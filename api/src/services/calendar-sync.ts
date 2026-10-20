@@ -10,7 +10,7 @@
 // Edits made in UniHub are written to the server first (with If-Match); the
 // local rows are then rebuilt from the new server copy, so the server stays
 // the authority and a conflicting edit elsewhere is never overwritten.
-import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
+import type { PoolConnection, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor, ApiError } from '../types';
 import type { CalendarAccount, CalendarCalendar, CalendarEvent } from '../types/calendar';
 import crypto from 'crypto';
@@ -60,7 +60,8 @@ interface Context {
 }
 interface ObjectListing { href: string; etag: string | null; url?: string; ics?: string }
 interface FetchedObject { href: string; etag: string | null; ics: string }
-interface SyncOptions { userId?: string | null; reason?: string; full?: boolean }
+// pass: the scheduled pass that asked; a stop of the background work ends it.
+interface SyncOptions { userId?: string | null; reason?: string; full?: boolean; pass?: AbortSignal }
 interface EventInput { userId: string; event: CalendarEvent }
 type WriteDescription = { remote: false; ctx?: never; link?: never; recurring?: never } | { remote: true; ctx: BaseContext; link: Awaited<ReturnType<typeof loadEventLink>>; recurring: boolean; readOnly: boolean };
 
@@ -226,8 +227,12 @@ function stopCalendarAccountWork(accountId: string, reason: StopReason = 'discon
   accountWork.delete(accountId);
   entry?.controller.abort((STOP_REASONS[reason] || STOP_REASONS.disconnected)());
 }
-// Every running sync and write of this process, when it stops its background work.
+// Every running sync and write of this process, when it stops its background
+// work. A scheduled pass going on starts no further account either.
+let passes = new AbortController();
 function stopAllCalendarWork() {
+  passes.abort();
+  passes = new AbortController();
   for (const accountId of [...accountWork.keys()]) stopCalendarAccountWork(accountId, 'stopping');
 }
 // For tests: accounts with work running.
@@ -382,81 +387,91 @@ async function applyObject(ctx: Context, calendar: Calendar, object: ObjectRecor
     ctx.stats.unreadable += 1;
     return [];
   }
-  const created = [];
+  return inTransaction(ctx, connection => applyObjectRows(connection, ctx, calendar, object, expanded));
+}
+
+// A stopped sync commits nothing more: the stop is checked again before the
+// commit, after the transaction's own queries.
+async function inTransaction<T>(ctx: Context, work: (connection: PoolConnection) => Promise<T>) {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
-    const [refs] = await connection.execute<RowDataPacket[]>(
-      'SELECT event_id, external_event_id FROM calendar_event_external_refs WHERE account_id = ? AND remote_object_id = ?',
-      [ctx.account.id, object.id]
-    );
-    const existing = new Map(refs.map(ref => [ref.external_event_id, ref.event_id]));
-    const keep = new Set();
-    for (const occurrence of expanded.occurrences) {
-      const key = externalEventId(object.id, occurrence.recurrenceId);
-      if (keep.has(key)) continue;
-      keep.add(key);
-      const values = [
-        calendar.id,
-        occurrence.title,
-        occurrence.description,
-        toMysqlDatetime(new Date(occurrence.startMs).toISOString()),
-        toMysqlDatetime(new Date(occurrence.endMs).toISOString()),
-        occurrence.allDay ? 1 : 0,
-        occurrence.location,
-        calendar.color || '#2563eb',
-        occurrence.reminders.length ? JSON.stringify(occurrence.reminders) : null,
-        expanded.rrule ? expanded.rrule.slice(0, 100) : null,
-      ];
-      const eventId = existing.get(key);
-      if (eventId) {
-        await connection.execute(
-          `UPDATE calendar_events SET calendar_id = ?, title = ?, description = ?, start_time = ?, end_time = ?, all_day = ?,
-             location = ?, color = ?, reminders = ?, recurrence = ? WHERE id = ? AND user_id = ?`,
-          [...values, eventId, ctx.account.user_id]
-        );
-        await connection.execute(
-          `UPDATE calendar_event_external_refs SET calendar_id = ?, external_etag = ?, recurrence_id = ?, last_synced_at = UTC_TIMESTAMP()
-           WHERE account_id = ? AND external_event_id = ?`,
-          [calendar.id, object.etag || null, occurrence.recurrenceId || null, ctx.account.id, key]
-        );
-        continue;
-      }
-      const id = crypto.randomUUID();
-      await connection.execute(
-        `INSERT INTO calendar_events (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, reminders, recurrence)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, ctx.account.user_id, ...values]
-      );
-      await connection.execute(
-        `INSERT INTO calendar_event_external_refs
-          (id, user_id, event_id, calendar_id, account_id, provider, external_event_id, external_etag, remote_object_id, recurrence_id, last_synced_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())`,
-        [crypto.randomUUID(), ctx.account.user_id, id, calendar.id, ctx.account.id, ctx.account.provider, key, object.etag || null, object.id, occurrence.recurrenceId || null]
-      );
-      created.push({ id, startMs: occurrence.startMs });
-    }
-    const stale = refs.filter(ref => !keep.has(ref.external_event_id)).map(ref => ref.event_id);
-    if (stale.length) {
-      await connection.execute(`DELETE FROM calendar_events WHERE user_id = ? AND id IN (${stale.map(() => '?').join(', ')})`, [ctx.account.user_id, ...stale]);
-    }
+    const result = await work(connection);
+    ctx.signal?.throwIfAborted();
     await connection.commit();
-    ctx.stats.events += expanded.occurrences.length;
-    ctx.stats.removedEvents += stale.length;
+    return result;
   } catch (error) {
     await connection.rollback();
     throw error;
   } finally {
     connection.release();
   }
+}
+
+async function applyObjectRows(connection: PoolConnection, ctx: Context, calendar: Calendar, object: ObjectRecord, expanded: NonNullable<ReturnType<typeof expandObject>>) {
+  const created = [];
+  const [refs] = await connection.execute<RowDataPacket[]>(
+    'SELECT event_id, external_event_id FROM calendar_event_external_refs WHERE account_id = ? AND remote_object_id = ?',
+    [ctx.account.id, object.id]
+  );
+  const existing = new Map(refs.map(ref => [ref.external_event_id, ref.event_id]));
+  const keep = new Set();
+  for (const occurrence of expanded.occurrences) {
+    const key = externalEventId(object.id, occurrence.recurrenceId);
+    if (keep.has(key)) continue;
+    keep.add(key);
+    const values = [
+      calendar.id,
+      occurrence.title,
+      occurrence.description,
+      toMysqlDatetime(new Date(occurrence.startMs).toISOString()),
+      toMysqlDatetime(new Date(occurrence.endMs).toISOString()),
+      occurrence.allDay ? 1 : 0,
+      occurrence.location,
+      calendar.color || '#2563eb',
+      occurrence.reminders.length ? JSON.stringify(occurrence.reminders) : null,
+      expanded.rrule ? expanded.rrule.slice(0, 100) : null,
+    ];
+    const eventId = existing.get(key);
+    if (eventId) {
+      await connection.execute(
+        `UPDATE calendar_events SET calendar_id = ?, title = ?, description = ?, start_time = ?, end_time = ?, all_day = ?,
+           location = ?, color = ?, reminders = ?, recurrence = ? WHERE id = ? AND user_id = ?`,
+        [...values, eventId, ctx.account.user_id]
+      );
+      await connection.execute(
+        `UPDATE calendar_event_external_refs SET calendar_id = ?, external_etag = ?, recurrence_id = ?, last_synced_at = UTC_TIMESTAMP()
+         WHERE account_id = ? AND external_event_id = ?`,
+        [calendar.id, object.etag || null, occurrence.recurrenceId || null, ctx.account.id, key]
+      );
+      continue;
+    }
+    const id = crypto.randomUUID();
+    await connection.execute(
+      `INSERT INTO calendar_events (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, reminders, recurrence)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, ctx.account.user_id, ...values]
+    );
+    await connection.execute(
+      `INSERT INTO calendar_event_external_refs
+        (id, user_id, event_id, calendar_id, account_id, provider, external_event_id, external_etag, remote_object_id, recurrence_id, last_synced_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())`,
+      [crypto.randomUUID(), ctx.account.user_id, id, calendar.id, ctx.account.id, ctx.account.provider, key, object.etag || null, object.id, occurrence.recurrenceId || null]
+    );
+    created.push({ id, startMs: occurrence.startMs });
+  }
+  const stale = refs.filter(ref => !keep.has(ref.external_event_id)).map(ref => ref.event_id);
+  if (stale.length) {
+    await connection.execute(`DELETE FROM calendar_events WHERE user_id = ? AND id IN (${stale.map(() => '?').join(', ')})`, [ctx.account.user_id, ...stale]);
+  }
+  ctx.stats.events += expanded.occurrences.length;
+  ctx.stats.removedEvents += stale.length;
   return created;
 }
 
 async function removeObjects(ctx: Context, objectIds: string[]) {
   if (!objectIds.length) return;
-  const connection = await db.getConnection();
-  try {
-    await connection.beginTransaction();
+  await inTransaction(ctx, async connection => {
     for (let index = 0; index < objectIds.length; index += 200) {
       const chunk = objectIds.slice(index, index + 200);
       const placeholders = chunk.map(() => '?').join(', ');
@@ -471,25 +486,22 @@ async function removeObjects(ctx: Context, objectIds: string[]) {
       await connection.execute(`DELETE FROM calendar_remote_objects WHERE account_id = ? AND id IN (${placeholders})`, [ctx.account.id, ...chunk]);
       ctx.stats.removedEvents += eventIds.length;
     }
-    await connection.commit();
-  } catch (error) {
-    await connection.rollback();
-    throw error;
-  } finally {
-    connection.release();
-  }
+  });
 }
 
-async function storeObject(account: Account, calendar: Calendar, { id, href, etag, ics }: { id?: string; href: string; etag?: string | null; ics: string }): Promise<ObjectRecord> {
+// A sync stores an object with its events in one transaction: one that fails
+// or stops in between keeps the previous copy and its ETag, so the next sync
+// downloads the object again.
+async function storeObject(connection: SqlExecutor, account: Account, calendar: Calendar, { id, href, etag, ics }: { id?: string; href: string; etag?: string | null; ics: string }): Promise<ObjectRecord> {
   const objectId = id || crypto.randomUUID();
   const uid = (ical.objectUid(ics) || '').slice(0, 500) || null;
-  await db.execute(
+  await connection.execute(
     `INSERT INTO calendar_remote_objects (id, user_id, account_id, calendar_id, href, href_hash, etag, uid, ics)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE etag = VALUES(etag), uid = VALUES(uid), ics = VALUES(ics), href = VALUES(href)`,
     [objectId, account.user_id, account.id, calendar.id, href, hrefHash(href), etag || null, uid, ics]
   );
-  const [rows] = await db.execute<ObjectRecord[]>('SELECT id, href, etag, ics FROM calendar_remote_objects WHERE calendar_id = ? AND href_hash = ?', [calendar.id, hrefHash(href)]);
+  const [rows] = await connection.execute<ObjectRecord[]>('SELECT id, href, etag, ics FROM calendar_remote_objects WHERE calendar_id = ? AND href_hash = ?', [calendar.id, hrefHash(href)]);
   return rows[0];
 }
 
@@ -556,13 +568,11 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       continue;
     }
     ctx.signal?.throwIfAborted();
-    const object = await storeObject(ctx.account, calendar, { id: known?.id, href: item.href, etag: item.etag, ics: item.ics });
-    applied.add(object.id);
-    const created = await applyObject(ctx, calendar, object, expanded).catch(async error => {
-      // Without its ETag the object is downloaded and applied again next time.
-      await db.execute('UPDATE calendar_remote_objects SET etag = NULL WHERE id = ?', [object.id]).catch(() => {});
-      throw error;
+    const { object, created } = await inTransaction(ctx, async connection => {
+      const object = await storeObject(connection, ctx.account, calendar, { id: known?.id, href: item.href, etag: item.etag, ics: item.ics });
+      return { object, created: await applyObjectRows(connection, ctx, calendar, object, expanded) };
     });
+    applied.add(object.id);
     ctx.stats.changedObjects += 1;
     if (ctx.notify && !known) {
       const upcoming = created.filter(event => event.startMs > Date.now()).sort((a, b) => a.startMs - b.startMs)[0];
@@ -590,6 +600,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
   if (expandAll && !unreadable) {
     // Rows from before 0.17 are only dropped once every object was read, as
     // an unreadable one may be what replaces them.
+    ctx.signal?.throwIfAborted();
     const [orphans] = await db.execute<RowDataPacket[]>(
       `SELECT r.event_id FROM calendar_event_external_refs r
        LEFT JOIN calendar_remote_objects o ON o.id = r.remote_object_id
@@ -600,6 +611,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       const ids = orphans.map(row => row.event_id);
       for (let index = 0; index < ids.length; index += 200) {
         const chunk = ids.slice(index, index + 200);
+        ctx.signal?.throwIfAborted();
         await db.execute(`DELETE FROM calendar_events WHERE user_id = ? AND id IN (${chunk.map(() => '?').join(', ')})`, [ctx.account.user_id, ...chunk]);
       }
       ctx.stats.removedEvents += ids.length;
@@ -681,6 +693,7 @@ async function syncIcsAccount(ctx: Context, { full }: { full?: boolean }) {
   const calendarCtx = { ...ctx, notify: ctx.notify && !isNew && !!calendar.remote_expanded_on };
   const unreadable = await syncCalendarObjects(calendarCtx, calendar, listing, async changed => changed as FetchedObject[], { expandAll });
   ctx.newEvents = calendarCtx.newEvents;
+  ctx.signal?.throwIfAborted();
   await db.execute('UPDATE calendar_calendars SET remote_ctag = ?, remote_expanded_on = ? WHERE id = ?', [unreadable ? null : feed.etag, today, calendar.id]);
   ctx.stats.calendars += 1;
 }
@@ -725,7 +738,7 @@ async function syncLinkedCalendars(userId: string, mailAccountId: string) {
   }
 }
 
-async function runAccountSync(accountId: string, { userId, reason, full }: SyncOptions) {
+async function runAccountSync(accountId: string, { userId, reason, full, pass }: SyncOptions) {
   const account = await loadAccount(accountId, userId);
   if (!account || !REMOTE_PROVIDERS.has(account.provider)) throw syncError('Calendar account not found', 404, 'CALENDAR_ACCOUNT_NOT_FOUND');
   // A first sync never attempted (connected or restored, or interrupted by a
@@ -738,7 +751,11 @@ async function runAccountSync(accountId: string, { userId, reason, full }: SyncO
 
   return withAccountLock(accountId, async () => {
     const work = beginAccountWork(accountId);
-    try { return await syncLocked(accountId, { userId, full }, work.signal); } finally { work.release(); }
+    try {
+      // Registered and checked in one step: a stop before this has ended the pass.
+      if (pass?.aborted) throw STOP_REASONS.stopping();
+      return await syncLocked(accountId, { userId, full }, work.signal);
+    } finally { work.release(); }
   });
 }
 
@@ -836,10 +853,10 @@ async function syncLocked(accountId: string, { userId, full }: SyncOptions, sign
 // Concurrent requests for the same account share one run. A run that found
 // the mail account connected again only after it gave up asks for a new one
 // (followUps), started once it has ended.
-function syncCalendarAccount(accountId: string, { userId = null, reason = 'manual', full = false }: SyncOptions = {}) {
+function syncCalendarAccount(accountId: string, { userId = null, reason = 'manual', full = false, pass }: SyncOptions = {}) {
   const running = inFlight.get(accountId);
   if (running) return running;
-  const run = runAccountSync(accountId, { userId, reason, full }).finally(() => {
+  const run = runAccountSync(accountId, { userId, reason, full, pass }).finally(() => {
     inFlight.delete(accountId);
     if (followUps.delete(accountId)) syncCalendarAccountInBackground(accountId, { userId, reason: 'credentials' });
   });
@@ -856,6 +873,7 @@ function syncCalendarAccountInBackground(accountId: string, options?: SyncOption
 async function runCalendarSyncPass() {
   if (passRunning) return { skipped: true };
   passRunning = true;
+  const pass = passes.signal;
   let synced = 0;
   try {
     const [rows] = await db.execute<RowDataPacket[]>(
@@ -864,8 +882,9 @@ async function runCalendarSyncPass() {
        ORDER BY next_sync_at IS NOT NULL, next_sync_at ASC LIMIT ${ACCOUNTS_PER_PASS}`
     );
     for (const row of rows) {
+      if (pass.aborted) break;
       try {
-        const result = await syncCalendarAccount(row.id, { userId: row.user_id, reason: 'scheduled' });
+        const result = await syncCalendarAccount(row.id, { userId: row.user_id, reason: 'scheduled', pass });
         if (result && 'ok' in result && result.ok) synced += 1;
       } catch (error) {
         console.warn(`[CALENDAR] Scheduled sync of account ${row.id} failed:`, (error as ApiError).message);
@@ -988,7 +1007,7 @@ async function pushCreatedEvent({ userId, event, calendarId = event.calendar_id 
     const collection = calendarUrl(ctx.account, ctx.calendar);
     const url = new URL(`${encodeURIComponent(uid)}.ics`, collection.endsWith('/') ? collection : `${collection}/`).toString();
     const { etag } = await caldav.putCalendarObject({ url, ics, etag: null, ...ctx.login }).catch(error => handleConflict(ctx, error));
-    const object = await storeObject(ctx.account, ctx.calendar, { href: caldav.canonicalHref(url), etag, ics });
+    const object = await storeObject(db, ctx.account, ctx.calendar, { href: caldav.canonicalHref(url), etag, ics });
     await db.execute(
       `INSERT INTO calendar_event_external_refs
         (id, user_id, event_id, calendar_id, account_id, provider, external_event_id, external_etag, remote_object_id, recurrence_id, last_synced_at)
@@ -1029,7 +1048,7 @@ async function pushEventUpdate({ userId, event, changes, scope }: EventInput & {
     });
     const { etag } = await caldav.putCalendarObject({ url: objectUrl(ctx.account, link.object), ics, etag: link.object.etag, ...ctx.login })
       .catch(error => handleConflict(ctx, error));
-    const object = await storeObject(ctx.account, ctx.calendar, { id: link.object.id, href: link.object.href, etag, ics });
+    const object = await storeObject(db, ctx.account, ctx.calendar, { id: link.object.id, href: link.object.href, etag, ics });
     await applyObject(rebuildContext(ctx), ctx.calendar, object);
     publishCalendarChanged(userId, ctx.account.id, 'local');
     return { scope: effectiveScope };
@@ -1054,7 +1073,7 @@ async function pushEventDelete({ userId, event, scope }: EventInput & { scope?: 
       const ics = ical.removeOccurrenceIcs(link.object.ics, link.recurrenceId, { userTimeZone: ctx.timeZone });
       if (ics) {
         const { etag } = await caldav.putCalendarObject({ url, ics, etag: link.object.etag, ...ctx.login }).catch(error => handleConflict(ctx, error));
-        const object = await storeObject(ctx.account, ctx.calendar, { id: link.object.id, href: link.object.href, etag, ics });
+        const object = await storeObject(db, ctx.account, ctx.calendar, { id: link.object.id, href: link.object.href, etag, ics });
         await applyObject(rebuildContext(ctx), ctx.calendar, object);
         publishCalendarChanged(userId, ctx.account.id, 'local');
         return { scope: 'occurrence' };

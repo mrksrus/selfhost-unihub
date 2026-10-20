@@ -583,9 +583,12 @@ Important boundaries in the current code:
   requests only; mail work it accepts stays queued for the owner. Every process
   checks the lock every 5 s, and each database step of a check ends within
   4 s. An owner that finds the lock no longer its own, or gets no answer,
-  stops its background work at once: its timers do nothing more (even while
-  its start-up is still running) and running calendar syncs are aborted
-  before their next write. A process that gets the lock waits 15 s (three
+  stops its background work at once: its timers do nothing more, a start-up
+  still running registers nothing more, and running calendar syncs are
+  aborted before their next commit (an entry and its events are written in
+  one transaction) while the scheduled calendar pass starts no further
+  account. A start-up that fails lets the lock go at the next check and
+  takes it again like any new owner. A process that gets the lock waits 15 s (three
   checks) and checks again before it starts, so the two never run background
   work at the same time; a fresh start, and an owner taking its lock back
   after a database restart, also begin after those 15 s. Durable mail jobs

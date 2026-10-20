@@ -300,6 +300,44 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       assert.deepEqual(await titles(), ['Holiday'], 'the stale answer was not stored');
       const [[afterStop]] = await connection.execute<RowDataPacket[]>('SELECT sync_error FROM calendar_accounts WHERE id = ?', [icsId]);
       assert.doesNotMatch(String(afterStop.sync_error), /interrupted/, 'nothing about the stop is written either');
+
+      // The stop comes while the changed entry is being written: neither the
+      // entry nor its events are kept, so the next sync downloads it again.
+      const storedIcs = async () => (await connection.execute<RowDataPacket[]>('SELECT ics FROM calendar_remote_objects WHERE account_id = ?', [icsId]))[0].map(row => String(row.ics));
+      const before = await storedIcs();
+      caldav.fetchIcsFeed = async () => ({ notModified: false, text: eventIcs('holiday@example.test', 'Moved holiday', start), etag: null });
+      const stopOnWrite = (sql: string) => { if (/^\s*INSERT INTO calendar_remote_objects/.test(sql)) calendarSync.stopAllCalendarWork(); };
+      const watched = <T extends object>(target: T): T => new Proxy(target, { get(object, name) {
+        const value = Reflect.get(object, name);
+        if (name === 'execute') return (sql: string, ...args: unknown[]) => { stopOnWrite(sql); return (value as Function).call(object, sql, ...args); };
+        if (name === 'getConnection') return async () => watched(await (value as Function).call(object));
+        return typeof value === 'function' ? value.bind(object) : value;
+      } });
+      setDb(watched(pool));
+      try {
+        await assert.rejects(calendarSync.syncCalendarAccount(icsId, { userId, full: true }), (error: FixtureValue) => error.code === 'CALENDAR_SYNC_INTERRUPTED');
+      } finally { setDb(pool); }
+      assert.deepEqual(await titles(), ['Holiday'], 'no event of the stopped write was kept');
+      assert.deepEqual(await storedIcs(), before, 'nor the entry, which keeps its previous copy');
+      await calendarSync.syncCalendarAccount(icsId, { userId, full: true });
+      assert.deepEqual(await titles(), ['Moved holiday'], 'the next sync downloads it again');
+
+      // A stop during a scheduled pass ends the pass: the next due account
+      // is not started (B-06).
+      for (const name of ['Pass one', 'Pass two']) {
+        await connection.execute<ResultSetHeader>(
+          `INSERT INTO calendar_accounts (id, user_id, provider, display_name, encrypted_password, is_active, sync_status, next_sync_at)
+           VALUES (?, ?, 'ics', ?, ?, TRUE, 'pending', NULL)`, [crypto.randomUUID(), userId, name, encrypt('https://feeds.example.test/pass.ics')]);
+      }
+      let started = 0;
+      const listAll = caldav.listCalendars;
+      const firstStops = async () => { started += 1; calendarSync.stopAllCalendarWork(); return { notModified: true, text: '', etag: null }; };
+      caldav.fetchIcsFeed = firstStops as FixtureValue;
+      caldav.listCalendars = (async () => { await firstStops(); return []; }) as FixtureValue;
+      try {
+        await calendarSync.runCalendarSyncPass();
+      } finally { caldav.listCalendars = listAll; }
+      assert.equal(started, 1, 'only the account running at the stop was asked');
     });
 
     await t.test('an owed first sync waits for the module, not for background sync', async () => {

@@ -46,7 +46,11 @@ interface BackgroundWorkDeps {
   pruneAuditLog: () => Promise<number>;
   isWorkerOwner: () => boolean;
 }
-interface BackgroundWorkHandle { stop(): void }
+interface BackgroundWorkHandle {
+  /** Settles when the start-up has finished (or stopped early); rejects when it failed. */
+  ready: Promise<void>;
+  stop(): void;
+}
 
 function defaultDeps(): BackgroundWorkDeps {
   return {
@@ -68,21 +72,44 @@ function defaultDeps(): BackgroundWorkDeps {
   };
 }
 
-async function startBackgroundWork(overrides: Partial<BackgroundWorkDeps> = {}): Promise<BackgroundWorkHandle> {
+// The handle exists before the start-up's first await, so a stop (the lock
+// lost, a shutdown) reaches a start-up still going: it registers nothing more,
+// and what it registered is cleared.
+function startBackgroundWork(overrides: Partial<BackgroundWorkDeps> = {}): BackgroundWorkHandle {
   const deps = { ...defaultDeps(), ...overrides };
-  const { timers } = deps;
   const intervals: { stop(): void }[] = [];
   const delayed: NodeJS.Timeout[] = [];
-  let stopped = false;
+  const state = { stopped: false };
+  const handle: BackgroundWorkHandle = {
+    ready: Promise.resolve(),
+    stop() {
+      if (state.stopped) return;
+      state.stopped = true;
+      for (const timer of delayed) deps.timers.clearTimeout(timer);
+      for (const interval of intervals) interval.stop();
+      deps.idleSupervisor.stop();
+      // Running calendar syncs write nothing more; the owner syncs them again.
+      deps.stopCalendarWork();
+    },
+  };
+  handle.ready = runStartup(deps, state, intervals, delayed);
+  return handle;
+}
+
+async function runStartup(deps: BackgroundWorkDeps, state: { stopped: boolean }, intervals: { stop(): void }[], delayed: NodeJS.Timeout[]) {
+  const { timers } = deps;
   // A process that lost the background-work lock does nothing more, even
   // while its start-up (or stop) has not finished.
-  const active = () => !stopped && deps.isWorkerOwner();
+  const active = () => !state.stopped && deps.isWorkerOwner();
+  const idle = { run: async () => false, stop() {} };
   const every = (label: string, intervalMs: number, task: () => unknown) => {
+    if (state.stopped) return idle;
     const handle = everyInterval(label, intervalMs, () => active() ? task() : undefined, timers);
     intervals.push(handle);
     return handle;
   };
   const after = (ms: number, task: () => unknown) => {
+    if (state.stopped) return;
     const timer = timers.setTimeout(task, ms);
     timer.unref?.();
     delayed.push(timer);
@@ -93,6 +120,8 @@ async function startBackgroundWork(overrides: Partial<BackgroundWorkDeps> = {}):
 
   // A process restart cannot resume an IMAP connection; rescan safely using
   // completed local imports. Accepted provider changes stay durable jobs.
+  // The resets belong to the owner: a stopped start-up's would touch the new owner's syncs.
+  if (!active()) return;
   await deps.db.execute("UPDATE mail_accounts SET sync_status = 'pending' WHERE sync_status = 'running'");
   let periodicMailSyncRunning = false;
   const schedulePeriodicMail = async () => {
@@ -105,6 +134,7 @@ async function startBackgroundWork(overrides: Partial<BackgroundWorkDeps> = {}):
       );
       log.info('SYNC', 'Periodic mail sync', { accounts: accounts.length });
       for (const account of accounts) {
+        if (!active()) break;
         if (await deps.isSectionRestoreActive(account.user_id, 'mail')) continue;
         const job = await deps.schedulePeriodicMailWork(account.id);
         if (job.started) job.promise.then((result: { success?: boolean; error?: unknown } | null | undefined) => {
@@ -153,6 +183,7 @@ async function startBackgroundWork(overrides: Partial<BackgroundWorkDeps> = {}):
 
   // Each calendar account schedules its own next sync (next_sync_at); this
   // timer only picks up the accounts that are due. A restart interrupts runs.
+  if (!active()) return;
   await deps.db.execute("UPDATE calendar_accounts SET sync_status = 'pending' WHERE sync_status = 'syncing'")
     .catch(error => log.error('CALENDAR', 'Could not reset interrupted syncs', error));
   const calendarSync = every('CALENDAR', 60 * 1000, deps.runCalendarSyncPass);
@@ -175,19 +206,8 @@ async function startBackgroundWork(overrides: Partial<BackgroundWorkDeps> = {}):
     }
   });
 
+  if (state.stopped) return;
   log.info('STARTUP', 'Background work started', { timers: intervals.length, imapIdleSessions: deps.idleSupervisor.options.maxSessions });
-
-  return {
-    stop() {
-      if (stopped) return;
-      stopped = true;
-      for (const timer of delayed) timers.clearTimeout(timer);
-      for (const handle of intervals) handle.stop();
-      deps.idleSupervisor.stop();
-      // Running calendar syncs write nothing more; the owner syncs them again.
-      deps.stopCalendarWork();
-    },
-  };
 }
 
 export { startBackgroundWork };

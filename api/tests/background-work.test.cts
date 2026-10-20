@@ -52,7 +52,8 @@ async function quietly<T>(work: () => Promise<T>) {
 test('background work starts the nine timers and stop clears every one of them', async () => {
   const timers = fakeTimers();
   const { overrides, calls, idle } = deps(timers);
-  const work = await quietly(() => startBackgroundWork(overrides));
+  const work = startBackgroundWork(overrides);
+  await quietly(() => work.ready);
   assert.deepEqual([...timers.intervals.values()].map(timer => timer.ms).sort((a, b) => a - b),
     [1000, 30000, 30000, 60000, 60000, 60000, 3600000, 3600000, 3600000]);
   // Interrupted syncs are reset before their timers can pick accounts up.
@@ -75,7 +76,8 @@ test('after this process lost the background-work lock its timers do nothing, ev
   const timers = fakeTimers();
   const { overrides, calls, idle } = deps(timers);
   let owner = true;
-  const work = await quietly(() => startBackgroundWork({ ...overrides, isWorkerOwner: () => owner }));
+  const work = startBackgroundWork({ ...overrides, isWorkerOwner: () => owner });
+  await quietly(() => work.ready);
   owner = false;
   calls.length = 0;
   await quietly(async () => {
@@ -86,4 +88,36 @@ test('after this process lost the background-work lock its timers do nothing, ev
   assert.deepEqual(calls, [], 'no notification, mail, calendar or cleanup work ran');
   assert.equal(idle.started, 0);
   work.stop();
+});
+
+test('a stop reaches a start-up still waiting for the database: it starts and resets nothing more (B-06)', async () => {
+  const timers = fakeTimers();
+  const { overrides, calls, idle } = deps(timers);
+  let answer!: () => void;
+  const db = { execute: async (sql: string) => {
+    calls.push(sql.split(' ').slice(0, 2).join(' '));
+    await new Promise<void>(resolve => { answer = resolve; });
+    return [{ affectedRows: 0 }];
+  } };
+  const work = startBackgroundWork({ ...overrides, db } as FixtureValue);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls.filter(call => call.startsWith('UPDATE')), ['UPDATE mail_accounts'], 'the start-up waits on its first reset');
+  work.stop();
+  answer();
+  await quietly(() => work.ready);
+  await quietly(async () => { for (const run of timers.immediates) run(); await new Promise(resolve => setTimeout(resolve, 10)); });
+  assert.equal(timers.intervals.size, 0, 'no timer was left or added');
+  assert.equal(timers.timeouts.size, 0);
+  assert.ok(!calls.includes('UPDATE calendar_accounts'), 'the calendar reset belongs to the next owner');
+  assert.equal(idle.started, 0);
+});
+
+test('a failed start-up says so through ready', async () => {
+  const timers = fakeTimers();
+  const { overrides } = deps(timers);
+  const db = { execute: async () => { throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }); } };
+  const work = startBackgroundWork({ ...overrides, db } as FixtureValue);
+  await assert.rejects(quietly(() => work.ready), /ECONNREFUSED/);
+  work.stop();
+  assert.equal(timers.intervals.size, 0);
 });

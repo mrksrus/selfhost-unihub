@@ -113,3 +113,32 @@ test('a background start-up that never finishes does not stop the lock checks (B
   await new Promise(resolve => setTimeout(resolve, 300));
   assert.deepEqual(events.slice(0, 2), ['a gained', 'a lost'], 'the check still ran and ended the role');
 });
+
+test('a background start-up that fails frees the lock and starts again (B-06)', {
+  skip: !process.env.MYSQL_TEST_HOST, timeout: 60000,
+}, async t => {
+  const first = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
+    user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD, database: process.env.MYSQL_TEST_DATABASE, connectionLimit: 3 });
+  t.after(() => first.end());
+  const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
+  t.after(captureLog(() => {}));
+  const path = require.resolve('../dist/src/services/worker-owner');
+  delete require.cache[path];
+  const a = require(path) as typeof import('../src/services/worker-owner');
+  const events: string[] = [];
+  const ticks: (() => void)[] = [];
+  const timers = { setInterval: ((fn: () => void) => { ticks.push(fn); return { unref() {} }; }) as unknown as typeof setInterval, clearInterval: (() => {}) as typeof clearInterval };
+  let starts = 0;
+  const ownerA = await a.startWorkerOwnership({ pool: first, timers, handoverMs: 100,
+    onGained: async () => { events.push('a gained'); if (++starts === 1) throw new Error('connect ECONNREFUSED'); },
+    onLost: () => events.push('a lost') });
+  t.after(() => ownerA.stop());
+  await new Promise(resolve => setTimeout(resolve, 50));
+  ticks[0]();
+  await new Promise(resolve => setTimeout(resolve, 400));
+  assert.deepEqual(events, ['a gained', 'a lost', 'a gained'], 'the failed start was stopped, the lock let go and taken again');
+  assert.equal(a.isWorkerOwner(), true);
+  ticks[0]();
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.deepEqual(events, ['a gained', 'a lost', 'a gained'], 'a start that worked keeps the role');
+});
