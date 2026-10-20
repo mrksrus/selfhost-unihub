@@ -89,6 +89,16 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     compositionRef.current += 1;
     sendKeyRef.current = null;
   };
+  // Counts the edits of the open message: a save marks it saved only when
+  // nothing changed while the save ran.
+  const revisionRef = useRef(0);
+  const markChanged = ({ attachments = false } = {}) => {
+    revisionRef.current += 1;
+    if (attachments) setAttachmentsDirty(true);
+    setIsComposeDirty(true);
+  };
+  // The save that shows "Saving": an earlier one ending does not clear a later one's.
+  const savingRef = useRef<object | null>(null);
   // The message a reply answers, for its threading headers. A draft opened
   // later from Drafts does not know it.
   const [replyToEmailId, setReplyToEmailId] = useState<string | null>(null);
@@ -194,20 +204,17 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       ...prev,
       ...uniqueIncomingFiles.map(file => ({ id: crypto.randomUUID(), file })),
     ]);
-    setAttachmentsDirty(true);
-    setIsComposeDirty(true);
+    markChanged({ attachments: true });
   };
 
   const removeComposeAttachment = (attachmentId: string) => {
     setComposeAttachments(prev => prev.filter(att => att.id !== attachmentId));
-    setAttachmentsDirty(true);
-    setIsComposeDirty(true);
+    markChanged({ attachments: true });
   };
 
   const removeExistingDraftAttachment = (attachmentId: string) => {
     setExistingDraftAttachments(prev => prev.filter(att => att.id !== attachmentId));
-    setAttachmentsDirty(true);
-    setIsComposeDirty(true);
+    markChanged({ attachments: true });
   };
 
   const handleComposeAttachmentInput = (e: ChangeEvent<HTMLInputElement>) => {
@@ -220,12 +227,12 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
 
   const updateComposeForm = (patch: Partial<ComposeForm>, dirty = true) => {
     setComposeForm(prev => ({ ...prev, ...patch }));
-    if (dirty) setIsComposeDirty(true);
+    if (dirty) markChanged();
   };
 
   const updateComposeBodyFromEditor = (editorRef: RefObject<HTMLDivElement>) => {
     setComposeForm(prev => ({ ...prev, body: editorRef.current?.innerHTML || '' }));
-    setIsComposeDirty(true);
+    markChanged();
   };
 
   const applyComposeCommand = (editorRef: RefObject<HTMLDivElement>, command: string, value?: string) => {
@@ -244,7 +251,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
         .join(', ');
       return { ...prev, [field]: `${nextValue}, ` };
     });
-    setIsComposeDirty(true);
+    markChanged();
   };
 
   const resetComposeState = () => {
@@ -339,9 +346,13 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     // A save that ends after its message was closed or replaced leaves the
     // message open now as it is.
     const composition = compositionRef.current;
+    const revision = revisionRef.current;
+    const saving = {};
+    savingRef.current = saving;
     setIsDraftSaving(true);
     try {
       const includeAttachments = options.includeAttachments ?? attachmentsDirty;
+      const uploaded = includeAttachments ? new Set(composeAttachments) : new Set<ComposeAttachment>();
       const payload: DraftInput = {
         account_id: fromAccountId,
         to: composeForm.to,
@@ -360,13 +371,15 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
 
       const savedDraft = await saveDraft(activeDraftId, payload);
       if (composition !== compositionRef.current) return savedDraft;
+      // Edits made while it was saved stay unsaved, and are saved next.
+      const current = revision === revisionRef.current;
       setActiveDraftId(savedDraft.id);
       setExistingDraftAttachments(savedDraft.attachments || []);
       if (includeAttachments) {
-        setComposeAttachments([]);
-        setAttachmentsDirty(false);
+        setComposeAttachments(prev => prev.filter(attachment => !uploaded.has(attachment)));
+        if (current) setAttachmentsDirty(false);
       }
-      setIsComposeDirty(false);
+      if (current) setIsComposeDirty(false);
       setDraftSavedAt(new Date().toISOString());
       void invalidateMailQueries(queryClient);
       if (!options.quiet) toast({ title: 'Draft saved' });
@@ -381,7 +394,10 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       }
       throw error;
     } finally {
-      if (composition === compositionRef.current) setIsDraftSaving(false);
+      if (savingRef.current === saving) {
+        savingRef.current = null;
+        setIsDraftSaving(false);
+      }
     }
   }, [
     activeDraftId,
@@ -426,12 +442,15 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
 
   const discardCurrentCompose = async () => {
     // A send still preparing (saving the draft, reading attachments) stops
-    // now, before the draft is deleted; the key stays for this message.
-    compositionRef.current += 1;
+    // now, before the draft is deleted; the key stays for this message. A
+    // message closed meanwhile (Save draft in the same prompt) stays closed,
+    // and one opened since is not discarded with it.
+    const composition = ++compositionRef.current;
     try {
       if (activeDraftId) {
         await deleteDraftById(activeDraftId);
       }
+      if (composition !== compositionRef.current) return;
       setComposeClosePromptOpen(false);
       closeComposeFlow({ force: true });
     } catch (error) {
