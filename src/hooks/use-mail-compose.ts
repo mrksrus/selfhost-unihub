@@ -99,6 +99,9 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   };
   // The save that shows "Saving": an earlier one ending does not clear a later one's.
   const savingRef = useRef<object | null>(null);
+  // The attachment lists as they are now, for a save that ends later.
+  const attachmentsRef = useRef({ added: composeAttachments, existing: existingDraftAttachments });
+  attachmentsRef.current = { added: composeAttachments, existing: existingDraftAttachments };
   // The message a reply answers, for its threading headers. A draft opened
   // later from Drafts does not know it.
   const [replyToEmailId, setReplyToEmailId] = useState<string | null>(null);
@@ -353,6 +356,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     try {
       const includeAttachments = options.includeAttachments ?? attachmentsDirty;
       const uploaded = includeAttachments ? new Set(composeAttachments) : new Set<ComposeAttachment>();
+      const keptBefore = new Set(existingDraftAttachments.map(attachment => attachment.id));
       const payload: DraftInput = {
         account_id: fromAccountId,
         to: composeForm.to,
@@ -374,7 +378,17 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       // Edits made while it was saved stay unsaved, and are saved next.
       const current = revision === revisionRef.current;
       setActiveDraftId(savedDraft.id);
-      setExistingDraftAttachments(savedDraft.attachments || []);
+      // Attachments removed while it was saved stay removed (and the next
+      // save, which that removal asked for, drops them on the server too).
+      const now = attachmentsRef.current;
+      const removed = new Set([...keptBefore].filter(id => !now.existing.some(attachment => attachment.id === id)));
+      const stored = (savedDraft.attachments || []).filter(attachment => !removed.has(attachment.id));
+      for (const gone of [...uploaded].filter(attachment => !now.added.includes(attachment))) {
+        const index = stored.findIndex(attachment => !keptBefore.has(attachment.id)
+          && attachment.filename === gone.file.name && attachment.size_bytes === gone.file.size);
+        if (index >= 0) stored.splice(index, 1);
+      }
+      setExistingDraftAttachments(stored);
       if (includeAttachments) {
         setComposeAttachments(prev => prev.filter(attachment => !uploaded.has(attachment)));
         if (current) setAttachmentsDirty(false);
@@ -464,9 +478,11 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
 
   const saveAndClose = () => {
     const composition = compositionRef.current;
+    const revision = revisionRef.current;
     saveCurrentDraft({ includeAttachments: true })
       .then(() => {
-        if (composition !== compositionRef.current) return;
+        // Edited again meanwhile ("Keep editing"): the newer text is not saved yet.
+        if (composition !== compositionRef.current || revision !== revisionRef.current) return;
         setComposeClosePromptOpen(false);
         closeComposeFlow({ force: true });
       })

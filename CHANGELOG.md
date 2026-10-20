@@ -39,7 +39,9 @@ and no configuration change (see [Upgrading](docs/UPGRADING.md#0231-fixes)).
 - **Edits made while a draft is being saved are kept.** Text typed while the
   automatic draft save was running counted as saved when that save ended, so
   closing the message did not ask and the newest text could be lost. It is
-  now saved by the next draft save. A save, send or Discard that ends after
+  now saved by the next draft save, and "Save draft" when closing keeps the
+  message open if you went on writing. An attachment removed during a save no
+  longer comes back. A save, send or Discard that ends after
   its message was closed no longer changes or closes the message opened
   since.
 - **The keyboard no longer squeezes the message out of the phone composer.**
