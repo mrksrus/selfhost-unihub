@@ -64,7 +64,18 @@ text, a number (stored as its text) or absent; every field but the notes is
 trimmed, an empty value becomes `NULL`, and a value longer than its column is
 refused with 400 naming the limit. Email fields are not checked
 for a format. A first name is required to create a contact; an edit may leave
-it empty, as a vCard imported without a name has none. The route ids come from
+it empty, as a vCard imported without a name has none.
+
+Three cases behave differently from 0.22.4, which only hand-written API
+clients notice. Since 0.23.0, and kept on purpose:
+
+- a value of only spaces or line breaks is empty (`NULL`), in the notes too;
+- a number is stored as its text, `0` included (`"0"`; 0.22.4 stored nothing);
+- `true`, `false`, objects and arrays are refused with 400
+  (`<Field> must be text`) instead of being stored as text.
+
+The full input contract is written down with the contacts rework in 0.26.0.
+The route ids come from
 the matcher (`req.params.id`), so a query string on the URL does not become
 part of the id.
 
