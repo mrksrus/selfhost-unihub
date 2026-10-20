@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import type { PDFDocumentProxy, RenderTask, TextLayer as PdfTextLayer } from 'pdfjs-dist';
 import { ChevronLeft, ChevronRight, Download, ExternalLink, FileQuestion, Minus, Plus, X } from 'lucide-react';
 import { api } from '@/lib/api';
+import { loadPdfJs, pdfDocumentOptions, pdfFailureDetail, type PdfJs } from '@/lib/pdf';
 import { saveFile } from '@/lib/platform';
 import { emailSrcDoc, prepareEmailHtml } from '@/lib/email-privacy';
 import type { EmailAttachment } from '@/lib/mail-api';
@@ -291,21 +292,6 @@ function TextPreview({ blob, html, fileLine, download }: { blob: Blob; html: boo
   );
 }
 
-type PdfJs = typeof import('pdfjs-dist');
-let pdfJs: Promise<PdfJs> | null = null;
-
-/** pdf.js is large, so it loads with the first PDF. */
-function loadPdfJs() {
-  pdfJs ??= import('pdfjs-dist').then(module => {
-    module.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
-    return module;
-  }, (error: unknown) => {
-    pdfJs = null;
-    throw error;
-  });
-  return pdfJs;
-}
-
 // Browsers refuse or blank canvases above about 16.7 million pixels (iOS), so sharpness gives way at high zoom.
 const MAX_CANVAS_PIXELS = 16_000_000;
 
@@ -328,7 +314,7 @@ function PdfPreview({ blob, zoom, onFitScale, onPages, download }: PdfPreviewPro
   const pageElements = useRef<(HTMLDivElement | null)[]>([]);
   const position = useRef(0);
   const [pdf, setPdf] = useState<{ pdfjs: PdfJs; document: PDFDocumentProxy; sizes: { width: number; height: number }[] } | null>(null);
-  const [failed, setFailed] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
   const [width, setWidth] = useState(0);
   const [near, setNear] = useState<ReadonlySet<number>>(() => new Set());
 
@@ -339,7 +325,7 @@ function PdfPreview({ blob, zoom, onFitScale, onPages, download }: PdfPreviewPro
       const pdfjs = await loadPdfJs();
       const data = new Uint8Array(await blob.arrayBuffer());
       if (cancelled) return;
-      const task = pdfjs.getDocument({ data });
+      const task = pdfjs.getDocument(pdfDocumentOptions(data));
       destroy = () => task.destroy();
       const document = await task.promise;
       const sizes: { width: number; height: number }[] = [];
@@ -350,7 +336,11 @@ function PdfPreview({ blob, zoom, onFitScale, onPages, download }: PdfPreviewPro
       if (cancelled) return;
       setPdf({ pdfjs, document, sizes });
       onPages({ current: 1, total: document.numPages });
-    })().catch(() => { if (!cancelled) setFailed(true); });
+    })().catch((error: unknown) => {
+      if (cancelled) return;
+      console.warn('PDF preview failed', error);
+      setFailure(pdfFailureDetail(error));
+    });
     return () => { cancelled = true; void destroy?.(); };
   }, [blob, onPages]);
 
@@ -409,8 +399,10 @@ function PdfPreview({ blob, zoom, onFitScale, onPages, download }: PdfPreviewPro
     onPages({ current, total: pdf.sizes.length });
   };
 
-  if (failed) {
-    return <EmptyState icon={FileQuestion} title="Could not show this PDF" description="It may be damaged or use features this viewer does not support. Download it to open it in another app."
+  if (failure !== null) {
+    return <EmptyState icon={FileQuestion} title="Could not show this PDF"
+      description={<>It may be damaged or use features this viewer does not support. Download it to open it in another app.
+        <span className="mt-2 block break-words font-mono text-xs">{failure}</span></>}
       action={download} className="h-full px-4" />;
   }
   return (

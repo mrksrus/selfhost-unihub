@@ -10,7 +10,7 @@ const pdf = vi.hoisted(() => ({ getDocument: vi.fn() }));
 vi.mock('@/lib/api', () => ({ api: { getBlob: vi.fn(), get: vi.fn(), post: vi.fn() } }));
 vi.mock('@/lib/platform', async importOriginal => ({ ...(await importOriginal<typeof import('@/lib/platform')>()), saveFile: vi.fn(async () => {}) }));
 // jsdom cannot run pdf.js; the viewer's use of it is what is checked here.
-vi.mock('pdfjs-dist', () => ({
+vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
   GlobalWorkerOptions: {},
   getDocument: pdf.getDocument,
   TextLayer: class { render() { return Promise.resolve(); } cancel() {} },
@@ -123,8 +123,10 @@ describe('attachment viewer', () => {
     openRow('invoice-4711.pdf');
     const dialog = await screen.findByRole('dialog', { name: 'invoice-4711.pdf' });
     expect(await within(dialog).findByText(/Page 1 of 3/)).toBeInTheDocument();
-    const [{ data }] = pdf.getDocument.mock.calls[0] as [{ data: Uint8Array }];
+    const [{ data, ...options }] = pdf.getDocument.mock.calls[0] as [{ data: Uint8Array }];
     expect(new TextDecoder().decode(data)).toBe('%PDF-1.7');
+    // The CSP allows no WebAssembly: the image decoders are the JavaScript ones the build ships.
+    expect(options).toEqual({ useWasm: false, wasmUrl: `${window.location.origin}/pdfjs/wasm/` });
     const canvasOf = (index: number) => dialog.querySelector(`[data-page="${index}"] canvas`);
 
     near([0, 1]);
@@ -139,5 +141,16 @@ describe('attachment viewer', () => {
     await waitFor(() => expect(canvasOf(0)).not.toBeNull());
     expect(canvasOf(2)).toBeNull();
     expect(page.render).toHaveBeenCalledTimes(4);
+  });
+
+  it('says why a PDF could not be shown, and still offers the download', async () => {
+    pdf.getDocument.mockReturnValue({ promise: Promise.reject(Object.assign(new Error('Invalid PDF structure.'), { name: 'InvalidPDFException' })), destroy: vi.fn(async () => {}) });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    show([files.invoice.attachment]);
+    openRow('invoice-4711.pdf');
+    const dialog = await screen.findByRole('dialog', { name: 'invoice-4711.pdf' });
+    expect(await within(dialog).findByText('Could not show this PDF')).toBeInTheDocument();
+    expect(within(dialog).getByText('InvalidPDFException: Invalid PDF structure.')).toBeInTheDocument();
+    expect(within(dialog).getAllByRole('button', { name: /Download/ }).length).toBeGreaterThan(0);
   });
 });
