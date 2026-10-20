@@ -309,8 +309,8 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       const stopOnWrite = (sql: string) => { if (/^\s*INSERT INTO calendar_remote_objects/.test(sql)) calendarSync.stopAllCalendarWork(); };
       const watched = <T extends object>(target: T): T => new Proxy(target, { get(object, name) {
         const value = Reflect.get(object, name);
-        if (name === 'execute') return (sql: string, ...args: unknown[]) => { stopOnWrite(sql); return (value as Function).call(object, sql, ...args); };
-        if (name === 'getConnection') return async () => watched(await (value as Function).call(object));
+        if (name === 'execute') return (sql: string, ...args: unknown[]) => { stopOnWrite(sql); return (value as (...args: unknown[]) => unknown).call(object, sql, ...args); };
+        if (name === 'getConnection') return async () => watched(await (value as () => Promise<object>).call(object));
         return typeof value === 'function' ? value.bind(object) : value;
       } });
       setDb(watched(pool));
