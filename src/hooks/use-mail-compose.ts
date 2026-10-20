@@ -7,6 +7,7 @@ import { invalidateMailQueries, type Email, type EmailAttachment } from '@/lib/m
 import { contactsQueryOptions } from '@/lib/contacts-api';
 import { plainTextToHtml, escapeHtml, sanitizeComposeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
 import { useToast } from '@/hooks/use-toast';
+import { sendFailureToast } from '@/components/mail/send-failure-toast';
 import { useMailAccounts } from '@/hooks/use-mail-queries';
 import { preferencesQueryOptions } from '@/lib/settings-api';
 import {
@@ -296,14 +297,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       toast({ title: '✓ Email sent successfully' });
       closeComposeFlow({ force: true });
     },
-    onError: (error: Error) => {
-      toast({
-        title: 'Failed to send email',
-        description: error.message,
-        variant: 'destructive',
-        duration: 8000,
-      });
-    },
+    onError: (error: Error) => toast(sendFailureToast(error, sendAgain)),
   });
 
   const buildAttachmentPayload = useCallback(async (): Promise<AttachmentPayload> =>
@@ -450,8 +444,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       });
   };
 
-  const handleSendEmail = async (e: FormEvent) => {
-    e.preventDefault();
+  const submitCompose = async () => {
     if (!fromAccountId) {
       toast({ title: 'Please select an account', variant: 'destructive' });
       return;
@@ -469,7 +462,12 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       if (activeDraftId) {
         const savedDraft = await saveCurrentDraft({ includeAttachments: true, quiet: true });
         const draftId = savedDraft?.id || activeDraftId;
-        await sendDraft(draftId, sendKey());
+        try {
+          await sendDraft(draftId, sendKey());
+        } catch (error) {
+          toast(sendFailureToast(error, sendAgain));
+          return;
+        }
         toast({ title: '✓ Email sent successfully' });
         void invalidateMailQueries(queryClient);
         closeComposeFlow({ force: true });
@@ -495,6 +493,18 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
         variant: 'destructive',
       });
     }
+  };
+  // "Send again" after an unknown outcome is a new send of what the composer
+  // holds when it is pressed, under a new key.
+  const submitRef = useRef(submitCompose);
+  submitRef.current = submitCompose;
+  function sendAgain() {
+    sendKeyRef.current = null;
+    void submitRef.current();
+  }
+  const handleSendEmail = (e: FormEvent) => {
+    e.preventDefault();
+    void submitCompose();
   };
 
   return {

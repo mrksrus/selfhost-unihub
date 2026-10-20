@@ -7,6 +7,7 @@ import { everyInterval } from './timers';
 import { schedulePeriodicMailWork, runMailServerDeletionPass } from './mail';
 import { runDueWritebacks } from './mail-writebacks';
 import { pruneFinishedJobs } from './mail-engine/runtime';
+import { pruneCommandReceipts } from './mail-engine/repository';
 import { cleanupExpiredRecordingUploads } from './recordings';
 import { isSectionRestoreActive } from './restore-locks';
 import { idleSupervisor } from './mail-idle';
@@ -124,13 +125,15 @@ async function startBackgroundWork(overrides: Partial<BackgroundWorkDeps> = {}):
     if (processed > 0) log.info('SERVER DELETE', 'Periodic pass processed queued messages', { processed });
   });
 
-  // Expired sessions and audit entries past their year, every hour, so the
-  // tables do not grow.
+  // Expired sessions, audit entries past their year and old mail request
+  // receipts, every hour, so the tables do not grow.
   every('CLEANUP', 60 * 60 * 1000, async () => {
     const [result] = await deps.db.execute<ResultSetHeader>('DELETE FROM sessions WHERE expires_at < UTC_TIMESTAMP()');
     if (result.affectedRows > 0) log.info('CLEANUP', 'Deleted expired sessions', { deleted: result.affectedRows });
     const audit = await deps.pruneAuditLog();
     if (audit > 0) log.info('CLEANUP', 'Deleted audit entries older than a year', { deleted: audit });
+    const receipts = await pruneCommandReceipts(deps.db);
+    if (receipts > 0) log.info('CLEANUP', 'Deleted mail request receipts older than 30 days', { deleted: receipts });
   });
 
   // Finished mail engine jobs older than 7 days, in bounded batches.

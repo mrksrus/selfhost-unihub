@@ -679,10 +679,18 @@ Both send routes accept an `Idempotency-Key` header; the app sends one per
 composed message. The key is claimed in `mail_command_receipts` before SMTP and
 holds the response afterwards, so a repeated request (a lost response, a second
 click) returns the first response and sends nothing. While the first request
-runs, or when it ended without a recorded outcome, a repeat gets
-`409 SEND_IN_PROGRESS`; the user checks Sent instead of sending twice. A send
-that failed releases its key. The same key with a different message is
-`409 IDEMPOTENCY_KEY_REUSED`.
+runs, a repeat gets `409 SEND_IN_PROGRESS`. A send that the server refused
+before it took the message (connection, login, a refused recipient, or a
+reply refusing the message) releases its key, so the same message can be
+sent again. When the connection ended after the `DATA` command, the server may
+have queued the message: the outcome is recorded as unknown, and the request
+and every repeat get `409 SEND_OUTCOME_UNKNOWN`. A send that stopped without a
+recorded outcome (the server restarted mid-send) is reported the same way once
+its pending receipt is two minutes old and no send for it runs in this
+process. The app then asks the user to check Sent and offers "Send again",
+which is a new send under a new key. The same key with a different message is
+`409 IDEMPOTENCY_KEY_REUSED`, offered the same way. Receipts are deleted
+30 days after their last change.
 
 Send and draft requests take `to`, `cc` and `bcc` as comma-separated strings;
 at least one of them needs a recipient. The Sent copy and drafts keep all three

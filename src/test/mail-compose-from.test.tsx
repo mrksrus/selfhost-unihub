@@ -136,4 +136,27 @@ describe('sending a message once', () => {
     await waitFor(() => expect(sendKeys()).toHaveLength(3));
     expect(sendKeys()[2]).not.toBe(sendKeys()[0]);
   });
+
+  it('after an unknown outcome a repeat never sends again by itself; "Send again" is a new send with a new key', async () => {
+    const sendKeys = () => vi.mocked(api.post).mock.calls.filter(([path]) => path === '/mail/send')
+      .map(([, , options]) => (options as { headers: Record<string, string> }).headers['Idempotency-Key']);
+    const unknown = { error: 'The connection to the mail server was lost after the message was handed over.', status: 409, code: 'SEND_OUTCOME_UNKNOWN' };
+    vi.mocked(api.post).mockResolvedValueOnce(unknown).mockResolvedValueOnce(unknown);
+    wrap(<Host />);
+    fireEvent.click(screen.getByRole('button', { name: 'New message' }));
+    await fillAndSend('someone@example.test', 'Hello', 'compose-body');
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'The email may have been sent' })));
+    // Send again from the composer repeats the same send, which the server answers the same way.
+    fireEvent.click(screen.getByRole('button', { name: /^Send/ }));
+    await waitFor(() => expect(sendKeys()).toHaveLength(2));
+    expect(sendKeys()[1]).toBe(sendKeys()[0]);
+    expect(screen.getByLabelText('To')).toBeTruthy();
+
+    // The person checked Sent and chooses to send it again: a new key.
+    const { action } = state.toast.mock.calls.at(-1)![0] as { action: React.ReactElement<{ onClick: () => void }> };
+    action.props.onClick();
+    await waitFor(() => expect(sendKeys()).toHaveLength(3));
+    expect(sendKeys()[2]).not.toBe(sendKeys()[0]);
+    await waitFor(() => expect(screen.queryByLabelText('To')).toBeNull());
+  });
 });

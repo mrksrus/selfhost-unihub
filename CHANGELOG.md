@@ -6,6 +6,21 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.23.1
+
+Fixes found in the reviews and first use of 0.23.0. No database upgrade and no
+configuration change.
+
+### Fixed
+
+- **A message whose sending was cut off is never sent twice by itself.** When
+  the connection to the mail server ended after the message had been handed
+  over, UniHub treated the send as failed, and pressing Send again could
+  deliver it a second time. UniHub now says that the email may have been sent
+  and asks you to check Sent; "Send again" sends it anyway if you choose to.
+  A send interrupted by a server restart no longer stays "already being sent"
+  until the message is closed: after two minutes it is reported the same way.
+
 ## 0.23.0
 
 Hardening across the server, mail, calendar and the apps: hashed sessions,
