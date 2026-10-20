@@ -55,6 +55,8 @@ interface Context {
   notify: boolean;
   newEvents: string[];
   stats: { calendars: number; changedObjects: number; removedObjects: number; events: number; removedEvents: number; unreadable: number };
+  /** Aborted when the run must write nothing more; checked before each write. */
+  signal?: AbortSignal;
 }
 interface ObjectListing { href: string; etag: string | null; url?: string; ics?: string }
 interface FetchedObject { href: string; etag: string | null; ics: string }
@@ -215,11 +217,18 @@ const STOP_REASONS = {
   disconnected: () => syncError(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED'),
   unlinked: () => syncError(MAIL_CALENDAR_UNLINKED_MESSAGE, 409, 'MAIL_CALENDAR_UNLINKED'),
   replaced: () => syncError(MAIL_HAS_OTHER_CALENDAR_MESSAGE, 409, 'MAIL_CALENDAR_UNLINKED'),
+  // This process stopped its background work (it lost the background-work
+  // lock, or shuts down): the run writes nothing more and the owner syncs again.
+  stopping: () => syncError('Calendar sync was interrupted; it continues with the next sync.', 503, 'CALENDAR_SYNC_INTERRUPTED'),
 };
 function stopCalendarAccountWork(accountId: string, reason: StopReason = 'disconnected') {
   const entry = accountWork.get(accountId);
   accountWork.delete(accountId);
   entry?.controller.abort((STOP_REASONS[reason] || STOP_REASONS.disconnected)());
+}
+// Every running sync and write of this process, when it stops its background work.
+function stopAllCalendarWork() {
+  for (const accountId of [...accountWork.keys()]) stopCalendarAccountWork(accountId, 'stopping');
 }
 // For tests: accounts with work running.
 const runningCalendarWorkCount = () => accountWork.size;
@@ -533,6 +542,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
     ctx.stats.unreadable += vanished.filter(row => !confirmed.has(String(row.id)) && !listed.has(row.href_hash)).length;
     removed = removed.filter(id => confirmed.has(id));
   }
+  ctx.signal?.throwIfAborted();
   await removeObjects(ctx, removed);
   ctx.stats.removedObjects += removed.length;
 
@@ -545,6 +555,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       ctx.stats.unreadable += 1;
       continue;
     }
+    ctx.signal?.throwIfAborted();
     const object = await storeObject(ctx.account, calendar, { id: known?.id, href: item.href, etag: item.etag, ics: item.ics });
     applied.add(object.id);
     const created = await applyObject(ctx, calendar, object, expanded).catch(async error => {
@@ -566,6 +577,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       const chunk = remaining.slice(index, index + 100);
       const [objects] = await db.execute<ObjectRecord[]>(`SELECT id, href, etag, ics FROM calendar_remote_objects WHERE id IN (${chunk.map(() => '?').join(', ')})`, chunk);
       for (const object of objects) {
+        ctx.signal?.throwIfAborted();
         const expanded = expandObject(ctx, object.ics);
         // 0.17.0 stored copies before reading them. Without its ETag an
         // unreadable one is downloaded again on the next sync.
@@ -600,6 +612,7 @@ async function syncCalDavAccount(ctx: Context, { full }: { full?: boolean }) {
   const { account } = ctx; const login = ctx.login!;
   if (!login.password) throw syncError('The calendar has no saved password. Reconnect the account.', 422, 'CALDAV_NO_PASSWORD');
   const remoteCalendars = await caldav.listCalendars({ homeUrl: account.base_url!, ...login });
+  ctx.signal?.throwIfAborted();
   const calendars = await reconcileCalendarList(account, remoteCalendars, login);
   const today = todayUtc();
   for (const { calendar, remote, isNew } of calendars) {
@@ -622,6 +635,7 @@ async function syncCalDavAccount(ctx: Context, { full }: { full?: boolean }) {
     };
     const unreadable = await syncCalendarObjects(calendarCtx, calendar, listing, fetchObjects, { expandAll, verifyVanished });
     ctx.newEvents = calendarCtx.newEvents;
+    ctx.signal?.throwIfAborted();
     // Without the ctag the next sync lists the calendar again and retries
     // the objects it could not read.
     await db.execute('UPDATE calendar_calendars SET remote_ctag = ?, remote_expanded_on = ? WHERE id = ?',
@@ -649,10 +663,12 @@ async function syncIcsAccount(ctx: Context, { full }: { full?: boolean }) {
   const { account } = ctx;
   const feedUrl = account.encrypted_password ? decrypt(account.encrypted_password) : null;
   if (!feedUrl) throw syncError('The subscription address is missing. Add the subscription again.', 422, 'ICS_URL_MISSING');
+  ctx.signal?.throwIfAborted();
   const { calendar, isNew } = await ensureIcsCalendar(account);
   const today = todayUtc();
   const expandAll = full || dateValue(calendar.remote_expanded_on) !== today;
-  const feed = await caldav.fetchIcsFeed({ url: feedUrl, etag: expandAll ? null : calendar.remote_ctag });
+  const feed = await caldav.fetchIcsFeed({ url: feedUrl, etag: expandAll ? null : calendar.remote_ctag, signal: ctx.signal });
+  ctx.signal?.throwIfAborted();
   if (feed.notModified) return;
   const { objects } = ical.splitIcsFeed(feed.text, { tooLarge: caldav.icsTooLarge });
   // A feed that suddenly has no events is more likely an error page or an
@@ -775,6 +791,7 @@ async function syncLocked(accountId: string, { userId, full }: SyncOptions, sign
     notify: !!account.last_synced_at && !full,
     newEvents: [],
     stats: { calendars: 0, changedObjects: 0, removedObjects: 0, events: 0, removedEvents: 0, unreadable: 0 },
+    signal,
   };
   try {
     if (account.provider === 'ics') await syncIcsAccount(ctx, { full });
@@ -791,6 +808,8 @@ async function syncLocked(accountId: string, { userId, full }: SyncOptions, sign
     );
   } catch (error) {
     if (signal.aborted) {
+      // Stopped with this process's background work: the next owner's sync writes the status.
+      if ((signal.reason as ApiError | undefined)?.code === 'CALENDAR_SYNC_INTERRUPTED') throw signal.reason;
       // Stopped by a mail disconnect or an unlink (CalDAV accounts only).
       if (account.provider === 'caldav') await noteMissingLogin(account, (signal.reason as Error | undefined)?.message || MAIL_DISCONNECTED_MESSAGE).catch(() => {});
       throw signal.reason;
@@ -1122,6 +1141,7 @@ export {
   syncLinkedCalendars,
   resolveLogin,
   stopCalendarAccountWork,
+  stopAllCalendarWork,
   stopLinkedCalendarWork,
   unlinkFromDeletedMail,
   SYNC_INTERVAL_MS,

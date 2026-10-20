@@ -87,3 +87,29 @@ test('when the owner\'s session ends, the next owner starts only after the old o
   assert.deepEqual([a.isWorkerOwner(), b.isWorkerOwner()], [false, true]);
 });
 type FixtureRow = import('mysql2/promise').RowDataPacket & { holder: number | string };
+
+test('a background start-up that never finishes does not stop the lock checks (B-06)', {
+  skip: !process.env.MYSQL_TEST_HOST, timeout: 60000,
+}, async t => {
+  const pool = () => mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
+    user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD, database: process.env.MYSQL_TEST_DATABASE, connectionLimit: 3 });
+  const first = pool(), admin = pool();
+  t.after(async () => { await first.end(); await admin.end(); });
+  const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
+  t.after(captureLog(() => {}));
+  const path = require.resolve('../dist/src/services/worker-owner');
+  delete require.cache[path];
+  const a = require(path) as typeof import('../src/services/worker-owner');
+  const events: string[] = [];
+  const ticks: (() => void)[] = [];
+  const timers = { setInterval: ((fn: () => void) => { ticks.push(fn); return { unref() {} }; }) as unknown as typeof setInterval, clearInterval: (() => {}) as typeof clearInterval };
+  // Start-up hangs (a database query that never answers).
+  const ownerA = await a.startWorkerOwnership({ pool: first, timers, handoverMs: 100, onGained: () => { events.push('a gained'); return new Promise(() => {}); }, onLost: () => events.push('a lost') });
+  t.after(() => ownerA.stop());
+  assert.equal(a.isWorkerOwner(), true);
+  const [[{ holder }]] = await admin.query<FixtureRow[]>('SELECT IS_USED_LOCK(?) AS holder', [a.LOCK_NAME]);
+  await admin.query(`KILL ${Number(holder)}`);
+  ticks[0]();
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.deepEqual(events.slice(0, 2), ['a gained', 'a lost'], 'the check still ran and ended the role');
+});

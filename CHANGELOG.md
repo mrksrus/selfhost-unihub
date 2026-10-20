@@ -41,9 +41,11 @@ and no configuration change (see [Upgrading](docs/UPGRADING.md#0231-fixes)).
 - **No duplicate background work when the database connection drops.** If
   the API process lost its database session briefly, a second API process
   (for example the next one during an update) could start mail sync and
-  notifications while the first still ran them for up to 30 seconds. A
-  process now waits 10 seconds after taking over, and the first one notices
-  within 5. Background work starts 10 seconds after the server starts.
+  notifications while the first still ran them for up to 30 seconds, and a
+  calendar sync already running could still write. A process now waits 15
+  seconds after taking over; the first one notices within 10, does no more
+  background work and stops its running calendar syncs. Background work
+  starts 15 seconds after the server starts.
 - **Calendar sync no longer redoes work on every run.** An event that the
   server's listing kept leaving out, although the server still had it, was
   downloaded and written again on every sync; now only when it changed.

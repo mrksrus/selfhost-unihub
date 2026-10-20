@@ -284,6 +284,22 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       const [[icsAccount]] = await connection.execute<RowDataPacket[]>('SELECT sync_status, sync_error FROM calendar_accounts WHERE id = ?', [icsId]);
       assert.equal(icsAccount.sync_status, 'error');
       assert.match(icsAccount.sync_error, /returned no events/);
+
+      // This process stops its background work (it lost the background-work
+      // lock) while a sync waits for the server: the late answer writes nothing (B-06).
+      let answer!: () => void;
+      let asked!: () => void;
+      const waiting = new Promise<void>(resolve => { asked = resolve; });
+      caldav.fetchIcsFeed = async () => { asked(); await new Promise<void>(resolve => { answer = resolve; });
+        return { notModified: false, text: eventIcs('holiday@example.test', 'Stale holiday', start), etag: null }; };
+      const interrupted = calendarSync.syncCalendarAccount(icsId, { userId, full: true });
+      await waiting;
+      calendarSync.stopAllCalendarWork();
+      answer();
+      await assert.rejects(interrupted, (error: FixtureValue) => error.code === 'CALENDAR_SYNC_INTERRUPTED');
+      assert.deepEqual(await titles(), ['Holiday'], 'the stale answer was not stored');
+      const [[afterStop]] = await connection.execute<RowDataPacket[]>('SELECT sync_error FROM calendar_accounts WHERE id = ?', [icsId]);
+      assert.doesNotMatch(String(afterStop.sync_error), /interrupted/, 'nothing about the stop is written either');
     });
 
     await t.test('an owed first sync waits for the module, not for background sync', async () => {
