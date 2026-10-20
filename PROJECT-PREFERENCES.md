@@ -395,6 +395,22 @@ the scan, but not the reach.
 Evidence: `api/src/routes/search.ts`, `api/src/routes/mail-messages.ts`
 (`body_text` in the search conditions).
 
+#### P-26 Compose stays uncluttered: optional features are switched on first
+
+Accepted, not yet in source. Decided 2026-10-20 (for 0.24.0 and the 0.25.0
+phone composer).
+
+Optional compose features (templates, scheduled send, the compose format
+switch and later ones) are off until the person switches them on in Settings;
+only then does the composer show their button. One to three such buttons share
+an existing line; more get a line of their own. Phones come first: the message
+body keeps most of the screen while typing, and the header may scroll away.
+Desktop may show more at once. Before a new compose layout is built, the
+maintainer is offered two or three options to choose from.
+
+Source: maintainer's direction while deciding the 0.24.0 scope (Road to 1.0
+D21), prompted by the Android composer leaving almost no room for the body.
+
 ### Product reliability
 
 #### P-19 Product reliability
