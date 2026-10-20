@@ -84,4 +84,17 @@ test('a send with an Idempotency-Key goes out once: repeats get its result, a ru
   assert.equal(await pruneCommandReceipts(pool), 1);
   const [left] = await pool.execute<FixtureValue[]>('SELECT client_key FROM mail_command_receipts WHERE user_id = ? ORDER BY client_key', [owner]);
   assert.deepEqual(left.map((row: FixtureValue) => row.client_key), ['send-b', 'send-c', 'send-d', 'send-e', 'send-f']);
+
+  // A reply answers the Message-ID of the user's own copy of the message, never another user's (B-10).
+  const { replyThreading } = require('../dist/src/services/mail-send') as typeof import('../src/services/mail-send');
+  const account = crypto.randomUUID(), received = crypto.randomUUID(), noId = crypto.randomUUID();
+  await pool.execute("INSERT INTO mail_accounts (id,user_id,email_address,provider,sync_mode,is_active) VALUES (?,?,'owner@example.test','custom','sync',TRUE)", [account, owner]);
+  await pool.execute(`INSERT INTO emails (id,user_id,mail_account_id,message_id,from_address,to_addresses,folder)
+    VALUES (?,?,?,'<quote-1@example.test>','sparks@example.test','["owner@example.test"]','inbox'), (?,?,?,'not a message id','sparks@example.test','["owner@example.test"]','inbox')`,
+  [received, owner, account, noId, owner, account]);
+  assert.equal(await replyThreading(owner, received), '<quote-1@example.test>');
+  assert.equal(await replyThreading(stranger, received), null, 'another user\'s message gives nothing');
+  assert.equal(await replyThreading(owner, noId), null, 'an unusable id is not sent');
+  assert.equal(await replyThreading(owner, undefined), null);
+  await assert.rejects(replyThreading(owner, { id: received }), (error: FixtureValue) => error.status === 400);
 });

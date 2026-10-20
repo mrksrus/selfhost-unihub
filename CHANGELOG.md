@@ -26,6 +26,11 @@ configuration change.
   JavaScript features. It now uses a build of the PDF library that works
   there, shows images in scanned PDFs (JPEG 2000, JBIG2), and names the
   reason under the message when a PDF still cannot be shown.
+- **Replies stay in the conversation at the recipient.** A reply sent from
+  UniHub carried no reference to the message it answered, so the recipient's
+  mail program showed it as a new conversation. Replies now carry the
+  standard In-Reply-To and References headers. A reply saved as a draft and
+  finished later from Drafts does not have them yet.
 - **Deleting or deactivating a user asks for your password,** like changing
   their role, password or two-factor authentication already did.
 - **Failed sign-ins no longer lock an admin out of admin actions.** Confirming

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { format } from 'date-fns';
-import { deleteDraft, saveDraft, sendDraft, sendMessage, type AttachmentPayload, type DraftInput, type OutgoingMessage } from '@/lib/mail-compose-api';
+import { deleteDraft, saveDraft, sendDraft, sendMessage, type AttachmentPayload, type DraftInput, type OutgoingMessage, type ReplyThreading } from '@/lib/mail-compose-api';
 import { invalidateMailQueries, type Email, type EmailAttachment } from '@/lib/mail-api';
 import { contactsQueryOptions } from '@/lib/contacts-api';
 import { plainTextToHtml, escapeHtml, sanitizeComposeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
@@ -82,6 +82,10 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   // response returns the first result instead of sending the message twice.
   const sendKeyRef = useRef<string | null>(null);
   const sendKey = () => (sendKeyRef.current ??= `send-${crypto.randomUUID()}`);
+  // The message a reply answers, for its threading headers. A draft opened
+  // later from Drafts does not know it.
+  const [replyToEmailId, setReplyToEmailId] = useState<string | null>(null);
+  const threading: ReplyThreading = replyToEmailId ? { in_reply_to_email_id: replyToEmailId } : {};
 
   // Open compose dialog if linked from dashboard
   useEffect(() => {
@@ -120,6 +124,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
 
   const openDraftForCompose = useCallback((draft: Email) => {
     setComposeMode('new');
+    setReplyToEmailId(null);
     setActiveDraftId(draft.id);
     setExistingDraftAttachments(draft.attachments || []);
     setComposeAttachments([]);
@@ -236,6 +241,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
 
   const resetComposeState = () => {
     setComposeMode('new');
+    setReplyToEmailId(null);
     setComposeForm(EMPTY_COMPOSE_FORM);
     setFocusedRecipientInput(null);
     setComposeAttachments([]);
@@ -271,6 +277,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       return;
     }
     setComposeMode(mode);
+    setReplyToEmailId(mode === 'reply' ? email.id : null);
     setComposeAttachments([]);
     setExistingDraftAttachments([]);
     setActiveDraftId(null);
@@ -292,7 +299,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   };
 
   const sendEmailMutation = useMutation({
-    mutationFn: (message: OutgoingMessage & { attachments?: AttachmentPayload }) => sendMessage(message, sendKey()),
+    mutationFn: (message: OutgoingMessage & ReplyThreading & { attachments?: AttachmentPayload }) => sendMessage(message, sendKey()),
     onSuccess: () => {
       toast({ title: '✓ Email sent successfully' });
       closeComposeFlow({ force: true });
@@ -463,7 +470,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
         const savedDraft = await saveCurrentDraft({ includeAttachments: true, quiet: true });
         const draftId = savedDraft?.id || activeDraftId;
         try {
-          await sendDraft(draftId, sendKey());
+          await sendDraft(draftId, sendKey(), threading);
         } catch (error) {
           toast(sendFailureToast(error, sendAgain));
           return;
@@ -485,6 +492,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
         body: composeForm.body || '<p></p>',
         isHtml: true,
         attachments: attachmentPayload,
+        ...threading,
       });
     } catch (error) {
       toast({

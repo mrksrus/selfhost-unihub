@@ -24,13 +24,16 @@ export interface DraftInput extends OutgoingMessage {
 // lost response returns the first result instead of sending twice.
 const keyed = (sendKey: string) => ({ headers: { 'Idempotency-Key': sendKey } });
 
-export async function sendMessage(message: OutgoingMessage & { attachments?: AttachmentPayload }, sendKey: string) {
+/** What a reply answers: the server puts that message's id in In-Reply-To and References. */
+export type ReplyThreading = { in_reply_to_email_id?: string };
+
+export async function sendMessage(message: OutgoingMessage & ReplyThreading & { attachments?: AttachmentPayload }, sendKey: string) {
   return unwrap(await api.post('/mail/send', message, keyed(sendKey)));
 }
 
 /** Sends a stored draft; the server removes it once sent. */
-export async function sendDraft(draftId: string, sendKey: string) {
-  unwrap(await api.post(`/mail/drafts/${draftId}/send`, undefined, keyed(sendKey)));
+export async function sendDraft(draftId: string, sendKey: string, threading: ReplyThreading = {}) {
+  unwrap(await api.post(`/mail/drafts/${draftId}/send`, threading.in_reply_to_email_id ? threading : undefined, keyed(sendKey)));
 }
 
 /** Creates the draft, or updates it when draftId names one; returns the stored draft. */

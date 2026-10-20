@@ -264,6 +264,8 @@ async function createDraftRouteHarness(t: import('node:test').TestContext, optio
     sendEmail: options.sendEmail || (async () => ({ success: true, messageId: '<sent@example.test>' })),
     // No Idempotency-Key in these requests: the real sendOnce would send directly.
     sendOnce: async (_options: FixtureValue, send: () => Promise<FixtureValue>) => send(),
+    // mail-send-once-mysql-integration covers the lookup; these drafts answer nothing.
+    replyThreading: async () => null,
     deleteStoredAttachmentFiles: async (paths: FixtureValue) => {
       let deletedFiles = 0;
       for (const item of paths || []) {
@@ -357,7 +359,7 @@ test('send draft sends stored content and removes the local draft', async (t) =>
 
   const sent = await routes['POST /api/mail/drafts/:id/send'](
     { url: `/api/mail/drafts/${(created.draft! as FixtureValue).id}/send`, headers: { host: 'localhost' } } as FixtureValue,
-    'user-1'
+    'user-1', {}
   );
 
   assert.equal(sent.success, true);
@@ -402,7 +404,7 @@ test('a quoted recipient name with a comma stays one address from draft to SMTP'
   assert.deepEqual(created.draft!.cc_addresses, ['"Doe, Jane" <jane@example.test>']);
 
   const draftId = (created.draft! as FixtureValue).id;
-  const sent = await routes['POST /api/mail/drafts/:id/send']({ url: `/api/mail/drafts/${draftId}/send` } as FixtureValue, 'user-1');
+  const sent = await routes['POST /api/mail/drafts/:id/send']({ url: `/api/mail/drafts/${draftId}/send` } as FixtureValue, 'user-1', {});
   assert.equal(sent.success, true);
   assert.equal(real.delivered.length, 1);
   assert.deepEqual([real.delivered[0].to, real.delivered[0].cc, real.delivered[0].bcc], [['reader@example.test'], ['"Doe, Jane" <jane@example.test>'], undefined]);
@@ -425,7 +427,7 @@ test('a plain-text draft with an attachment is sent as text', async (t) => {
     attachments: [{ filename: 'notes.txt', contentType: 'text/plain', dataBase64: Buffer.from('attached').toString('base64') }],
   });
   const draftId = (created.draft! as FixtureValue).id;
-  const sent = await routes['POST /api/mail/drafts/:id/send']({ url: `/api/mail/drafts/${draftId}/send` } as FixtureValue, 'user-1');
+  const sent = await routes['POST /api/mail/drafts/:id/send']({ url: `/api/mail/drafts/${draftId}/send` } as FixtureValue, 'user-1', {});
   assert.equal(sent.success, true);
   assert.equal(real.delivered.length, 1);
   assert.equal(real.delivered[0].text, 'line one\nif a < b\n');
