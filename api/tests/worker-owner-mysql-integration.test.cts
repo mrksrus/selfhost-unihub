@@ -142,3 +142,45 @@ test('a background start-up that fails frees the lock and starts again (B-06)', 
   await new Promise(resolve => setTimeout(resolve, 200));
   assert.deepEqual(events, ['a gained', 'a lost', 'a gained'], 'a start that worked keeps the role');
 });
+
+test('a start-up of a lost role that fails later does not hide the current start-up\'s failure (B-06)', {
+  skip: !process.env.MYSQL_TEST_HOST, timeout: 60000,
+}, async t => {
+  const pool = () => mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
+    user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD, database: process.env.MYSQL_TEST_DATABASE, connectionLimit: 3 });
+  const first = pool(), admin = pool();
+  t.after(async () => { await first.end(); await admin.end(); });
+  const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
+  t.after(captureLog(() => {}));
+  const path = require.resolve('../dist/src/services/worker-owner');
+  delete require.cache[path];
+  const a = require(path) as typeof import('../src/services/worker-owner');
+  const events: string[] = [];
+  const ticks: (() => void)[] = [];
+  const timers = { setInterval: ((fn: () => void) => { ticks.push(fn); return { unref() {} }; }) as unknown as typeof setInterval, clearInterval: (() => {}) as typeof clearInterval };
+  // The first start-up hangs until the test fails it; the second fails at once; later ones work.
+  let failFirst!: (error: Error) => void;
+  let starts = 0;
+  const ownerA = await a.startWorkerOwnership({ pool: first, timers, handoverMs: 100, onLost: () => events.push('lost'), onGained: () => {
+    events.push('gained');
+    starts += 1;
+    if (starts === 1) return new Promise((_, reject) => { failFirst = reject; });
+    if (starts === 2) return Promise.reject(new Error('connect ECONNREFUSED'));
+    return undefined;
+  } });
+  t.after(() => ownerA.stop());
+  await new Promise(resolve => setTimeout(resolve, 50));
+  // The lock's session ends; the process loses the role and gains it again.
+  const [[{ holder }]] = await admin.query<FixtureRow[]>('SELECT IS_USED_LOCK(?) AS holder', [a.LOCK_NAME]);
+  await admin.query(`KILL ${Number(holder)}`);
+  ticks[0]();
+  await new Promise(resolve => setTimeout(resolve, 400));
+  assert.deepEqual(events, ['gained', 'lost', 'gained'], 'the second start-up ran (and failed)');
+  // Only now does the first, long-stopped start-up fail.
+  failFirst(new Error('late failure'));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  ticks[0]();
+  await new Promise(resolve => setTimeout(resolve, 400));
+  assert.deepEqual(events, ['gained', 'lost', 'gained', 'lost', 'gained'], 'the failed current start-up is still retried');
+  assert.equal(a.isWorkerOwner(), true);
+});

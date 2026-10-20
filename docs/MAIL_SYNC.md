@@ -688,7 +688,8 @@ and every repeat get `409 SEND_OUTCOME_UNKNOWN`. A send that stopped without a
 recorded outcome (the server restarted mid-send) is reported the same way once
 its pending receipt is two minutes old and no send for it runs in this
 process. The app then asks the user to check Sent and offers "Send again",
-which is a new send under a new key. The same key with a different message is
+which is a new send under a new key, only while that message is still open
+in the composer. The same key with a different message is
 `409 IDEMPOTENCY_KEY_REUSED`, offered the same way. Receipts are deleted
 30 days after their last change.
 

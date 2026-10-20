@@ -260,6 +260,11 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
         caldav.resourceGone = async args => args.kind === 'calendar' ? false : resourceGone(args);
         await sync();
         assert.deepEqual(await titles(), ['Review']);
+        // Confirmed gone, but this process stopped its background work
+        // meanwhile: the removal is left to the next owner's sync (B-06).
+        caldav.resourceGone = async args => { if (args.kind !== 'calendar') return resourceGone(args); calendarSync.stopAllCalendarWork(); return true; };
+        await assert.rejects(sync(), (error: FixtureValue) => error.code === 'CALENDAR_SYNC_INTERRUPTED');
+        assert.deepEqual(await titles(), ['Review'], 'a stopped sync removes no calendar');
         caldav.resourceGone = async args => args.kind === 'calendar' ? true : resourceGone(args);
         await sync();
         assert.deepEqual(await titles(), [], 'a calendar the server confirms gone is removed');

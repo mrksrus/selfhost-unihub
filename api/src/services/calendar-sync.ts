@@ -303,7 +303,8 @@ async function deleteCalendarAccount(userId: string, accountId: string) {
 
 // --- Calendar list ----------------------------------------------------------
 
-async function reconcileCalendarList(account: Account, remoteCalendars: Awaited<ReturnType<typeof caldav.listCalendars>>, login: caldav.CalDavLogin) {
+// signal: the sync's; a stopped sync changes no calendar (connecting an account passes none).
+async function reconcileCalendarList(account: Account, remoteCalendars: Awaited<ReturnType<typeof caldav.listCalendars>>, login: caldav.CalDavLogin, signal?: AbortSignal) {
   const [rows] = await db.execute<(RowDataPacket & Calendar)[]>('SELECT * FROM calendar_calendars WHERE account_id = ? AND user_id = ? ORDER BY created_at ASC', [account.id, account.user_id]);
   const byHref = new Map<string, Calendar>();
   for (const row of rows) {
@@ -318,6 +319,7 @@ async function reconcileCalendarList(account: Account, remoteCalendars: Awaited<
       matched.add(existing.id);
       // Written only when the server changed something, not on every sync.
       if (existing.name !== remote.displayName || Number(existing.read_only) !== (remote.readOnly ? 1 : 0) || existing.external_id !== remote.href) {
+        signal?.throwIfAborted();
         await db.execute('UPDATE calendar_calendars SET name = ?, read_only = ?, external_id = ? WHERE id = ?',
           [remote.displayName, remote.readOnly ? 1 : 0, remote.href, existing.id]);
       }
@@ -328,6 +330,7 @@ async function reconcileCalendarList(account: Account, remoteCalendars: Awaited<
     const isPrimary = rows.length === 0 && index === 0;
     const color = remote.color || CALENDAR_COLORS[(rows.length + index) % CALENDAR_COLORS.length];
     // New server calendars do not create ToDos until the user opts in.
+    signal?.throwIfAborted();
     await db.execute(
       `INSERT INTO calendar_calendars
         (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
@@ -345,19 +348,7 @@ async function reconcileCalendarList(account: Account, remoteCalendars: Awaited<
     try { url = row.external_id ? new URL(row.external_id, account.base_url!).toString() : null; } catch { /* unusable legacy id */ }
     if (!url || await caldav.resourceGone({ url, kind: 'calendar', ...login })) vanished.push(row.id);
   }
-  if (vanished.length) {
-    const connection = await db.getConnection();
-    try {
-      await connection.beginTransaction();
-      await deleteCalendarsWithEvents(connection, account.user_id, vanished);
-      await connection.commit();
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
-    }
-  }
+  if (vanished.length) await inTransaction({ signal }, connection => deleteCalendarsWithEvents(connection, account.user_id, vanished));
   return result;
 }
 
@@ -392,7 +383,7 @@ async function applyObject(ctx: Context, calendar: Calendar, object: ObjectRecor
 
 // A stopped sync commits nothing more: the stop is checked again before the
 // commit, after the transaction's own queries.
-async function inTransaction<T>(ctx: Context, work: (connection: PoolConnection) => Promise<T>) {
+async function inTransaction<T>(ctx: Pick<Context, 'signal'>, work: (connection: PoolConnection) => Promise<T>) {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
@@ -625,7 +616,7 @@ async function syncCalDavAccount(ctx: Context, { full }: { full?: boolean }) {
   if (!login.password) throw syncError('The calendar has no saved password. Reconnect the account.', 422, 'CALDAV_NO_PASSWORD');
   const remoteCalendars = await caldav.listCalendars({ homeUrl: account.base_url!, ...login });
   ctx.signal?.throwIfAborted();
-  const calendars = await reconcileCalendarList(account, remoteCalendars, login);
+  const calendars = await reconcileCalendarList(account, remoteCalendars, login, ctx.signal);
   const today = todayUtc();
   for (const { calendar, remote, isNew } of calendars) {
     const expandAll = full || dateValue(calendar.remote_expanded_on) !== today;
