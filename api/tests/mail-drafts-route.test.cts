@@ -294,13 +294,15 @@ test('draft routes create, update, and delete draft attachments', async (t) => {
       subject: 'Draft',
       body: '<p>Hello</p>',
       isHtml: true,
-      attachments: [{ filename: 'first.txt', contentType: 'text/plain', dataBase64: attachmentA }],
+      attachments: [{ filename: 'first.txt', contentType: 'text/plain', dataBase64: attachmentA, client_id: 'file-a' }],
     }
   );
 
   assert.equal((created.draft! as FixtureValue).folder, 'drafts');
   assert.equal(created.draft!.is_draft, true);
   assert.equal(created.draft!.attachments.length, 1);
+  // The composer learns which stored attachment each of its files became.
+  assert.deepEqual(created.uploaded, [{ client_id: 'file-a', id: created.draft!.attachments[0].id }]);
   const firstAttachmentPath = [...state.attachments.values()][0].storage_path;
   await assert.doesNotReject(() => fs.stat(firstAttachmentPath));
 
@@ -311,11 +313,12 @@ test('draft routes create, update, and delete draft attachments', async (t) => {
       subject: 'Updated',
       body: '<p>Updated</p>',
       existing_attachment_ids: [],
-      attachments: [{ filename: 'second.txt', contentType: 'text/plain', dataBase64: attachmentB }],
+      attachments: [{ filename: 'second.txt', contentType: 'text/plain', dataBase64: attachmentB, client_id: 'file-b' }],
     }
   );
 
   assert.equal(updated.draft!.subject, 'Updated');
+  assert.deepEqual(updated.uploaded, [{ client_id: 'file-b', id: updated.draft!.attachments[0].id }]);
   assert.equal(updated.draft!.attachments.length, 1);
   assert.equal(updated.draft!.attachments[0].filename, 'second.txt');
   await assert.rejects(() => fs.stat(firstAttachmentPath));

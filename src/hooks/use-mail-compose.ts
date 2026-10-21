@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type RefObject } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type RefObject } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { format } from 'date-fns';
@@ -33,6 +33,19 @@ const fileToBase64 = (file: File) =>
     reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
     reader.readAsDataURL(file);
   });
+
+// Each file carries its composer id, so a draft save answers which stored
+// attachment it became.
+const buildAttachmentPayload = (attachments: ComposeAttachment[]): Promise<AttachmentPayload> =>
+  Promise.all(
+    attachments.map(async ({ id, file }) => ({
+      filename: file.name,
+      contentType: file.type || 'application/octet-stream',
+      size: file.size,
+      dataBase64: await fileToBase64(file),
+      client_id: id,
+    }))
+  );
 
 interface ComposeOptions {
   /** The account in view, which a new message starts from; virtual views (all, legacy) have none. */
@@ -85,9 +98,20 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   // Counts the messages composed here: a send's result (and its "Send again")
   // belongs to the message it sent, not to one opened since.
   const compositionRef = useRef(0);
+  // One record per message: its stored draft, and the files it has uploaded
+  // (by client id) with the attachment each became, kept by id and never
+  // uploaded again. A save that ends after Discard or Send started still
+  // records the draft it made in the record of its own message.
+  const draftRef = useRef<{ composition: number; id: string | null; uploaded: Map<string, string> }>(
+    { composition: 0, id: null, uploaded: new Map() });
+  // A message's saves run one at a time, each from the message as it is when
+  // it starts, so two saves never race over the same draft or upload.
+  const savesRef = useRef<Promise<unknown>>(Promise.resolve());
+  const pendingSavesRef = useRef(0);
   const newComposition = () => {
     compositionRef.current += 1;
     sendKeyRef.current = null;
+    draftRef.current = { composition: compositionRef.current, id: null, uploaded: new Map() };
   };
   // Counts the edits of the open message: a save marks it saved only when
   // nothing changed while the save ran.
@@ -141,6 +165,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
 
   const openDraftForCompose = useCallback((draft: Email) => {
     newComposition();
+    draftRef.current.id = draft.id;
     setComposeMode('new');
     setReplyToEmailId(null);
     setActiveDraftId(draft.id);
@@ -324,17 +349,19 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     onError: (error: Error, { composition }) => toast(sendFailureToast(error, sendAgainFor(composition))),
   });
 
-  const buildAttachmentPayload = useCallback(async (): Promise<AttachmentPayload> =>
-    Promise.all(
-      composeAttachments.map(async ({ file }) => ({
-        filename: file.name,
-        contentType: file.type || 'application/octet-stream',
-        size: file.size,
-        dataBase64: await fileToBase64(file),
-      }))
-    ), [composeAttachments]);
+  // What a save reads when it starts, after the saves before it have ended.
+  const latestRef = useRef({ composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty });
+  useLayoutEffect(() => {
+    latestRef.current = { composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty };
+  });
 
-  const saveCurrentDraft = useCallback(async (options: { includeAttachments?: boolean; quiet?: boolean } = {}) => {
+  const saveNow = useCallback(async (options: { includeAttachments?: boolean; quiet?: boolean }) => {
+    // A save that ends after its message was closed or replaced leaves the
+    // message open now as it is; one that had not started yet does nothing.
+    const composition = compositionRef.current;
+    const owner = draftRef.current;
+    if (owner.composition !== composition) return null;
+    const { composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty } = latestRef.current;
     if (!fromAccountId) {
       if (!options.quiet) toast({ title: 'Please select an account before saving a draft', variant: 'destructive' });
       return null;
@@ -343,16 +370,12 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       return null;
     }
 
-    // A save that ends after its message was closed or replaced leaves the
-    // message open now as it is.
-    const composition = compositionRef.current;
     const revision = revisionRef.current;
     const saving = {};
     savingRef.current = saving;
     setIsDraftSaving(true);
     try {
       const includeAttachments = options.includeAttachments ?? attachmentsDirty;
-      const uploaded = includeAttachments ? new Set(composeAttachments) : new Set<ComposeAttachment>();
       const payload: DraftInput = {
         account_id: fromAccountId,
         to: composeForm.to,
@@ -364,21 +387,26 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       };
 
       if (includeAttachments) {
-        payload.existing_attachment_ids = existingDraftAttachments.map(attachment => attachment.id);
-        payload.attachments = await buildAttachmentPayload();
+        // The draft keeps exactly what the message shows now: its stored
+        // attachments, and the files it holds (each uploaded once).
+        const { uploaded } = owner;
+        payload.existing_attachment_ids = [
+          ...existingDraftAttachments.map(attachment => attachment.id),
+          ...composeAttachments.flatMap(attachment => uploaded.has(attachment.id) ? [uploaded.get(attachment.id)!] : []),
+        ];
+        payload.attachments = await buildAttachmentPayload(composeAttachments.filter(attachment => !uploaded.has(attachment.id)));
         if (composition !== compositionRef.current) return null;
       }
 
-      const savedDraft = await saveDraft(activeDraftId, payload);
+      const { draft: savedDraft, uploaded } = await saveDraft(owner.id, payload);
+      owner.id = savedDraft.id;
+      for (const { client_id, id } of uploaded) owner.uploaded.set(client_id, id);
       if (composition !== compositionRef.current) return savedDraft;
-      // Edits made while it was saved stay unsaved, and are saved next.
+      // Edits made while it was saved stay unsaved, and are saved next; a file
+      // removed meanwhile is dropped from the draft then.
       const current = revision === revisionRef.current;
       setActiveDraftId(savedDraft.id);
-      setExistingDraftAttachments(savedDraft.attachments || []);
-      if (includeAttachments) {
-        setComposeAttachments(prev => prev.filter(attachment => !uploaded.has(attachment)));
-        if (current) setAttachmentsDirty(false);
-      }
+      if (includeAttachments && current) setAttachmentsDirty(false);
       if (current) setIsComposeDirty(false);
       setDraftSavedAt(new Date().toISOString());
       void invalidateMailQueries(queryClient);
@@ -399,17 +427,16 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
         setIsDraftSaving(false);
       }
     }
-  }, [
-    activeDraftId,
-    attachmentsDirty,
-    buildAttachmentPayload,
-    composeAttachments,
-    composeForm,
-    existingDraftAttachments,
-    queryClient,
-    fromAccountId,
-    toast,
-  ]);
+  }, [queryClient, toast]);
+
+  const saveCurrentDraft = useCallback((options: { includeAttachments?: boolean; quiet?: boolean } = {}) => {
+    const start = () => saveNow(options);
+    const run = pendingSavesRef.current === 0 ? start() : savesRef.current.catch(() => {}).then(start);
+    pendingSavesRef.current += 1;
+    const tracked = run.finally(() => { pendingSavesRef.current -= 1; });
+    savesRef.current = tracked;
+    return tracked;
+  }, [saveNow]);
 
   useEffect(() => {
     if (!isComposeDirty || !fromAccountId) return;
@@ -445,15 +472,18 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     // now, before the draft is deleted; the key stays for this message. A
     // message closed meanwhile (Save draft in the same prompt) stays closed,
     // and one opened since is not discarded with it.
+    const owner = draftRef.current;
     const composition = ++compositionRef.current;
     try {
-      if (activeDraftId) {
-        await deleteDraftById(activeDraftId);
-      }
+      // A first save still running may be creating the draft.
+      if (!owner.id && pendingSavesRef.current) await savesRef.current.catch(() => {});
+      if (owner.id) await deleteDraftById(owner.id);
       if (composition !== compositionRef.current) return;
       setComposeClosePromptOpen(false);
       closeComposeFlow({ force: true });
     } catch (error) {
+      // Still open: its next saves go on with the same draft.
+      if (composition === compositionRef.current) draftRef.current = { ...owner, composition };
       toast({
         title: 'Failed to discard draft',
         description: error instanceof Error ? error.message : 'Could not discard the draft',
@@ -516,10 +546,17 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       return true;
     };
     try {
-      if (activeDraftId) {
+      // A first save still running may be creating this message's draft: the
+      // message is then sent as that draft, which leaves no copy in Drafts.
+      if (!draftRef.current.id && pendingSavesRef.current) {
+        await savesRef.current.catch(() => {});
+        if (closedMeanwhile()) return;
+      }
+      const owner = draftRef.current;
+      if (owner.id) {
         const savedDraft = await saveCurrentDraft({ includeAttachments: true, quiet: true });
         if (closedMeanwhile()) return;
-        const draftId = savedDraft?.id || activeDraftId;
+        const draftId = savedDraft?.id || owner.id!;
         try {
           await sendDraft(draftId, key, threading);
         } catch (error) {
@@ -532,7 +569,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
         return;
       }
 
-      const attachmentPayload = await buildAttachmentPayload();
+      const attachmentPayload = await buildAttachmentPayload(composeAttachments);
       if (closedMeanwhile()) return;
 
       sendEmailMutation.mutate({

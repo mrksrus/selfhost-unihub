@@ -149,3 +149,102 @@ describe('edits made while a draft is saved', () => {
     expect(hook.result.current.isDirty).toBe(true);
   });
 });
+
+describe('attachments and saves of one draft (B-12)', () => {
+  const stored = { id: 'att-stored', filename: 'kept.txt', size_bytes: 1, content_type: 'text/plain' };
+  const file = (name: string, lastModified = 1) => new File([name], name, { type: 'text/plain', lastModified });
+  const putBody = (call: number) => vi.mocked(api.put).mock.calls[call][1] as Record<string, unknown>;
+  const answer = (uploaded: Array<{ client_id: string; id: string }> = []) => ({ data: { draft, uploaded } });
+
+  it('an attachment removed while a text autosave runs stays removed', async () => {
+    const save = deferred<Awaited<ReturnType<typeof api.put>>>();
+    const withAttachment = { ...draft, attachments: [stored] } as Email;
+    vi.mocked(api.put).mockReturnValueOnce(save.promise).mockResolvedValue({ data: { draft: withAttachment } });
+    const hook = mount();
+    act(() => hook.result.current.openDraftForCompose(withAttachment));
+    act(() => hook.result.current.updateComposeForm({ subject: 'edited' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1), { timeout: 2500 });
+    act(() => hook.result.current.removeExistingDraftAttachment('att-stored'));
+    await act(async () => save.resolve({ data: { draft: withAttachment } }));
+    expect(hook.result.current.existingDraftAttachments).toEqual([]);
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2), { timeout: 2500 });
+    expect(putBody(1)).toHaveProperty('existing_attachment_ids', []);
+  });
+
+  it('a file removed while it is being uploaded stays removed, and the draft drops it', async () => {
+    const save = deferred<Awaited<ReturnType<typeof api.put>>>();
+    vi.mocked(api.put).mockReturnValueOnce(save.promise).mockResolvedValue(answer());
+    const hook = mount();
+    act(() => hook.result.current.openDraftForCompose(draft));
+    act(() => hook.result.current.addComposeFiles([file('private.txt')]));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1), { timeout: 2500 });
+    const [sent] = putBody(0).attachments as Array<{ client_id: string }>;
+    act(() => hook.result.current.removeComposeAttachment(sent.client_id));
+    // The stored draft has the file now; its answer must not bring it back.
+    await act(async () => save.resolve({ data: { draft: { ...draft, attachments: [{ ...stored, id: 'att-private', filename: 'private.txt' }] },
+      uploaded: [{ client_id: sent.client_id, id: 'att-private' }] } }));
+    expect(hook.result.current.composeAttachments).toEqual([]);
+    expect(hook.result.current.existingDraftAttachments).toEqual([]);
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2), { timeout: 2500 });
+    expect(putBody(1)).toEqual(expect.objectContaining({ existing_attachment_ids: [], attachments: [] }));
+  });
+
+  it('a save asked for while another runs waits for it, and uploads nothing twice', async () => {
+    const first = deferred<Awaited<ReturnType<typeof api.put>>>();
+    vi.mocked(api.put).mockReturnValueOnce(first.promise).mockResolvedValue(answer());
+    const hook = mount();
+    act(() => hook.result.current.openDraftForCompose(draft));
+    act(() => hook.result.current.addComposeFiles([file('report.txt')]));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1), { timeout: 2500 });
+    const [sent] = putBody(0).attachments as Array<{ client_id: string }>;
+    act(() => hook.result.current.updateComposeForm({ subject: 'while uploading' }));
+    let second!: Promise<Email | null>;
+    act(() => { second = hook.result.current.saveCurrentDraft({ includeAttachments: true }); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(api.put).toHaveBeenCalledTimes(1);
+    await act(async () => { first.resolve(answer([{ client_id: sent.client_id, id: 'att-report' }])); await second; });
+    expect(api.put).toHaveBeenCalledTimes(2);
+    expect(putBody(1)).toEqual(expect.objectContaining({ subject: 'while uploading', existing_attachment_ids: ['att-report'], attachments: [] }));
+  });
+
+  it('of two files with the same name and size, the one removed is the one dropped', async () => {
+    vi.mocked(api.put).mockImplementation(async (_path, body) => answer(((body as { attachments?: Array<{ client_id: string }> }).attachments ?? [])
+      .map((attachment, index) => ({ client_id: attachment.client_id, id: `att-${index}` }))));
+    const hook = mount();
+    act(() => hook.result.current.openDraftForCompose(draft));
+    act(() => hook.result.current.addComposeFiles([file('notes.txt', 1), file('notes.txt', 2)]));
+    await act(async () => { await hook.result.current.saveCurrentDraft({ includeAttachments: true }); });
+    act(() => hook.result.current.removeComposeAttachment(hook.result.current.composeAttachments[1].id));
+    await act(async () => { await hook.result.current.saveCurrentDraft({ includeAttachments: true }); });
+    expect(putBody(1)).toEqual(expect.objectContaining({ existing_attachment_ids: ['att-0'], attachments: [] }));
+  });
+
+  it('Send while the first autosave is still creating the draft sends that draft and leaves no copy', async () => {
+    const created = deferred<Awaited<ReturnType<typeof api.post>>>();
+    const fresh = { ...draft, id: 'draft-new' } as Email;
+    vi.mocked(api.post).mockImplementation(async path => path === '/mail/drafts' ? created.promise : { data: { message: 'sent' } });
+    vi.mocked(api.put).mockResolvedValue({ data: { draft: fresh, uploaded: [] } });
+    const hook = mount();
+    act(() => hook.result.current.openCompose());
+    act(() => hook.result.current.updateComposeForm({ to: 'reader@example.test', subject: 'New', body: '<p>Hi</p>' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/drafts', expect.anything()), { timeout: 2500 });
+    send(hook);
+    await act(async () => created.resolve({ data: { draft: fresh, uploaded: [] } }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/drafts/draft-new/send', undefined, expect.anything()));
+    expect(vi.mocked(api.post).mock.calls.map(([path]) => path)).not.toContain('/mail/send');
+  });
+
+  it('Discard while the first autosave is still creating the draft deletes that draft', async () => {
+    const created = deferred<Awaited<ReturnType<typeof api.post>>>();
+    vi.mocked(api.post).mockImplementation(async path => path === '/mail/drafts' ? created.promise : { data: {} });
+    const hook = mount();
+    act(() => hook.result.current.openCompose());
+    act(() => hook.result.current.updateComposeForm({ to: 'reader@example.test', subject: 'Never mind' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/drafts', expect.anything()), { timeout: 2500 });
+    let discarding!: Promise<void>;
+    act(() => { discarding = hook.result.current.discardCurrentCompose(); });
+    await act(async () => { created.resolve({ data: { draft: { ...draft, id: 'draft-new' }, uploaded: [] } }); await discarding; });
+    expect(api.delete).toHaveBeenCalledWith('/mail/drafts/draft-new');
+    expect(hook.result.current.isComposeOpen).toBe(false);
+  });
+});
