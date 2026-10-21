@@ -5,6 +5,16 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.23.2 Mail fixes
+
+No database upgrade and no configuration change. Going back to 0.23.1 is
+possible. A read or star change that 0.23.1 left in "needs your attention"
+because another mail app had moved the message can be retried after the
+update: Retry now finds the message where it is.
+
+- **Android app.** Nothing changed in the app; installing 0.23.2's app is
+  optional. The window is 0.23.2, 0.23.1, 0.23.0 and 0.22.4.
+
 ## 0.23.1 Fixes
 
 No database upgrade and no configuration change. Going back to 0.23.0 is

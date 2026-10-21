@@ -64,15 +64,15 @@ published.
 
 ## Current window
 
-As recorded in `android/support-window.json` for 0.23.1. The CI table is the
+As recorded in `android/support-window.json` for 0.23.2. The CI table is the
 evidence; this table is what it is checked against.
 
 | App | Android 10 | Android 16 | Android 17 |
 | --- | --- | --- | --- |
+| 0.23.2 | starts and connects | starts and connects | starts and connects |
 | 0.23.1 | starts and connects | starts and connects | starts and connects |
 | 0.23.0 | starts and connects | starts and connects | starts and connects |
 | 0.22.4 | starts and connects | starts and connects | starts and connects |
-| 0.22.3 | starts and connects | starts and connects | starts and connects |
 
 All four apps put contacts on the phone and sync them both ways.
 From 0.23.0 the app also reads the handshake `protocol` and `minApp` when

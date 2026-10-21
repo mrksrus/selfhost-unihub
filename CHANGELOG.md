@@ -6,6 +6,32 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.23.2
+
+Two mail fixes found in the first use of 0.23.1: marking a message read no
+longer gets stuck when another mail app has moved it, and attachments of a
+draft stay as you left them while it saves. No database upgrade and no
+configuration change (see [Upgrading](docs/UPGRADING.md#0232-mail-fixes)).
+
+### Fixed
+
+- **Marking a message read or starred no longer gets stuck when another mail
+  app moved it.** When another app or a mail rule archived a message (on Gmail,
+  for example) before UniHub noticed, the change waited for you with "provider
+  change needs review", and Retry failed the same way. UniHub now finds the
+  message where it is now and sets it there. If it has not seen the new place
+  yet, the change waits for the next sync instead of asking you.
+- **Mail sync says why a change waits.** A change that waits or needs your
+  attention now says so in plain words when UniHub knows the reason, for
+  example that the message was moved on the server.
+- **Draft attachments stay as you left them.** An attachment removed while the
+  draft was being saved came back, and the next save kept it. Draft saves now
+  run one after the other, each file is uploaded once, and what you remove stays
+  removed.
+- **Sending or discarding a new message right after you started it** no longer
+  leaves a copy in Drafts: when its first save is still running, Send sends that
+  draft and Discard deletes it.
+
 ## 0.23.1
 
 Fixes found in the reviews and first use of 0.23.0: a message is never sent
