@@ -60,8 +60,8 @@ async function ensureMailbox({ userId, accountId, folderName, epoch = null, meta
       evidence_json = JSON_SET(COALESCE(evidence_json, JSON_OBJECT()), '$.reason', 'epoch_changed')
       WHERE dispatched = TRUE AND ${stale}`, [userId, accountId, name, name, epoch]);
     await cx.execute(`UPDATE mail_writebacks SET state = 'needs_attention', status = 'conflict',
-      error = ?, evidence_json = JSON_OBJECT('reason','epoch_changed') WHERE dispatched = FALSE AND ${stale}`,
-    [OPERATION_REASONS.mailbox_reset, userId, accountId, name, name, epoch]);
+      error = '${OPERATION_REASONS.mailbox_reset}', evidence_json = JSON_OBJECT('reason','epoch_changed')
+      WHERE dispatched = FALSE AND ${stale}`, [userId, accountId, name, name, epoch]);
     await cx.execute(`UPDATE mail_remote_mailboxes SET uidvalidity = ?, state = 'active', epoch_revision = epoch_revision + 1 WHERE id = ?`, [epoch, mailbox.id]);
   } else if (epoch !== null && mailbox.uidvalidity === null) {
     await cx.execute("UPDATE mail_remote_mailboxes SET uidvalidity = ?, state = 'active', epoch_revision = epoch_revision + 1 WHERE id = ?", [epoch, mailbox.id]);
