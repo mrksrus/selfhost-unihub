@@ -84,7 +84,15 @@ names a copy the server still has: when a presence sweep proves the addressed
 copy absent while another active mailbox still holds the message, the sweep
 re-points the item there (`repointToLiveOccurrence`: a real folder before All
 Mail, then the most recently observed copy). Queuing and Retry do the same
-(Retry only on Sync accounts), so changes are never sent to a dead address. After a confirmed move into Trash or Spam on Gmail, the item's other
+(Retry only on Sync accounts), so changes are never sent to a dead address.
+A read or star change whose addressed copy is missing before it is sent
+(another mail client moved the message after the last presence sweep) checks
+that one UID's presence at once, re-points the item the same way and is then
+set on the live copy. While UniHub knows no other copy yet, the change waits
+for sync like any stall and ends in attention only after its bounded retries.
+The writeback list carries UniHub's own reason as a `reason` code (`moved`,
+`changed`, `mailbox_reset`), never the provider's error text.
+After a confirmed move into Trash or Spam on Gmail, the item's other
 copies are marked absent in the same transaction.
 
 `emails.mail_account_id` remains the source identity used by IMAP sync;

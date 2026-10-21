@@ -1,14 +1,14 @@
 // Durable provider operation executor. IMAP is never called inside a SQL transaction.
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor } from '../../types';
-import type { OperationRow } from '../../types/mail-engine';
+import type { ClaimedJob, OperationRow } from '../../types/mail-engine';
 import type { ProtocolConnection } from '../../types/imap-protocol';
 
 import { db } from '../../state';
 import * as transport from './transport';
 import * as reconciliation from './reconciliation';
 import * as runtime from './runtime';
-import { WAITING, UNRESOLVED, UNPROVEN, SETTLED, DONE, DUE_SQL, statusFor } from './operation-states';
+import { WAITING, UNRESOLVED, UNPROVEN, SETTLED, DONE, DUE_SQL, OPERATION_REASONS, statusFor } from './operation-states';
 import { sqlList } from './job-kinds';
 import { canRunModule } from '../access-policy';
 
@@ -124,11 +124,71 @@ async function readSource(connection: ProtocolConnection, op: OperationRow, sign
     observationRevision: email.observation_revision };
 }
 interface OperationResult { needsSync?: boolean; connectionFailed?: boolean; }
-async function applyFlag(op: OperationRow, connection: ProtocolConnection, generation: number, signal?: AbortSignal, workerId?: string | null, jobId?: string | null): Promise<OperationResult> {
+// The message left the folder this change was aimed at: another mail client
+// moved or archived it before UniHub's own presence sweep noticed. A flag is
+// safe to set on any copy the server still has, so a one-UID presence check
+// proves the old address gone (a UID is never reused within its UIDVALIDITY),
+// and the change moves to the copy UniHub already knows of, the way Retry
+// does. Returns the rebased row, or null while no live copy is known.
+async function followMovedSource(op: OperationRow, connection: ProtocolConnection, generation: number, signal: AbortSignal | undefined,
+  workerId: string | null | undefined, jobId: string | null | undefined): Promise<OperationRow | null> {
+  const repository = require('./repository') as typeof import('./repository');
+  const [[account]] = await db.execute<RowDataPacket[]>('SELECT id,user_id,sync_mode FROM mail_accounts WHERE id=? AND user_id=?',
+    [op.mail_account_id, op.user_id]);
+  const [[local]] = await db.execute<RowDataPacket[]>(`SELECT f.slug FROM mail_folder_remote_boxes b JOIN mail_folders f ON f.id=b.folder_id
+    WHERE b.mail_account_id=? AND BINARY b.remote_name=BINARY ? AND f.user_id=? LIMIT 1`, [op.mail_account_id, op.remote_folder, op.user_id]);
+  if (!account) return null;
+  // A missing UID inserts nothing, so the local folder only names the mapping.
+  await (require('./sync') as typeof import('./sync')).scanMailboxSlice({ db, connection, account: account as { id: string; user_id: string },
+    folder: { folderName: op.remote_folder!, dbFolderName: local?.slug ?? '' }, stream: 'presence', signal,
+    job: { id: jobId, lease_owner: workerId, worker_generation: generation } as ClaimedJob,
+    targetUid: Number(op.remote_uid), expectedEpoch: Number(op.remote_uidvalidity) });
+  return transaction(async cx => {
+    const [[row]] = await cx.execute<(RowDataPacket & OperationRow)[]>(`SELECT * FROM mail_writebacks WHERE id=? AND user_id=? AND mail_account_id=? FOR UPDATE`,
+      [op.id, op.user_id, op.mail_account_id]);
+    if (!row || !Number(row.is_current) || Number(row.dispatched) || !WAITING.includes(row.state)
+      || !await accountFence(cx, row, generation, workerId, jobId)) return null;
+    const [[email]] = await cx.execute<RowDataPacket[]>(`SELECT remote_folder,remote_uid,remote_uidvalidity FROM emails
+      WHERE id=? AND user_id=? AND mail_account_id=? FOR UPDATE`, [row.email_id, row.user_id, row.mail_account_id]);
+    if (!email) return null;
+    const source = { folder: row.remote_folder!, uid: row.remote_uid!, uidvalidity: row.remote_uidvalidity! };
+    const atSource = email.remote_folder === source.folder && same(email.remote_uid, source.uid) && same(email.remote_uidvalidity, source.uidvalidity);
+    const [present] = await cx.execute<RowDataPacket[]>(`SELECT o.id FROM mail_remote_occurrences o JOIN mail_remote_mailboxes m ON m.id=o.mailbox_id
+      WHERE o.email_id=? AND o.user_id=? AND o.mail_account_id=? AND o.presence='present'
+        AND BINARY m.remote_name=BINARY ? AND o.uid=? AND o.uidvalidity=? LIMIT 1`,
+    [row.email_id, row.user_id, row.mail_account_id, source.folder, source.uid, source.uidvalidity]);
+    // Not proven gone after all: leave it to the ordinary path.
+    if (present.length) return null;
+    // The presence check repoints the item when it proves the copy gone; a
+    // copy found later (a label discovered after that) is picked up here.
+    if (atSource && !await repository.repointToLiveOccurrence({ userId: row.user_id, accountId: row.mail_account_id,
+      emailId: row.email_id, from: source }, cx)) return null;
+    const [[target]] = await cx.execute<RowDataPacket[]>(`SELECT e.remote_folder,e.remote_uid,e.remote_uidvalidity,o.id AS occurrence_id
+      FROM emails e JOIN mail_remote_mailboxes m ON m.user_id=e.user_id AND m.mail_account_id=e.mail_account_id
+        AND BINARY m.remote_name=BINARY e.remote_folder AND m.state='active' AND m.uidvalidity=e.remote_uidvalidity
+      JOIN mail_remote_occurrences o ON o.mailbox_id=m.id AND o.email_id=e.id AND o.uid=e.remote_uid
+        AND o.uidvalidity=e.remote_uidvalidity AND o.presence='present'
+      WHERE e.id=? AND e.user_id=? AND e.mail_account_id=?`, [row.email_id, row.user_id, row.mail_account_id]);
+    if (!target) return null;
+    await cx.execute(`UPDATE mail_writebacks SET remote_folder=?,remote_uid=?,remote_uidvalidity=?,source_occurrence_id=?,error=NULL
+      WHERE id=? AND user_id=? AND mail_account_id=?`,
+    [target.remote_folder, target.remote_uid, target.remote_uidvalidity, target.occurrence_id, row.id, row.user_id, row.mail_account_id]);
+    return { ...row, remote_folder: target.remote_folder, remote_uid: target.remote_uid,
+      remote_uidvalidity: target.remote_uidvalidity, source_occurrence_id: target.occurrence_id, error: null };
+  });
+}
+async function applyFlag(op: OperationRow, connection: ProtocolConnection, generation: number, signal?: AbortSignal, workerId?: string | null, jobId?: string | null, followed = false): Promise<OperationResult> {
   const ready = () => providerReady(op, generation, workerId, jobId, signal);
   const before = await readSource(connection, op, signal, ready);
+  if (!before.staleEpoch && !before.item && !Number(op.dispatched)) {
+    // Gone from its folder in the same mailbox epoch: follow it once, then wait
+    // for sync to find it (bounded like any stall) instead of asking the user.
+    const rebased = followed ? null : await followMovedSource(op, connection, generation, signal, workerId, jobId);
+    if (rebased) return applyFlag(rebased, connection, generation, signal, workerId, jobId, true);
+    return stall(op, OPERATION_REASONS.moved, { generation, workerId, jobId });
+  }
   if (before.staleEpoch || !before.item) {
-    await setState(op, 'needs_attention', 'Source UID or mailbox epoch changed; identity must be re-established', { generation, workerId, jobId });
+    await setState(op, 'needs_attention', OPERATION_REASONS.changed, { generation, workerId, jobId });
     return { needsSync: true };
   }
   const latest = await loadLatest(op, generation, workerId, jobId);
