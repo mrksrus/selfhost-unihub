@@ -355,12 +355,13 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     latestRef.current = { composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty };
   });
 
-  const saveNow = useCallback(async (options: { includeAttachments?: boolean; quiet?: boolean }) => {
+  const saveNow = useCallback(async (options: { includeAttachments?: boolean; quiet?: boolean },
+    owner: typeof draftRef.current) => {
     // A save that ends after its message was closed or replaced leaves the
-    // message open now as it is; one that had not started yet does nothing.
-    const composition = compositionRef.current;
-    const owner = draftRef.current;
-    if (owner.composition !== composition) return null;
+    // message open now as it is; one that had not started yet (queued behind
+    // another) does nothing, so it never saves the message opened since.
+    const composition = owner.composition;
+    if (draftRef.current !== owner || compositionRef.current !== composition) return null;
     const { composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty } = latestRef.current;
     if (!fromAccountId) {
       if (!options.quiet) toast({ title: 'Please select an account before saving a draft', variant: 'destructive' });
@@ -430,7 +431,9 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   }, [queryClient, toast]);
 
   const saveCurrentDraft = useCallback((options: { includeAttachments?: boolean; quiet?: boolean } = {}) => {
-    const start = () => saveNow(options);
+    // Belongs to the message open when it was asked for.
+    const owner = draftRef.current;
+    const start = () => saveNow(options, owner);
     const run = pendingSavesRef.current === 0 ? start() : savesRef.current.catch(() => {}).then(start);
     pendingSavesRef.current += 1;
     const tracked = run.finally(() => { pendingSavesRef.current -= 1; });
@@ -483,7 +486,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       closeComposeFlow({ force: true });
     } catch (error) {
       // Still open: its next saves go on with the same draft.
-      if (composition === compositionRef.current) draftRef.current = { ...owner, composition };
+      if (composition === compositionRef.current && draftRef.current === owner) owner.composition = composition;
       toast({
         title: 'Failed to discard draft',
         description: error instanceof Error ? error.message : 'Could not discard the draft',

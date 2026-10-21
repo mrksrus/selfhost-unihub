@@ -248,3 +248,44 @@ describe('attachments and saves of one draft (B-12)', () => {
     expect(hook.result.current.isComposeOpen).toBe(false);
   });
 });
+
+describe('a save queued behind a slow one', () => {
+  it('belongs to its message: after Discard it does not save the message opened next', async () => {
+    const first = deferred<Awaited<ReturnType<typeof api.put>>>();
+    vi.mocked(api.put).mockReturnValueOnce(first.promise);
+    vi.mocked(api.post).mockResolvedValue({ data: { draft: { ...draft, id: 'draft-b' }, uploaded: [] } });
+    const hook = mount();
+    act(() => hook.result.current.openDraftForCompose(draft));
+    act(() => hook.result.current.updateComposeForm({ subject: 'A first edit' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1), { timeout: 2500 });
+    // A second edit queues another autosave behind the slow one.
+    act(() => hook.result.current.updateComposeForm({ subject: 'A second edit' }));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 1650)); });
+    expect(api.put).toHaveBeenCalledTimes(1);
+    await act(async () => { await hook.result.current.discardCurrentCompose(); });
+    expect(api.delete).toHaveBeenCalledWith('/mail/drafts/draft-a');
+    act(() => hook.result.current.openCompose());
+    act(() => hook.result.current.updateComposeForm({ to: 'b@example.test', subject: 'B unsaved', body: '<p>B</p>' }));
+    await act(async () => { first.resolve({ data: { draft, uploaded: [] } }); });
+    expect(api.post).not.toHaveBeenCalled();
+    expect(api.put).toHaveBeenCalledTimes(1);
+    expect({ draftId: hook.result.current.activeDraftId, dirty: hook.result.current.isDirty }).toEqual({ draftId: null, dirty: true });
+  });
+
+  it('after a Discard that failed, still saves its own message', async () => {
+    const first = deferred<Awaited<ReturnType<typeof api.put>>>();
+    vi.mocked(api.put).mockReturnValueOnce(first.promise);
+    vi.mocked(api.delete).mockResolvedValueOnce({ error: 'Temporary outage', status: 503 });
+    const hook = mount();
+    act(() => hook.result.current.openDraftForCompose(draft));
+    act(() => hook.result.current.updateComposeForm({ subject: 'A first edit' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1), { timeout: 2500 });
+    act(() => hook.result.current.updateComposeForm({ subject: 'A second edit' }));
+    await act(async () => { await hook.result.current.discardCurrentCompose(); });
+    expect(hook.result.current.isComposeOpen).toBe(true);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 1650)); });
+    await act(async () => { first.resolve({ data: { draft, uploaded: [] } }); });
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.put).mock.calls[1]).toEqual(['/mail/drafts/draft-a', expect.objectContaining({ subject: 'A second edit' })]);
+  });
+});
