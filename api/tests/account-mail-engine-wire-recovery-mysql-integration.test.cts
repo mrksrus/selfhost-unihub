@@ -99,6 +99,67 @@ async function peer(db: FixtureValue, opId: FixtureValue, { ack = 'mapped', defe
   };
 }
 
+// Another mail client moved message 103 out of INBOX; the server has it as
+// UID 207 in Archive. UniHub has not swept INBOX since, so it still has 103.
+async function movedAwayPeer() {
+  const commands: string[] = [], sockets = new Set<import('node:net').Socket>(), errors: unknown[] = [];
+  let archiveSeen = false;
+  const server = net.createServer(socket => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('error', error => errors.push(error));
+    socket.write('* OK disposable IMAP peer\r\n');
+    let input = '', selected = '';
+    const write = (value: string) => { if (!socket.destroyed) socket.write(value); };
+    socket.on('data', data => {
+      input += data.toString('latin1');
+      let index;
+      while ((index = input.indexOf('\r\n')) >= 0) {
+        const line = input.slice(0, index); input = input.slice(index + 2);
+        const match = /^([0-9A-F]+) (.*)$/.exec(line);
+        if (!match) continue;
+        const [, tag, cmd] = match;
+        commands.push(cmd);
+        const ok = (text?: string) => write(`${tag} OK ${text || 'completed'}\r\n`);
+        if (cmd === 'CAPABILITY') { write('* CAPABILITY IMAP4rev1 UIDPLUS MOVE CONDSTORE ENABLE\r\n'); ok(); }
+        else if (cmd.startsWith('LOGIN ')) ok();
+        else if (cmd === 'ENABLE CONDSTORE') { write('* ENABLED CONDSTORE\r\n'); ok(); }
+        else if (cmd.startsWith('LIST ')) { write('* LIST (\\Noselect) "/" ""\r\n'); ok(); }
+        else if (cmd.startsWith('LSUB ')) ok();
+        else if (/^(SELECT|EXAMINE) "?(INBOX|Archive)"?$/.test(cmd)) {
+          selected = /INBOX/.test(cmd) ? 'INBOX' : 'Archive';
+          write(`* FLAGS (\\Seen)\r\n* ${selected === 'INBOX' ? 0 : 1} EXISTS\r\n* OK [UIDVALIDITY ${selected === 'INBOX' ? 9 : 10}] valid\r\n* OK [UIDNEXT ${selected === 'INBOX' ? 104 : 208}] next\r\n`);
+          ok(`[${cmd.startsWith('EXAMINE') ? 'READ-ONLY' : 'READ-WRITE'}] selected`);
+        } else if (/^UID FETCH \d+:\d+ \(UID FLAGS INTERNALDATE MODSEQ\)$/.test(cmd)) {
+          const [low, high] = /^UID FETCH (\d+):(\d+)/.exec(cmd)!.slice(1).map(Number);
+          if (selected === 'Archive' && low <= 207 && high >= 207)
+            write(`* 1 FETCH (UID 207 FLAGS (${archiveSeen ? '\\Seen' : ''}) MODSEQ (${archiveSeen ? 20 : 19}) INTERNALDATE "29-Sep-2026 12:00:00 +0000")\r\n`);
+          ok();
+        } else if (selected === 'Archive' && /^UID STORE 207 (\(UNCHANGEDSINCE \d+\) )?\+FLAGS\.SILENT \(\\Seen\)$/.test(cmd)) {
+          archiveSeen = true; ok();
+        } else if (cmd === 'LOGOUT') { write('* BYE goodbye\r\n'); ok(); }
+        else { errors.push(new Error(`Unexpected IMAP wire command: ${cmd}`)); write(`${tag} BAD unexpected\r\n`); }
+      }
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(undefined)));
+  const port = (server.address() as import('node:net').AddressInfo).port;
+  return {
+    commands, get archiveSeen() { return archiveSeen; },
+    async connect() {
+      return guardImapConnection(await connectImap({ imap: {
+        host: '127.0.0.1', port, user: 'fixture', password: 'fixture',
+        tls: false, keepalive: false, connTimeout: 1000, authTimeout: 1000, socketTimeout: 1000,
+      } }), { timeoutMs: 3000 });
+    },
+    async close() {
+      for (const socket of sockets) socket.destroy();
+      await new Promise(resolve => server.close(() => resolve(undefined)));
+      assert.deepEqual(errors, []);
+    },
+  };
+}
+
 test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovered no-replay', {
   skip: !process.env.MYSQL_TEST_HOST, timeout: 180000,
 }, async t => {
@@ -346,5 +407,81 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
     assert.deepEqual(moveCommands(f.fixture),['UID MOVE 103 "Filed"']);
     await runtime.completeJob({ jobId:job!.id,accountId:f.accountId,workerId:'mapped-recovered',
       generation:Number(job!.worker_generation) },pool);
+  });
+
+  async function movedAwaySetup(label: string, { archiveKnown }: { archiveKnown: boolean }) {
+    const userId = randomUUID(), accountId = randomUUID(), emailId = randomUUID();
+    await pool.execute<ResultSetHeader>('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, `${label}@example.test`, 'synthetic']);
+    await pool.execute<ResultSetHeader>(`INSERT INTO mail_accounts (id,user_id,email_address,provider,sync_mode,is_active)
+      VALUES (?,?,?,'custom','sync',TRUE)`, [accountId,userId,`${label}@example.test`]);
+    await pool.execute<ResultSetHeader>(`INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder,is_read,
+      remote_folder,remote_uid,remote_uidvalidity,raw_storage_path,raw_sha256) VALUES (?,?,?,'synthetic@example.test','[]','inbox',FALSE,'INBOX',103,9,?,?)`,
+    [emailId,userId,accountId,`/synthetic/${label}/original.eml`, 'a'.repeat(64)]);
+    const source = await repo.withTransaction(async (cx) => {
+      const mailbox = await repo.ensureMailbox({ userId, accountId, folderName: 'INBOX', epoch: 9 }, cx);
+      return repo.upsertOccurrence({ userId, accountId, mailboxId: mailbox.id, epoch: 9, uid: 103, emailId, flags: [] }, cx);
+    }, pool);
+    // A later sync sees the copy in Archive (on Gmail, by its message id).
+    const learnArchive = () => repo.withTransaction(async (cx) => {
+      const mailbox = await repo.ensureMailbox({ userId, accountId, folderName: 'Archive', epoch: 10 }, cx);
+      return repo.upsertOccurrence({ userId, accountId, mailboxId: mailbox.id, epoch: 10, uid: 207, emailId, flags: [] }, cx);
+    }, pool);
+    if (archiveKnown) await learnArchive();
+    const opId = randomUUID();
+    await pool.execute<ResultSetHeader>(`INSERT INTO mail_writebacks (id,user_id,mail_account_id,email_id,action,target_value,
+      base_value,remote_folder,remote_uid,remote_uidvalidity,source_occurrence_id,status,state,is_current,intent_revision,dispatched)
+      VALUES (?,?,?,?,'read','1','0','INBOX',103,9,?,'pending','queued',TRUE,1,FALSE)`, [opId,userId,accountId,emailId,source!.id]);
+    const workerId = `${label}-worker`;
+    const fixture = await movedAwayPeer(); t.after(() => fixture.close());
+    const connection = await fixture.connect(); t.after(() => closeImapConnection(connection));
+    // One operation job per pass, as the due scan enqueues them.
+    const apply = async () => {
+      const job = await runtime.enqueueJob({ userId,accountId,operationId:opId,kind:'operation',priority:0 }, pool);
+      const claimed = await runtime.claimDueJob({ workerId,kinds:['operation'] }, pool);
+      assert.equal(claimed!.id,job.id);
+      const op = await one(pool, 'SELECT * FROM mail_writebacks WHERE id=?', [opId]);
+      try {
+        return await operations.applyFlag(op, connection, Number(claimed!.worker_generation), new AbortController().signal, workerId, job.id);
+      } finally {
+        await runtime.completeJob({ jobId:job.id,accountId,workerId,generation:Number(claimed!.worker_generation) },pool);
+      }
+    };
+    return { userId, emailId, opId, source, fixture, apply, learnArchive };
+  }
+  const flagRow = (id: string) => one(pool, 'SELECT state,status,dispatched,attempts,error,remote_folder,remote_uid FROM mail_writebacks WHERE id=?', [id]);
+  const stores = (fixture: FixtureValue) => fixture.commands.filter((cmd: string) => /\bSTORE\b/.test(cmd));
+
+  await t.test('read change on a message another client moved: proven gone, set on the copy UniHub knows', async () => {
+    const f = await movedAwaySetup('moved-known', { archiveKnown: true });
+    await f.apply();
+    const op = await flagRow(f.opId);
+    assert.equal(op.state, 'confirmed'); assert.equal(op.status, 'done');
+    assert.deepEqual([op.remote_folder, op.remote_uid], ['Archive', 207]);
+    assert.equal(f.fixture.archiveSeen, true);
+    assert.equal(stores(f.fixture).length, 1, 'one STORE, on the live copy');
+    assert.equal((await one(pool, 'SELECT presence FROM mail_remote_occurrences WHERE id=?', [f.source!.id])).presence, 'absent');
+    assert.deepEqual(await one(pool, 'SELECT is_read,remote_folder,remote_uid FROM emails WHERE id=?', [f.emailId]),
+      { is_read: 1, remote_folder: 'Archive', remote_uid: 207 });
+  });
+
+  await t.test('read change on a message moved to a folder UniHub has not seen yet: waits, then follows it', async () => {
+    const f = await movedAwaySetup('moved-unknown', { archiveKnown: false });
+    await f.apply();
+    const waiting = await flagRow(f.opId);
+    assert.equal(waiting.state, 'retry_wait', 'waits for sync, does not ask the user');
+    assert.equal(waiting.dispatched, 0); assert.equal(waiting.attempts, 1);
+    assert.match(waiting.error, /no longer where it was/);
+    assert.deepEqual(stores(f.fixture), [], 'nothing is sent to a dead address');
+    assert.equal((await one(pool, 'SELECT presence FROM mail_remote_occurrences WHERE id=?', [f.source!.id])).presence, 'absent');
+    const { listWritebacks } = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
+    assert.equal((await listWritebacks(f.userId)).operations.find(row => row.id === f.opId)?.reason, 'moved', 'the browser gets the reason as a code');
+    await f.learnArchive();
+    await pool.execute<ResultSetHeader>('UPDATE mail_writebacks SET available_at=UTC_TIMESTAMP() WHERE id=?', [f.opId]);
+    await f.apply();
+    const op = await flagRow(f.opId);
+    assert.equal(op.state, 'confirmed'); assert.equal(op.error, null);
+    assert.deepEqual([op.remote_folder, op.remote_uid], ['Archive', 207]);
+    assert.equal(stores(f.fixture).length, 1);
+    assert.equal((await one(pool, 'SELECT is_read FROM emails WHERE id=?', [f.emailId])).is_read, 1);
   });
 });

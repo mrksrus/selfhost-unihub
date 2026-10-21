@@ -63,6 +63,20 @@ function canCancel(op: OperationView) {
 // Mirrors the WHERE clause of acceptServerState.
 const canAcceptServerState = (op: OperationView) => dispatchedMove(op) && op.state === 'needs_attention';
 
+// The engine's own reasons for a change that waits or needs attention, as it
+// stores them in mail_writebacks.error. Only these reach the browser, as a
+// code; a provider's error text can carry private details and never does.
+const OPERATION_REASONS = {
+  moved: 'The message is no longer where it was on the server, and UniHub has not found it elsewhere yet',
+  changed: 'Source UID or mailbox epoch changed; identity must be re-established',
+  mailbox_reset: 'Provider reset this mailbox; sync, then retry or discard this change',
+} as const;
+type OperationReason = keyof typeof OPERATION_REASONS;
+function operationReason(error: unknown): OperationReason | null {
+  const found = Object.entries(OPERATION_REASONS).find(([, text]) => text === error);
+  return found ? found[0] as OperationReason : null;
+}
+
 export {
   OPERATION_STATES,
   WAITING,
@@ -81,5 +95,7 @@ export {
   canRetry,
   canCancel,
   canAcceptServerState,
+  OPERATION_REASONS,
+  operationReason,
 };
-export type { OperationState, OperationView };
+export type { OperationState, OperationView, OperationReason };

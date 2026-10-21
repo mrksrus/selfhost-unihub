@@ -9,7 +9,7 @@ import { canRunModule } from './access-policy';
 import * as runtime from './mail-engine/runtime';
 import * as repository from './mail-engine/repository';
 import { WAITING, UNRESOLVED, UNPROVEN, ACTIVE, CANCELLABLE, MOVE_RECHECK, sqlStates,
-  dispatchedMove, canRetry, canCancel, canAcceptServerState } from './mail-engine/operation-states';
+  dispatchedMove, canRetry, canCancel, canAcceptServerState, operationReason } from './mail-engine/operation-states';
 import { sqlList } from './mail-engine/job-kinds';
 import { publishMailChanged, publishMailOperation } from './realtime';
 
@@ -219,7 +219,8 @@ async function getOperationReceipt(userId: string, key: string) {
 // which mirrors the WHERE clauses of retryWriteback/cancelWriteback/acceptServerState.
 function projectOperation(op: OperationRow) {
   return { ...op, is_current: Boolean(Number(op.is_current)), can_retry: canRetry(op), can_cancel: canCancel(op),
-    can_accept_server_state: canAcceptServerState(op), retry_action: dispatchedMove(op) ? 'check_outcome' : 'retry' };
+    can_accept_server_state: canAcceptServerState(op), retry_action: dispatchedMove(op) ? 'check_outcome' : 'retry',
+    reason: operationReason(op.error) };
 }
 async function listWritebacks(userId: string, { accountId = null, includeHistory = false, limit = 100 }: { accountId?: string | null; includeHistory?: boolean; limit?: number | string } = {}) {
   limit = String(Math.floor(Math.min(200, Math.max(1, Number(limit) || 100))));

@@ -192,6 +192,8 @@ export interface MailWriteback {
   can_cancel?: boolean;
   can_accept_server_state?: boolean;
   retry_action?: 'check_outcome' | 'retry' | null;
+  /** UniHub's own reason for waiting or attention; provider text is never sent as one. */
+  reason?: 'moved' | 'changed' | 'mailbox_reset' | null;
   attempts?: number;
   available_at?: string | null;
   error: string | null;

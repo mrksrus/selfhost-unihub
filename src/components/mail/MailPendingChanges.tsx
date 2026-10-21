@@ -12,17 +12,26 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 const actionLabels = { read: 'Read status change', star: 'Star change', move: 'Folder move' };
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
+const reasons = {
+  moved: 'the message was moved on the server, perhaps by another app, and UniHub has not found it yet.',
+  changed: 'the message changed on the server. Retry after the next sync, or discard.',
+  mailbox_reset: 'the server reset this folder. Retry after the next sync, or discard.',
+};
+
 function describe(operation: MailWriteback, check: boolean) {
+  const reason = operation.reason ? reasons[operation.reason] : null;
   switch (writebackLifecycle(operation)) {
     case 'reconciling': return 'checking what happened at the provider.';
     case 'rejected': return 'request rejected; no provider confirmation.';
-    case 'needs_attention': return check ? 'outcome uncertain; do not send this move again.' : 'provider change needs review.';
+    case 'needs_attention': return check ? 'outcome uncertain; do not send this move again.'
+      : operation.reason === 'moved' ? `${reason} Retry after the next sync, or discard.` : reason ?? 'provider change needs review.';
     case 'executing': return 'sending to the server.';
     case 'verifying': return 'confirming with the server.';
     case 'retry_wait': {
       const due = operation.available_at ? new Date(operation.available_at) : null;
-      return due && !Number.isNaN(due.getTime()) && due.getTime() > Date.now()
-        ? `server busy; retry ${formatDistanceToNowStrict(due, { addSuffix: true })}.` : 'server busy; retrying soon.';
+      const when = due && !Number.isNaN(due.getTime()) && due.getTime() > Date.now()
+        ? `retry ${formatDistanceToNowStrict(due, { addSuffix: true })}.` : 'retrying soon.';
+      return operation.reason === 'moved' ? `${reason!.slice(0, -1)}; ${when}` : `server busy; ${when}`;
     }
     default: return 'waiting for the server.';
   }

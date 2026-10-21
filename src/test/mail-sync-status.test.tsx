@@ -73,6 +73,17 @@ describe('mail server change feedback', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/writebacks/failed/retry'));
   });
 
+  it('says why a change waits or needs attention when UniHub knows the reason, never the provider text', async () => {
+    setup([{ ...operation('stuck', 'conflict', 'read'), state: 'needs_attention', reason: 'moved', can_retry: true, can_cancel: true },
+      { ...operation('looking', 'pending', 'star'), state: 'retry_wait', reason: 'moved', is_current: true,
+        available_at: new Date(Date.now() + 120_000).toISOString() }]);
+    expect(await screen.findByText(/Read status change: the message was moved on the server, perhaps by another app, and UniHub has not found it yet\. Retry after the next sync, or discard\./)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '1 change waiting for the server' }));
+    expect(screen.getByText(/Star change: .*has not found it yet; retry in 2 minutes\./)).toBeInTheDocument();
+    expect(screen.queryByText(/server busy/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/private provider details/)).not.toBeInTheDocument();
+  });
+
   it('offers retry and discard exactly as the server allows, and never discards a sent move', async () => {
     setup([
       { ...operation('flag', 'conflict', 'star'), state: 'needs_attention', can_retry: true, can_cancel: true, retry_action: 'retry' },
