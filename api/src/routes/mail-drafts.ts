@@ -106,6 +106,18 @@ async function loadDraftEmail(userId: string, draftId: string) {
   };
 }
 
+// A composer names each file it uploads (client_id); the answer pairs those
+// names with the attachments they became, so the composer never guesses which
+// stored attachment is which of its files.
+const CLIENT_ID = /^[A-Za-z0-9-]{1,64}$/;
+function uploadedAttachments(attachments: unknown, ids: string[]) {
+  if (!Array.isArray(attachments)) return [];
+  return ids.flatMap((id, index) => {
+    const clientId = (attachments[index] as { client_id?: unknown } | null)?.client_id;
+    return typeof clientId === 'string' && CLIENT_ID.test(clientId) ? [{ client_id: clientId, id }] : [];
+  });
+}
+
 async function deleteDraftWithFiles(userId: string, draftId: string) {
   const draft = await loadDraftEmail(userId, draftId);
   if (!draft) return { error: 'Draft not found', status: 404 };
@@ -140,7 +152,7 @@ export = {
       const subject = String(body?.subject ?? '');
 
       await ensureDefaultMailFoldersForUser(userId);
-      await saveDraftMutation({ db, userId, emailId: draftId, isNew: true, body,
+      const ids = await saveDraftMutation({ db, userId, emailId: draftId, isNew: true, body,
         deleteFiles: deleteStoredAttachmentFiles,
         mutate: (connection) => connection.execute(
         `INSERT INTO emails
@@ -165,7 +177,7 @@ export = {
         ),
       });
 
-      return { draft: await loadDraftEmail(userId, draftId) };
+      return { draft: await loadDraftEmail(userId, draftId), uploaded: uploadedAttachments(body?.attachments, ids) };
     } catch (error) {
       console.error('Create draft error:', error);
       return routeError(error, 'Failed to save draft');
@@ -219,14 +231,14 @@ export = {
       }
 
       params.push(draftId, userId);
-      await saveDraftMutation({ db, userId, emailId: draftId, body,
+      const ids = await saveDraftMutation({ db, userId, emailId: draftId, body,
         deleteFiles: deleteStoredAttachmentFiles,
         mutate: (connection) => connection.execute(
           `UPDATE emails SET ${updates.join(', ')} WHERE id = ? AND user_id = ? AND is_draft = TRUE`, params
         ),
       });
 
-      return { draft: await loadDraftEmail(userId, draftId) };
+      return { draft: await loadDraftEmail(userId, draftId), uploaded: uploadedAttachments(body?.attachments, ids) };
     } catch (error) {
       console.error('Update draft error:', error);
       return routeError(error, 'Failed to update draft');

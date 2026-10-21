@@ -662,8 +662,8 @@ System folders cannot be deleted. Synced custom-folder deletion returns a confli
 | POST | `/api/mail/emails/bulk-update` | Bulk read/star updates |
 | GET | `/api/mail/unread-counts` | Unread counts by folder and optionally account |
 | GET | `/api/mail/attachments/:id` | Authenticated attachment download |
-| POST | `/api/mail/drafts` | Create an app-local draft |
-| PUT | `/api/mail/drafts/:id` | Update an app-local draft |
+| POST | `/api/mail/drafts` | Create an app-local draft; answers the draft and `uploaded` (see below) |
+| PUT | `/api/mail/drafts/:id` | Update an app-local draft; answers the draft and `uploaded` |
 | DELETE | `/api/mail/drafts/:id` | Delete an app-local draft and its attachments |
 | POST | `/api/mail/drafts/:id/send` | Send an app-local draft and remove it after SMTP succeeds |
 | GET | `/api/mail/writebacks` | Unsettled provider changes with `can_retry`, `can_cancel`, `can_accept_server_state` |
@@ -724,7 +724,12 @@ Compose attachment limits:
 Draft attachment payloads are validated before draft content changes. Replacements
 retain old files until their metadata transaction commits; invalid replacements
 and database failures preserve the previous draft. Retained plus new attachments
-must fit the same limits. Attachment downloads stream from authenticated,
+must fit the same limits. A new attachment may carry a `client_id` (letters,
+digits and `-`, at most 64); the answer's `uploaded` pairs each such
+`client_id` with the attachment id it became, so the composer keeps that file
+by id (in `existing_attachment_ids`) and never uploads it again. The composer
+runs a message's saves one at a time, each from the message as it is when it
+starts. Attachment downloads stream from authenticated,
 path-checked files rather than buffering the entire file in API memory.
 
 SMTP port behavior:

@@ -68,6 +68,8 @@ async function saveDraftMutation({ db, userId, emailId, isNew = false, body, mut
     if (!committed && !commitAttempted) await discardStagedAttachments(staged);
   }
   await deleteFiles(removable.map(row => row.storage_path));
+  // The new attachments' ids, in the order of body.attachments.
+  return staged.map(row => row.id);
 }
 
 export { saveDraftMutation };
