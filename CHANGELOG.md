@@ -25,13 +25,14 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   services against the root list built into Node.js, which still trusted that
   root up to 0.23.2. Someone able to intercept the server's connections could
   therefore pose as your mail or calendar provider and receive the stored
-  password and the data. The image now runs on Node.js 26.12.1, which drops
-  that root and refuses certificate chains containing the compromised keys,
-  also through their cross-signature by Sectigo. Mail accounts where you
-  confirmed a certificate fingerprint use that pin and were not affected.
-  Nothing in UniHub can show whether this was used against an installation; if
-  the server's connections could have been intercepted (a network or VPN you do
-  not control), change the mail and calendar passwords stored in UniHub.
+  password and the data. This includes mail accounts with a confirmed
+  certificate fingerprint, because UniHub also accepts any certificate that
+  this root list vouches for. The image now runs on Node.js 26.12.1, which
+  drops that root and refuses certificate chains containing the compromised
+  keys, also through their cross-signature by Sectigo. Nothing in UniHub can
+  show whether this was used against an installation; if the server's
+  connections could have been intercepted (a network or VPN you do not
+  control), change the mail and calendar passwords stored in UniHub.
 - **Node.js 26.12.1 also fixes certificate host name checks** that accepted a
   certificate for the wrong host when the address was written in unusual forms
   (full-width digits, non-canonical IPv4 notation, names that loosely resolve to
