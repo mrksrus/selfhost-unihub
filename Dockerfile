@@ -34,7 +34,7 @@ RUN npm run build
 # it; on Linux: docker run --privileged --rm tonistiigi/binfmt --install amd64).
 # --build-arg UNIHUB_ANDROID=0 skips this stage; the web page then offers only
 # the web app.
-FROM --platform=linux/amd64 eclipse-temurin:17-jdk AS android-1
+FROM --platform=linux/amd64 eclipse-temurin:24-jdk AS android-1
 ENV ANDROID_HOME=/opt/android-sdk
 RUN apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL -o /tmp/tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
