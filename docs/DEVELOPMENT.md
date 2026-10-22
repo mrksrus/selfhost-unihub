@@ -28,7 +28,8 @@ Docker volume by default.
 
 ## Local development
 
-Use Node.js 26, the container and CI runtime. Package manifests require Node 26 or newer.
+Use Node.js 26 (26.12.1 or later), the container and CI runtime: the Dockerfile pins
+the exact release and CI uses the same one. Package manifests require Node 26 or newer.
 
 Install frontend dependencies:
 

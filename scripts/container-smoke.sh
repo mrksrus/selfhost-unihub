@@ -103,10 +103,22 @@ if [[ "$startup_log" == *'MariaDB took longer than expected'* || "$startup_log" 
   exit 1
 fi
 
-# The runtime must be the Node.js major the Dockerfile's final stage names.
-expected_node_major="$(grep -E '^FROM ' "$script_dir/../Dockerfile" | tail -n 1 | sed -nE 's/^FROM node:([0-9]+)-alpine$/\1/p')"
-[[ "$expected_node_major" =~ ^[0-9]+$ ]] || { echo 'The Dockerfile final stage must be FROM node:<major>-alpine.' >&2; exit 1; }
-docker exec "$container_name" node -e 'if(process.versions.node.split(".")[0]!==process.argv[1]){console.error("Expected Node.js",process.argv[1],"but the image runs",process.version);process.exit(1)}console.log("Runtime Node.js",process.version)' "$expected_node_major"
+# The runtime must be the exact Node.js release the Dockerfile's final stage
+# pins (by version and digest), so a rebuild cannot fall back to an older one.
+expected_node="$(grep -E '^FROM ' "$script_dir/../Dockerfile" | tail -n 1 | sed -nE 's/^FROM node:([0-9]+\.[0-9]+\.[0-9]+)-alpine@sha256:[0-9a-f]{64}$/\1/p')"
+[[ "$expected_node" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'The Dockerfile final stage must be FROM node:<x.y.z>-alpine@sha256:<digest>.' >&2; exit 1; }
+docker exec "$container_name" node -e 'if(process.versions.node!==process.argv[1]){console.error("Expected Node.js",process.argv[1],"but the image runs",process.version);process.exit(1)}console.log("Runtime Node.js",process.version)' "$expected_node"
+# Mail, CalDAV and push connections trust Node's bundled root certificates.
+# The eMudhra intermediates under emSign ECC Root CA - G3 had recoverable keys
+# (October 2026); Node 26.12.1 dropped that root, and it must stay dropped.
+docker exec "$container_name" node -e '
+const { X509Certificate } = require("node:crypto");
+const tls = require("node:tls");
+const distrusted = "86:A1:EC:BA:08:9C:4A:8D:3B:BE:27:34:C6:12:BA:34:1D:81:3E:04:3C:F9:E8:A8:62:CD:5C:57:A3:6B:BE:6B";
+if (tls.rootCertificates.some(pem => new X509Certificate(pem).fingerprint256 === distrusted)) {
+  console.error("The image still trusts emSign ECC Root CA - G3.");
+  process.exit(1);
+}'
 # The API must run as the unprivileged unihub user (10001) with no capabilities
 # or supplementary groups, and the old root-owned uploads must now belong to it.
 api_pid="$(docker exec "$container_name" node -e 'const fs=require("node:fs");for(const name of fs.readdirSync("/proc")){if(!/^\d+$/.test(name))continue;try{const args=fs.readFileSync(`/proc/${name}/cmdline`,"utf8").split("\0");if(args.includes("/app/api/server.js")){console.log(name);process.exit(0)}}catch{}}process.exit(1)')"

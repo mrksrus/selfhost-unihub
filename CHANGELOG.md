@@ -6,6 +6,41 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.23.3
+
+> **Security update: install it promptly.** This release replaces the Node.js
+> runtime in the image to stop trusting certificates that anyone can forge.
+> No database upgrade and no configuration change (see
+> [Upgrading](docs/UPGRADING.md#0233-security-update)).
+
+### Security
+
+- **The server no longer trusts the compromised eMudhra certificates.** In
+  October 2026 the Indian certificate authority eMudhra was found to have eight
+  intermediate certificates whose private keys could be worked out from the
+  certificates themselves, so anyone could make a certificate for any website
+  that chains to its *emSign ECC Root CA - G3*. Browsers and phone systems
+  blocked them, but UniHub's server checks the certificates of mail servers
+  (IMAP and SMTP), calendar servers and subscriptions (CalDAV and ICS) and push
+  services against the root list built into Node.js, which still trusted that
+  root up to 0.23.2. Someone able to intercept the server's connections could
+  therefore pose as your mail or calendar provider and receive the stored
+  password and the data. The image now runs on Node.js 26.12.1, which drops
+  that root and refuses certificate chains containing the compromised keys,
+  also through their cross-signature by Sectigo. Mail accounts where you
+  confirmed a certificate fingerprint use that pin and were not affected.
+  Nothing in UniHub can show whether this was used against an installation; if
+  the server's connections could have been intercepted (a network or VPN you do
+  not control), change the mail and calendar passwords stored in UniHub.
+- **Node.js 26.12.1 also fixes certificate host name checks** that accepted a
+  certificate for the wrong host when the address was written in unusual forms
+  (full-width digits, non-canonical IPv4 notation, names that loosely resolve to
+  an IP address), along with its other October 2026 security fixes.
+- **The image pins its Node.js release by version and digest,** so rebuilding
+  an older UniHub release no longer picks up whichever Node.js 26 is current,
+  and the release checks fail if the image runs a different Node.js or still
+  trusts the eMudhra root.
+
 ## 0.23.2
 
 Two mail fixes found in the first use of 0.23.1: marking a message read no

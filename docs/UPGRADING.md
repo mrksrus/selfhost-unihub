@@ -5,6 +5,20 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.23.3 Security update
+
+Install this update promptly. No database upgrade and no configuration change.
+The image now runs on Node.js 26.12.1, which no longer trusts the compromised
+eMudhra certificates for the server's mail, calendar and push connections (see
+the [changelog](../CHANGELOG.md#0233)). Going back to 0.23.2 is possible but
+restores the old trust; do so only briefly. If the server's connections to
+your mail or calendar providers could have been intercepted, change the
+passwords UniHub stores for them after updating.
+
+- **Android app.** Nothing changed in the app; installing 0.23.3's app is
+  optional. Phones get the certificate change from their own system updates.
+  The window is 0.23.3, 0.23.2, 0.23.1 and 0.23.0.
+
 ## 0.23.2 Mail fixes
 
 No database upgrade and no configuration change. Going back to 0.23.1 is

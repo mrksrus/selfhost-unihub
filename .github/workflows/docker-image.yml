@@ -138,10 +138,19 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # The tests run on the Node.js release the image pins (Dockerfile final
+      # stage), also when Dependabot moves that pin.
+      - name: Read the image's Node.js version
+        id: node
+        run: |
+          version="$(grep -E '^FROM ' Dockerfile | tail -n 1 | sed -nE 's/^FROM node:([0-9]+\.[0-9]+\.[0-9]+)-alpine@sha256:[0-9a-f]{64}$/\1/p')"
+          [ -n "$version" ] || { echo 'The Dockerfile final stage must be FROM node:<x.y.z>-alpine@sha256:<digest>.' >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 26
+          node-version: ${{ steps.node.outputs.version }}
           cache: npm
 
       - name: Install dependencies
