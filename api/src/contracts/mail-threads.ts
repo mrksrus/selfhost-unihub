@@ -29,6 +29,13 @@ export interface MailListRow {
   task_count: number;
   /** The conversation; null for older mail the background backfill has not reached yet (a conversation of its own). */
   thread_key: string | null;
+  /** Until when the message is snoozed (only in the Snoozed view and search); null otherwise. */
+  snoozed_until: string | null;
+  /** When a snooze last brought it back; the list may mark it. */
+  snooze_returned_at: string | null;
+  /** Drafts: the scheduled send, if any (see ScheduledSend in contracts/mail.ts). */
+  scheduled_send_at: string | null;
+  scheduled_send_status: 'scheduled' | 'sending' | 'sent' | 'failed' | 'unknown' | null;
 }
 
 /** GET /api/mail/threads: the same filters as GET /api/mail/emails. */

@@ -1,6 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import type { MailThreadListResponse, MailThreadResponse } from '../../api/src/contracts/mail-threads';
+import type { MailListRow, MailThreadListResponse, MailThreadResponse } from '../../api/src/contracts/mail-threads';
 export type { MailListRow, MailThreadListResponse, MailThreadParticipant, MailThreadResponse, MailThreadSummary } from '../../api/src/contracts/mail-threads';
 
 export interface MailAccount {
@@ -153,6 +153,11 @@ export interface Email {
   tasks?: import('@/lib/email-tasks').EmailTaskSummary[];
   /** How many tasks were made from this email (list rows). */
   task_count?: number;
+  /** List rows: snooze state and a draft's scheduled send (MailListRow in contracts/mail-threads.ts). */
+  snoozed_until?: string | null;
+  snooze_returned_at?: string | null;
+  scheduled_send_at?: string | null;
+  scheduled_send_status?: MailListRow['scheduled_send_status'];
 }
 
 
@@ -174,6 +179,8 @@ export interface MailFolder {
   position: number;
   total_count?: number;
   unread_count?: number;
+  /** System roles (inbox, sent, drafts, junk, trash, archive) by slug and the server's special-use flag; notification filters match them as `role:<name>`. */
+  roles?: string[];
 }
 
 
