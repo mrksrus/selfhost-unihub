@@ -20,7 +20,7 @@ export default function MailFolderNavigation({ folders, systemIds, selectedFolde
   const [customOpen, setCustomOpen] = useState(true);
   const query = search.trim().toLocaleLowerCase();
   const visible = folders.filter(folder => !query || folder.label.toLocaleLowerCase().includes(query));
-  const isSystem = (folder: Folder) => folder.id === 'all' || systemIds.includes(folder.id);
+  const isSystem = (folder: Folder) => folder.id === 'all' || folder.id === 'snoozed' || systemIds.includes(folder.id);
   const builtins = visible.filter(isSystem);
   const custom = visible.filter(folder => !isSystem(folder));
   const renderFolder = (folder: Folder) => (

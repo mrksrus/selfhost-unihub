@@ -1,4 +1,5 @@
 import { api } from '@/lib/api';
+import { ApiError } from '@/lib/api-error';
 import type {
   MailTemplate, MailTemplateRequest, MailTemplateResponse, MailTemplatesResponse, ScheduleResponse, ScheduledSend,
   SignatureRequest, SignatureResponse, SnoozeResponse,
@@ -9,9 +10,12 @@ export type { MailTemplate, MailTemplateRequest, ScheduledSend } from '../../api
 // send and snooze (api/src/routes/mail-essentials.ts).
 export const mailTemplatesKey = ['mail-templates'] as const;
 
-async function unwrap<T>(request: Promise<{ data?: T; error?: string }>, fallback: string): Promise<T> {
+// A failed request is thrown as ApiError, so the composer can tell a
+// scheduled send in progress (409 SCHEDULED_SEND_IN_PROGRESS) or a taken
+// template name (409 TEMPLATE_NAME_TAKEN) from any other failure.
+async function unwrap<T>(request: Promise<{ data?: T; error?: string; status?: number }>, fallback: string): Promise<T> {
   const response = await request;
-  if (response.error) throw new Error(response.error);
+  if (response.error) throw new ApiError(response);
   if (response.data === undefined) throw new Error(fallback);
   return response.data;
 }

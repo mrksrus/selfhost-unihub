@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useServerEventsConnected } from '@/hooks/use-server-events';
 import { LIVE_POLL_MS } from '@/lib/server-events';
-import { captureMailFlagReconciler, mailQueryKeys, fetchMailList, type MailAccount, type MailFolder, type MailUnreadCountsResponse, type MailListFilters } from '@/lib/mail-api';
+import { captureMailFlagReconciler, mailQueryKeys, fetchMailList, fetchMailThreads, type MailAccount, type MailFolder, type MailUnreadCountsResponse, type MailListFilters } from '@/lib/mail-api';
 
 export async function fetchMailAccounts({ signal }: { signal?: AbortSignal } = {}) {
   const response = await api.get<{ accounts: MailAccount[] }>('/mail/accounts', { signal });
@@ -33,7 +33,7 @@ export const useMailUnreadCounts = (account: string | null) => useQuery({
   enabled: !!account,
 });
 
-export const useMailList = (filters: MailListFilters) => {
+export const useMailList = (filters: MailListFilters, enabled = true) => {
   const client = useQueryClient();
   const live = useServerEventsConnected();
   return useQuery({
@@ -43,10 +43,33 @@ export const useMailList = (filters: MailListFilters) => {
       const result = await fetchMailList(filters, signal);
       return { ...result, emails: result.emails.map(reconcile) };
     },
-    enabled: !!filters.account,
+    enabled: enabled && !!filters.account,
     staleTime: 60000,
     // Fetch the bounded list directly; row count alone misses deletes/read/star
     // changes. Live list-change events replace most of this while connected.
+    refetchInterval: live ? LIVE_POLL_MS.mailList : 60000,
+    refetchIntervalInBackground: false,
+  });
+};
+
+/**
+ * The conversation view of the same list (mail_threaded_view), one page at a
+ * time by cursor. Keyed like the message list, so the same server events,
+ * flag refreshes and account switches reach it; a page of another account or
+ * folder answers into its own key, never this one.
+ */
+export const useMailThreads = (filters: MailListFilters, cursor: string | null, enabled = true) => {
+  const client = useQueryClient();
+  const live = useServerEventsConnected();
+  return useQuery({
+    queryKey: mailQueryKeys.threads(filters, cursor),
+    queryFn: async ({ signal }) => {
+      const reconcile = captureMailFlagReconciler(client);
+      const result = await fetchMailThreads(filters, signal, cursor);
+      return { ...result, threads: result.threads.map(thread => ({ ...thread, latest: reconcile(thread.latest) as typeof thread.latest })) };
+    },
+    enabled: enabled && !!filters.account,
+    staleTime: 60000,
     refetchInterval: live ? LIVE_POLL_MS.mailList : 60000,
     refetchIntervalInBackground: false,
   });

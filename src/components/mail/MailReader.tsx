@@ -1,12 +1,17 @@
-import { useRef, type CSSProperties, type ReactNode } from 'react';
+import { useRef, useState, type CSSProperties, type ReactNode } from 'react';
 
-import { ArrowLeft, CheckCircle2, Forward, ListTodo, Loader2, Mail, Reply, ReplyAll, Star } from 'lucide-react';
-import type { Email, MailAccount, MailFlagKind } from '@/lib/mail-api';
+import { AlarmClock, AlarmClockOff, ArrowLeft, CheckCircle2, Forward, ListTodo, Loader2, Mail, Reply, ReplyAll, Star } from 'lucide-react';
+import type { Email, MailAccount, MailFlagKind, MailThreadResponse } from '@/lib/mail-api';
 import { useResizableWidth } from '@/hooks/use-resizable-width';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import type { WhenChoice } from '@/lib/mail-times';
 import { MailPendingMark } from '@/components/mail/MailPendingMark';
 import { MailMessageView } from '@/components/mail/MailMessageView';
+import { MailConversation } from '@/components/mail/MailConversation';
+import { WhenDialog, WhenMenuItems } from '@/components/mail/WhenPicker';
+import { isSnoozed } from '@/components/mail/mail-page-model';
 
 interface Props {
   /** The open message. The reader hook only sets it for the current selection. */
@@ -31,6 +36,10 @@ interface Props {
   timezone: string | null;
   /** Desktop inline reply editor, shown below the message. */
   inlineCompose: ReactNode;
+  /** Snooze: the person's choices and the actions; absent where the reader has none. */
+  snooze?: { choices: WhenChoice[]; onSnooze: (at: Date) => void; onUnsnooze: () => void; pending: boolean; readOnly: boolean };
+  /** The conversation around the message (threaded view), once loaded. */
+  thread?: MailThreadResponse | null;
 }
 
 /**
@@ -39,8 +48,10 @@ interface Props {
  * of the page (remembered in this browser); the list keeps at least 20rem.
  */
 export function MailReader({ email, loading = false, accounts, location, backLabel, isMobile, isReplying, flagRequests, requestFlag,
-  senderInContacts, onBack, onReply, onReplyAll, onForward, onAddTask, timezone, inlineCompose }: Props) {
+  senderInContacts, onBack, onReply, onReplyAll, onForward, onAddTask, timezone, inlineCompose, snooze, thread }: Props) {
   const pane = useRef<HTMLDivElement>(null);
+  const [pickingSnooze, setPickingSnooze] = useState(false);
+  const snoozed = isSnoozed(email);
   const width = useResizableWidth('unihub:mail:reader-width', { element: pane, defaultValue: 0.45, min: 0.3, max: 0.7 });
   return (
     <div ref={pane} style={{ '--reader-width': `${(width.value * 100).toFixed(1)}%` } as CSSProperties}
@@ -92,6 +103,25 @@ export function MailReader({ email, loading = false, accounts, location, backLab
                 <ListTodo className="h-4 w-4 mr-2" />
                 Add task
               </Button>
+              {snooze && (snoozed ? (
+                <Button variant="outline" size="sm" onClick={snooze.onUnsnooze} disabled={loading || snooze.pending || snooze.readOnly}
+                  title={snooze.readOnly ? 'Not available offline' : undefined}>
+                  {snooze.pending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <AlarmClockOff className="h-4 w-4 mr-2" />}
+                  Unsnooze
+                </Button>
+              ) : (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" disabled={loading || snooze.pending || snooze.readOnly} title={snooze.readOnly ? 'Not available offline' : undefined}>
+                      {snooze.pending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <AlarmClock className="h-4 w-4 mr-2" />}
+                      Snooze
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="min-w-[14rem]">
+                    <WhenMenuItems choices={snooze.choices} onPick={snooze.onSnooze} onPickCustom={() => setPickingSnooze(true)} />
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ))}
             </div>
           </div>
           <div className="flex min-w-0 flex-wrap items-center gap-2 ml-auto">
@@ -130,13 +160,23 @@ export function MailReader({ email, loading = false, accounts, location, backLab
         {/* Email Content */}
         <div className={`flex-1 overflow-auto p-6 ${!isMobile && isReplying ? 'pb-0' : ''}`}>
           <div className="max-w-4xl mx-auto">
-            <MailMessageView email={email} loading={loading} timezone={timezone} senderInContacts={senderInContacts}
-              notice={email.remote_missing && <p className="mb-4 rounded-md border border-border p-3 text-sm text-muted-foreground">Local copy: this email was not found on the server during the last complete sync. Its content and attachments are kept here.</p>} />
+            {(() => {
+              const view = <MailMessageView email={email} loading={loading} timezone={timezone} senderInContacts={senderInContacts}
+                notice={<>
+                  {snoozed && <p className="mb-4 rounded-md border border-border p-3 text-sm text-muted-foreground">Snoozed: this message comes back to its folder at the chosen time.</p>}
+                  {email.remote_missing && <p className="mb-4 rounded-md border border-border p-3 text-sm text-muted-foreground">Local copy: this email was not found on the server during the last complete sync. Its content and attachments are kept here.</p>}
+                </>} />;
+              return thread && !loading
+                ? <MailConversation open={email} thread={thread} timezone={timezone} requestFlag={requestFlag}>{view}</MailConversation>
+                : view;
+            })()}
           </div>
         </div>
 
         {inlineCompose}
       </div>
+      {snooze && <WhenDialog open={pickingSnooze} onOpenChange={setPickingSnooze} title="Snooze until" choices={snooze.choices}
+        description="The message leaves its list and comes back at this time, with a notification." confirmLabel="Snooze" onPick={snooze.onSnooze} />}
     </div>
   );
 }
