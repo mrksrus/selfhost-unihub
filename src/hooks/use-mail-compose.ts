@@ -6,7 +6,7 @@ import { invalidateMailQueries, type Email, type EmailAttachment } from '@/lib/m
 import { ApiError } from '@/lib/api-error';
 import { cancelMailSchedule, createMailTemplate, mailTemplatesKey, scheduleMailDraft, type MailTemplate } from '@/lib/mail-essentials-api';
 import { contactsQueryOptions } from '@/lib/contacts-api';
-import { plainTextToHtml, sanitizeComposeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
+import { plainTextToHtml, sanitizeComposeHtml, sanitizeReturnTo, isComposeBodyEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
 import { composeBody, convertBody, htmlToPlainText, quoteOf, responseRecipients, signatureFor, type BodyParts, type ComposeFormat, type ResponseMode } from '@/lib/compose-body';
 import { formatWhen } from '@/lib/mail-times';
 import { useToast } from '@/hooks/use-toast';
@@ -195,7 +195,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   }, [contactsForCompose]);
 
   const hasMeaningfulContent = () =>
-    isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length);
+    isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length, bodyFormat);
 
   const openDraftForCompose = useCallback((draft: Email) => {
     newComposition();
@@ -525,7 +525,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       if (!options.quiet) toast({ title: 'Please select an account before saving a draft', variant: 'destructive' });
       return null;
     }
-    if (!isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length)) {
+    if (!isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length, bodyFormat)) {
       return null;
     }
 
@@ -607,7 +607,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   useEffect(() => {
     if (!isComposeDirty || !fromAccountId) return;
     if (!isComposeOpen && !isReplying) return;
-    if (!isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length)) return;
+    if (!isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length, bodyFormat)) return;
 
     const timeout = window.setTimeout(() => {
       saveCurrentDraft({ quiet: true }).catch(() => {
@@ -617,6 +617,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
 
     return () => window.clearTimeout(timeout);
   }, [
+    bodyFormat,
     composeAttachments.length,
     composeForm,
     existingDraftAttachments.length,
@@ -697,7 +698,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       toast({ title: 'Add at least one recipient', variant: 'destructive' });
       return;
     }
-    if (isComposeHtmlEmpty(composeForm.body) && composeAttachments.length === 0) {
+    if (isComposeBodyEmpty(composeForm.body, bodyFormat) && composeAttachments.length === 0) {
       toast({ title: 'Please enter a message or add an attachment', variant: 'destructive' });
       return;
     }
@@ -772,7 +773,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       toast({ title: 'Add at least one recipient', variant: 'destructive' });
       return;
     }
-    if (isComposeHtmlEmpty(composeForm.body) && composeAttachments.length === 0 && existingDraftAttachments.length === 0) {
+    if (isComposeBodyEmpty(composeForm.body, bodyFormat) && composeAttachments.length === 0 && existingDraftAttachments.length === 0) {
       toast({ title: 'Please enter a message or add an attachment', variant: 'destructive' });
       return;
     }

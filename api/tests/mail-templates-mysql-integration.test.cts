@@ -26,6 +26,11 @@ test('templates and signatures belong to their person and their account', {
   assert.equal(created.name, 'Weekly report');
   assert.equal(created.subject, 'Report for week', 'a subject is one line');
   await assert.rejects(templates.createTemplate(owner, { name: 'Weekly report' }), { status: 409 });
+  // Two saves of one new name at once: the database lets one through.
+  const racing = await Promise.allSettled([templates.createTemplate(owner, { name: 'Daily note' }), templates.createTemplate(owner, { name: 'Daily note' })]);
+  assert.deepEqual(racing.map(result => result.status).sort(), ['fulfilled', 'rejected']);
+  assert.equal((racing.find(result => result.status === 'rejected') as PromiseRejectedResult).reason.status, 409);
+  await templates.deleteTemplate(owner, (racing.find(result => result.status === 'fulfilled') as PromiseFulfilledResult<{ id: string }>).value.id);
   await assert.rejects(templates.createTemplate(owner, { name: '' }), { status: 400 });
   await assert.rejects(templates.createTemplate(owner, { name: 'Huge', body_text: 'x'.repeat(templates.TEMPLATE_TEXT_LIMIT + 1) }), { status: 400 });
 

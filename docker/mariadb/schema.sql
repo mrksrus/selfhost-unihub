@@ -750,6 +750,7 @@ CREATE TABLE `mail_scheduled_sends` (
   `mail_account_id` char(36) NOT NULL,
   `send_at` datetime NOT NULL,
   `status` varchar(16) NOT NULL DEFAULT 'scheduled',
+  `origin` varchar(16) NOT NULL DEFAULT 'schedule',
   `client_key` varchar(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   `attempts` int(11) NOT NULL DEFAULT 0,
   `last_error` varchar(255) DEFAULT NULL,
@@ -831,7 +832,7 @@ CREATE TABLE `mail_templates` (
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   PRIMARY KEY (`id`),
-  KEY `idx_mail_templates_user` (`user_id`,`name`),
+  UNIQUE KEY `unique_mail_template_name` (`user_id`,`name`),
   CONSTRAINT `mail_templates_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

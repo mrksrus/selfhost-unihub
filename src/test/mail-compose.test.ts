@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isComposeMeaningful, plainTextToHtml, sanitizeComposeHtml, sanitizeReturnTo, validateComposeAttachments } from '@/lib/mail-compose';
+import { isComposeBodyEmpty, isComposeMeaningful, plainTextToHtml, sanitizeComposeHtml, sanitizeReturnTo, validateComposeAttachments } from '@/lib/mail-compose';
 
 describe('mail compose boundaries', () => {
   it('escapes plain text while preserving paragraphs without executable markup', () => {
@@ -24,5 +24,12 @@ describe('mail compose boundaries', () => {
     expect(isComposeMeaningful(form, 0, 1)).toBe(true);
     expect(isComposeMeaningful({ ...form, cc: 'copy@example.com' }, 0)).toBe(true);
     expect(validateComposeAttachments(Array.from({ length: 20 }, () => ({ filename: 'old', size: 1 })), [new File(['x'], 'new.txt')])).toContain('at most 20');
+  });
+  it('keeps a plain-text body that looks like markup: it is what the person typed', () => {
+    const form = { to: '', cc: '', bcc: '', subject: '', body: '<alice@example.test>' };
+    expect(isComposeBodyEmpty(form.body, 'plain')).toBe(false);
+    expect(isComposeMeaningful(form, 0, 0, 'plain')).toBe(true);
+    expect(isComposeBodyEmpty('  \n ', 'plain')).toBe(true);
+    expect(isComposeBodyEmpty('<p><br></p>', 'rich')).toBe(true);
   });
 });

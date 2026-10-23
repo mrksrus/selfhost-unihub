@@ -5,6 +5,32 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.24.0 Notifications, settings and mail essentials
+
+One automatic database upgrade (step 20) adds the settings of each mail
+account and calendar, installation policies, signatures, templates, scheduled
+sends, and the threading and snooze columns of messages. Make a database
+backup first and restore it instead of going back to 0.23.x: 0.23.x does not
+know scheduled sends and would leave them unsent, and snoozed messages would
+show again.
+
+No configuration change is needed. Worth knowing:
+
+- **Conversations of older mail** are built in the background after the
+  upgrade, a few hundred messages every 15 seconds; until a message is reached
+  it is a conversation of its own. Large mailboxes take a while, and nothing
+  needs to wait for it.
+- **Mail notifications** now follow each account's settings: on or off, which
+  folders, and how much they show. The default leaves out Sent, Drafts, Trash
+  and Archive as before, and now Junk too. The detail level is applied on the server, so
+  a phone never receives more than the setting allows.
+- **Settings keep their values.** The existing preferences (start page, mail
+  links, default account, accent colour) move into the new settings registry
+  unchanged; the old settings address keeps answering for older apps.
+- **Android app.** Nothing in the app changed for these features; they come
+  with the server's pages, so installing 0.24.0's app is optional. Older apps
+  keep working.
+
 ## 0.23.3 Security update
 
 Install this update promptly. No database upgrade and no configuration change.

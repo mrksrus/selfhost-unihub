@@ -483,12 +483,13 @@ async function addSettingsAndMailEssentials(connection: SqlExecutor) {
     body_text MEDIUMTEXT NULL,
     created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    KEY idx_mail_templates_user (user_id, name),
+    UNIQUE KEY unique_mail_template_name (user_id, name),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
   // A draft that sends itself at send_at, once (client_key is its send-once
-  // receipt). Installation-local work: a restore brings the draft back, not
-  // the schedule.
+  // receipt), or (origin 'send_now') the reservation of a draft being sent by
+  // hand, so the two never overlap. Installation-local work: a restore brings
+  // the draft back, not the schedule.
   await connection.execute(`CREATE TABLE IF NOT EXISTS mail_scheduled_sends (
     id CHAR(36) NOT NULL PRIMARY KEY,
     user_id CHAR(36) NOT NULL,
@@ -496,6 +497,7 @@ async function addSettingsAndMailEssentials(connection: SqlExecutor) {
     mail_account_id CHAR(36) NOT NULL,
     send_at DATETIME NOT NULL,
     status VARCHAR(16) NOT NULL DEFAULT 'scheduled',
+    origin VARCHAR(16) NOT NULL DEFAULT 'schedule',
     client_key VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     attempts INT NOT NULL DEFAULT 0,
     last_error VARCHAR(255) NULL,

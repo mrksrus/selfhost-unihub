@@ -1,11 +1,13 @@
 import type { Pool, PoolConnection, RowDataPacket } from 'mysql2/promise';
+import type { SqlExecutor } from '../types';
 
 import fs from 'fs';
 import { db } from '../state';
 import { log } from '../log';
-import { toBooleanFlag } from './mail-host-policy';
-import { deleteStoredAttachmentFiles } from './mail-server-delete';
-import { draftThreading, replyThreading, sendEmail } from './mail-send';
+// Through the facade, as the draft routes did, so their tests can stub sending.
+import { toBooleanFlag, deleteStoredAttachmentFiles, replyThreading, sendEmail } from './mail';
+import { draftThreading } from './mail-send';
+import { withTransaction } from './transactions';
 import { parseStoredRecipients } from './mail-recipients';
 
 import {
@@ -27,6 +29,8 @@ interface DraftRow extends RowDataPacket {
   body_text: string | null;
 }
 const readFile = fs.promises.readFile;
+
+const sendInProgress = () => Object.assign(new Error('This message is being sent now.'), { status: 409, code: 'SCHEDULED_SEND_IN_PROGRESS' });
 
 interface ExistingAttachment extends RowDataPacket {
   id: string;
@@ -56,8 +60,11 @@ async function saveDraftMutation({ db, userId, emailId, isNew = false, body, mut
     connection = await db.getConnection();
     await connection.beginTransaction();
     if (!isNew) {
-      const [drafts] = await connection.execute<RowDataPacket[]>('SELECT id FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE FOR UPDATE', [emailId, userId]);
-      if (!drafts.length) throw Object.assign(new Error('Draft not found'), { status: 404 });
+      const locked = await lockDraftForSend(connection, userId, emailId);
+      if (!locked) throw Object.assign(new Error('Draft not found'), { status: 404 });
+      // A send claims the draft's send row before it reads the draft: holding
+      // the row here, an edit lands either before the send starts or is refused.
+      if (locked.send?.status === 'sending') throw sendInProgress();
     }
     let kept: ExistingAttachment[] = [];
     if (changesAttachments && !isNew) {
@@ -126,6 +133,44 @@ async function loadDraftEmail(userId: string, draftId: string) {
   };
 }
 
+
+interface ScheduleLockRow extends RowDataPacket { id: string; status: string; origin: string; client_key: string }
+/**
+ * Locks one of the user's drafts and then its send row (mail_scheduled_sends:
+ * a schedule, or a send by hand in progress), in the order every writer of a
+ * draft uses. Null when there is no such draft.
+ */
+async function lockDraftForSend(connection: SqlExecutor, userId: string, draftId: string) {
+  const [drafts] = await connection.execute<RowDataPacket[]>('SELECT id FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE FOR UPDATE', [draftId, userId]);
+  if (!drafts.length) return null;
+  const [rows] = await connection.execute<ScheduleLockRow[]>('SELECT id, status, origin, client_key FROM mail_scheduled_sends WHERE email_id = ? AND user_id = ? FOR UPDATE', [draftId, userId]);
+  return { send: rows[0] ?? null };
+}
+
+// Draft sends running in this process (by hand or scheduled). A mail restore
+// waits until none runs; a send registers before it checks for a restore, so
+// one of the two always sees the other.
+let draftSendsRunning = 0;
+async function trackDraftSend<T>(work: () => Promise<T>): Promise<T> {
+  draftSendsRunning += 1;
+  try { return await work(); } finally { draftSendsRunning -= 1; }
+}
+const isAnyDraftSendRunning = () => draftSendsRunning > 0;
+
+/** Deletes one of the user's drafts by request: refused while it is being sent, in the same lock order as the sends. */
+async function deleteDraftUnlessSending(userId: string, draftId: string) {
+  const paths = await withTransaction(async connection => {
+    const locked = await lockDraftForSend(connection, userId, draftId);
+    if (!locked) return null;
+    if (locked.send?.status === 'sending') throw sendInProgress();
+    const [attachments] = await connection.execute<RowDataPacket[]>('SELECT storage_path FROM email_attachments WHERE email_id = ? AND user_id = ?', [draftId, userId]);
+    await connection.execute('DELETE FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE', [draftId, userId]);
+    return attachments.map(row => row.storage_path as string);
+  });
+  if (!paths) return { error: 'Draft not found', status: 404 };
+  const fileResult = await deleteStoredAttachmentFiles(paths);
+  return { deleted: true, deletedAttachmentFiles: fileResult.deletedFiles, failedAttachmentFiles: fileResult.failedFiles };
+}
 
 async function deleteDraftWithFiles(userId: string, draftId: string) {
   const draft = await loadDraftEmail(userId, draftId);
@@ -205,5 +250,5 @@ async function sendStoredDraft(userId: string, draftId: string, replyTo?: unknow
   };
 }
 
-export { saveDraftMutation, loadMailAccountForDraft, loadDraftEmail, deleteDraftWithFiles, sendStoredDraft };
+export { saveDraftMutation, loadMailAccountForDraft, loadDraftEmail, deleteDraftWithFiles, deleteDraftUnlessSending, lockDraftForSend, sendStoredDraft, trackDraftSend, isAnyDraftSendRunning };
 export type { DraftRow };

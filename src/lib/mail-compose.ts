@@ -44,17 +44,22 @@ export const isComposeHtmlEmpty = (value: string) =>
     .replace(/&nbsp;/g, ' ')
     .trim();
 
+/** A plain-text body is text as typed: `<alice@example.test>` is content, not a tag. */
+export const isComposeBodyEmpty = (value: string, format: 'rich' | 'plain' = 'rich') =>
+  format === 'plain' ? !value.trim() : isComposeHtmlEmpty(value);
+
 export const isComposeMeaningful = (
   form: { to: string; cc: string; bcc: string; subject: string; body: string },
   newAttachmentsCount: number,
-  existingAttachmentsCount = 0
+  existingAttachmentsCount = 0,
+  format: 'rich' | 'plain' = 'rich'
 ) =>
   Boolean(
     form.to.trim() ||
     form.cc.trim() ||
     form.bcc.trim() ||
     form.subject.trim() ||
-    !isComposeHtmlEmpty(form.body) ||
+    !isComposeBodyEmpty(form.body, format) ||
     newAttachmentsCount > 0 ||
     existingAttachmentsCount > 0
   );

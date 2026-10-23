@@ -1,10 +1,11 @@
-import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
+import type { Pool, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { db as defaultDb } from '../state';
 import { canRunModule } from './access-policy';
+import { withTransaction } from './transactions';
 import { rawRoot } from './mail-storage';
 import { log } from '../log';
 import {
@@ -128,13 +129,20 @@ async function backfillRow(deps: BackfillDeps, userId: string, row: PendingRow) 
     inReplyTo: headers.inReplyTo, references: headers.references, subject: row.subject,
     receivedAt: new Date(row.received_at), participants: participantsOf(row) });
   if (!threadKey) return false;
-  const [updated] = await deps.db.execute<ResultSetHeader>(`UPDATE emails SET in_reply_to = COALESCE(in_reply_to, ?),
-      references_header = COALESCE(references_header, ?), thread_key = ?
-    WHERE id = ? AND user_id = ? AND thread_key IS NULL AND raw_storage_path <=> ?`,
-  [headers.inReplyTo, storedReferences(headers.references), threadKey, row.id, userId, row.raw_storage_path]);
-  if (updated.affectedRows !== 1) return false;
-  await adoptReplies(deps.db, { userId, messageId: row.message_id, threadKey });
-  return true;
+  // The message's key and the adoption of its earlier-keyed replies commit
+  // together: a pass stopped between them would leave the replies apart for
+  // good, since later passes skip a message that has a key.
+  const write = async (executor: SqlExecutor) => {
+    const [updated] = await executor.execute<ResultSetHeader>(`UPDATE emails SET in_reply_to = COALESCE(in_reply_to, ?),
+        references_header = COALESCE(references_header, ?), thread_key = ?
+      WHERE id = ? AND user_id = ? AND thread_key IS NULL AND raw_storage_path <=> ?`,
+    [headers.inReplyTo, storedReferences(headers.references), threadKey, row.id, userId, row.raw_storage_path]);
+    if (updated.affectedRows !== 1) return false;
+    await adoptReplies(executor, { userId, messageId: row.message_id, threadKey });
+    return true;
+  };
+  const pool = deps.db as Partial<Pick<Pool, 'getConnection'>>;
+  return typeof pool.getConnection === 'function' ? withTransaction(write, pool as Pick<Pool, 'getConnection'>) : write(deps.db);
 }
 
 function participantsOf(row: PendingRow) {
