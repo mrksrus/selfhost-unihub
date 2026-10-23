@@ -32,6 +32,9 @@ const PAGES = [
 ];
 
 const PREFERENCES = { email_link_behavior: 'internal', default_start_page: 'mail', default_mail_account_id: 'acct-work', accent_color: 'blue' };
+// GET /settings/values (0.24): the same choices as resolved settings; the
+// frontend fills every other setting with its default.
+const SETTINGS = Object.fromEntries(Object.entries(PREFERENCES).map(([key, value]) => [key, { value, source: 'user', locked: false }]));
 
 const MAIL_ACCOUNTS = [
   { id: 'acct-work', email_address: 'ada@work.example.com', display_name: 'Work', provider: 'imap', is_active: true,
@@ -207,6 +210,7 @@ function defaultRoutes(emails: typeof EMAILS): Route[] {
     ['GET', /^\/auth\/me$/, () => ok({ user: USER, csrfToken: 'synthetic-csrf-token' })],
     ['GET', /^\/modules$/, () => ok({ modules: MODULES, pages: PAGES })],
     ['GET', /^\/settings\/preferences$/, () => ok({ preferences: PREFERENCES })],
+    ['GET', /^\/settings\/values$/, () => ok({ settings: SETTINGS })],
     ['GET', /^\/version$/, () => ok({ app: 'unihub', server: '0.21.4', android: null })],
     ['GET', /^\/mail\/accounts$/, () => ok({ accounts: MAIL_ACCOUNTS.map(account => ({ ...account,
       unread_count: emails.filter(row => row.mail_account_id === account.id && !row.is_read).length })) })],
