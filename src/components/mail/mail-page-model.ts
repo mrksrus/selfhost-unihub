@@ -176,6 +176,13 @@ export const systemFolders = [
 export const ALL_ACCOUNTS = 'all';
 export const LEGACY_ACCOUNT = 'legacy';
 export const ALL_MAIL: FolderMode = 'all';
+/** The virtual view of snoozed messages (`folder=snoozed`); they keep their real folders. */
+export const SNOOZED: FolderMode = 'snoozed';
+/** A message snoozed until a time still ahead. */
+export const isSnoozed = (email: Pick<Email, 'snoozed_until'>, now = Date.now()) => !!email.snoozed_until && Date.parse(email.snoozed_until) > now;
+/** Came back from a snooze within the last day and is still unread: the list marks it. */
+export const isBackFromSnooze = (email: Pick<Email, 'snooze_returned_at' | 'is_read' | 'snoozed_until'>, now = Date.now()) =>
+  !email.is_read && !!email.snooze_returned_at && now - Date.parse(email.snooze_returned_at) < 24 * 60 * 60 * 1000 && !isSnoozed(email, now);
 export const bulkKey = (kind: string, payload: object) => `${kind}:${JSON.stringify(kind === 'delete' ? (payload as { emailIds: string[] }).emailIds : payload)}`;
 
 export const initialAccountForm: AccountFormState = {

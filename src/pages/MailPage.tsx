@@ -1,8 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { PenSquare, Plus } from 'lucide-react';
-import { captureMailFlagReconciler, type Email } from '@/lib/mail-api';
+import { captureMailFlagReconciler, fetchMailThread, mailQueryKeys, type Email } from '@/lib/mail-api';
+import { selectUserSetting, userSettingsQueryOptions } from '@/lib/settings-api';
+import { snoozeChoices } from '@/lib/mail-times';
 import type { TaskSource } from '@/lib/email-tasks';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
@@ -21,6 +23,9 @@ import { useMailAccountEditor } from '@/hooks/use-mail-account-editor';
 import { useMailAccountRemoval } from '@/hooks/use-mail-account-removal';
 import { useMailSyncJobs } from '@/hooks/use-mail-sync-jobs';
 import { useMailWritebacks } from '@/hooks/use-mail-writebacks';
+import { useMailSnooze } from '@/hooks/use-mail-snooze';
+import { useMailSchedule } from '@/hooks/use-mail-schedule';
+import { useOfflineReadOnly } from '@/hooks/use-offline-read-only';
 import { MailAccountList, MailPanel } from '@/components/mail/MailPanel';
 import { PageShell } from '@/components/layout/PageShell';
 import MailFolderNavigation from '@/components/mail/MailFolderNavigation';
@@ -33,7 +38,8 @@ import { MailAccountDialog } from '@/components/mail/MailAccountDialog';
 import { MailAccountRemovalDialogs } from '@/components/mail/MailAccountRemovalDialogs';
 import { MailFolderDialogs } from '@/components/mail/MailFolderDialogs';
 import { MailSyncControl, type SyncPanelFocus } from '@/components/mail/MailSyncControl';
-import { systemFolders, ALL_ACCOUNTS, LEGACY_ACCOUNT, ALL_MAIL } from '@/components/mail/mail-page-model';
+import { WhenDialog } from '@/components/mail/WhenPicker';
+import { systemFolders, ALL_ACCOUNTS, LEGACY_ACCOUNT, ALL_MAIL, SNOOZED } from '@/components/mail/mail-page-model';
 
 /**
  * Mail: account/folder sidebar, message list and reader (side by side on wide
@@ -75,6 +81,14 @@ const MailPage = () => {
   const { jobs: syncJobs, requestSync, syncingAccountIds, requestCancel, cancellingAccountIds } = useMailSyncJobs(accounts);
   const writebacks = useMailWritebacks(refreshSettledEmail);
   const [syncPanel, setSyncPanel] = useState<SyncPanelFocus | null>(null);
+  // Offline is read-only: snooze and scheduled-send actions wait for a connection.
+  const readOnly = useOfflineReadOnly();
+  const snoozeTimes = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('snooze_choices') }).data ?? [];
+  const threadedView = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('mail_threaded_view') }).data ?? false;
+  const snooze = useMailSnooze({ onSnoozedAway: id => { if (selectedEmail?.id === id && !compose.isReplying) closeReader(); } });
+  const schedule = useMailSchedule();
+  // The message whose snooze time is being picked (row menu).
+  const [snoozeTarget, setSnoozeTarget] = useState<Email | null>(null);
 
   const list = useMailListView(selectedAccount, selectedFolder);
   const { emails } = list;
@@ -88,16 +102,28 @@ const MailPage = () => {
   // The list rows open the reader at once; a link without a row waits for the load.
   const rows = useRef(emails);
   rows.current = emails;
+  const openDraft = compose.openDraftForCompose;
   const loadEmailForReader = React.useCallback((emailId: string) => {
     supersedeRefresh();
+    const row = rows.current.find(email => email.id === emailId);
     return loadEmail(emailId, {
-      onDraft: compose.openDraftForCompose,
+      // The detail does not carry a draft's schedule; the list row does.
+      onDraft: draft => openDraft({ ...draft, scheduled_send_at: row?.scheduled_send_at ?? null, scheduled_send_status: row?.scheduled_send_status ?? null }),
       reconcileEmail: captureMailFlagReconciler(queryClient),
       onMarkRead: (email) => requestFlag(email, 'read', true),
       onUndoMarkRead: (email) => requestFlag({ ...email, is_read: true }, 'read', false),
       onError: (message) => toast({ title: 'Failed to load email', description: message, variant: 'destructive' }),
-    }, rows.current.find(email => email.id === emailId));
-  }, [loadEmail, supersedeRefresh, compose.openDraftForCompose, requestFlag, queryClient, toast]);
+    }, row);
+  }, [loadEmail, supersedeRefresh, openDraft, requestFlag, queryClient, toast]);
+
+  // The conversation around the open message (threaded view). Keyed by the
+  // message, so another message never shows this one's conversation.
+  const thread = useQuery({
+    queryKey: mailQueryKeys.thread(selectedEmail?.id ?? ''),
+    queryFn: ({ signal }) => fetchMailThread(selectedEmail!.id, signal),
+    enabled: threadedView && !!selectedEmail && !isReaderLoading,
+    staleTime: 60000,
+  });
 
   // Open a message linked from a notification or search, then drop the parameter.
   useEffect(() => {
@@ -134,7 +160,7 @@ const MailPage = () => {
 
   const selectedAccountData = accounts.find(a => a.id === selectedAccount);
   const selectedFolderData = folders.find((folder) => folder.id === selectedFolder);
-  const folderLabel = selectedFolder === ALL_MAIL ? 'All mail' : selectedFolderData?.label || selectedFolder;
+  const folderLabel = selectedFolder === ALL_MAIL ? 'All mail' : selectedFolder === SNOOZED ? 'Snoozed' : selectedFolderData?.label || selectedFolder;
   const accountLabel = selectedAccount === LEGACY_ACCOUNT ? 'Legacy — needs review' : selectedAccount === ALL_ACCOUNTS
     ? 'All accounts'
     : selectedAccountData?.display_name || selectedAccountData?.email_address || 'No account selected';
@@ -194,7 +220,7 @@ const MailPage = () => {
         <MailMessageList account={selectedAccount} folder={selectedFolder} folderLabel={folderLabel} accountLabel={accountLabel}
           list={list} selection={selection} accounts={accounts} flagRequests={flagRequests} requestFlag={requestFlag}
           onOpen={loadEmailForReader} onContextMenu={(email, x, y) => setContextMenuEmail({ email, x, y })}
-          onAddAccount={accountEditor.openAdd} />
+          onAddAccount={accountEditor.openAdd} snooze={snooze} schedule={schedule} readOnly={readOnly} />
       </div>
 
       {narrow && !selectedEmail && (
@@ -208,8 +234,15 @@ const MailPage = () => {
 
       {contextMenuEmail && (
         <MailContextMenu target={contextMenuEmail} onClose={() => setContextMenuEmail(null)} requestFlag={requestFlag}
-          movableFolders={movableFolders} bulk={bulk} onDeleteDraft={compose.setDraftToDelete} onAddTask={setTaskEmail} />
+          movableFolders={movableFolders} bulk={bulk} onDeleteDraft={compose.setDraftToDelete} onAddTask={setTaskEmail}
+          onSnooze={setSnoozeTarget} onUnsnooze={snooze.unsnooze} readOnly={readOnly} />
       )}
+      <WhenDialog open={!!snoozeTarget} onOpenChange={open => { if (!open) setSnoozeTarget(null); }} title="Snooze until"
+        description="The message leaves its list and comes back at this time, with a notification." choices={snoozeChoices(snoozeTimes)}
+        confirmLabel="Snooze" onPick={at => { if (snoozeTarget) snooze.snooze(snoozeTarget, at); }} />
+      <WhenDialog open={!!schedule.picking} onOpenChange={open => { if (!open) schedule.setPicking(null); }} title="Send later"
+        description="The draft is sent at this time." initial={schedule.picking?.scheduled_send_status === 'scheduled' && schedule.picking.scheduled_send_at ? new Date(schedule.picking.scheduled_send_at) : null}
+        confirmLabel="Schedule" onPick={at => { if (schedule.picking) void schedule.reschedule(schedule.picking, at); }} />
       <EmailTaskDialog email={taskEmail} onClose={() => setTaskEmail(null)} timezone={timezone}
         onCreated={task => setSelectedEmail(prev => prev && prev.id === task.source_email?.email_id ? { ...prev, tasks: [...(prev.tasks ?? []), task] } : prev)} />
 
@@ -231,6 +264,9 @@ const MailPage = () => {
           onReplyAll={() => compose.startResponse(selectedEmail, 'replyAll')}
           onForward={() => compose.startResponse(selectedEmail, 'forward')}
           onAddTask={() => setTaskEmail(selectedEmail)} timezone={timezone}
+          snooze={{ choices: snoozeChoices(snoozeTimes), onSnooze: at => snooze.snooze(selectedEmail, at), onUnsnooze: () => snooze.unsnooze(selectedEmail),
+            pending: snooze.isPending(selectedEmail.id), readOnly }}
+          thread={threadedView ? thread.data ?? null : null}
           inlineCompose={!isMobile && compose.isReplying && <MailInlineCompose compose={compose} onAddTask={addTaskFromDraft} />} />
       )}
 

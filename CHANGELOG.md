@@ -6,6 +6,37 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.24.0 (unreleased)
+
+- **Mail: optional compose features, off until you switch them on.** Settings,
+  Mail lists three new switches: Templates, Send later and the text-format
+  switch. With none on, the composer looks as before. Templates and the format
+  switch end the formatting toolbar row (plain text keeps a one-row strip for
+  them); the Templates menu inserts a template where you are writing (the
+  subject only while it is empty) and offers "Save as template". Switching a
+  formatted message to plain text asks first. Send later turns Send into a
+  split button: in 1 hour, tomorrow morning, Monday morning before a weekend,
+  or a date and time of your own; the draft is saved first and the message
+  waits in Drafts, with Undo on the confirmation. On phones the composer's
+  footer is one row: Add task is an icon and Cancel is folded into the close
+  control.
+- **Mail: scheduled sends in Drafts.** A scheduled draft shows its time with
+  "Cancel schedule" and "Edit time"; one that could not be sent says "Not sent"
+  with "Send now" and "Reschedule"; one whose outcome is unknown says so and is
+  never retried by itself. A draft can still be opened and edited until it is
+  being sent.
+- **Mail: snooze.** Snooze a message from the reader or the row menu for the
+  times chosen in Settings (or a date and time of your own); it leaves its
+  list at once, with Undo, and comes back at that time with a notification. The
+  new Snoozed view lists what is waiting, each with its return time and
+  "Unsnooze"; a message that just came back carries a "Back from snooze" mark.
+  Offline, these actions are disabled.
+- **Mail: conversations.** With "Threaded view" on in Settings, Mail, each
+  list shows conversations: who took part, how many messages (and unread), the
+  latest subject and preview. Opening one shows its messages in the reader,
+  the newest in full and the earlier ones folded to one line each. Off, the
+  list is as before.
+
 ## 0.23.3
 
 > **Security update: install it promptly.** This release replaces the Node.js

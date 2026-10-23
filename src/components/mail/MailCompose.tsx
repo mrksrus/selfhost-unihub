@@ -1,9 +1,17 @@
-import { useEffect, useState, type RefObject } from 'react';
+import { useEffect, useState, type ReactNode, type RefObject } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import {
-  Bold, Image as ImageIcon, Italic, Link as LinkIcon, List, ListOrdered, ListTodo, Loader2, Palette, Paperclip, Send, Underline, X,
+  Bold, ChevronDown, Image as ImageIcon, Italic, LayoutTemplate, Link as LinkIcon, List, ListOrdered, ListTodo, Loader2, Palette, Paperclip,
+  RemoveFormatting, Send, Underline, X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { DialogFooter } from '@/components/ui/dialog';
+import { cn } from '@/lib/utils';
+import { fetchMailTemplates, mailTemplatesKey } from '@/lib/mail-essentials-api';
+import { formatWhen, sendLaterChoices } from '@/lib/mail-times';
+import { WhenDialog, WhenMenuItems } from '@/components/mail/WhenPicker';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -131,24 +139,182 @@ function RecipientRows({ compose, idSuffix = '', rowClassName }: { compose: Mail
   );
 }
 
-// The message body in the message's format: the rich editor with its
-// toolbar, or plain text (Settings, Mail: compose format).
-function ComposeBodyEditor(props: { compose: MailCompose; editorId: string; editorRef: RefObject<HTMLDivElement>; editorClassName?: string }) {
-  if (props.compose.bodyFormat === 'rich') return <RichComposeEditor {...props} />;
-  const { compose, editorId, editorClassName = '' } = props;
+/** Templates (Settings, Mail): insert one, or save the open message as one. */
+function TemplatesMenu({ compose }: { compose: MailCompose }) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const templates = useQuery({ queryKey: mailTemplatesKey, queryFn: fetchMailTemplates, enabled: open });
+  return <>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <Button type="button" variant="ghost" size="icon-sm" aria-label="Templates" title="Templates">
+          <LayoutTemplate aria-hidden="true" />
+        </Button>
+      </DropdownMenuTrigger>
+      {/* The editor keeps the focus a template was inserted at. */}
+      <DropdownMenuContent align="end" className="max-h-[60vh] min-w-[14rem] overflow-y-auto" onCloseAutoFocus={event => event.preventDefault()}>
+        <DropdownMenuLabel>Templates</DropdownMenuLabel>
+        {templates.isLoading ? <DropdownMenuItem disabled>Loading…</DropdownMenuItem>
+          : templates.isError ? <DropdownMenuItem disabled>Could not load the templates</DropdownMenuItem>
+          : templates.data?.length === 0 ? <DropdownMenuItem disabled>No templates yet</DropdownMenuItem>
+          : templates.data?.map(template => (
+            <DropdownMenuItem key={template.id} onSelect={() => compose.applyTemplate(template)}>{template.name}</DropdownMenuItem>
+          ))}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => setSaving(true)}>Save as template…</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+    <SaveTemplateDialog open={saving} onOpenChange={setSaving} compose={compose} />
+  </>;
+}
+
+/** Names the template the open message becomes; a taken name is refused in place. */
+function SaveTemplateDialog({ open, onOpenChange, compose }: { open: boolean; onOpenChange: (open: boolean) => void; compose: MailCompose }) {
+  const [name, setName] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { if (open) { setName(compose.composeForm.subject.trim()); setError(null); } }, [open, compose.composeForm.subject]);
+  const save = async () => {
+    if (!name.trim()) { setError('Give the template a name.'); return; }
+    setBusy(true);
+    try {
+      await compose.saveAsTemplate(name.trim());
+      onOpenChange(false);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'Could not save the template');
+    } finally { setBusy(false); }
+  };
   return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Save as template</DialogTitle>
+          <DialogDescription>The subject and the text above the signature are kept; recipients and attachments are not.</DialogDescription>
+        </DialogHeader>
+        <form className="space-y-2" onSubmit={event => { event.preventDefault(); void save(); }}>
+          <Label htmlFor="template-name">Name</Label>
+          <Input id="template-name" value={name} autoFocus maxLength={80} aria-invalid={!!error} aria-describedby={error ? 'template-name-error' : undefined}
+            onChange={event => { setName(event.target.value); setError(null); }} />
+          {error && <p id="template-name-error" role="alert" className="text-sm text-destructive">{error}</p>}
+          <DialogFooter className="pt-2">
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button type="submit" disabled={busy}>{busy && <Loader2 aria-hidden="true" className="animate-spin" />}Save template</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Formatted ↔ plain text for this message; losing the formatting is confirmed first. */
+function FormatSwitch({ compose }: { compose: MailCompose }) {
+  const [confirm, setConfirm] = useState(false);
+  const plain = compose.bodyFormat === 'plain';
+  const label = plain ? 'Switch to formatted text' : 'Switch to plain text';
+  return <>
+    <Button type="button" variant="ghost" size="icon-sm" aria-pressed={plain} aria-label={label} title={label}
+      className={plain ? 'bg-muted text-foreground' : undefined}
+      onMouseDown={event => event.preventDefault()} onClick={() => plain ? compose.switchBodyFormat('rich') : setConfirm(true)}>
+      <RemoveFormatting aria-hidden="true" />
+    </Button>
+    <AlertDialog open={confirm} onOpenChange={setConfirm}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Switch to plain text?</AlertDialogTitle>
+          <AlertDialogDescription>Bold, lists, links, images and colours are removed from this message. The text stays.</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Keep formatting</AlertDialogCancel>
+          <AlertDialogAction onClick={() => compose.switchBodyFormat('plain')}>Switch to plain text</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  </>;
+}
+
+// Up to this many optional features share the toolbar row (P-26); more get a
+// line of their own above the message.
+const FEATURES_IN_TOOLBAR = 3;
+
+/** The optional compose features switched on in Settings (P-26), one button each, where they act on the message. */
+function composeFeatureButtons(compose: MailCompose): ReactNode[] {
+  const buttons: ReactNode[] = [];
+  if (compose.features.templates) buttons.push(<TemplatesMenu key="templates" compose={compose} />);
+  if (compose.features.formatSwitch) buttons.push(<FormatSwitch key="format" compose={compose} />);
+  return buttons;
+}
+
+/** Send, and with Send later on (Settings, Mail) a split button whose arrow half offers the times. */
+function SendButton({ compose }: { compose: MailCompose }) {
+  const busy = compose.isSending || compose.isDraftSaving;
+  const [custom, setCustom] = useState(false);
+  const main = (
+    <Button type="submit" disabled={busy} className={cn(compose.features.scheduledSend && 'rounded-r-none')}>
+      {busy ? <><Loader2 aria-hidden="true" className="animate-spin" />Sending...</> : <><Send aria-hidden="true" />Send</>}
+    </Button>
+  );
+  if (!compose.features.scheduledSend) return main;
+  return <>
+    {/* No gap between the halves; the arrow half is a full touch target of its own. */}
+    <div className="inline-flex">
+      {main}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button type="button" disabled={busy} aria-label="Send later" title="Send later"
+            className="min-w-11 rounded-l-none border-l border-primary-foreground/30 px-2">
+            <ChevronDown aria-hidden="true" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-[14rem]">
+          <DropdownMenuLabel>Send later</DropdownMenuLabel>
+          <WhenMenuItems choices={sendLaterChoices()} onPick={at => void compose.scheduleSend(at)} onPickCustom={() => setCustom(true)} />
+          {compose.scheduledAt && <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => void compose.cancelScheduledSend()}>Cancel scheduled send</DropdownMenuItem>
+          </>}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+    <WhenDialog open={custom} onOpenChange={setCustom} title="Send later" description="The message is saved as a draft and sent at this time."
+      confirmLabel="Schedule" onPick={at => void compose.scheduleSend(at)} />
+  </>;
+}
+
+// The message body in the message's format: the rich editor with its
+// toolbar, or plain text (Settings, Mail: compose format). The optional
+// features end the toolbar row; plain text keeps a one-row strip for them;
+// four or more get a line of their own above the message (P-26).
+function ComposeBodyEditor(props: { compose: MailCompose; editorId: string; editorRef: RefObject<HTMLDivElement>; editorClassName?: string }) {
+  const features = composeFeatureButtons(props.compose);
+  const ownLine = features.length > FEATURES_IN_TOOLBAR;
+  if (props.compose.bodyFormat === 'rich') return <RichComposeEditor {...props} features={ownLine ? [] : features} strip={ownLine ? features : null} />;
+  const { compose, editorId, editorClassName = '' } = props;
+  const textarea = (
     <Textarea
       id={editorId}
       value={compose.composeForm.body}
       placeholder="Write your message..."
-      className={`resize-none overscroll-contain font-sans text-sm ${editorClassName}`}
+      className={cn('resize-none overscroll-contain font-sans text-sm', features.length > 0 && 'rounded-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0', editorClassName)}
       onChange={event => compose.updateComposeForm({ body: event.target.value })}
+      onSelect={event => compose.rememberPlainSelection(event.currentTarget.selectionStart, event.currentTarget.selectionEnd)}
+      onBlur={event => compose.rememberPlainSelection(event.currentTarget.selectionStart, event.currentTarget.selectionEnd)}
     />
+  );
+  if (features.length === 0) return textarea;
+  return (
+    <div className={`rounded-md border border-input bg-background overflow-hidden ${editorClassName.includes('flex-1') ? 'flex flex-col min-h-0' : ''}`}>
+      <div className="flex items-center justify-end gap-1 border-b border-border bg-muted/30 px-2 py-1">{features}</div>
+      {textarea}
+    </div>
   );
 }
 
-function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '' }: {
+function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '', features, strip }: {
   compose: MailCompose; editorId: string; editorRef: RefObject<HTMLDivElement>; editorClassName?: string;
+  /** Feature buttons ending the toolbar row. */
+  features: ReactNode[];
+  /** Feature buttons on a line of their own (four or more). */
+  strip: ReactNode[] | null;
 }) {
   // The body state becomes the editor's content here, where the editor exists:
   // the dialog's editor is portaled in a commit after the draft set the body,
@@ -228,7 +394,9 @@ function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '' 
         >
           <ImageIcon className="h-4 w-4" />
         </Button>
+        {features.length > 0 && <div className="ml-auto flex items-center gap-1">{features}</div>}
       </div>
+      {strip && <div className="flex items-center gap-1 border-b border-border bg-muted/30 px-2 py-1">{strip}</div>}
       <div
         id={editorId}
         ref={editorRef}
@@ -239,7 +407,9 @@ function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '' 
         data-placeholder="Write your message..."
         className={`p-3 text-sm outline-none overflow-y-auto overscroll-contain break-words [&:empty:before]:content-[attr(data-placeholder)] [&:empty:before]:text-muted-foreground [&_a]:text-accent [&_a]:underline [&_img]:max-w-full [&_img]:rounded-md [&_ol]:list-decimal [&_ol]:pl-6 [&_ul]:list-disc [&_ul]:pl-6 ${editorClassName}`}
         onInput={() => compose.updateComposeBodyFromEditor(editorRef)}
-        onBlur={() => compose.updateComposeBodyFromEditor(editorRef)}
+        onKeyUp={() => compose.rememberRichSelection(editorRef)}
+        onMouseUp={() => compose.rememberRichSelection(editorRef)}
+        onBlur={() => { compose.rememberRichSelection(editorRef); compose.updateComposeBodyFromEditor(editorRef); }}
       />
     </div>
   );
@@ -338,10 +508,14 @@ function ComposeAttachmentsSection({ compose, inputId }: { compose: MailCompose;
   );
 }
 
-/** Desktop reply/forward editor below the open message. */
-/** "Add task" for the draft being written; the draft is saved first so the task can point at it. */
-function AddTaskFromDraft({ compose, onAddTask }: { compose: MailCompose; onAddTask?: () => void }) {
+/** "Add task" for the draft being written; the draft is saved first so the task can point at it. An icon on phones, where the footer is one row. */
+function AddTaskFromDraft({ compose, onAddTask, icon = false }: { compose: MailCompose; onAddTask?: () => void; icon?: boolean }) {
   if (!onAddTask) return null;
+  if (icon) return (
+    <Button type="button" variant="ghost" size="icon" className="mr-auto" aria-label="Add task" title="Add task" onClick={onAddTask} disabled={compose.isDraftSaving || compose.isSending}>
+      <ListTodo aria-hidden="true" />
+    </Button>
+  );
   return (
     <Button type="button" variant="ghost" size="sm" className="mr-auto" onClick={onAddTask} disabled={compose.isDraftSaving || compose.isSending}>
       <ListTodo aria-hidden="true" />Add task
@@ -349,7 +523,11 @@ function AddTaskFromDraft({ compose, onAddTask }: { compose: MailCompose; onAddT
   );
 }
 
-/** Reply editor under a message. `fill` lets it take the whole column (the peek on phones) instead of the lower half. */
+/**
+ * Reply editor under a message. `fill` lets it take the whole column (the peek
+ * on phones) instead of the lower half; its footer is then one row, as the
+ * phone composer's (P-26): no Cancel (the close control does the same).
+ */
 export function MailInlineCompose({ compose, onAddTask, fill = false }: { compose: MailCompose; onAddTask?: () => void; fill?: boolean }) {
   return (
     <div className={fill ? 'min-h-0 flex-1 bg-card' : 'max-h-[52vh] shrink-0 border-t border-border bg-card'}>
@@ -388,34 +566,18 @@ export function MailInlineCompose({ compose, onAddTask, fill = false }: { compos
             </div>
             <ComposeAttachmentsSection compose={compose} inputId="compose-attachments-inline" />
           </div>
-          <div className="flex shrink-0 flex-wrap justify-end gap-3 border-t border-border pt-3">
-            <AddTaskFromDraft compose={compose} onAddTask={onAddTask} />
+          <div className={cn('flex shrink-0 items-center justify-end gap-3 border-t border-border pt-3', !fill && 'flex-wrap')}>
+            <AddTaskFromDraft compose={compose} onAddTask={onAddTask} icon={fill} />
             <Button type="button" variant="secondary" onClick={() => compose.saveCurrentDraft({ includeAttachments: true })} disabled={compose.isDraftSaving || compose.isSending}>
               {compose.isDraftSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Save draft
             </Button>
-            <Button 
-              type="button" 
-              variant="outline" 
-              onClick={() => {
-                compose.closeComposeFlow();
-              }}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={compose.isSending || compose.isDraftSaving}>
-              {compose.isSending || compose.isDraftSaving ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Sending...
-                </>
-              ) : (
-                <>
-                  <Send className="h-4 w-4 mr-2" />
-                  Send
-                </>
-              )}
-            </Button>
+            {!fill && (
+              <Button type="button" variant="outline" onClick={() => { compose.closeComposeFlow(); }}>
+                Cancel
+              </Button>
+            )}
+            <SendButton compose={compose} />
           </div>
         </form>
       </div>
@@ -444,7 +606,8 @@ export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
             {compose.composeMode === 'reply' ? 'Reply' : compose.composeMode === 'forward' ? 'Forward' : 'New Message'}
           </DialogTitle>
           <DialogDescription className={compose.activeDraftId || compose.isDraftSaving || compose.draftSavedAt ? undefined : 'sr-only'}>
-            {compose.isDraftSaving ? 'Saving draft...' : compose.draftSavedAt ? `Draft saved ${format(new Date(compose.draftSavedAt), 'HH:mm')}` : 'Compose email message'}
+            {compose.scheduledAt ? `Scheduled for ${formatWhen(compose.scheduledAt)}. It can be edited until it is sent.`
+              : compose.isDraftSaving ? 'Saving draft...' : compose.draftSavedAt ? `Draft saved ${format(new Date(compose.draftSavedAt), 'HH:mm')}` : 'Compose email message'}
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={compose.handleSendEmail} className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -493,30 +656,21 @@ export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
             <ComposeAttachmentsSection compose={compose} inputId="compose-attachments-dialog" />
           </div>
           </div>
-          <div className="flex shrink-0 flex-wrap justify-end gap-3 border-t border-border bg-background px-4 py-3">
-            <AddTaskFromDraft compose={compose} onAddTask={onAddTask} />
+          {/* One row on phones (P-26): Add task as an icon, no Cancel (the close control does the same). */}
+          <div className={cn('flex shrink-0 items-center justify-end gap-3 border-t border-border bg-background px-4 py-3', !isMobile && 'flex-wrap')}>
+            <AddTaskFromDraft compose={compose} onAddTask={onAddTask} icon={isMobile} />
             <Button type="button" variant="secondary" onClick={() => compose.saveCurrentDraft({ includeAttachments: true })} disabled={compose.isDraftSaving || compose.isSending}>
               {compose.isDraftSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Save draft
             </Button>
-            <Button type="button" variant="outline" onClick={() => {
-              compose.closeComposeFlow();
-            }}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={compose.isSending || compose.isDraftSaving}>
-              {compose.isSending || compose.isDraftSaving ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Sending...
-                </>
-              ) : (
-                <>
-                  <Send className="h-4 w-4 mr-2" />
-                  Send
-                </>
-              )}
-            </Button>
+            {!isMobile && (
+              <Button type="button" variant="outline" onClick={() => {
+                compose.closeComposeFlow();
+              }}>
+                Cancel
+              </Button>
+            )}
+            <SendButton compose={compose} />
           </div>
         </form>
       </DialogContent>
