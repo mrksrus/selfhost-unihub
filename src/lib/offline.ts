@@ -230,11 +230,14 @@ function mailRows(snapshot: OfflineSnapshot, params: URLSearchParams) {
     const folder = params.get('folder');
     const accountId = params.get('account_id');
     if (accountId && accountId !== 'all' && viewAccount(row) !== accountId) return false;
-    if (folder && folder !== 'all' && folder !== 'starred' && row.folder !== folder) return false;
+    const query = (params.get('search') || '').trim().toLowerCase();
+    // Snoozed messages show only in the Snoozed view and in search, as online.
+    const snoozed = Date.parse(text(row.snoozed_until)) > Date.now();
+    if (folder === 'snoozed') { if (!snoozed) return false; } else if (snoozed && !query) return false;
+    if (folder && folder !== 'all' && folder !== 'starred' && folder !== 'snoozed' && row.folder !== folder) return false;
     if (folder === 'starred' && !truthy(row.is_starred)) return false;
     if (params.has('is_read') && truthy(row.is_read) !== (params.get('is_read') === 'true')) return false;
     if (params.has('is_starred') && truthy(row.is_starred) !== (params.get('is_starred') === 'true')) return false;
-    const query = (params.get('search') || '').trim().toLowerCase();
     return !query || [row.subject,row.from_name,row.from_address,row.body_text].some(value=>text(value).toLowerCase().includes(query));
   }).sort(newestFirst);
 }

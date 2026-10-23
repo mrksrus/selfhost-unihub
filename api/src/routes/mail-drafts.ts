@@ -1,36 +1,23 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
 import crypto from 'crypto';
-import fs from 'fs';
-import { promisify } from 'util';
 import { db } from '../state';
 import {
-  toBooleanFlag,
   ensureDefaultMailFoldersForUser,
   sendEmail,
   sendOnce,
   replyThreading,
   deleteStoredAttachmentFiles,
 } from '../services/mail';
-import { draftThreading } from '../services/mail-send';
 import { adoptReplies, resolveThreadKey, storedReferences } from '../services/mail-threading';
 import type { ReplyThreading } from '../services/mail-send';
 import type { PoolConnection } from 'mysql2/promise';
-import { saveDraftMutation } from '../services/mail-drafts';
-import { normalizeRecipients, parseStoredRecipients } from '../services/mail-recipients';
+import { deleteDraftWithFiles, loadDraftEmail, loadMailAccountForDraft, saveDraftMutation, sendStoredDraft } from '../services/mail-drafts';
+import { assertDraftEditable, cancelScheduleForSendNow } from '../services/mail-scheduled-send';
+import { normalizeRecipients } from '../services/mail-recipients';
 import { extractMailRouteId, routeError, idempotencyKey } from './mail-route-helpers';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
-interface DraftRow extends RowDataPacket {
-  mail_account_id: string;
-  from_address: string;
-  subject: string | null;
-  in_reply_to: string | null;
-  references_header: string | null;
-  thread_key: string | null;
-  body_html: string | null;
-  body_text: string | null;
-}
 interface Input {
   account_id?: string;
   isHtml?: boolean;
@@ -46,7 +33,6 @@ interface Input {
   in_reply_to_email_id?: unknown;
 }
 
-const readFile = promisify(fs.readFile);
 const MAIL_DRAFT_FOLDER = 'drafts';
 const RECIPIENT_FIELDS = ['to', 'cc', 'bcc'] as const;
 const MAX_RECIPIENT_FIELD_LENGTH = 10000;
@@ -80,40 +66,6 @@ const draftRecipients = (value: unknown) => {
   return recipients.length ? JSON.stringify(recipients) : null;
 };
 
-async function loadMailAccountForDraft(userId: string, accountId: unknown) {
-  const normalizedAccountId = String(accountId || '').trim();
-  if (!normalizedAccountId) return null;
-  const [accounts] = await db.execute<RowDataPacket[]>(
-    'SELECT id, user_id, email_address, display_name FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1',
-    [normalizedAccountId, userId]
-  );
-  return accounts[0] || null;
-}
-
-async function loadDraftEmail(userId: string, draftId: string) {
-  const [rows] = await db.execute<DraftRow[]>(
-    'SELECT * FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE LIMIT 1',
-    [draftId, userId]
-  );
-  if (!rows.length) return null;
-  const draft = rows[0];
-  const [attachments] = await db.execute<RowDataPacket[]>(
-    'SELECT id, filename, content_type, size_bytes FROM email_attachments WHERE email_id = ? AND user_id = ? ORDER BY filename',
-    [draftId, userId]
-  );
-  return {
-    ...draft,
-    to_addresses: parseStoredRecipients(draft.to_addresses),
-    cc_addresses: parseStoredRecipients(draft.cc_addresses),
-    bcc_addresses: parseStoredRecipients(draft.bcc_addresses),
-    is_read: toBooleanFlag(draft.is_read),
-    is_starred: toBooleanFlag(draft.is_starred),
-    is_draft: !!draft.is_draft,
-    has_attachments: !!draft.has_attachments,
-    attachments: attachments || [],
-  };
-}
-
 // A composer names each file it uploads (client_id); the answer pairs those
 // names with the attachments they became, so the composer never guesses which
 // stored attachment is which of its files.
@@ -139,22 +91,6 @@ async function draftThreadColumns(connection: PoolConnection, { userId, draftId,
 }
 const replyLinkGiven = (value: unknown) => value !== undefined;
 const replyLinkRemoved = (value: unknown) => value === null || value === '';
-
-async function deleteDraftWithFiles(userId: string, draftId: string) {
-  const draft = await loadDraftEmail(userId, draftId);
-  if (!draft) return { error: 'Draft not found', status: 404 };
-  const [attachments] = await db.execute<RowDataPacket[]>(
-    'SELECT storage_path FROM email_attachments WHERE email_id = ? AND user_id = ?',
-    [draftId, userId]
-  );
-  await db.execute('DELETE FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE', [draftId, userId]);
-  const fileResult = await deleteStoredAttachmentFiles((attachments || []).map(row => row.storage_path));
-  return {
-    deleted: true,
-    deletedAttachmentFiles: fileResult.deletedFiles,
-    failedAttachmentFiles: fileResult.failedFiles,
-  };
-}
 
 export = {
   'POST /api/mail/drafts': async (req: Request, userId: string | null, body: Input) => {
@@ -225,6 +161,8 @@ export = {
       const draftId = extractMailRouteId(req)!;
       const current = await loadDraftEmail(userId, draftId);
       if (!current) return { error: 'Draft not found', status: 404 };
+      // A scheduled draft stays editable until it goes out.
+      await assertDraftEditable(userId, draftId);
 
       let account = null;
       if (body?.account_id !== undefined && body.account_id !== current.mail_account_id) {
@@ -292,6 +230,7 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
+      await assertDraftEditable(userId, extractMailRouteId(req)!);
       return await deleteDraftWithFiles(userId, extractMailRouteId(req)!);
     } catch (error) {
       console.error('Delete draft error:', error);
@@ -305,63 +244,10 @@ export = {
     try {
       const draftId = extractMailRouteId(req, 2)!;
       const replyTo = body?.in_reply_to_email_id;
+      // Sent now: a schedule for it is cancelled first (refused while it is being sent).
       // A repeat after a lost response gets the first result, before the (deleted) draft is looked up.
-      return await sendOnce({ userId, clientKey: idempotencyKey(req), request: { draftId, replyTo } }, async () => {
-        const draft = await loadDraftEmail(userId, draftId);
-        if (!draft) return { error: 'Draft not found', status: 404 };
-
-        const account = await loadMailAccountForDraft(userId, draft.mail_account_id);
-        if (!account) return { error: 'Account not found', status: 404 };
-
-        const to = parseStoredRecipients(draft.to_addresses);
-        const cc = parseStoredRecipients(draft.cc_addresses);
-        const bcc = parseStoredRecipients(draft.bcc_addresses);
-        if (!to.length && !cc.length && !bcc.length) return { error: 'Draft needs at least one recipient before sending', status: 400 };
-
-        const [attachmentRows] = await db.execute<RowDataPacket[]>(
-          'SELECT filename, content_type, storage_path FROM email_attachments WHERE email_id = ? AND user_id = ? ORDER BY filename',
-          [draftId, userId]
-        );
-        const attachments = [];
-        for (const attachment of attachmentRows || []) {
-          if (!attachment.storage_path) continue;
-          const content = await readFile(attachment.storage_path);
-          attachments.push({
-            filename: attachment.filename,
-            contentType: attachment.content_type || 'application/octet-stream',
-            dataBase64: content.toString('base64'),
-          });
-        }
-
-        const bodyContent = draft.body_html || draft.body_text || (attachments.length > 0 ? '<p></p>' : '');
-        if (!bodyContent && attachments.length === 0) {
-          return { error: 'Draft needs a message or attachment before sending', status: 400 };
-        }
-
-        const result = await sendEmail({ userId, accountId: draft.mail_account_id }, {
-          to,
-          cc,
-          bcc,
-          subject: draft.subject || '(No subject)',
-          body: bodyContent,
-          isHtml: !!draft.body_html || (!draft.body_text && attachments.length > 0),
-          attachments,
-          // The reply link the request names, else the one the draft kept.
-          ...((await replyThreading(userId, replyTo)) ?? draftThreading(draft) ?? {}),
-      });
-      // The message is out: a draft that cannot be removed now stays, and the send still succeeded.
-      const deleteResult = await deleteDraftWithFiles(userId, draftId).catch((error: unknown) => {
-        console.error('Send draft cleanup error:', (error as Error)?.name || 'Error');
-        return { deletedAttachmentFiles: 0, failedAttachmentFiles: 0 };
-      });
-
-      return {
-        success: true,
-        messageId: result.messageId,
-        deletedAttachmentFiles: deleteResult.deletedAttachmentFiles || 0,
-        failedAttachmentFiles: deleteResult.failedAttachmentFiles || 0,
-      };
-      });
+      await cancelScheduleForSendNow(userId, draftId);
+      return await sendOnce({ userId, clientKey: idempotencyKey(req), request: { draftId, replyTo } }, () => sendStoredDraft(userId, draftId, replyTo));
     } catch (error) {
       console.error('Send draft error:', (error as NodeJS.ErrnoException)?.code || (error as Error)?.name || 'Error');
       return routeError(error, 'Failed to send draft');

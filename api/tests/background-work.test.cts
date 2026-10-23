@@ -38,6 +38,8 @@ function deps(timers: ReturnType<typeof fakeTimers>) {
       runCalendarSyncPass: async () => {},
       pruneAuditLog: async () => 0,
       runMailThreadBackfill: async () => { calls.push('thread backfill'); },
+      runDueScheduledSends: async () => { calls.push('scheduled sends'); },
+      returnDueSnoozes: async () => { calls.push('snoozes'); },
       isWorkerOwner: () => true,
       stopCalendarWork: () => { calls.push('stop calendar work'); },
     } as FixtureValue,
@@ -50,13 +52,13 @@ async function quietly<T>(work: () => Promise<T>) {
   try { return await work(); } finally { console.log = original; }
 }
 
-test('background work starts the ten timers and stop clears every one of them', async () => {
+test('background work starts the twelve timers and stop clears every one of them', async () => {
   const timers = fakeTimers();
   const { overrides, calls, idle } = deps(timers);
   const work = startBackgroundWork(overrides);
   await quietly(() => work.ready);
   assert.deepEqual([...timers.intervals.values()].map(timer => timer.ms).sort((a, b) => a - b),
-    [1000, 15000, 30000, 30000, 60000, 60000, 60000, 3600000, 3600000, 3600000]);
+    [1000, 15000, 15000, 30000, 30000, 30000, 60000, 60000, 60000, 3600000, 3600000, 3600000]);
   // Interrupted syncs are reset before their timers can pick accounts up.
   assert.ok(calls.includes('UPDATE mail_accounts'));
   assert.ok(calls.includes('UPDATE calendar_accounts'));

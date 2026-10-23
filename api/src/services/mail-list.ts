@@ -10,12 +10,14 @@ import { escapeLike } from './sql';
 import { EMAIL_TASK_COUNT_SQL } from './email-tasks';
 import { isModuleEnabled } from './module-settings';
 import { badRequest, notFound } from '../http/errors';
+import { NOT_SNOOZED_SQL, SNOOZED_SQL } from './mail-snooze';
 
 // The mail list's view (folder, account, read/star and search filters) and
 // row shape, shared by the message list (GET /api/mail/emails) and the
 // conversation list (GET /api/mail/threads), so both show the same messages.
 
-const MAIL_LIST_PREVIEW_LENGTH = 240;
+// Enough for five preview lines on a wide list (Settings, Mail: preview lines).
+const MAIL_LIST_PREVIEW_LENGTH = 700;
 const MAIL_THREAD_MAX_MESSAGES = 200;
 const PARTICIPANTS_PER_THREAD = 5;
 
@@ -47,6 +49,8 @@ function mailListView(searchParams: URLSearchParams, userId: string): MailListVi
 
   if (folder === 'starred') {
     where.push(`${EFFECTIVE_STAR_SQL} = 1`);
+  } else if (folder === 'snoozed') {
+    where.push(SNOOZED_SQL);
   } else if (hasFolderFilter) {
     where.push(folderMembershipSql);
     params.push(folder, folder, folder);
@@ -63,6 +67,8 @@ function mailListView(searchParams: URLSearchParams, userId: string): MailListVi
     where.push(`${EFFECTIVE_STAR_SQL} = ?`);
     params.push(isStarredParam === 'true' ? 1 : 0);
   }
+  // Snoozed messages leave the lists until they come back; search finds them.
+  if (folder !== 'snoozed' && !searchParam) where.push(NOT_SNOOZED_SQL);
   if (searchParam) {
     const searchValue = `%${escapeLike(searchParam.toLowerCase())}%`;
     where.push(`(
@@ -81,6 +87,10 @@ function mailListView(searchParams: URLSearchParams, userId: string): MailListVi
   return { whereSql: where.join(' AND '), params, folder, accountId, hasFolderFilter, hasAccountFilter,
     includeCount: searchParams.get('include_count') !== 'false', limit, offset, page: Math.max(1, Math.floor(offset / limit) + 1) };
 }
+
+// A draft's scheduled send, if any (mail-scheduled-send.ts).
+const SCHEDULED_SEND_SQL = `(SELECT s.send_at FROM mail_scheduled_sends s WHERE s.email_id = emails.id AND s.user_id = emails.user_id) AS scheduled_send_at,
+          (SELECT s.status FROM mail_scheduled_sends s WHERE s.email_id = emails.id AND s.user_id = emails.user_id) AS scheduled_send_status`;
 
 // Task counts are Calendar data: none while that module is off.
 async function mailListColumns(userId: string) {
@@ -116,13 +126,16 @@ async function mailListColumns(userId: string) {
           received_at,
           created_at,
           thread_key,
+          snoozed_until,
+          snooze_returned_at,
+          ${SCHEDULED_SEND_SQL},
           ${taskCountSql} AS task_count`;
 }
 
 function presentMailListRow(email: RowDataPacket, view?: Pick<MailListView, 'folder' | 'hasFolderFilter'>) {
   return {
     ...presentMailFiling(email),
-    ...(view?.hasFolderFilter && view.folder !== 'starred' ? { folder: view.folder } : {}),
+    ...(view?.hasFolderFilter && view.folder !== 'starred' && view.folder !== 'snoozed' ? { folder: view.folder } : {}),
     to_addresses: typeof email.to_addresses === 'string' ? JSON.parse(email.to_addresses || '[]') : email.to_addresses,
     is_read: toBooleanFlag(email.is_read),
     is_starred: toBooleanFlag(email.is_starred),

@@ -49,7 +49,7 @@ const SECTIONS = {
   calendarAccounts: { table: 'calendar_accounts', columns: 'id user_id provider account_email display_name is_active capabilities created_at updated_at', order: 'created_at, id' },
   mailAccounts: { table: 'mail_accounts', columns: 'id user_id email_address display_name is_active sync_mode sync_status last_synced_at created_at', order: 'created_at, id' },
   folders: { table: 'mail_folders', columns: 'id user_id mail_account_id slug display_name is_system position', order: 'position, slug' },
-  emails: { table: 'emails', columns: 'id user_id mail_account_id filing_account_id is_legacy remote_missing message_id subject from_address from_name to_addresses cc_addresses bcc_addresses body_text body_html folder is_read is_starred is_draft has_attachments received_at created_at thread_key',
+  emails: { table: 'emails', columns: 'id user_id mail_account_id filing_account_id is_legacy remote_missing message_id subject from_address from_name to_addresses cc_addresses bcc_addresses body_text body_html folder is_read is_starred is_draft has_attachments received_at created_at thread_key snoozed_until',
     filter: ' AND is_draft = FALSE', order: 'received_at DESC, id DESC', limit: OFFLINE_MAIL_LIMIT },
 };
 const groupByEvent = <T extends { event_id: string }>(rows: readonly T[]) => {

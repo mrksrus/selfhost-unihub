@@ -1,13 +1,15 @@
 import type { RouteRequest, ApiError } from '../types';
-import type { MailTemplateResponse, MailTemplatesResponse, SignatureResponse } from '../contracts/mail';
+import type { MailTemplateResponse, MailTemplatesResponse, ScheduleResponse, SignatureResponse, SnoozeResponse } from '../contracts/mail';
 import { clientError } from '../http/errors';
 import { log } from '../log';
 import { defineRoutes } from '../http/route';
 import { saveSignature, SIGNATURE_HTML_LIMIT, SIGNATURE_TEXT_LIMIT } from '../services/mail-signature';
 import { createTemplate, deleteTemplate, listTemplates, updateTemplate, TEMPLATE_HTML_LIMIT, TEMPLATE_TEXT_LIMIT } from '../services/mail-templates';
+import { cancelSchedule, scheduleDraft } from '../services/mail-scheduled-send';
+import { snoozeEmail, unsnoozeEmail } from '../services/mail-snooze';
 
-// The mail essentials of 0.24: signatures, templates (and snooze and
-// scheduled send). Declared with their specs; the older mail route files are
+// The mail essentials of 0.24: signatures, templates, scheduled send and
+// snooze. Declared with their specs; the older mail route files are
 // still wrapped by legacy-spec.ts.
 type Request = RouteRequest & { params: Record<string, string> };
 
@@ -46,5 +48,29 @@ export = defineRoutes({
       await deleteTemplate(userId, req.params.id);
       return { deleted: true };
     } catch (error) { return failed(error, 'Failed to delete the template'); }
+  } },
+
+  'POST /api/mail/drafts/:id/schedule': { auth: 'user', module: 'mail', restoreSection: 'mail', body: { limit: 1024 },
+    handler: async (req: Request, userId: string, body: unknown) => {
+      try {
+        return { schedule: await scheduleDraft(userId, req.params.id, body) } satisfies ScheduleResponse;
+      } catch (error) { return failed(error, 'Failed to schedule the message'); }
+    } },
+  'DELETE /api/mail/drafts/:id/schedule': { auth: 'user', module: 'mail', restoreSection: 'mail', handler: async (req: Request, userId: string) => {
+    try {
+      return await cancelSchedule(userId, req.params.id);
+    } catch (error) { return failed(error, 'Failed to cancel the scheduled send'); }
+  } },
+
+  'POST /api/mail/emails/:id/snooze': { auth: 'user', module: 'mail', restoreSection: 'mail', body: { limit: 1024 },
+    handler: async (req: Request, userId: string, body: unknown) => {
+      try {
+        return await snoozeEmail(userId, req.params.id, body) satisfies SnoozeResponse;
+      } catch (error) { return failed(error, 'Failed to snooze the message'); }
+    } },
+  'DELETE /api/mail/emails/:id/snooze': { auth: 'user', module: 'mail', restoreSection: 'mail', handler: async (req: Request, userId: string) => {
+    try {
+      return await unsnoozeEmail(userId, req.params.id) satisfies SnoozeResponse;
+    } catch (error) { return failed(error, 'Failed to bring the message back'); }
   } },
 });

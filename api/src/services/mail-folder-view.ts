@@ -47,6 +47,9 @@ const folderMembershipSql = `(CASE
     THEN EXISTS(SELECT 1 FROM ${membershipTables} WHERE ${membershipWhere} AND f.slug = ?)
   ELSE ${fallbackFolderSql} = ? END)`;
 
+// Snoozed messages are counted again when they come back (mail-snooze.ts).
+const NOT_SNOOZED_EMAILS_SQL = '(emails.snoozed_until IS NULL OR emails.snoozed_until <= UTC_TIMESTAMP())';
+
 // One row per message and folder it is shown in.
 function folderViewRows(effectiveReadSql: string, accountId: string | null | undefined) {
   const hasAccount = accountId && accountId !== 'all';
@@ -61,7 +64,7 @@ function folderViewRows(effectiveReadSql: string, accountId: string | null | und
       FROM ${membershipTables} WHERE o.presence = 'present'
     ) memberships ON memberships.email_id = emails.id AND memberships.user_id = emails.user_id
       AND memberships.mail_account_id = emails.mail_account_id AND NOT ${localFilingSql}
-    WHERE emails.user_id = ?${filter}`;
+    WHERE emails.user_id = ?${filter} AND ${NOT_SNOOZED_EMAILS_SQL}`;
 }
 function membershipCountQuery(effectiveReadSql: string, accountId: string | null | undefined, { onlyUnread = false, byAccount = false } = {}) {
   return `SELECT folder${byAccount ? ', mail_account_id' : ''}, COUNT(*) AS total_count,

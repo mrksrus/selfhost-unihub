@@ -149,7 +149,7 @@ interface SourceKind<S> {
   expiresAt(source: S, payload: NotificationPayload, now: number): Date;
 }
 interface FixedKind {
-  module: 'recordings' | null;
+  module: 'recordings' | 'mail' | null;
   current?(row: EventRow, payload: NotificationPayload, connection: SqlExecutor): Promise<boolean>;
 }
 type KindSpec = SourceKind<unknown> | FixedKind;
@@ -197,6 +197,31 @@ async function loadCalendarEvent(userId: string, eventId: string, connection: Sq
   const event = events[0];
   return !event || event.is_visible === 0 || event.is_visible === false || ['done', 'cancelled'].includes(event.todo_status) ? null : event;
 }
+type SnoozeSource = MailSource & { returned_at: string };
+// The message as it came back: still back (not snoozed again), and not a draft.
+async function loadReturnedSnooze(userId: string, emailId: string, connection: SqlExecutor) {
+  const [rows] = await connection.execute<SnoozeSource[]>(`SELECT id, subject, from_name, from_address, folder, mail_account_id,
+      DATE_FORMAT(snooze_returned_at, '%Y-%m-%dT%H:%i:%sZ') AS returned_at
+    FROM emails WHERE id = ? AND user_id = ? AND is_draft = FALSE AND snooze_returned_at IS NOT NULL AND snoozed_until IS NULL`, [emailId, userId]);
+  return rows[0] ?? null;
+}
+async function snoozeLevel(userId: string, email: SnoozeSource, connection: SqlExecutor) {
+  return (await scopedValues('mail_account', userId, email.mail_account_id, connection)).notify_detail;
+}
+/** Says that a scheduled send did not go out, or may not have. */
+// One per schedule key and outcome: a rescheduled send has a new key.
+async function enqueueScheduledSendProblem({ userId, emailId, scheduleId, sendKey, status }: { userId: string; emailId: string; scheduleId: string; sendKey: string; status: 'failed' | 'unknown' }) {
+  return inTransaction(db, connection => enqueueEvent({ userId, dedupeKey: `scheduled-send:${sendKey}:${status}`, kind: 'scheduled-send', sourceId: scheduleId,
+    title: status === 'failed' ? 'Scheduled email not sent' : 'Scheduled email may not have been sent',
+    body: status === 'failed' ? 'Open Drafts to see why and send it again.' : 'Check Sent before sending it again.',
+    url: `/mail?folder=drafts&email=${encodeURIComponent(emailId)}`, expiresAt: new Date(Date.now() + DAY_MS) }, connection));
+}
+/** Announces a snoozed message that came back, in the transaction that returned it. */
+async function enqueueSnoozeReturn({ userId, emailId, returnedAt }: { userId: string; emailId: string; returnedAt: string }, connection: SqlExecutor) {
+  return enqueueFromSource({ kind: 'snooze', userId, sourceId: emailId, dedupeKey: `snooze:${emailId}:${returnedAt}`,
+    url: `/mail?email=${encodeURIComponent(emailId)}`, data: { emailId, returnedAt } }, connection);
+}
+
 // Each calendar on or off; how much shows is the person's reminder level.
 async function calendarLevel(userId: string, event: CalendarSource, connection: SqlExecutor) {
   if (!(await scopedValues('calendar', userId, event.calendar_id, connection)).notify_enabled) return null;
@@ -219,6 +244,18 @@ const KINDS: Readonly<Record<string, KindSpec>> = Object.freeze({
     },
     expiresAt: (_email, _payload, now) => new Date(now + DAY_MS),
   }),
+  // A snoozed message that came back (mail-snooze.ts). The person asked for it,
+  // so the account's folder filter and switch do not apply; its detail level does.
+  snooze: defineSourceKind<SnoozeSource>({
+    module: 'mail', load: loadReturnedSnooze, level: snoozeLevel,
+    matches: (email, payload) => payload.returnedAt === email.returned_at,
+    render: {
+      full: email => ({ title: 'Snoozed email is back', body: `${senderOf(email)}: ${email.subject || '(No subject)'}` }),
+      sender: email => ({ title: 'Snoozed email is back', body: senderOf(email) }),
+      none: () => ({ title: 'Snoozed email is back', body: '' }),
+    },
+    expiresAt: (_email, _payload, now) => new Date(now + DAY_MS),
+  }),
   calendar: newCalendarItem('New Calendar Event'),
   todo: newCalendarItem('New ToDo'),
   reminder: defineSourceKind<CalendarSource>({
@@ -237,6 +274,15 @@ const KINDS: Readonly<Record<string, KindSpec>> = Object.freeze({
     async current(row: EventRow, payload: NotificationPayload, connection: SqlExecutor) {
       const [uploads] = await connection.execute<RowDataPacket[]>('SELECT bytes_received FROM recording_uploads WHERE id = ? AND user_id = ?', [row.source_id, row.user_id]);
       return !!uploads[0] && Number(uploads[0].bytes_received) === Number(payload.bytesReceived);
+    },
+  },
+  // A scheduled send that did not go out (mail-scheduled-send.ts). No message
+  // content: the person opens Drafts to see which one.
+  'scheduled-send': {
+    module: 'mail',
+    async current(row: EventRow, _payload: NotificationPayload, connection: SqlExecutor) {
+      const [rows] = await connection.execute<RowDataPacket[]>("SELECT id FROM mail_scheduled_sends WHERE id = ? AND user_id = ? AND status IN ('failed', 'unknown')", [row.source_id, row.user_id]);
+      return rows.length > 0;
     },
   },
   session: {
@@ -609,6 +655,8 @@ export {
   enqueueMailNotification,
   releaseMailNotification,
   enqueueCalendarNotification,
+  enqueueSnoozeReturn,
+  enqueueScheduledSendProblem,
   enqueueTestNotification,
   enqueueEvent,
   enqueueStalledRecordingUploads,

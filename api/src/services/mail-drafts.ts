@@ -1,5 +1,13 @@
 import type { Pool, PoolConnection, RowDataPacket } from 'mysql2/promise';
 
+import fs from 'fs';
+import { db } from '../state';
+import { log } from '../log';
+import { toBooleanFlag } from './mail-host-policy';
+import { deleteStoredAttachmentFiles } from './mail-server-delete';
+import { draftThreading, replyThreading, sendEmail } from './mail-send';
+import { parseStoredRecipients } from './mail-recipients';
+
 import {
   normalizeComposerAttachments,
   validateAttachmentTotals,
@@ -7,6 +15,18 @@ import {
   discardStagedAttachments,
   insertStagedAttachments,
 } from './mail-attachments';
+
+interface DraftRow extends RowDataPacket {
+  mail_account_id: string;
+  from_address: string;
+  subject: string | null;
+  in_reply_to: string | null;
+  references_header: string | null;
+  thread_key: string | null;
+  body_html: string | null;
+  body_text: string | null;
+}
+const readFile = fs.promises.readFile;
 
 interface ExistingAttachment extends RowDataPacket {
   id: string;
@@ -72,4 +92,118 @@ async function saveDraftMutation({ db, userId, emailId, isNew = false, body, mut
   return staged.map(row => row.id);
 }
 
-export { saveDraftMutation };
+async function loadMailAccountForDraft(userId: string, accountId: unknown) {
+  const normalizedAccountId = String(accountId || '').trim();
+  if (!normalizedAccountId) return null;
+  const [accounts] = await db.execute<RowDataPacket[]>(
+    'SELECT id, user_id, email_address, display_name FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1',
+    [normalizedAccountId, userId]
+  );
+  return accounts[0] || null;
+}
+
+async function loadDraftEmail(userId: string, draftId: string) {
+  const [rows] = await db.execute<DraftRow[]>(
+    'SELECT * FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE LIMIT 1',
+    [draftId, userId]
+  );
+  if (!rows.length) return null;
+  const draft = rows[0];
+  const [attachments] = await db.execute<RowDataPacket[]>(
+    'SELECT id, filename, content_type, size_bytes FROM email_attachments WHERE email_id = ? AND user_id = ? ORDER BY filename',
+    [draftId, userId]
+  );
+  return {
+    ...draft,
+    to_addresses: parseStoredRecipients(draft.to_addresses),
+    cc_addresses: parseStoredRecipients(draft.cc_addresses),
+    bcc_addresses: parseStoredRecipients(draft.bcc_addresses),
+    is_read: toBooleanFlag(draft.is_read),
+    is_starred: toBooleanFlag(draft.is_starred),
+    is_draft: !!draft.is_draft,
+    has_attachments: !!draft.has_attachments,
+    attachments: attachments || [],
+  };
+}
+
+
+async function deleteDraftWithFiles(userId: string, draftId: string) {
+  const draft = await loadDraftEmail(userId, draftId);
+  if (!draft) return { error: 'Draft not found', status: 404 };
+  const [attachments] = await db.execute<RowDataPacket[]>(
+    'SELECT storage_path FROM email_attachments WHERE email_id = ? AND user_id = ?',
+    [draftId, userId]
+  );
+  await db.execute('DELETE FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE', [draftId, userId]);
+  const fileResult = await deleteStoredAttachmentFiles((attachments || []).map(row => row.storage_path));
+  return {
+    deleted: true,
+    deletedAttachmentFiles: fileResult.deletedFiles,
+    failedAttachmentFiles: fileResult.failedFiles,
+  };
+}
+
+/**
+ * Sends one of the user's stored drafts and removes it once the message is
+ * out. The caller wraps it in sendOnce with the send's key; a refusal before
+ * the message was handed over returns `error` (the key is released).
+ */
+async function sendStoredDraft(userId: string, draftId: string, replyTo?: unknown): Promise<Record<string, unknown>> {
+  const draft = await loadDraftEmail(userId, draftId);
+  if (!draft) return { error: 'Draft not found', status: 404 };
+
+  const account = await loadMailAccountForDraft(userId, draft.mail_account_id);
+  if (!account) return { error: 'Account not found', status: 404 };
+
+  const to = parseStoredRecipients(draft.to_addresses);
+  const cc = parseStoredRecipients(draft.cc_addresses);
+  const bcc = parseStoredRecipients(draft.bcc_addresses);
+  if (!to.length && !cc.length && !bcc.length) return { error: 'Draft needs at least one recipient before sending', status: 400 };
+
+  const [attachmentRows] = await db.execute<RowDataPacket[]>(
+    'SELECT filename, content_type, storage_path FROM email_attachments WHERE email_id = ? AND user_id = ? ORDER BY filename',
+    [draftId, userId]
+  );
+  const attachments = [];
+  for (const attachment of attachmentRows || []) {
+    if (!attachment.storage_path) continue;
+    const content = await readFile(attachment.storage_path);
+    attachments.push({
+      filename: attachment.filename,
+      contentType: attachment.content_type || 'application/octet-stream',
+      dataBase64: content.toString('base64'),
+    });
+  }
+
+  const bodyContent = draft.body_html || draft.body_text || (attachments.length > 0 ? '<p></p>' : '');
+  if (!bodyContent && attachments.length === 0) {
+    return { error: 'Draft needs a message or attachment before sending', status: 400 };
+  }
+
+  const result = await sendEmail({ userId, accountId: draft.mail_account_id }, {
+    to,
+    cc,
+    bcc,
+    subject: draft.subject || '(No subject)',
+    body: bodyContent,
+    isHtml: !!draft.body_html || (!draft.body_text && attachments.length > 0),
+    attachments,
+    // The reply link the request names, else the one the draft kept.
+    ...((await replyThreading(userId, replyTo)) ?? draftThreading(draft) ?? {}),
+  });
+  // The message is out: a draft that cannot be removed now stays, and the send still succeeded.
+  const deleteResult = await deleteDraftWithFiles(userId, draftId).catch((error: unknown) => {
+    log.warn('mail', 'a sent draft could not be removed', { userId, code: (error as Error)?.name || 'Error' });
+    return { deletedAttachmentFiles: 0, failedAttachmentFiles: 0 };
+  });
+
+  return {
+    success: true,
+    messageId: result.messageId,
+    deletedAttachmentFiles: deleteResult.deletedAttachmentFiles || 0,
+    failedAttachmentFiles: deleteResult.failedAttachmentFiles || 0,
+  };
+}
+
+export { saveDraftMutation, loadMailAccountForDraft, loadDraftEmail, deleteDraftWithFiles, sendStoredDraft };
+export type { DraftRow };

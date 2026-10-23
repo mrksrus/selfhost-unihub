@@ -14,10 +14,12 @@ import { idleSupervisor } from './mail-idle';
 import { processNotificationJobs } from './notifications';
 import { pruneAuditLog } from './audit';
 import { runMailThreadBackfill } from './mail-thread-backfill';
+import { runDueScheduledSends } from './mail-scheduled-send';
+import { returnDueSnoozes } from './mail-snooze';
 import { isWorkerOwner } from './worker-owner';
 import { log } from '../log';
 
-// The periodic work of this API process: the ten timers listed in
+// The periodic work of this API process: the twelve timers listed in
 // docs/ARCHITECTURE.md "Scheduled Jobs", the startup resets they rely on and
 // the mail IDLE supervisor they start. app.ts starts it once after the server
 // listens and stops it on shutdown. UniHub runs one API process; everything
@@ -29,6 +31,8 @@ import { log } from '../log';
 const MAIL_SYNC_INTERVAL_MS = 30 * 1000;
 const MAIL_SERVER_DELETE_INTERVAL_MS = 60 * 1000;
 const MAIL_THREAD_BACKFILL_INTERVAL_MS = 15 * 1000;
+const SCHEDULED_SEND_INTERVAL_MS = 15 * 1000;
+const SNOOZE_RETURN_INTERVAL_MS = 30 * 1000;
 
 type TimerApi = Pick<typeof globalThis, 'setInterval' | 'clearInterval' | 'setTimeout' | 'clearTimeout' | 'setImmediate'>;
 interface BackgroundWorkDeps {
@@ -47,6 +51,8 @@ interface BackgroundWorkDeps {
   stopCalendarWork: () => void;
   pruneAuditLog: () => Promise<number>;
   runMailThreadBackfill: () => Promise<unknown>;
+  runDueScheduledSends: () => Promise<unknown>;
+  returnDueSnoozes: () => Promise<unknown>;
   isWorkerOwner: () => boolean;
 }
 interface BackgroundWorkHandle {
@@ -70,6 +76,8 @@ function defaultDeps(): BackgroundWorkDeps {
     idleSupervisor,
     pruneAuditLog: () => pruneAuditLog(),
     runMailThreadBackfill: () => runMailThreadBackfill(),
+    runDueScheduledSends: () => runDueScheduledSends(),
+    returnDueSnoozes: () => returnDueSnoozes(),
     isWorkerOwner,
     stopCalendarWork: () => (require('./calendar-sync') as typeof import('./calendar-sync')).stopAllCalendarWork(),
     runCalendarSyncPass: (...args) => (require('./calendar-sync') as typeof import('./calendar-sync')).runCalendarSyncPass(...args),
@@ -170,6 +178,11 @@ async function runStartup(deps: BackgroundWorkDeps, state: { stopped: boolean },
   // Conversations of mail stored before 0.24, in bounded slices
   // (mail-thread-backfill.ts); it pauses itself once nothing is left.
   every('MAIL THREADS', MAIL_THREAD_BACKFILL_INTERVAL_MS, deps.runMailThreadBackfill);
+
+  // Scheduled sends that are due, each once (mail-scheduled-send.ts), and
+  // snoozed messages whose time has come, with their notification.
+  every('SCHEDULED SEND', SCHEDULED_SEND_INTERVAL_MS, deps.runDueScheduledSends);
+  every('SNOOZE', SNOOZE_RETURN_INTERVAL_MS, deps.returnDueSnoozes);
 
   // Expired sessions, audit entries past their year and old mail request
   // receipts, every hour, so the tables do not grow.

@@ -18,3 +18,18 @@ export interface MailTemplate {
 export interface MailTemplateRequest { name: string; subject?: string; body_html?: string | null; body_text?: string }
 export interface MailTemplatesResponse { templates: MailTemplate[] }
 export interface MailTemplateResponse { template: MailTemplate }
+
+/** A draft's scheduled send (POST/DELETE /api/mail/drafts/:id/schedule; list rows carry scheduled_send_at and scheduled_send_status). */
+export interface ScheduledSend {
+  email_id: string;
+  send_at: string;
+  /** scheduled, being sent, sent (the draft could not be removed), failed (not sent) or unknown (may have been sent: check Sent). */
+  status: 'scheduled' | 'sending' | 'sent' | 'failed' | 'unknown';
+  last_error: string | null;
+}
+/** POST /api/mail/drafts/:id/schedule */
+export interface ScheduleRequest { send_at: string }
+export interface ScheduleResponse { schedule: ScheduledSend }
+/** POST /api/mail/emails/:id/snooze */
+export interface SnoozeRequest { until: string }
+export interface SnoozeResponse { id: string; snoozed_until: string | null }
