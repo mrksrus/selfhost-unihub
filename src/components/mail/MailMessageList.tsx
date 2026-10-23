@@ -140,7 +140,7 @@ export function MailMessageList({ account, folder, folderLabel, accountLabel, li
                   </Button>
                 </div>
                 <div className="min-w-0 flex-1">
-                  <button type="button" className="min-w-0 w-full py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
+                  <button type="button" className="block min-w-0 w-full py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
                     onClick={() => { void onOpen(email.id); }}>
                     <span className="flex min-w-0 items-baseline gap-2">
                       <span aria-hidden="true" className={cn('h-2 w-2 shrink-0 self-center rounded-full', unread ? 'bg-accent' : 'bg-transparent')} />
