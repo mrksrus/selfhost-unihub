@@ -34,10 +34,10 @@ export function MailConversation({ open, thread, children, timezone, requestFlag
     return next;
   });
   return (
-    <section aria-label={`Conversation, ${thread.messages.length} messages`} className="space-y-3">
-      {thread.truncated && <p className="text-xs text-muted-foreground">Only the newest 200 messages of this conversation are shown.</p>}
+    <section aria-label={`Conversation, ${thread.messages.length} messages`} className="divide-y divide-border">
+      {thread.truncated && <p className="pb-2 text-xs text-muted-foreground">Only the newest 200 messages of this conversation are shown.</p>}
       {thread.messages.map(message => message.id === open.id
-        ? <div key={message.id} className="rounded-md border border-accent/40 p-4">{children}</div>
+        ? <div key={message.id} className="py-4 first:pt-0">{children}</div>
         : <CollapsedMessage key={message.id} row={message} expanded={expanded.has(message.id)} onToggle={() => toggle(message.id)}
           openFolder={open.folder} timezone={timezone} requestFlag={requestFlag} />)}
     </section>
@@ -62,9 +62,9 @@ function CollapsedMessage({ row, expanded, onToggle, openFolder, timezone, reque
   const unread = !(detail.data?.is_read ?? row.is_read);
   const snippet = row.body_text?.replace(/\s+/g, ' ').trim().slice(0, 140) || '';
   return (
-    <div className={cn('rounded-md border border-border', expanded && 'bg-card')}>
+    <div>
       <button type="button" aria-expanded={expanded} onClick={onToggle}
-        className="flex w-full items-start gap-2 rounded-md px-3 py-2 text-left text-sm touch:py-3 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        className="flex w-full items-start gap-2 rounded-md px-2 py-2.5 text-left text-sm touch:py-3 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         {expanded ? <ChevronDown aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />}
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
@@ -77,7 +77,7 @@ function CollapsedMessage({ row, expanded, onToggle, openFolder, timezone, reque
         </span>
       </button>
       {expanded && (
-        <div className="border-t border-border px-3 py-3">
+        <div className="px-2 pb-4 pt-1">
           {detail.isError ? <p className="text-sm text-destructive">{detail.error instanceof Error ? detail.error.message : 'Could not load the message'}</p>
             : detail.data ? <MailMessageView email={detail.data} timezone={timezone} compact />
             : <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />Loading message…</p>}
