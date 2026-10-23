@@ -64,6 +64,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Fixed
 
+- **Switches had no tap area on touch screens.** Every switch in Settings now
+  has the 44 px tap area the other small controls have.
 - **In-page reminders respected neither the reminder detail level nor a
   calendar's notification switch.** The reminder an open, offline page shows
   itself now follows both, as the server's reminders do: at the "nothing"

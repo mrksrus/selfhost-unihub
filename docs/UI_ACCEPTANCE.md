@@ -124,7 +124,7 @@ asserts that header and the absence of inline scripts in the built image, and
 | ID | Where | Steps | Checks | Mark |
 | --- | --- | --- | --- | --- |
 | C-01 | Wide | Ctrl/Cmd+click two contacts, Shift+click a range, press Escape, press Delete, use "Set company…". | Selection grows without opening a contact; Escape clears; Delete asks first; the company is written to all selected. | Source (`contacts-page.test.tsx`) |
-| C-02 | Wide, Phone | Open Settings → Appearance and General. | Device settings say "Saved on this device"; account settings say they follow the account; the two are not mixed in one row. | Source (`AppearanceSettings.tsx`), Open at runtime |
+| C-02 | Wide, Phone | Open Settings → Appearance, General, Mail and Notifications. | Device settings say "Saved on this device"; account settings say they follow the account; the two are not mixed in one row. A setting an administrator fixed is greyed out with "Set by your administrator", never hidden. | Source (`AppearanceSettings.tsx`, `settings-pages.test.tsx`), Open at runtime |
 
 ## Baselines and approval
 

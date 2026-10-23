@@ -116,12 +116,12 @@ function FolderPicker({ account, mode, refs, disabled, lock, onChange }: {
   if (folders.isLoading) return <SettingsBlock><LoadingState compact label="Loading folders…" /></SettingsBlock>;
   if (folders.error) return <SettingsBlock><ErrorState title="Could not load the folders" error={folders.error} onRetry={() => void folders.refetch()} retrying={folders.isFetching} /></SettingsBlock>;
   return (
-    <SettingsRow label={label} description={mode === 'only' ? 'New mail in a ticked folder is announced.' : 'New mail in a ticked folder is not announced.'} lock={lock}>
-      <div role="group" aria-label={label} className="grid w-full grid-cols-2 gap-x-6 gap-y-3 sm:w-auto sm:grid-cols-3 touch:gap-y-4">
+    <SettingsRow label={label} description={mode === 'only' ? 'New mail in a ticked folder is announced.' : 'New mail in a ticked folder is not announced.'} lock={lock} stack>
+      <div role="group" aria-label={label} className="grid w-full grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 touch:gap-y-4">
         {listed.map(folder => (
-          <label key={folder.id} className="flex min-h-6 cursor-pointer items-center gap-2 text-sm touch:min-h-11">
+          <label key={folder.id} className="flex min-h-6 min-w-0 cursor-pointer items-center gap-2 text-sm touch:min-h-11">
             <Checkbox checked={refs.some(ref => refersTo(ref, folder))} disabled={disabled} onCheckedChange={checked => onChange(toggleFolder(refs, folder, checked === true))} />
-            <span className="truncate">{folder.display_name}</span>
+            <span className="truncate" title={folder.display_name}>{folder.display_name}</span>
           </label>
         ))}
       </div>

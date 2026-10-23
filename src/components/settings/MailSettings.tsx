@@ -123,8 +123,8 @@ export default function MailSettings() {
       </SettingsSection>
 
       <SettingsSection title="Snooze" description="The times offered when you snooze a message.">
-        <SettingsRow label="Choices" description={chosen.size === 0 ? 'Nothing is offered until a time is chosen.' : undefined} lock={lock('snooze_choices')}>
-          <div role="group" aria-label="Snooze choices" className="grid w-full grid-cols-2 gap-x-6 gap-y-3 sm:w-auto sm:grid-cols-3 touch:gap-y-4">
+        <SettingsRow label="Choices" description={chosen.size === 0 ? 'Nothing is offered until a time is chosen.' : undefined} lock={lock('snooze_choices')} stack>
+          <div role="group" aria-label="Snooze choices" className="grid w-full grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 touch:gap-y-4">
             {SNOOZE_OPTIONS.map(option => (
               <label key={option.value} className="flex min-h-6 cursor-pointer items-center gap-2 text-sm touch:min-h-11">
                 <Checkbox checked={chosen.has(option.value)} disabled={disabled('snooze_choices')} onCheckedChange={checked => toggleSnooze(option.value, checked === true)} />
