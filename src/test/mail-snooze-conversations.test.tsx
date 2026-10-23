@@ -46,7 +46,7 @@ let settings: Partial<UserSettingValues>;
 let failLists: boolean;
 /** Conversation pages by `${account}|${cursor}`; a page with a deferred reply waits for it. */
 let threadPages: Record<string, { threads: MailThreadSummary[]; next_cursor: string | null }>;
-let slowPages: Record<string, Promise<Reply>>;
+let slowPages: Partial<Record<string, Promise<Reply>>>;
 
 function mount() {
   render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/mail']}><MailPage /></MemoryRouter></QueryClientProvider>);
@@ -88,7 +88,8 @@ beforeEach(() => {
     if (path.startsWith('/mail/threads?')) {
       const params = new URLSearchParams(path.split('?')[1]);
       const key = `${params.get('account_id') ?? 'all'}|${params.get('cursor') ?? ''}`;
-      if (slowPages[key]) return slowPages[key];
+      const slow = slowPages[key];
+      if (slow) return slow;
       const page = threadPages[key];
       if (!page) throw new Error(`No conversation page for ${key}`);
       return { data: { threads: structuredClone(page.threads), pagination: { total: null, limit: 50, offset: 0, page: 1, totalPages: null, hasMore: !!page.next_cursor, next_cursor: page.next_cursor } } };
