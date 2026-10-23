@@ -1,6 +1,6 @@
 import { useRef, type CSSProperties, type ReactNode } from 'react';
 
-import { ArrowLeft, CheckCircle2, Forward, ListTodo, Loader2, Mail, Reply, Star } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Forward, ListTodo, Loader2, Mail, Reply, ReplyAll, Star } from 'lucide-react';
 import type { Email, MailAccount, MailFlagKind } from '@/lib/mail-api';
 import { useResizableWidth } from '@/hooks/use-resizable-width';
 import { cn } from '@/lib/utils';
@@ -24,6 +24,7 @@ interface Props {
   senderInContacts: boolean;
   onBack: () => void;
   onReply: () => void;
+  onReplyAll: () => void;
   onForward: () => void;
   /** Opens the dialog that makes a task from this message. */
   onAddTask: () => void;
@@ -38,7 +39,7 @@ interface Props {
  * of the page (remembered in this browser); the list keeps at least 20rem.
  */
 export function MailReader({ email, loading = false, accounts, location, backLabel, isMobile, isReplying, flagRequests, requestFlag,
-  senderInContacts, onBack, onReply, onForward, onAddTask, timezone, inlineCompose }: Props) {
+  senderInContacts, onBack, onReply, onReplyAll, onForward, onAddTask, timezone, inlineCompose }: Props) {
   const pane = useRef<HTMLDivElement>(null);
   const width = useResizableWidth('unihub:mail:reader-width', { element: pane, defaultValue: 0.45, min: 0.3, max: 0.7 });
   return (
@@ -73,6 +74,10 @@ export function MailReader({ email, loading = false, accounts, location, backLab
               >
                 <Reply className="h-4 w-4 mr-2" />
                 Reply
+              </Button>
+              <Button variant="outline" size="sm" onClick={onReplyAll} disabled={loading}>
+                <ReplyAll className="h-4 w-4 mr-2" />
+                Reply all
               </Button>
               <Button
                 variant="outline"

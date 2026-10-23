@@ -228,6 +228,7 @@ const MailPage = () => {
             compose.resetComposeState();
           }}
           onReply={() => compose.startResponse(selectedEmail, 'reply')}
+          onReplyAll={() => compose.startResponse(selectedEmail, 'replyAll')}
           onForward={() => compose.startResponse(selectedEmail, 'forward')}
           onAddTask={() => setTaskEmail(selectedEmail)} timezone={timezone}
           inlineCompose={!isMobile && compose.isReplying && <MailInlineCompose compose={compose} onAddTask={addTaskFromDraft} />} />

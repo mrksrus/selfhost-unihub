@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type MouseEvent, type PointerEvent } from 
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
-import { ChevronDown, ChevronUp, ExternalLink, Forward, Mail, Minimize2, Reply, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, ExternalLink, Forward, Mail, Minimize2, Reply, ReplyAll, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import { mailQueryKeys, type Email } from '@/lib/mail-api';
 import { emailPath } from '@/lib/email-tasks';
@@ -127,6 +127,9 @@ function MailPeekPanel({ emailId, docked }: { emailId: string; docked: boolean }
                 <span className="min-w-0 flex-1 truncate text-sm font-medium">Email</span>
                 <Button variant="ghost" size="sm" disabled={!email} onClick={() => email && compose.startResponse(email, 'reply')}>
                   <Reply aria-hidden="true" /><span className="sr-only sm:not-sr-only">Reply</span>
+                </Button>
+                <Button variant="ghost" size="sm" disabled={!email} onClick={() => email && compose.startResponse(email, 'replyAll')}>
+                  <ReplyAll aria-hidden="true" /><span className="sr-only sm:not-sr-only">Reply all</span>
                 </Button>
                 <Button variant="ghost" size="sm" disabled={!email} onClick={() => email && compose.startResponse(email, 'forward')}>
                   <Forward aria-hidden="true" /><span className="sr-only sm:not-sr-only">Forward</span>

@@ -1,4 +1,5 @@
-import { badRequest } from '../http/errors';
+import { db } from '../state';
+import { badRequest, notFound } from '../http/errors';
 
 // A signature belongs to its mail account (a column, not a setting): rich
 // text with a plain-text version for plain mail. The HTML is the person's
@@ -19,5 +20,15 @@ function normalizeSignature(input: { html?: unknown; text?: unknown }): Signatur
   return plain.trim() ? { html: html.trim() || null, text: plain } : { html: null, text: null };
 }
 
-export { normalizeSignature, SIGNATURE_HTML_LIMIT, SIGNATURE_TEXT_LIMIT };
+/** Saves the signature of one of the user's mail accounts. */
+async function saveSignature(userId: string, accountId: string, input: unknown) {
+  const body = (input && typeof input === 'object' ? input : {}) as { html?: unknown; text?: unknown };
+  const signature = normalizeSignature(body);
+  const [result] = await db.execute<import('mysql2/promise').ResultSetHeader>('UPDATE mail_accounts SET signature_html = ?, signature_text = ? WHERE id = ? AND user_id = ?',
+    [signature.html, signature.text, accountId, userId]);
+  if (!result.affectedRows) throw notFound('MAIL_ACCOUNT_NOT_FOUND', 'Account not found');
+  return { id: accountId, signature_html: signature.html, signature_text: signature.text };
+}
+
+export { saveSignature, normalizeSignature, SIGNATURE_HTML_LIMIT, SIGNATURE_TEXT_LIMIT };
 export type { Signature };

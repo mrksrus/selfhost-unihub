@@ -1,4 +1,5 @@
 import { useMemo, useState, type FormEvent } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import { Loader2, Repeat } from 'lucide-react';
 import {
@@ -20,6 +21,7 @@ import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { SourceEmailBlock } from '@/components/todo/SourceEmail';
 import { useSourceEmailUnlink } from '@/hooks/use-source-email-unlink';
+import { selectUserSetting, userSettingsQueryOptions } from '@/lib/settings-api';
 
 /** What the dialog shows: a new event (optionally on a day) or an existing one. */
 export type EventDialogTarget = { kind: 'new'; date?: Date } | { kind: 'edit'; event: CalendarEvent } | null;
@@ -29,7 +31,8 @@ type PendingScope = { kind: 'update' | 'delete'; event: CalendarEvent; recurring
 const emptyForm = { calendar_id: '', title: '', description: '', start_time: '', end_time: '', all_day: false, location: '', color: '#3b82f6', reminders: [0] as number[], attendee_emails: '' };
 type Form = typeof emptyForm;
 
-function formFor(target: Exclude<EventDialogTarget, null>, timezone: string | null, calendarId: string): Form {
+// A new event starts with the account's default reminder (Settings, General).
+function formFor(target: Exclude<EventDialogTarget, null>, timezone: string | null, calendarId: string, defaultReminder: number | null): Form {
   if (target.kind === 'edit') {
     const event = target.event;
     return {
@@ -42,7 +45,8 @@ function formFor(target: Exclude<EventDialogTarget, null>, timezone: string | nu
   const day = target.date ?? new Date();
   const start = new Date(day); start.setHours(9, 0, 0, 0);
   const end = new Date(day); end.setHours(10, 0, 0, 0);
-  return { ...emptyForm, calendar_id: calendarId, start_time: format(start, "yyyy-MM-dd'T'HH:mm"), end_time: format(end, "yyyy-MM-dd'T'HH:mm") };
+  return { ...emptyForm, calendar_id: calendarId, start_time: format(start, "yyyy-MM-dd'T'HH:mm"), end_time: format(end, "yyyy-MM-dd'T'HH:mm"),
+    reminders: defaultReminder === null ? [] : [defaultReminder] };
 }
 
 interface Props {
@@ -60,6 +64,7 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
   const [formTarget, setFormTarget] = useState<EventDialogTarget>(null);
   const [pendingScope, setPendingScope] = useState<PendingScope | null>(null);
   const editing = target?.kind === 'edit' ? target.event : null;
+  const defaultReminder = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('default_event_reminder') }).data;
 
   const calendarById = useMemo(() => new Map(calendars.map(calendar => [calendar.id, calendar])), [calendars]);
   const accountOf = (calendarId?: string | null) => {
@@ -83,7 +88,7 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
   // an empty form first. Later calendar refreshes do not reset what was typed.
   if (target !== formTarget) {
     setFormTarget(target);
-    if (target) setForm(formFor(target, timezone, writable[0]?.id || ''));
+    if (target) setForm(formFor(target, timezone, writable[0]?.id || '', defaultReminder === undefined ? 0 : defaultReminder));
   }
 
   const payload = (): Partial<CalendarEvent> & { title: string } => ({

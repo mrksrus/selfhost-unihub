@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import { Loader2, UserPlus } from 'lucide-react';
 import type { Email, EmailAttachment } from '@/lib/mail-api';
@@ -6,6 +7,7 @@ import { useContactActions } from '@/hooks/use-contact-actions';
 import { Button } from '@/components/ui/button';
 import { LoadingState } from '@/components/ui/page-states';
 import { SafeEmailContent } from '@/components/mail/SafeEmailContent';
+import { selectUserSetting, userSettingsQueryOptions } from '@/lib/settings-api';
 import { EmailTasks } from '@/components/mail/EmailTasks';
 import { AttachmentList } from '@/components/mail/AttachmentList';
 import { AttachmentViewer } from '@/components/mail/AttachmentViewer';
@@ -33,6 +35,7 @@ interface Props {
  */
 export function MailMessageView({ email, loading = false, timezone, senderInContacts = true, onOpenAttachment, notice, compact = false }: Props) {
   const { create: createContact } = useContactActions();
+  const readingFormat = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('reading_format') }).data;
   // Tied to the message, so another message never opens with this one's attachment.
   const [viewing, setViewing] = useState<{ emailId: string; attachmentId: string } | null>(null);
   const openId = viewing?.emailId === email.id ? viewing.attachmentId : null;
@@ -71,7 +74,7 @@ export function MailMessageView({ email, loading = false, timezone, senderInCont
 
       {!loading && (
         <div className="border-t border-border pt-4">
-          <SafeEmailContent emailId={email.id} bodyHtml={email.body_html} bodyText={email.body_text} />
+          <SafeEmailContent emailId={email.id} bodyHtml={email.body_html} bodyText={email.body_text} readingFormat={readingFormat} />
         </div>
       )}
     </div>

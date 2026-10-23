@@ -6,8 +6,7 @@ import type { CalendarView } from '@/hooks/use-calendar-view';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 
-const WEEK = { weekStartsOn: 1 as const };
-const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const dayKey = (date: Date) => format(date, 'yyyy-MM-dd');
 
 function groupByDay(events: CalendarEvent[]) {
@@ -70,7 +69,8 @@ interface GridProps {
 /** The period: a month of days, a week of columns or one day as a list. */
 export function CalendarGrid({ view, events, timezone, onOpen, onNew }: GridProps) {
   const byDay = useMemo(() => groupByDay(events), [events]);
-  const { viewMode, currentDate, selectedDate, selectDay } = view;
+  const { viewMode, currentDate, selectedDate, selectDay, weekStartsOn } = view;
+  const week = { weekStartsOn };
 
   if (viewMode === 'day') {
     const list = byDay.get(dayKey(selectedDate)) || [];
@@ -80,15 +80,16 @@ export function CalendarGrid({ view, events, timezone, onOpen, onNew }: GridProp
   }
 
   const days = viewMode === 'week'
-    ? eachDayOfInterval({ start: startOfWeek(currentDate, WEEK), end: endOfWeek(currentDate, WEEK) })
-    : eachDayOfInterval({ start: startOfWeek(startOfMonth(currentDate), WEEK), end: endOfWeek(endOfMonth(currentDate), WEEK) });
+    ? eachDayOfInterval({ start: startOfWeek(currentDate, week), end: endOfWeek(currentDate, week) })
+    : eachDayOfInterval({ start: startOfWeek(startOfMonth(currentDate), week), end: endOfWeek(endOfMonth(currentDate), week) });
+  const weekdays = [...WEEKDAYS.slice(weekStartsOn), ...WEEKDAYS.slice(0, weekStartsOn)];
   const month = viewMode === 'month';
   const limit = month ? 3 : 8;
 
   return (
     <div className="overflow-hidden rounded-lg border border-border">
       <div aria-hidden="true" className="grid grid-cols-7 border-b border-border bg-card text-xs text-muted-foreground">
-        {WEEKDAYS.map(day => <div key={day} className="px-2 py-1.5">{day}</div>)}
+        {weekdays.map(day => <div key={day} className="px-2 py-1.5">{day}</div>)}
       </div>
       <div className="grid grid-cols-7">
         {days.map((day, index) => {

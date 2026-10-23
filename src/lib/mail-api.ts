@@ -32,6 +32,9 @@ export interface MailAccount {
     skipped: number;
   };
   unread_count?: number;
+  /** The account's signature (Settings, Mail): rich text and its plain version; null without one. */
+  signature_html?: string | null;
+  signature_text?: string | null;
   /** Sync mode only: days of mail kept in UniHub; null keeps all mail. */
   sync_window_days?: MailWindowDays;
   /** Sync mode only: days of trash and spam kept in UniHub; null keeps all. */

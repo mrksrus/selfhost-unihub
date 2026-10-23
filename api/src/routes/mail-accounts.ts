@@ -99,7 +99,7 @@ const ACCOUNT_COLUMNS = `id, user_id, email_address, display_name, provider, use
   smtp_host, smtp_port, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
   server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at,
   is_active, disconnected_at, engine_version, last_synced_at, created_at,
-  sync_window_days, trash_window_days, sync_policy_confirmed_at,
+  sync_window_days, trash_window_days, sync_policy_confirmed_at, signature_html, signature_text,
   (encrypted_password IS NOT NULL) AS has_saved_password`;
 
 // Sync policy fields of the account JSON. Removal counts are only computed for

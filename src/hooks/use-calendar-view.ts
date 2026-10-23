@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { addDays, addMonths, endOfDay, endOfMonth, endOfWeek, startOfDay, startOfMonth, startOfWeek, subDays, subMonths } from 'date-fns';
 import type { CalendarCalendar } from '@/lib/calendar-api';
+import { selectUserSetting, userSettingsQueryOptions, type UserSettingValues } from '@/lib/settings-api';
 
 export type CalendarViewMode = 'day' | 'week' | 'month';
 
@@ -9,7 +11,9 @@ const STORAGE_VIEW_KEY = 'calendar_view_mode';
 const STORAGE_CURRENT_DATE_KEY = 'calendar_current_date';
 const STORAGE_SELECTED_DATE_KEY = 'calendar_selected_date';
 const STORAGE_SELECTED_CALENDAR_IDS_KEY = 'calendar_selected_ids';
-const WEEK = { weekStartsOn: 1 as const };
+type WeekStartsOn = 0 | 1 | 6;
+// The account's week start (Settings, General); Monday until it is known.
+const WEEK_STARTS_ON: Record<UserSettingValues['week_start'], WeekStartsOn> = { monday: 1, sunday: 0, saturday: 6 };
 
 function read(key: string) {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -23,14 +27,17 @@ function readDate(key: string) {
   return Number.isNaN(date.getTime()) ? new Date() : date;
 }
 
-export function viewDateRange(viewMode: CalendarViewMode, baseDate: Date) {
+export function viewDateRange(viewMode: CalendarViewMode, baseDate: Date, weekStartsOn: WeekStartsOn = 1) {
+  const week = { weekStartsOn };
   if (viewMode === 'day') return { start: startOfDay(baseDate), end: endOfDay(baseDate) };
-  if (viewMode === 'week') return { start: startOfWeek(baseDate, WEEK), end: endOfWeek(baseDate, WEEK) };
-  return { start: startOfWeek(startOfMonth(baseDate), WEEK), end: endOfWeek(endOfMonth(baseDate), WEEK) };
+  if (viewMode === 'week') return { start: startOfWeek(baseDate, week), end: endOfWeek(baseDate, week) };
+  return { start: startOfWeek(startOfMonth(baseDate), week), end: endOfWeek(endOfMonth(baseDate), week) };
 }
 
 /** Which period and which calendars the Calendar page shows. */
 export function useCalendarView(calendars: CalendarCalendar[]) {
+  const weekStart = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('week_start') }).data ?? 'monday';
+  const weekStartsOn = WEEK_STARTS_ON[weekStart];
   const [viewMode, setViewMode] = useState<CalendarViewMode>(() => {
     const raw = read(STORAGE_VIEW_KEY);
     return raw === 'day' || raw === 'week' || raw === 'month' ? raw : 'month';
@@ -59,7 +66,7 @@ export function useCalendarView(calendars: CalendarCalendar[]) {
   useEffect(() => { write(STORAGE_SELECTED_CALENDAR_IDS_KEY, JSON.stringify(selectedCalendarIds)); }, [selectedCalendarIds]);
   useEffect(() => { if (viewMode === 'day') setCurrentDate(selectedDate); }, [viewMode, selectedDate]);
 
-  const range = useMemo(() => viewDateRange(viewMode, currentDate), [viewMode, currentDate]);
+  const range = useMemo(() => viewDateRange(viewMode, currentDate, weekStartsOn), [viewMode, currentDate, weekStartsOn]);
 
   const shiftPeriod = useCallback((direction: -1 | 1) => {
     if (viewMode === 'month') {
@@ -88,7 +95,7 @@ export function useCalendarView(calendars: CalendarCalendar[]) {
     setSelectedCalendarIds(prev => shown ? Array.from(new Set([...prev, calendarId])) : prev.filter(id => id !== calendarId));
   }, []);
 
-  return { viewMode, setViewMode, currentDate, selectedDate, selectedCalendarIds, range, shiftPeriod, goToday, selectDay, showCalendar };
+  return { viewMode, setViewMode, currentDate, selectedDate, selectedCalendarIds, range, weekStartsOn, shiftPeriod, goToday, selectDay, showCalendar };
 }
 
 export type CalendarView = ReturnType<typeof useCalendarView>;

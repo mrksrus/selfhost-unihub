@@ -36,7 +36,8 @@ export const SETTINGS = {
     default_mail_account_id: { scope: 'user', kind: { type: 'reference', target: 'mail_account' }, default: '' },
     accent_color: { scope: 'user', kind: { type: 'enum', values: ['blue', 'indigo', 'violet', 'pink', 'teal', 'green'] }, default: 'blue' },
     week_start: { scope: 'user', kind: { type: 'enum', values: ['monday', 'sunday', 'saturday'] }, default: 'monday' },
-    default_event_reminder: { scope: 'user', kind: { type: 'integer', min: 0, max: 10080, values: [0, 5, 10, 15, 30, 60, 120, 1440, 2880, 10080], nullable: true }, default: 0 },
+    // The event dialog's reminder choices (REMINDER_OPTIONS in src/lib/calendar-api.ts).
+    default_event_reminder: { scope: 'user', kind: { type: 'integer', min: 0, max: 1440, values: [0, 5, 15, 30, 60, 120, 1440], nullable: true }, default: 0 },
     reminder_notification_detail: { scope: 'user', kind: { type: 'enum', values: ['full', 'none'] }, default: 'full', strictness: ['full', 'none'] },
     compose_format: { scope: 'user', kind: { type: 'enum', values: ['rich', 'plain'] }, default: 'rich' },
     compose_format_switch: { scope: 'user', kind: { type: 'boolean' }, default: false },

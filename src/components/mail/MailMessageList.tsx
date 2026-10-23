@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, CheckSquare, ChevronLeft, ChevronRight, Inbox, ListTodo, Mail, Paperclip, Plus, Square, Star, Trash2 } from 'lucide-react';
 import type { Email, MailAccount, MailFlagKind } from '@/lib/mail-api';
 import type { MailListView } from '@/hooks/use-mail-list-view';
@@ -6,9 +7,13 @@ import type { MailBulkActions } from '@/hooks/use-mail-bulk-actions';
 import { Button } from '@/components/ui/button';
 import { EmptyState, LoadingState } from '@/components/ui/page-states';
 import { cn } from '@/lib/utils';
+import { selectUserSetting, userSettingsQueryOptions } from '@/lib/settings-api';
 import { Pagination, PaginationContent, PaginationItem } from '@/components/ui/pagination';
 import { MailPendingMark } from '@/components/mail/MailPendingMark';
 import { ALL_ACCOUNTS, ALL_MAIL, formatListDate, type MailFolderItem } from '@/components/mail/mail-page-model';
+
+// Lines of body text under each message (Settings, Mail): 0 to 5.
+const PREVIEW_CLAMP = ['', 'truncate', 'line-clamp-2', 'line-clamp-3', 'line-clamp-4', 'line-clamp-5'];
 
 interface ListProps {
   account: string | null;
@@ -43,6 +48,7 @@ function emptyText(list: MailListView, account: string | null, folder: string, f
 export function MailMessageList({ account, folder, folderLabel, accountLabel, list, selection, accounts, flagRequests, requestFlag,
   onOpen, onContextMenu, onAddAccount }: ListProps) {
   const { emails } = list;
+  const previewLines = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('mail_preview_lines') }).data ?? 1;
   const empty = emptyText(list, account, folder, folderLabel, accountLabel);
   return (
     <div className="min-h-0 flex-1 overflow-auto pb-mobile-nav md:pb-0">
@@ -99,7 +105,9 @@ export function MailMessageList({ account, folder, folderLabel, accountLabel, li
  aria-label="Has attachments" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
                     {!!email.task_count && <ListTodo aria-label={email.task_count === 1 ? 'Has a task' : `Has ${email.task_count} tasks`} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
                   </span>
-                  <span className="mt-0.5 block truncate pl-4 text-sm text-muted-foreground/80">{email.body_text?.substring(0, 140) || '(No content)'}</span>
+                  {previewLines > 0 && <span className={cn('mt-0.5 block break-words pl-4 text-sm text-muted-foreground/80', PREVIEW_CLAMP[previewLines])}>
+                    {email.body_text?.replace(/\s+/g, ' ').trim().substring(0, 140 * previewLines) || '(No content)'}
+                  </span>}
                   {(disconnected || email.remote_missing) && <span className="mt-1 flex flex-wrap gap-1.5 pl-4">
                     {disconnected && <span className="rounded border border-border px-1.5 text-xs text-muted-foreground" title="This account is disconnected; this mail is retained locally, not verified at the provider">Disconnected · local mail</span>}
                     {email.remote_missing && <span className="rounded border border-border px-1.5 text-xs text-muted-foreground" title="No currently verified provider occurrence; local copy retained">Local copy · provider presence unverified</span>}

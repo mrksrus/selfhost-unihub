@@ -6,6 +6,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
@@ -127,6 +128,22 @@ function RecipientRows({ compose, idSuffix = '', rowClassName }: { compose: Mail
         </div>
       ))}
     </>
+  );
+}
+
+// The message body in the message's format: the rich editor with its
+// toolbar, or plain text (Settings, Mail: compose format).
+function ComposeBodyEditor(props: { compose: MailCompose; editorId: string; editorRef: RefObject<HTMLDivElement>; editorClassName?: string }) {
+  if (props.compose.bodyFormat === 'rich') return <RichComposeEditor {...props} />;
+  const { compose, editorId, editorClassName = '' } = props;
+  return (
+    <Textarea
+      id={editorId}
+      value={compose.composeForm.body}
+      placeholder="Write your message..."
+      className={`resize-none overscroll-contain font-sans text-sm ${editorClassName}`}
+      onChange={event => compose.updateComposeForm({ body: event.target.value })}
+    />
   );
 }
 
@@ -367,7 +384,7 @@ export function MailInlineCompose({ compose, onAddTask, fill = false }: { compos
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-3">
             <div className="space-y-2">
               <Label htmlFor="compose-body-inline">Message</Label>
-              <RichComposeEditor compose={compose} editorId="compose-body-inline" editorRef={compose.inlineComposeEditorRef} editorClassName="h-[220px] min-h-[180px]" />
+              <ComposeBodyEditor compose={compose} editorId="compose-body-inline" editorRef={compose.inlineComposeEditorRef} editorClassName="h-[220px] min-h-[180px]" />
             </div>
             <ComposeAttachmentsSection compose={compose} inputId="compose-attachments-inline" />
           </div>
@@ -466,7 +483,7 @@ export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
           <div className={`min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-3 ${isMobile ? SHORT_SCREEN_STATIC : ''}`}>
             <div className="flex min-h-0 flex-col space-y-2">
               <Label htmlFor="compose-body">Message</Label>
-              <RichComposeEditor
+              <ComposeBodyEditor
                 compose={compose}
                 editorId="compose-body"
                 editorRef={compose.dialogComposeEditorRef}

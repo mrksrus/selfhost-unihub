@@ -33,3 +33,31 @@ describe('Dark email reading', () => {
     expect(screen.getByTitle('email-a').getAttribute('srcdoc')).not.toContain("/api/mail/attachments/ data: http: https:");
   });
 });
+
+describe('Reading format (Settings, Mail)', () => {
+  const designed = '<table><tr><td>Logo</td><td>Offer</td></tr></table><p>Newsletter</p>';
+  const written = '<div>Hi Ana,</div><div>see you at ten.</div>';
+
+  it('opens each message in the chosen appearance; a switch by hand stays with that message', () => {
+    const view = render(<SafeEmailContent emailId="a" bodyHtml={written} bodyText="Hi Ana" readingFormat="original" />);
+    expect(screen.getByTitle('email-a')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Dark reading view' }));
+    expect(screen.queryByTitle('email-a')).not.toBeInTheDocument();
+    view.rerender(<SafeEmailContent emailId="b" bodyHtml={written} bodyText="Hi Ana" readingFormat="original" />);
+    expect(screen.getByTitle('email-b')).toBeInTheDocument();
+  });
+
+  it('auto shows designed mail in its original appearance and written mail simplified', () => {
+    const view = render(<SafeEmailContent emailId="a" bodyHtml={designed} bodyText={null} readingFormat="auto" />);
+    expect(screen.getByTitle('email-a')).toBeInTheDocument();
+    view.rerender(<SafeEmailContent emailId="b" bodyHtml={written} bodyText="Hi Ana, see you at ten." readingFormat="auto" />);
+    expect(screen.queryByTitle('email-b')).not.toBeInTheDocument();
+    expect(screen.getByText('Hi Ana, see you at ten.')).toBeInTheDocument();
+  });
+
+  it('remote images stay blocked when a message opens in its original appearance', () => {
+    render(<SafeEmailContent emailId="a" bodyHtml={'<p>Hi</p><img src="https://tracker.example/x">'} bodyText={null} readingFormat="original" />);
+    expect(screen.getByText(/Remote images are blocked/)).toBeInTheDocument();
+    expect(screen.getByTitle('email-a').getAttribute('srcdoc')).not.toContain('https://tracker.example/x');
+  });
+});

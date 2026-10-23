@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type RefObject } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { format } from 'date-fns';
 import { deleteDraft, saveDraft, sendDraft, sendMessage, type AttachmentPayload, type DraftInput, type OutgoingMessage, type ReplyThreading } from '@/lib/mail-compose-api';
 import { invalidateMailQueries, type Email, type EmailAttachment } from '@/lib/mail-api';
 import { contactsQueryOptions } from '@/lib/contacts-api';
-import { plainTextToHtml, escapeHtml, sanitizeComposeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
+import { plainTextToHtml, sanitizeComposeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
+import { composeBody, convertBody, quoteOf, responseRecipients, signatureFor, type BodyParts, type ComposeFormat, type ResponseMode } from '@/lib/compose-body';
+import type { MailTemplate } from '../../api/src/contracts/mail';
 import { useToast } from '@/hooks/use-toast';
 import { sendFailureToast } from '@/components/mail/send-failure-toast';
 import { useMailAccounts } from '@/hooks/use-mail-queries';
@@ -70,6 +71,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   // Choosing another account here never changes what the Mail page shows.
   const { data: accounts = [] } = useMailAccounts();
   const preferredAccountId = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('default_mail_account_id') }).data ?? '';
+  const defaultFormat = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('compose_format') }).data ?? 'rich';
   const [chosenAccountId, setChosenAccountId] = useState<string | null>(null);
   const connected = (id: string | null | undefined) => !!id && accounts.some(account => account.id === id && account.is_active && !account.disconnected_at);
   const fromAccountId = chosenAccountId ?? activeMailAccountId
@@ -77,6 +79,12 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   const [composeMode, setComposeMode] = useState<ComposeMode>('new');
   const [isReplying, setIsReplying] = useState(false);
   const [composeForm, setComposeForm] = useState<ComposeForm>(EMPTY_COMPOSE_FORM);
+  // Rich text or plain text: the account's default for each new message,
+  // switched per message where the switch is on (Settings, Mail).
+  const [bodyFormat, setBodyFormat] = useState<ComposeFormat>('rich');
+  // What the message started from (a template, the quoted message), so a
+  // signature can follow the From account while nothing was written yet.
+  const partsRef = useRef<BodyParts>({});
   const [composeReturnTo, setComposeReturnTo] = useState<string | null>(null);
   const [focusedRecipientInput, setFocusedRecipientInput] = useState<string | null>(null);
   const [composeAttachments, setComposeAttachments] = useState<ComposeAttachment[]>([]);
@@ -127,6 +135,11 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   // later from Drafts does not know it.
   const [replyToEmailId, setReplyToEmailId] = useState<string | null>(null);
   const threading: ReplyThreading = replyToEmailId ? { in_reply_to_email_id: replyToEmailId } : {};
+  const accountById = (id: string | null | undefined) => accounts.find(account => account.id === id) ?? null;
+  const startingBody = (accountId: string | null, nextFormat: ComposeFormat, parts: BodyParts) => {
+    partsRef.current = parts;
+    return composeBody(nextFormat, signatureFor(accountById(accountId), nextFormat), parts);
+  };
 
   // Open compose dialog if linked from dashboard
   useEffect(() => {
@@ -134,6 +147,9 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     if (params.get('action') === 'compose') {
       const returnTo = sanitizeReturnTo(params.get('returnTo'));
       setComposeMode('new');
+      setBodyFormat('rich');
+      // A body from the link is the start of the message, above the signature.
+      partsRef.current = params.get('body') ? { intro: { html: null, text: params.get('body') || '' } } : {};
       setComposeForm({
         ...EMPTY_COMPOSE_FORM,
         to: params.get('to') || '',
@@ -179,8 +195,11 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       cc: draft.cc_addresses?.join(', ') || '',
       bcc: draft.bcc_addresses?.join(', ') || '',
       subject: draft.subject || '',
-      body: sanitizeComposeHtml(draft.body_html || '') || (draft.body_text ? plainTextToHtml(draft.body_text) : ''),
+      body: draft.body_html ? sanitizeComposeHtml(draft.body_html) : draft.body_text || '',
     });
+    // A draft keeps the format it was written in.
+    setBodyFormat(draft.body_html || !draft.body_text ? 'rich' : 'plain');
+    partsRef.current = {};
     setChosenAccountId(draft.mail_account_id);
     setIsReplying(false);
     setIsComposeOpen(true);
@@ -284,6 +303,8 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     setComposeMode('new');
     setReplyToEmailId(null);
     setComposeForm(EMPTY_COMPOSE_FORM);
+    setBodyFormat('rich');
+    partsRef.current = {};
     setFocusedRecipientInput(null);
     setComposeAttachments([]);
     setExistingDraftAttachments([]);
@@ -310,33 +331,76 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     if (target) navigate(target);
   };
 
-  /** Starts a reply or forward of the open message; asks first when a dirty compose would be replaced. */
-  const startResponse = (email: Email, mode: 'reply' | 'forward') => {
+  /** Starts a reply, reply to all or forward of the open message; asks first when a dirty compose would be replaced. */
+  const startResponse = (email: Email, mode: ResponseMode) => {
     if ((isReplying || isComposeOpen) && (isComposeDirty || attachmentsDirty) && hasMeaningfulContent()) {
       setComposeClosePromptOpen(true);
       return;
     }
     newComposition();
-    setComposeMode(mode);
-    setReplyToEmailId(mode === 'reply' ? email.id : null);
+    setComposeMode(mode === 'forward' ? 'forward' : 'reply');
+    setReplyToEmailId(mode === 'forward' ? null : email.id);
     setComposeAttachments([]);
     setExistingDraftAttachments([]);
     setActiveDraftId(null);
     setAttachmentsDirty(false);
     setIsComposeDirty(false);
     setChosenAccountId(email.mail_account_id);
-    const quoted = `<p><strong>${mode === 'reply' ? 'Original Message' : 'Forwarded Message'}</strong><br>From: ${escapeHtml(email.from_name || email.from_address)}<br>Date: ${escapeHtml(format(new Date(email.received_at), 'PPpp'))}</p><blockquote>${plainTextToHtml(email.body_text || '')}</blockquote>`;
+    setBodyFormat(defaultFormat);
+    const recipients = responseRecipients(email, mode, accountById(email.mail_account_id)?.email_address);
     setComposeForm({
       ...EMPTY_COMPOSE_FORM,
-      to: mode === 'reply' ? email.from_address : '',
-      subject: `${mode === 'reply' ? 'Re' : 'Fwd'}: ${email.subject || ''}`,
-      body: `<p><br></p><hr>${quoted}`,
+      ...recipients,
+      subject: `${mode === 'forward' ? 'Fwd' : 'Re'}: ${email.subject || ''}`,
+      body: startingBody(email.mail_account_id, defaultFormat, { quote: quoteOf(email, mode) }),
     });
     if (isMobile) {
       setIsComposeOpen(true);
     } else {
       setIsReplying(true);
     }
+  };
+
+  /** Opens an empty new message in the account's compose format, with the sending account's signature. */
+  const startNewMessage = () => {
+    if (!isComposeOpen && !isReplying) {
+      newComposition();
+      setComposeMode('new');
+      setBodyFormat(defaultFormat);
+      setComposeForm({ ...EMPTY_COMPOSE_FORM, body: startingBody(fromAccountId, defaultFormat, {}) });
+      setIsComposeDirty(false);
+    }
+    setIsComposeOpen(true);
+  };
+
+  // While nothing was written yet, the body follows the From account's
+  // signature: a choice in the composer, or the accounts and the default
+  // send-from account arriving after the composer opened.
+  const signature = signatureFor(accountById(fromAccountId), bodyFormat);
+  useEffect(() => {
+    if ((!isComposeOpen && !isReplying) || isComposeDirty || activeDraftId) return;
+    setComposeForm(prev => ({ ...prev, body: composeBody(bodyFormat, signature, partsRef.current) }));
+    // bodyFormat changes only with a switch, which marks the message changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature, isComposeOpen, isReplying, isComposeDirty, activeDraftId]);
+
+  /** Switches this message between rich text and plain text. */
+  const switchBodyFormat = (next: ComposeFormat) => {
+    if (next === bodyFormat) return;
+    setBodyFormat(next);
+    setComposeForm(prev => ({ ...prev, body: convertBody(prev.body, next) }));
+    markChanged();
+  };
+
+  /** Starts the message (new mail or reply) from a template: its text above the signature and quote. */
+  const applyTemplate = (template: MailTemplate) => {
+    const intro = { html: template.body_html, text: template.body_text };
+    setComposeForm(prev => ({
+      ...prev,
+      subject: prev.subject.trim() && composeMode !== 'new' ? prev.subject : template.subject || prev.subject,
+      body: startingBody(fromAccountId, bodyFormat, { ...partsRef.current, intro }),
+    }));
+    markChanged();
   };
 
   const sendEmailMutation = useMutation({
@@ -350,9 +414,9 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   });
 
   // What a save reads when it starts, after the saves before it have ended.
-  const latestRef = useRef({ composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty });
+  const latestRef = useRef({ composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty, bodyFormat });
   useLayoutEffect(() => {
-    latestRef.current = { composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty };
+    latestRef.current = { composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty, bodyFormat };
   });
 
   const saveNow = useCallback(async (options: { includeAttachments?: boolean; quiet?: boolean },
@@ -362,7 +426,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     // another) does nothing, so it never saves the message opened since.
     const composition = owner.composition;
     if (draftRef.current !== owner || compositionRef.current !== composition) return null;
-    const { composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty } = latestRef.current;
+    const { composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty, bodyFormat } = latestRef.current;
     if (!fromAccountId) {
       if (!options.quiet) toast({ title: 'Please select an account before saving a draft', variant: 'destructive' });
       return null;
@@ -383,8 +447,8 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
         cc: composeForm.cc,
         bcc: composeForm.bcc,
         subject: composeForm.subject,
-        body: composeForm.body || '<p></p>',
-        isHtml: true,
+        body: composeForm.body || (bodyFormat === 'rich' ? '<p></p>' : ''),
+        isHtml: bodyFormat === 'rich',
       };
 
       if (includeAttachments) {
@@ -583,8 +647,8 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
         cc: composeForm.cc,
         bcc: composeForm.bcc,
         subject: composeForm.subject.trim() || '(No subject)',
-        body: composeForm.body || '<p></p>',
-        isHtml: true,
+        body: composeForm.body || (bodyFormat === 'rich' ? '<p></p>' : ''),
+        isHtml: bodyFormat === 'rich',
         attachments: attachmentPayload,
         ...threading,
       });
@@ -617,8 +681,9 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   };
 
   return {
-    isComposeOpen, openCompose: () => setIsComposeOpen(true), composeMode, isReplying,
+    isComposeOpen, openCompose: startNewMessage, composeMode, isReplying,
     composeForm, updateComposeForm, fromAccountId, setFromAccount: setChosenAccountId,
+    bodyFormat, switchBodyFormat, applyTemplate,
     focusedRecipientInput, setFocusedRecipientInput, replaceActiveRecipient, contactEmailSuggestions,
     composeAttachments, existingDraftAttachments, isAttachmentDragOver, setIsAttachmentDragOver,
     addComposeFiles, removeComposeAttachment, removeExistingDraftAttachment, handleComposeAttachmentInput,

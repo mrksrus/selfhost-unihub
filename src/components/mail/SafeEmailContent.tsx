@@ -2,11 +2,35 @@ import { useMemo, useState } from 'react';
 import { useTheme } from 'next-themes';
 import { Button } from '@/components/ui/button';
 import { emailSrcDoc, prepareEmailHtml } from '@/lib/email-privacy';
+import type { ReadingFormat } from '@/lib/settings-api';
 
 interface SafeEmailContentProps {
   emailId: string;
   bodyHtml: string | null;
   bodyText: string | null;
+  /** The account's reading format; the behaviour before 0.24 when not given. */
+  readingFormat?: ReadingFormat;
+}
+
+// Designed mail (layout tables, backgrounds, several images) reads better in
+// its original appearance; mail written as text reads better simplified.
+function looksDesigned(html: string) {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const content = template.content;
+  const layoutTables = Array.from(content.querySelectorAll('table')).filter(table => table.querySelectorAll('td').length > 1).length;
+  const backgrounds = content.querySelectorAll('[bgcolor], [background], [style*="background"]').length;
+  return layoutTables > 0 || backgrounds > 1 || content.querySelectorAll('img').length > 2;
+}
+
+// Which appearance a message opens in, from the account's reading format
+// (Settings, Mail). 'theme' is the behaviour before 0.24 (P-14): the reading
+// view in the dark theme, the original appearance in the light one.
+function opensOriginal(format: ReadingFormat, dark: boolean, bodyHtml: string) {
+  if (format === 'original') return true;
+  if (format === 'simplified') return false;
+  if (format === 'auto') return looksDesigned(bodyHtml);
+  return !dark;
 }
 
 // A keyed child discards both choices on navigation, including A -> B -> A.
@@ -14,11 +38,15 @@ export function SafeEmailContent(props: SafeEmailContentProps) {
   return <MessageContent key={props.emailId} {...props} />;
 }
 
-function MessageContent({ emailId, bodyHtml, bodyText }: SafeEmailContentProps) {
+function MessageContent({ emailId, bodyHtml, bodyText, readingFormat: format = 'theme' }: SafeEmailContentProps) {
   const [allowRemoteContent, setAllowRemoteContent] = useState(false);
   const [blockSuspectedTrackers, setBlockSuspectedTrackers] = useState(true);
-  const [original, setOriginal] = useState(false);
+  // null follows the reading format until this message is switched by hand.
+  const [chosen, setOriginal] = useState<boolean | null>(null);
   const { resolvedTheme } = useTheme();
+  const dark = resolvedTheme === 'dark';
+  const original = useMemo(() => chosen ?? opensOriginal(format, dark, bodyHtml || ''), [chosen, format, dark, bodyHtml]);
+  const readingLabel = dark ? 'Dark reading view' : 'Reading view';
   const prepared = useMemo(() => prepareEmailHtml(bodyHtml || '', {
     allowRemoteImages: allowRemoteContent,
     blockSuspectedTrackers,
@@ -34,10 +62,10 @@ function MessageContent({ emailId, bodyHtml, bodyText }: SafeEmailContentProps) 
     content.querySelectorAll('p, div, tr, li, h1, h2, h3').forEach(node => node.append('\n'));
     return content.textContent?.trim() || '(No text content. Open the original email to view it.)';
   }, [bodyText, bodyHtml]);
-  if (bodyHtml && resolvedTheme === 'dark' && !original) {
+  if (bodyHtml && !original) {
     return <div className="space-y-3">
       <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/40 p-3">
-        <span className="text-sm text-muted-foreground">Dark reading view</span>
+        <span className="text-sm text-muted-foreground">{readingLabel}</span>
         <Button type="button" size="sm" variant="outline" onClick={() => setOriginal(true)}>Original email appearance</Button>
       </div>
       <div className="whitespace-pre-wrap break-words text-foreground">{readableText}</div>
@@ -48,7 +76,7 @@ function MessageContent({ emailId, bodyHtml, bodyText }: SafeEmailContentProps) 
 
     return (
       <div className="space-y-3">
-        {resolvedTheme === 'dark' && <Button type="button" size="sm" variant="outline" onClick={() => setOriginal(false)}>Dark reading view</Button>}
+        <Button type="button" size="sm" variant="outline" onClick={() => setOriginal(false)}>{readingLabel}</Button>
         {prepared.remoteImages > 0 && (
           <div className="space-y-3 rounded-md border border-border bg-muted/40 p-3">
             <p className="text-sm text-muted-foreground">
