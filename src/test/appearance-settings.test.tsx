@@ -54,7 +54,7 @@ describe('appearance settings', () => {
     expect(screen.getByRole('radio', { name: 'Teal' })).toHaveAttribute('aria-checked', 'true');
   });
 
-  it('two quick choices keep the later one, whichever save answers last', async () => {
+  it('two quick choices are saved in order and the later one stays', async () => {
     const answers: Array<() => void> = [];
     vi.mocked(api.put).mockImplementation((_path: string, body: unknown) =>
       new Promise(resolve => { answers.push(() => resolve(savedSettingsAnswer(body))); }));
@@ -65,13 +65,30 @@ describe('appearance settings', () => {
     fireEvent.click(violet);
     await waitFor(() => expect(violet).toHaveAttribute('aria-checked', 'true'));
     fireEvent.click(screen.getByRole('radio', { name: 'Teal' }));
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Teal' })).toHaveAttribute('aria-checked', 'true'));
+    // The second choice waits for the first answer, so the server stores them in the order they were made.
+    await waitFor(() => expect(answers).toHaveLength(1));
+    await act(async () => { answers[0](); await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(screen.getByRole('radio', { name: 'Teal' })).toHaveAttribute('aria-checked', 'true');
     await waitFor(() => expect(answers).toHaveLength(2));
+    expect(vi.mocked(api.put).mock.calls.map(call => call[1])).toEqual([{ values: { accent_color: 'violet' } }, { values: { accent_color: 'teal' } }]);
 
     answers[1]();
     await waitFor(() => expect(document.documentElement.style.getPropertyValue('--primary')).toBe('172 66% 50%'));
-    await act(async () => { answers[0](); await new Promise(resolve => setTimeout(resolve, 20)); });
     expect(screen.getByRole('radio', { name: 'Teal' })).toHaveAttribute('aria-checked', 'true');
-    expect(document.documentElement.style.getPropertyValue('--primary')).toBe('172 66% 50%');
+  });
+
+  it('when both of two quick choices fail, the saved accent comes back, not the first choice', async () => {
+    vi.mocked(api.put).mockResolvedValue({ error: 'Server unavailable', status: 503 });
+    show();
+    const violet = await screen.findByRole('radio', { name: 'Violet' });
+    await waitFor(() => expect(violet).toBeEnabled());
+
+    fireEvent.click(violet);
+    fireEvent.click(screen.getByRole('radio', { name: 'Teal' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Blue' })).toHaveAttribute('aria-checked', 'true'));
+    expect(violet).toHaveAttribute('aria-checked', 'false');
   });
 });
 

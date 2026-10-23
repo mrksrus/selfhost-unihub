@@ -356,12 +356,16 @@ test('the backfill threads older mail from the header part of its raw files, res
   const theirs = await legacy(stranger, strangerAccount, { messageId: '<n-1@example.test>', subject: 'Re: Budget', from: 'alice@example.test', to: '["neighbour@example.test"]',
     raw: header(['In-Reply-To: <l-root@example.test>']) });
 
+  // Two replies with the same subject, correspondent and time: neither may wait for the other.
+  const twinA = await legacy(owner, account, { messageId: '<t-1@example.test>', subject: 'Re: Twins', ago: DAY / 2 });
+  const twinB = await legacy(owner, account, { messageId: '<t-2@example.test>', subject: 'Re: Twins', ago: DAY / 2 });
+
   const unkeyed = async () => Number((await pool.execute<RowDataPacket[]>('SELECT COUNT(*) AS n FROM emails WHERE thread_key IS NULL'))[0][0].n);
-  assert.equal(await unkeyed(), 8);
+  assert.equal(await unkeyed(), 10);
   // Slices of three rows: each run resumes where the last stopped.
   const first = await runMailThreadBackfill({}, { maxRows: 3, force: true });
   assert.equal(first.more, true);
-  assert.equal(await unkeyed(), 8 - first.keyed);
+  assert.equal(await unkeyed(), 10 - first.keyed);
   for (let run = 0; run < 20 && await unkeyed() > 0; run++) await runMailThreadBackfill({}, { maxRows: 3, force: true });
   assert.equal(await unkeyed(), 0);
 
@@ -376,6 +380,9 @@ test('the backfill threads older mail from the header part of its raw files, res
   assert.deepEqual(await keyOf(planted), { in_reply_to: null, references_header: null, thread_key: sha('<l-6@example.test>') });
   assert.equal((await keyOf(huge)).thread_key, sha('<l-7@example.test>'));
   assert.equal((await keyOf(theirs)).thread_key, sha('<l-root@example.test>'), 'the neighbour\'s mail is threaded in their own mailbox');
+  const [earlierTwin, laterTwin] = [twinA, twinB].sort();
+  assert.equal((await keyOf(earlierTwin)).thread_key, sha(earlierTwin === twinA ? '<t-1@example.test>' : '<t-2@example.test>'));
+  assert.equal((await keyOf(laterTwin)).thread_key, (await keyOf(earlierTwin)).thread_key, 'the twin with the larger id joins the other');
 
   // A second run finds nothing and changes nothing.
   const before = await state();

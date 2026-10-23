@@ -12,7 +12,7 @@ const MAIL_ROUTE_MODULES = ['mail', 'mail-route-helpers', 'mail-folders', 'mail-
   'mail-messages', 'mail-operations', 'mail-sync']
   .map(name => require.resolve(`../../dist/src/routes/${name}`))
   // Draft loading and sending live in a service the draft routes share with scheduled send.
-  .concat(require.resolve('../../dist/src/services/mail-drafts'));
+  .concat(['mail-drafts', 'mail-scheduled-send'].map(name => require.resolve(`../../dist/src/services/${name}`)));
 
 function evict(paths: FixtureValue) {
   const saved = new Map<string, NodeJS.Module | undefined>(paths.map((p: FixtureValue) => [p, require.cache[p]]));

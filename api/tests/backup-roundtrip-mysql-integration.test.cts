@@ -499,7 +499,11 @@ test('production export and restore jobs round-trip every section through encryp
     // classifies them. Restore must still pause that exact destination intent.
     const [[unclassified]] = await pool.execute<RowDataPacket[]>('SELECT state, status FROM mail_writebacks WHERE id = ?', [destinationWritebackId]);
     assert.equal(unclassified.state, null); assert.equal(unclassified.status, 'pending');
+    // A schedule of a message the restore overwrites must not send the restored content.
+    await insert('mail_scheduled_sends', { id: uuid(), user_id: encryptedUser, email_id: localEmail.id, mail_account_id: localEmail.mail_account_id,
+      send_at: '2030-01-01 00:00:00', client_key: `scheduled-${uuid()}` });
     await uploadAndRestore(destination, encryptedUser, encrypted, 'replace');
+    assert.deepEqual(await rowsFor('mail_scheduled_sends', encryptedUser), [], 'A message the restore wrote comes back unscheduled');
     const destinationCommands = await rowsFor('mail_writebacks', encryptedUser);
     const destinationIntent = destinationCommands.find((row) => row.id === destinationWritebackId);
     assert.ok(destinationIntent && destinationIntent.state === 'needs_attention' && destinationIntent.status === 'conflict',
@@ -519,7 +523,8 @@ test('production export and restore jobs round-trip every section through encryp
       assert.deepEqual(await fs.readFile(recording.storage_path), audioByTitle.get(recording.title));
     }
     for (const event of doubled.calendar_events) assert.ok(doubled.calendar_event_subtasks.some((row: FixtureValue) => row.event_id === event.id));
-    assert.equal(doubled.mail_templates.length, original.mail_templates.length * 2);
+    // A template is known by its name, unique per person: keeping both keeps the existing one.
+    assert.equal(doubled.mail_templates.length, original.mail_templates.length);
   });
   await t.test('a same-slug folder owned by another filing account fails atomically in every conflict mode', async () => {
     const userId = await newUser('folder-scope-collision');

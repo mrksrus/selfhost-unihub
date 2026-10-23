@@ -726,8 +726,17 @@ sends it twice. The statuses are:
 | `failed` | Refused before the message left; `last_error` holds a text written for the person, never the SMTP reply. Rescheduling uses a new key |
 | `unknown` | The connection ended after the message was handed over; never retried. The person checks Sent |
 
-`failed` and `unknown` send a notification (kind `scheduled-send`) without
-message content. Schedules wait while the person's Mail is off, paused or
+Sending a draft by hand reserves it in the same row (`origin = 'send_now'`,
+status `sending`), replacing its schedule: while either kind of send runs, a
+new schedule, an edit, a delete and the scheduler leave the draft alone, so it
+cannot go out twice. A send by hand whose process stopped is never resumed by
+the worker; its receipt only decides whether the draft is marked sent, unknown
+or free again. Every writer locks the draft row first and then this row. A
+mail restore waits for running draft sends, and a draft the restore writes
+loses its schedule.
+
+`failed` and `unknown` scheduled sends send a notification (kind
+`scheduled-send`) without message content. Schedules wait while the person's Mail is off, paused or
 being restored, or the person is deactivated. Schedules are installation-local
 work: a backup does not carry them and a restored draft is not scheduled.
 

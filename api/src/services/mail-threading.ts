@@ -163,10 +163,11 @@ async function subjectThread(executor: SqlExecutor, input: ThreadInput): Promise
   const since = new Date(received.getTime() - SUBJECT_WINDOW_DAYS * 86_400_000);
   const [candidates] = await executor.execute<RowDataPacket[]>(`SELECT recent.id, recent.subject, recent.thread_key FROM (
       SELECT id, subject, thread_key, received_at FROM emails
-      WHERE user_id = ? AND received_at <= ? AND received_at >= ? AND id <> ? AND is_draft = FALSE
+      WHERE user_id = ? AND (received_at < ? OR (received_at = ? AND id < ?)) AND received_at >= ? AND is_draft = FALSE
       ORDER BY received_at DESC, id DESC LIMIT ${SUBJECT_SCAN_ROWS}
     ) recent WHERE recent.subject LIKE ? ORDER BY recent.received_at DESC, recent.id DESC LIMIT 20`,
-  [input.userId, received, since, input.emailId, `%${escapeLike(base)}%`]);
+  // Strictly earlier (same time: the smaller id), so two messages never wait for each other.
+  [input.userId, received, received, input.emailId, since, `%${escapeLike(base)}%`]);
   const sameSubject = candidates.filter(row => normalizeSubject(row.subject).base === base);
   if (!sameSubject.length) return undefined;
   const [people] = await executor.execute<RowDataPacket[]>(`SELECT id, from_address, to_addresses, cc_addresses FROM emails

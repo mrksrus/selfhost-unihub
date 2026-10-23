@@ -53,6 +53,12 @@ async function nameTaken(userId: string, name: string, exceptId: string | null) 
   return rows.length > 0;
 }
 
+// The unique key on (user_id, name) settles two saves of one name at once.
+const nameClash = (error: unknown) => {
+  if ((error as { code?: string })?.code === 'ER_DUP_ENTRY') throw conflict('TEMPLATE_NAME_TAKEN', 'A template with this name exists');
+  throw error;
+};
+
 async function createTemplate(userId: string, input: unknown) {
   const template = parse(input);
   const [[count]] = await db.execute<RowDataPacket[]>('SELECT COUNT(*) AS total FROM mail_templates WHERE user_id = ?', [userId]);
@@ -60,7 +66,7 @@ async function createTemplate(userId: string, input: unknown) {
   if (await nameTaken(userId, template.name, null)) throw conflict('TEMPLATE_NAME_TAKEN', 'A template with this name exists');
   const id = crypto.randomUUID();
   await db.execute('INSERT INTO mail_templates (id, user_id, name, subject, body_html, body_text) VALUES (?, ?, ?, ?, ?, ?)',
-    [id, userId, template.name, template.subject, template.body_html, template.body_text]);
+    [id, userId, template.name, template.subject, template.body_html, template.body_text]).catch(nameClash);
   return getTemplate(userId, id);
 }
 
@@ -69,7 +75,7 @@ async function updateTemplate(userId: string, id: string, input: unknown) {
   await getTemplate(userId, id);
   if (await nameTaken(userId, template.name, id)) throw conflict('TEMPLATE_NAME_TAKEN', 'A template with this name exists');
   await db.execute('UPDATE mail_templates SET name = ?, subject = ?, body_html = ?, body_text = ? WHERE id = ? AND user_id = ?',
-    [template.name, template.subject, template.body_html, template.body_text, id, userId]);
+    [template.name, template.subject, template.body_html, template.body_text, id, userId]).catch(nameClash);
   return getTemplate(userId, id);
 }
 

@@ -61,4 +61,3 @@ export const SETTINGS = {
     notify_enabled: { scope: 'calendar', kind: { type: 'boolean' }, default: true },
   },
 } as const satisfies Record<SettingScope, Record<string, Entry>>;
-
