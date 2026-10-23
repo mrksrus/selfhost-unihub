@@ -75,6 +75,12 @@ async function saveDraftMutation({ db, userId, emailId, isNew = false, body, mut
     }
     if (changesAttachments) validateAttachmentTotals([...kept, ...staged]);
     await mutate(connection);
+    // A schedule follows the draft's From account, so removing the former
+    // account does not take the schedule of a draft that moved away with it.
+    if (!isNew) {
+      await connection.execute(`UPDATE mail_scheduled_sends s JOIN emails e ON e.id = s.email_id AND e.user_id = s.user_id
+        SET s.mail_account_id = e.mail_account_id WHERE s.email_id = ? AND s.user_id = ? AND s.mail_account_id <> e.mail_account_id`, [emailId, userId]);
+    }
     if (changesAttachments) {
       if (removable.length) {
         await connection.execute(`DELETE FROM email_attachments WHERE id IN (${removable.map(() => '?').join(',')}) AND email_id = ? AND user_id = ?`,

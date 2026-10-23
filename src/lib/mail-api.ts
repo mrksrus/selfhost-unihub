@@ -442,7 +442,8 @@ export function showRequestedSnoozeInMailCaches(client: QueryClient, ids: Readon
     for (const { key, threads, rows } of removed) {
       const data = client.getQueryData<MailListResponse | MailThreadListResponse>(key);
       if (!data) continue;
-      const idOf = (item: Email | MailThreadSummary) => 'latest' in item ? item.latest.id : item.id;
+      // A conversation is the same row whichever message is its latest now.
+      const idOf = (item: Email | MailThreadSummary) => 'latest' in item ? (item.thread_key ? `thread:${item.thread_key}` : item.latest.id) : item.id;
       const list: (Email | MailThreadSummary)[] = threads && isThreadList(data) ? [...data.threads] : isMessageList(data) ? [...data.emails] : [];
       const present = new Set(list.map(idOf));
       let added = 0;

@@ -169,23 +169,28 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     if (composeLinkHandled.current || !formatKnown) return;
     composeLinkHandled.current = true;
     const params = new URLSearchParams(window.location.search);
-    if (params.get('action') === 'compose') {
-      const returnTo = sanitizeReturnTo(params.get('returnTo'));
-      const linkBody = params.get('body') || '';
-      setComposeMode('new');
-      setBodyFormat(defaultFormat);
-      // A body from the link is the start of the message, above the signature.
-      partsRef.current = linkBody ? { intro: { html: null, text: linkBody } } : {};
-      setComposeForm({
-        ...EMPTY_COMPOSE_FORM,
-        to: params.get('to') || '',
-        subject: params.get('subject') || '',
-        body: linkBody ? (defaultFormat === 'plain' ? linkBody : plainTextToHtml(linkBody)) : '',
-      });
-      setComposeReturnTo(returnTo);
-      setIsComposeOpen(true);
+    if (params.get('action') !== 'compose') return;
+    // A message started while the settings loaded is kept; the link gives way.
+    if (compositionRef.current !== 0) {
       window.history.replaceState({}, '', window.location.pathname);
+      return;
     }
+    newComposition();
+    const returnTo = sanitizeReturnTo(params.get('returnTo'));
+    const linkBody = params.get('body') || '';
+    setComposeMode('new');
+    setBodyFormat(defaultFormat);
+    // A body from the link is the start of the message, above the signature.
+    partsRef.current = linkBody ? { intro: { html: null, text: linkBody } } : {};
+    setComposeForm({
+      ...EMPTY_COMPOSE_FORM,
+      to: params.get('to') || '',
+      subject: params.get('subject') || '',
+      body: linkBody ? (defaultFormat === 'plain' ? linkBody : plainTextToHtml(linkBody)) : '',
+    });
+    setComposeReturnTo(returnTo);
+    setIsComposeOpen(true);
+    window.history.replaceState({}, '', window.location.pathname);
   }, [formatKnown, defaultFormat]);
 
   const { data: contactsForCompose = [] } = useQuery({ ...contactsQueryOptions, enabled: isComposeOpen || isReplying });
@@ -294,6 +299,16 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     }
     // Allow re-selecting the same file later
     e.target.value = '';
+  };
+
+  // A new From account is an edit: a save in progress is followed by another
+  // (Send later), and a stored draft is saved again. An untouched new message
+  // stays untouched, so its signature keeps following the account.
+  const setFromAccount = (id: string) => {
+    if (id === fromAccountId) return;
+    setChosenAccountId(id);
+    if (isComposeDirty || activeDraftId) markChanged();
+    else revisionRef.current += 1;
   };
 
   const updateComposeForm = (patch: Partial<ComposeForm>, dirty = true) => {
@@ -878,7 +893,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
 
   return {
     isComposeOpen, openCompose: startNewMessage, composeMode, isReplying,
-    composeForm, updateComposeForm, fromAccountId, setFromAccount: setChosenAccountId,
+    composeForm, updateComposeForm, fromAccountId, setFromAccount,
     bodyFormat, switchBodyFormat, applyTemplate, saveAsTemplate, features,
     rememberRichSelection, rememberPlainSelection,
     scheduledAt, scheduleSend, cancelScheduledSend,

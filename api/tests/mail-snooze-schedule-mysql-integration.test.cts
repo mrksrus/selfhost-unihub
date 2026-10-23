@@ -115,7 +115,7 @@ test('a snoozed message leaves the lists and counts, comes back once with a noti
 test('a scheduled draft sends once at its time, waits while Mail is off, recovers a stopped send from its key, and reports a failure', {
   skip: !process.env.MYSQL_TEST_HOST, timeout: 120000,
 }, async t => {
-  const { pool, owner, stranger, ownerId, email, setMail } = await setup(t, 'schedule');
+  const { pool, owner, stranger, ownerId, account, email, setMail } = await setup(t, 'schedule');
   const scheduled = require('../dist/src/services/mail-scheduled-send') as typeof import('../src/services/mail-scheduled-send');
   const drafts = require('../dist/src/services/mail-drafts') as typeof import('../src/services/mail-drafts');
 
@@ -144,6 +144,18 @@ test('a scheduled draft sends once at its time, waits while Mail is off, recover
   assert.equal((await stranger.request('DELETE', `/api/mail/drafts/${draft}/schedule`)).status, 404);
   const listed = ((await owner.request('GET', '/api/mail/emails?folder=drafts')).body.emails as FixtureValue[]).find(row => row.id === draft);
   assert.equal(listed?.scheduled_send_status, 'scheduled', 'Drafts shows the schedule');
+  // A new From account takes the schedule along: removing the former account
+  // then leaves it in place.
+  const other = crypto.randomUUID();
+  await pool.execute(`INSERT INTO mail_accounts (id, user_id, email_address, provider, imap_host, smtp_host, encrypted_password, sync_mode, is_active)
+    VALUES (?, ?, 'schedule-other@example.test', 'custom', 'imap.example.test', 'smtp.example.test', 'x', 'download', TRUE)`, [other, ownerId]);
+  const scheduleAccount = async () => (await pool.execute<RowDataPacket[]>('SELECT mail_account_id FROM mail_scheduled_sends WHERE email_id = ?', [draft]))[0][0]?.mail_account_id;
+  assert.equal((await owner.request('PUT', `/api/mail/drafts/${draft}`, { account_id: other })).status, 200);
+  assert.equal(await scheduleAccount(), other);
+  assert.equal((await owner.request('PUT', `/api/mail/drafts/${draft}`, { account_id: account })).status, 200);
+  await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [other]);
+  assert.equal(await scheduleAccount(), account);
+  assert.equal((await status(draft)).client_key, key, 'an edit keeps the schedule');
 
   assert.deepEqual(await scheduled.runDueScheduledSends(new Date(), deliver), { sent: 0 }, 'not due yet');
   // Due while Mail is off: it waits, and is sent once Mail is back.
