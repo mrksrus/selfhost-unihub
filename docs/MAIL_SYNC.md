@@ -674,6 +674,13 @@ System folders cannot be deleted. Synced custom-folder deletion returns a confli
 | PUT | `/api/mail/drafts/:id` | Update an app-local draft; answers the draft and `uploaded` |
 | DELETE | `/api/mail/drafts/:id` | Delete an app-local draft and its attachments |
 | POST | `/api/mail/drafts/:id/send` | Send an app-local draft and remove it after SMTP succeeds |
+| POST | `/api/mail/drafts/:id/schedule` | Schedule a saved draft (`{ send_at }`), or move its time (see [Scheduled send](#scheduled-send)) |
+| DELETE | `/api/mail/drafts/:id/schedule` | Cancel a draft's schedule; the draft stays |
+| POST | `/api/mail/emails/:id/snooze` | Snooze a message until `{ until }` (see [Snooze](#snooze)) |
+| DELETE | `/api/mail/emails/:id/snooze` | Bring a snoozed message back now |
+| PUT | `/api/mail/accounts/:id/signature` | Save the account's signature (`{ html, text }`; empty clears it) |
+| GET, POST | `/api/mail/templates` | List or create the user's templates (name unique per user, 120 characters, at most 200) |
+| PUT, DELETE | `/api/mail/templates/:id` | Change or delete one template |
 | GET | `/api/mail/writebacks` | Unsettled provider changes with `can_retry`, `can_cancel`, `can_accept_server_state` |
 | POST | `/api/mail/writebacks/:id/retry` | Retry, or for a sent MOVE a read-only outcome check |
 | POST | `/api/mail/writebacks/:id/cancel` | Discard an unsent change or a stopped read/star change |
@@ -684,7 +691,45 @@ System folders cannot be deleted. Synced custom-folder deletion returns a confli
 
 `GET /api/mail/emails` supports `folder`, `account_id`, `is_read`,
 `is_starred`, `search`, `limit`, `offset`, and `include_count`. Each row carries
-its `thread_key`.
+its `thread_key`, `snoozed_until`, `snooze_returned_at`, and for a scheduled
+draft `scheduled_send_at` and `scheduled_send_status`. `folder=snoozed` lists
+the snoozed messages.
+
+### Snooze
+
+Snooze is UniHub's own state (`emails.snoozed_until`); nothing changes at the
+provider and the message keeps its folders. Until its time the message is left
+out of every list, conversation and count; search still finds it and the
+Snoozed view lists it. The time must lie between one minute and a year ahead;
+drafts cannot be snoozed. Every 30 seconds the worker brings back the messages
+whose time has come (`services/mail-snooze.ts`), each in one transaction with
+its notification (kind `snooze`), so a crash neither loses nor repeats it. The
+notification follows the account's detail level but not its on/off switch or
+folder filter: the person asked for it. Users whose Mail is off, paused or
+being restored wait. Bringing a message back by hand sends no notification.
+Backups carry the snooze state; a restored message whose time has passed
+comes back on the next worker pass.
+
+### Scheduled send
+
+A saved draft can be scheduled (`mail_scheduled_sends`, one row per draft;
+`services/mail-scheduled-send.ts`). Every 15 seconds the worker claims the due
+schedules and sends each draft through the same send-once path as Send, under
+the schedule's own key, so a second pass, a restart or a second process never
+sends it twice. The statuses are:
+
+| Status | Meaning |
+| --- | --- |
+| `scheduled` | Waiting; the draft can be edited, rescheduled, cancelled or sent by hand (which cancels the schedule) |
+| `sending` | Claimed; editing, deleting or cancelling the draft answers `409 SCHEDULED_SEND_IN_PROGRESS`. A claim with no outcome after 10 minutes is settled from its receipt |
+| `sent` | Sent, but the draft could not be removed (normally the sent draft takes its schedule with it) |
+| `failed` | Refused before the message left; `last_error` holds a text written for the person, never the SMTP reply. Rescheduling uses a new key |
+| `unknown` | The connection ended after the message was handed over; never retried. The person checks Sent |
+
+`failed` and `unknown` send a notification (kind `scheduled-send`) without
+message content. Schedules wait while the person's Mail is off, paused or
+being restored, or the person is deactivated. Schedules are installation-local
+work: a backup does not carry them and a restored draft is not scheduled.
 
 ### Conversations
 

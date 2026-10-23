@@ -277,6 +277,15 @@ item after an owner-scoped detail request, even when it falls outside the
 currently displayed calendar range. See [PWA notifications](PWA.md) for delivery
 timing and platform limits.
 
+Since 0.24 each calendar can be switched off for notifications (calendar
+setting `notify_enabled`, Settings → Notifications), and the person's reminder
+detail level (`reminder_notification_detail`: full, or none for just "Event reminder"
+without the title) applies to reminders and new items alike. Both are applied
+on the server before delivery; the page's own reminders while it is open follow
+them too. Two general settings shape the calendar: the first day of the week
+(`week_start`: Monday, Sunday or Saturday) and the reminder a new event starts
+with (`default_event_reminder`, none by default).
+
 Opt-in offline snapshots contain calendar accounts, calendars, events/to-dos,
 attendees and subtasks. The offline view applies calendar visibility, date and
 to-do filters to the saved records and remains read-only. Dark mode preserves
