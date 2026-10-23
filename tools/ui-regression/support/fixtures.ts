@@ -211,6 +211,7 @@ function defaultRoutes(emails: typeof EMAILS): Route[] {
     ['GET', /^\/modules$/, () => ok({ modules: MODULES, pages: PAGES })],
     ['GET', /^\/settings\/preferences$/, () => ok({ preferences: PREFERENCES })],
     ['GET', /^\/settings\/values$/, () => ok({ settings: SETTINGS })],
+    ['GET', /^\/settings\/values\/calendars$/, () => ok({ calendars: {} })],
     ['GET', /^\/version$/, () => ok({ app: 'unihub', server: '0.21.4', android: null })],
     ['GET', /^\/mail\/accounts$/, () => ok({ accounts: MAIL_ACCOUNTS.map(account => ({ ...account,
       unread_count: emails.filter(row => row.mail_account_id === account.id && !row.is_read).length })) })],
