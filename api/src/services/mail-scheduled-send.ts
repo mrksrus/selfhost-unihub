@@ -9,7 +9,7 @@ import { log } from '../log';
 import { blockedBackgroundModulesByUser, canRunModule } from './access-policy';
 import { isSectionRestoreActive } from './restore-locks';
 import { withTransaction } from './transactions';
-import { loadDraftEmail, lockDraftForSend, sendStoredDraft, trackDraftSend } from './mail-drafts';
+import { isDraftSendRunning, loadDraftEmail, lockDraftForSend, sendStoredDraft, trackDraftSend } from './mail-drafts';
 // Through the facade, as the draft routes did, so their tests can stub sending.
 import { sendOnce } from './mail';
 import { getReceipt } from './mail-engine/repository';
@@ -145,7 +145,7 @@ async function sendDraftNow(userId: string, draftId: string, clientKey: string |
     if (result.error) await settleMine('DELETE FROM mail_scheduled_sends');
     else await settleMine("UPDATE mail_scheduled_sends SET status = 'sent', last_error = NULL");
     return result;
-  });
+  }, { userId, draftId });
 }
 
 // What the person sees when a scheduled send did not go out. SMTP errors can
@@ -165,8 +165,8 @@ async function settle(row: ScheduleRow, status: 'failed' | 'unknown' | 'sent', l
     .catch((error: unknown) => log.warn('mail', 'could not announce a scheduled send that did not go out', { userId: row.user_id }, error));
 }
 
-// A send by hand whose process stopped: never sent again from here, the
-// person decides. Its receipt says whether it went out; without one (no key,
+// A send by hand whose process stopped (a live one in this process is skipped
+// above): never sent again from here, the person decides. Its receipt says whether it went out; without one (no key,
 // or refused) the draft is simply free again.
 async function settleStoppedSendNow(row: ScheduleRow) {
   const receipt = await getReceipt({ userId: row.user_id, clientKey: row.client_key }).catch(() => null);
@@ -187,6 +187,9 @@ async function runDueScheduledSends(now = new Date(), send: typeof sendStoredDra
     ORDER BY s.send_at LIMIT ${BATCH}`, [now, STALE_SENDING_SECONDS, ...blocked]);
   let sent = 0;
   for (const row of due) {
+    // A claim older than the stale window whose send still runs here (a slow
+    // server) is alive: neither resumed nor settled as stopped.
+    if (isDraftSendRunning(row.user_id, row.email_id)) continue;
     // Registered before the check: a restore that starts later waits for this send.
     await trackDraftSend(async () => {
       if (!await canRunModule(row.user_id, 'mail', { background: true })) return;
@@ -211,7 +214,7 @@ async function runDueScheduledSends(now = new Date(), send: typeof sendStoredDra
       sent += 1;
       // The sent draft took its schedule with it; one that could not be removed keeps a 'sent' mark.
       await db.execute("UPDATE mail_scheduled_sends SET status = 'sent', last_error = NULL WHERE id = ? AND user_id = ?", [row.id, row.user_id]);
-    });
+    }, { userId: row.user_id, draftId: row.email_id });
   }
   return { sent };
 }

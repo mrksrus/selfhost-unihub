@@ -40,6 +40,8 @@ export function MailConversation({ open, thread, children, timezone, requestFlag
         ? <div key={message.id} className="py-4 first:pt-0">{children}</div>
         : <CollapsedMessage key={message.id} row={message} expanded={expanded.has(message.id)} onToggle={() => toggle(message.id)}
           openFolder={open.folder} timezone={timezone} requestFlag={requestFlag} />)}
+      {/* The open message is always shown, even if the conversation answer lacks it. */}
+      {!thread.messages.some(message => message.id === open.id) && <div className="py-4">{children}</div>}
     </section>
   );
 }

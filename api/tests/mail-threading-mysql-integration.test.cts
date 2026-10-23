@@ -503,6 +503,19 @@ test('the conversation list groups each person\'s own mail per view, pages stabl
   assert.equal((await stranger.request('GET', `/api/mail/emails/${first}/thread`)).status, 404);
   assert.deepEqual(((await owner.request('GET', `/api/mail/emails/${oldest}/thread`)).body.messages as FixtureValue[]).map(row => row.id), [oldest, late]);
 
+  // A conversation longer than the reader's limit: the newest messages are
+  // shown, and an older message opened from the list is still among them.
+  const k7 = '7'.repeat(64);
+  const longStart = await mail(ownerId, ownerAccount, { key: k7, folder: 'archive', day: 0.5, from: 'kim@example.test' });
+  const longRest: string[] = [];
+  for (let index = 0; index < 200; index++) longRest.push(await mail(ownerId, ownerAccount, { key: k7, folder: 'archive', day: 10 + index / 1000, from: 'lee@example.test' }));
+  const long = (await owner.request('GET', `/api/mail/emails/${longStart}/thread`)).body as { messages: FixtureValue[]; truncated: boolean };
+  assert.equal(long.truncated, true);
+  assert.equal(long.messages.length, 200);
+  assert.equal(long.messages[0].id, longStart, 'the opened message first, as the oldest');
+  assert.equal(long.messages[199].id, longRest[199]);
+  await pool.execute('DELETE FROM emails WHERE thread_key = ?', [k7]);
+
   // The message list is unchanged: one row per message.
   const flat = await owner.request('GET', '/api/mail/emails?folder=inbox');
   assert.deepEqual((flat.body.emails as FixtureValue[]).map(row => row.id), [late, starred, reply, unkeyed, first, oldest]);
