@@ -61,6 +61,7 @@ export const isAttachmentPathUnderUploads = serverDelete.isAttachmentPathUnderUp
 export const deleteStoredAttachmentFiles = serverDelete.deleteStoredAttachmentFiles;
 export const getMailRawStoragePath = serverDelete.getMailRawStoragePath;
 export const isMailRawPathUnderRoot = serverDelete.isMailRawPathUnderRoot;
+export const mailFolderRoles = folders.mailFolderRoles;
 export const imapListToFolders = folders.imapListToFolders;
 export const listAvailableImapFolders = folders.listAvailableImapFolders;
 export const registerCustomImapFoldersForUser = folders.registerCustomImapFoldersForUser;

@@ -101,9 +101,10 @@ test('Android notification devices: registration, encrypted stream delivery, ack
       return { ecdh, auth, keys: { p256dh, auth } };
     }
     const open = (device: FixtureValue, body: string) => JSON.parse(ece.decrypt(Buffer.from(body, 'base64url'), { version: 'aes128gcm', privateKey: device.ecdh, authSecret: device.auth }).toString('utf8'));
-    async function newMail(subject: string) {
+    async function newMail(subject: string, detail?: string) {
       const accountId = crypto.randomUUID(); const emailId = crypto.randomUUID();
       await pool.execute<ResultSetHeader>("INSERT INTO mail_accounts (id, user_id, email_address, provider) VALUES (?, ?, ?, 'imap')", [accountId, ids.owner, `${accountId.slice(0, 8)}@example.test`]);
+      if (detail) await owner('PUT', `/settings/values/mail-accounts/${accountId}`, { values: { notify_detail: detail } });
       await pool.execute<ResultSetHeader>("INSERT INTO emails (id, user_id, mail_account_id, subject, from_name, from_address, to_addresses, folder, is_read) VALUES (?, ?, ?, ?, 'Alex Example', 'alex@example.test', '[]', 'inbox', FALSE)",
         [emailId, ids.owner, accountId, subject]);
       const eventId = await notifications.enqueueMailNotification({ userId: ids.owner, emailId });
@@ -177,6 +178,18 @@ test('Android notification devices: registration, encrypted stream delivery, ack
     assert.ok(status.lastSentAt);
     await pass();
     assert.equal(await stream.next('notification', 300), null, 'an acknowledged notification is not sent again');
+
+    // The account's level is applied on the server: the phone receives only what it shows.
+    for (const [detail, body] of [['sender', 'Alex Example'], ['none', '']]) {
+      const privateMail = await newMail(`Medical results ${detail}`, detail);
+      await pass();
+      const sealed = await stream.next('notification');
+      assert.equal(sealed?.id, privateMail.eventId);
+      const shown = open(phone, sealed.body);
+      assert.deepEqual([shown.title, shown.body], ['New Email', body]);
+      assert.doesNotMatch(JSON.stringify(shown), detail === 'none' ? /Medical|Alex/ : /Medical/, `the ${detail} payload carries nothing hidden`);
+      await owner('POST', '/notifications/android/ack', { device: registered.device, ids: [privateMail.eventId] });
+    }
 
     // Without an acknowledgement the notification is sent again later.
     const second = await newMail('Unacknowledged');

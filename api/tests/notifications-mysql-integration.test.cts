@@ -38,7 +38,11 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   await connection.execute(`CREATE TEMPORARY TABLE calendar_calendars (id CHAR(36) PRIMARY KEY, is_visible BOOLEAN) ${options}`);
   await connection.execute(`CREATE TEMPORARY TABLE calendar_events (id CHAR(36) PRIMARY KEY, user_id CHAR(36), calendar_id CHAR(36), title VARCHAR(255), start_time DATETIME, end_time DATETIME,
     reminders JSON, reminder_minutes INT, todo_status VARCHAR(24), is_todo_only BOOLEAN DEFAULT FALSE, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ${options}`);
-  await connection.execute(`CREATE TEMPORARY TABLE emails (id CHAR(36) PRIMARY KEY, user_id CHAR(36), subject TEXT, from_name TEXT, from_address TEXT, folder VARCHAR(64), is_draft BOOLEAN DEFAULT FALSE, is_read BOOLEAN DEFAULT FALSE) ${options}`);
+  await connection.execute(`CREATE TEMPORARY TABLE emails (id CHAR(36) PRIMARY KEY, user_id CHAR(36), mail_account_id CHAR(36), subject TEXT, from_name TEXT, from_address TEXT, folder VARCHAR(64), is_draft BOOLEAN DEFAULT FALSE, is_read BOOLEAN DEFAULT FALSE) ${options}`);
+  // Folder roles and the installation's policies; the filters themselves are
+  // covered on the full schema (notification-filters-mysql-integration).
+  await connection.execute(`CREATE TEMPORARY TABLE mail_folders (id CHAR(36) PRIMARY KEY, user_id CHAR(36), slug VARCHAR(64), special_use VARCHAR(32)) ${options}`);
+  await connection.execute(`CREATE TEMPORARY TABLE setting_policies (target_kind VARCHAR(16), target_id VARCHAR(36), setting_key VARCHAR(100), setting_value TEXT, locked BOOLEAN) ${options}`);
   await connection.execute(`CREATE TEMPORARY TABLE recording_uploads (id CHAR(36) PRIMARY KEY, user_id CHAR(36), title VARCHAR(255), total_bytes BIGINT, bytes_received BIGINT DEFAULT 0,
     expires_at DATETIME, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ${options}`);
   await connection.execute(`CREATE TEMPORARY TABLE backup_restore_jobs (id CHAR(36) PRIMARY KEY, user_id CHAR(36), requested_sections JSON, status VARCHAR(24)) ${options}`);

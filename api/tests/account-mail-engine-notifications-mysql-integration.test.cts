@@ -17,7 +17,7 @@ const one = async (db: FixtureValue, sql: string, params: FixtureValue[] = []) =
 const rows = async (db: FixtureValue, sql: string, params: FixtureValue[] = []) => (await db.execute(sql, params))[0];
 const decode = (value: FixtureValue) => typeof value === 'string' ? JSON.parse(value) : value;
 
-// One INBOX per login whose messages the test adds; every message has the same synthetic body.
+// Mailboxes per login whose messages the test adds; every message has the same synthetic body.
 async function startPeer() {
   const sockets = new Set<import('node:net').Socket>(), errors: FixtureValue[] = [];
   const boxes = new Map<string, { mail: Map<number, { flags: string[]; modseq: number; subject: string }>; nextUid: number }>();
@@ -27,7 +27,7 @@ async function startPeer() {
     socket.on('close', () => sockets.delete(socket));
     socket.on('error', () => {});
     socket.write('* OK synthetic notification peer\r\n');
-    let input = '', chain = Promise.resolve(), login = '';
+    let input = '', chain = Promise.resolve(), login = '', selectedBox = 'INBOX';
     const send = (value: string) => { if (!socket.destroyed) socket.write(value); };
     socket.on('data', chunk => {
       input += chunk.toString('latin1');
@@ -43,10 +43,12 @@ async function startPeer() {
           if (cmd === 'ENABLE CONDSTORE') { send('* ENABLED CONDSTORE\r\n'); ok(); return; }
           if (cmd.startsWith('LOGIN ')) { login = /LOGIN "?([a-z]+)"? /.exec(cmd)?.[1] || ''; assert(login); ok(); return; }
           if (cmd.startsWith('LSUB ')) { ok(); return; }
-          const { mail, nextUid } = box(login);
+          const { mail, nextUid } = box(`${login}/${selectedBox}`);
           if (cmd.startsWith('LIST ')) { send('* LIST (\\Noselect) "/" ""\r\n'); ok(); return; }
-          const selected = /^(SELECT|EXAMINE) "?INBOX"?$/.exec(cmd);
+          const selected = /^(SELECT|EXAMINE) "?(INBOX|Junk)"?$/.exec(cmd);
           if (selected) {
+            selectedBox = selected[2];
+            const { mail, nextUid } = box(`${login}/${selectedBox}`);
             send(`* FLAGS (\\Seen \\Flagged)\r\n* ${mail.size} EXISTS\r\n* OK [UIDVALIDITY 9] valid\r\n* OK [UIDNEXT ${nextUid}] next\r\n`);
             ok(`[${selected[1] === 'EXAMINE' ? 'READ-ONLY' : 'READ-WRITE'}] selected`); return;
           }
@@ -55,7 +57,7 @@ async function startPeer() {
             const low = Number(fetch[1]), high = Number(fetch[2] || fetch[1]);
             for (const [uid, item] of [...mail].filter(([uid]) => uid >= low && uid <= high).sort((a, b) => a[0] - b[0])) {
               if (fetch[3]) {
-                const raw = Buffer.from(`From: Fixture Sender <fixture@example.test>\r\nTo: owner@example.test\r\nSubject: ${item.subject}\r\nMessage-ID: <${uid}@example.test>\r\n\r\nbody\r\n`);
+                const raw = Buffer.from(`From: Fixture Sender <fixture@example.test>\r\nTo: owner@example.test\r\nSubject: ${item.subject}\r\nMessage-ID: <${uid}.${selectedBox}@example.test>\r\n\r\nbody\r\n`);
                 send(`* 1 FETCH (UID ${uid} FLAGS (${item.flags.join(' ')}) MODSEQ (${item.modseq}) INTERNALDATE "29-Sep-2026 12:00:00 +0000" BODY[] {${raw.length}}\r\n`);
                 if (!socket.destroyed) socket.write(raw);
                 send(')\r\n');
@@ -72,7 +74,7 @@ async function startPeer() {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
   return {
     errors,
-    arrive(login: string, subject: string, flags: string[] = []) { const b = box(login); const uid = b.nextUid++; b.mail.set(uid, { flags, modseq: 19, subject }); return uid; },
+    arrive(login: string, subject: string, flags: string[] = [], mailbox = 'INBOX') { const b = box(`${login}/${mailbox}`); const uid = b.nextUid++; b.mail.set(uid, { flags, modseq: 19, subject }); return uid; },
     port: (server.address() as import('node:net').AddressInfo).port,
     async close() { for (const socket of sockets) socket.destroy(); await new Promise(r => server.close(r)); assert.deepEqual(errors, []); },
   };
@@ -213,6 +215,24 @@ test('real MariaDB + IMAP wire peer: new mail is announced after its content arr
     await notifications.processNotificationJobs();
     assert.deepEqual(sent.slice(1).map(item => item.body), ['Fixture Sender: seen by the sweep first']);
     assert.equal((await events()).filter((e: FixtureValue) => e.source_id === sweptId).length, 1, 'one event although two streams saw it');
+
+    // The account's Junk folder, recognised by the \Junk special use its server
+    // reported (not by its name), is left out by default: new spam is imported
+    // like any mail but never announced.
+    const { registerCustomImapFoldersForUser } = require('../dist/src/services/mail-folders') as typeof import('../src/services/mail-folders');
+    await registerCustomImapFoldersForUser(userId, accountId, ['Junk'], pool, new Map([['Junk', 'junk']]), true);
+    const junk = { folderName: 'Junk', dbFolderName: (await one(pool, "SELECT slug FROM mail_folders WHERE user_id = ? AND mail_account_id = ? AND special_use = 'junk'", [userId, accountId])).slug };
+    const scanJunk = () => scanMailboxSlice({ db: pool, connection: imap, account, folder: junk, stream: 'recent' });
+    assert.equal((await scanJunk()).processed, 0, 'the empty Junk is its baseline');
+    peer.arrive('owner', 'You won a prize', [], 'Junk');
+    const spam = await scanJunk();
+    assert.equal(spam.inserted, 1);
+    assert.equal((await processBodySlice({ db: pool, connection: imap, account, folder: junk, mailboxId: spam.mailboxId })).processed, 1);
+    const spamRow = await one(pool, "SELECT id, folder, subject FROM emails WHERE mail_account_id = ? AND subject = 'You won a prize'", [accountId]);
+    assert.equal(spamRow.folder, junk.dbFolderName);
+    assert.equal((await rows(pool, 'SELECT id FROM notification_events WHERE source_id = ?', [spamRow.id])).length, 0, 'no event for Junk');
+    await notifications.processNotificationJobs();
+    assert.equal(sent.length, 2);
 
     // An account whose INBOX is empty when it is added: its first message is new mail.
     const fresh = { id: freshId, user_id: userId, sync_mode: 'sync' };

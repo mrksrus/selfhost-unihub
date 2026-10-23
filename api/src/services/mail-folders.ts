@@ -199,6 +199,16 @@ async function ensureDefaultMailFoldersForUser(userId: string | null | undefined
 
 const SPECIAL_USE_ROLES: Record<string, string> = { '\\sent': 'sent', '\\drafts': 'drafts', '\\junk': 'junk', '\\trash': 'trash', '\\archive': 'archive', '\\all': 'archive', '\\important': 'important' };
 
+// The roles a folder has for notification filters ('role:<role>'): a system
+// folder's slug, and the special use its server reported (an account's own
+// Junk folder is a custom folder whose special use is 'junk').
+function mailFolderRoles(folder: { slug: string; special_use?: string | null }) {
+  const roles = SYSTEM_MAIL_FOLDER_SET.has(folder.slug) ? [folder.slug] : [];
+  const special = String(folder.special_use || '').toLowerCase();
+  if (special && !roles.includes(special)) roles.push(special);
+  return roles;
+}
+
 // Maps ImapFlow LIST entries to selectable mailbox paths. Only the attributes
 // the server sent (RFC 6154 special-use or Gmail XLIST) assign a role; the
 // library's name-based specialUse guess is deliberately ignored.
@@ -434,6 +444,7 @@ export {
   resolveMailSenderTargetFolder,
   createMailRoutingContext,
   ensureDefaultMailFoldersForUser,
+  mailFolderRoles,
   imapListToFolders,
   listAvailableImapFolders,
   isVirtualMailFolderName,

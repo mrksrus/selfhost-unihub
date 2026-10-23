@@ -16,6 +16,7 @@ import {
   allocateCollisionSafeMailFolderSlug,
   createRemoteMailFolderForUserAccounts,
   loadMailFoldersForUser,
+  mailFolderRoles,
   toBooleanFlag,
   resolveMailSenderTargetFolder,
   createMailRoutingContext,
@@ -48,7 +49,7 @@ interface Original extends RowDataPacket {
   filing_account_id: string | null;
   sync_mode: string;
 }
-type Folder = NonNullable<Parameters<typeof folderAcceptsAccount>[0]> & { id: string; display_name: string; position?: number };
+type Folder = NonNullable<Parameters<typeof folderAcceptsAccount>[0]> & { id: string; display_name: string; position?: number; special_use?: string | null };
 
 const MAIL_PAUSED_ERRORS = new Set(['Mail restore in progress', 'Mail module is disabled', 'Mail is paused']);
 const senderRuleChunk = 500;
@@ -124,6 +125,8 @@ async function getMailFolderRowsWithCounts(userId: string, accountId: string | n
   return folders.filter(folder => !accountId || (accountId === 'legacy' ? legacyCounts.has(folder.slug)
     : folderAcceptsAccount(folder, accountId, links))).map(folder => ({
     ...folder,
+    // What a notification filter's 'role:<role>' matches (Settings' folder picker).
+    roles: mailFolderRoles(folder),
     connected_account_ids: links.get(folder.slug) || [],
     legacy_count: legacyCounts.get(folder.slug) || 0,
     total_count: countsByFolder.get(folder.slug)?.total_count || 0,
