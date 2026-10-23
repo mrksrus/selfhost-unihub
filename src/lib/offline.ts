@@ -1,6 +1,7 @@
 import { defaultPages, knownModules, knownPages, legacyOfflineModules, moduleForPath, type ModulePreference, type PagePreference } from '@/lib/modules';
 import type { User } from '@/contexts/auth-context';
 import { emitAppEvent } from '@/lib/app-events';
+import { DEFAULT_USER_SETTINGS, defaultsResolved } from '@/lib/settings-defaults';
 
 type Row = Record<string, unknown>;
 export interface OfflineSnapshot {
@@ -343,6 +344,8 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
   if(path === '/mail/accounts/counts') return {data:{counts:snapshot.mailAccounts.map(row=>({mail_account_id:row.id,total_count:snapshot.emails.filter(email=>viewAccount(email)===row.id).length,unread_count:snapshot.emails.filter(email=>viewAccount(email)===row.id&&!truthy(email.is_read)).length}))}};
   if(path === '/mail/stats') return {data:{total:snapshot.emails.length,unread:snapshot.emails.filter(row=>!truthy(row.is_read)).length,starred:snapshot.emails.filter(row=>truthy(row.is_starred)).length}};
   if(path === '/settings/preferences') return {data:{preferences:{email_link_behavior:'internal',default_start_page:'mail'}}};
+  // Saved settings are not part of the snapshot; offline uses the defaults, and writing in UniHub stays inside it.
+  if(path === '/settings/values') return {data:{settings:defaultsResolved({...DEFAULT_USER_SETTINGS,email_link_behavior:'internal'})}};
   if(path.startsWith('/mail/attachments/')) return {error:'Attachments are available when you reconnect.',status:503};
   return {error:'This feature needs a connection to UniHub. Your offline mail, contacts and calendar are still available.',status:503};
 }

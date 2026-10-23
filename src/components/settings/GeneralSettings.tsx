@@ -1,13 +1,13 @@
-import { usePreferences } from '@/hooks/use-preferences';
+import { useUserSettings } from '@/hooks/use-settings';
 import { useModules } from '@/hooks/use-modules';
 import { useMailAccounts } from '@/hooks/use-mail-queries';
-import type { UserPreferences } from '@/lib/settings-api';
+import type { UserSettingValues } from '@/lib/settings-api';
 import { ErrorState } from '@/components/ui/page-states';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 import InstallSettings from '@/components/pwa/InstallSettings';
 
-const START_PAGES: { value: UserPreferences['default_start_page']; label: string; path: string }[] = [
+const START_PAGES: { value: UserSettingValues['default_start_page']; label: string; path: string }[] = [
   { value: 'mail', label: 'Mail', path: '/mail' },
   { value: 'calendar', label: 'Calendar', path: '/calendar' },
   { value: 'todo', label: 'ToDo', path: '/todo' },
@@ -21,7 +21,7 @@ export default function GeneralSettings() {
   const { canAccess } = useModules();
   const mailEnabled = canAccess('/mail');
   const senders = (useMailAccounts().data ?? []).filter(account => account.is_active && !account.disconnected_at);
-  const { preferences, change, unavailable, error, refetch, refetching } = usePreferences();
+  const { values: preferences, change, unavailable, error, refetch, refetching } = useUserSettings();
 
   return (
     <>
@@ -33,7 +33,7 @@ export default function GeneralSettings() {
         )}
         <SettingsRow label="Start page" description="The page UniHub opens on." htmlFor="start-page">
           <Select value={preferences.default_start_page} disabled={unavailable}
-            onValueChange={value => change({ default_start_page: value as UserPreferences['default_start_page'] })}>
+            onValueChange={value => change({ default_start_page: value as UserSettingValues['default_start_page'] })}>
             <SelectTrigger id="start-page" className="w-full sm:w-56"><SelectValue /></SelectTrigger>
             <SelectContent>
               {START_PAGES.filter(page => canAccess(page.path) || page.value === preferences.default_start_page).map(page => (
@@ -44,7 +44,7 @@ export default function GeneralSettings() {
         </SettingsRow>
         <SettingsRow label="Email addresses" description="When you click an email address." htmlFor="email-links">
           <Select value={preferences.email_link_behavior} disabled={unavailable}
-            onValueChange={value => change({ email_link_behavior: value as UserPreferences['email_link_behavior'] })}>
+            onValueChange={value => change({ email_link_behavior: value as UserSettingValues['email_link_behavior'] })}>
             <SelectTrigger id="email-links" className="w-full sm:w-56"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="internal">Write in UniHub</SelectItem>

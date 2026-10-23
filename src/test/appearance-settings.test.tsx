@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { api } from '@/lib/api';
-import { DEFAULT_PREFERENCES } from '@/lib/settings-api';
+import { savedSettingsAnswer, userSettingsAnswer } from './settings-fixtures';
 import { ACCENTS, accentChannels, accentForeground, contrastRatio } from '@/lib/accent';
 import { THEMES } from '@/lib/theme';
 import { ThemeProvider } from '@/components/theme/ThemeProvider';
@@ -22,8 +22,8 @@ beforeEach(() => {
   localStorage.clear();
   window.matchMedia ??= ((query: string) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, onchange: null, dispatchEvent: () => false })) as typeof window.matchMedia;
   document.head.innerHTML = '<link rel="icon" type="image/svg+xml" href="/favicon.svg"><meta name="theme-color" content="#000000">';
-  vi.mocked(api.get).mockResolvedValue({ data: { preferences: { ...DEFAULT_PREFERENCES } } });
-  vi.mocked(api.put).mockImplementation(async (_path: string, body: unknown) => ({ data: { preferences: body } }));
+  vi.mocked(api.get).mockResolvedValue(userSettingsAnswer());
+  vi.mocked(api.put).mockImplementation(async (_path: string, body: unknown) => savedSettingsAnswer(body));
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); document.documentElement.removeAttribute('style'); document.documentElement.removeAttribute('data-theme'); });
 
@@ -36,7 +36,7 @@ describe('appearance settings', () => {
     expect(document.documentElement.style.getPropertyValue('--primary')).toBe('');
 
     fireEvent.click(violet);
-    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/settings/preferences', expect.objectContaining({ accent_color: 'violet' })));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/settings/values', { values: { accent_color: 'violet' } }));
     await waitFor(() => expect(document.documentElement.style.getPropertyValue('--primary')).toBe('258 90% 62%'));
     expect(document.documentElement.style.getPropertyValue('--ring')).toBe('255 92% 76%');
     expect(document.querySelector('link[rel="icon"]')?.getAttribute('href')).toMatch(/^data:image\/svg\+xml/);
@@ -45,7 +45,7 @@ describe('appearance settings', () => {
   });
 
   it('the saved accent is applied when the preferences load', async () => {
-    vi.mocked(api.get).mockResolvedValue({ data: { preferences: { ...DEFAULT_PREFERENCES, accent_color: 'teal' } } });
+    vi.mocked(api.get).mockResolvedValue(userSettingsAnswer({ accent_color: 'teal' }));
     show();
     await waitFor(() => expect(document.documentElement.style.getPropertyValue('--accent')).toBe('172 66% 50%'));
     // White on the dark theme's bright teal would be illegible; buttons and selected items use black.
@@ -57,7 +57,7 @@ describe('appearance settings', () => {
   it('two quick choices keep the later one, whichever save answers last', async () => {
     const answers: Array<() => void> = [];
     vi.mocked(api.put).mockImplementation((_path: string, body: unknown) =>
-      new Promise(resolve => { answers.push(() => resolve({ data: { preferences: body } })); }));
+      new Promise(resolve => { answers.push(() => resolve(savedSettingsAnswer(body))); }));
     show();
     const violet = await screen.findByRole('radio', { name: 'Violet' });
     await waitFor(() => expect(violet).toBeEnabled());

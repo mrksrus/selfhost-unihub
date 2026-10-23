@@ -2,7 +2,7 @@ import { useTheme } from 'next-themes';
 import { Check, Monitor, Moon, Sun } from 'lucide-react';
 import { ACCENTS, accentChannels, accentForeground, type AccentId } from '@/lib/accent';
 import { DEFAULT_THEME, themesFor, type Theme, type ThemeMode } from '@/lib/theme';
-import { usePreferences } from '@/hooks/use-preferences';
+import { useUserSettings } from '@/hooks/use-settings';
 import { cn } from '@/lib/utils';
 import { ErrorState } from '@/components/ui/page-states';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
@@ -94,7 +94,7 @@ function AccentPicker({ value, onChange, disabled }: { value: AccentId; onChange
 }
 
 export default function AppearanceSettings() {
-  const { preferences, change, unavailable, error, refetch, refetching } = usePreferences();
+  const { values: preferences, change, unavailable, error, refetch, refetching } = useUserSettings();
   const { theme, resolvedTheme } = useTheme();
   const mode: ThemeMode = resolvedTheme === 'light' ? 'light' : 'dark';
   return (

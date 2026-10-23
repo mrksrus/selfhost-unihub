@@ -3,7 +3,7 @@
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
--- Through migration 19.
+-- Through migration 20.
 
 CREATE TABLE `audit_log` (
   `id` char(36) NOT NULL DEFAULT uuid(),
@@ -247,6 +247,18 @@ CREATE TABLE `calendar_remote_objects` (
   CONSTRAINT `calendar_remote_objects_ibfk_3` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `calendar_settings` (
+  `calendar_id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `setting_key` varchar(100) NOT NULL,
+  `setting_value` text NOT NULL,
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`calendar_id`,`setting_key`),
+  KEY `idx_calendar_settings_user` (`user_id`),
+  CONSTRAINT `calendar_settings_ibfk_1` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `calendar_settings_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE `contacts` (
   `id` char(36) NOT NULL DEFAULT uuid(),
   `user_id` char(36) NOT NULL,
@@ -359,6 +371,11 @@ CREATE TABLE `emails` (
   `raw_bytes` bigint(20) DEFAULT NULL,
   `raw_verified` tinyint(1) NOT NULL DEFAULT 0,
   `content_state` varchar(24) NOT NULL DEFAULT 'legacy',
+  `in_reply_to` varchar(998) DEFAULT NULL,
+  `references_header` text DEFAULT NULL,
+  `thread_key` char(64) DEFAULT NULL,
+  `snoozed_until` datetime DEFAULT NULL,
+  `snooze_returned_at` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_emails_user` (`user_id`),
   KEY `idx_emails_account` (`mail_account_id`),
@@ -373,10 +390,24 @@ CREATE TABLE `emails` (
   KEY `idx_emails_user_starred_date` (`user_id`,`is_starred`,`received_at` DESC),
   KEY `idx_emails_user_read_folder_account` (`user_id`,`is_read`,`folder`,`mail_account_id`),
   KEY `fk_emails_filing_account` (`filing_account_id`),
+  KEY `idx_emails_user_thread` (`user_id`,`thread_key`),
+  KEY `idx_emails_user_snoozed` (`user_id`,`snoozed_until`),
   FULLTEXT KEY `ft_emails_search` (`subject`,`body_text`),
   CONSTRAINT `emails_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `emails_ibfk_2` FOREIGN KEY (`mail_account_id`) REFERENCES `mail_accounts` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_emails_filing_account` FOREIGN KEY (`filing_account_id`) REFERENCES `mail_accounts` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `mail_account_settings` (
+  `mail_account_id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `setting_key` varchar(100) NOT NULL,
+  `setting_value` text NOT NULL,
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`mail_account_id`,`setting_key`),
+  KEY `idx_mail_account_settings_user` (`user_id`),
+  CONSTRAINT `mail_account_settings_ibfk_1` FOREIGN KEY (`mail_account_id`) REFERENCES `mail_accounts` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `mail_account_settings_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `mail_accounts` (
@@ -410,6 +441,8 @@ CREATE TABLE `mail_accounts` (
   `sync_window_days` int(11) DEFAULT NULL,
   `trash_window_days` int(11) DEFAULT 30,
   `sync_policy_confirmed_at` datetime DEFAULT NULL,
+  `signature_html` mediumtext DEFAULT NULL,
+  `signature_text` text DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `unique_user_email` (`user_id`,`email_address`),
   KEY `idx_mail_accounts_user` (`user_id`),
@@ -709,6 +742,28 @@ CREATE TABLE `mail_remote_occurrences` (
   CONSTRAINT `mail_remote_occurrences_ibfk_4` FOREIGN KEY (`email_id`) REFERENCES `emails` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `mail_scheduled_sends` (
+  `id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `email_id` char(36) NOT NULL,
+  `mail_account_id` char(36) NOT NULL,
+  `send_at` datetime NOT NULL,
+  `status` varchar(16) NOT NULL DEFAULT 'scheduled',
+  `client_key` varchar(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `attempts` int(11) NOT NULL DEFAULT 0,
+  `last_error` varchar(255) DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_scheduled_send_email` (`email_id`),
+  KEY `idx_scheduled_sends_due` (`status`,`send_at`),
+  KEY `idx_scheduled_sends_user` (`user_id`),
+  KEY `mail_account_id` (`mail_account_id`),
+  CONSTRAINT `mail_scheduled_sends_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `mail_scheduled_sends_ibfk_2` FOREIGN KEY (`email_id`) REFERENCES `emails` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `mail_scheduled_sends_ibfk_3` FOREIGN KEY (`mail_account_id`) REFERENCES `mail_accounts` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE `mail_sender_rules` (
   `id` char(36) NOT NULL DEFAULT uuid(),
   `user_id` char(36) NOT NULL,
@@ -763,6 +818,20 @@ CREATE TABLE `mail_sync_state` (
   `last_synced_at` timestamp NULL DEFAULT NULL,
   PRIMARY KEY (`mail_account_id`,`source_folder`),
   CONSTRAINT `mail_sync_state_ibfk_1` FOREIGN KEY (`mail_account_id`) REFERENCES `mail_accounts` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `mail_templates` (
+  `id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `name` varchar(120) NOT NULL,
+  `subject` text DEFAULT NULL,
+  `body_html` mediumtext DEFAULT NULL,
+  `body_text` mediumtext DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_mail_templates_user` (`user_id`,`name`),
+  CONSTRAINT `mail_templates_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `mail_writebacks` (
@@ -990,6 +1059,17 @@ CREATE TABLE `sessions` (
   KEY `idx_sessions_user` (`user_id`),
   KEY `idx_sessions_expires` (`expires_at`),
   CONSTRAINT `sessions_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `setting_policies` (
+  `target_kind` varchar(16) NOT NULL,
+  `target_id` varchar(36) NOT NULL DEFAULT '',
+  `setting_key` varchar(100) NOT NULL,
+  `setting_value` text NOT NULL,
+  `locked` tinyint(1) NOT NULL DEFAULT 0,
+  `updated_by` char(36) DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`target_kind`,`target_id`,`setting_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `system_settings` (

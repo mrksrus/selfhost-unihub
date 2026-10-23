@@ -10,7 +10,7 @@ const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts')
 
 const uuid = () => crypto.randomUUID();
 const sha256 = (bytes: FixtureValue) => crypto.createHash('sha256').update(bytes).digest('hex');
-const TABLES = ['user_settings', 'contacts', 'mail_folders', 'mail_accounts', 'mail_folder_remote_boxes', 'mail_sender_rules', 'emails', 'email_attachments', 'mail_email_scores', 'calendar_accounts', 'calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'calendar_event_external_refs', 'recordings', 'recording_tags', 'recording_tag_links', 'recording_transcription_jobs', 'mail_folder_reconciliations', 'mail_folder_recovery_items', 'mail_folder_rule_overrides'];
+const TABLES = ['user_settings', 'contacts', 'mail_folders', 'mail_accounts', 'mail_folder_remote_boxes', 'mail_sender_rules', 'emails', 'email_attachments', 'mail_email_scores', 'calendar_accounts', 'calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'calendar_event_external_refs', 'recordings', 'recording_tags', 'recording_tag_links', 'recording_transcription_jobs', 'mail_folder_reconciliations', 'mail_folder_recovery_items', 'mail_folder_rule_overrides', 'mail_account_settings', 'mail_templates', 'calendar_settings'];
 
 function wav() {
   const bytes = Buffer.alloc(76);
@@ -155,6 +155,15 @@ test('production export and restore jobs round-trip every section through encryp
   await pool.execute<ResultSetHeader>('UPDATE emails SET is_legacy = TRUE WHERE id = ?', [sourceEmails[1].id]);
   // The default sending account is a mail account ID; restore must remap it.
   await insert('user_settings', { user_id: sourceUser, setting_key: 'default_mail_account_id', setting_value: mailAccounts[1].id });
+  // 0.24: registry settings, a folder named by id, a signature, a template,
+  // threading headers and a snooze.
+  await insert('user_settings', { user_id: sourceUser, setting_key: 'mail_preview_lines', setting_value: '3' });
+  await insert('mail_account_settings', { mail_account_id: mailAccounts[1].id, user_id: sourceUser, setting_key: 'notify_folders', setting_value: JSON.stringify(['role:junk', `folder:${folderIds.copies}`]) });
+  await insert('mail_account_settings', { mail_account_id: mailAccounts[1].id, user_id: sourceUser, setting_key: 'notify_detail', setting_value: 'sender' });
+  await pool.execute<ResultSetHeader>('UPDATE mail_accounts SET signature_html = ?, signature_text = ? WHERE id = ?', ['<p>Grüße, <b>Roundtrip</b></p>', 'Grüße, Roundtrip', mailAccounts[0].id]);
+  await insert('mail_templates', { id: uuid(), user_id: sourceUser, name: 'Weekly report', subject: 'Report for week', body_html: '<p>Hello team,</p>', body_text: 'Hello team,' });
+  await pool.execute<ResultSetHeader>('UPDATE emails SET in_reply_to = ?, references_header = ?, thread_key = ?, snoozed_until = ? WHERE id = ?',
+    ['<parent@example.test>', '<root@example.test> <parent@example.test>', sha256('<root@example.test>'), '2030-03-04 05:06:07', sourceEmails[0].id]);
   for (const account of mailAccounts) {
     const mappings = await rowsFor('mail_folder_remote_boxes', sourceUser);
     await insert('mail_folder_reconciliations', { mail_account_id: account.id, user_id: sourceUser,
@@ -170,6 +179,7 @@ test('production export and restore jobs round-trip every section through encryp
   const calendarAccountId = uuid(), calendarId = uuid(), eventId = uuid();
   await insert('calendar_accounts', { id: calendarAccountId, user_id: sourceUser, provider: 'caldav', display_name: 'Roundtrip calendar', account_email: 'calendar@example.test', username: 'calendar-user', discovery_url: 'https://8.8.8.8/dav/', base_url: 'https://8.8.8.8/dav/', encrypted_password: sourceCrypto.encrypt('synthetic-calendar-password'), encrypted_access_token: sourceCrypto.encrypt('synthetic-access-token'), encrypted_refresh_token: sourceCrypto.encrypt('synthetic-refresh-token'), is_active: 1 });
   await insert('calendar_calendars', { id: calendarId, user_id: sourceUser, account_id: calendarAccountId, name: 'Research Calendar', external_id: 'https://8.8.8.8/dav/calendar/', color: '#2244ff', is_visible: 1 });
+  await insert('calendar_settings', { calendar_id: calendarId, user_id: sourceUser, setting_key: 'notify_enabled', setting_value: 'false' });
   await insert('calendar_events', { id: eventId, user_id: sourceUser, calendar_id: calendarId, title: 'Roundtrip event', description: 'Preserve Grüße\nSecond line', start_time: '2030-02-03 10:00:00', end_time: '2030-02-03 11:00:00', recurrence: 'FREQ=WEEKLY;COUNT=3', reminders: JSON.stringify([10, 60]), reminder_minutes: 10, todo_status: 'todo', location: 'Vienna' });
   await insert('calendar_event_subtasks', { id: uuid(), user_id: sourceUser, event_id: eventId, title: 'Keep this task', is_done: 1, position: 2 });
   await insert('calendar_event_attendees', { id: uuid(), user_id: sourceUser, event_id: eventId, email: 'attendee@example.test', display_name: 'Attendee', response_status: 'accepted' });
@@ -312,7 +322,7 @@ test('production export and restore jobs round-trip every section through encryp
     compare('recording_transcription_jobs', ['status', 'provider', 'model', 'language', 'transcript_text', 'created_at', 'updated_at']);
     compare('mail_folder_reconciliations', ['inventory', 'completed_at']);
     compare('mail_folder_recovery_items', ['original_folder', 'target_folder', 'action', 'created_at']);
-    compare('emails', ['message_id', 'subject', 'from_address', 'to_addresses', 'body_text', 'folder', 'source_folder', 'imap_uid', 'imap_uidvalidity', 'is_starred', 'has_attachments', 'received_at', 'raw_sha256', 'import_complete', 'is_legacy', 'remote_folder', 'remote_uid', 'remote_uidvalidity', 'remote_missing']);
+    compare('emails', ['message_id', 'subject', 'from_address', 'to_addresses', 'body_text', 'folder', 'source_folder', 'imap_uid', 'imap_uidvalidity', 'is_starred', 'has_attachments', 'received_at', 'raw_sha256', 'import_complete', 'is_legacy', 'remote_folder', 'remote_uid', 'remote_uidvalidity', 'remote_missing', 'in_reply_to', 'references_header', 'thread_key', 'snoozed_until']);
     compare('calendar_events', ['title', 'description', 'start_time', 'end_time', 'recurrence', 'reminders', 'reminder_minutes', 'todo_status', 'location']);
     compare('calendar_event_subtasks', ['title', 'is_done', 'position']);
     compare('calendar_event_attendees', ['email', 'display_name', 'response_status']);
@@ -324,6 +334,19 @@ test('production export and restore jobs round-trip every section through encryp
     const defaultAccount = (rows: FixtureValue[]) => rows.find(row => row.setting_key === 'default_mail_account_id')?.setting_value;
     assert.equal(newAccountEmail(defaultAccount(restored.user_settings)), oldAccountEmail(defaultAccount(original.user_settings)),
       'The default sending account names the restored copy of the same account');
+    compare('mail_templates', ['name', 'subject', 'body_html', 'body_text']);
+    compare('mail_accounts', ['email_address', 'signature_html', 'signature_text']);
+    // Scoped settings follow their restored account, calendar and folder.
+    for (const setting of restored.mail_account_settings) {
+      const old = original.mail_account_settings.find((row: FixtureValue) => row.setting_key === setting.setting_key);
+      assert.equal(newAccountEmail(setting.mail_account_id), oldAccountEmail(old.mail_account_id));
+      if (setting.setting_key !== 'notify_folders') { assert.equal(setting.setting_value, old.setting_value); continue; }
+      const [role, folder] = JSON.parse(setting.setting_value);
+      assert.equal(role, 'role:junk');
+      assert.equal(restored.mail_folders.find((row: FixtureValue) => `folder:${row.id}` === folder)?.slug, 'copies', 'A folder named by id names the restored folder');
+    }
+    assert.deepEqual(restored.calendar_settings.map((row: FixtureValue) => [row.calendar_id, row.setting_key, row.setting_value]),
+      [[restored.calendar_calendars[0].id, 'notify_enabled', 'false']]);
     for (const folder of restored.mail_folders) {
       const old = original.mail_folders.find((row: FixtureValue) => row.slug === folder.slug);
       assert.equal(newAccountEmail(folder.mail_account_id), oldAccountEmail(old.mail_account_id));
@@ -496,6 +519,7 @@ test('production export and restore jobs round-trip every section through encryp
       assert.deepEqual(await fs.readFile(recording.storage_path), audioByTitle.get(recording.title));
     }
     for (const event of doubled.calendar_events) assert.ok(doubled.calendar_event_subtasks.some((row: FixtureValue) => row.event_id === event.id));
+    assert.equal(doubled.mail_templates.length, original.mail_templates.length * 2);
   });
   await t.test('a same-slug folder owned by another filing account fails atomically in every conflict mode', async () => {
     const userId = await newUser('folder-scope-collision');

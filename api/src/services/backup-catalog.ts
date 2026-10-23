@@ -23,8 +23,8 @@ interface TablePolicy {
 const SECTION_POLICIES: Readonly<Record<string, SectionPolicy>> = Object.freeze({
   settings: { tables: ["user", "user_settings"], fileKinds: [] },
   contacts: { tables: ["contacts"], fileKinds: [] },
-  calendar: { tables: ["calendar_accounts", "calendar_calendars", "calendar_events", "calendar_event_subtasks", "calendar_event_attendees", "calendar_event_external_refs"], fileKinds: [] },
-  mail: { tables: ["mail_accounts", "mail_folders", "mail_folder_remote_boxes", "mail_sender_rules", "emails", "email_attachments", "mail_email_scores", "mail_folder_reconciliations", "mail_folder_recovery_items", "mail_folder_rule_overrides", ...Object.keys(ARCHIVE_COLUMNS)], fileKinds: ["email_attachment", "raw_email"] },
+  calendar: { tables: ["calendar_accounts", "calendar_calendars", "calendar_settings", "calendar_events", "calendar_event_subtasks", "calendar_event_attendees", "calendar_event_external_refs"], fileKinds: [] },
+  mail: { tables: ["mail_accounts", "mail_account_settings", "mail_templates", "mail_folders", "mail_folder_remote_boxes", "mail_sender_rules", "emails", "email_attachments", "mail_email_scores", "mail_folder_reconciliations", "mail_folder_recovery_items", "mail_folder_rule_overrides", ...Object.keys(ARCHIVE_COLUMNS)], fileKinds: ["email_attachment", "raw_email"] },
   recordings: { tables: ["recordings", "recording_tags", "recording_tag_links", "recording_transcription_jobs"], fileKinds: ["recording"] },
 });
 
@@ -37,21 +37,28 @@ function table(section: string, columns: string, keyColumns: readonly string[] =
   });
 }
 
+// Every listed column arrived with upgrade step `id`.
+const since = (id: number, columns: string) => Object.fromEntries(columns.split(' ').map(column => [column, id]));
+
 const BASE_TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Object.freeze({
   user: table('settings', 'id email full_name avatar_url role is_active email_verified timezone created_at updated_at', ["id"], {"email": "destination_identity", "role": "destination_identity", "is_active": "destination_identity", "email_verified": "destination_identity"}),
   user_settings: table('settings', 'user_id setting_key setting_value updated_at', ["user_id", "setting_key"], {}),
   contacts: table('contacts', 'id user_id first_name last_name email email2 email3 phone phone2 phone3 company job_title notes avatar_url is_favorite created_at updated_at', ["id"], {}),
   calendar_accounts: table('calendar', 'id user_id provider account_email display_name username encrypted_password discovery_url base_url encrypted_access_token encrypted_refresh_token token_expires_at provider_config capabilities is_active sync_status sync_error last_synced_at created_at updated_at', ["id"], {}),
   calendar_calendars: table('calendar', 'id user_id account_id name external_id color is_visible auto_todo_enabled read_only is_primary sync_token created_at updated_at', ["id"], {}),
+  calendar_settings: table('calendar', 'calendar_id user_id setting_key setting_value updated_at', ['calendar_id', 'setting_key'], {}, since(20, 'calendar_id user_id setting_key setting_value updated_at')),
   calendar_events: table('calendar', 'id user_id calendar_id title description start_time end_time all_day location color recurrence reminder_minutes reminders todo_status is_todo_only done_at created_at updated_at source_email_id source_email_json', ["id"], { source_email_id: 'preserve' }, { source_email_id: 16, source_email_json: 16 }),
   calendar_event_subtasks: table('calendar', 'id event_id user_id title is_done position created_at updated_at', ["id"], {}),
   calendar_event_attendees: table('calendar', 'id user_id event_id email display_name response_status is_organizer optional_attendee comment created_at updated_at', ["id"], {}),
   calendar_event_external_refs: table('calendar', 'id user_id event_id calendar_id account_id provider external_event_id external_etag external_updated_at last_synced_at created_at updated_at', ["id"], {}),
-  mail_accounts: table('mail', 'id user_id email_address display_name provider username imap_host imap_port smtp_host smtp_port encrypted_password sync_fetch_limit sync_mode sync_status delete_emails_on_server server_delete_enabled_at server_delete_grace_until server_delete_last_run_at allow_self_signed trusted_imap_fingerprint256 trusted_smtp_fingerprint256 is_active last_synced_at created_at updated_at sync_window_days trash_window_days sync_policy_confirmed_at', ["id"], {"delete_emails_on_server": "reset_server_deletion", "server_delete_enabled_at": "reset_server_deletion", "server_delete_grace_until": "reset_server_deletion", "server_delete_last_run_at": "reset_server_deletion", "sync_status": "reset_sync_progress", "sync_policy_confirmed_at": "reset_sync_policy_confirmation"}, { sync_mode: 3, sync_status: 3, sync_window_days: 10, trash_window_days: 10, sync_policy_confirmed_at: 10 }),
+  mail_accounts: table('mail', 'id user_id email_address display_name provider username imap_host imap_port smtp_host smtp_port encrypted_password sync_fetch_limit sync_mode sync_status delete_emails_on_server server_delete_enabled_at server_delete_grace_until server_delete_last_run_at allow_self_signed trusted_imap_fingerprint256 trusted_smtp_fingerprint256 is_active last_synced_at created_at updated_at sync_window_days trash_window_days sync_policy_confirmed_at signature_html signature_text', ["id"], {"delete_emails_on_server": "reset_server_deletion", "server_delete_enabled_at": "reset_server_deletion", "server_delete_grace_until": "reset_server_deletion", "server_delete_last_run_at": "reset_server_deletion", "sync_status": "reset_sync_progress", "sync_policy_confirmed_at": "reset_sync_policy_confirmation"}, { sync_mode: 3, sync_status: 3, sync_window_days: 10, trash_window_days: 10, sync_policy_confirmed_at: 10, signature_html: 20, signature_text: 20 }),
+  // Settings of one mail account (F1); folder references are remapped.
+  mail_account_settings: table('mail', 'mail_account_id user_id setting_key setting_value updated_at', ['mail_account_id', 'setting_key'], { setting_value: 'remap_setting_references' }, since(20, 'mail_account_id user_id setting_key setting_value updated_at')),
+  mail_templates: table('mail', 'id user_id name subject body_html body_text created_at updated_at', ['id'], {}, since(20, 'id user_id name subject body_html body_text created_at updated_at')),
   mail_folders: table('mail', 'id user_id slug display_name is_system position created_at updated_at mail_account_id special_use', ["id"], {}),
   mail_folder_remote_boxes: table('mail', 'folder_id mail_account_id remote_name created_at updated_at', ["folder_id", "mail_account_id"], {}),
   mail_sender_rules: table('mail', 'id user_id mail_account_id match_type match_value target_folder priority is_active created_at updated_at', ["id"], {}),
-  emails: table('mail', 'id user_id mail_account_id message_id subject from_address from_name to_addresses cc_addresses bcc_addresses body_text body_html folder source_folder imap_uid imap_uidvalidity raw_storage_path raw_sha256 is_read is_starred is_draft has_attachments received_at created_at filing_account_id is_legacy import_complete remote_folder remote_uid remote_uidvalidity remote_missing', ["id"], {"raw_storage_path": "restored_file", "body_html": "remap_inline_attachments", "import_complete": "require_raw_file"}, { remote_folder: 3, remote_uid: 3, remote_uidvalidity: 3, remote_missing: 3 }),
+  emails: table('mail', 'id user_id mail_account_id message_id subject from_address from_name to_addresses cc_addresses bcc_addresses body_text body_html folder source_folder imap_uid imap_uidvalidity raw_storage_path raw_sha256 is_read is_starred is_draft has_attachments received_at created_at filing_account_id is_legacy import_complete remote_folder remote_uid remote_uidvalidity remote_missing in_reply_to references_header thread_key snoozed_until snooze_returned_at', ["id"], {"raw_storage_path": "restored_file", "body_html": "remap_inline_attachments", "import_complete": "require_raw_file"}, { remote_folder: 3, remote_uid: 3, remote_uidvalidity: 3, remote_missing: 3, ...since(20, 'in_reply_to references_header thread_key snoozed_until snooze_returned_at') }),
   email_attachments: table('mail', 'id email_id user_id filename content_type size_bytes storage_path content_id created_at', ["id"], {"storage_path": "restored_file"}),
   mail_email_scores: table('mail', 'id email_id user_id score_version total_score risk_level spf_result dkim_result dmarc_result language_risk_score sender_reputation_score source_risk_score classifier_confidence reasons metadata scored_at created_at updated_at', ["id"], {}),
   mail_folder_reconciliations: table('mail', 'mail_account_id user_id inventory previous_mappings completed_at', ["mail_account_id"], {"previous_mappings": "remap_journal", "completed_at": "preserve"}),
@@ -86,6 +93,7 @@ const TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Object.f
 // user_id is always rebound to the authenticated destination, never copied.
 const REFERENCES: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze({
   calendar_calendars: { account_id: 'calendar_accounts' },
+  calendar_settings: { calendar_id: 'calendar_calendars' },
   // calendar_events.source_email_id is a link across sections (to emails),
   // so it is preserved as written; the import follows a restored email's new
   // id afterwards, and a calendar-only restore keeps the task's own snapshot.
@@ -93,6 +101,8 @@ const REFERENCES: Readonly<Record<string, Readonly<Record<string, string>>>> = O
   calendar_event_subtasks: { event_id: 'calendar_events' },
   calendar_event_attendees: { event_id: 'calendar_events' },
   calendar_event_external_refs: { event_id: 'calendar_events', calendar_id: 'calendar_calendars', account_id: 'calendar_accounts' },
+  mail_account_settings: { mail_account_id: 'mail_accounts' },
+  mail_templates: {},
   mail_folders: { mail_account_id: 'mail_accounts' },
   mail_folder_remote_boxes: { folder_id: 'mail_folders', mail_account_id: 'mail_accounts' },
   mail_sender_rules: { mail_account_id: 'mail_accounts' },

@@ -1,5 +1,5 @@
 import type { RowDataPacket } from 'mysql2/promise';
-import type { ArchiveEnvelope, ApiError, BackupRow } from '../types';
+import type { ArchiveEnvelope, ApiError, BackupRow, SqlExecutor } from '../types';
 import type { ImportOptions, RestoreArchive, ImportResult, RestoredAccounts } from '../types/backup-restore';
 import { sameProviderMailbox } from './mail-account-mode';
 import { MAIL_WINDOW_DAYS, DEFAULT_TRASH_WINDOW_DAYS } from './mail-sync-policy';
@@ -14,6 +14,8 @@ import { normalizeBackupPayload } from './backup-format';
 import { restoreMailRecovery, validateRestoredMailDestinations } from './backup-mail-recovery';
 import { pauseMailRestore, restoreMailEngineEvidence } from './backup-mail-engine';
 import { isModuleEnabled } from './module-settings';
+import { MAIL_ACCOUNT_REFERENCE_KEYS, SETTINGS, restorableValue } from './settings';
+import { normalizeSignature } from './mail-signature';
 import {
   isFileRangeSource,
   normalizeMysqlDateTime,
@@ -74,6 +76,48 @@ function sourceEmailId(value: unknown) {
 function sourceEmailJson(value: unknown) {
   if (value == null) return null;
   try { return JSON.stringify(typeof value === 'string' ? JSON.parse(value) : value); } catch { return null; }
+}
+
+const SETTING_KEYS = new Set(Object.keys(SETTINGS.user));
+
+// Archives from before 0.24 carry no signature; the account keeps its own.
+async function restoreSignature(connection: SqlExecutor, userId: string, accountId: string, row: BackupRow) {
+  if (row.signature_html === undefined && row.signature_text === undefined) return;
+  let signature;
+  try { signature = normalizeSignature({ html: row.signature_html, text: row.signature_text }); } catch { return; }
+  await connection.execute('UPDATE mail_accounts SET signature_html = ?, signature_text = ? WHERE id = ? AND user_id = ?',
+    [signature.html, signature.text, accountId, userId]);
+}
+
+// A folder named by id follows its restored copy; one that names nothing of
+// this user's is dropped from the list.
+async function remapFolderRefs(connection: SqlExecutor, userId: string, text: string, folderIds: ReadonlyMap<string, string>) {
+  const refs = JSON.parse(text) as string[];
+  const kept: string[] = [];
+  for (const ref of refs) {
+    if (!ref.startsWith('folder:')) { kept.push(ref); continue; }
+    const mapped = folderIds.get(ref.slice(7));
+    if (mapped) { kept.push(`folder:${mapped}`); continue; }
+    const [owned] = await connection.execute<RowDataPacket[]>('SELECT id FROM mail_folders WHERE id = ? AND user_id = ?', [ref.slice(7), userId]);
+    if (owned.length) kept.push(ref);
+  }
+  return JSON.stringify([...new Set(kept)]);
+}
+
+// Threading headers and snooze state (0.24); older archives leave them as they are.
+const EMAIL_HEADER_COLUMNS = ['in_reply_to', 'references_header', 'thread_key', 'snoozed_until', 'snooze_returned_at'] as const;
+async function restoreEmailHeaders(connection: SqlExecutor, userId: string, emailId: string, row: BackupRow) {
+  const present = EMAIL_HEADER_COLUMNS.filter(column => row[column] !== undefined);
+  if (!present.length) return;
+  const value = (column: typeof EMAIL_HEADER_COLUMNS[number]) => {
+    const raw = row[column];
+    if (raw == null || raw === '') return null;
+    if (column === 'snoozed_until' || column === 'snooze_returned_at') return normalizeMysqlDateTime(raw as Parameters<typeof normalizeMysqlDateTime>[0]);
+    if (column === 'thread_key') return typeof raw === 'string' && /^[0-9a-f]{64}$/.test(raw) ? raw : null;
+    return String(raw).slice(0, column === 'in_reply_to' ? 998 : 65535);
+  };
+  await connection.execute(`UPDATE emails SET ${present.map(column => `${column} = ?`).join(', ')} WHERE id = ? AND user_id = ?`,
+    [...present.map(value), emailId, userId]);
 }
 
 async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
@@ -201,7 +245,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
       );
     }
 
-    let archivedDefaultMailAccountId: string | null = null;
+    const archivedReferences = new Map<string, string>();
     for (const setting of data.user_settings || []) {
       await checkRestoreCancelled();
       const row = overwriteUserId(setting, userId);
@@ -213,10 +257,13 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         if (existingSetting.length) continue;
       }
       // Names a mail account, which may get a new ID below; written after them.
-      if (row.setting_key === 'default_mail_account_id' && row.setting_value) {
-        archivedDefaultMailAccountId = String(row.setting_value);
+      if (MAIL_ACCOUNT_REFERENCE_KEYS.includes(String(row.setting_key)) && row.setting_value) {
+        archivedReferences.set(String(row.setting_key), String(row.setting_value));
         continue;
       }
+      // A registry setting keeps only a value the registry accepts; other keys
+      // (module and page choices) are checked by their owners when read.
+      if (restorableValue('user', String(row.setting_key), row.setting_value) === null && SETTING_KEYS.has(String(row.setting_key))) continue;
       await writeOwnedRow(connection, userId, 'user_settings',
         ['user_id', 'setting_key', 'setting_value'],
         [row.user_id, row.setting_key, row.setting_value],
@@ -335,6 +382,23 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         ['id', 'user_id', 'account_id', 'name', 'external_id', 'color', 'is_visible', 'auto_todo_enabled', 'read_only', 'is_primary', 'sync_token'],
         [targetCalendarId, row.user_id, targetAccountId, calendarName, row.external_id || null, row.color || '#22c55e', row.is_visible === false || row.is_visible === 0 ? 0 : 1, row.auto_todo_enabled === false || row.auto_todo_enabled === 0 ? 0 : 1, row.read_only ? 1 : 0, row.is_primary ? 1 : 0, row.sync_token || null],
         ['name', 'external_id', 'color', 'is_visible', 'auto_todo_enabled', 'read_only', 'is_primary', 'sync_token']
+      );
+    }
+
+    for (const setting of data.calendar_settings || []) {
+      await checkRestoreCancelled();
+      const row = overwriteUserId(setting, userId);
+      const value = restorableValue('calendar', String(row.setting_key), row.setting_value);
+      if (value === null) continue;
+      const targetCalendarId = await resolveOwnedReference(connection, userId, 'calendar_calendars', row.calendar_id, calendarIdMap);
+      if (conflictMode === 'keep_existing') {
+        const [existing] = await connection.execute<RowDataPacket[]>('SELECT setting_key FROM calendar_settings WHERE calendar_id = ? AND setting_key = ? AND user_id = ?', [targetCalendarId, row.setting_key, userId]);
+        if (existing.length) continue;
+      }
+      await writeOwnedRow(connection, userId, 'calendar_settings',
+        ['calendar_id', 'user_id', 'setting_key', 'setting_value'],
+        [targetCalendarId, row.user_id, row.setting_key, value],
+        ['setting_value']
       );
     }
 
@@ -457,6 +521,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
             row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, active ? 1 : 0,
             restoredWindow(row.sync_window_days, null), restoredWindow(row.trash_window_days, DEFAULT_TRASH_WINDOW_DAYS)]
         );
+        await restoreSignature(connection, userId, targetAccountId, row);
         if (active) {
           // The first download is queued in the restore transaction, so it is not
           // lost if the process stops right after the restore completes. It is
@@ -528,21 +593,22 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         [row.sync_mode === 'sync' ? 'sync' : 'download', row.sync_mode === 'sync' ? 'pending' : 'idle',
           restoredWindow(row.sync_window_days, null), restoredWindow(row.trash_window_days, DEFAULT_TRASH_WINDOW_DAYS), targetAccountId, userId]
       );
+      await restoreSignature(connection, userId, targetAccountId, row);
     }
 
-    if (archivedDefaultMailAccountId !== null) {
+    for (const [key, archivedAccountId] of archivedReferences) {
       // The restored copy of the account, or the same account when it is still
       // this user's (settings restored without mail); otherwise '' (the first
       // account) rather than an ID that names nothing.
-      let defaultMailAccountId = mailAccountIdMap.get(archivedDefaultMailAccountId) || '';
-      if (!defaultMailAccountId) {
+      let accountId = mailAccountIdMap.get(archivedAccountId) || '';
+      if (!accountId) {
         const [owned] = await connection.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1',
-          [archivedDefaultMailAccountId, userId]);
-        if (owned.length) defaultMailAccountId = archivedDefaultMailAccountId;
+          [archivedAccountId, userId]);
+        if (owned.length) accountId = archivedAccountId;
       }
       await writeOwnedRow(connection, userId, 'user_settings',
         ['user_id', 'setting_key', 'setting_value'],
-        [userId, 'default_mail_account_id', defaultMailAccountId],
+        [userId, key, accountId],
         ['setting_value']
       );
     }
@@ -567,6 +633,40 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         ['id', 'user_id', 'slug', 'display_name', 'is_system', 'position', 'mail_account_id', 'special_use'],
         [targetFolderId, row.user_id, row.slug, row.display_name, row.is_system ? 1 : 0, row.position || 0, targetAccountId, row.special_use || null],
         ['display_name', 'is_system', 'position', 'mail_account_id', 'special_use']
+      );
+    }
+
+    // After the folders: a folder named by id follows its restored folder.
+    for (const setting of data.mail_account_settings || []) {
+      await checkRestoreCancelled();
+      const row = overwriteUserId(setting, userId);
+      let value = restorableValue('mail_account', String(row.setting_key), row.setting_value);
+      if (value === null) continue;
+      const targetAccountId = await resolveOwnedReference(connection, userId, 'mail_accounts', row.mail_account_id, mailAccountIdMap);
+      if (row.setting_key === 'notify_folders') value = await remapFolderRefs(connection, userId, value, mailFolderIdMap);
+      if (conflictMode === 'keep_existing') {
+        const [existing] = await connection.execute<RowDataPacket[]>('SELECT setting_key FROM mail_account_settings WHERE mail_account_id = ? AND setting_key = ? AND user_id = ?', [targetAccountId, row.setting_key, userId]);
+        if (existing.length) continue;
+      }
+      await writeOwnedRow(connection, userId, 'mail_account_settings',
+        ['mail_account_id', 'user_id', 'setting_key', 'setting_value'],
+        [targetAccountId, row.user_id, row.setting_key, value],
+        ['setting_value']
+      );
+    }
+
+    for (const template of data.mail_templates || []) {
+      await checkRestoreCancelled();
+      const row = overwriteUserId(template, userId);
+      // A template is known by its name; archive ids are never trusted.
+      const name = String(row.name || 'Template').slice(0, 120);
+      const [existing] = await connection.execute<RowDataPacket[]>('SELECT id FROM mail_templates WHERE user_id = ? AND name = ? ORDER BY created_at, id LIMIT 1', [userId, name]);
+      const targetTemplateId = chooseTargetId(row.id, existing[0]?.id, conflictMode);
+      if (!shouldWriteExisting(existing[0]?.id, targetTemplateId, conflictMode)) continue;
+      await writeOwnedRow(connection, userId, 'mail_templates',
+        ['id', 'user_id', 'name', 'subject', 'body_html', 'body_text'],
+        [targetTemplateId, row.user_id, name, row.subject ?? null, row.body_html ?? null, row.body_text ?? null],
+        ['name', 'subject', 'body_html', 'body_text']
       );
     }
 
@@ -622,6 +722,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         ['subject', 'from_address', 'from_name', 'to_addresses', 'cc_addresses', 'bcc_addresses', 'body_text', 'body_html', 'folder', 'source_folder', 'imap_uid', 'imap_uidvalidity', 'raw_storage_path', 'raw_sha256', 'is_read', 'is_starred', 'is_draft', 'has_attachments', 'received_at', 'import_complete', 'filing_account_id', 'is_legacy', 'remote_folder', 'remote_uid', 'remote_uidvalidity', 'remote_missing']
           .filter(column => rawPath || !['raw_storage_path', 'raw_sha256', 'import_complete'].includes(column))
       );
+      await restoreEmailHeaders(connection, userId, targetEmailId, row);
     }
 
     for (const attachment of data.email_attachments || []) {

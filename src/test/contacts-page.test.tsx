@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Contacts from '@/pages/Contacts';
 import { api } from '@/lib/api';
 import type { Contact } from '@/lib/contacts-api';
+import { userSettingsAnswer } from './settings-fixtures';
+import type { UserSettingValues } from '@/lib/settings-api';
 
 const state = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }) }));
@@ -26,10 +28,10 @@ function Location() {
   return <output data-testid="location">{location.pathname}{location.search}</output>;
 }
 
-function mount(path = '/contacts', preferences = { email_link_behavior: 'mailto' }) {
+function mount(path = '/contacts', preferences: Partial<UserSettingValues> = { email_link_behavior: 'mailto' }) {
   vi.mocked(api.get).mockImplementation(async (url: string) => {
     if (url.startsWith('/contacts')) return { data: { contacts, has_more: false } };
-    if (url === '/settings/preferences') return { data: { preferences } };
+    if (url === '/settings/values') return userSettingsAnswer(preferences);
     return { data: {} };
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });

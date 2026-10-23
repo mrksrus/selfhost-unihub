@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
 import { useMailCompose } from '@/hooks/use-mail-compose';
 import type { Email, MailAccount } from '@/lib/mail-api';
+import { userSettingsAnswer } from './settings-fixtures';
 
 // A message closed or replaced while its draft is saved or its attachments
 // are read: the late result belongs to that message only.
@@ -33,7 +34,7 @@ function pendingReads() {
 }
 
 beforeEach(() => {
-  vi.mocked(api.get).mockImplementation(async path => ({ data: path.startsWith('/mail/accounts') ? { accounts: [account] } : path === '/settings/preferences' ? { preferences: {} } : { contacts: [] } }));
+  vi.mocked(api.get).mockImplementation(async path => ({ data: path.startsWith('/mail/accounts') ? { accounts: [account] } : path === '/settings/values' ? userSettingsAnswer().data : { contacts: [] } }));
   vi.mocked(api.post).mockResolvedValue({ data: { message: 'sent' } });
   vi.mocked(api.put).mockResolvedValue({ data: { draft } });
   vi.mocked(api.delete).mockResolvedValue({ data: {} });

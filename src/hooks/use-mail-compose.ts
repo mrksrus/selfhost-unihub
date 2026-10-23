@@ -9,7 +9,7 @@ import { plainTextToHtml, escapeHtml, sanitizeComposeHtml, sanitizeReturnTo, isC
 import { useToast } from '@/hooks/use-toast';
 import { sendFailureToast } from '@/components/mail/send-failure-toast';
 import { useMailAccounts } from '@/hooks/use-mail-queries';
-import { preferencesQueryOptions } from '@/lib/settings-api';
+import { selectUserSetting, userSettingsQueryOptions } from '@/lib/settings-api';
 import {
   formatRecipient, getContactDisplayName,
   type ComposeAttachment, type ComposeForm, type ComposeMode, type ContactEmailSuggestion,
@@ -69,7 +69,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   // one. A reply always comes from the account that received the message.
   // Choosing another account here never changes what the Mail page shows.
   const { data: accounts = [] } = useMailAccounts();
-  const preferredAccountId = useQuery(preferencesQueryOptions).data?.default_mail_account_id ?? '';
+  const preferredAccountId = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('default_mail_account_id') }).data ?? '';
   const [chosenAccountId, setChosenAccountId] = useState<string | null>(null);
   const connected = (id: string | null | undefined) => !!id && accounts.some(account => account.id === id && account.is_active && !account.disconnected_at);
   const fromAccountId = chosenAccountId ?? activeMailAccountId

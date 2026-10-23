@@ -9,6 +9,7 @@ import BottomNav from '@/components/layout/BottomNav';
 import { PAGES_QUERY_KEY, useModules, type ModulePreference, type PagePreference } from '@/hooks/use-modules';
 import { defaultPages, knownModules } from '@/lib/modules';
 import { api } from '@/lib/api';
+import { userSettingsAnswer } from './settings-fixtures';
 
 vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'owner' } }) }));
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -65,7 +66,7 @@ describe('pages', () => {
   });
 
   it('opens a hidden start page, and falls back to the first shown page when its module is disabled', async () => {
-    vi.spyOn(api, 'get').mockResolvedValue({ data: { preferences: { default_start_page: 'music' } } });
+    vi.spyOn(api, 'get').mockResolvedValue(userSettingsAnswer({ default_start_page: 'music' }));
     function Where() { return <p>At {useLocation().pathname}</p>; }
     const app = <Routes><Route path="/" element={<StartRedirect />} /><Route path="*" element={<Where />} /></Routes>;
     const pages = reorder(defaultPages(defaults), ['contacts', 'mail', 'calendar', 'todo', 'recordings', 'music', 'today'])

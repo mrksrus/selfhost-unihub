@@ -4,7 +4,7 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { Download, Plus, Search, Upload, Users, X } from 'lucide-react';
 import { contactsApi, contactsQueryOptions, contactName, type Contact, type MergePreview } from '@/lib/contacts-api';
 import { CONTACT_VIEWS, filterContacts, findDuplicates, inContactView, isContactView, type ContactView } from '@/lib/contact-views';
-import { preferencesQueryOptions } from '@/lib/settings-api';
+import { selectUserSetting, userSettingsQueryOptions } from '@/lib/settings-api';
 import { saveFile } from '@/lib/platform';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { useContactActions } from '@/hooks/use-contact-actions';
@@ -84,7 +84,7 @@ const Contacts = () => {
   const activeId = params.get('contact');
 
   const contactsQuery = useQuery(contactsQueryOptions);
-  const { data: preferences } = useQuery(preferencesQueryOptions);
+  const { data: emailLinkBehavior } = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('email_link_behavior') });
   const allContacts = useMemo(() => contactsQuery.data ?? [], [contactsQuery.data]);
   const duplicates = useMemo(() => findDuplicates(allContacts), [allContacts]);
   const contacts = useMemo(() => filterContacts(allContacts, view, debouncedSearch, duplicates), [allContacts, view, debouncedSearch, duplicates]);
@@ -166,7 +166,7 @@ const Contacts = () => {
     return () => window.removeEventListener('keydown', onKeyDown);
   });
 
-  const emailInUniHub = preferences?.email_link_behavior === 'internal'
+  const emailInUniHub = emailLinkBehavior === 'internal'
     ? (address: string) => navigate(`/mail?${new URLSearchParams({ action: 'compose', to: address, returnTo: `${location.pathname}${location.search}` })}`)
     : undefined;
 

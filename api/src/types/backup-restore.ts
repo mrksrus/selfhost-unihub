@@ -25,7 +25,7 @@ export interface RestoreRow extends RowDataPacket {
   base_url: string | null;
   discovery_url: string | null;
 }
-export type RestoreTable = 'calendar_accounts' | 'calendar_calendars' | 'calendar_event_attendees' | 'calendar_event_external_refs' | 'calendar_event_subtasks' | 'calendar_events' | 'contacts' | 'email_attachments' | 'emails' | 'mail_accounts' | 'mail_email_scores' | 'mail_folder_remote_boxes' | 'mail_folders' | 'mail_sender_rules' | 'recording_tag_links' | 'recording_tags' | 'recording_transcription_jobs' | 'recordings' | 'user_settings';
+export type RestoreTable = 'calendar_accounts' | 'calendar_calendars' | 'calendar_settings' | 'mail_account_settings' | 'mail_templates' | 'calendar_event_attendees' | 'calendar_event_external_refs' | 'calendar_event_subtasks' | 'calendar_events' | 'contacts' | 'email_attachments' | 'emails' | 'mail_accounts' | 'mail_email_scores' | 'mail_folder_remote_boxes' | 'mail_folders' | 'mail_sender_rules' | 'recording_tag_links' | 'recording_tags' | 'recording_transcription_jobs' | 'recordings' | 'user_settings';
 export type RestoreData = BackupPayload['data'] & Partial<Record<RestoreTable, RestoreRow[]>> & { user?: RestoreRow };
 export interface RestoreArchive extends ArchiveEnvelope {
   data: RestoreData;

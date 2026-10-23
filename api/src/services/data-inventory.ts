@@ -75,7 +75,46 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
     ...excluded('deliberately_excluded', 'The Notes module was removed in 0.14.0; migration 11 drops its tables and files.', columns),
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 4])), removedIn: 11 })])),
   schema_migrations: excluded('deliberately_excluded', 'Database upgrade history describes this installation, never user archive contents.', 'id name completed_at'),
+  // Upgrade step 20 (0.24.0).
+  ...Object.fromEntries([
+    ['setting_policies', 'deliberately_excluded', 'Administrator policies belong to the installation, not to one person; the instance backup carries them.', 'target_kind target_id setting_key setting_value locked updated_by updated_at'],
+    ['mail_scheduled_sends', 'deliberately_excluded', 'A restore must not send mail again; the draft is restored and can be scheduled again.', 'id user_id email_id mail_account_id send_at status client_key attempts last_error created_at updated_at'],
+  ].map(([name, treatment, reason, columns]) => [name, Object.freeze({ ...excluded(treatment, reason, columns),
+    introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 20])) })])),
 });
+
+// From upgrade step 20 on, a new table states who owns a row, whether it can
+// be shared, its data class (F2), the module that gates it and what restore
+// does with it (AGENTS.md, Building toward 1.0).
+const DECLARATIONS_FROM = 20;
+interface TableDeclaration {
+  owner: 'user' | 'organisation' | 'installation';
+  shareable: boolean;
+  dataClass: 'local' | 'local-by-policy' | 'mirror' | 'org' | 'config' | 'installation' | 'ciphertext';
+  module: string | null;
+  restore: string;
+}
+const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.freeze({
+  mail_account_settings: { owner: 'user', shareable: false, dataClass: 'local', module: 'mail', restore: 'Restored with its mail account; folder references follow the restored folders.' },
+  mail_templates: { owner: 'user', shareable: false, dataClass: 'local', module: 'mail', restore: 'Restored with the Mail section.' },
+  calendar_settings: { owner: 'user', shareable: false, dataClass: 'local', module: 'calendar', restore: 'Restored with its calendar.' },
+  setting_policies: { owner: 'installation', shareable: false, dataClass: 'config', module: null, restore: 'Not in personal backups; the instance backup carries it.' },
+  mail_scheduled_sends: { owner: 'user', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: the draft comes back unscheduled.' },
+});
+
+function assertTableDeclarations(fields: ReadonlyMap<string, InventoryField>) {
+  const firstStep = new Map<string, number>();
+  for (const [key, field] of fields) {
+    const table = key.slice(0, key.indexOf('.'));
+    firstStep.set(table, Math.min(firstStep.get(table) ?? Infinity, field.introducedIn));
+  }
+  for (const [table, step] of firstStep) {
+    if (step >= DECLARATIONS_FROM && !TABLE_DECLARATIONS[table]) throw new Error(`Table ${table} lacks its declaration (owner, sharing, data class, module, restore)`);
+  }
+  for (const table of Object.keys(TABLE_DECLARATIONS)) {
+    if ((firstStep.get(table) ?? 0) < DECLARATIONS_FROM) throw new Error(`Declared table ${table} is not a table from step ${DECLARATIONS_FROM} on`);
+  }
+}
 
 function declaredFields() {
   assertRecoveryCatalog();
@@ -94,6 +133,7 @@ function declaredFields() {
     if (!policy.reason) throw new Error(`Missing exclusion reason: ${table}`);
     for (const column of policy.columns) add(table, column, policy.treatment, policy.introducedIn?.[column], policy.removedIn);
   }
+  assertTableDeclarations(fields);
   return fields;
 }
 
@@ -140,4 +180,4 @@ function assertArchiveRelationships(rows: readonly RelationshipRow[]) {
   }
 }
 
-export { NON_ARCHIVE_POLICIES, declaredFields, assertInventoryCoverage, assertArchiveRelationships, verifyDatabaseInventory };
+export { NON_ARCHIVE_POLICIES, TABLE_DECLARATIONS, declaredFields, assertInventoryCoverage, assertArchiveRelationships, verifyDatabaseInventory };

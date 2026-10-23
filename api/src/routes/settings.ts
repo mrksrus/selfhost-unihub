@@ -14,13 +14,73 @@ import {
   deleteRecordingFiles,
 } from '../services/recordings';
 import { deleteUser } from '../services/user-lifecycle';
-import { getUserPreferences, setUserPreferences } from '../services/settings';
+import { getScopedSettings, getSettings, getUserPreferences, setUserPreferences, updateSettings } from '../services/settings';
+import type {
+  CalendarSettingsResponse,
+  CalendarSettingValues,
+  MailAccountSettingsResponse,
+  MailAccountSettingValues,
+  ScopedSettingsResponse,
+  UserSettingsResponse,
+} from '../contracts/settings';
 import { defineRoutes } from '../http/route';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 type Input = Record<string, unknown>;
 
 export = defineRoutes({
+  // The settings registry (F1). Mail-account and calendar settings follow
+  // their module's switch and restore lock.
+  'GET /api/settings/values': { auth: 'user', module: null, handler: async (req: Request, userId: string) => {
+    try {
+      return { settings: await getSettings('user', userId) } satisfies UserSettingsResponse;
+    } catch (error) {
+      if (!(error as ApiError).status) console.error('Get settings error:', error);
+      return clientError(error, 'Failed to load settings');
+    }
+  } },
+  'PUT /api/settings/values': { auth: 'user', module: null, restoreSection: 'settings', handler: async (req: Request, userId: string, body: Input) => {
+    try {
+      return { settings: await updateSettings('user', userId, userId, body) } satisfies UserSettingsResponse;
+    } catch (error) {
+      if (!(error as ApiError).status) console.error('Update settings error:', error);
+      return clientError(error, 'Failed to save settings');
+    }
+  } },
+  'GET /api/settings/values/mail-accounts': { auth: 'user', module: 'mail', handler: async (req: Request, userId: string) => {
+    try {
+      return { accounts: await getScopedSettings('mail_account', userId) } satisfies MailAccountSettingsResponse;
+    } catch (error) {
+      if (!(error as ApiError).status) console.error('Get mail account settings error:', error);
+      return clientError(error, 'Failed to load mail account settings');
+    }
+  } },
+  'PUT /api/settings/values/mail-accounts/:id': { auth: 'user', module: 'mail', restoreSection: 'mail', handler: async (req: Request, userId: string, body: Input) => {
+    try {
+      return { id: req.params.id, settings: await updateSettings('mail_account', userId, req.params.id, body) } satisfies ScopedSettingsResponse<MailAccountSettingValues>;
+    } catch (error) {
+      if (!(error as ApiError).status) console.error('Update mail account settings error:', error);
+      return clientError(error, 'Failed to save mail account settings');
+    }
+  } },
+  'GET /api/settings/values/calendars': { auth: 'user', module: 'calendar', handler: async (req: Request, userId: string) => {
+    try {
+      return { calendars: await getScopedSettings('calendar', userId) } satisfies CalendarSettingsResponse;
+    } catch (error) {
+      if (!(error as ApiError).status) console.error('Get calendar settings error:', error);
+      return clientError(error, 'Failed to load calendar settings');
+    }
+  } },
+  'PUT /api/settings/values/calendars/:id': { auth: 'user', module: 'calendar', restoreSection: 'calendar', handler: async (req: Request, userId: string, body: Input) => {
+    try {
+      return { id: req.params.id, settings: await updateSettings('calendar', userId, req.params.id, body) } satisfies ScopedSettingsResponse<CalendarSettingValues>;
+    } catch (error) {
+      if (!(error as ApiError).status) console.error('Update calendar settings error:', error);
+      return clientError(error, 'Failed to save calendar settings');
+    }
+  } },
+
+  // The four preferences before the registry, for clients from before 0.24.
   'GET /api/settings/preferences': { auth: 'user', module: null, handler: async (req: Request, userId: string) => {
     try {
       return { preferences: await getUserPreferences(userId) };

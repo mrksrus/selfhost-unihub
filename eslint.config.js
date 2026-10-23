@@ -5,6 +5,12 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
 import { API_FILES_USING_CONSOLE, ROUTES_USING_DB, VIEWS_USING_API_CLIENT } from "./eslint.boundaries.js";
 
+// Settings and policies have one owner (F1): services/settings.ts.
+const SETTINGS_FENCE = {
+  selector: "Literal[value=/\\b(mail_account_settings|calendar_settings|setting_policies)\\b/]:not(TSLiteralType > Literal), TemplateElement[value.raw=/\\b(mail_account_settings|calendar_settings|setting_policies)\\b/]",
+  message: "Read and write settings and policies through services/settings.ts.",
+};
+
 export default tseslint.config(
   { ignores: ["dist", "api/dist", ".worker-dist", "tools/ui-regression/.build", "tools/ui-regression/.browsers", "tools/ui-regression/report", "tools/ui-regression/test-results"] },
   {
@@ -41,6 +47,15 @@ export default tseslint.config(
       "@typescript-eslint/no-require-imports": "off",
     },
   },
+  {
+    // Settings and policies have one owner (F1): services/settings.ts. Schema
+    // and recovery code name the tables to create, archive and restore them.
+    files: ["api/src/**/*.ts"],
+    ignores: ["api/src/services/settings.ts", "api/src/services/database.ts", "api/src/services/data-inventory.ts", "api/src/services/backup-catalog.ts", "api/src/services/backup-export.ts", "api/src/services/backup-import.ts"],
+    rules: {
+      "no-restricted-syntax": ["error", SETTINGS_FENCE],
+    },
+  },
   // Layering (docs/ARCHITECTURE.md, Layering). Existing exceptions are listed
   // in eslint.boundaries.js and only shrink.
   {
@@ -59,7 +74,7 @@ export default tseslint.config(
       }, {
         selector: "CallExpression[callee.property.name='split'] > MemberExpression.callee > TSNonNullExpression.object > MemberExpression.expression[property.name='url']",
         message: "Read path parameters from req.params; the boundary matched the route.",
-      }],
+      }, SETTINGS_FENCE],
     },
   },
   {

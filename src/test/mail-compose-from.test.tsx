@@ -6,6 +6,7 @@ import { api } from '@/lib/api';
 import type { Email, MailAccount } from '@/lib/mail-api';
 import { useMailCompose } from '@/hooks/use-mail-compose';
 import { MailComposeDialog, MailComposeDialogs, MailInlineCompose } from '@/components/mail/MailCompose';
+import { userSettingsAnswer } from './settings-fixtures';
 
 const state = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }) }));
@@ -56,7 +57,7 @@ const fillAndSend = async (to: string, body: string, editorId: string) => {
 beforeEach(() => {
   vi.mocked(api.get).mockImplementation(async (path: string) => {
     if (path.startsWith('/mail/accounts')) return { data: { accounts } };
-    if (path === '/settings/preferences') return { data: { preferences: { default_mail_account_id: 'acc-b' } } };
+    if (path === '/settings/values') return userSettingsAnswer({ default_mail_account_id: 'acc-b' });
     return { data: { contacts: [{ id: 'c-1', first_name: 'Sparks', last_name: '', email: 'sparks@example.test' }] } };
   });
   vi.mocked(api.post).mockResolvedValue({ data: { message: 'sent' } });

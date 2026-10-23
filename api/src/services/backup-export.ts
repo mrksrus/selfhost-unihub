@@ -219,6 +219,9 @@ function assertBackupFilesComplete(backup: ExportBackup) {
 // account-scoped and are left out.
 const ACCOUNT_MAIL_FILTERS: Readonly<Record<string, string>> = Object.freeze({
   mail_accounts: 'b.id = ?',
+  mail_account_settings: 'b.mail_account_id = ?',
+  // Templates belong to the person, not to one account.
+  mail_templates: 'FALSE',
   mail_folders: '(b.mail_account_id = ? OR b.mail_account_id IS NULL)',
   mail_folder_remote_boxes: 'b.mail_account_id = ?',
   mail_sender_rules: '(b.mail_account_id = ? OR b.mail_account_id IS NULL)',

@@ -310,6 +310,20 @@ const MIGRATIONS: readonly Migration[] = [
       await verifyDatabaseInventory(connection, { throughMigration: 19 });
     },
   },
+  {
+    // 0.24.0: the settings registry's scoped values and policy store (F1), a
+    // signature per mail account, threading headers and snooze on messages,
+    // templates and scheduled sends.
+    id: 20,
+    name: 'settings-and-mail-essentials',
+    up: addSettingsAndMailEssentials,
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 20 });
+      for (const [table, name] of [['emails', 'idx_emails_user_thread'], ['emails', 'idx_emails_user_snoozed'], ['mail_scheduled_sends', 'idx_scheduled_sends_due']]) {
+        if (!await hasIndex(connection, table, name)) throw new Error(`Index ${name} on ${table} is missing`);
+      }
+    },
+  },
 ];
 const LATEST_MIGRATION_ID = MIGRATIONS[MIGRATIONS.length - 1].id;
 
@@ -422,6 +436,96 @@ async function createAuditLog(connection: SqlExecutor) {
     KEY idx_audit_target (target_user_id, created_at),
     KEY idx_audit_actor (actor_id, created_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+}
+
+// Upgrade step 20 (0.24.0). Scoped settings follow their record and its
+// owner; policies belong to the installation (groups from 0.30 use the same
+// rows with target_kind 'group').
+async function addSettingsAndMailEssentials(connection: SqlExecutor) {
+  await connection.execute(`CREATE TABLE IF NOT EXISTS mail_account_settings (
+    mail_account_id CHAR(36) NOT NULL,
+    user_id CHAR(36) NOT NULL,
+    setting_key VARCHAR(100) NOT NULL,
+    setting_value TEXT NOT NULL,
+    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (mail_account_id, setting_key),
+    KEY idx_mail_account_settings_user (user_id),
+    FOREIGN KEY (mail_account_id) REFERENCES mail_accounts(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await connection.execute(`CREATE TABLE IF NOT EXISTS calendar_settings (
+    calendar_id CHAR(36) NOT NULL,
+    user_id CHAR(36) NOT NULL,
+    setting_key VARCHAR(100) NOT NULL,
+    setting_value TEXT NOT NULL,
+    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (calendar_id, setting_key),
+    KEY idx_calendar_settings_user (user_id),
+    FOREIGN KEY (calendar_id) REFERENCES calendar_calendars(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await connection.execute(`CREATE TABLE IF NOT EXISTS setting_policies (
+    target_kind VARCHAR(16) NOT NULL,
+    target_id VARCHAR(36) NOT NULL DEFAULT '',
+    setting_key VARCHAR(100) NOT NULL,
+    setting_value TEXT NOT NULL,
+    locked TINYINT(1) NOT NULL DEFAULT 0,
+    updated_by CHAR(36) NULL,
+    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (target_kind, target_id, setting_key)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await connection.execute(`CREATE TABLE IF NOT EXISTS mail_templates (
+    id CHAR(36) NOT NULL PRIMARY KEY,
+    user_id CHAR(36) NOT NULL,
+    name VARCHAR(120) NOT NULL,
+    subject TEXT NULL,
+    body_html MEDIUMTEXT NULL,
+    body_text MEDIUMTEXT NULL,
+    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_mail_templates_user (user_id, name),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  // A draft that sends itself at send_at, once (client_key is its send-once
+  // receipt). Installation-local work: a restore brings the draft back, not
+  // the schedule.
+  await connection.execute(`CREATE TABLE IF NOT EXISTS mail_scheduled_sends (
+    id CHAR(36) NOT NULL PRIMARY KEY,
+    user_id CHAR(36) NOT NULL,
+    email_id CHAR(36) NOT NULL,
+    mail_account_id CHAR(36) NOT NULL,
+    send_at DATETIME NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'scheduled',
+    client_key VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    attempts INT NOT NULL DEFAULT 0,
+    last_error VARCHAR(255) NULL,
+    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_scheduled_send_email (email_id),
+    KEY idx_scheduled_sends_due (status, send_at),
+    KEY idx_scheduled_sends_user (user_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE,
+    FOREIGN KEY (mail_account_id) REFERENCES mail_accounts(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  const columns: [string, string, string][] = [
+    ['mail_accounts', 'signature_html', 'ALTER TABLE mail_accounts ADD COLUMN signature_html MEDIUMTEXT NULL'],
+    ['mail_accounts', 'signature_text', 'ALTER TABLE mail_accounts ADD COLUMN signature_text TEXT NULL'],
+    ['emails', 'in_reply_to', 'ALTER TABLE emails ADD COLUMN in_reply_to VARCHAR(998) NULL'],
+    ['emails', 'references_header', 'ALTER TABLE emails ADD COLUMN references_header TEXT NULL'],
+    ['emails', 'thread_key', 'ALTER TABLE emails ADD COLUMN thread_key CHAR(64) NULL'],
+    ['emails', 'snoozed_until', 'ALTER TABLE emails ADD COLUMN snoozed_until DATETIME NULL'],
+    ['emails', 'snooze_returned_at', 'ALTER TABLE emails ADD COLUMN snooze_returned_at DATETIME NULL'],
+  ];
+  for (const [table, column, sql] of columns) {
+    if (!await hasColumn(connection, table, column)) await connection.execute(sql);
+  }
+  if (!await hasIndex(connection, 'emails', 'idx_emails_user_thread')) {
+    await connection.execute('ALTER TABLE emails ADD KEY idx_emails_user_thread (user_id, thread_key)');
+  }
+  if (!await hasIndex(connection, 'emails', 'idx_emails_user_snoozed')) {
+    await connection.execute('ALTER TABLE emails ADD KEY idx_emails_user_snoozed (user_id, snoozed_until)');
+  }
 }
 
 async function addPushTransport(connection: SqlExecutor) {
