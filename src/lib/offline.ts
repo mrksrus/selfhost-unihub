@@ -225,14 +225,15 @@ const presentMail = (row: Row) => ({ ...row, source_mail_account_id: Object.prot
 const newestFirst = (a: Row, b: Row) => Date.parse(text(b.received_at)) - Date.parse(text(a.received_at)) || text(b.id).localeCompare(text(a.id));
 // A message as the mail list shows it: a short text preview, no HTML.
 const listRow = (row: Row) => ({...presentMail(row),body_html:null,body_text:typeof row.body_text==='string'&&row.body_text.length>240?row.body_text.slice(0,240)+'...':row.body_text});
+// Snoozed messages show only in the Snoozed view and in search, as online.
+const isSnoozed = (row: Row) => Date.parse(text(row.snoozed_until)) > Date.now();
 function mailRows(snapshot: OfflineSnapshot, params: URLSearchParams) {
   return snapshot.emails.filter(row => {
     const folder = params.get('folder');
     const accountId = params.get('account_id');
     if (accountId && accountId !== 'all' && viewAccount(row) !== accountId) return false;
     const query = (params.get('search') || '').trim().toLowerCase();
-    // Snoozed messages show only in the Snoozed view and in search, as online.
-    const snoozed = Date.parse(text(row.snoozed_until)) > Date.now();
+    const snoozed = isSnoozed(row);
     if (folder === 'snoozed') { if (!snoozed) return false; } else if (snoozed && !query) return false;
     if (folder && folder !== 'all' && folder !== 'starred' && folder !== 'snoozed' && row.folder !== folder) return false;
     if (folder === 'starred' && !truthy(row.is_starred)) return false;
@@ -298,7 +299,7 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
     });
     return {data:{events:events.sort((a,b)=>Date.parse(text(a.start_time))-Date.parse(text(b.start_time))).map(withSourceEmail)}};
   }
-  if(path === '/mail/accounts') return {data:{accounts:snapshot.mailAccounts.map(row=>({...row,unread_count:snapshot.emails.filter(email=>viewAccount(email)===row.id&&!truthy(email.is_read)).length}))}};
+  if(path === '/mail/accounts') return {data:{accounts:snapshot.mailAccounts.map(row=>({...row,unread_count:snapshot.emails.filter(email=>viewAccount(email)===row.id&&!truthy(email.is_read)&&!isSnoozed(email)).length}))}};
   if(path === '/mail/emails') {
     const rows=mailRows(snapshot,params),limit=Math.max(1,numberParam(params,'limit',50,100)),offset=numberParam(params,'offset',0,10000000);
     const includeCount=params.get('include_count')!=='false';
@@ -308,14 +309,14 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
   // Conversations among the saved messages (GET /api/mail/threads); a message
   // saved without a thread_key (before 0.24) is a conversation of its own.
   if(path === '/mail/threads') {
-    const groups=new Map<string,Row[]>();
+    const groups=new Map<string,Row[]>(),showSnoozed=params.get('folder')==='snoozed'||!!(params.get('search')||'').trim();
     for(const row of mailRows(snapshot,params)){const key=text(row.thread_key)||`email:${text(row.id)}`;groups.set(key,[...(groups.get(key)||[]),row]);}
     const all=[...groups.values()],limit=Math.max(1,numberParam(params,'limit',50,100)),includeCount=params.get('include_count')==='true';
     const cursorId=/^[0-9]{1,15}\.(.+)$/.exec(params.get('cursor')||'')?.[1];
     const offset=cursorId?all.findIndex(rows=>rows[0].id===cursorId)+1:numberParam(params,'offset',0,10000000);
     const threads=all.slice(offset,offset+limit).map(rows=>{
       const latest=rows[0],key=text(latest.thread_key)||null;
-      const conversation=key?snapshot.emails.filter(row=>row.thread_key===key&&!truthy(row.is_draft)):rows;
+      const conversation=key?snapshot.emails.filter(row=>row.thread_key===key&&!truthy(row.is_draft)&&(showSnoozed||!isSnoozed(row))):rows;
       const senders=new Map<string,Row>();
       for(const row of [...conversation].sort(newestFirst)){const address=text(row.from_address).toLowerCase();if(address&&!senders.has(address))senders.set(address,row);}
       return {thread_key:key,latest:listRow(latest),message_count:rows.length,unread_count:rows.filter(row=>!truthy(row.is_read)).length,total_count:Math.max(conversation.length,1),
@@ -331,7 +332,7 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
     const anchor=snapshot.emails.find(row=>row.id===decodeURIComponent(threadMatch[1]));
     if(!anchor)return {error:'This message is not in your offline snapshot.',status:404};
     const key=text(anchor.thread_key)||null;
-    const messages=(key?snapshot.emails.filter(row=>row.thread_key===key):[anchor]).sort((a,b)=>newestFirst(b,a)).map(listRow);
+    const messages=(key?snapshot.emails.filter(row=>row.thread_key===key&&(row===anchor||!isSnoozed(row))):[anchor]).sort((a,b)=>newestFirst(b,a)).map(listRow);
     return {data:{thread_key:key,messages,truncated:false}};
   }
   if(/^\/mail\/emails\/[^/]+$/.test(path)) {

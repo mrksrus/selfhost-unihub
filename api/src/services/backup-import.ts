@@ -658,10 +658,11 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
     for (const template of data.mail_templates || []) {
       await checkRestoreCancelled();
       const row = overwriteUserId(template, userId);
-      // A template is known by its name; archive ids are never trusted.
+      // A template is known by its name (unique per user), so "keep both"
+      // cannot apply; archive ids are never trusted.
       const name = String(row.name || 'Template').slice(0, 120);
       const [existing] = await connection.execute<RowDataPacket[]>('SELECT id FROM mail_templates WHERE user_id = ? AND name = ? ORDER BY created_at, id LIMIT 1', [userId, name]);
-      const targetTemplateId = chooseTargetId(row.id, existing[0]?.id, conflictMode);
+      const targetTemplateId = chooseTargetId(row.id, existing[0]?.id, conflictMode, { canKeepBoth: false });
       if (!shouldWriteExisting(existing[0]?.id, targetTemplateId, conflictMode)) continue;
       await writeOwnedRow(connection, userId, 'mail_templates',
         ['id', 'user_id', 'name', 'subject', 'body_html', 'body_text'],
@@ -723,6 +724,12 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
           .filter(column => rawPath || !['raw_storage_path', 'raw_sha256', 'import_complete'].includes(column))
       );
       await restoreEmailHeaders(connection, userId, targetEmailId, row);
+      // A draft the restore wrote comes back unscheduled. A send of it that a
+      // stopped process left 'sending' is never resumed with this content.
+      await connection.execute("DELETE FROM mail_scheduled_sends WHERE email_id = ? AND user_id = ? AND status <> 'sending'", [targetEmailId, userId]);
+      await connection.execute(`UPDATE mail_scheduled_sends SET status = 'unknown',
+        last_error = 'A restore replaced this draft while it was being sent. Check Sent before sending it again.'
+        WHERE email_id = ? AND user_id = ? AND status = 'sending'`, [targetEmailId, userId]);
     }
 
     for (const attachment of data.email_attachments || []) {

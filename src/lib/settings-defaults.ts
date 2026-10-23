@@ -36,4 +36,3 @@ export function defaultsResolved<T extends object>(values: T): ResolvedSettings<
 export function settingValues<T extends object>(settings: ResolvedSettings<T>): T {
   return Object.fromEntries(Object.entries(settings).map(([key, setting]) => [key, (setting as { value: unknown }).value])) as T;
 }
-

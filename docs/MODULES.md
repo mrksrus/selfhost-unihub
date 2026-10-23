@@ -34,7 +34,10 @@ for user ownership or access permissions.
 Already-issued network operations may finish after a pause. Active mail scans are
 asked to stop; remote deletion checks settings again immediately before sending a
 command. Notifications waiting to be delivered retain their attempts while paused,
-but expired notifications are not replayed on resume.
+but expired notifications are not replayed on resume. Scheduled sends and snoozed
+messages wait while Mail or its background work is off and catch up on resume:
+a due scheduled send then goes out, and a snoozed message comes back with its
+notification.
 
 Turning off a module clears the current browser's offline snapshot. Refresh or
 clear snapshots on other devices too; a server setting cannot erase an offline

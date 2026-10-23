@@ -76,6 +76,19 @@ account backup started from a mail account (`POST
 restricted to that account; messages filed in another account restore under
 their own account.
 
+0.24.0 adds to schema 4, again without changing its version: the settings
+of each mail account and calendar (`mail_account_settings`,
+`calendar_settings`; folder references and setting references are remapped to
+the restored records, values the registry no longer accepts are skipped),
+templates (`mail_templates`, matched by name, so restoring twice does not
+duplicate them), the account signature (`mail_accounts.signature_html`,
+`signature_text`) and each message's threading headers, conversation key and
+snooze state. Archives without them restore without them; conversations of
+older mail are built again by the background threading. Installation policies
+(`setting_policies`) and scheduled sends (`mail_scheduled_sends`) are never
+archived: a restore must not send mail again, so a restored draft is not
+scheduled.
+
 Older applications that read only schemas 1–3 cannot import new schema-4 backups.
 Downgrading an image is not a database rollback. Preserve a matching full server
 snapshot before upgrading. Future changes must retain supported readers and

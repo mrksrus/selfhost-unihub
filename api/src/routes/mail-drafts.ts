@@ -12,8 +12,8 @@ import {
 import { adoptReplies, resolveThreadKey, storedReferences } from '../services/mail-threading';
 import type { ReplyThreading } from '../services/mail-send';
 import type { PoolConnection } from 'mysql2/promise';
-import { deleteDraftWithFiles, loadDraftEmail, loadMailAccountForDraft, saveDraftMutation, sendStoredDraft } from '../services/mail-drafts';
-import { assertDraftEditable, cancelScheduleForSendNow } from '../services/mail-scheduled-send';
+import { deleteDraftUnlessSending, loadDraftEmail, loadMailAccountForDraft, saveDraftMutation } from '../services/mail-drafts';
+import { assertDraftEditable, sendDraftNow } from '../services/mail-scheduled-send';
 import { normalizeRecipients } from '../services/mail-recipients';
 import { extractMailRouteId, routeError, idempotencyKey } from './mail-route-helpers';
 
@@ -230,8 +230,8 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
-      await assertDraftEditable(userId, extractMailRouteId(req)!);
-      return await deleteDraftWithFiles(userId, extractMailRouteId(req)!);
+      // Refused while the draft is being sent (by hand or scheduled).
+      return await deleteDraftUnlessSending(userId, extractMailRouteId(req)!);
     } catch (error) {
       console.error('Delete draft error:', error);
       return routeError(error, 'Failed to delete draft');
@@ -244,10 +244,10 @@ export = {
     try {
       const draftId = extractMailRouteId(req, 2)!;
       const replyTo = body?.in_reply_to_email_id;
-      // Sent now: a schedule for it is cancelled first (refused while it is being sent).
-      // A repeat after a lost response gets the first result, before the (deleted) draft is looked up.
-      await cancelScheduleForSendNow(userId, draftId);
-      return await sendOnce({ userId, clientKey: idempotencyKey(req), request: { draftId, replyTo } }, () => sendStoredDraft(userId, draftId, replyTo));
+      // Sent now: the draft is reserved, replacing a schedule for it (refused
+      // while another send of it runs). A repeat after a lost response gets
+      // the first result from its key, before the (deleted) draft is looked up.
+      return await sendDraftNow(userId, draftId, idempotencyKey(req), replyTo);
     } catch (error) {
       console.error('Send draft error:', (error as NodeJS.ErrnoException)?.code || (error as Error)?.name || 'Error');
       return routeError(error, 'Failed to send draft');

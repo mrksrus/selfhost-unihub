@@ -78,7 +78,7 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
   // Upgrade step 20 (0.24.0).
   ...Object.fromEntries([
     ['setting_policies', 'deliberately_excluded', 'Administrator policies belong to the installation, not to one person; the instance backup carries them.', 'target_kind target_id setting_key setting_value locked updated_by updated_at'],
-    ['mail_scheduled_sends', 'deliberately_excluded', 'A restore must not send mail again; the draft is restored and can be scheduled again.', 'id user_id email_id mail_account_id send_at status client_key attempts last_error created_at updated_at'],
+    ['mail_scheduled_sends', 'deliberately_excluded', 'A restore must not send mail again; the draft is restored and can be scheduled again.', 'id user_id email_id mail_account_id send_at status origin client_key attempts last_error created_at updated_at'],
   ].map(([name, treatment, reason, columns]) => [name, Object.freeze({ ...excluded(treatment, reason, columns),
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 20])) })])),
 });

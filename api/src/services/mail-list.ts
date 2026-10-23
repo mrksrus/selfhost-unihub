@@ -200,6 +200,9 @@ async function listMailThreads(userId: string, searchParams: URLSearchParams): P
   }
 
   const keys = [...new Set(page.map(row => row.thread_key).filter((key): key is string => typeof key === 'string'))];
+  // A conversation's size and senders leave out its snoozed messages, except
+  // where the view shows them (the Snoozed view and search).
+  const snoozedSql = view.folder === 'snoozed' || (searchParams.get('search') || '').trim() ? '' : ` AND ${NOT_SNOOZED_SQL}`;
   const inView = new Map<string, RowDataPacket>(), totals = new Map<string, number>(), senders = new Map<string, RowDataPacket[]>();
   if (keys.length) {
     const [counted] = await db.execute<RowDataPacket[]>(`SELECT thread_key, COUNT(*) AS message_count,
@@ -208,10 +211,10 @@ async function listMailThreads(userId: string, searchParams: URLSearchParams): P
       FROM emails WHERE ${view.whereSql} AND thread_key IN (${placeholders(keys)}) GROUP BY thread_key`, [...view.params, ...keys]);
     for (const row of counted) inView.set(row.thread_key, row);
     const [whole] = await db.execute<RowDataPacket[]>(`SELECT thread_key, COUNT(*) AS total_count FROM emails
-      WHERE user_id = ? AND thread_key IN (${placeholders(keys)}) AND NOT COALESCE(is_draft, FALSE) GROUP BY thread_key`, [userId, ...keys]);
+      WHERE user_id = ? AND thread_key IN (${placeholders(keys)}) AND NOT COALESCE(is_draft, FALSE)${snoozedSql} GROUP BY thread_key`, [userId, ...keys]);
     for (const row of whole) totals.set(row.thread_key, Number(row.total_count) || 0);
     const [people] = await db.execute<RowDataPacket[]>(`SELECT thread_key, from_address, MAX(from_name) AS from_name, MAX(received_at) AS last_at FROM emails
-      WHERE user_id = ? AND thread_key IN (${placeholders(keys)}) AND NOT COALESCE(is_draft, FALSE) AND from_address <> 'unknown'
+      WHERE user_id = ? AND thread_key IN (${placeholders(keys)}) AND NOT COALESCE(is_draft, FALSE) AND from_address <> 'unknown'${snoozedSql}
       GROUP BY thread_key, from_address`, [userId, ...keys]);
     for (const row of people) senders.set(row.thread_key, [...(senders.get(row.thread_key) || []), row]);
   }
@@ -241,14 +244,14 @@ async function listMailThreads(userId: string, searchParams: URLSearchParams): P
   };
 }
 
-/** Every message of the conversation the user's message belongs to, oldest first, for the reader. */
+/** Every message of the conversation the user's message belongs to, oldest first, for the reader; its other snoozed messages stay hidden. */
 async function mailThreadMessages(userId: string, emailId: string): Promise<MailThreadResponse> {
   const [[anchor]] = await db.execute<RowDataPacket[]>('SELECT thread_key FROM emails WHERE id = ? AND user_id = ?', [emailId, userId]);
   if (!anchor) throw notFound('EMAIL_NOT_FOUND', 'Email not found');
   const columns = await mailListColumns(userId);
   const [rows] = anchor.thread_key
-    ? await db.execute<RowDataPacket[]>(`SELECT ${columns} FROM emails WHERE user_id = ? AND thread_key = ?
-        ORDER BY received_at DESC, id DESC LIMIT ${MAIL_THREAD_MAX_MESSAGES + 1}`, [userId, anchor.thread_key])
+    ? await db.execute<RowDataPacket[]>(`SELECT ${columns} FROM emails WHERE user_id = ? AND thread_key = ? AND (id = ? OR ${NOT_SNOOZED_SQL})
+        ORDER BY received_at DESC, id DESC LIMIT ${MAIL_THREAD_MAX_MESSAGES + 1}`, [userId, anchor.thread_key, emailId])
     : await db.execute<RowDataPacket[]>(`SELECT ${columns} FROM emails WHERE user_id = ? AND id = ?`, [userId, emailId]);
   const truncated = rows.length > MAIL_THREAD_MAX_MESSAGES;
   return {

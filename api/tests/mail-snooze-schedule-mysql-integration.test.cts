@@ -11,17 +11,23 @@ const { withTestDatabase, startTestApi } = require('./helpers/test-database.cts'
 const decode = (value: FixtureValue) => typeof value === 'string' ? JSON.parse(value) : value;
 const inMinutes = (minutes: number, from = Date.now()) => new Date(from + minutes * 60 * 1000);
 
+// The bootstrap admin is read once per process: both tests sign in as it.
+process.env.BOOTSTRAP_ADMIN_EMAIL = 'essentials-owner@example.test';
+process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-essentials-owner-password';
+
 async function setup(t: FixtureValue, name: string) {
-  process.env.BOOTSTRAP_ADMIN_EMAIL = `${name}-owner@example.test`;
-  process.env.BOOTSTRAP_ADMIN_PASSWORD = `synthetic-${name}-owner-password`;
   const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
   t.after(captureLog(() => {}));
   const pool = await withTestDatabase(t);
   const api = await startTestApi(t);
   const owner = api.client(), stranger = api.client();
-  assert.equal((await owner.request('POST', '/api/auth/signin', { email: `${name}-owner@example.test`, password: `synthetic-${name}-owner-password` })).status, 200);
+  assert.equal((await owner.request('POST', '/api/auth/signin', { email: 'essentials-owner@example.test', password: 'synthetic-essentials-owner-password' })).status, 200);
   assert.equal((await owner.request('PUT', '/api/admin/settings/signup-mode', { signup_mode: 'open' })).status, 200);
   assert.equal((await stranger.request('POST', '/api/auth/signup', { email: `${name}-stranger@example.test`, password: `synthetic-${name}-stranger-password`, full_name: 'Stranger' })).status, 200);
+  // The owner's browser turned notifications on: events are only made for subscribed devices.
+  const keyBytes = Buffer.alloc(65, 1); keyBytes[0] = 4;
+  assert.equal((await owner.request('POST', '/api/notifications/subscription', { subscription: { endpoint: `https://fcm.googleapis.com/fcm/send/${name}-browser`,
+    keys: { p256dh: keyBytes.toString('base64url'), auth: Buffer.alloc(16, 2).toString('base64url') } } })).status, 200);
   const ownerId = ((await owner.request('GET', '/api/auth/me')).body.user as FixtureValue).id as string;
   const account = crypto.randomUUID();
   await pool.execute(`INSERT INTO mail_accounts (id, user_id, email_address, provider, imap_host, smtp_host, encrypted_password, sync_mode, is_active)
@@ -43,8 +49,12 @@ test('a snoozed message leaves the lists and counts, comes back once with a noti
   const { pool, owner, stranger, ownerId, account, email, setMail } = await setup(t, 'snooze');
   const snooze = require('../dist/src/services/mail-snooze') as typeof import('../src/services/mail-snooze');
 
-  await email({ subject: 'Stays in the inbox' });
+  const kept = await email({ subject: 'Stays in the inbox' });
   const later = await email({ subject: 'Quarterly numbers' });
+  // Both in one conversation: a snoozed message leaves the conversation too.
+  await pool.execute('UPDATE emails SET thread_key = ? WHERE id IN (?, ?)', ['c'.repeat(64), kept, later]);
+  const conversation = async (id: string) => ((await owner.request('GET', `/api/mail/emails/${id}/thread`)).body.messages as FixtureValue[]).map(row => row.id).sort();
+  const inboxThreads = async () => (await owner.request('GET', '/api/mail/threads?folder=inbox')).body.threads as FixtureValue[];
   const draft = await email({ subject: 'Unfinished', draft: true, folder: 'drafts' });
   const subjects = async (query: string) =>
     ((await owner.request('GET', `/api/mail/emails?${query}`)).body.emails as FixtureValue[]).map(row => row.subject).sort();
@@ -62,6 +72,10 @@ test('a snoozed message leaves the lists and counts, comes back once with a noti
   assert.deepEqual(await subjects('folder=inbox'), ['Stays in the inbox']);
   assert.deepEqual(await subjects('folder=snoozed'), ['Quarterly numbers']);
   assert.deepEqual(await subjects('folder=inbox&search=quarterly'), ['Quarterly numbers'], 'search still finds it');
+  assert.deepEqual(await conversation(kept), [kept], 'its conversation leaves it out');
+  assert.deepEqual(await conversation(later), [kept, later].sort(), 'opened from the Snoozed view, it shows with its conversation');
+  const [thread] = await inboxThreads();
+  assert.deepEqual([thread.total_count, thread.message_count], [1, 1]);
   assert.equal(await inboxUnread(), 1, 'and it is not counted while snoozed');
   assert.deepEqual((await stranger.request('GET', '/api/mail/emails?folder=snoozed')).body.emails, [], 'the stranger\'s Snoozed view is their own');
 
@@ -189,8 +203,40 @@ test('a scheduled draft sends once at its time, waits while Mail is off, recover
   await schedule(owner, refused, 5);
   assert.notEqual((await status(refused)).client_key, refusedKey, 'a new attempt has a new key');
   assert.equal((await status(refused)).status, 'scheduled');
-  await scheduled.cancelScheduleForSendNow(ownerId, refused);
+  // Sending it by hand replaces the schedule; refused again, the draft is free and unscheduled.
+  assert.deepEqual(await scheduled.sendDraftNow(ownerId, refused, 'send-now-refused', null, async () => ({ error: 'Account not found', status: 404 })),
+    { error: 'Account not found', status: 404 });
   assert.equal(await status(refused), undefined);
+
+  // A send by hand reserves the draft: while it runs, no schedule, edit,
+  // delete or scheduler pass can touch it, so it cannot go out twice.
+  const manual = await email({ subject: 'Sent by hand', draft: true, folder: 'drafts', to: ['team@example.test'] });
+  let finish!: () => void;
+  const slowHandOver = async (userId: string, draftId: string) => {
+    await new Promise<void>(resolve => { finish = resolve; });
+    return deliver(userId, draftId);
+  };
+  const byHand = scheduled.sendDraftNow(ownerId, manual, 'send-now-manual', null, slowHandOver);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal((await schedule(owner, manual, 5)).body.code, 'SCHEDULED_SEND_IN_PROGRESS');
+  assert.equal((await owner.request('PUT', `/api/mail/drafts/${manual}`, { subject: 'Changed meanwhile' })).body.code, 'SCHEDULED_SEND_IN_PROGRESS');
+  assert.equal((await owner.request('DELETE', `/api/mail/drafts/${manual}`)).status, 409);
+  await pool.execute("UPDATE mail_scheduled_sends SET updated_at = UTC_TIMESTAMP() - INTERVAL 1 HOUR WHERE email_id = ?", [manual]);
+  await scheduled.runDueScheduledSends(inMinutes(60), deliver);
+  assert.ok(!handedOver.includes(manual), 'the scheduler never sends a draft that is being sent by hand');
+  finish();
+  assert.equal((await byHand).success, true);
+  assert.deepEqual(handedOver.filter(id => id === manual), [manual], 'handed over once');
+  assert.equal(await status(manual), undefined, 'the sent draft took its reservation with it');
+
+  // A send by hand whose process stopped is never resumed by the scheduler:
+  // without a receipt the draft is simply free again.
+  const stopped = await email({ subject: 'Stopped by hand', draft: true, folder: 'drafts', to: ['team@example.test'] });
+  await pool.execute(`INSERT INTO mail_scheduled_sends (id, user_id, email_id, mail_account_id, send_at, status, origin, client_key, updated_at)
+    SELECT UUID(), user_id, id, mail_account_id, UTC_TIMESTAMP(), 'sending', 'send_now', 'send-now-stopped', UTC_TIMESTAMP() - INTERVAL 1 HOUR FROM emails WHERE id = ?`, [stopped]);
+  await scheduled.runDueScheduledSends(inMinutes(60), deliver);
+  assert.ok(!handedOver.includes(stopped));
+  assert.equal(await status(stopped), undefined);
 
   // A deactivated person's scheduled mail does not go out.
   const inactive = await email({ subject: 'After leaving', draft: true, folder: 'drafts', to: ['team@example.test'] });

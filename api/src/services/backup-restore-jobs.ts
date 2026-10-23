@@ -21,6 +21,7 @@ import {
 } from './backup-container';
 import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
 import { attachmentsRoot, rawRoot } from './mail-storage';
+import { isAnyDraftSendRunning } from './mail-drafts';
 import {
   isAnyMailAccountSyncRunning,
   isAnyMailServerDeleteRunning,
@@ -293,7 +294,7 @@ async function restoreValidatedJob(job: RestoreJob) {
   await checkRestoreCancelled(job.id);
   const restoreSections = new Set(normalizeBackupImportSections(parseJsonValue(job.requested_sections, 'full')));
   if (restoreSections.has('mail')) {
-    while (isAnyMailAccountSyncRunning() || isAnyMailServerDeleteRunning()) {
+    while (isAnyMailAccountSyncRunning() || isAnyMailServerDeleteRunning() || isAnyDraftSendRunning()) {
       await updateRestoreJob(job.id, { phase: 'waiting_for_mail', progress: 1 });
       await new Promise(resolve => setTimeout(resolve, 1000));
       await checkRestoreCancelled(job.id);
