@@ -254,9 +254,16 @@ async function mailThreadMessages(userId: string, emailId: string): Promise<Mail
         ORDER BY received_at DESC, id DESC LIMIT ${MAIL_THREAD_MAX_MESSAGES + 1}`, [userId, anchor.thread_key, emailId])
     : await db.execute<RowDataPacket[]>(`SELECT ${columns} FROM emails WHERE user_id = ? AND id = ?`, [userId, emailId]);
   const truncated = rows.length > MAIL_THREAD_MAX_MESSAGES;
+  let kept = rows.slice(0, MAIL_THREAD_MAX_MESSAGES);
+  // The opened message is always among them: when the conversation has more
+  // newer messages than the limit, it takes the last place (it is older than all).
+  if (!kept.some(row => row.id === emailId)) {
+    const [[own]] = await db.execute<RowDataPacket[]>(`SELECT ${columns} FROM emails WHERE user_id = ? AND id = ?`, [userId, emailId]);
+    if (own) kept = [...kept.slice(0, MAIL_THREAD_MAX_MESSAGES - 1), own];
+  }
   return {
     thread_key: anchor.thread_key ?? null,
-    messages: rows.slice(0, MAIL_THREAD_MAX_MESSAGES).reverse().map(row => presentMailListRow(row) as unknown as MailListRow),
+    messages: kept.reverse().map(row => presentMailListRow(row) as unknown as MailListRow),
     truncated,
   };
 }

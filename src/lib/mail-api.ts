@@ -1,6 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import type { MailListRow, MailThreadListResponse, MailThreadResponse } from '../../api/src/contracts/mail-threads';
+import type { MailListRow, MailThreadListResponse, MailThreadResponse, MailThreadSummary } from '../../api/src/contracts/mail-threads';
 export type { MailListRow, MailThreadListResponse, MailThreadParticipant, MailThreadResponse, MailThreadSummary } from '../../api/src/contracts/mail-threads';
 
 export interface MailAccount {
@@ -414,25 +414,50 @@ const restoreList = (data: MailListResponse | MailThreadListResponse, reconcile:
  */
 export function showRequestedSnoozeInMailCaches(client: QueryClient, ids: ReadonlySet<string>, snoozed: boolean) {
   const reconcile = captureMailFlagReconciler(client);
-  const previous: [readonly unknown[], MailListResponse | MailThreadListResponse][] = [];
+  // Only the rows this request took out, with their places: the undo puts
+  // those back into each list as it is then, so other snoozes, moves and
+  // flag changes made meanwhile stay.
+  const removed: { key: readonly unknown[]; threads: boolean; rows: { index: number; item: Email | MailThreadSummary }[] }[] = [];
   for (const query of client.getQueryCache().findAll({ queryKey: mailQueryKeys.all })) {
     const current = query.state.data as MailListResponse | MailThreadListResponse | undefined;
     const [, , folder, , search] = query.queryKey;
     // A snoozed message stays visible in the Snoozed view and in search results; one that came back leaves the Snoozed view.
     if (snoozed ? folder === 'snoozed' || search : folder !== 'snoozed') continue;
     if (isThreadList(current)) {
-      if (!current.threads.some(thread => ids.has(thread.latest.id))) continue;
-      previous.push([query.queryKey, current]);
+      const rows = current.threads.flatMap((item, index) => ids.has(item.latest.id) ? [{ index, item }] : []);
+      if (!rows.length) continue;
+      removed.push({ key: query.queryKey, threads: true, rows });
       client.setQueryData<MailThreadListResponse>(query.queryKey, { ...current, threads: current.threads.filter(thread => !ids.has(thread.latest.id)) });
       continue;
     }
-    if (!isMessageList(current) || !current.emails.some(email => ids.has(email.id))) continue;
-    previous.push([query.queryKey, current]);
+    if (!isMessageList(current)) continue;
+    const rows = current.emails.flatMap((item, index) => ids.has(item.id) ? [{ index, item }] : []);
+    if (!rows.length) continue;
+    removed.push({ key: query.queryKey, threads: false, rows });
     const emails = current.emails.filter(email => !ids.has(email.id));
     client.setQueryData<MailListResponse>(query.queryKey, { ...current, emails,
-      ...(current.pagination ? { pagination: { ...current.pagination, total: Math.max(0, current.pagination.total - (current.emails.length - emails.length)) } } : {}) });
+      ...(current.pagination ? { pagination: { ...current.pagination, total: Math.max(0, current.pagination.total - rows.length) } } : {}) });
   }
-  return () => { for (const [key, data] of previous) client.setQueryData(key, restoreList(data, reconcile)); };
+  return () => {
+    for (const { key, threads, rows } of removed) {
+      const data = client.getQueryData<MailListResponse | MailThreadListResponse>(key);
+      if (!data) continue;
+      const idOf = (item: Email | MailThreadSummary) => 'latest' in item ? item.latest.id : item.id;
+      const list: (Email | MailThreadSummary)[] = threads && isThreadList(data) ? [...data.threads] : isMessageList(data) ? [...data.emails] : [];
+      const present = new Set(list.map(idOf));
+      let added = 0;
+      for (const { index, item } of rows) {
+        if (present.has(idOf(item))) continue;
+        list.splice(Math.min(index, list.length), 0, 'latest' in item
+          ? { ...item, latest: reconcile(item.latest as unknown as Email) as unknown as MailListRow } : reconcile(item));
+        added++;
+      }
+      if (!added) continue;
+      if (threads && isThreadList(data)) client.setQueryData<MailThreadListResponse>(key, { ...data, threads: list as MailThreadSummary[] });
+      else if (isMessageList(data)) client.setQueryData<MailListResponse>(key, { ...data, emails: list as Email[],
+        ...(data.pagination ? { pagination: { ...data.pagination, total: data.pagination.total + added } } : {}) });
+    }
+  };
 }
 
 /** After a move or trash was accepted or rejected: the lists, folder counts and the server-change list. */

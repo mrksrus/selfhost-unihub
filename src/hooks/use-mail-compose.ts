@@ -74,7 +74,10 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   // Choosing another account here never changes what the Mail page shows.
   const { data: accounts = [] } = useMailAccounts();
   const preferredAccountId = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('default_mail_account_id') }).data ?? '';
-  const defaultFormat = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('compose_format') }).data ?? 'rich';
+  const formatSetting = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('compose_format') });
+  const defaultFormat = formatSetting.data ?? 'rich';
+  // The saved default is known (or could not be loaded): a compose link may open.
+  const formatKnown = formatSetting.isFetched || formatSetting.isError;
   // The optional compose features (P-26): off until switched on in Settings,
   // Mail; only then does the composer show their button.
   const features = {
@@ -159,26 +162,31 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     return composeBody(nextFormat, signatureFor(accountById(accountId), nextFormat), parts);
   };
 
-  // Open compose dialog if linked from dashboard
+  // Open compose dialog if linked from dashboard, in the person's compose
+  // format once that is known.
+  const composeLinkHandled = useRef(false);
   useEffect(() => {
+    if (composeLinkHandled.current || !formatKnown) return;
+    composeLinkHandled.current = true;
     const params = new URLSearchParams(window.location.search);
     if (params.get('action') === 'compose') {
       const returnTo = sanitizeReturnTo(params.get('returnTo'));
+      const linkBody = params.get('body') || '';
       setComposeMode('new');
-      setBodyFormat('rich');
+      setBodyFormat(defaultFormat);
       // A body from the link is the start of the message, above the signature.
-      partsRef.current = params.get('body') ? { intro: { html: null, text: params.get('body') || '' } } : {};
+      partsRef.current = linkBody ? { intro: { html: null, text: linkBody } } : {};
       setComposeForm({
         ...EMPTY_COMPOSE_FORM,
         to: params.get('to') || '',
         subject: params.get('subject') || '',
-        body: params.get('body') ? plainTextToHtml(params.get('body') || '') : '',
+        body: linkBody ? (defaultFormat === 'plain' ? linkBody : plainTextToHtml(linkBody)) : '',
       });
       setComposeReturnTo(returnTo);
       setIsComposeOpen(true);
       window.history.replaceState({}, '', window.location.pathname);
     }
-  }, []);
+  }, [formatKnown, defaultFormat]);
 
   const { data: contactsForCompose = [] } = useQuery({ ...contactsQueryOptions, enabled: isComposeOpen || isReplying });
   const contactEmailSuggestions = useMemo<ContactEmailSuggestion[]>(() => {
@@ -778,26 +786,47 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       return;
     }
     const composition = compositionRef.current;
-    let draftId: string | null = null;
+    // Saves until a save ends with nothing typed meanwhile, so what is stored
+    // (and later sent) is what the composer shows when it closes.
+    const saveCurrent = async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const revision = revisionRef.current;
+        const saved = await saveCurrentDraft({ includeAttachments: true, quiet: true });
+        if (composition !== compositionRef.current) return { closed: true as const };
+        const id = saved?.id ?? draftRef.current.id;
+        if (!id) throw new Error('The draft could not be saved');
+        if (revision === revisionRef.current) return { id };
+      }
+      throw new Error('The message kept changing while it was saved. Try again.');
+    };
+    let draftId: string;
     try {
-      const saved = await saveCurrentDraft({ includeAttachments: true, quiet: true });
-      draftId = saved?.id ?? draftRef.current.id;
+      const saved = await saveCurrent();
+      if ('closed' in saved) {
+        toast({ title: 'Not scheduled', description: 'The message was closed before it was scheduled.' });
+        return;
+      }
+      draftId = saved.id;
     } catch (error) {
       toast({ title: 'Not scheduled', description: error instanceof Error ? error.message : 'The draft could not be saved', variant: 'destructive' });
       return;
     }
-    if (composition !== compositionRef.current) {
-      toast({ title: 'Not scheduled', description: 'The message was closed before it was scheduled.' });
-      return;
-    }
-    if (!draftId) {
-      toast({ title: 'Not scheduled', description: 'The draft could not be saved', variant: 'destructive' });
-      return;
-    }
     try {
+      const revision = revisionRef.current;
       const schedule = await scheduleMailDraft(draftId, sendAt);
       void invalidateMailQueries(queryClient);
-      if (composition === compositionRef.current) closeComposeFlow({ force: true });
+      // Typed while the schedule was set: saved too (a scheduled draft can still
+      // change) before the composer closes; if that fails, it stays open.
+      let current = composition === compositionRef.current;
+      if (current && revision !== revisionRef.current) {
+        try {
+          current = !('closed' in await saveCurrent());
+        } catch (error) {
+          current = false;
+          toast({ title: 'Scheduled, but your latest changes are not saved', description: error instanceof Error ? error.message : undefined, variant: 'destructive' });
+        }
+      }
+      if (current) closeComposeFlow({ force: true });
       const id = draftId;
       toast(scheduledSendToast(schedule.send_at, async () => {
         try {

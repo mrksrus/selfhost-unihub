@@ -224,6 +224,10 @@ test('a scheduled draft sends once at its time, waits while Mail is off, recover
   await pool.execute("UPDATE mail_scheduled_sends SET updated_at = UTC_TIMESTAMP() - INTERVAL 1 HOUR WHERE email_id = ?", [manual]);
   await scheduled.runDueScheduledSends(inMinutes(60), deliver);
   assert.ok(!handedOver.includes(manual), 'the scheduler never sends a draft that is being sent by hand');
+  // Older than the stale window but still running here: not settled as stopped,
+  // so a second send by hand (a new key) is still refused.
+  assert.equal((await status(manual)).status, 'sending');
+  await assert.rejects(scheduled.sendDraftNow(ownerId, manual, 'send-now-second', null, deliver), { status: 409, code: 'SCHEDULED_SEND_IN_PROGRESS' });
   finish();
   assert.equal((await byHand).success, true);
   assert.deepEqual(handedOver.filter(id => id === manual), [manual], 'handed over once');

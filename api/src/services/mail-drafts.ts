@@ -150,12 +150,22 @@ async function lockDraftForSend(connection: SqlExecutor, userId: string, draftId
 // Draft sends running in this process (by hand or scheduled). A mail restore
 // waits until none runs; a send registers before it checks for a restore, so
 // one of the two always sees the other.
+// Each send also marks its draft: a send that runs longer than the stale
+// window is still alive, and the scheduler must not settle it as stopped.
 let draftSendsRunning = 0;
-async function trackDraftSend<T>(work: () => Promise<T>): Promise<T> {
+const draftsSending = new Map<string, number>();
+const draftKey = (userId: string, draftId: string) => `${userId}:${draftId}`;
+async function trackDraftSend<T>(work: () => Promise<T>, draft?: { userId: string; draftId: string }): Promise<T> {
+  const key = draft ? draftKey(draft.userId, draft.draftId) : null;
   draftSendsRunning += 1;
-  try { return await work(); } finally { draftSendsRunning -= 1; }
+  if (key) draftsSending.set(key, (draftsSending.get(key) || 0) + 1);
+  try { return await work(); } finally {
+    draftSendsRunning -= 1;
+    if (key) { const left = (draftsSending.get(key) || 1) - 1; if (left) draftsSending.set(key, left); else draftsSending.delete(key); }
+  }
 }
 const isAnyDraftSendRunning = () => draftSendsRunning > 0;
+const isDraftSendRunning = (userId: string, draftId: string) => draftsSending.has(draftKey(userId, draftId));
 
 /** Deletes one of the user's drafts by request: refused while it is being sent, in the same lock order as the sends. */
 async function deleteDraftUnlessSending(userId: string, draftId: string) {
@@ -250,5 +260,5 @@ async function sendStoredDraft(userId: string, draftId: string, replyTo?: unknow
   };
 }
 
-export { saveDraftMutation, loadMailAccountForDraft, loadDraftEmail, deleteDraftWithFiles, deleteDraftUnlessSending, lockDraftForSend, sendStoredDraft, trackDraftSend, isAnyDraftSendRunning };
+export { saveDraftMutation, loadMailAccountForDraft, loadDraftEmail, deleteDraftWithFiles, deleteDraftUnlessSending, lockDraftForSend, sendStoredDraft, trackDraftSend, isAnyDraftSendRunning, isDraftSendRunning };
 export type { DraftRow };

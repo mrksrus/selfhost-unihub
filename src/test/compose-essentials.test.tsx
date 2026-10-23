@@ -117,6 +117,17 @@ describe('compose format', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Send/ }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ isHtml: false, body: 'Plain hello\n\n-- \nAlex Example' }), expect.anything()));
   });
+
+  it('a compose link opens in the saved format once the settings have answered', async () => {
+    state.settings = { compose_format: 'plain' };
+    window.history.replaceState({}, '', '/mail?action=compose&to=sparks%40example.test&body=Call+me');
+    wrap();
+    const body = await screen.findByPlaceholderText('Write your message...');
+    expect(body.tagName).toBe('TEXTAREA');
+    await waitFor(() => expect(body).toHaveValue('Call me\n\n-- \nAlex Example'));
+    expect(screen.getByLabelText('To')).toHaveValue('sparks@example.test');
+    expect(window.location.search).toBe('');
+  });
 });
 
 describe('templates', () => {
@@ -212,6 +223,41 @@ describe('optional compose features', () => {
     await act(async () => { scheduled.action.props.onClick(); });
     await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/mail/drafts/d-1/schedule'));
     expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Scheduled send cancelled' }));
+  });
+
+  it('Send later saves an edit typed while the draft was being saved before it schedules', async () => {
+    state.settings = { compose_scheduled_send: true };
+    const calls: string[] = [];
+    let finishFirstSave!: () => void;
+    const draft = (subject: string) => ({ data: { draft: { id: 'd-1', mail_account_id: 'acc-a', folder: 'drafts', is_draft: true, subject,
+      from_address: 'alex@example.test', to_addresses: ['sparks@example.test'], body_text: '', body_html: null, is_read: true, is_starred: false, received_at: '2026-10-23T10:00:00.000Z' }, uploaded: [] } });
+    vi.mocked(api.post).mockImplementation(async (path: string, body?: unknown) => {
+      calls.push(`POST ${path}`);
+      if (path === '/mail/drafts') {
+        await new Promise<void>(resolve => { finishFirstSave = resolve; });
+        return draft((body as { subject: string }).subject);
+      }
+      if (path === '/mail/drafts/d-1/schedule') return { data: { schedule: { email_id: 'd-1', send_at: (body as { send_at: string }).send_at, status: 'scheduled', last_error: null, created_at: '', updated_at: '' } } };
+      return { error: `unexpected ${path}` };
+    });
+    vi.mocked(api.put).mockImplementation(async (path: string, body?: unknown) => {
+      calls.push(`PUT ${path} ${(body as { subject: string }).subject}`);
+      return draft((body as { subject: string }).subject);
+    });
+    await openNew();
+    fireEvent.change(screen.getByLabelText('To'), { target: { value: 'sparks@example.test' } });
+    fireEvent.change(screen.getByLabelText('Subject'), { target: { value: 'Minutes' } });
+    const editor = document.getElementById('compose-body')!;
+    await waitFor(() => expect(editor.innerHTML).toContain('Alex <b>Example</b>'));
+    editor.innerHTML = `<p>See you Monday.</p>${editor.innerHTML}`;
+    fireEvent.input(editor);
+    openMenu('Send later');
+    fireEvent.click(await screen.findByRole('menuitem', { name: /^In 1 hour/ }));
+    await waitFor(() => expect(calls).toEqual(['POST /mail/drafts']));
+    fireEvent.change(screen.getByLabelText('Subject'), { target: { value: 'Minutes, final' } });
+    await act(async () => { finishFirstSave(); });
+    await waitFor(() => expect(calls).toEqual(['POST /mail/drafts', 'PUT /mail/drafts/d-1 Minutes, final', 'POST /mail/drafts/d-1/schedule']));
+    await waitFor(() => expect(screen.queryByLabelText('To')).not.toBeInTheDocument());
   });
 
   it('a taken template name is refused in the dialog, which stays open', async () => {
