@@ -11,17 +11,23 @@ const { withTestDatabase, startTestApi } = require('./helpers/test-database.cts'
 const decode = (value: FixtureValue) => typeof value === 'string' ? JSON.parse(value) : value;
 const inMinutes = (minutes: number, from = Date.now()) => new Date(from + minutes * 60 * 1000);
 
+// The bootstrap admin is read once per process: both tests sign in as it.
+process.env.BOOTSTRAP_ADMIN_EMAIL = 'essentials-owner@example.test';
+process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-essentials-owner-password';
+
 async function setup(t: FixtureValue, name: string) {
-  process.env.BOOTSTRAP_ADMIN_EMAIL = `${name}-owner@example.test`;
-  process.env.BOOTSTRAP_ADMIN_PASSWORD = `synthetic-${name}-owner-password`;
   const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
   t.after(captureLog(() => {}));
   const pool = await withTestDatabase(t);
   const api = await startTestApi(t);
   const owner = api.client(), stranger = api.client();
-  assert.equal((await owner.request('POST', '/api/auth/signin', { email: `${name}-owner@example.test`, password: `synthetic-${name}-owner-password` })).status, 200);
+  assert.equal((await owner.request('POST', '/api/auth/signin', { email: 'essentials-owner@example.test', password: 'synthetic-essentials-owner-password' })).status, 200);
   assert.equal((await owner.request('PUT', '/api/admin/settings/signup-mode', { signup_mode: 'open' })).status, 200);
   assert.equal((await stranger.request('POST', '/api/auth/signup', { email: `${name}-stranger@example.test`, password: `synthetic-${name}-stranger-password`, full_name: 'Stranger' })).status, 200);
+  // The owner's browser turned notifications on: events are only made for subscribed devices.
+  const keyBytes = Buffer.alloc(65, 1); keyBytes[0] = 4;
+  assert.equal((await owner.request('POST', '/api/notifications/subscription', { subscription: { endpoint: `https://fcm.googleapis.com/fcm/send/${name}-browser`,
+    keys: { p256dh: keyBytes.toString('base64url'), auth: Buffer.alloc(16, 2).toString('base64url') } } })).status, 200);
   const ownerId = ((await owner.request('GET', '/api/auth/me')).body.user as FixtureValue).id as string;
   const account = crypto.randomUUID();
   await pool.execute(`INSERT INTO mail_accounts (id, user_id, email_address, provider, imap_host, smtp_host, encrypted_password, sync_mode, is_active)

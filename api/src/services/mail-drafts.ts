@@ -3,9 +3,9 @@ import type { Pool, PoolConnection, RowDataPacket } from 'mysql2/promise';
 import fs from 'fs';
 import { db } from '../state';
 import { log } from '../log';
-import { toBooleanFlag } from './mail-host-policy';
-import { deleteStoredAttachmentFiles } from './mail-server-delete';
-import { draftThreading, replyThreading, sendEmail } from './mail-send';
+// Through the facade, as the draft routes did, so their tests can stub sending.
+import { toBooleanFlag, deleteStoredAttachmentFiles, replyThreading, sendEmail } from './mail';
+import { draftThreading } from './mail-send';
 import { parseStoredRecipients } from './mail-recipients';
 
 import {
@@ -58,6 +58,10 @@ async function saveDraftMutation({ db, userId, emailId, isNew = false, body, mut
     if (!isNew) {
       const [drafts] = await connection.execute<RowDataPacket[]>('SELECT id FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE FOR UPDATE', [emailId, userId]);
       if (!drafts.length) throw Object.assign(new Error('Draft not found'), { status: 404 });
+      // A scheduled send claims its row before it reads the draft: holding the
+      // row here, an edit lands either before the send starts or is refused.
+      const [schedules] = await connection.execute<RowDataPacket[]>('SELECT status FROM mail_scheduled_sends WHERE email_id = ? AND user_id = ? FOR UPDATE', [emailId, userId]);
+      if (schedules[0]?.status === 'sending') throw Object.assign(new Error('This message is being sent now.'), { status: 409, code: 'SCHEDULED_SEND_IN_PROGRESS' });
     }
     let kept: ExistingAttachment[] = [];
     if (changesAttachments && !isNew) {
