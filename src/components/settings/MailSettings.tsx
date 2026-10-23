@@ -106,7 +106,7 @@ export default function MailSettings() {
       </SettingsSection>
 
       <SettingsSection title="Reading">
-        <SettingsRow label="Message appearance" description="Match the app’s theme reads in the dark theme’s reading view and shows the original in light; simplified always uses the reading view; original keeps the sender’s layout; per message decides from the message. A switch while reading stays for that message." htmlFor="reading-format" lock={lock('reading_format')}>
+        <SettingsRow label="Message appearance" description="Match the app’s theme shows the reading view in dark and the original in light. A switch while reading stays for that message." htmlFor="reading-format" lock={lock('reading_format')}>
           <Select value={values.reading_format} disabled={disabled('reading_format')} onValueChange={value => change({ reading_format: value as UserSettingValues['reading_format'] })}>
             <SelectTrigger id="reading-format" className="w-full sm:w-56"><SelectValue /></SelectTrigger>
             <SelectContent>
