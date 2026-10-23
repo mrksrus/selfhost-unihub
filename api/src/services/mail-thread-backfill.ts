@@ -45,6 +45,8 @@ interface BackfillDeps {
 }
 interface BackfillState { cursors: Map<string, string>; idleUntil: number }
 const state: BackfillState = { cursors: new Map(), idleUntil: 0 };
+// A row whose file cannot be read is tried again each pass; it is logged once.
+const reported = new Set<string>();
 
 function defaultDeps(): BackfillDeps {
   return { db: defaultDb, now: Date.now, mayRun: userId => canRunModule(userId, 'mail'), readHeaders: readRawThreadHeaders };
@@ -88,7 +90,10 @@ async function runMailThreadBackfill(overrides: Partial<BackfillDeps> = {}, { ma
         budget--;
         state.cursors.set(userId, row.id);
         const keyed = await backfillRow(deps, userId, row).catch(error => {
-          log.warn('mail', 'Could not thread a stored message; it is tried again later', { userId, emailId: row.id }, error);
+          if (!reported.has(row.id) && reported.size < 10_000) {
+            reported.add(row.id);
+            log.warn('mail', 'Could not thread a stored message; it is tried again later', { userId, emailId: row.id }, error);
+          }
           return false;
         });
         if (keyed) result.keyed++; else result.deferred++;
@@ -143,6 +148,7 @@ function participantsOf(row: PendingRow) {
 /** Tests: forget the pass cursors and the idle pause. */
 function resetMailThreadBackfill() {
   state.cursors.clear();
+  reported.clear();
   state.idleUntil = 0;
 }
 

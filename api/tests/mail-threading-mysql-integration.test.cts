@@ -445,7 +445,7 @@ test('the conversation list groups each person\'s own mail per view, pages stabl
     assert.equal(reply.status, 200, String(reply.body.error));
     return reply.body as unknown as Threads;
   };
-  const page1 = await list(owner, 'folder=inbox&limit=2');
+  const page1 = await list(owner, 'folder=inbox&limit=2&include_count=true');
   assert.deepEqual(page1.threads.map(thread => thread.latest.id), [starred, reply]);
   assert.deepEqual(page1.threads[1], { ...page1.threads[1], thread_key: k1, message_count: 2, unread_count: 1, total_count: 3, has_attachments: false, is_starred: false,
     participants: [{ address: 'bob@example.test', name: 'bob' }, { address: 'thread-list-admin@example.test', name: 'thread-list-admin' }, { address: 'alice@example.test', name: 'alice' }] });
@@ -462,6 +462,27 @@ test('the conversation list groups each person\'s own mail per view, pages stabl
   assert.deepEqual((await list(owner, 'folder=inbox&limit=2&offset=2')).threads.map(thread => thread.latest.id), [reply, unkeyed]);
   assert.deepEqual((await list(owner, 'folder=inbox&is_read=false')).threads.map(thread => [thread.latest.id, thread.message_count]), [[late, 1], [starred, 1], [reply, 1]]);
   assert.equal((await owner.request('GET', '/api/mail/threads?cursor=not-a-cursor')).status, 400);
+  assert.equal((await list(owner, 'folder=inbox')).pagination.total, null, 'the view is counted only when asked');
+
+  // Messages received in the same second: two conversations are paged one by
+  // one without a gap or a repeat; one conversation is listed once.
+  const sameSecond = 8;
+  const [tieA, tieB] = [await mail(ownerId, ownerAccount, { key: null, day: sameSecond, from: 'gina@example.test' }),
+    await mail(ownerId, ownerAccount, { key: null, day: sameSecond, from: 'hank@example.test' })].sort();
+  const [pairA, pairB] = [await mail(ownerId, ownerAccount, { key: '6'.repeat(64), day: sameSecond, from: 'ivy@example.test' }),
+    await mail(ownerId, ownerAccount, { key: '6'.repeat(64), day: sameSecond, from: 'jon@example.test' })].sort();
+  const seen: string[] = [];
+  let cursor = '';
+  for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
+    const page = await list(owner, `folder=inbox&limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+    seen.push(...page.threads.map(thread => thread.latest.id));
+    if (!page.pagination.hasMore) break;
+    cursor = page.pagination.next_cursor;
+  }
+  assert.deepEqual(seen.slice(0, 3), [pairA, tieA, tieB].sort(), 'each conversation of that second once, by id; the pair by its first id');
+  assert.ok(!seen.includes(pairB));
+  assert.deepEqual(seen.slice(3), [late, starred, reply, unkeyed]);
+  await pool.execute('DELETE FROM emails WHERE id IN (?, ?, ?, ?)', [tieA, tieB, pairA, pairB]);
 
   // The other person sees only their own message, counted alone.
   const theirList = await list(stranger, 'folder=inbox');

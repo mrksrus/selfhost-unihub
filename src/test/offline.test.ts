@@ -62,7 +62,7 @@ describe('offline endpoint parity', () => {
     ];
     type Threads = { threads: Array<{ latest: { id: string } }>; pagination: { hasMore: boolean; next_cursor: string | null } };
     const resolve = <T = Record<string, unknown>>(endpoint: string) => (resolveOfflineEndpoint(saved, endpoint) as { data: T }).data;
-    const inbox = resolve<Threads>('/mail/threads?folder=inbox');
+    const inbox = resolve<Threads>('/mail/threads?folder=inbox&include_count=true');
     expect(inbox.threads).toMatchObject([
       { thread_key: 'k1', latest: { id: 'reply', body_html: null }, message_count: 2, unread_count: 1, total_count: 3,
         participants: [{ address: 'b@example.test' }, { address: 'me@example.test' }, { address: 'a@example.test' }] },

@@ -43,7 +43,7 @@ export interface MailThreadListQuery {
   offset?: number;
   /** next_cursor of the previous page; when given, offset is ignored. */
   cursor?: string;
-  /** Default true: counts the conversations of the whole view (a full scan of it). */
+  /** 'true' counts the conversations of the whole view (a full scan of it); off by default, unlike the message list. */
   include_count?: 'true' | 'false';
 }
 
@@ -72,7 +72,7 @@ export interface MailThreadSummary {
 export interface MailThreadListResponse {
   threads: MailThreadSummary[];
   pagination: {
-    /** Conversations in the view, null with include_count=false. */
+    /** Conversations in the view; null unless include_count=true. */
     total: number | null;
     limit: number;
     offset: number;

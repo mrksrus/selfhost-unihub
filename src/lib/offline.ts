@@ -307,7 +307,7 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
   if(path === '/mail/threads') {
     const groups=new Map<string,Row[]>();
     for(const row of mailRows(snapshot,params)){const key=text(row.thread_key)||`email:${text(row.id)}`;groups.set(key,[...(groups.get(key)||[]),row]);}
-    const all=[...groups.values()],limit=Math.max(1,numberParam(params,'limit',50,100)),includeCount=params.get('include_count')!=='false';
+    const all=[...groups.values()],limit=Math.max(1,numberParam(params,'limit',50,100)),includeCount=params.get('include_count')==='true';
     const cursorId=/^[0-9]{1,15}\.(.+)$/.exec(params.get('cursor')||'')?.[1];
     const offset=cursorId?all.findIndex(rows=>rows[0].id===cursorId)+1:numberParam(params,'offset',0,10000000);
     const threads=all.slice(offset,offset+limit).map(rows=>{

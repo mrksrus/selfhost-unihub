@@ -156,26 +156,32 @@ async function listMailThreads(userId: string, searchParams: URLSearchParams): P
   const view = mailListView(searchParams, userId);
   const cursor = parseCursor(searchParams.get('cursor'));
   const columns = await mailListColumns(userId);
-  // The newest message in the view of its conversation: no later message of
-  // the same conversation is in the view. The innermost query re-applies the
-  // view's conditions to that later message under the table's own name, so
-  // the same SQL fragments serve both. A message without a key is a
-  // conversation of its own.
+  // The newest message in the view of its conversation: no message of the
+  // same conversation that comes before it in the list is in the view. The
+  // innermost query re-applies the view's conditions to that message under
+  // the table's own name, so the same SQL fragments serve both. A message
+  // without a key is a conversation of its own.
+  // The list order (received_at DESC, id ASC) is the order of
+  // idx_emails_user_date, so the scan walks the index and stops after one
+  // page; with id DESC the database sorted the whole view first, running the
+  // check for every message of it (seconds at 100k messages instead of ms).
   const newestInView = `(emails.thread_key IS NULL OR NOT EXISTS (
       SELECT 1 FROM emails AS later WHERE later.user_id = emails.user_id AND later.thread_key = emails.thread_key
-        AND (later.received_at > emails.received_at OR (later.received_at = emails.received_at AND later.id > emails.id))
+        AND (later.received_at > emails.received_at OR (later.received_at = emails.received_at AND later.id < emails.id))
         AND EXISTS (SELECT 1 FROM emails WHERE emails.id = later.id AND ${view.whereSql})))`;
-  const cursorSql = cursor ? ' AND (emails.received_at < ? OR (emails.received_at = ? AND emails.id < ?))' : '';
+  const cursorSql = cursor ? ' AND (emails.received_at < ? OR (emails.received_at = ? AND emails.id > ?))' : '';
   const offset = cursor ? 0 : view.offset;
   const [rows] = await db.execute<RowDataPacket[]>(`SELECT ${columns} FROM emails
     WHERE ${view.whereSql}${cursorSql} AND ${newestInView}
-    ORDER BY received_at DESC, id DESC LIMIT ${view.limit + 1} OFFSET ${offset}`,
+    ORDER BY received_at DESC, id ASC LIMIT ${view.limit + 1} OFFSET ${offset}`,
   [...view.params, ...(cursor ? [cursor.receivedAt, cursor.receivedAt, cursor.id] : []), ...view.params]);
   const hasMore = rows.length > view.limit;
   const page = rows.slice(0, view.limit);
 
+  // Counting the view's conversations reads all of it (about 0.6 s for an
+  // inbox of 100k messages), so it runs only when asked for.
   let total: number | null = null;
-  if (view.includeCount) {
+  if (searchParams.get('include_count') === 'true') {
     const [[count]] = await db.execute<RowDataPacket[]>(`SELECT COUNT(DISTINCT COALESCE(thread_key, id)) AS total FROM emails WHERE ${view.whereSql}`, view.params);
     total = Number(count?.total) || 0;
   }

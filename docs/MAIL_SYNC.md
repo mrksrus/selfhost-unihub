@@ -740,8 +740,11 @@ with `message_count` and `unread_count` in the view, `total_count` in the whole
 mailbox (drafts excluded), `has_attachments`, `is_starred` and up to five
 `participants` (senders, most recent first). Pages are `limit`/`offset`, or the
 `cursor` the previous page returned as `next_cursor`, which keeps pages apart
-while new mail moves a conversation to the top. `include_count` (default true)
-counts the view's conversations. The message list itself is unchanged; the
+while new mail moves a conversation to the top; messages received in the same
+second are ordered by id ascending (the order of `idx_emails_user_date`, so a
+page reads only the index entries it needs). `include_count=true` also counts
+the view's conversations; unlike the message list this is off by default,
+because it reads the whole view. The message list itself is unchanged; the
 app asks for conversations when the user turned on **Threaded view**
 (`mail_threaded_view`). `GET /api/mail/emails/:id/thread` returns
 `{ thread_key, messages, truncated }`: the user's messages of that message's
