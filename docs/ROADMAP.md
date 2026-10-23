@@ -69,7 +69,7 @@ UniHub servers, AI features and new Music features.
 | Version | Theme | Main contents |
 | --- | --- | --- |
 | 0.23.x | Hardening | Released. Patch releases carry the fixes found in review and testing. |
-| 0.24.0 | Notifications and settings | Per-account folder filter for notifications ("notify except selected", Junk excluded by default, or "only selected"); how much a notification shows (sender and subject, sender only, or nothing); notifications per calendar; a typed settings registry that later admin policies build on; a few general mail and calendar settings, such as a signature per account. |
+| 0.24.0 | Notifications, settings and mail essentials | Per-account folder filter for notifications ("notify except selected", Junk excluded by default, or "only selected"); how much a notification shows (sender and subject, sender only, or nothing); notifications per calendar; a typed settings registry that later admin policies build on; a signature per mail account, the week start and the default event reminder; mail essentials: reply all, formatted or plain-text compose, a default reading format, conversations, preview lines, templates, snooze and scheduled send, each optional compose feature switched on in Settings before it adds a button. |
 | 0.25.0 | Mail on the phone | A phone composer modelled on Apple Mail (compact header, recipient chips, a body that stays above the keyboard); keyboard handling in the Android app and PWA; attachments: open with another app, save and share on Android; an automated Android check against a real server. |
 | 0.26.0 | Contacts | Any number of emails and phone numbers per contact; duplicate detection by name as well as email and phone, with a reason for each match; side-by-side merge review that keeps every value, can be undone, and lets you mark contacts as "not the same person"; a written contacts input contract. |
 | 0.27.0 | ToDo and calendar order and defaults | Drag handles to reorder tasks, subtasks and module pages; choose the list or calendar when creating an item, and move tasks between lists; default task list and calendar in Settings. |
@@ -132,6 +132,9 @@ These items are not planned. Each one can come after 1.0, or never.
 - UnifiedPush as an optional notification route
 - Sharing into UniHub from other Android apps, document scanning
 - Quiet hours and smart notification rules
+- More per-account mail settings: a reply-to address, the default for remote
+  images, when a message counts as read, undo send; a default event length
+- S/MIME signing and encryption
 - Encrypting mail and files inside the server beyond volume encryption
 - Several API processes or replicas
 - Communication between UniHub servers

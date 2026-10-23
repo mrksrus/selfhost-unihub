@@ -6,7 +6,13 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
-## 0.24.0 (unreleased)
+## 0.24.0
+
+Notifications, settings and mail essentials: settings per account, mail
+account and calendar, notifications you can filter, signatures, reply all,
+templates, sending later, snooze and conversations. One automatic database
+upgrade; no configuration change is needed (see
+[Upgrading](docs/UPGRADING.md#0240-notifications-settings-and-mail-essentials)).
 
 ### Added
 
@@ -33,6 +39,12 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - **Settings an administrator fixed** are shown greyed out with "Set by your
   administrator" instead of disappearing; where a policy only sets a minimum
   privacy level, the less private choices are greyed out the same way.
+- **Mail: reply all and signatures.** The reader and the row menu offer
+  Reply all, which writes to the sender and everyone on To and Cc, without
+  your own address or anyone twice, from the account that received the
+  message. A new message, reply or forward starts with the signature of the
+  account it is sent from (above the quoted message), in formatted or plain
+  text; while nothing is written yet, it follows a change of the From account.
 - **Mail: optional compose features, off until you switch them on.** Settings,
   Mail lists three new switches: Templates, Send later and the text-format
   switch. With none on, the composer looks as before. Templates and the format

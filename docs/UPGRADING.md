@@ -29,7 +29,7 @@ No configuration change is needed. Worth knowing:
   unchanged; the old settings address keeps answering for older apps.
 - **Android app.** Nothing in the app changed for these features; they come
   with the server's pages, so installing 0.24.0's app is optional. Older apps
-  keep working.
+  keep working. The window is 0.24.0, 0.23.3, 0.23.2 and 0.23.1.
 
 ## 0.23.3 Security update
 
