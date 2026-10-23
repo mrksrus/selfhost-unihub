@@ -28,7 +28,8 @@ const REMINDER_DETAIL: { value: UserSettingValues['reminder_notification_detail'
   { value: 'none', label: 'Nothing, just “Event reminder”' },
 ];
 const REMINDER_DETAIL_ORDER = REMINDER_DETAIL.map(option => option.value);
-const SERVER_NOTE = 'Applied on the server before anything leaves it.';
+const SERVER_NOTE = 'The server applies these choices before a notification leaves it.';
+const ACCOUNT_NOTE = 'Saved with your account, so every device follows.';
 
 export function NotificationChoices() {
   const { isEnabled } = useModules();
@@ -44,23 +45,21 @@ function MailNotificationChoices() {
   const accountsQuery = useMailAccounts();
   const accounts = (accountsQuery.data ?? []).filter(account => account.is_active && !account.disconnected_at);
   const { accounts: settings, change, unavailable, error, refetch, refetching } = useMailAccountSettings();
-  if (accountsQuery.isLoading) return <SettingsSection title="Mail"><SettingsBlock><LoadingState compact label="Loading accounts…" /></SettingsBlock></SettingsSection>;
-  if (accounts.length === 0) return null;
   return (
-    <>
-      {error && (
-        <SettingsSection title="Mail">
-          <SettingsBlock><ErrorState title="Could not load the mail notification settings" error={error} onRetry={refetch} retrying={refetching} /></SettingsBlock>
-        </SettingsSection>
-      )}
+    <SettingsSection title="New mail" description={`For each mail account. ${ACCOUNT_NOTE} ${SERVER_NOTE}`}>
+      {accountsQuery.isLoading && <SettingsBlock><LoadingState compact label="Loading accounts…" /></SettingsBlock>}
+      {accountsQuery.error && <SettingsBlock><ErrorState title="Could not load the mail accounts" error={accountsQuery.error} onRetry={() => void accountsQuery.refetch()} retrying={accountsQuery.isFetching} /></SettingsBlock>}
+      {error && <SettingsBlock><ErrorState title="Could not load the mail notification settings" error={error} onRetry={refetch} retrying={refetching} /></SettingsBlock>}
+      {accountsQuery.isSuccess && accounts.length === 0 && <SettingsBlock><p className="text-sm text-muted-foreground">Add a mail account to choose what it announces.</p></SettingsBlock>}
       {accounts.map(account => (
         <AccountNotifications key={account.id} account={account} unavailable={unavailable}
           settings={settings[account.id] ?? defaultsResolved(DEFAULT_MAIL_ACCOUNT_SETTINGS)} change={patch => change(account.id, patch)} />
       ))}
-    </>
+    </SettingsSection>
   );
 }
 
+/** One account's rows under its address; a group, so the same labels can repeat per account. */
 function AccountNotifications({ account, settings, unavailable, change }: {
   account: MailAccount; settings: MailAccountSettings; unavailable: boolean; change: (patch: Partial<MailAccountSettingValues>) => void;
 }) {
@@ -69,36 +68,40 @@ function AccountNotifications({ account, settings, unavailable, change }: {
   const disabled = (key: keyof MailAccountSettingValues) => unavailable || settings[key].locked;
   const lock = (key: keyof MailAccountSettingValues) => settings[key].locked ? ADMIN_REASON : undefined;
   return (
-    <SettingsSection title={account.email_address} description={account.display_name || undefined}>
-      <SettingsRow label="Notifications" description="New mail in this account." htmlFor={id('enabled')} lock={lock('notify_enabled')}>
-        <Switch id={id('enabled')} checked={values.notify_enabled} disabled={disabled('notify_enabled')} onCheckedChange={checked => change({ notify_enabled: checked })} />
-      </SettingsRow>
-      {values.notify_enabled && (
-        <>
-          <SettingsRow label="Folders" description="Which folders announce new mail." htmlFor={id('mode')} lock={lock('notify_folder_mode')}>
-            <Select value={values.notify_folder_mode} disabled={disabled('notify_folder_mode')} onValueChange={value => change({ notify_folder_mode: value as MailAccountSettingValues['notify_folder_mode'] })}>
-              <SelectTrigger id={id('mode')} className="w-full sm:w-56"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="except">All folders except</SelectItem>
-                <SelectItem value="only">Only these folders</SelectItem>
-              </SelectContent>
-            </Select>
-          </SettingsRow>
-          <FolderPicker account={account} mode={values.notify_folder_mode} refs={values.notify_folders} disabled={disabled('notify_folders')} lock={lock('notify_folders')}
-            onChange={notify_folders => change({ notify_folders })} />
-          <SettingsRow label="What it shows" description={SERVER_NOTE} htmlFor={id('detail')} lock={policyReason(settings.notify_detail)}>
-            <Select value={values.notify_detail} disabled={disabled('notify_detail')} onValueChange={value => change({ notify_detail: value as MailAccountSettingValues['notify_detail'] })}>
-              <SelectTrigger id={id('detail')} className="w-full sm:w-64"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {MAIL_DETAIL.map(option => (
-                  <SelectItem key={option.value} value={option.value} disabled={!allowedByFloor(settings.notify_detail, MAIL_DETAIL_ORDER, option.value)}>{option.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </SettingsRow>
-        </>
-      )}
-    </SettingsSection>
+    <div role="group" aria-labelledby={id('title')} className="pt-4">
+      <h3 id={id('title')} className="text-sm font-semibold">{account.email_address}</h3>
+      {account.display_name && <p className="mt-0.5 text-sm text-muted-foreground">{account.display_name}</p>}
+      <div className="divide-y divide-border">
+        <SettingsRow label="Notifications" description="New mail in this account." htmlFor={id('enabled')} lock={lock('notify_enabled')}>
+          <Switch id={id('enabled')} checked={values.notify_enabled} disabled={disabled('notify_enabled')} onCheckedChange={checked => change({ notify_enabled: checked })} />
+        </SettingsRow>
+        {values.notify_enabled && (
+          <>
+            <SettingsRow label="Folders" description="Which folders announce new mail." htmlFor={id('mode')} lock={lock('notify_folder_mode')}>
+              <Select value={values.notify_folder_mode} disabled={disabled('notify_folder_mode')} onValueChange={value => change({ notify_folder_mode: value as MailAccountSettingValues['notify_folder_mode'] })}>
+                <SelectTrigger id={id('mode')} className="w-full sm:w-56"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="except">All folders except</SelectItem>
+                  <SelectItem value="only">Only these folders</SelectItem>
+                </SelectContent>
+              </Select>
+            </SettingsRow>
+            <FolderPicker account={account} mode={values.notify_folder_mode} refs={values.notify_folders} disabled={disabled('notify_folders')} lock={lock('notify_folders')}
+              onChange={notify_folders => change({ notify_folders })} />
+            <SettingsRow label="What it shows" description="The sender and subject, the sender, or only that mail arrived." htmlFor={id('detail')} lock={policyReason(settings.notify_detail)}>
+              <Select value={values.notify_detail} disabled={disabled('notify_detail')} onValueChange={value => change({ notify_detail: value as MailAccountSettingValues['notify_detail'] })}>
+                <SelectTrigger id={id('detail')} className="w-full sm:w-64"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {MAIL_DETAIL.map(option => (
+                    <SelectItem key={option.value} value={option.value} disabled={!allowedByFloor(settings.notify_detail, MAIL_DETAIL_ORDER, option.value)}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </SettingsRow>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -132,8 +135,8 @@ function CalendarNotificationChoices() {
   const { calendars: calendarSettings, change: changeCalendar, unavailable: calendarsUnavailable, error, refetch, refetching } = useCalendarSettings();
   const detail = settings.reminder_notification_detail;
   return (
-    <SettingsSection title="Reminders" description="Event and task reminders, and new items in shared calendars.">
-      <SettingsRow label="What a reminder shows" description={SERVER_NOTE} htmlFor="reminder-detail" lock={policyReason(detail)}>
+    <SettingsSection title="Reminders" description={`Event and task reminders, and new items in shared calendars. ${ACCOUNT_NOTE} ${SERVER_NOTE}`}>
+      <SettingsRow label="What a reminder shows" description="The title and time, or only that a reminder is due." htmlFor="reminder-detail" lock={policyReason(detail)}>
         <Select value={values.reminder_notification_detail} disabled={unavailable || detail.locked}
           onValueChange={value => change({ reminder_notification_detail: value as UserSettingValues['reminder_notification_detail'] })}>
           <SelectTrigger id="reminder-detail" className="w-full sm:w-64"><SelectValue /></SelectTrigger>

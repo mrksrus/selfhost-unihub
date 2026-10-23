@@ -8,6 +8,8 @@ import { useToast } from '@/hooks/use-toast';
 import { mailQueryKeys, type MailAccount } from '@/lib/mail-api';
 import { createMailTemplate, deleteMailTemplate, fetchMailTemplates, mailTemplatesKey, saveMailSignature, updateMailTemplate, type MailTemplate, type MailTemplateRequest } from '@/lib/mail-essentials-api';
 import { htmlToPlainText } from '@/lib/compose-body';
+import { snoozeChoiceLabel } from '@/lib/mail-times';
+import { ApiError } from '@/lib/api-error';
 import { plainTextToHtml, sanitizeComposeHtml } from '@/lib/mail-compose';
 import type { SnoozeChoice, UserSettingValues } from '@/lib/settings-api';
 import { Button } from '@/components/ui/button';
@@ -26,18 +28,11 @@ import { RichTextField } from '@/components/settings/RichTextField';
 
 type ComposeFormat = UserSettingValues['compose_format'];
 
-// The offered snooze times, in the order the registry allows them.
-const SNOOZE_OPTIONS: { value: SnoozeChoice; label: string }[] = [
-  { value: '1h', label: '1 hour' },
-  { value: '3h', label: '3 hours' },
-  { value: 'tomorrow', label: 'Tomorrow' },
-  { value: '1d', label: '1 day' },
-  { value: '2d', label: '2 days' },
-  { value: 'next_week', label: 'Next week' },
-  { value: '1w', label: '1 week' },
-  { value: '2w', label: '2 weeks' },
-  { value: '1mo', label: '1 month' },
-];
+// Every snooze time the registry allows, in its order; the snooze menu
+// (mail-times.ts) labels them, so Settings offers what the menu will say.
+const SNOOZE_CHOICES: SnoozeChoice[] = ['1h', '3h', 'tomorrow', '1d', '2d', 'next_week', '1w', '2w', '1mo'];
+const SNOOZE_OPTIONS = SNOOZE_CHOICES.map(value => ({ value, label: snoozeChoiceLabel(value) }));
+const ACCOUNT_NOTE = 'Saved with your account, so every device follows.';
 const READING_FORMATS: { value: UserSettingValues['reading_format']; label: string }[] = [
   { value: 'theme', label: 'Match the app’s theme' },
   { value: 'simplified', label: 'Simplified' },
@@ -59,7 +54,7 @@ export default function MailSettings() {
   const senders = activeSenders(accountsQuery.data);
   const lock = (key: keyof UserSettingValues) => settings[key].locked ? ADMIN_REASON : undefined;
   const disabled = (key: keyof UserSettingValues) => unavailable || settings[key].locked;
-  const chosen = new Set(values.snooze_choices);
+  const chosen = new Set<string>(values.snooze_choices);
   const toggleSnooze = (choice: SnoozeChoice, on: boolean) => {
     const next = new Set(chosen);
     if (on) next.add(choice); else next.delete(choice);
@@ -68,7 +63,7 @@ export default function MailSettings() {
 
   return (
     <>
-      <SettingsSection title="Writing">
+      <SettingsSection title="Writing" description={ACCOUNT_NOTE}>
         {error && (
           <div className="py-4">
             <ErrorState title="Could not load your mail settings" error={error} onRetry={refetch} retrying={refetching} />
@@ -177,13 +172,20 @@ function TemplatesSection({ defaultFormat }: { defaultFormat: ComposeFormat }) {
   const { toast } = useToast();
   const [editing, setEditing] = useState<TemplateEditing>(null);
   const [deleting, setDeleting] = useState<MailTemplate | null>(null);
+  // A taken name is said in the dialog, next to the name; any other failure as a toast.
+  const [nameTaken, setNameTaken] = useState(false);
   const templates = useQuery({ queryKey: mailTemplatesKey, queryFn: fetchMailTemplates });
   const refresh = () => client.invalidateQueries({ queryKey: mailTemplatesKey });
   const failed = (title: string) => (error: Error) => toast({ title, description: error.message, variant: 'destructive' });
+  const open = (next: TemplateEditing) => { setNameTaken(false); setEditing(next); };
   const save = useMutation({
     mutationFn: ({ id, draft }: { id?: string; draft: TemplateDraft }) => id ? updateMailTemplate(id, templateRequest(draft)) : createMailTemplate(templateRequest(draft)),
+    onMutate: () => setNameTaken(false),
     onSuccess: (_template, { id }) => { void refresh(); setEditing(null); toast({ title: id ? 'Template saved' : 'Template added' }); },
-    onError: failed('Could not save the template'),
+    onError: error => {
+      if (error instanceof ApiError && error.code === 'TEMPLATE_NAME_TAKEN') setNameTaken(true);
+      else failed('Could not save the template')(error);
+    },
   });
   const remove = useMutation({
     mutationFn: (id: string) => deleteMailTemplate(id),
@@ -198,16 +200,16 @@ function TemplatesSection({ defaultFormat }: { defaultFormat: ComposeFormat }) {
     if (rows.length === 0) return <SettingsBlock><p className="text-sm text-muted-foreground">No templates yet. Add one to start messages from it.</p></SettingsBlock>;
     return rows.map(template => (
       <SettingsRow key={template.id} label={template.name} description={template.subject || firstLine(template.body_text) || 'Empty'}>
-        <Button variant="ghost" size="sm" className="text-accent hover:text-accent" onClick={() => setEditing({ id: template.id, draft: templateDraft(template, defaultFormat) })}>Edit</Button>
+        <Button variant="ghost" size="sm" className="text-accent hover:text-accent" onClick={() => open({ id: template.id, draft: templateDraft(template, defaultFormat) })}>Edit</Button>
       </SettingsRow>
     ));
   };
 
   return (
     <SettingsSection title="Templates" description="Saved starts for new messages and replies."
-      action={<Button variant="outline" onClick={() => setEditing({ draft: templateDraft(null, defaultFormat) })}>New template</Button>}>
+      action={<Button variant="outline" onClick={() => open({ draft: templateDraft(null, defaultFormat) })}>New template</Button>}>
       {list()}
-      <TemplateDialog editing={editing} saving={save.isPending} onClose={() => setEditing(null)}
+      <TemplateDialog editing={editing} saving={save.isPending} nameTaken={nameTaken} onClose={() => setEditing(null)}
         onSave={(id, draft) => save.mutate({ id, draft })} onDelete={() => { const current = (templates.data ?? []).find(template => template.id === editing?.id); if (current) setDeleting(current); }} />
       <AlertDialog open={!!deleting} onOpenChange={open => { if (!open) setDeleting(null); }}>
         <AlertDialogContent>
@@ -228,8 +230,8 @@ function TemplatesSection({ defaultFormat }: { defaultFormat: ComposeFormat }) {
   );
 }
 
-function TemplateDialog({ editing, saving, onClose, onSave, onDelete }: {
-  editing: TemplateEditing; saving: boolean; onClose: () => void; onSave: (id: string | undefined, draft: TemplateDraft) => void; onDelete: () => void;
+function TemplateDialog({ editing, saving, nameTaken, onClose, onSave, onDelete }: {
+  editing: TemplateEditing; saving: boolean; nameTaken: boolean; onClose: () => void; onSave: (id: string | undefined, draft: TemplateDraft) => void; onDelete: () => void;
 }) {
   const [draft, setDraft] = useState<TemplateDraft | null>(editing?.draft ?? null);
   useEffect(() => { setDraft(editing?.draft ?? null); }, [editing]);
@@ -249,7 +251,9 @@ function TemplateDialog({ editing, saving, onClose, onSave, onDelete }: {
           <form className="space-y-4" onSubmit={event => { event.preventDefault(); if (draft.name.trim()) onSave(editing?.id, draft); }}>
             <div className="space-y-2">
               <Label htmlFor="template-name">Name</Label>
-              <Input id="template-name" value={draft.name} required maxLength={100} onChange={event => set('name', event.target.value)} />
+              <Input id="template-name" value={draft.name} required maxLength={100} aria-invalid={nameTaken || undefined} aria-describedby={nameTaken ? 'template-name-taken' : undefined}
+                onChange={event => set('name', event.target.value)} />
+              {nameTaken && <p id="template-name-taken" role="alert" className="text-sm text-destructive">You already have a template with this name. Choose another.</p>}
             </div>
             <div className="space-y-2">
               <Label htmlFor="template-subject">Subject</Label>

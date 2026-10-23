@@ -33,7 +33,7 @@ export default function GeneralSettings() {
 
   return (
     <>
-      <SettingsSection title="Behaviour">
+      <SettingsSection title="Behaviour" description="Saved with your account, so every device follows.">
         {error && (
           <div className="py-4">
             <ErrorState title="Could not load your preferences" error={error} onRetry={refetch} retrying={refetching} />

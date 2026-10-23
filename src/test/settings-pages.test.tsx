@@ -114,7 +114,7 @@ describe('mail settings', () => {
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/settings/values', { values: { compose_templates: true } }));
     expect(templatesSwitch).toBeChecked();
 
-    fireEvent.click(screen.getByRole('checkbox', { name: '3 hours' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'In 3 hours' }));
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/settings/values', { values: { snooze_choices: ['1h', '3h', '1d', '1w'] } }));
 
     vi.mocked(api.put).mockRejectedValueOnce(new Error('Server says no'));
@@ -124,7 +124,7 @@ describe('mail settings', () => {
     await waitFor(() => expect(conversations).not.toBeChecked());
   });
 
-  it('adds a formatted template with its plain text, and deletes one after confirming', async () => {
+  it('adds a formatted template with its plain text, says when the name is taken, and deletes one after confirming', async () => {
     mount('mail');
     await screen.findByText('Weekly report');
     fireEvent.click(screen.getByRole('button', { name: 'New template' }));
@@ -134,8 +134,13 @@ describe('mail settings', () => {
     const editor = within(dialog).getByRole('textbox', { name: 'Text' });
     editor.innerHTML = '<p>Thanks for your <b>order</b>.</p><script>alert(1)</script>';
     fireEvent.input(editor);
+    vi.mocked(api.post).mockResolvedValueOnce({ error: 'A template with this name exists', status: 409, code: 'TEMPLATE_NAME_TAKEN' } as never);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/templates', { name: 'Thanks', subject: 'Thank you', body_html: '<p>Thanks for your <b>order</b>.</p>', body_text: 'Thanks for your order.' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('already have a template with this name');
+    expect(within(dialog).getByLabelText('Name')).toHaveAttribute('aria-invalid', 'true');
+    expect(state.toast).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.post).toHaveBeenLastCalledWith('/mail/templates', { name: 'Thanks', subject: 'Thank you', body_html: '<p>Thanks for your <b>order</b>.</p>', body_text: 'Thanks for your order.' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
 
     const section = screen.getByRole('heading', { name: 'Templates' }).closest('section')!;
@@ -172,7 +177,7 @@ describe('notification choices', () => {
     expect(toggleFolder(['role:junk', 'role:sent'], { id: 'f-spam', roles: ['junk'] }, false)).toEqual(['role:sent']);
 
     mount('notifications');
-    const alex = (await screen.findByRole('heading', { name: 'alex@example.test' })).closest('section')!;
+    const alex = await screen.findByRole('group', { name: 'alex@example.test' });
     const junk = await within(alex).findByRole('checkbox', { name: 'Junk' });
     await waitFor(() => expect(junk).toBeEnabled());
     expect(junk).toBeChecked();
@@ -188,10 +193,10 @@ describe('notification choices', () => {
     mailAccountAnswer['acc-a'] = { ...mailSettings({ notify_detail: 'sender' }), notify_detail: { value: 'sender', source: 'policy', locked: false, floor: 'sender' } };
     mailAccountAnswer['acc-b'] = mailSettings({ notify_enabled: false });
     mount('notifications');
-    const alex = (await screen.findByRole('heading', { name: 'alex@example.test' })).closest('section')!;
+    const alex = await screen.findByRole('group', { name: 'alex@example.test' });
     await waitFor(() => expect(within(alex).getByRole('switch', { name: 'Notifications' })).toBeEnabled());
     expect(within(alex).getByText('Set by your administrator')).toBeInTheDocument();
-    const bo = screen.getByRole('heading', { name: 'bo@example.test' }).closest('section')!;
+    const bo = screen.getByRole('group', { name: 'bo@example.test' });
     expect(within(bo).getByRole('switch', { name: 'Notifications' })).not.toBeChecked();
     expect(within(bo).queryByRole('combobox', { name: 'Folders' })).not.toBeInTheDocument();
     fireEvent.click(within(alex).getByRole('combobox', { name: 'What it shows' }));

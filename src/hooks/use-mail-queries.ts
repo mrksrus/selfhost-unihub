@@ -16,7 +16,6 @@ export const useMailFolders = () => useQuery({
   queryKey: mailQueryKeys.folders,
   queryFn: async ({ signal }) => {
     const response = await api.get<{ folders: MailFolder[] }>('/mail/folders', { signal });
-
     if (response.error) throw new Error(response.error);
     return response.data?.folders ?? [];
   },
@@ -30,7 +29,6 @@ export const useMailAccountFolders = (accountId: string) => useQuery({
     return response.data?.folders ?? [];
   },
 });
-
 
 export const useMailUnreadCounts = (account: string | null) => useQuery({
   queryKey: mailQueryKeys.unread(account),
