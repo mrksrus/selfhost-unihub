@@ -1,4 +1,5 @@
 import { useId, type ReactNode } from 'react';
+import { Lock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 /** A titled group of settings rows. Sections stack with space between them, never boxes. */
@@ -20,9 +21,13 @@ export function SettingsSection({ title, description, action, children, classNam
   );
 }
 
-/** One setting: what it is on the left, its control on the right (below on phones). */
-export function SettingsRow({ label, description, htmlFor, children, tone = 'default', className }: {
-  label: ReactNode; description?: ReactNode; htmlFor?: string; children?: ReactNode; tone?: 'default' | 'destructive'; className?: string;
+/**
+ * One setting: what it is on the left, its control on the right (below on
+ * phones). `lock` is the reason a policy fixes or narrows the choice; the row
+ * says so under its description and the caller disables the control.
+ */
+export function SettingsRow({ label, description, htmlFor, children, tone = 'default', lock, className }: {
+  label: ReactNode; description?: ReactNode; htmlFor?: string; children?: ReactNode; tone?: 'default' | 'destructive'; lock?: string; className?: string;
 }) {
   const Label = htmlFor ? 'label' : 'p';
   return (
@@ -30,6 +35,7 @@ export function SettingsRow({ label, description, htmlFor, children, tone = 'def
       <div className="min-w-0">
         <Label htmlFor={htmlFor} className={cn('block text-sm font-medium', tone === 'destructive' && 'text-destructive')}>{label}</Label>
         {description && <div className="mt-0.5 text-sm text-muted-foreground">{description}</div>}
+        {lock && <PolicyNote reason={lock} />}
       </div>
       {children && <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">{children}</div>}
     </div>
@@ -39,4 +45,13 @@ export function SettingsRow({ label, description, htmlFor, children, tone = 'def
 /** Content inside a section that is not a label and control pair (lists, forms, notes). */
 export function SettingsBlock({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cn('py-4', className)}>{children}</div>;
+}
+
+/** Why a control is greyed out: an administrator's policy. */
+export function PolicyNote({ reason, className }: { reason: string; className?: string }) {
+  return (
+    <p className={cn('mt-1 flex items-center gap-1.5 text-xs text-muted-foreground', className)}>
+      <Lock aria-hidden="true" className="h-3 w-3 shrink-0" />{reason}
+    </p>
+  );
 }
