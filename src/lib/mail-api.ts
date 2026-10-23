@@ -1,5 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import type { MailThreadListResponse, MailThreadResponse } from '../../api/src/contracts/mail-threads';
+export type { MailListRow, MailThreadListResponse, MailThreadParticipant, MailThreadResponse, MailThreadSummary } from '../../api/src/contracts/mail-threads';
 
 export interface MailAccount {
   id: string;
@@ -405,15 +407,42 @@ export function scheduleMailFlagRefresh(client: QueryClient, kind: MailFlagKind)
     void client.invalidateQueries({ queryKey: mailQueryKeys.writebacks });
   }, MAIL_FLAG_REFRESH_MS);
 }
-export async function fetchMailList(filters: MailListFilters, signal?: AbortSignal): Promise<MailListResponse> {
+function mailListParams(filters: MailListFilters) {
   const params = new URLSearchParams({ limit: '50', offset: String((filters.page - 1) * 50) });
   if (filters.account && filters.account !== 'all') params.set('account_id', filters.account);
   if (filters.folder !== 'all') params.set('folder', filters.folder);
   if (filters.folder === 'starred') params.set('is_starred', 'true');
   if (filters.unreadOnly) params.set('is_read', 'false');
   if (filters.search) params.set('search', filters.search);
+  return params;
+}
+export async function fetchMailList(filters: MailListFilters, signal?: AbortSignal): Promise<MailListResponse> {
+  const params = mailListParams(filters);
   const response = await api.get<MailListResponse>(`/mail/emails?${params}`, { signal });
   if (response.error) throw new Error(response.error);
   if (!Array.isArray(response.data?.emails)) throw new Error('Invalid mail list response');
+  return response.data;
+}
+
+/**
+ * The conversation view of a mail list (the user's mail_threaded_view): one row
+ * per conversation, same filters and pages as fetchMailList. The offline
+ * snapshot answers it from the saved messages. `cursor` is the previous page's
+ * next_cursor; it keeps pages apart while new mail arrives.
+ */
+export async function fetchMailThreads(filters: MailListFilters, signal?: AbortSignal, cursor?: string | null): Promise<MailThreadListResponse> {
+  const params = mailListParams(filters);
+  if (cursor) { params.set('cursor', cursor); params.delete('offset'); }
+  const response = await api.get<MailThreadListResponse>(`/mail/threads?${params}`, { signal });
+  if (response.error) throw new Error(response.error);
+  if (!Array.isArray(response.data?.threads)) throw new Error('Invalid conversation list response');
+  return response.data;
+}
+
+/** Every message of the conversation the message belongs to, oldest first. */
+export async function fetchMailThread(emailId: string, signal?: AbortSignal): Promise<MailThreadResponse> {
+  const response = await api.get<MailThreadResponse>(`/mail/emails/${encodeURIComponent(emailId)}/thread`, { signal });
+  if (response.error) throw new Error(response.error);
+  if (!Array.isArray(response.data?.messages)) throw new Error('Invalid conversation response');
   return response.data;
 }

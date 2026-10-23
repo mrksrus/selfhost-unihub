@@ -12,6 +12,10 @@ import {
   replyThreading,
   deleteStoredAttachmentFiles,
 } from '../services/mail';
+import { draftThreading } from '../services/mail-send';
+import { adoptReplies, resolveThreadKey, storedReferences } from '../services/mail-threading';
+import type { ReplyThreading } from '../services/mail-send';
+import type { PoolConnection } from 'mysql2/promise';
 import { saveDraftMutation } from '../services/mail-drafts';
 import { normalizeRecipients, parseStoredRecipients } from '../services/mail-recipients';
 import { extractMailRouteId, routeError, idempotencyKey } from './mail-route-helpers';
@@ -19,7 +23,11 @@ import { extractMailRouteId, routeError, idempotencyKey } from './mail-route-hel
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface DraftRow extends RowDataPacket {
   mail_account_id: string;
+  from_address: string;
   subject: string | null;
+  in_reply_to: string | null;
+  references_header: string | null;
+  thread_key: string | null;
   body_html: string | null;
   body_text: string | null;
 }
@@ -34,7 +42,7 @@ interface Input {
   body_html?: string;
   attachments?: unknown;
   existing_attachment_ids?: unknown[] | null;
-  /** The UniHub id of the message a reply answers. */
+  /** The UniHub id of the message a reply answers; on a draft, null or '' removes the reply link. */
   in_reply_to_email_id?: unknown;
 }
 
@@ -118,6 +126,20 @@ function uploadedAttachments(attachments: unknown, ids: string[]) {
   });
 }
 
+// A reply draft keeps the threading of the message it answers (0.24), so a
+// reply finished later from Drafts still goes out with In-Reply-To and
+// References. The draft's own conversation is the parent's.
+async function draftThreadColumns(connection: PoolConnection, { userId, draftId, threading, subject, participants }:
+  { userId: string; draftId: string; threading: ReplyThreading | null; subject: string | null; participants: string[] }) {
+  const messageId = `<draft-${draftId}@unihub.local>`;
+  const threadKey = threading?.threadKey ?? await resolveThreadKey(connection, { userId, emailId: draftId, messageId,
+    inReplyTo: threading?.inReplyTo ?? null, references: threading?.references ?? [], subject, receivedAt: new Date(), participants });
+  return { in_reply_to: threading?.inReplyTo ?? null, references_header: storedReferences(threading?.references ?? []), thread_key: threadKey,
+    adopt: () => adoptReplies(connection, { userId, messageId, threadKey }) };
+}
+const replyLinkGiven = (value: unknown) => value !== undefined;
+const replyLinkRemoved = (value: unknown) => value === null || value === '';
+
 async function deleteDraftWithFiles(userId: string, draftId: string) {
   const draft = await loadDraftEmail(userId, draftId);
   if (!draft) return { error: 'Draft not found', status: 404 };
@@ -150,15 +172,20 @@ export = {
       const bodyText = isHtml ? htmlToDraftText(draftBody) : draftBody;
       const bodyHtml = isHtml ? draftBody : null;
       const subject = String(body?.subject ?? '');
+      const threading = replyLinkRemoved(body?.in_reply_to_email_id) ? null : await replyThreading(userId, body?.in_reply_to_email_id);
+      const participants = [account.email_address, ...normalizeRecipients(body?.to), ...normalizeRecipients(body?.cc), ...normalizeRecipients(body?.bcc)];
 
       await ensureDefaultMailFoldersForUser(userId);
       const ids = await saveDraftMutation({ db, userId, emailId: draftId, isNew: true, body,
         deleteFiles: deleteStoredAttachmentFiles,
-        mutate: (connection) => connection.execute(
+        mutate: async (connection) => {
+        const thread = await draftThreadColumns(connection, { userId, draftId, threading, subject: subject || null, participants });
+        await connection.execute(
         `INSERT INTO emails
           (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses,
-           cc_addresses, bcc_addresses, body_text, body_html, has_attachments, received_at, folder, is_read, is_draft)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, UTC_TIMESTAMP(), ?, TRUE, TRUE)`,
+           cc_addresses, bcc_addresses, body_text, body_html, has_attachments, received_at, folder, is_read, is_draft,
+           in_reply_to, references_header, thread_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, UTC_TIMESTAMP(), ?, TRUE, TRUE, ?, ?, ?)`,
         [
           draftId,
           userId,
@@ -173,8 +200,13 @@ export = {
           bodyText || null,
           bodyHtml,
           MAIL_DRAFT_FOLDER,
+          thread.in_reply_to,
+          thread.references_header,
+          thread.thread_key,
         ]
-        ),
+        );
+        await thread.adopt();
+        },
       });
 
       return { draft: await loadDraftEmail(userId, draftId), uploaded: uploadedAttachments(body?.attachments, ids) };
@@ -230,12 +262,23 @@ export = {
         params.push(isHtml ? htmlToDraftText(draftBody) || null : draftBody || null, isHtml ? draftBody : null);
       }
 
-      params.push(draftId, userId);
+      const relink = replyLinkGiven(body?.in_reply_to_email_id);
+      const threading = relink && !replyLinkRemoved(body?.in_reply_to_email_id) ? await replyThreading(userId, body?.in_reply_to_email_id) : null;
+
       const ids = await saveDraftMutation({ db, userId, emailId: draftId, body,
         deleteFiles: deleteStoredAttachmentFiles,
-        mutate: (connection) => connection.execute(
-          `UPDATE emails SET ${updates.join(', ')} WHERE id = ? AND user_id = ? AND is_draft = TRUE`, params
-        ),
+        mutate: async (connection) => {
+          const thread = relink ? await draftThreadColumns(connection, { userId, draftId, threading,
+            subject: body?.subject !== undefined ? String(body.subject || '') || null : current.subject,
+            participants: [account?.email_address ?? current.from_address, ...normalizeRecipients(body?.to ?? current.to_addresses),
+              ...normalizeRecipients(body?.cc ?? current.cc_addresses)] }) : null;
+          const threadUpdates = thread ? ['in_reply_to = ?', 'references_header = ?', 'thread_key = ?'] : [];
+          await connection.execute(
+            `UPDATE emails SET ${[...updates, ...threadUpdates].join(', ')} WHERE id = ? AND user_id = ? AND is_draft = TRUE`,
+            [...params, ...(thread ? [thread.in_reply_to, thread.references_header, thread.thread_key] : []), draftId, userId]
+          );
+          await thread?.adopt();
+        },
       });
 
       return { draft: await loadDraftEmail(userId, draftId), uploaded: uploadedAttachments(body?.attachments, ids) };
@@ -303,7 +346,8 @@ export = {
           body: bodyContent,
           isHtml: !!draft.body_html || (!draft.body_text && attachments.length > 0),
           attachments,
-          inReplyTo: await replyThreading(userId, replyTo),
+          // The reply link the request names, else the one the draft kept.
+          ...((await replyThreading(userId, replyTo)) ?? draftThreading(draft) ?? {}),
       });
       // The message is out: a draft that cannot be removed now stays, and the send still succeeded.
       const deleteResult = await deleteDraftWithFiles(userId, draftId).catch((error: unknown) => {
@@ -349,7 +393,7 @@ export = {
 
       const message = { to: to || '', cc, bcc, subject, body: emailBody, isHtml, attachments: attachments || [] };
       return await sendOnce({ userId, clientKey: idempotencyKey(req), request: { account_id, ...message, in_reply_to_email_id } }, async () => {
-        const result = await sendEmail({ userId, accountId: account_id }, { ...message, inReplyTo: await replyThreading(userId, in_reply_to_email_id) });
+        const result = await sendEmail({ userId, accountId: account_id }, { ...message, ...(await replyThreading(userId, in_reply_to_email_id) ?? {}) });
         return { ...result, success: true, messageId: result.messageId };
       });
     } catch (error) {

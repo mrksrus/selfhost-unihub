@@ -661,6 +661,8 @@ System folders cannot be deleted. Synced custom-folder deletion returns a confli
 | --- | --- | --- |
 | GET | `/api/mail/emails` | List/paginate emails |
 | GET | `/api/mail/emails/:id` | Load full email and regular attachment list |
+| GET | `/api/mail/threads` | Conversations of a view, one row each (see [Conversations](#conversations)) |
+| GET | `/api/mail/emails/:id/thread` | Every message of the conversation that message belongs to, oldest first |
 | PUT | `/api/mail/emails/:id/read` | Set read state |
 | PUT | `/api/mail/emails/:id/star` | Set starred state |
 | POST | `/api/mail/emails/bulk-delete` | Move selected messages to `trash` |
@@ -681,7 +683,81 @@ System folders cannot be deleted. Synced custom-folder deletion returns a confli
 | POST | `/api/mail/send` | Send mail through SMTP |
 
 `GET /api/mail/emails` supports `folder`, `account_id`, `is_read`,
-`is_starred`, `search`, `limit`, `offset`, and `include_count`.
+`is_starred`, `search`, `limit`, `offset`, and `include_count`. Each row carries
+its `thread_key`.
+
+### Conversations
+
+Since 0.24 every message has a conversation key, `emails.thread_key`: the
+SHA-256 (hex) of the conversation's root Message-ID, per user
+(`services/mail-threading.ts`):
+
+1. The root is the first id of `References`, else the id of `In-Reply-To`.
+   When the user stores the root message with a key, that key is used, so a
+   reply that names only its parent joins the parent's conversation even when
+   the parent's own root lies further up.
+2. A message with neither header whose subject starts with a reply or forward
+   prefix (`Re:`, `AW:`, `Antw:`, `SV:`, `Fwd:`, `WG:`, `TR:`, ...) joins the
+   most recent earlier message of the same user with the same subject
+   (prefixes, list tags such as `[team]`, case and spacing ignored), received
+   within 60 days, when the two share a correspondent other than the user's own
+   account addresses. Only the user's latest 2000 messages before it are
+   searched. A subject without a prefix never joins anything, so two unrelated
+   "Invoice" mails stay apart.
+3. Otherwise the message starts its own conversation: the hash of its own
+   Message-ID, or of its row id when it has none (also for a message whose
+   content has not arrived yet).
+
+The arrival order does not matter: storing a message whose key is not the hash
+of its own Message-ID moves the messages keyed by that hash (replies that
+arrived first) into its conversation. Keys never cross users; another
+person's message with the same Message-ID lends nothing.
+
+`In-Reply-To` (its first well-formed id) and `References` are stored with each
+imported message in both modes, with UniHub's Sent copy and with drafts
+(`emails.in_reply_to`, `emails.references_header`). Header values are
+untrusted: only well-formed `<id>` values of at most 500 characters are kept,
+and `References` is shortened to its first and 39 latest ids (at most 8000
+characters).
+
+A reply answers the user's own copy of a message: it sends `In-Reply-To` with
+that message's Message-ID and `References` with that message's `References`
+(or its `In-Reply-To`) followed by its Message-ID; its Sent copy joins that
+message's conversation. A reply draft keeps the same headers and conversation
+when it is saved (`in_reply_to_email_id` on `POST /api/mail/drafts` and
+`PUT /api/mail/drafts/:id`; `null` or `''` removes the link), so a reply
+finished later from Drafts still goes out as a reply.
+
+Mail stored before 0.24 is threaded in the background by the worker owner
+(`services/mail-thread-backfill.ts`, every 15 seconds, at most 600 messages or
+5 seconds a tick, then a 5-minute pause once nothing is left). It reads the
+header part of each message's raw file (at most 64 KiB, inside the owner's raw
+directory; both raw formats); a message without a raw file is keyed from what
+its row holds. The rows still without a key are the progress marker, so a
+restart resumes and nothing is done twice; mail restored from an older archive
+is picked up the same way. A user whose mail section is being restored, whose
+Mail module is off, or whose raw directory is not reachable (an unmounted
+volume looks like missing files) waits.
+
+`GET /api/mail/threads` takes the filters of `GET /api/mail/emails` and lists
+the conversations of that view, newest first: a conversation is listed once,
+at the place of its newest message in the view (`latest`, a message-list row),
+with `message_count` and `unread_count` in the view, `total_count` in the whole
+mailbox (drafts excluded), `has_attachments`, `is_starred` and up to five
+`participants` (senders, most recent first). Pages are `limit`/`offset`, or the
+`cursor` the previous page returned as `next_cursor`, which keeps pages apart
+while new mail moves a conversation to the top; messages received in the same
+second are ordered by id ascending (the order of `idx_emails_user_date`, so a
+page reads only the index entries it needs). `include_count=true` also counts
+the view's conversations; unlike the message list this is off by default,
+because it reads the whole view. The message list itself is unchanged; the
+app asks for conversations when the user turned on **Threaded view**
+(`mail_threaded_view`). `GET /api/mail/emails/:id/thread` returns
+`{ thread_key, messages, truncated }`: the user's messages of that message's
+conversation in every folder and account, oldest first, at most the newest
+200. Offline, both answer from the saved snapshot (the latest 100 messages),
+so a conversation shows only its saved messages. Shapes:
+`api/src/contracts/mail-threads.ts`.
 
 ## SMTP Sending
 
@@ -710,10 +786,12 @@ in the composer. The same key with a different message is
 A reply names the message it answers with `in_reply_to_email_id` (on
 `POST /api/mail/send`, or in the body of `POST /api/mail/drafts/:id/send`).
 The server reads that message's `Message-ID` from the user's own copy and sends
-it as `In-Reply-To` and `References`, so the recipient's mail program shows the
-reply in the same conversation. Another user's message, or one without a usable
-`Message-ID`, adds nothing. A draft keeps no reply link yet: a reply finished
-later from Drafts goes out without these headers.
+it as `In-Reply-To` and, after that message's own `References`, in
+`References`, so the recipient's mail program shows the reply in the same
+conversation. Another user's message, or one without a usable
+`Message-ID`, adds nothing. A reply draft keeps this link (see
+[Conversations](#conversations)), so a reply finished later from Drafts goes out
+with the same headers.
 
 Send and draft requests take `to`, `cc` and `bcc` as comma-separated strings;
 at least one of them needs a recipient. The Sent copy and drafts keep all three

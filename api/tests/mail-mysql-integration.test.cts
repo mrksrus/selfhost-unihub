@@ -34,7 +34,8 @@ test('MySQL mail defaults and atomic import rollback', { skip: !process.env.MYSQ
     source_folder VARCHAR(255), imap_uid BIGINT, imap_uidvalidity BIGINT, raw_storage_path TEXT, raw_sha256 CHAR(64),
     is_read BOOLEAN, import_complete BOOLEAN NOT NULL DEFAULT FALSE,
     raw_format VARCHAR(24) NOT NULL DEFAULT 'legacy_normalized', raw_bytes BIGINT NULL,
-    raw_verified BOOLEAN NOT NULL DEFAULT FALSE, content_state VARCHAR(24) NOT NULL DEFAULT 'legacy') ENGINE=InnoDB`);
+    raw_verified BOOLEAN NOT NULL DEFAULT FALSE, content_state VARCHAR(24) NOT NULL DEFAULT 'legacy',
+    in_reply_to VARCHAR(998) NULL, references_header TEXT NULL, thread_key CHAR(64) NULL) ENGINE=InnoDB`);
   await connection.execute(`CREATE TEMPORARY TABLE email_attachments (id CHAR(36) PRIMARY KEY, email_id CHAR(36), user_id CHAR(36),
     filename VARCHAR(255), content_type VARCHAR(100), size_bytes BIGINT, storage_path TEXT, content_id VARCHAR(255)) ENGINE=InnoDB`);
   const userId = crypto.randomUUID();

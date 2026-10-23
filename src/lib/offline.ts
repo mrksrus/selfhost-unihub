@@ -222,6 +222,9 @@ const filingAccount = (row: Row) => row.filing_account_id ?? row.mail_account_id
 const viewAccount = (row: Row) => truthy(row.is_legacy) ? 'legacy' : filingAccount(row);
 const presentMail = (row: Row) => ({ ...row, source_mail_account_id: Object.prototype.hasOwnProperty.call(row, 'source_mail_account_id') ? row.source_mail_account_id : row.mail_account_id,
   mail_account_id: filingAccount(row), is_legacy: truthy(row.is_legacy), remote_missing: truthy(row.remote_missing) });
+const newestFirst = (a: Row, b: Row) => Date.parse(text(b.received_at)) - Date.parse(text(a.received_at)) || text(b.id).localeCompare(text(a.id));
+// A message as the mail list shows it: a short text preview, no HTML.
+const listRow = (row: Row) => ({...presentMail(row),body_html:null,body_text:typeof row.body_text==='string'&&row.body_text.length>240?row.body_text.slice(0,240)+'...':row.body_text});
 function mailRows(snapshot: OfflineSnapshot, params: URLSearchParams) {
   return snapshot.emails.filter(row => {
     const folder = params.get('folder');
@@ -233,7 +236,7 @@ function mailRows(snapshot: OfflineSnapshot, params: URLSearchParams) {
     if (params.has('is_starred') && truthy(row.is_starred) !== (params.get('is_starred') === 'true')) return false;
     const query = (params.get('search') || '').trim().toLowerCase();
     return !query || [row.subject,row.from_name,row.from_address,row.body_text].some(value=>text(value).toLowerCase().includes(query));
-  }).sort((a, b) => Date.parse(text(b.received_at)) - Date.parse(text(a.received_at)) || text(b.id).localeCompare(text(a.id)));
+  }).sort(newestFirst);
 }
 export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: string): {data: unknown} | {error: string;status?:number} | null {
   const url = new URL(endpoint,'https://offline.invalid');
@@ -296,8 +299,37 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
   if(path === '/mail/emails') {
     const rows=mailRows(snapshot,params),limit=Math.max(1,numberParam(params,'limit',50,100)),offset=numberParam(params,'offset',0,10000000);
     const includeCount=params.get('include_count')!=='false';
-    const emails=rows.slice(offset,offset+limit).map(row=>({...presentMail(row),body_html:null,body_text:typeof row.body_text==='string'&&row.body_text.length>240?row.body_text.slice(0,240)+'...':row.body_text}));
+    const emails=rows.slice(offset,offset+limit).map(listRow);
     return {data:{emails,pagination:{total:includeCount?rows.length:null,limit,offset,page:Math.floor(offset/Math.max(1,limit))+1,totalPages:includeCount?Math.ceil(rows.length/Math.max(1,limit)):null,hasMore:offset+limit<rows.length},offline:true}};
+  }
+  // Conversations among the saved messages (GET /api/mail/threads); a message
+  // saved without a thread_key (before 0.24) is a conversation of its own.
+  if(path === '/mail/threads') {
+    const groups=new Map<string,Row[]>();
+    for(const row of mailRows(snapshot,params)){const key=text(row.thread_key)||`email:${text(row.id)}`;groups.set(key,[...(groups.get(key)||[]),row]);}
+    const all=[...groups.values()],limit=Math.max(1,numberParam(params,'limit',50,100)),includeCount=params.get('include_count')==='true';
+    const cursorId=/^[0-9]{1,15}\.(.+)$/.exec(params.get('cursor')||'')?.[1];
+    const offset=cursorId?all.findIndex(rows=>rows[0].id===cursorId)+1:numberParam(params,'offset',0,10000000);
+    const threads=all.slice(offset,offset+limit).map(rows=>{
+      const latest=rows[0],key=text(latest.thread_key)||null;
+      const conversation=key?snapshot.emails.filter(row=>row.thread_key===key&&!truthy(row.is_draft)):rows;
+      const senders=new Map<string,Row>();
+      for(const row of [...conversation].sort(newestFirst)){const address=text(row.from_address).toLowerCase();if(address&&!senders.has(address))senders.set(address,row);}
+      return {thread_key:key,latest:listRow(latest),message_count:rows.length,unread_count:rows.filter(row=>!truthy(row.is_read)).length,total_count:Math.max(conversation.length,1),
+        has_attachments:rows.some(row=>truthy(row.has_attachments)),is_starred:rows.some(row=>truthy(row.is_starred)),
+        participants:[...senders.values()].slice(0,5).map(row=>({address:text(row.from_address),name:row.from_name==null?null:text(row.from_name)}))};
+    });
+    const last=all[offset+limit-1]?.[0],hasMore=offset+limit<all.length;
+    return {data:{threads,pagination:{total:includeCount?all.length:null,limit,offset,page:Math.floor(offset/limit)+1,totalPages:includeCount?Math.ceil(all.length/limit):null,hasMore,
+      next_cursor:hasMore&&last?`${Date.parse(text(last.received_at))||0}.${text(last.id)}`:null},offline:true}};
+  }
+  const threadMatch=path.match(/^\/mail\/emails\/([^/]+)\/thread$/);
+  if(threadMatch) {
+    const anchor=snapshot.emails.find(row=>row.id===decodeURIComponent(threadMatch[1]));
+    if(!anchor)return {error:'This message is not in your offline snapshot.',status:404};
+    const key=text(anchor.thread_key)||null;
+    const messages=(key?snapshot.emails.filter(row=>row.thread_key===key):[anchor]).sort((a,b)=>newestFirst(b,a)).map(listRow);
+    return {data:{thread_key:key,messages,truncated:false}};
   }
   if(/^\/mail\/emails\/[^/]+$/.test(path)) {
     const email=snapshot.emails.find(row=>row.id===decodeURIComponent(path.split('/').pop()!));

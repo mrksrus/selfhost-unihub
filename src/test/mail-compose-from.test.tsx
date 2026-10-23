@@ -87,6 +87,18 @@ describe('which account a message is sent from', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ account_id: 'acc-a', in_reply_to_email_id: 'email-1' }), expect.anything()));
   });
 
+  it('saves a reply draft with the message it answers, so it is still a reply when sent later from Drafts (B-10)', async () => {
+    vi.mocked(api.post).mockImplementation(async (path: string) => path === '/mail/drafts'
+      ? { data: { draft: { ...draft, id: 'draft-reply', subject: 'Re: Quote' }, uploaded: [] } } : { data: { message: 'sent' } });
+    wrap(<Host />);
+    fireEvent.click(screen.getByRole('button', { name: 'Reply to Sparks' }));
+    await screen.findByLabelText('To');
+    const editor = document.getElementById('compose-body-inline')!;
+    editor.innerHTML = '<p>Thanks, I will check</p>';
+    fireEvent.input(editor);
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/drafts', expect.objectContaining({ in_reply_to_email_id: 'email-1' })), { timeout: 4000 });
+  });
+
   it('closes the contact list after a pick until more is typed, and sends a Bcc-only message', async () => {
     wrap(<Host />);
     fireEvent.click(screen.getByRole('button', { name: 'New message' }));

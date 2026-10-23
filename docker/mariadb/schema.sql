@@ -391,6 +391,7 @@ CREATE TABLE `emails` (
   KEY `idx_emails_user_read_folder_account` (`user_id`,`is_read`,`folder`,`mail_account_id`),
   KEY `fk_emails_filing_account` (`filing_account_id`),
   KEY `idx_emails_user_thread` (`user_id`,`thread_key`),
+  KEY `idx_emails_user_message_id` (`user_id`,`message_id`),
   KEY `idx_emails_user_snoozed` (`user_id`,`snoozed_until`),
   FULLTEXT KEY `ft_emails_search` (`subject`,`body_text`),
   CONSTRAINT `emails_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,

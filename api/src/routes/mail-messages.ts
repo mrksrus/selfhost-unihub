@@ -1,14 +1,12 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
-import { FILING_ACCOUNT_SQL } from '../services/mail-folder-reconciliation';
-import { folderMembershipSql, pendingMoveSql } from '../services/mail-folder-view';
 import { presentMailFiling } from '../services/mail-filing';
+import { mailListColumns, mailListView, presentMailListRow } from '../services/mail-list';
 import { parseStoredRecipients } from '../services/mail-recipients';
 import fs from 'fs';
 import { db } from '../state';
 import { mailPathUnderRoot } from '../services/mail-storage';
-import { escapeLike } from '../services/sql';
-import { EMAIL_TASK_COUNT_SQL, tasksForEmail } from '../services/email-tasks';
+import { tasksForEmail } from '../services/email-tasks';
 import { isModuleEnabled } from '../services/module-settings';
 import { toBooleanFlag } from '../services/mail';
 import { pendingFlagSql, EFFECTIVE_READ_SQL, EFFECTIVE_STAR_SQL, extractMailRouteId, routeError } from './mail-route-helpers';
@@ -16,103 +14,22 @@ import { pendingFlagSql, EFFECTIVE_READ_SQL, EFFECTIVE_STAR_SQL, extractMailRout
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 type Input = unknown;
 
-const MAIL_LIST_PREVIEW_LENGTH = 240;
-
 export = {
   'GET /api/mail/emails': async (req: Request, userId: string | null) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
-    let query: string | undefined, params: (string | number | null)[] | undefined, folder: string | null | undefined, accountId: string | null | undefined;
+    let query: string | undefined, params: (string | number | Date | null)[] | undefined, folder: string | null | undefined, accountId: string | null | undefined;
     try {
       const url = new URL(req.url, `http://${req.headers.host}`);
-      folder = url.searchParams.get('folder');
-      accountId = url.searchParams.get('account_id');
-      const hasFolderFilter = !!folder && folder !== 'all';
-      const hasAccountFilter = !!accountId && accountId !== 'all';
-      const isReadParam = url.searchParams.get('is_read');
-      const isStarredParam = url.searchParams.get('is_starred');
-      const searchParam = (url.searchParams.get('search') || '').trim();
-      const includeCount = url.searchParams.get('include_count') !== 'false';
-      const where = ['user_id = ?'];
-      params = [userId];
-
-      if (folder === 'starred') {
-        where.push(`${EFFECTIVE_STAR_SQL} = 1`);
-      } else if (hasFolderFilter) {
-        where.push(folderMembershipSql);
-        params.push(folder, folder, folder);
-      }
-
-      if (hasAccountFilter) {
-        where.push(accountId === 'legacy' ? 'is_legacy = TRUE' : `is_legacy = FALSE AND ${FILING_ACCOUNT_SQL} = ?`);
-        if (accountId !== 'legacy') params.push(accountId);
-      }
-
-      if (isReadParam === 'true' || isReadParam === 'false') {
-        where.push(`${EFFECTIVE_READ_SQL} = ?`);
-        params.push(isReadParam === 'true' ? 1 : 0);
-      }
-
-      if (isStarredParam === 'true' || isStarredParam === 'false') {
-        where.push(`${EFFECTIVE_STAR_SQL} = ?`);
-        params.push(isStarredParam === 'true' ? 1 : 0);
-      }
-
-      if (searchParam) {
-        const searchValue = `%${escapeLike(searchParam.toLowerCase())}%`;
-        where.push(`(
-          LOWER(COALESCE(subject, '')) LIKE ? OR
-          LOWER(COALESCE(from_name, '')) LIKE ? OR
-          LOWER(COALESCE(from_address, '')) LIKE ? OR
-          LOWER(COALESCE(body_text, '')) LIKE ?
-        )`);
-        params.push(searchValue, searchValue, searchValue, searchValue);
-      }
-
-      // Pagination
-      const requestedLimit = parseInt(url.searchParams.get('limit') || '50', 10);
-      const requestedOffset = parseInt(url.searchParams.get('offset') || '0', 10);
-      const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50;
-      const offset = Number.isFinite(requestedOffset) ? Math.max(requestedOffset, 0) : 0;
-      const page = Math.max(1, Math.floor(offset / limit) + 1);
-      const whereSql = where.join(' AND ');
-      // Task counts are Calendar data: none while that module is off.
-      const taskCountSql = await isModuleEnabled(userId, 'calendar') ? EMAIL_TASK_COUNT_SQL : '0';
+      // The view and row shape are shared with the conversation list (services/mail-list.ts).
+      const view = mailListView(url.searchParams, userId);
+      ({ folder, accountId, params } = view);
+      const { hasFolderFilter, hasAccountFilter, includeCount, limit, offset, page, whereSql } = view;
 
       // Use template literals for LIMIT/OFFSET since they're already sanitized integers
       // This avoids parameter binding issues with mysql2
       query = `
-        SELECT
-          id,
-          user_id,
-          mail_account_id, filing_account_id, is_legacy, remote_missing,
-          message_id,
-          subject,
-          from_address,
-          from_name,
-          to_addresses,
-          CASE
-            WHEN body_text IS NULL THEN NULL
-            WHEN CHAR_LENGTH(body_text) > ${MAIL_LIST_PREVIEW_LENGTH}
-              THEN CONCAT(LEFT(body_text, ${MAIL_LIST_PREVIEW_LENGTH}), '...')
-            ELSE body_text
-          END AS body_text,
-          NULL AS body_html,
-          COALESCE(${pendingMoveSql}, folder) AS folder,
-          source_folder,
-          imap_uid,
-          imap_uidvalidity,
-          raw_storage_path,
-          raw_sha256,
-          ${EFFECTIVE_READ_SQL} AS is_read,
-          ${EFFECTIVE_STAR_SQL} AS is_starred,
-          ${pendingFlagSql('read')} AS read_sync_pending,
-          ${pendingFlagSql('star')} AS star_sync_pending,
-          is_draft,
-          has_attachments,
-          received_at,
-          created_at,
-          ${taskCountSql} AS task_count
+        SELECT ${await mailListColumns(userId)}
         FROM emails
         WHERE ${whereSql}
         ORDER BY received_at DESC, id DESC
@@ -129,18 +46,7 @@ export = {
       const [emails] = await db.execute<RowDataPacket[]>(query, params);
       console.log(`[API] GET /api/mail/emails: Found ${emails.length} emails for user ${userId}, folder ${hasFolderFilter ? folder : 'all'}, account ${hasAccountFilter ? accountId : 'all'}, total ${includeCount ? total : 'not requested'}`);
 
-      // Parse JSON fields
-      const parsedEmails = emails.map(email => ({
-        ...presentMailFiling(email),
-        ...(hasFolderFilter && folder !== 'starred' ? { folder } : {}),
-        to_addresses: typeof email.to_addresses === 'string' ? JSON.parse(email.to_addresses || '[]') : email.to_addresses,
-        is_read: toBooleanFlag(email.is_read),
-        is_starred: toBooleanFlag(email.is_starred),
-        read_sync_pending: !!email.read_sync_pending,
-        star_sync_pending: !!email.star_sync_pending,
-        is_draft: !!email.is_draft,
-        task_count: Number(email.task_count) || 0,
-      }));
+      const parsedEmails = emails.map(email => presentMailListRow(email, view));
       return {
         emails: parsedEmails,
         pagination: {

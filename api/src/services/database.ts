@@ -319,7 +319,7 @@ const MIGRATIONS: readonly Migration[] = [
     up: addSettingsAndMailEssentials,
     verify: async (connection: PoolConnection) => {
       await verifyDatabaseInventory(connection, { throughMigration: 20 });
-      for (const [table, name] of [['emails', 'idx_emails_user_thread'], ['emails', 'idx_emails_user_snoozed'], ['mail_scheduled_sends', 'idx_scheduled_sends_due']]) {
+      for (const [table, name] of [['emails', 'idx_emails_user_thread'], ['emails', 'idx_emails_user_message_id'], ['emails', 'idx_emails_user_snoozed'], ['mail_scheduled_sends', 'idx_scheduled_sends_due']]) {
         if (!await hasIndex(connection, table, name)) throw new Error(`Index ${name} on ${table} is missing`);
       }
     },
@@ -522,6 +522,11 @@ async function addSettingsAndMailEssentials(connection: SqlExecutor) {
   }
   if (!await hasIndex(connection, 'emails', 'idx_emails_user_thread')) {
     await connection.execute('ALTER TABLE emails ADD KEY idx_emails_user_thread (user_id, thread_key)');
+  }
+  // Threading looks up a conversation's root message by its Message-ID
+  // (services/mail-threading.ts).
+  if (!await hasIndex(connection, 'emails', 'idx_emails_user_message_id')) {
+    await connection.execute('ALTER TABLE emails ADD KEY idx_emails_user_message_id (user_id, message_id)');
   }
   if (!await hasIndex(connection, 'emails', 'idx_emails_user_snoozed')) {
     await connection.execute('ALTER TABLE emails ADD KEY idx_emails_user_snoozed (user_id, snoozed_until)');

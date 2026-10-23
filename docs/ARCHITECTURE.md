@@ -75,6 +75,7 @@ and an icon, and that the page loads no inline script.
 | `api/src/services/mail-attachments.ts` | Attachment validation, staging and inline references |
 | `api/src/services/mail-drafts.ts` | Atomic draft replacements |
 | `api/src/services/mail-import.ts` | Complete-message transactions and durable queue insertion |
+| `api/src/services/mail-threading.ts`, `mail-thread-backfill.ts`, `mail-list.ts` | Conversations: threading headers and the thread_key rule, the background threading of older mail, and the message/conversation list view shared by `GET /api/mail/emails` and `GET /api/mail/threads` ([mail sync](MAIL_SYNC.md#conversations)) |
 | `api/src/services/mail-idle.ts` | IMAP IDLE supervisor: one read-only INBOX session per eligible account; changes become ordinary durable jobs |
 | `api/src/services/offline.ts` | Owner-scoped, size-bounded offline snapshots |
 | `api/src/services/caldav.ts`, `calendar-sync.ts`, `calendar-ical.ts`, `calendar-accounts.ts` | CalDAV discovery and requests, the sync engine and writeback, iCalendar parsing and recurrence expansion, calendars of mail accounts |
@@ -197,7 +198,8 @@ every key resolves through the matcher. `routes-policy.test.cts` also walks the
 production table through the real boundary: 401 for every non-public route
 without a session, 403 for every admin route as a plain user.
 
-Route files not yet declared with specs (`calendar`, `mail-*`, `contacts`,
+Route files not yet declared with specs (`calendar`, `mail-*` except
+`mail-threads`, `contacts`,
 `recordings`, `backup`) export plain handlers that `routes/legacy-spec.ts`
 wraps with the derived policy (public keys, body limits, `getModuleForPath`,
 a restore-section prefix table, the background-header keys);
@@ -417,11 +419,12 @@ commands and file writes stay outside.
 `api/src/services/background-work.ts` holds the periodic work of the API
 process. `app.ts` starts it once after the server listens and stops it on
 shutdown, before the event streams close. Each timer skips a tick while its
-previous run is still going (`services/timers.ts`). These nine run:
+previous run is still going (`services/timers.ts`). These ten run:
 
 | Interval | Job |
 | --- | --- |
 | 1 second | Re-enqueue due mail writebacks (per-operation backoff) and nudge the durable mail scheduler |
+| 15 seconds | Thread mail stored before 0.24 (`mail-thread-backfill.ts`): up to 600 messages or 5 seconds a tick; pauses 5 minutes once nothing is left |
 | 30 seconds | Reconcile due reminders and process durable notification deliveries |
 | 30 seconds | Mail INBOX follow-up per active account (every 5 minutes while its IMAP IDLE session is healthy); folder discovery at most every 5 minutes |
 | 1 minute | Calendar accounts whose `next_sync_at` is due |

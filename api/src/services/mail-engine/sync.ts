@@ -10,6 +10,7 @@ import { uint32 } from './content';
 import { UNPROVEN } from './operation-states';
 import { sqlList } from './job-kinds';
 import { outsideWindow } from '../mail-sync-policy';
+import { localThreadKey } from '../mail-threading';
 
 type Selection = Awaited<ReturnType<typeof transport.selectMailbox>>;
 type WindowReply = Awaited<ReturnType<typeof transport.fetchMetadataWindow>>;
@@ -179,13 +180,15 @@ async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId,
     return mapped.emailId;
   }
   const id = crypto.randomUUID();
+  // Until its content arrives the message is a conversation of its own; the
+  // body import gives it its real thread_key (services/mail-threading.ts).
   await executor.execute(`INSERT INTO emails (id,user_id,mail_account_id,message_id,subject,from_address,to_addresses,folder,
     source_folder,imap_uid,imap_uidvalidity,remote_folder,remote_uid,remote_uidvalidity,
-    is_read,is_starred,import_complete,content_state)
-    VALUES (?,?,?,NULL,'(Loading message)','unknown','[]',?,?,?,?,?,?,?,?,?,FALSE,'queued')`,
+    is_read,is_starred,import_complete,content_state,thread_key)
+    VALUES (?,?,?,NULL,'(Loading message)','unknown','[]',?,?,?,?,?,?,?,?,?,FALSE,'queued',?)`,
   [id, userId, accountId, folder.dbFolderName || 'inbox', folder.folderName, item.uid, epoch,
     folder.folderName, item.uid, epoch,
-    item.flags.includes('\\Seen') ? 1 : 0, item.flags.includes('\\Flagged') ? 1 : 0]);
+    item.flags.includes('\\Seen') ? 1 : 0, item.flags.includes('\\Flagged') ? 1 : 0, localThreadKey(id)]);
   if (gmail && item.gmailMsgId && /^[0-9]+$/.test(String(item.gmailMsgId))) {
     // A concurrently discovered Gmail label may have won the account-scoped
     // identity. Resolve under the unique key without ever merging generic copies.
