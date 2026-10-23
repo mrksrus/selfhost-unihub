@@ -101,6 +101,10 @@ test('MySQL restores colliding backup IDs without changing another user in every
   await connection.execute('ALTER TABLE mail_accounts ADD COLUMN sync_window_days INT NULL, ADD COLUMN trash_window_days INT NULL DEFAULT 30, ADD COLUMN sync_policy_confirmed_at DATETIME NULL');
   await connection.execute('ALTER TABLE emails ADD COLUMN remote_folder VARCHAR(255) NULL, ADD COLUMN remote_uid BIGINT NULL, ADD COLUMN remote_uidvalidity BIGINT NULL, ADD COLUMN remote_missing BOOLEAN NOT NULL DEFAULT FALSE');
   await connection.execute("ALTER TABLE emails ADD COLUMN observation_revision BIGINT NOT NULL DEFAULT 0, ADD COLUMN observed_modseq VARCHAR(32) NULL, ADD COLUMN raw_format VARCHAR(24) NOT NULL DEFAULT 'legacy_normalized', ADD COLUMN raw_bytes BIGINT NULL, ADD COLUMN raw_verified BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN content_state VARCHAR(24) NOT NULL DEFAULT 'legacy'");
+  // A restored draft loses its schedule (0.24); the restore clears it on this connection.
+  await connection.execute(`CREATE TEMPORARY TABLE mail_scheduled_sends (
+    id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, email_id CHAR(36) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'scheduled', last_error VARCHAR(255) NULL) ENGINE=InnoDB`);
   await connection.execute('CREATE TEMPORARY TABLE notification_config (id INT PRIMARY KEY, reminder_revision BIGINT DEFAULT 0)');
   await connection.execute<ResultSetHeader>('INSERT INTO notification_config (id) VALUES (1)');
   const victim = crypto.randomUUID();

@@ -127,7 +127,7 @@ export interface EmailAttachment {
 export interface Email {
   remote_missing?: boolean;
   is_legacy?: boolean;
-  source_mail_account_id?: string;
+  source_mail_account_id?: string | null;
   id: string;
   mail_account_id: string;
   subject: string | null;
@@ -153,6 +153,8 @@ export interface Email {
   tasks?: import('@/lib/email-tasks').EmailTaskSummary[];
   /** How many tasks were made from this email (list rows). */
   task_count?: number;
+  /** The conversation (list rows and the detail); null for mail not threaded yet. */
+  thread_key?: string | null;
   /** List rows: snooze state and a draft's scheduled send (MailListRow in contracts/mail-threads.ts). */
   snoozed_until?: string | null;
   snooze_returned_at?: string | null;
@@ -221,12 +223,18 @@ export const mailQueryKeys = {
   unread: (account: string | null) => ['mail-unread-counts', account] as const,
   dashboardUnread: ['dashboard-unread-mail'] as const,
   list: (filters: MailListFilters) => ['emails', filters.account, filters.folder, filters.page, filters.search, filters.unreadOnly] as const,
+  // The conversation view of the same list (mail_threaded_view): same root
+  // and positions, so the invalidations and flag refreshes of the message
+  // list reach it; the cursor names the page.
+  threads: (filters: MailListFilters, cursor: string | null) => ['emails', filters.account, filters.folder, filters.page, filters.search, filters.unreadOnly, 'threads', cursor] as const,
+  // The messages of the conversation open in the reader.
+  thread: (id: string) => ['mail-thread', id] as const,
   // One message outside the Mail page (the peek). Its own root: every entry
   // under 'emails' is a list, and the list cache patches rely on that shape.
   detail: (id: string) => ['mail-email', id] as const,
 };
 
-const MAIL_QUERY_ROOTS = new Set(['emails', 'mail-email', 'mail-unread-counts', 'mail-accounts', 'mail-accounts-count', 'mail-folders', 'email-count', 'stats', 'dashboard-unread-mail', 'mail-writebacks']);
+const MAIL_QUERY_ROOTS = new Set(['emails', 'mail-email', 'mail-thread', 'mail-unread-counts', 'mail-accounts', 'mail-accounts-count', 'mail-folders', 'email-count', 'stats', 'dashboard-unread-mail', 'mail-writebacks']);
 export function invalidateMailQueries(client: QueryClient) {
   return client.invalidateQueries({ predicate: (query) => MAIL_QUERY_ROOTS.has(String(query.queryKey[0])) });
 }
@@ -237,7 +245,7 @@ export function invalidateMailQueries(client: QueryClient) {
 const MAIL_FLAG_COUNT_ROOTS = new Set(['mail-unread-counts', 'mail-accounts', 'mail-accounts-count', 'email-count', 'stats', 'dashboard-unread-mail']);
 
 export function invalidateMailFlagViews(client: QueryClient) {
-  return client.invalidateQueries({ predicate: query => query.queryKey[0] === 'emails' || query.queryKey[0] === 'mail-email' || MAIL_FLAG_COUNT_ROOTS.has(String(query.queryKey[0])) });
+  return client.invalidateQueries({ predicate: query => query.queryKey[0] === 'emails' || query.queryKey[0] === 'mail-email' || query.queryKey[0] === 'mail-thread' || MAIL_FLAG_COUNT_ROOTS.has(String(query.queryKey[0])) });
 }
 
 const MAIL_COUNT_ROOTS = new Set(['mail-unread-counts', 'dashboard-unread-mail', 'email-count', 'stats']);
@@ -252,8 +260,8 @@ export function invalidateChangedMail(client: QueryClient, accounts: ReadonlySet
     const [root, account] = query.queryKey;
     if (MAIL_COUNT_ROOTS.has(String(root))) return true;
     if (folders && root === mailQueryKeys.folders[0]) return true;
-    // The peek's key carries no account, so it follows every change.
-    if (root === 'mail-email') return true;
+    // The peek's key and the open conversation's carry no account, so they follow every change.
+    if (root === 'mail-email' || root === 'mail-thread') return true;
     return root === mailQueryKeys.all[0] && (accounts.has('*') || account === 'all' || accounts.has(String(account)));
   } });
 }
@@ -308,12 +316,18 @@ export function mailFlagRevision(client: QueryClient, id: string, kind: MailFlag
 
 export function showRequestedFlagInMailLists(client: QueryClient, ids: string[], patch: MailFlagPatch) {
   const selectedIds = new Set(ids);
-  // Only list-shaped entries are patched; anything else under the prefix is left alone.
-  client.setQueriesData<MailListResponse>({ queryKey: mailQueryKeys.all }, current => Array.isArray(current?.emails) ? {
-    ...current,
-    emails: current.emails.map(email => selectedIds.has(email.id) ? { ...email, ...patch } : email),
-  } : current);
+  // Only list-shaped entries are patched (message lists and conversation
+  // lists, whose rows are their latest messages); anything else under the
+  // prefix is left alone.
+  client.setQueriesData<MailListResponse | MailThreadListResponse>({ queryKey: mailQueryKeys.all }, current => {
+    if (isMessageList(current)) return { ...current, emails: current.emails.map(email => selectedIds.has(email.id) ? { ...email, ...patch } : email) };
+    if (isThreadList(current)) return { ...current, threads: current.threads.map(thread => selectedIds.has(thread.latest.id)
+      ? { ...thread, latest: { ...thread.latest, ...patch }, ...(patch.is_starred === undefined ? {} : { is_starred: patch.is_starred }) } : thread) };
+    return current;
+  });
 }
+const isMessageList = (data: unknown): data is MailListResponse => Array.isArray((data as MailListResponse | undefined)?.emails);
+const isThreadList = (data: unknown): data is MailThreadListResponse => Array.isArray((data as MailThreadListResponse | undefined)?.threads);
 export function showRequestedReadInMailLists(client: QueryClient, ids: string[], isRead: boolean) {
   showRequestedFlagInMailLists(client, ids, { is_read: isRead });
 }
@@ -353,14 +367,23 @@ export type MovedEmail = Pick<Email, 'id' | 'folder' | 'is_read' | 'mail_account
 export function showRequestedMoveInMailCaches(client: QueryClient, moved: MovedEmail[], target: string) {
   const ids = new Set(moved.map(email => email.id));
   const reconcile = captureMailFlagReconciler(client);
-  const previous: [readonly unknown[], MailListResponse][] = [];
+  const previous: [readonly unknown[], MailListResponse | MailThreadListResponse][] = [];
   for (const query of client.getQueryCache().findAll({ queryKey: mailQueryKeys.all })) {
-    const current = query.state.data as MailListResponse | undefined;
-    if (!Array.isArray(current?.emails) || !current.emails.some(email => ids.has(email.id))) continue;
+    const current = query.state.data as MailListResponse | MailThreadListResponse | undefined;
     const folder = query.queryKey[2];
     if (folder === target) continue;
+    // Virtual views list by flag or snooze, not by folder: the row stays, with its new folder.
+    const keepRows = folder === 'all' || folder === 'starred' || folder === 'snoozed';
+    if (isThreadList(current)) {
+      if (!current.threads.some(thread => ids.has(thread.latest.id))) continue;
+      previous.push([query.queryKey, current]);
+      const threads = keepRows ? current.threads.map(thread => ids.has(thread.latest.id) ? { ...thread, latest: { ...thread.latest, folder: target } } : thread)
+        : current.threads.filter(thread => !ids.has(thread.latest.id));
+      client.setQueryData<MailThreadListResponse>(query.queryKey, { ...current, threads });
+      continue;
+    }
+    if (!isMessageList(current) || !current.emails.some(email => ids.has(email.id))) continue;
     previous.push([query.queryKey, current]);
-    const keepRows = folder === 'all' || folder === 'starred';
     const emails = keepRows ? current.emails.map(email => ids.has(email.id) ? { ...email, folder: target } : email)
       : current.emails.filter(email => !ids.has(email.id));
     const removed = current.emails.length - emails.length;
@@ -375,9 +398,41 @@ export function showRequestedMoveInMailCaches(client: QueryClient, moved: MovedE
   ]);
   adjustMailUnreadCounts(client, counts);
   return () => {
-    for (const [key, data] of previous) client.setQueryData<MailListResponse>(key, { ...data, emails: data.emails.map(reconcile) });
+    for (const [key, data] of previous) client.setQueryData(key, restoreList(data, reconcile));
     adjustMailUnreadCounts(client, counts.map(change => ({ ...change, delta: -change.delta })));
   };
+}
+// A list put back from its snapshot keeps the flag edits made meanwhile.
+const restoreList = (data: MailListResponse | MailThreadListResponse, reconcile: (email: Email) => Email) =>
+  isThreadList(data) ? { ...data, threads: data.threads.map(thread => ({ ...thread, latest: reconcile(thread.latest) })) }
+    : { ...data, emails: data.emails.map(reconcile) };
+
+/**
+ * Shows a requested snooze (or its end) before the server answers: a snoozed
+ * message leaves every list but the Snoozed view and searches; one brought
+ * back leaves the Snoozed view. Returns the undo for a rejected request.
+ */
+export function showRequestedSnoozeInMailCaches(client: QueryClient, ids: ReadonlySet<string>, snoozed: boolean) {
+  const reconcile = captureMailFlagReconciler(client);
+  const previous: [readonly unknown[], MailListResponse | MailThreadListResponse][] = [];
+  for (const query of client.getQueryCache().findAll({ queryKey: mailQueryKeys.all })) {
+    const current = query.state.data as MailListResponse | MailThreadListResponse | undefined;
+    const [, , folder, , search] = query.queryKey;
+    // A snoozed message stays visible in the Snoozed view and in search results; one that came back leaves the Snoozed view.
+    if (snoozed ? folder === 'snoozed' || search : folder !== 'snoozed') continue;
+    if (isThreadList(current)) {
+      if (!current.threads.some(thread => ids.has(thread.latest.id))) continue;
+      previous.push([query.queryKey, current]);
+      client.setQueryData<MailThreadListResponse>(query.queryKey, { ...current, threads: current.threads.filter(thread => !ids.has(thread.latest.id)) });
+      continue;
+    }
+    if (!isMessageList(current) || !current.emails.some(email => ids.has(email.id))) continue;
+    previous.push([query.queryKey, current]);
+    const emails = current.emails.filter(email => !ids.has(email.id));
+    client.setQueryData<MailListResponse>(query.queryKey, { ...current, emails,
+      ...(current.pagination ? { pagination: { ...current.pagination, total: Math.max(0, current.pagination.total - (current.emails.length - emails.length)) } } : {}) });
+  }
+  return () => { for (const [key, data] of previous) client.setQueryData(key, restoreList(data, reconcile)); };
 }
 
 /** After a move or trash was accepted or rejected: the lists, folder counts and the server-change list. */
@@ -444,6 +499,13 @@ export async function fetchMailThreads(filters: MailListFilters, signal?: AbortS
   if (response.error) throw new Error(response.error);
   if (!Array.isArray(response.data?.threads)) throw new Error('Invalid conversation list response');
   return response.data;
+}
+
+/** One message in full (body, attachments, tasks), as the reader and the peek show it. */
+export async function fetchMailDetail(emailId: string, signal?: AbortSignal): Promise<Email> {
+  const response = await api.get<{ email: Email }>(`/mail/emails/${encodeURIComponent(emailId)}`, { signal });
+  if (response.error || !response.data?.email) throw new Error(response.error || 'Could not load the message');
+  return response.data.email;
 }
 
 /** Every message of the conversation the message belongs to, oldest first. */

@@ -710,6 +710,15 @@ being restored wait. Bringing a message back by hand sends no notification.
 Backups carry the snooze state; a restored message whose time has passed
 comes back on the next worker pass.
 
+In the app, Snooze is on the reader's toolbar and in a row's menu, offering
+the person's `snooze_choices` (Settings, Mail; "tomorrow" and "next week" mean
+08:00 local on that day) and a date and time of their own. The row leaves its
+list before the server answers, with Undo on the toast; a refused request puts
+it back and says why. The **Snoozed** view (`folder=snoozed`) lists the waiting
+messages with their return time and an "Unsnooze" action. A message that came
+back within the last day and is still unread carries a "Back from snooze"
+mark. Offline reading mode disables both actions (`src/hooks/use-mail-snooze.tsx`).
+
 ### Scheduled send
 
 A saved draft can be scheduled (`mail_scheduled_sends`, one row per draft;
@@ -734,6 +743,18 @@ the worker; its receipt only decides whether the draft is marked sent, unknown
 or free again. Every writer locks the draft row first and then this row. A
 mail restore waits for running draft sends, and a draft the restore writes
 loses its schedule.
+
+In the composer (with "Send later" switched on in Settings, Mail) Send is a
+split button whose arrow half offers in 1 hour, tomorrow morning (08:00 local),
+Monday morning before a weekend, or a date and time; the draft is saved first,
+then scheduled, and the composer closes with an Undo on the toast that cancels
+the schedule. Drafts rows show the status above: `scheduled` with "Cancel
+schedule" and "Edit time", `failed` as "Not sent" with "Send now" and
+"Reschedule", `unknown` as "May have been sent: check Sent" (never retried by
+the app), `sent` as sent with the draft still there; the latter two can be
+cleared. A save refused with `SCHEDULED_SEND_IN_PROGRESS` is shown to the
+person, also for an autosave (`src/hooks/use-mail-compose.ts`,
+`src/hooks/use-mail-schedule.tsx`).
 
 `failed` and `unknown` scheduled sends send a notification (kind
 `scheduled-send`) without message content. Schedules wait while the person's Mail is off, paused or
@@ -812,6 +833,19 @@ conversation in every folder and account, oldest first, at most the newest
 200. Offline, both answer from the saved snapshot (the latest 100 messages),
 so a conversation shows only its saved messages. Shapes:
 `api/src/contracts/mail-threads.ts`.
+
+In the app (`mail_threaded_view` on) the list shows one row per conversation:
+the participants (most recent first), the message count and unread count of
+the view, and the latest message's subject and preview (`mail_preview_lines`
+applies as to single messages). Pages follow `next_cursor` ("Previous" and
+"Next" instead of numbered pages). The conversation list is cached under the
+same keys as the message list, so the live mail-changed events, flag changes,
+moves and snoozes that refresh or patch the message list reach it, and a page
+of another account or folder never shows in the current view. Opening a row
+opens its latest message; the reader then loads the conversation
+(`GET /api/mail/emails/:id/thread`) and shows the open message in full with
+the other messages folded to one line each, oldest first; unfolding one loads
+and marks it read (`src/components/mail/MailConversation.tsx`).
 
 ## SMTP Sending
 

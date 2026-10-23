@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FolderOpen, Mail, ShieldAlert } from 'lucide-react';
+import { AlarmClock, FolderOpen, Mail, ShieldAlert } from 'lucide-react';
 import type { MailAccount } from '@/lib/mail-api';
 import { useMailFolders, useMailUnreadCounts } from '@/hooks/use-mail-queries';
-import { ALL_ACCOUNTS, ALL_MAIL, LEGACY_ACCOUNT, systemFolders, type FolderMode, type MailFolderItem } from '@/components/mail/mail-page-model';
+import { ALL_ACCOUNTS, ALL_MAIL, LEGACY_ACCOUNT, SNOOZED, systemFolders, type FolderMode, type MailFolderItem } from '@/components/mail/mail-page-model';
 
 /**
  * The selected folder and the folders shown for the selected account view
@@ -42,26 +42,29 @@ export function useMailFolderView(selectedAccount: string | null, accounts: Mail
   }, [mailFolders, visibleMailFolders, selectedAccount, accounts]);
 
   useEffect(() => {
-    if (mailFolders.length && selectedFolder !== ALL_MAIL && selectedFolder !== 'starred' && !visibleMailFolders.some(folder => folder.slug === selectedFolder)) {
+    if (mailFolders.length && selectedFolder !== ALL_MAIL && selectedFolder !== 'starred' && selectedFolder !== SNOOZED && !visibleMailFolders.some(folder => folder.slug === selectedFolder)) {
       setSelectedFolder(selectedAccount === LEGACY_ACCOUNT ? ALL_MAIL : 'inbox');
     }
   }, [mailFolders, visibleMailFolders, selectedFolder, selectedAccount]);
 
   const folderFilters = useMemo<MailFolderItem[]>(() => {
-    // Starred is a virtual IMAP flag view, not a physical mailbox row.
+    // Starred is a virtual IMAP flag view, not a physical mailbox row; Snoozed
+    // lists the messages waiting to come back (they keep their folders).
     const starred = { ...systemFolders.find(folder => folder.id === 'starred')!, legacy: false, accountId: null };
+    const snoozed: MailFolderItem = { id: SNOOZED, label: 'Snoozed', icon: AlarmClock, legacy: false, accountId: null };
     const listedFolders = folders.filter(folder => folder.id !== 'starred');
     const insertAfter = listedFolders.findIndex(folder => folder.id === 'drafts') + 1;
-    const orderedFolders = [
+    const orderedFolders = selectedAccount === LEGACY_ACCOUNT ? listedFolders : [
       ...listedFolders.slice(0, Math.max(insertAfter, 0)),
       starred,
+      snoozed,
       ...listedFolders.slice(Math.max(insertAfter, 0)),
     ];
     return [{ id: ALL_MAIL, label: 'All mail', icon: Mail, legacy: false, accountId: null }, ...orderedFolders];
-  }, [folders]);
+  }, [folders, selectedAccount]);
 
   const movableFolderIds = useMemo(
-    () => selectedAccount === LEGACY_ACCOUNT ? [] : folders.filter(folder => !folder.accountId || folder.accountId === selectedAccount).map(folder => folder.id).filter(folderId => folderId !== 'starred'),
+    () => selectedAccount === LEGACY_ACCOUNT ? [] : folders.filter(folder => !folder.accountId || folder.accountId === selectedAccount).map(folder => folder.id).filter(folderId => folderId !== 'starred' && folderId !== SNOOZED),
     [folders, selectedAccount]
   );
 

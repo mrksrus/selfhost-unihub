@@ -3,12 +3,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { deleteDraft, saveDraft, sendDraft, sendMessage, type AttachmentPayload, type DraftInput, type OutgoingMessage, type ReplyThreading } from '@/lib/mail-compose-api';
 import { invalidateMailQueries, type Email, type EmailAttachment } from '@/lib/mail-api';
+import { ApiError } from '@/lib/api-error';
+import { cancelMailSchedule, createMailTemplate, mailTemplatesKey, scheduleMailDraft, type MailTemplate } from '@/lib/mail-essentials-api';
 import { contactsQueryOptions } from '@/lib/contacts-api';
 import { plainTextToHtml, sanitizeComposeHtml, sanitizeReturnTo, isComposeBodyEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
-import { composeBody, convertBody, quoteOf, responseRecipients, signatureFor, type BodyParts, type ComposeFormat, type ResponseMode } from '@/lib/compose-body';
-import type { MailTemplate } from '../../api/src/contracts/mail';
+import { composeBody, convertBody, htmlToPlainText, quoteOf, responseRecipients, signatureFor, type BodyParts, type ComposeFormat, type ResponseMode } from '@/lib/compose-body';
+import { formatWhen } from '@/lib/mail-times';
 import { useToast } from '@/hooks/use-toast';
 import { sendFailureToast } from '@/components/mail/send-failure-toast';
+import { scheduledSendToast } from '@/components/mail/scheduled-send-toast';
 import { useMailAccounts } from '@/hooks/use-mail-queries';
 import { selectUserSetting, userSettingsQueryOptions } from '@/lib/settings-api';
 import {
@@ -72,6 +75,13 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   const { data: accounts = [] } = useMailAccounts();
   const preferredAccountId = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('default_mail_account_id') }).data ?? '';
   const defaultFormat = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('compose_format') }).data ?? 'rich';
+  // The optional compose features (P-26): off until switched on in Settings,
+  // Mail; only then does the composer show their button.
+  const features = {
+    templates: useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('compose_templates') }).data ?? false,
+    scheduledSend: useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('compose_scheduled_send') }).data ?? false,
+    formatSwitch: useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('compose_format_switch') }).data ?? false,
+  };
   const [chosenAccountId, setChosenAccountId] = useState<string | null>(null);
   const connected = (id: string | null | undefined) => !!id && accounts.some(account => account.id === id && account.is_active && !account.disconnected_at);
   const fromAccountId = chosenAccountId ?? activeMailAccountId
@@ -90,6 +100,8 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   const [composeAttachments, setComposeAttachments] = useState<ComposeAttachment[]>([]);
   const [existingDraftAttachments, setExistingDraftAttachments] = useState<EmailAttachment[]>([]);
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
+  // When the open draft is scheduled to be sent (opened from Drafts); null otherwise.
+  const [scheduledAt, setScheduledAt] = useState<string | null>(null);
   const [isComposeDirty, setIsComposeDirty] = useState(false);
   const [attachmentsDirty, setAttachmentsDirty] = useState(false);
   const [isDraftSaving, setIsDraftSaving] = useState(false);
@@ -99,6 +111,11 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   const [isAttachmentDragOver, setIsAttachmentDragOver] = useState(false);
   const inlineComposeEditorRef = useRef<HTMLDivElement | null>(null);
   const dialogComposeEditorRef = useRef<HTMLDivElement | null>(null);
+  // Where the person last wrote: a template is inserted there once the body
+  // has been touched. The rich editor's selection is gone once a menu takes
+  // focus, so it is remembered as the editor loses it.
+  const richRangeRef = useRef<{ editor: HTMLElement; range: Range } | null>(null);
+  const plainSelectionRef = useRef<{ start: number; end: number } | null>(null);
   // One Idempotency-Key per composed message: pressing Send again after a lost
   // response returns the first result instead of sending the message twice.
   const sendKeyRef = useRef<string | null>(null);
@@ -191,6 +208,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     setAttachmentsDirty(false);
     setIsComposeDirty(false);
     setDraftSavedAt(draft.received_at || new Date().toISOString());
+    setScheduledAt(draft.scheduled_send_status === 'scheduled' ? draft.scheduled_send_at ?? null : null);
     setComposeForm({
       to: draft.to_addresses?.join(', ') || '',
       cc: draft.cc_addresses?.join(', ') || '',
@@ -286,6 +304,16 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     updateComposeBodyFromEditor(editorRef);
   };
 
+  /** Remembers the rich editor's caret, so a template can be inserted where the person was writing. */
+  const rememberRichSelection = (editorRef: RefObject<HTMLDivElement>) => {
+    const editor = editorRef.current;
+    const selection = window.getSelection();
+    if (!editor || !selection || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    if (editor.contains(range.startContainer)) richRangeRef.current = { editor, range: range.cloneRange() };
+  };
+  const rememberPlainSelection = (start: number, end: number) => { plainSelectionRef.current = { start, end }; };
+
   const replaceActiveRecipient = (suggestion: ContactEmailSuggestion, field: RecipientField = 'to') => {
     setComposeForm(prev => {
       const parts = prev[field].split(',');
@@ -310,6 +338,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     setComposeAttachments([]);
     setExistingDraftAttachments([]);
     setActiveDraftId(null);
+    setScheduledAt(null);
     setIsComposeDirty(false);
     setAttachmentsDirty(false);
     setIsDraftSaving(false);
@@ -317,6 +346,8 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     setIsAttachmentDragOver(false);
     setIsReplying(false);
     setChosenAccountId(null);
+    richRangeRef.current = null;
+    plainSelectionRef.current = null;
   };
 
   const closeComposeFlow = (options: { force?: boolean } = {}) => {
@@ -344,6 +375,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     setComposeAttachments([]);
     setExistingDraftAttachments([]);
     setActiveDraftId(null);
+    setScheduledAt(null);
     setAttachmentsDirty(false);
     setIsComposeDirty(false);
     setChosenAccountId(email.mail_account_id);
@@ -393,15 +425,76 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     markChanged();
   };
 
-  /** Starts the message (new mail or reply) from a template: its text above the signature and quote. */
+  /**
+   * Inserts a template: the subject only while none is written; the text
+   * replaces an untouched body (above the signature and quote), or goes in
+   * where the person was writing.
+   */
   const applyTemplate = (template: MailTemplate) => {
     const intro = { html: template.body_html, text: template.body_text };
-    setComposeForm(prev => ({
-      ...prev,
-      subject: prev.subject.trim() && composeMode !== 'new' ? prev.subject : template.subject || prev.subject,
-      body: startingBody(fromAccountId, bodyFormat, { ...partsRef.current, intro }),
-    }));
+    const untouched = (!isComposeDirty && !activeDraftId) || composeForm.body === composeBody(bodyFormat, signature, partsRef.current);
+    const subjectOf = (current: string) => current.trim() ? current : template.subject || '';
+    if (untouched) {
+      setComposeForm(prev => ({ ...prev, subject: subjectOf(prev.subject), body: startingBody(fromAccountId, bodyFormat, { ...partsRef.current, intro }) }));
+      markChanged();
+      return;
+    }
+    if (bodyFormat === 'plain') {
+      const text = intro.text || (intro.html ? htmlToPlainText(intro.html) : '');
+      const at = plainSelectionRef.current ?? { start: 0, end: 0 };
+      setComposeForm(prev => ({ ...prev, subject: subjectOf(prev.subject), body: `${prev.body.slice(0, at.start)}${text}${prev.body.slice(at.end)}` }));
+      plainSelectionRef.current = { start: at.start + text.length, end: at.start + text.length };
+      markChanged();
+      return;
+    }
+    const editor = (isComposeOpen ? dialogComposeEditorRef : inlineComposeEditorRef).current;
+    const html = intro.html ? sanitizeComposeHtml(intro.html) : plainTextToHtml(intro.text);
+    if (!editor) {
+      setComposeForm(prev => ({ ...prev, subject: subjectOf(prev.subject), body: `${html}${prev.body}` }));
+      markChanged();
+      return;
+    }
+    // At the remembered caret, else at the top of the message. Only
+    // sanitized HTML reaches the editor (sanitizeComposeHtml above).
+    const remembered = richRangeRef.current?.editor === editor && editor.contains(richRangeRef.current.range.startContainer) ? richRangeRef.current.range : null;
+    const range = remembered ?? document.createRange();
+    if (!remembered) range.setStart(editor, 0);
+    range.deleteContents();
+    const fragment = document.createElement('template');
+    fragment.innerHTML = html;
+    const last = fragment.content.lastChild;
+    range.insertNode(fragment.content);
+    if (last) { range.setStartAfter(last); range.collapse(true); }
+    editor.focus();
+    const selection = window.getSelection();
+    if (selection) { selection.removeAllRanges(); selection.addRange(range); }
+    richRangeRef.current = { editor, range: range.cloneRange() };
+    setComposeForm(prev => ({ ...prev, subject: subjectOf(prev.subject), body: editor.innerHTML }));
     markChanged();
+  };
+
+  /** The message as written, without the signature and the quoted message: what a template holds. */
+  const templateBody = () => {
+    const body = composeForm.body;
+    if (bodyFormat === 'plain') {
+      const cutAt = [signature ? body.indexOf(signature) : -1, body.indexOf('-------- ')].filter(index => index >= 0);
+      return (cutAt.length ? body.slice(0, Math.min(...cutAt)) : body).trimEnd();
+    }
+    const cutAt = [signature ? body.indexOf(signature) : -1, body.indexOf('<hr>')].filter(index => index >= 0);
+    return cutAt.length ? body.slice(0, Math.min(...cutAt)) : body;
+  };
+
+  /** Saves the open message as a template under the given name; a taken name is refused (ApiError TEMPLATE_NAME_TAKEN). */
+  const saveAsTemplate = async (name: string) => {
+    const body = templateBody();
+    const template = await createMailTemplate({
+      name, subject: composeForm.subject.trim(),
+      body_html: bodyFormat === 'rich' ? body : null,
+      body_text: bodyFormat === 'rich' ? htmlToPlainText(body) : body,
+    });
+    void queryClient.invalidateQueries({ queryKey: mailTemplatesKey });
+    toast({ title: 'Template saved', description: `"${template.name}" is in the Templates menu.` });
+    return template;
   };
 
   const sendEmailMutation = useMutation({
@@ -480,9 +573,13 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       if (!options.quiet) toast({ title: 'Draft saved' });
       return savedDraft;
     } catch (error) {
-      if (!options.quiet) {
+      // A quiet save (autosave) keeps typing uninterrupted, except when the
+      // draft is being sent by its schedule: the person must know their
+      // edits did not reach the message.
+      const beingSent = error instanceof ApiError && error.code === 'SCHEDULED_SEND_IN_PROGRESS';
+      if (!options.quiet || beingSent) {
         toast({
-          title: 'Failed to save draft',
+          title: beingSent ? 'Not saved' : 'Failed to save draft',
           description: error instanceof Error ? error.message : 'Could not save the draft',
           variant: 'destructive',
         });
@@ -663,6 +760,73 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       });
     }
   };
+  /**
+   * Send later: the draft is saved first (the stored draft is what goes out),
+   * then scheduled; the composer closes with an Undo that cancels the schedule.
+   */
+  const scheduleSend = async (sendAt: Date) => {
+    if (!fromAccountId) {
+      toast({ title: 'Please select an account', variant: 'destructive' });
+      return;
+    }
+    if (!composeForm.to.trim() && !composeForm.cc.trim() && !composeForm.bcc.trim()) {
+      toast({ title: 'Add at least one recipient', variant: 'destructive' });
+      return;
+    }
+    if (isComposeBodyEmpty(composeForm.body, bodyFormat) && composeAttachments.length === 0 && existingDraftAttachments.length === 0) {
+      toast({ title: 'Please enter a message or add an attachment', variant: 'destructive' });
+      return;
+    }
+    const composition = compositionRef.current;
+    let draftId: string | null = null;
+    try {
+      const saved = await saveCurrentDraft({ includeAttachments: true, quiet: true });
+      draftId = saved?.id ?? draftRef.current.id;
+    } catch (error) {
+      toast({ title: 'Not scheduled', description: error instanceof Error ? error.message : 'The draft could not be saved', variant: 'destructive' });
+      return;
+    }
+    if (composition !== compositionRef.current) {
+      toast({ title: 'Not scheduled', description: 'The message was closed before it was scheduled.' });
+      return;
+    }
+    if (!draftId) {
+      toast({ title: 'Not scheduled', description: 'The draft could not be saved', variant: 'destructive' });
+      return;
+    }
+    try {
+      const schedule = await scheduleMailDraft(draftId, sendAt);
+      void invalidateMailQueries(queryClient);
+      if (composition === compositionRef.current) closeComposeFlow({ force: true });
+      const id = draftId;
+      toast(scheduledSendToast(schedule.send_at, async () => {
+        try {
+          await cancelMailSchedule(id);
+          void invalidateMailQueries(queryClient);
+          toast({ title: 'Scheduled send cancelled', description: 'The message stays in Drafts.' });
+        } catch (error) {
+          toast({ title: 'Could not cancel the scheduled send', description: error instanceof Error ? error.message : undefined, variant: 'destructive' });
+        }
+      }));
+    } catch (error) {
+      toast({ title: 'Not scheduled', description: error instanceof Error ? error.message : 'Could not schedule the message', variant: 'destructive' });
+    }
+  };
+
+  /** Cancels the open draft's scheduled send; the draft stays open. */
+  const cancelScheduledSend = async () => {
+    const id = draftRef.current.id ?? activeDraftId;
+    if (!id) return;
+    try {
+      await cancelMailSchedule(id);
+      setScheduledAt(null);
+      void invalidateMailQueries(queryClient);
+      toast({ title: 'Scheduled send cancelled', description: `Sending at ${formatWhen(scheduledAt ?? '')} is off; the message stays in Drafts.` });
+    } catch (error) {
+      toast({ title: 'Could not cancel the scheduled send', description: error instanceof Error ? error.message : undefined, variant: 'destructive' });
+    }
+  };
+
   // "Send again" after an unknown outcome is a new send of what the composer
   // holds when it is pressed, under a new key, while that message is still
   // the one open. Another message opened since is never sent by it.
@@ -686,7 +850,9 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   return {
     isComposeOpen, openCompose: startNewMessage, composeMode, isReplying,
     composeForm, updateComposeForm, fromAccountId, setFromAccount: setChosenAccountId,
-    bodyFormat, switchBodyFormat, applyTemplate,
+    bodyFormat, switchBodyFormat, applyTemplate, saveAsTemplate, features,
+    rememberRichSelection, rememberPlainSelection,
+    scheduledAt, scheduleSend, cancelScheduledSend,
     focusedRecipientInput, setFocusedRecipientInput, replaceActiveRecipient, contactEmailSuggestions,
     composeAttachments, existingDraftAttachments, isAttachmentDragOver, setIsAttachmentDragOver,
     addComposeFiles, removeComposeAttachment, removeExistingDraftAttachment, handleComposeAttachmentInput,
