@@ -45,6 +45,8 @@ export function composeBody(bodyFormat: ComposeFormat, signature: string, { intr
   if (bodyFormat === 'plain') {
     return [intro?.text ?? '', signature, quote?.text ?? ''].filter((part, index) => index === 0 || part).join('\n\n');
   }
+  // Nothing to add: an empty editor, which shows its placeholder.
+  if (!intro && !signature && !quote) return '';
   const start = intro ? (intro.html ? sanitizeComposeHtml(intro.html) : plainTextToHtml(intro.text)) : '<p><br></p>';
   return `${start}${signature}${quote ? `<hr>${quote.html}` : ''}`;
 }

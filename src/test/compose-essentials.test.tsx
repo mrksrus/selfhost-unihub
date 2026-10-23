@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
 import type { Email, MailAccount } from '@/lib/mail-api';
 import { userSettingsQueryOptions, type UserSettingValues } from '@/lib/settings-api';
-import { responseRecipients } from '@/lib/compose-body';
+import { composeBody, responseRecipients } from '@/lib/compose-body';
 import { useMailCompose } from '@/hooks/use-mail-compose';
 import { useMailAccounts } from '@/hooks/use-mail-queries';
 import { MailComposeDialog, MailComposeDialogs, MailInlineCompose } from '@/components/mail/MailCompose';
@@ -65,6 +65,12 @@ describe('reply all', () => {
   it('writes to the sender and everyone on To and Cc, without your own address or anyone twice', () => {
     expect(responseRecipients(received, 'replyAll', 'alex@example.test')).toEqual({ to: 'sparks@example.test, Bo <bo@example.test>', cc: 'cy@example.test' });
     expect(responseRecipients(received, 'reply', 'alex@example.test')).toEqual({ to: 'sparks@example.test', cc: '' });
+  });
+
+  it('a new message without a signature starts empty, so the editor shows its placeholder', () => {
+    expect(composeBody('rich', '')).toBe('');
+    expect(composeBody('plain', '')).toBe('');
+    expect(composeBody('rich', '<p>Sig</p>')).toBe('<p><br></p><p>Sig</p>');
   });
 
   it('opens a reply to all from the account that received the message', async () => {
