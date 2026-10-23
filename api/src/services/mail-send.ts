@@ -12,6 +12,7 @@ import { finishReceipt, recordReceipt, withTransaction } from './mail-engine/rep
 import { log } from '../log';
 import { accountTlsOptions, toBooleanFlag } from './mail-host-policy';
 import { normalizeRecipients } from './mail-recipients';
+import { adoptReplies, boundReferences, messageIds, normalizeMessageId, resolveThreadKey, storedReferences } from './mail-threading';
 
 interface SmtpAccount {
   id: string;
@@ -37,24 +38,49 @@ interface OutgoingEmail {
   body: string;
   isHtml?: boolean;
   attachments?: unknown;
-  /** The Message-ID this message answers, from replyThreading. */
+  /** The Message-ID this message answers, from replyThreading or a reply draft. */
   inReplyTo?: string | null;
+  /** The References of the reply: the parent's References and the parent's Message-ID. */
+  references?: string[];
+  /** The conversation of the message answered; the Sent copy joins it. */
+  threadKey?: string | null;
 }
+
+/** What a reply carries: the threading headers it sends and the conversation its Sent copy joins. */
+interface ReplyThreading { inReplyTo: string; references: string[]; threadKey: string | null }
 
 const storedRecipients = (recipients: string[]) => recipients.length ? JSON.stringify(recipients) : null;
 
-const MESSAGE_ID = /^<[^<>\s]{1,995}>$/;
 /**
- * The Message-ID a reply answers, from the user's own copy of the message, so
- * the reply's In-Reply-To and References put it in the same conversation at
- * the recipient. Nothing when the message is not the user's or has no usable id.
+ * The threading headers of a reply, from the user's own copy of the message
+ * it answers: In-Reply-To is that message's Message-ID, References its
+ * References (or its In-Reply-To) followed by that id, so the recipient's mail
+ * program and UniHub put the reply in the same conversation. Nothing when the
+ * message is not the user's or has no usable id.
  */
-async function replyThreading(userId: string, emailId: unknown) {
+async function replyThreading(userId: string, emailId: unknown): Promise<ReplyThreading | null> {
   if (emailId === undefined || emailId === null || emailId === '') return null;
   if (typeof emailId !== 'string' || emailId.length > 64) throw Object.assign(new Error('Invalid in_reply_to_email_id'), { status: 400 });
-  const [rows] = await db.execute<RowDataPacket[]>('SELECT message_id FROM emails WHERE id = ? AND user_id = ?', [emailId, userId]);
-  const messageId = typeof rows[0]?.message_id === 'string' ? rows[0].message_id.trim() : '';
-  return MESSAGE_ID.test(messageId) ? messageId : null;
+  const [rows] = await db.execute<RowDataPacket[]>('SELECT message_id, in_reply_to, references_header, thread_key FROM emails WHERE id = ? AND user_id = ?', [emailId, userId]);
+  const parent = rows[0];
+  const messageId = typeof parent?.message_id === 'string' && parent.message_id.trim() === normalizeMessageId(parent.message_id) ? normalizeMessageId(parent.message_id) : null;
+  if (!messageId) return null;
+  const earlier = messageIds(parent.references_header);
+  const chain = (earlier.length ? earlier : messageIds(parent.in_reply_to).slice(0, 1)).filter(id => id !== messageId);
+  return { inReplyTo: messageId, references: boundReferences([...chain, messageId]),
+    threadKey: typeof parent.thread_key === 'string' && /^[0-9a-f]{64}$/.test(parent.thread_key) ? parent.thread_key : null };
+}
+
+/**
+ * The threading a stored draft keeps (0.24): its In-Reply-To and References,
+ * checked again because the row may come from a restored archive.
+ */
+function draftThreading(draft: { in_reply_to?: unknown; references_header?: unknown; thread_key?: unknown }): ReplyThreading | null {
+  const inReplyTo = normalizeMessageId(draft.in_reply_to);
+  if (!inReplyTo || String(draft.in_reply_to).trim() !== inReplyTo) return null;
+  const references = boundReferences(messageIds(draft.references_header));
+  return { inReplyTo, references: references.length ? references : [inReplyTo],
+    threadKey: typeof draft.thread_key === 'string' && /^[0-9a-f]{64}$/.test(draft.thread_key) ? draft.thread_key : null };
 }
 
 const outcomeUnknown = () => Object.assign(new Error('The connection to the mail server was lost after the message was handed over, so it may have been sent. Check Sent, or ask a recipient, before sending it again.'),
@@ -86,7 +112,7 @@ function dataPhaseWatcher() {
 
 // The account is looked up with its owner: a stored reference (a draft's
 // account) cannot send from another user's account.
-async function sendEmail({ userId, accountId }: { userId: string; accountId: string }, { subject, body, isHtml = false, attachments = [], inReplyTo = null, ...recipients }: OutgoingEmail) {
+async function sendEmail({ userId, accountId }: { userId: string; accountId: string }, { subject, body, isHtml = false, attachments = [], inReplyTo = null, references = [], threadKey = null, ...recipients }: OutgoingEmail) {
   // SMTP and the Sent copy get the same parsed recipients, names kept, whichever route sent.
   const to = normalizeRecipients(recipients.to);
   const cc = normalizeRecipients(recipients.cc);
@@ -138,7 +164,7 @@ async function sendEmail({ userId, accountId }: { userId: string; accountId: str
       text: isHtml ? undefined : body,
       html: isHtml ? body : undefined,
       attachments: smtpAttachments.length > 0 ? smtpAttachments : undefined,
-      ...(inReplyTo ? { inReplyTo, references: [inReplyTo] } : {}),
+      ...(inReplyTo ? { inReplyTo, references: references.length ? references : [inReplyTo] } : {}),
       disableFileAccess: true,
       disableUrlAccess: true,
     }).catch((error: unknown) => {
@@ -163,11 +189,17 @@ async function sendEmail({ userId, accountId }: { userId: string; accountId: str
       const emailId = crypto.randomUUID();
       const messageId = info.messageId || `<${Date.now()}-${emailId}@unihub.local>`;
       staged = await stageAttachments({ userId: account.user_id, emailId, attachments: smtpAttachments });
+      const sentReferences = inReplyTo ? (references.length ? references : [inReplyTo]) : [];
+      const sentAt = new Date();
       await withTransaction(async connection => {
         commitAttempted = false;
+        // A reply joins the conversation of the message it answers.
+        const sentThreadKey = threadKey ?? await resolveThreadKey(connection, { userId: account.user_id, emailId, messageId,
+          inReplyTo, references: sentReferences, subject: subject || '(No subject)', receivedAt: sentAt,
+          participants: [account.email_address, ...to, ...cc, ...bcc] });
         // Bcc stays in the sender's own copy only; SMTP never puts it in the message headers.
         await connection.execute(
-          'INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, cc_addresses, bcc_addresses, body_text, body_html, has_attachments, received_at, folder, is_read) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, cc_addresses, bcc_addresses, body_text, body_html, has_attachments, received_at, folder, is_read, in_reply_to, references_header, thread_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
           [
             emailId,
             account.user_id,
@@ -182,11 +214,15 @@ async function sendEmail({ userId, accountId }: { userId: string; accountId: str
             isHtml ? null : body,
             isHtml ? body : null,
             staged.length > 0 ? 1 : 0,
-            new Date(),
+            sentAt,
             'sent',
             1,
+            inReplyTo,
+            storedReferences(sentReferences),
+            sentThreadKey,
           ]
         );
+        await adoptReplies(connection, { userId: account.user_id, messageId, threadKey: sentThreadKey });
         await insertStagedAttachments(connection, staged);
         commitAttempted = true;
       });
@@ -294,6 +330,8 @@ async function sendOnce<T extends Record<string, unknown>>({ userId, clientKey, 
 
 export {
   replyThreading,
+  draftThreading,
   sendEmail,
   sendOnce,
 };
+export type { ReplyThreading };

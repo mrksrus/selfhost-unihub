@@ -52,6 +52,31 @@ describe('offline endpoint parity', () => {
     expect(data('/mail/unread-counts?include_by_account=true')).toMatchObject({ unreadByFolder: { inbox: 1, archive: 1, starred: 2 }, unreadByFolderAccount: { starred: { 'mail-1': 1, 'mail-2': 1 } } });
     expect(data('/mail/unread-counts?account_id=mail-1')).toEqual({ unreadByFolder: { inbox: 1, starred: 1 } });
   });
+  it('groups the saved messages into conversations and opens one, as the server does (0.24 threaded view)', () => {
+    const saved = snapshot();
+    saved.emails = [
+      { id: 'reply', thread_key: 'k1', mail_account_id: 'mail-1', folder: 'inbox', is_read: false, received_at: '2026-09-06T12:00:00Z', from_address: 'b@example.test', from_name: 'B' },
+      { id: 'sent', thread_key: 'k1', mail_account_id: 'mail-1', folder: 'sent', is_read: true, received_at: '2026-09-06T11:30:00Z', from_address: 'me@example.test', from_name: null },
+      { id: 'solo', mail_account_id: 'mail-1', folder: 'inbox', is_read: true, received_at: '2026-09-06T11:00:00Z', from_address: 'c@example.test' },
+      { id: 'first', thread_key: 'k1', mail_account_id: 'mail-1', folder: 'inbox', is_read: true, received_at: '2026-09-06T10:00:00Z', from_address: 'a@example.test', from_name: 'A' },
+    ];
+    type Threads = { threads: Array<{ latest: { id: string } }>; pagination: { hasMore: boolean; next_cursor: string | null } };
+    const resolve = <T = Record<string, unknown>>(endpoint: string) => (resolveOfflineEndpoint(saved, endpoint) as { data: T }).data;
+    const inbox = resolve<Threads>('/mail/threads?folder=inbox');
+    expect(inbox.threads).toMatchObject([
+      { thread_key: 'k1', latest: { id: 'reply', body_html: null }, message_count: 2, unread_count: 1, total_count: 3,
+        participants: [{ address: 'b@example.test' }, { address: 'me@example.test' }, { address: 'a@example.test' }] },
+      { thread_key: null, latest: { id: 'solo' }, message_count: 1, unread_count: 0, total_count: 1 },
+    ]);
+    expect(inbox.pagination).toMatchObject({ total: 2, hasMore: false, next_cursor: null });
+    const first = resolve<Threads>('/mail/threads?folder=inbox&limit=1');
+    expect(first.threads.map(thread => thread.latest.id)).toEqual(['reply']);
+    expect(first.pagination.hasMore).toBe(true);
+    expect(resolve<Threads>(`/mail/threads?folder=inbox&limit=1&cursor=${first.pagination.next_cursor}`).threads.map(thread => thread.latest.id)).toEqual(['solo']);
+    expect(resolve<{ messages: Array<{ id: string }> }>('/mail/emails/first/thread').messages.map(row => row.id)).toEqual(['first', 'sent', 'reply']);
+    expect(resolve('/mail/emails/solo/thread')).toMatchObject({ thread_key: null, messages: [{ id: 'solo' }] });
+    expect(resolveOfflineEndpoint(saved, '/mail/emails/missing/thread')).toMatchObject({ status: 404 });
+  });
   it('keeps cached folders readable in snapshots saved before folder account metadata existed', () => {
     expect(data('/mail/folders?account_id=mail-1').folders).toMatchObject([{ slug: 'inbox', total_count: 2, unread_count: 1 }]);
     expect(data('/mail/folders?account_id=mail-2').folders).toMatchObject([{ slug: 'archive', total_count: 1, unread_count: 1 }]);

@@ -16,7 +16,7 @@ function oldRestoreSection(pathname: string) {
   }
   return null;
 }
-const NATIVE_ROUTE_FILES = ['notifications', 'admin', 'auth', 'settings', 'modules', 'system', 'offline', 'search', 'events'];
+const NATIVE_ROUTE_FILES = ['notifications', 'admin', 'auth', 'settings', 'modules', 'system', 'offline', 'search', 'events', 'mail-threads'];
 const nativeKeys = new Set(NATIVE_ROUTE_FILES.flatMap(name => Object.keys(require(`../dist/src/routes/${name}`))));
 
 test('every derived route spec equals the policy the boundary looked up before specs existed', () => {

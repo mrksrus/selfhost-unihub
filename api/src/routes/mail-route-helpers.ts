@@ -5,17 +5,7 @@ import { db } from '../state';
 import { CLIENT_KEY_PATTERN } from '../services/mail-engine/repository';
 import { clientError } from '../http/errors';
 import { normalizeMailFolderSlug, ensureDefaultMailFoldersForUser, scheduleMailAccountSync } from '../services/mail';
-
-// Keep stored flags as the last confirmed provider state. Show an accepted
-// pending action immediately, including after a page reload or a long sync.
-const effectiveFlagSql = (action: 'read' | 'star', column: 'is_read' | 'is_starred') => `COALESCE((SELECT CAST(w.target_value AS UNSIGNED)
-  FROM mail_writebacks w WHERE w.email_id = emails.id AND w.user_id = emails.user_id
-    AND w.action = '${action}' AND w.status = 'pending' AND w.is_current = TRUE
-    ORDER BY w.intent_revision DESC, w.created_at DESC, w.id DESC LIMIT 1), emails.${column})`;
-const pendingFlagSql = (action: 'read' | 'star') => `EXISTS(SELECT 1 FROM mail_writebacks w WHERE w.email_id = emails.id
-  AND w.user_id = emails.user_id AND w.action = '${action}' AND w.status = 'pending' AND w.is_current = TRUE)`;
-const EFFECTIVE_READ_SQL = effectiveFlagSql('read', 'is_read');
-const EFFECTIVE_STAR_SQL = effectiveFlagSql('star', 'is_starred');
+import { pendingFlagSql, EFFECTIVE_READ_SQL, EFFECTIVE_STAR_SQL } from '../services/mail-folder-view';
 
 async function startMailSyncInBackground(accountId: string, label = accountId, options: Record<string, unknown> = {}) {
   const job = await scheduleMailAccountSync(accountId, options);

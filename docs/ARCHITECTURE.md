@@ -417,11 +417,12 @@ commands and file writes stay outside.
 `api/src/services/background-work.ts` holds the periodic work of the API
 process. `app.ts` starts it once after the server listens and stops it on
 shutdown, before the event streams close. Each timer skips a tick while its
-previous run is still going (`services/timers.ts`). These nine run:
+previous run is still going (`services/timers.ts`). These ten run:
 
 | Interval | Job |
 | --- | --- |
 | 1 second | Re-enqueue due mail writebacks (per-operation backoff) and nudge the durable mail scheduler |
+| 15 seconds | Thread mail stored before 0.24 (`mail-thread-backfill.ts`): up to 600 messages or 5 seconds a tick; pauses 5 minutes once nothing is left |
 | 30 seconds | Reconcile due reminders and process durable notification deliveries |
 | 30 seconds | Mail INBOX follow-up per active account (every 5 minutes while its IMAP IDLE session is healthy); folder discovery at most every 5 minutes |
 | 1 minute | Calendar accounts whose `next_sync_at` is due |

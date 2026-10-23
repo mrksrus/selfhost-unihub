@@ -9,6 +9,7 @@ import {
   insertStagedAttachments,
   rewriteInlineAttachments,
 } from './mail-attachments';
+import { adoptReplies, resolveThreadKey, storedReferences, threadHeaders } from './mail-threading';
 
 interface RawArchive {
   rawStoragePath?: string;
@@ -27,7 +28,9 @@ interface ImportedMessage {
   existingEmail?: { id: string; raw_storage_path?: string | null } | null;
   messageId: string | null;
   fullEmail: Buffer | string;
-  parsed: { attachments?: ComposerAttachment[]; html?: string | false; subject?: string; date?: Date; text?: string };
+  parsed: { attachments?: ComposerAttachment[]; html?: string | false; subject?: string; date?: Date; text?: string;
+    /** mailparser's In-Reply-To and References (untrusted; services/mail-threading.ts keeps the well-formed ids). */
+    inReplyTo?: string; references?: string | string[] };
   fromAddress: string;
   fromName: string | null;
   toAddresses: unknown;
@@ -73,6 +76,9 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
   const { messageId: storedMessageId, fromAddress: storedFromAddress, fromName: storedFromName, attachments } =
     normalizeParsedHeaders({ messageId, fromAddress, fromName, attachments: parsed.attachments || [] });
   const storedCc = ccAddresses.length ? JSON.stringify(ccAddresses) : null;
+  const threading = threadHeaders({ inReplyTo: parsed.inReplyTo, references: parsed.references });
+  const subject = parsed.subject || '(No subject)';
+  const receivedAt = parsed.date || new Date();
   let staged: StagedAttachment[] = [];
   let archive: RawArchive | undefined;
   let connection: PoolConnection | undefined;
@@ -92,6 +98,9 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
     connection = await db.getConnection();
     await connection.beginTransaction();
     if (validateOccurrence) await validateOccurrence(connection, emailId);
+    const threadKey = await resolveThreadKey(connection, { userId: account.user_id, emailId, messageId: storedMessageId,
+      inReplyTo: threading.inReplyTo, references: threading.references, subject, receivedAt,
+      participants: [storedFromAddress, ...(Array.isArray(toAddresses) ? toAddresses : []), ...ccAddresses].filter((value): value is string => typeof value === 'string') });
     if (existingEmail) {
       [oldAttachments] = await connection.execute<(RowDataPacket & { id: string; storage_path: string })[]>('SELECT id, storage_path FROM email_attachments WHERE email_id = ? AND user_id = ?', [emailId, account.user_id]);
       const [updated] = await connection.execute<ResultSetHeader>(
@@ -99,12 +108,13 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
           body_text = ?, body_html = ?, has_attachments = ?, source_folder = COALESCE(source_folder, ?),
           imap_uid = COALESCE(imap_uid, ?), imap_uidvalidity = COALESCE(imap_uidvalidity, ?),
           raw_storage_path = ?, raw_sha256 = ?, raw_bytes = ?, raw_format = ?, raw_verified = ?,
-          content_state = 'complete', import_complete = TRUE
+          content_state = 'complete', import_complete = TRUE, in_reply_to = ?, references_header = ?, thread_key = ?
          WHERE id = ? AND user_id = ? AND mail_account_id = ?`,
-        [storedMessageId, parsed.subject || '(No subject)', parsed.date || new Date(),
+        [storedMessageId, subject, receivedAt,
           storedFromAddress, storedFromName, JSON.stringify(toAddresses), storedCc, parsed.text || null, bodyHtml,
           staged.length > 0 ? 1 : 0, folderName, uid, uidValidity, archive.rawStoragePath, archive.rawSha256,
           archive.rawBytes ?? null, exact ? 'exact_octets' : 'legacy_normalized', exact ? 1 : 0,
+          threading.inReplyTo, storedReferences(threading.references), threadKey,
           emailId, account.user_id, accountId]
       );
       if (updated.affectedRows !== 1) throw new Error('Archived item changed before body commit');
@@ -115,14 +125,16 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
         `INSERT INTO emails
           (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, cc_addresses, body_text, body_html,
            has_attachments, received_at, folder, source_folder, imap_uid, imap_uidvalidity, raw_storage_path, raw_sha256,
-           raw_bytes, raw_format, raw_verified, content_state, is_read, import_complete)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'complete', ?, TRUE)`,
-        [emailId, account.user_id, accountId, storedMessageId, parsed.subject || '(No subject)', storedFromAddress, storedFromName,
-          JSON.stringify(toAddresses), storedCc, parsed.text || null, bodyHtml, staged.length > 0 ? 1 : 0, parsed.date || new Date(),
+           raw_bytes, raw_format, raw_verified, content_state, is_read, import_complete, in_reply_to, references_header, thread_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'complete', ?, TRUE, ?, ?, ?)`,
+        [emailId, account.user_id, accountId, storedMessageId, subject, storedFromAddress, storedFromName,
+          JSON.stringify(toAddresses), storedCc, parsed.text || null, bodyHtml, staged.length > 0 ? 1 : 0, receivedAt,
           folder, folderName, uid, uidValidity, archive.rawStoragePath, archive.rawSha256, archive.rawBytes ?? null,
-          exact ? 'exact_octets' : 'legacy_normalized', exact ? 1 : 0, isRead ? 1 : 0]
+          exact ? 'exact_octets' : 'legacy_normalized', exact ? 1 : 0, isRead ? 1 : 0,
+          threading.inReplyTo, storedReferences(threading.references), threadKey]
       );
     }
+    await adoptReplies(connection, { userId: account.user_id, messageId: storedMessageId, threadKey });
     await insertStagedAttachments(connection, staged);
     if (exact && account.sync_mode === 'download') {
       await enqueueDeletion({ connection, userId: account.user_id, accountId, emailId, sourceFolder: folderName,

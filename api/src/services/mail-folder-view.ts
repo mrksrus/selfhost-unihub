@@ -1,3 +1,14 @@
+// Keep stored flags as the last confirmed provider state. Show an accepted
+// pending action immediately, including after a page reload or a long sync.
+const effectiveFlagSql = (action: 'read' | 'star', column: 'is_read' | 'is_starred') => `COALESCE((SELECT CAST(w.target_value AS UNSIGNED)
+  FROM mail_writebacks w WHERE w.email_id = emails.id AND w.user_id = emails.user_id
+    AND w.action = '${action}' AND w.status = 'pending' AND w.is_current = TRUE
+    ORDER BY w.intent_revision DESC, w.created_at DESC, w.id DESC LIMIT 1), emails.${column})`;
+const pendingFlagSql = (action: 'read' | 'star') => `EXISTS(SELECT 1 FROM mail_writebacks w WHERE w.email_id = emails.id
+  AND w.user_id = emails.user_id AND w.action = '${action}' AND w.status = 'pending' AND w.is_current = TRUE)`;
+const EFFECTIVE_READ_SQL = effectiveFlagSql('read', 'is_read');
+const EFFECTIVE_STAR_SQL = effectiveFlagSql('star', 'is_starred');
+
 // Provider membership is an occurrence property, not a single message folder.
 // Generic copies keep separate email IDs; Gmail labels can share one ID.
 const pendingMoveSql = `(SELECT w.target_folder FROM mail_writebacks w
@@ -64,4 +75,4 @@ const unreadMembershipQuery = (effectiveReadSql: string, accountId: string | nul
 const accountUnreadQuery = (effectiveReadSql: string) => `SELECT mail_account_id, COUNT(DISTINCT id) AS unread_count FROM (
     ${folderViewRows(effectiveReadSql, null)}
   ) mail_view WHERE folder IS NOT NULL AND view_is_read = 0 GROUP BY mail_account_id`;
-export { folderMembershipSql, membershipCountQuery, unreadMembershipQuery, accountUnreadQuery, pendingMoveSql };
+export { folderMembershipSql, membershipCountQuery, unreadMembershipQuery, accountUnreadQuery, pendingMoveSql, pendingFlagSql, EFFECTIVE_READ_SQL, EFFECTIVE_STAR_SQL };

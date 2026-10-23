@@ -15,7 +15,7 @@ export interface OutgoingMessage {
   isHtml: boolean;
 }
 
-export interface DraftInput extends OutgoingMessage {
+export interface DraftInput extends OutgoingMessage, ReplyThreading {
   /** Attachments of the stored draft that stay; the others are removed. */
   existing_attachment_ids?: string[];
   attachments?: AttachmentPayload;
@@ -25,7 +25,11 @@ export interface DraftInput extends OutgoingMessage {
 // lost response returns the first result instead of sending twice.
 const keyed = (sendKey: string) => ({ headers: { 'Idempotency-Key': sendKey } });
 
-/** What a reply answers: the server puts that message's id in In-Reply-To and References. */
+/**
+ * What a reply answers: the server puts that message's id in In-Reply-To and
+ * References. A draft saved with it keeps the link, so the reply still
+ * carries them when it is sent later from Drafts.
+ */
 export type ReplyThreading = { in_reply_to_email_id?: string };
 
 export async function sendMessage(message: OutgoingMessage & ReplyThreading & { attachments?: AttachmentPayload }, sendKey: string) {

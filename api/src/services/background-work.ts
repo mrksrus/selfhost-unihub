@@ -13,10 +13,11 @@ import { isSectionRestoreActive } from './restore-locks';
 import { idleSupervisor } from './mail-idle';
 import { processNotificationJobs } from './notifications';
 import { pruneAuditLog } from './audit';
+import { runMailThreadBackfill } from './mail-thread-backfill';
 import { isWorkerOwner } from './worker-owner';
 import { log } from '../log';
 
-// The periodic work of this API process: the nine timers listed in
+// The periodic work of this API process: the ten timers listed in
 // docs/ARCHITECTURE.md "Scheduled Jobs", the startup resets they rely on and
 // the mail IDLE supervisor they start. app.ts starts it once after the server
 // listens and stops it on shutdown. UniHub runs one API process; everything
@@ -27,6 +28,7 @@ import { log } from '../log';
 // scheduler coalesces due work; this timer is not the authority for its state.
 const MAIL_SYNC_INTERVAL_MS = 30 * 1000;
 const MAIL_SERVER_DELETE_INTERVAL_MS = 60 * 1000;
+const MAIL_THREAD_BACKFILL_INTERVAL_MS = 15 * 1000;
 
 type TimerApi = Pick<typeof globalThis, 'setInterval' | 'clearInterval' | 'setTimeout' | 'clearTimeout' | 'setImmediate'>;
 interface BackgroundWorkDeps {
@@ -44,6 +46,7 @@ interface BackgroundWorkDeps {
   runCalendarSyncPass: () => Promise<unknown>;
   stopCalendarWork: () => void;
   pruneAuditLog: () => Promise<number>;
+  runMailThreadBackfill: () => Promise<unknown>;
   isWorkerOwner: () => boolean;
 }
 interface BackgroundWorkHandle {
@@ -66,6 +69,7 @@ function defaultDeps(): BackgroundWorkDeps {
     isSectionRestoreActive,
     idleSupervisor,
     pruneAuditLog: () => pruneAuditLog(),
+    runMailThreadBackfill: () => runMailThreadBackfill(),
     isWorkerOwner,
     stopCalendarWork: () => (require('./calendar-sync') as typeof import('./calendar-sync')).stopAllCalendarWork(),
     runCalendarSyncPass: (...args) => (require('./calendar-sync') as typeof import('./calendar-sync')).runCalendarSyncPass(...args),
@@ -162,6 +166,10 @@ async function runStartup(deps: BackgroundWorkDeps, state: { stopped: boolean },
     const processed = (result.accounts || []).reduce((sum: number, item: { accountId: string; processed?: number }) => sum + (item.processed || 0), 0);
     if (processed > 0) log.info('SERVER DELETE', 'Periodic pass processed queued messages', { processed });
   });
+
+  // Conversations of mail stored before 0.24, in bounded slices
+  // (mail-thread-backfill.ts); it pauses itself once nothing is left.
+  every('MAIL THREADS', MAIL_THREAD_BACKFILL_INTERVAL_MS, deps.runMailThreadBackfill);
 
   // Expired sessions, audit entries past their year and old mail request
   // receipts, every hour, so the tables do not grow.

@@ -123,8 +123,9 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   };
   // The save that shows "Saving": an earlier one ending does not clear a later one's.
   const savingRef = useRef<object | null>(null);
-  // The message a reply answers, for its threading headers. A draft opened
-  // later from Drafts does not know it.
+  // The message a reply answers, for its threading headers. Draft saves pass
+  // it too: the server keeps it with the draft, so a draft opened later from
+  // Drafts (which does not know it) is still sent as a reply.
   const [replyToEmailId, setReplyToEmailId] = useState<string | null>(null);
   const threading: ReplyThreading = replyToEmailId ? { in_reply_to_email_id: replyToEmailId } : {};
 
@@ -350,9 +351,9 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   });
 
   // What a save reads when it starts, after the saves before it have ended.
-  const latestRef = useRef({ composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty });
+  const latestRef = useRef({ composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty, replyToEmailId });
   useLayoutEffect(() => {
-    latestRef.current = { composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty };
+    latestRef.current = { composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty, replyToEmailId };
   });
 
   const saveNow = useCallback(async (options: { includeAttachments?: boolean; quiet?: boolean },
@@ -362,7 +363,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     // another) does nothing, so it never saves the message opened since.
     const composition = owner.composition;
     if (draftRef.current !== owner || compositionRef.current !== composition) return null;
-    const { composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty } = latestRef.current;
+    const { composeForm, composeAttachments, existingDraftAttachments, fromAccountId, attachmentsDirty, replyToEmailId } = latestRef.current;
     if (!fromAccountId) {
       if (!options.quiet) toast({ title: 'Please select an account before saving a draft', variant: 'destructive' });
       return null;
@@ -385,6 +386,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
         subject: composeForm.subject,
         body: composeForm.body || '<p></p>',
         isHtml: true,
+        ...(replyToEmailId ? { in_reply_to_email_id: replyToEmailId } : {}),
       };
 
       if (includeAttachments) {
