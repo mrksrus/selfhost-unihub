@@ -158,6 +158,11 @@ async function settingValues<S extends SettingScope>(scope: S, userId: string, i
   return valuesOf(await getSettings(scope, userId, id, executor));
 }
 
+/** The values that apply where no record of the scope holds its own: the defaults under the installation's policies. */
+async function defaultSettingValues<S extends SettingScope>(scope: S, executor: SqlExecutor = db): Promise<Values<S>> {
+  return valuesOf(resolveAll(scope, new Map(), await loadPolicies(executor)));
+}
+
 async function checkReference(userId: string, kind: Kind, value: Value, executor: SqlExecutor) {
   if (kind.type !== 'reference' || value === '') return;
   const [owned] = await executor.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? AND is_active = TRUE AND disconnected_at IS NULL', [value, userId]);
@@ -272,6 +277,7 @@ export {
   getSettings,
   getScopedSettings,
   settingValues,
+  defaultSettingValues,
   updateSettings,
   valuesOf,
   restorableValue,

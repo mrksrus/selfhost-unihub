@@ -27,11 +27,12 @@ async function fixture(t: import('node:test').TestContext, { failAttachment = fa
     release() { calls.push('release'); },
     async execute(sql: string, params: FixtureValue) {
       calls.push(sql); statements.push({ sql, params });
-      assert.equal((sql.match(/\?/g) || []).length, params.length, 'prepared SQL parameter count');
+      assert.equal((sql.match(/\?/g) || []).length, (params ?? []).length, 'prepared SQL parameter count');
       if (failAttachment && sql.includes('INSERT INTO email_attachments')) throw new Error('Injected attachment insert failure');
       if (sql.includes('SELECT id, storage_path')) return [[]];
       if (sql.includes('FROM notification_events')) return [heldNotification ? [{ id: 'event-1', payload: JSON.stringify({ kind: 'mail', held: true }) }] : []];
-      if (sql.includes('FROM emails WHERE id = ?')) return [[{ id: params[0], subject: 'Subject', from_name: 'Sender', from_address: 'sender@example.test', folder: 'inbox', is_draft: 0, is_read: 0 }]];
+      if (sql.includes('FROM emails e LEFT JOIN mail_folders')) return [[{ id: params[0], subject: 'Subject', from_name: 'Sender', from_address: 'sender@example.test', folder: 'inbox', mail_account_id: null, is_draft: 0, is_read: 0 }]];
+      if (sql.includes('FROM setting_policies')) return [[]];
       if (sql.includes('FROM push_subscriptions p')) return [[{ id: 'device-1' }]];
       return [{ affectedRows: 1 }];
     },

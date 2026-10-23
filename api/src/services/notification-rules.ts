@@ -13,7 +13,6 @@ interface ReminderEvent {
 interface SubscriptionInput { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } | null }
 
 const REMINDER_GRACE_MS = 2 * 60 * 60 * 1000;
-const EXCLUDED_MAIL_FOLDERS = new Set(['sent', 'drafts', 'trash', 'archive']);
 
 function asUtcDate(value: unknown) {
   if (value instanceof Date) return value;
@@ -67,7 +66,6 @@ function retryDisposition(error: { statusCode?: unknown } | null | undefined, at
 }
 export {
   REMINDER_GRACE_MS,
-  EXCLUDED_MAIL_FOLDERS,
   asUtcDate,
   reminderMinutes,
   reminderKey,

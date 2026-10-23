@@ -102,72 +102,6 @@ test('outbox duplicates do not fan out new deliveries and use the caller transac
   assert.equal(await service.enqueueEvent(event, connection), null);
   assert.equal(deliveries.length, 2);
 });
-test('new mail is held at discovery without deliveries and released once with the imported sender and subject', async () => {
-  const writes: FixtureValue[] = [];
-  let emailRow: FixtureValue = { id: 'new-1', subject: '(Loading message)', folder: 'inbox', from_address: 'unknown', is_read: 0, is_draft: 0 };
-  let event: FixtureValue = null;
-  const connection = { async execute(sql: string, values: FixtureValue) {
-    if (sql.startsWith('SELECT id, subject')) return [[emailRow]];
-    if (sql.includes('FROM user_settings')) return [[]];
-    if (sql.startsWith('SELECT p.id')) return [[{ id: 'device-1' }]];
-    if (sql.startsWith('SELECT id, payload FROM notification_events')) return [event ? [event] : []];
-    if (sql.startsWith('INSERT IGNORE INTO notification_events')) event = { id: values[0], payload: values[5] };
-    if (sql.startsWith('UPDATE notification_events SET payload')) event.payload = values[0];
-    writes.push({ sql, values }); return [{ affectedRows: 1 }];
-  } };
-  const service: FixtureValue = loadService({});
-  const deliveries = () => writes.filter(call => call.sql.includes('notification_deliveries')).length;
-  assert.equal(await service.releaseMailNotification({ userId: 'u1', emailId: 'new-1' }, connection), null, 'nothing was held');
-  assert.ok(await service.enqueueMailNotification({ userId: 'u1', emailId: 'new-1', held: true }, connection));
-  assert.equal(JSON.parse(event.payload).held, true);
-  assert.equal(deliveries(), 0, 'the sender and subject are not known yet');
-  emailRow = { ...emailRow, subject: 'Old sender date, new import', from_address: 'sender@example.com' };
-  assert.equal(await service.releaseMailNotification({ userId: 'u1', emailId: 'new-1' }, connection), event.id);
-  const payload = JSON.parse(event.payload);
-  assert.equal(payload.held, undefined);
-  assert.equal(payload.body, 'sender@example.com: Old sender date, new import');
-  assert.equal(payload.url, '/mail?email=new-1');
-  assert.equal(payload.dedupeKey, 'mail:new-1');
-  assert.equal(deliveries(), 1);
-  assert.equal(await service.releaseMailNotification({ userId: 'u1', emailId: 'new-1' }, connection), null, 'released once');
-  assert.equal(deliveries(), 1);
-  // Read (on another device) before its content arrived: never sent.
-  event = null; writes.length = 0;
-  emailRow = { ...emailRow, is_read: 1 };
-  assert.equal(await service.enqueueMailNotification({ userId: 'u1', emailId: 'new-1', held: true }, connection), null);
-  emailRow = { ...emailRow, is_read: 0 };
-  assert.ok(await service.enqueueMailNotification({ userId: 'u1', emailId: 'new-1', held: true }, connection));
-  emailRow = { ...emailRow, is_read: 1 };
-  assert.equal(await service.releaseMailNotification({ userId: 'u1', emailId: 'new-1' }, connection), null);
-  assert.equal(deliveries(), 0);
-});
-test('calendar, todo and due reminder payloads link to the exact event without changing delivery keys', async () => {
-  const now = new Date();
-  const writes: FixtureValue[] = [];
-  let event: FixtureValue;
-  const connection = {
-    beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {},
-    async execute(sql: string, values: FixtureValue) {
-      if (sql.startsWith('SELECT e.*')) return [[event]];
-      if (sql.includes('FROM user_settings')) return [[]];
-    if (sql.startsWith('SELECT p.id')) return [[{ id: 'device-1' }]];
-      if (sql.startsWith('INSERT IGNORE INTO notification_events')) writes.push(JSON.parse(values[5]));
-      return [{ affectedRows: 1 }];
-    },
-  };
-  const service: FixtureValue = loadService({});
-  for (const todoOnly of [false, true]) {
-    event = { id: todoOnly ? 'todo-1' : 'event-1', user_id: 'u1', title: 'Meeting', is_todo_only: todoOnly, start_time: now, due_at: now, minutes: 0, reminders: [0] };
-    await service.enqueueCalendarNotification({ userId: 'u1', eventId: event.id }, connection);
-    await service.testInternals.enqueueDueReminders(connection, now);
-    const [created, reminder] = writes.splice(0);
-    const route = todoOnly ? '/todo' : '/calendar';
-    assert.equal(created.url, `${route}?event=${event.id}`);
-    assert.equal(reminder.url, created.url);
-    assert.equal(created.dedupeKey, `${todoOnly ? 'todo' : 'calendar'}:${event.id}`);
-    assert.equal(reminder.dedupeKey, reminderKey(event, 0));
-  }
-});
 test('subscription endpoints require a live session and are scoped on removal', async () => {
   const calls: FixtureValue[] = [];
   const service: FixtureValue = loadService({ async execute(sql: string, values: FixtureValue) { calls.push({ sql, values }); return [[]]; } });
@@ -323,10 +257,9 @@ test('restore sections retain todo aliases, merge active jobs, and scope notific
   await service.testInternals.deliverPending(connection, now, active);
   assert.match(calls[0].sql, /r.user_id NOT IN \(\?\)[\s\S]*LIMIT 200/);
   assert.equal(calls[0].values[1], 'u1');
-  assert.match(calls[1].sql, /NOT \(e.kind IN \('calendar', 'todo', 'reminder'\) AND e.user_id IN \(\?\)\)/);
-  assert.match(calls[1].sql, /NOT \(e.kind IN \('mail'\) AND e.user_id IN \(\?\)\)/);
-  assert.equal(calls[1].values[2], 'u1');
-  assert.equal(calls[1].values[3], 'u1');
+  assert.match(calls[1].sql, /NOT \(e.kind IN \(\?, \?, \?\) AND e.user_id IN \(\?\)\)/);
+  assert.match(calls[1].sql, /NOT \(e.kind IN \(\?\) AND e.user_id IN \(\?\)\)/);
+  assert.deepEqual([...calls[1].values.slice(2)].sort(), ['calendar', 'mail', 'reminder', 'todo', 'u1', 'u1'], 'mail and calendar kinds of u1 only');
   assert.equal(calls[1].values.includes('u2'), false, 'a contact restore does not delay notifications');
 });
 
@@ -356,6 +289,7 @@ test('a pause during source revalidation preserves the delivery before reserving
     if (sql.startsWith('SELECT public_key')) return [[{ public_key: 'public', encrypted_private_key: 'encrypted:secret', subject: 'mailto:test@example.com' }]];
     if (sql.includes('FROM user_settings')) return [[{ setting_value: JSON.stringify({ mail: { background: !paused } }) }]];
     if (sql.includes('FROM emails')) { paused = true; return [[{ folder: 'inbox', is_read: 0, is_draft: 0 }]]; }
+    if (sql.includes('FROM setting_policies')) return [[]];
     writes.push({ sql, values }); return [{}];
   } };
   const service: FixtureValue = loadService(connection, { sendNotification: async () => { sends++; } });

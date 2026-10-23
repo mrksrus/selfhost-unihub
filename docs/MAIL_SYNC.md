@@ -536,11 +536,17 @@ the user asked for. The announcement is a held notification event written in
 the same transaction as the message's row, one per message (a second copy, such
 as another Gmail label, hits the event's dedupe key); the body import that
 brings the sender and subject releases it, in its own transaction, by filling in
-the text and queuing the deliveries (`releaseMailNotification`). Only mail filed
-in an announceable folder is announced: a message read or filed away (Sent,
-Drafts, Trash, Archive, which on Gmail includes a message whose All Mail copy
-was seen before its INBOX copy) before its content arrived, or whose content
-never arrives, is not sent and expires with the event.
+the text and queuing the deliveries (`releaseMailNotification`). Only mail the
+account's notification filter lets through is announced: the account is
+switched on, and its folder is not left out ("Notify except selected", by
+default Junk, Sent, Drafts, Trash and Archive) or is chosen ("Notify only for
+selected"). Folders are chosen by role (a system folder's slug, or the special
+use its server reported, so each account's own Junk counts) or by folder id.
+The filter is applied when the arrival is recorded, at release and again
+before each delivery: a message read or filed away before its content arrived
+(on Gmail this includes a message whose All Mail copy was seen before its
+INBOX copy), whose content never arrives, or whose account or folder was
+switched off meanwhile, is not sent and expires with the event.
 
 Existing installations receive `import_complete = FALSE` on older rows and no
 preexisting per-folder checkpoint. The first upgraded sync therefore scans and
