@@ -397,8 +397,8 @@ Evidence: `api/src/routes/search.ts`, `api/src/routes/mail-messages.ts`
 
 #### P-26 Compose stays uncluttered: optional features are switched on first
 
-Accepted, not yet in source. Decided 2026-10-20 (for 0.24.0 and the 0.25.0
-phone composer).
+Accepted, being built in 0.24.0. Decided 2026-10-20 (for 0.24.0 and the 0.25.0
+phone composer); layout chosen 2026-10-23.
 
 Optional compose features (templates, scheduled send, the compose format
 switch and later ones) are off until the person switches them on in Settings;
@@ -410,6 +410,16 @@ maintainer is offered two or three options to choose from.
 
 Source: maintainer's direction while deciding the 0.24.0 scope (Road to 1.0
 D21), prompted by the Android composer leaving almost no room for the body.
+
+Layout chosen 2026-10-23 from three options (A toolbar, B a More menu, C the
+title bar): **A**. Templates and the format switch end the formatting
+toolbar row, where they act on the message; Send later turns Send into a split
+button whose arrow half is at least 44 px wide on touch, with no gap between
+the halves. Up to three features take no extra line; plain text keeps a
+one-row strip for them; four or more get a line of their own above the
+message. Switching a formatted body to plain text asks first. In the same
+choice the phone composer's footer became one row: Cancel (the same as the
+close control) is dropped on phones and Add task is an icon there.
 
 ### Product reliability
 
