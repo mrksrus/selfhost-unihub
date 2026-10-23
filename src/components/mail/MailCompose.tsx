@@ -523,7 +523,11 @@ function AddTaskFromDraft({ compose, onAddTask, icon = false }: { compose: MailC
   );
 }
 
-/** Reply editor under a message. `fill` lets it take the whole column (the peek on phones) instead of the lower half. */
+/**
+ * Reply editor under a message. `fill` lets it take the whole column (the peek
+ * on phones) instead of the lower half; its footer is then one row, as the
+ * phone composer's (P-26): no Cancel (the close control does the same).
+ */
 export function MailInlineCompose({ compose, onAddTask, fill = false }: { compose: MailCompose; onAddTask?: () => void; fill?: boolean }) {
   return (
     <div className={fill ? 'min-h-0 flex-1 bg-card' : 'max-h-[52vh] shrink-0 border-t border-border bg-card'}>
@@ -562,21 +566,17 @@ export function MailInlineCompose({ compose, onAddTask, fill = false }: { compos
             </div>
             <ComposeAttachmentsSection compose={compose} inputId="compose-attachments-inline" />
           </div>
-          <div className="flex shrink-0 flex-wrap justify-end gap-3 border-t border-border pt-3">
-            <AddTaskFromDraft compose={compose} onAddTask={onAddTask} />
+          <div className={cn('flex shrink-0 items-center justify-end gap-3 border-t border-border pt-3', !fill && 'flex-wrap')}>
+            <AddTaskFromDraft compose={compose} onAddTask={onAddTask} icon={fill} />
             <Button type="button" variant="secondary" onClick={() => compose.saveCurrentDraft({ includeAttachments: true })} disabled={compose.isDraftSaving || compose.isSending}>
               {compose.isDraftSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Save draft
             </Button>
-            <Button 
-              type="button" 
-              variant="outline" 
-              onClick={() => {
-                compose.closeComposeFlow();
-              }}
-            >
-              Cancel
-            </Button>
+            {!fill && (
+              <Button type="button" variant="outline" onClick={() => { compose.closeComposeFlow(); }}>
+                Cancel
+              </Button>
+            )}
             <SendButton compose={compose} />
           </div>
         </form>

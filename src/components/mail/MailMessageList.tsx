@@ -287,14 +287,17 @@ interface ContextMenuProps {
   bulk: MailBulkActions;
   onDeleteDraft: (draft: Email) => void;
   onAddTask: (email: Email) => void;
-  /** Opens the snooze time picker for the message; absent offline. */
+  /** Opens the snooze time picker for the message. */
   onSnooze?: (email: Email) => void;
   onUnsnooze?: (email: Email) => void;
+  /** Offline is read-only: the snooze entries stay visible but disabled. */
+  readOnly?: boolean;
 }
 
 /** Right-click menu of a message row. */
-export function MailContextMenu({ target, onClose, requestFlag, movableFolders, bulk, onDeleteDraft, onAddTask, onSnooze, onUnsnooze }: ContextMenuProps) {
+export function MailContextMenu({ target, onClose, requestFlag, movableFolders, bulk, onDeleteDraft, onAddTask, onSnooze, onUnsnooze, readOnly = false }: ContextMenuProps) {
   const draft = target.email.is_draft || target.email.folder === 'drafts';
+  const offline = readOnly ? { disabled: true, title: 'Not available offline' } : {};
   return (
     <>
       <div
@@ -337,13 +340,13 @@ export function MailContextMenu({ target, onClose, requestFlag, movableFolders, 
           Add task
         </button>
         {!draft && (isSnoozed(target.email) ? onUnsnooze && (
-          <button className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2"
+          <button className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2 disabled:opacity-50 disabled:pointer-events-none" {...offline}
             onClick={() => { onUnsnooze(target.email); onClose(); }}>
             <AlarmClockOff className="h-4 w-4" />
             Unsnooze
           </button>
         ) : onSnooze && (
-          <button className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2"
+          <button className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2 disabled:opacity-50 disabled:pointer-events-none" {...offline}
             onClick={() => { onSnooze(target.email); onClose(); }}>
             <AlarmClock className="h-4 w-4" />
             Snooze…

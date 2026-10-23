@@ -235,7 +235,7 @@ const MailPage = () => {
       {contextMenuEmail && (
         <MailContextMenu target={contextMenuEmail} onClose={() => setContextMenuEmail(null)} requestFlag={requestFlag}
           movableFolders={movableFolders} bulk={bulk} onDeleteDraft={compose.setDraftToDelete} onAddTask={setTaskEmail}
-          onSnooze={readOnly ? undefined : setSnoozeTarget} onUnsnooze={readOnly ? undefined : snooze.unsnooze} />
+          onSnooze={setSnoozeTarget} onUnsnooze={snooze.unsnooze} readOnly={readOnly} />
       )}
       <WhenDialog open={!!snoozeTarget} onOpenChange={open => { if (!open) setSnoozeTarget(null); }} title="Snooze until"
         description="The message leaves its list and comes back at this time, with a notification." choices={snoozeChoices(snoozeTimes)}
