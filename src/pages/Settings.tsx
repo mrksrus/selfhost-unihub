@@ -10,22 +10,30 @@ import AppearanceSettings from '@/components/settings/AppearanceSettings';
 import AccountSettings from '@/components/settings/AccountSettings';
 import SecuritySettings from '@/components/settings/SecuritySettings';
 import NotificationSettings from '@/components/pwa/NotificationSettings';
+import { NotificationChoices } from '@/components/settings/NotificationChoices';
 import OfflineSettings from '@/components/offline/OfflineSettings';
 import ModuleSettings from '@/components/settings/ModuleSettings';
+import MailSettings from '@/components/settings/MailSettings';
 import MailRuleSettings from '@/components/settings/MailRuleSettings';
 import DeleteDataSettings from '@/components/settings/DeleteDataSettings';
 
 const BackupSettings = lazy(() => import('@/components/settings/BackupSettings'));
+
+// This device first, then what is announced per account and calendar.
+function NotificationsSection() {
+  return <><NotificationSettings /><NotificationChoices /></>;
+}
 
 const SECTION_VIEWS = {
   general: GeneralSettings,
   appearance: AppearanceSettings,
   account: AccountSettings,
   security: SecuritySettings,
-  notifications: NotificationSettings,
+  notifications: NotificationsSection,
   offline: OfflineSettings,
   pages: ModuleSettings,
-  mail: MailRuleSettings,
+  mail: MailSettings,
+  'mail-rules': MailRuleSettings,
   delete: DeleteDataSettings,
 } as const;
 

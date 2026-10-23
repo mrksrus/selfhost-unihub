@@ -8,6 +8,31 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.24.0 (unreleased)
 
+### Added
+
+- **Settings → General: Calendar.** The week start (Monday, Sunday or
+  Saturday) and the reminder a new event starts with follow the account.
+- **Settings → Mail.** A page of its own (the sender rules moved to *Mail
+  rules* next to it): the account new messages are sent from, the compose
+  format (formatted or plain text), the optional compose features
+  *Templates*, *Send later* and *Format switch*, each off until switched on
+  and only then shown in the composer, the message appearance while reading
+  (match the app's theme, simplified, original or decided per message),
+  conversations, the number of preview lines in the list, the snooze times
+  offered, the mail templates (add, edit, delete) and a signature per mail
+  account, written as formatted text with its plain version derived for
+  plain-text mail.
+- **Settings → Notifications: what is announced.** Per mail account:
+  notifications on or off, which folders announce new mail (all folders
+  except the ticked ones, or only the ticked ones; new accounts leave out
+  Junk, Sent, Drafts, Trash and Archive) and how much a notification shows
+  (sender and subject, sender only, or nothing but "New email"). For
+  reminders: how much they show (title and time, or only "Event reminder"),
+  and notifications on or off per calendar. The server applies every choice
+  before a notification leaves it.
+- **Settings an administrator fixed** are shown greyed out with "Set by your
+  administrator" instead of disappearing; where a policy only sets a minimum
+  privacy level, the less private choices are greyed out the same way.
 - **Mail: optional compose features, off until you switch them on.** Settings,
   Mail lists three new switches: Templates, Send later and the text-format
   switch. With none on, the composer looks as before. Templates and the format
@@ -36,6 +61,16 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   latest subject and preview. Opening one shows its messages in the reader,
   the newest in full and the earlier ones folded to one line each. Off, the
   list is as before.
+
+### Fixed
+
+- **Switches had no tap area on touch screens.** Every switch in Settings now
+  has the 44 px tap area the other small controls have.
+- **In-page reminders respected neither the reminder detail level nor a
+  calendar's notification switch.** The reminder an open, offline page shows
+  itself now follows both, as the server's reminders do: at the "nothing"
+  level it says only "Event reminder" or "ToDo reminder", and a calendar
+  switched off stays quiet.
 
 ## 0.23.3
 

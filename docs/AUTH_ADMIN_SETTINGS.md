@@ -352,35 +352,93 @@ attachments, raw mail archives, recordings, and generated backup archives. It al
 splits those byte totals per user account. It does not return message subjects,
 filenames, contact records, or backup contents.
 
-## User Preferences
+## User settings
 
-Preferences are stored in `user_settings`.
-
-Endpoint:
+Settings follow the account (every device sees them) and live in one registry
+(`api/src/services/settings-registry.ts`, F1): each key has a scope, a type,
+its allowed values and a default. The service in `api/src/services/settings.ts`
+stores, resolves and checks the values; routes and workers call it rather than
+reading tables of their own.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/settings/preferences` | Load current preferences |
-| PUT | `/api/settings/preferences` | Update allowed preferences |
+| GET | `/api/settings/values` | The user-scoped settings, each resolved |
+| PUT | `/api/settings/values` | Save changed user-scoped values; answers with every setting as now resolved |
+| GET | `/api/settings/values/mail-accounts` | The settings of each of the user's mail accounts, by account id |
+| PUT | `/api/settings/values/mail-accounts/:id` | Save changed values of one mail account |
+| GET | `/api/settings/values/calendars` | The settings of each of the user's calendars, by calendar id |
+| PUT | `/api/settings/values/calendars/:id` | Save changed values of one calendar |
+| GET, PUT | `/api/settings/preferences` | The pre-0.24 form of the user-scoped keys that existed then, for older clients |
 
-Supported preferences:
+A PUT carries only the changed keys (`{ "values": { ... } }`); an unknown key
+is ignored, an invalid value is rejected and a request with one invalid value
+changes nothing. Every setting comes back resolved:
+
+```json
+{ "value": "sender", "source": "policy", "locked": false, "floor": "sender" }
+```
+
+`source` says where the value comes from (`user`, `policy` or `default`).
+`locked` means an administrator fixed it. `floor` is the least private value
+a policy still allows for a key with privacy levels. The server enforces
+both; Settings only reflects them: a locked setting is greyed out with "Set by
+your administrator", never hidden, and under a floor the less private choices
+are greyed out the same way. The shared types are in
+`api/src/contracts/settings.ts`.
+
+### User scope
+
+| Key | Allowed values | Default | Settings page |
+| --- | --- | --- | --- |
+| `email_link_behavior` | `mailto`, `internal` | `mailto` | General |
+| `default_start_page` | `mail`, `calendar`, `todo`, `contacts`, `recordings`, `music`, `dashboard` | `mail` | General |
+| `accent_color` | `blue`, `indigo`, `violet`, `pink`, `teal`, `green` (src/lib/accent.ts) | `blue` | Appearance |
+| `week_start` | `monday`, `sunday`, `saturday` | `monday` | General, Calendar |
+| `default_event_reminder` | minutes before a new event: `0`, `5`, `15`, `30`, `60`, `120`, `1440`, or `null` for none | `0` | General, Calendar |
+| `reminder_notification_detail` | `full` (title and time), `none` (only "Event reminder"); may carry a floor | `full` | Notifications |
+| `default_mail_account_id` | the id of one of the user's active, connected mail accounts; empty means the first account (remapped on restore) | empty | Mail |
+| `compose_format` | `rich`, `plain` | `rich` | Mail |
+| `compose_templates`, `compose_scheduled_send`, `compose_format_switch` | `true`, `false`: the optional compose features, whose button the composer shows only while on | `false` | Mail |
+| `reading_format` | `theme` (the dark theme's reading view, the original in light), `simplified`, `original`, `auto` (decided from the message) | `theme` | Mail |
+| `mail_threaded_view` | `true`, `false` | `false` | Mail |
+| `mail_preview_lines` | `0` to `5` | `1` | Mail |
+| `snooze_choices` | a list from `1h`, `3h`, `tomorrow`, `1d`, `2d`, `next_week`, `1w`, `2w`, `1mo`, each at most once | `1h`, `1d`, `1w` | Mail |
+
+### Mail account scope
 
 | Key | Allowed values | Default |
 | --- | --- | --- |
-| `email_link_behavior` | `mailto`, `internal` | `mailto` |
-| `default_start_page` | `mail`, `calendar`, `todo`, `contacts`, `recordings`, `music`, `dashboard` | `mail` |
-| `default_mail_account_id` | the id of one of the user's active, connected mail accounts; empty means the first account | empty |
-| `accent_color` | `blue`, `indigo`, `violet`, `pink`, `teal`, `green` (src/lib/accent.ts) | `blue` |
+| `notify_enabled` | `true`, `false` | `true` |
+| `notify_folder_mode` | `except` (all folders except the listed ones), `only` (only the listed ones) | `except` |
+| `notify_folders` | up to 100 folder references: `role:<inbox\|sent\|drafts\|junk\|trash\|archive>` for a system folder, so the choice covers the account's own folder of that role, or `folder:<id>` for another folder | `role:junk`, `role:sent`, `role:drafts`, `role:trash`, `role:archive` |
+| `notify_detail` | `full` (sender and subject), `sender`, `none` (only "New email"); may carry a floor | `full` |
 
-Unknown preference keys are ignored. Invalid values are rejected, and a request with one invalid value changes nothing. `api/src/services/settings.ts` declares the keys.
+Settings → Notifications shows these per mail account, with the account's
+folders as a picker (`GET /api/mail/folders?account_id=` lists each folder's
+roles). The server applies the switch, the folder filter and the detail level
+before a notification leaves it ([notifications](PWA.md)).
 
-General Settings also contains browser/device preferences: **Appearance**
-(Dark by default, Light or System, and a look per theme such as OLED black or
-High contrast), **Offline reading**, and **Notifications**.
-Theme selection and offline copies belong to the browser profile; notification
-permission and the subscription belong to the device/browser and signed-in
-account. These are separate from the account preferences stored in
-`user_settings`.
+### Calendar scope
+
+| Key | Allowed values | Default |
+| --- | --- | --- |
+| `notify_enabled` | `true`, `false`: reminders and new items from this calendar | `true` |
+
+### Signatures and templates
+
+A mail account's signature is a column of the account, not a setting:
+`PUT /api/mail/accounts/:id/signature` with `{ "html", "text" }` stores the
+formatted version and its plain-text version (Settings → Mail → Signatures
+derives the text from the formatted editor). Mail templates are rows of their
+own under `/api/mail/templates` (`api/src/routes/mail-essentials.ts`).
+
+### On this device
+
+The Settings page also holds choices that stay in the browser or on the
+device and are never sent to the server: **Appearance** (Dark by default,
+Light or System, and a look per theme such as OLED black or High contrast),
+**Offline reading**, and the device part of **Notifications** (permission and
+the subscription of this browser or phone). They say "Saved on this device".
 
 ## User Data Management Endpoints
 

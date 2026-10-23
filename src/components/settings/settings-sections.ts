@@ -1,7 +1,7 @@
-import { Archive, Bell, CloudOff, LayoutGrid, ListFilter, Palette, Shield, SlidersHorizontal, Trash2, UserRound } from 'lucide-react';
+import { Archive, Bell, CloudOff, LayoutGrid, ListFilter, Mail, Palette, Shield, SlidersHorizontal, Trash2, UserRound } from 'lucide-react';
 import type { ModuleId } from '@/lib/modules';
 
-export type SettingsSectionId = 'general' | 'appearance' | 'account' | 'security' | 'notifications' | 'offline' | 'pages' | 'mail' | 'backup' | 'delete';
+export type SettingsSectionId = 'general' | 'appearance' | 'account' | 'security' | 'notifications' | 'offline' | 'pages' | 'mail' | 'mail-rules' | 'backup' | 'delete';
 
 export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; icon: typeof Bell; module?: ModuleId }[] = [
   { id: 'general', label: 'General', icon: SlidersHorizontal },
@@ -11,12 +11,13 @@ export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; icon: ty
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'offline', label: 'Offline reading', icon: CloudOff },
   { id: 'pages', label: 'Pages and modules', icon: LayoutGrid },
-  { id: 'mail', label: 'Mail rules', icon: ListFilter, module: 'mail' },
+  { id: 'mail', label: 'Mail', icon: Mail, module: 'mail' },
+  { id: 'mail-rules', label: 'Mail rules', icon: ListFilter, module: 'mail' },
   { id: 'backup', label: 'Backup and restore', icon: Archive },
   { id: 'delete', label: 'Delete data', icon: Trash2 },
 ];
 
-// Links from before 0.19.2 used ?tab=.
+// Links from before 0.19.2 used ?tab=. Until 0.24.0, ?section=mail was the rules page; it now opens Mail, which links to the rules.
 const LEGACY_TABS: Record<string, SettingsSectionId> = { general: 'general', modules: 'pages', security: 'security', data: 'backup', mail: 'mail', danger: 'delete' };
 
 export function settingsSectionFrom(params: URLSearchParams, available: (id: SettingsSectionId) => boolean): SettingsSectionId {

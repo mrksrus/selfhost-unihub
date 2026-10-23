@@ -20,6 +20,15 @@ export const useMailFolders = () => useQuery({
     return response.data?.folders ?? [];
   },
 });
+/** One account's folders (GET /api/mail/folders?account_id=), for the notification folder picker. */
+export const useMailAccountFolders = (accountId: string) => useQuery({
+  queryKey: [...mailQueryKeys.folders, 'account', accountId],
+  queryFn: async ({ signal }) => {
+    const response = await api.get<{ folders: MailFolder[] }>(`/mail/folders?account_id=${encodeURIComponent(accountId)}`, { signal });
+    if (response.error) throw new Error(response.error);
+    return response.data?.folders ?? [];
+  },
+});
 
 export const useMailUnreadCounts = (account: string | null) => useQuery({
   queryKey: mailQueryKeys.unread(account),
