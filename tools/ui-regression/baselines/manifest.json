@@ -23,12 +23,12 @@
   },
   "baselines": {
     "composer-phone-dark.png": {
-      "sha256": "7723aa79d231db895865eb350791f200cba93f505f0e2ef5f36f5ce637aa6e3d",
-      "bytes": 25556
+      "sha256": "ffc647c089e1a3d9cf194a7f28329bbc461c0817fc4f4a231195eb043eb9ba53",
+      "bytes": 26182
     },
     "composer-phone-light.png": {
-      "sha256": "0cf731cd150151a550f595b5302d2ae4d861906a7917a14d0a34f56b32ab65ac",
-      "bytes": 26690
+      "sha256": "c460e8648e30ad4d31132e0b31fcb92d2882d2849d258940c10af1ff0a9076b6",
+      "bytes": 27349
     },
     "mail-reader-wide-dark.png": {
       "sha256": "1f24aa99d3b156f46fb8ad11480d4b3f98cd1b3166db3340ae7d2b671f7e4de4",
@@ -216,6 +216,46 @@
         "branch": "fix/0.24.1-phone-composer",
         "dirty": false,
         "digest": "29d24afd84746ecbb173c5a7afaff33133644815309a579d215b7a6cf5e6ce14"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [],
+      "changed": [
+        "composer-phone-dark.png",
+        "composer-phone-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-10-24T14:13:02.790Z",
+      "reason": "0.24.2: the phone composer's attach button follows Image URL in the toolbar row and attached files show as small type chips there, as the maintainer asked on 2026-10-24 (P-26, replaced under P-27)",
+      "source": {
+        "commit": "50cc0b6e6564d444a7aaef059d63e78a9ccd43a0",
+        "branch": "fix/0.24.2-phone-attachments",
+        "dirty": true,
+        "digest": "f3d154444dbf94df2990655ed5e4819bcf9ac9d931a86f5dc5c201d958055f97"
       },
       "render": {
         "playwright": "1.64.0",
