@@ -85,7 +85,8 @@ upgrade; no configuration change is needed (see
   switched off stays quiet.
 - **The mail reader's Mark read/unread and star stay on the top row.** They
   sat centred beside the reply buttons and drifted between rows as the
-  buttons wrapped; they now sit beside the back arrow at every width.
+  buttons wrapped; where the reader has room they now sit beside the back
+  arrow. On a phone they still follow the buttons, as before.
 
 ### Pinned interface pictures
 
