@@ -397,9 +397,10 @@ Evidence: `api/src/routes/search.ts`, `api/src/routes/mail-messages.ts`
 
 #### P-26 Compose stays uncluttered: optional features are switched on first
 
-Accepted, in source on the 0.24.0 branch (`MailCompose.tsx`: `SendButton`,
+Accepted, in source since 0.24.0 (`MailCompose.tsx`: `SendButton`,
 `FEATURES_IN_TOOLBAR`; `src/test/compose-essentials.test.tsx`). Decided
-2026-10-20 (for 0.24.0 and the 0.25.0 phone composer); layout chosen 2026-10-23.
+2026-10-20 (for 0.24.0 and the 0.25.0 phone composer); layout chosen 2026-10-23;
+phone composer made full screen and compact 2026-10-24 (0.24.1).
 
 Optional compose features (templates, scheduled send, the compose format
 switch and later ones) are off until the person switches them on in Settings;
@@ -422,6 +423,15 @@ message. Switching a formatted body to plain text asks first. In the same
 choice the phone composer's footer became one row: Cancel (the same as the
 close control) is dropped on phones and Add task is an icon there. The phone peek's
 reply footer follows the same one-row rule.
+
+Phone composer, decided 2026-10-24 by the maintainer after 0.24.0 left one
+line of message above the Android keyboard ("The entire UI needs to be pushed
+to the very top of the screen and compressed a bit… `To: *to field*`"): on
+phones the composer fills the screen from the very top, its header is compact,
+and From, To, Cc, Bcc and Subject each take one row with the label beside the
+field. Typing in the message scrolls the field rows away so the message keeps
+the space above the keyboard. The wide dialog and the desktop inline reply are
+unchanged.
 
 ### Product reliability
 

@@ -6,6 +6,28 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.24.1
+
+The phone composer gets the screen. No database upgrade and no configuration
+change (see [Upgrading](docs/UPGRADING.md#0241-phone-composer)).
+
+### Fixed
+
+- **Writing on a phone left one line above the keyboard.** The composer sat
+  between the page header and the bottom bar, with each label on a row of its
+  own, so with the keyboard open only one line of the message showed. On
+  phones the composer now fills the screen from the top, its header is
+  compact, and From, To, Cc, Bcc and Subject each take one row with the label
+  beside the field. Once you write in the message, the fields scroll away and
+  the message keeps the space above the keyboard. The composer on wide screens
+  is unchanged.
+
+### Pinned interface pictures
+
+- The phone composer's reference pictures (Dark and Light) show the
+  full-screen, compact composer the maintainer asked for on 2026-10-24
+  (PROJECT-PREFERENCES P-26).
+
 ## 0.24.0
 
 Notifications, settings and mail essentials: settings per account, mail

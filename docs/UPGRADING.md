@@ -5,6 +5,17 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.24.1 Phone composer
+
+No database upgrade and no configuration change. Going back to 0.24.0 is
+possible.
+
+- **Android app.** Nothing changed in the app; the composer comes with the
+  server's pages, so installing 0.24.1's app is optional. An app or browser
+  that was open during the update shows the new composer once it has loaded
+  the new version (reload the page, or close and reopen the app).
+  The window is 0.24.1, 0.24.0, 0.23.3 and 0.23.2.
+
 ## 0.24.0 Notifications, settings and mail essentials
 
 One automatic database upgrade (step 20) adds the settings of each mail
