@@ -314,31 +314,53 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
   });
 });
 
-// With the keyboard open the Android app's page is only about 560 px tall. The
-// composer's fields must scroll away so the message keeps room to write in.
+// With the keyboard open the Android app's page is only about 560 to 600 px
+// tall. The phone composer fills the screen from the very top, and typing the
+// first line of the message must leave the message most of that screen: the
+// field rows scroll away, the message keeps the room between the title bar and
+// the button bar (0.24.1, the maintainer's Android report).
 test.describe('the phone composer leaves the message room with the keyboard open', () => {
-  test.use({ ...VIEWPORTS.phone, viewport: { width: VIEWPORTS.phone.viewport.width, height: 560 } });
+  for (const [width, height] of [[412, 560], [450, 600]] as const) {
+    test.describe(`${width}×${height}`, () => {
+      test.use({ ...VIEWPORTS.phone, viewport: { width, height } });
 
-  test('typing in the message shows at least 120 px of it', async ({ page, open, settle }) => {
-    await open('/mail');
-    await page.getByRole('button', { name: 'Compose', exact: true }).click();
-    const editor = page.locator('#compose-body');
-    await editor.click();
-    await page.keyboard.type('Line\n'.repeat(12));
-    await settle();
-    // The part of the editor that is on screen: clipped by every scrolling or
-    // clipping box around it, and above the dialog's button bar.
-    const visible = await editor.evaluate(element => {
-      let { top, bottom } = element.getBoundingClientRect();
-      for (let box = element.parentElement; box; box = box.parentElement) {
-        const { overflowY } = getComputedStyle(box);
-        if (overflowY === 'visible') continue;
-        const rect = box.getBoundingClientRect();
-        top = Math.max(top, rect.top); bottom = Math.min(bottom, rect.bottom);
-      }
-      const buttons = element.closest('form')!.lastElementChild!.getBoundingClientRect();
-      return Math.min(bottom, buttons.top, window.innerHeight) - top;
+      test(`typing one line shows at least 240 px of the message (${width}×${height})`, async ({ page, open, settle }) => {
+        await open('/mail');
+        await page.getByRole('button', { name: 'Compose', exact: true }).click();
+        const dialog = page.getByRole('dialog');
+        await expect(dialog).toBeVisible();
+        await settle();
+        const editor = page.locator('#compose-body');
+        await editor.click();
+        await page.keyboard.type('Hello');
+        await settle();
+        // The part of the editor that is on screen: clipped by every scrolling or
+        // clipping box around it, and above the dialog's button bar.
+        const visible = await editor.evaluate(element => {
+          let { top, bottom } = element.getBoundingClientRect();
+          for (let box = element.parentElement; box; box = box.parentElement) {
+            const { overflowY } = getComputedStyle(box);
+            if (overflowY === 'visible') continue;
+            const rect = box.getBoundingClientRect();
+            top = Math.max(top, rect.top); bottom = Math.min(bottom, rect.bottom);
+          }
+          const buttons = element.closest('form')!.lastElementChild!.getBoundingClientRect();
+          return Math.min(bottom, buttons.top, window.innerHeight) - top;
+        });
+        expect(visible).toBeGreaterThanOrEqual(240);
+        // The typed line is on screen too, not hidden under the title bar.
+        const caretLine = await editor.evaluate(element => {
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          const rect = range.getBoundingClientRect();
+          return { top: rect.top, bottom: rect.bottom };
+        });
+        expect(caretLine.top).toBeGreaterThanOrEqual(0);
+        expect(caretLine.bottom).toBeLessThanOrEqual(height);
+        // Full screen: the composer starts at the very top and spans the width.
+        const frame = (await dialog.boundingBox())!;
+        expect({ x: frame.x, y: frame.y, width: frame.width }).toEqual({ x: 0, y: 0, width });
+      });
     });
-    expect(visible).toBeGreaterThanOrEqual(120);
-  });
+  }
 });
