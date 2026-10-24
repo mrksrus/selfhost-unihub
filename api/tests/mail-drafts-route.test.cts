@@ -114,9 +114,9 @@ async function createDraftRouteHarness(t: import('node:test').TestContext, optio
         return [[email && email.user_id === params[1] && email.is_draft ? email : null].filter(Boolean)];
       }
 
-      if (sql.includes('SELECT id FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE FOR UPDATE')) {
+      if (sql.includes('FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE FOR UPDATE')) {
         const email = state.emails.get(params[0]);
-        return [[email && email.user_id === params[1] && email.is_draft ? { id: email.id } : null].filter(Boolean)];
+        return [[email && email.user_id === params[1] && email.is_draft ? { id: email.id, mail_account_id: email.mail_account_id } : null].filter(Boolean)];
       }
 
       if (sql.includes('INSERT INTO email_attachments')) {
