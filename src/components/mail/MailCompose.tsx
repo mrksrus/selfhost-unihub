@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import {
@@ -15,7 +15,7 @@ import { WhenDialog, WhenMenuItems } from '@/components/mail/WhenPicker';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   AlertDialog,
@@ -33,7 +33,35 @@ import { formatAttachmentSize, getActiveRecipientSearchTerm } from '@/components
 
 type RecipientField = 'to' | 'cc' | 'bcc';
 
-function RecipientInput({ compose, field, inputId, autoFocus }: { compose: MailCompose; field: RecipientField; inputId: string; autoFocus?: boolean }) {
+/**
+ * A field of the phone composer's rows: no box of its own, the row's hairline
+ * separates it; 44 px tall (P-11) with the focus ring drawn inside it, a little
+ * wider than the text so the ring never covers the first letter.
+ */
+const INLINE_FIELD = '-mx-1 h-11 w-[calc(100%+0.5rem)] rounded-none border-0 bg-transparent px-1 focus-visible:ring-inset focus-visible:ring-offset-0';
+/** The From select of that row; its ring shows on focus, not only on focus-visible. */
+const INLINE_SELECT = `${INLINE_FIELD} focus:ring-inset focus:ring-offset-0`;
+
+/**
+ * One row of the phone composer: a narrow muted label, the field filling the
+ * rest, and anything that ends the row (the Cc and Bcc buttons). The row is the
+ * positioning box, so a recipient list opens under the whole row.
+ */
+function FieldRow({ label, htmlFor, children, trailing }: { label: string; htmlFor?: string; children: ReactNode; trailing?: ReactNode }) {
+  return (
+    <div className="relative flex min-h-11 items-center gap-2 border-b border-border px-4">
+      <Label htmlFor={htmlFor} className="w-14 shrink-0 text-sm font-normal text-muted-foreground">{label}</Label>
+      <div className="min-w-0 flex-1">{children}</div>
+      {trailing}
+    </div>
+  );
+}
+
+function RecipientInput({ compose, field, inputId, autoFocus, inline = false }: {
+  compose: MailCompose; field: RecipientField; inputId: string; autoFocus?: boolean;
+  /** Inside a FieldRow: the row positions the list of suggestions. */
+  inline?: boolean;
+}) {
   const searchTerm = getActiveRecipientSearchTerm(compose.composeForm[field]);
   const suggestions = searchTerm
     ? compose.contactEmailSuggestions
@@ -43,11 +71,12 @@ function RecipientInput({ compose, field, inputId, autoFocus }: { compose: MailC
   const showSuggestions = compose.focusedRecipientInput === inputId && suggestions.length > 0;
 
   return (
-    <div className="relative">
+    <div className={inline ? 'static' : 'relative'}>
       <Input
         id={inputId}
         type="text"
         role="combobox"
+        className={inline ? INLINE_FIELD : undefined}
         aria-expanded={showSuggestions}
         aria-autocomplete="list"
         placeholder="recipient@example.com"
@@ -100,32 +129,51 @@ const keepDialogOpenWhileSuggesting = (event: KeyboardEvent) => {
 /**
  * To with quiet Cc and Bcc buttons at its right end; each reveals its own row. A field that
  * already has content (an opened draft) is shown from the start. `idSuffix` keeps ids unique
- * per form; `rowClassName` lets the inline grid keep To next to Subject.
+ * per form; `rowClassName` lets the inline grid keep To next to Subject. The `rows` variant
+ * is the phone composer's: label and field on one line (FieldRow), the buttons ending the To row.
  */
-function RecipientRows({ compose, idSuffix = '', rowClassName }: { compose: MailCompose; idSuffix?: string; rowClassName?: string }) {
+function RecipientRows({ compose, idSuffix = '', rowClassName, variant = 'stacked' }: {
+  compose: MailCompose; idSuffix?: string; rowClassName?: string; variant?: 'stacked' | 'rows';
+}) {
   const [revealed, setRevealed] = useState<RecipientField[]>([]);
   const optional: RecipientField[] = ['cc', 'bcc'];
   const shown = (field: RecipientField) => revealed.includes(field) || compose.composeForm[field] !== '';
   const label = (field: RecipientField) => field === 'to' ? 'To' : field === 'cc' ? 'Cc' : 'Bcc';
+  const hidden = optional.filter((field) => !shown(field));
+  const reveal = hidden.length > 0 && (
+    <div className={variant === 'rows' ? '-mr-2 flex shrink-0 touch:gap-2' : '-mr-1.5 flex touch:gap-2'}>
+      {hidden.map((field) => (
+        <Button
+          key={field}
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-6 px-1.5 text-xs text-muted-foreground touch:h-8 touch:px-2 touch:text-sm tap-area"
+          onClick={() => setRevealed((current) => [...current, field])}
+        >
+          {label(field)}
+        </Button>
+      ))}
+    </div>
+  );
+  if (variant === 'rows') return (
+    <>
+      <FieldRow label="To" htmlFor={`compose-to${idSuffix}`} trailing={reveal}>
+        <RecipientInput compose={compose} field="to" inputId={`compose-to${idSuffix}`} inline />
+      </FieldRow>
+      {optional.filter(shown).map((field) => (
+        <FieldRow key={field} label={label(field)} htmlFor={`compose-${field}${idSuffix}`}>
+          <RecipientInput compose={compose} field={field} inputId={`compose-${field}${idSuffix}`} autoFocus={revealed.includes(field)} inline />
+        </FieldRow>
+      ))}
+    </>
+  );
   return (
     <>
       <div className="space-y-2">
         <div className="flex h-6 items-center justify-between touch:h-8">
           <Label htmlFor={`compose-to${idSuffix}`}>To</Label>
-          <div className="-mr-1.5 flex touch:gap-2">
-            {optional.filter((field) => !shown(field)).map((field) => (
-              <Button
-                key={field}
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-6 px-1.5 text-xs text-muted-foreground touch:h-8 touch:px-2 touch:text-sm tap-area"
-                onClick={() => setRevealed((current) => [...current, field])}
-              >
-                {label(field)}
-              </Button>
-            ))}
-          </div>
+          {reveal}
         </div>
         <RecipientInput compose={compose} field="to" inputId={`compose-to${idSuffix}`} />
       </div>
@@ -284,17 +332,21 @@ function SendButton({ compose }: { compose: MailCompose }) {
 // toolbar, or plain text (Settings, Mail: compose format). The optional
 // features end the toolbar row; plain text keeps a one-row strip for them;
 // four or more get a line of their own above the message (P-26).
-function ComposeBodyEditor(props: { compose: MailCompose; editorId: string; editorRef: RefObject<HTMLDivElement>; editorClassName?: string }) {
+function ComposeBodyEditor(props: {
+  compose: MailCompose; editorId: string; editorRef: RefObject<HTMLDivElement>; editorClassName?: string;
+  /** The box around toolbar and text (the phone composer lets it fill the message's room). */
+  boxClassName?: string;
+}) {
   const features = composeFeatureButtons(props.compose);
   const ownLine = features.length > FEATURES_IN_TOOLBAR;
   if (props.compose.bodyFormat === 'rich') return <RichComposeEditor {...props} features={ownLine ? [] : features} strip={ownLine ? features : null} />;
-  const { compose, editorId, editorClassName = '' } = props;
+  const { compose, editorId, editorClassName = '', boxClassName = '' } = props;
   const textarea = (
     <Textarea
       id={editorId}
       value={compose.composeForm.body}
       placeholder="Write your message..."
-      className={cn('resize-none overscroll-contain font-sans text-sm', features.length > 0 && 'rounded-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0', editorClassName)}
+      className={cn('resize-none overscroll-contain font-sans text-sm', features.length > 0 ? 'rounded-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0' : boxClassName, editorClassName)}
       onChange={event => compose.updateComposeForm({ body: event.target.value })}
       onSelect={event => compose.rememberPlainSelection(event.currentTarget.selectionStart, event.currentTarget.selectionEnd)}
       onBlur={event => compose.rememberPlainSelection(event.currentTarget.selectionStart, event.currentTarget.selectionEnd)}
@@ -302,15 +354,15 @@ function ComposeBodyEditor(props: { compose: MailCompose; editorId: string; edit
   );
   if (features.length === 0) return textarea;
   return (
-    <div className={`rounded-md border border-input bg-background overflow-hidden ${editorClassName.includes('flex-1') ? 'flex flex-col min-h-0' : ''}`}>
+    <div className={`rounded-md border border-input bg-background overflow-hidden ${editorClassName.includes('flex-1') ? 'flex flex-col min-h-0' : ''} ${boxClassName}`}>
       <div className="flex items-center justify-end gap-1 border-b border-border bg-muted/30 px-2 py-1">{features}</div>
       {textarea}
     </div>
   );
 }
 
-function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '', features, strip }: {
-  compose: MailCompose; editorId: string; editorRef: RefObject<HTMLDivElement>; editorClassName?: string;
+function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '', boxClassName = '', features, strip }: {
+  compose: MailCompose; editorId: string; editorRef: RefObject<HTMLDivElement>; editorClassName?: string; boxClassName?: string;
   /** Feature buttons ending the toolbar row. */
   features: ReactNode[];
   /** Feature buttons on a line of their own (four or more). */
@@ -325,7 +377,7 @@ function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '',
     if (editorRef.current && editorRef.current.innerHTML !== body) editorRef.current.innerHTML = body;
   }, [body, editorRef]);
   return (
-    <div className={`rounded-md border border-input bg-background overflow-hidden ${editorClassName.includes('flex-1') ? 'flex flex-col min-h-0' : ''}`}>
+    <div className={`rounded-md border border-input bg-background overflow-hidden ${editorClassName.includes('flex-1') ? 'flex flex-col min-h-0' : ''} ${boxClassName}`}>
       <div className="flex flex-wrap items-center gap-1 border-b border-border bg-muted/30 px-2 py-1">
         <Button type="button" variant="ghost" size="icon-sm" title="Bold" onMouseDown={(e) => e.preventDefault()} onClick={() => compose.applyComposeCommand(editorRef, 'bold')}>
           <Bold className="h-4 w-4" />
@@ -401,6 +453,7 @@ function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '',
         id={editorId}
         ref={editorRef}
         role="textbox"
+        aria-label="Message"
         aria-multiline="true"
         contentEditable
         suppressContentEditableWarning
@@ -585,95 +638,191 @@ export function MailInlineCompose({ compose, onAddTask, fill = false }: { compos
   );
 }
 
-// Below this height (a phone with the keyboard open) the phone composer
-// scrolls as one; the message area stops being a scroller of its own.
-const SHORT_SCREEN_SCROLL = '[@media(max-height:44rem)]:block [@media(max-height:44rem)]:min-h-0 [@media(max-height:44rem)]:flex-1 [@media(max-height:44rem)]:overflow-y-auto [@media(max-height:44rem)]:overscroll-contain';
-const SHORT_SCREEN_STATIC = '[@media(max-height:44rem)]:overflow-visible';
+/** A phone with the keyboard open: the page is about 600 px tall or less. */
+const shortScreen = () => window.matchMedia('(max-height: 44rem)').matches;
+const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const isMessageField = (target: EventTarget | null) =>
+  target instanceof HTMLElement && (target.isContentEditable || target instanceof HTMLTextAreaElement);
 
 /** New message dialog, and reply/forward on phones. */
 export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
   compose: MailCompose; accounts: MailAccount[]; isMobile: boolean; onAddTask?: () => void;
 }) {
   const senders = accounts.filter(account => account.is_active && !account.disconnected_at);
+  const title = compose.composeMode === 'reply' ? 'Reply' : compose.composeMode === 'forward' ? 'Forward' : 'New message';
+  const status = compose.scheduledAt ? `Scheduled for ${formatWhen(compose.scheduledAt)}. It can be edited until it is sent.`
+    : compose.isDraftSaving ? 'Saving draft...' : compose.draftSavedAt ? `Draft saved ${format(new Date(compose.draftSavedAt), 'HH:mm')}` : null;
+  const hasStatus = !!(compose.activeDraftId || compose.isDraftSaving || compose.draftSavedAt);
+
+  // On a phone the fields and the message scroll together in one scroller,
+  // and the message area is at least as tall as that scroller. When the
+  // message gets focus on a short screen (the keyboard is open), the scroller
+  // moves so the message's toolbar sits at its top: the field rows scroll
+  // away and the message keeps the whole room above the keyboard. Later the
+  // person's own scrolling is left alone, unless the caret would be hidden.
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const messageRef = useRef<HTMLDivElement>(null);
+  const giveMessageTheRoom = useCallback(() => {
+    const scroller = scrollerRef.current;
+    const message = messageRef.current;
+    if (!scroller || !message) return;
+    const top = message.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    scroller.scrollTo({ top, behavior: reducedMotion() ? 'auto' : 'smooth' });
+  }, []);
+  const caretHidden = () => {
+    const scroller = scrollerRef.current;
+    const selection = window.getSelection();
+    const active = document.activeElement;
+    if (!scroller || !selection?.rangeCount || !(active instanceof HTMLElement && active.isContentEditable)) return false;
+    const caret = selection.getRangeAt(0).getBoundingClientRect();
+    const room = scroller.getBoundingClientRect();
+    return caret.height > 0 && (caret.top < room.top || caret.bottom > room.bottom);
+  };
+  useEffect(() => {
+    if (!isMobile || !compose.isComposeOpen) return;
+    // The keyboard opens after the focus: the page shrinks, so align again.
+    const onResize = () => {
+      if (messageRef.current?.contains(document.activeElement) && shortScreen()) giveMessageTheRoom();
+    };
+    window.addEventListener('resize', onResize);
+    window.visualViewport?.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.visualViewport?.removeEventListener('resize', onResize);
+    };
+  }, [isMobile, compose.isComposeOpen, giveMessageTheRoom]);
+
+  const subject = (id: string, className?: string) => (
+    <Input
+      id={id}
+      className={className}
+      placeholder="Enter subject"
+      value={compose.composeForm.subject}
+      onChange={(e) => compose.updateComposeForm({ subject: e.target.value })}
+    />
+  );
+  const from = (className?: string) => (
+    <Select value={compose.fromAccountId || ''} onValueChange={value => compose.setFromAccount(value)}>
+      <SelectTrigger aria-label="From" className={className}>
+        <SelectValue placeholder="Select account" />
+      </SelectTrigger>
+      <SelectContent>
+        {senders.map((account) => (
+          <SelectItem key={account.id} value={account.id}>
+            {account.email_address}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+  const footer = (
+    // One row on phones (P-26): Add task as an icon, no Cancel (the close control does the same).
+    <div className={cn('flex shrink-0 items-center justify-end gap-3 border-t border-border bg-background',
+      isMobile ? 'px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom,0px))]' : 'flex-wrap px-4 py-3')}>
+      <AddTaskFromDraft compose={compose} onAddTask={onAddTask} icon={isMobile} />
+      <Button type="button" variant="secondary" onClick={() => compose.saveCurrentDraft({ includeAttachments: true })} disabled={compose.isDraftSaving || compose.isSending}>
+        {compose.isDraftSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+        Save draft
+      </Button>
+      {!isMobile && (
+        <Button type="button" variant="outline" onClick={() => {
+          compose.closeComposeFlow();
+        }}>
+          Cancel
+        </Button>
+      )}
+      <SendButton compose={compose} />
+    </div>
+  );
+
   return (
     <Dialog open={compose.isComposeOpen} onOpenChange={(open) => {
       if (open) compose.openCompose();
       else compose.closeComposeFlow();
     }}>
-      <DialogContent className={`${isMobile ? 'max-w-full h-[calc(100dvh-5.5rem)] max-h-[calc(100dvh-5.5rem)] translate-y-[-50%] rounded-t-lg rounded-b-none' : 'sm:max-w-3xl max-h-[90dvh]'} !flex flex-col overflow-hidden p-0`} onEscapeKeyDown={keepDialogOpenWhileSuggesting}>
-        <DialogHeader className="shrink-0 border-b border-border px-4 py-3 pr-10">
-          <DialogTitle>
-            {compose.composeMode === 'reply' ? 'Reply' : compose.composeMode === 'forward' ? 'Forward' : 'New Message'}
-          </DialogTitle>
-          <DialogDescription className={compose.activeDraftId || compose.isDraftSaving || compose.draftSavedAt ? undefined : 'sr-only'}>
-            {compose.scheduledAt ? `Scheduled for ${formatWhen(compose.scheduledAt)}. It can be edited until it is sent.`
-              : compose.isDraftSaving ? 'Saving draft...' : compose.draftSavedAt ? `Draft saved ${format(new Date(compose.draftSavedAt), 'HH:mm')}` : 'Compose email message'}
-          </DialogDescription>
-        </DialogHeader>
-        <form onSubmit={compose.handleSendEmail} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          {/* On a short phone screen (the keyboard is open) the fields and the
-              message scroll together, so the header scrolls away and the
-              message keeps the space instead of fixed fields leaving it almost
-              none. At full height the layout stays as it was. */}
-          <div className={isMobile ? `contents ${SHORT_SCREEN_SCROLL}` : 'contents'}>
-          <div className="shrink-0 space-y-4 px-4 py-3">
-            <div className="space-y-2">
-              <Label>From</Label>
-              <Select value={compose.fromAccountId || ''} onValueChange={value => compose.setFromAccount(value)}>
-                <SelectTrigger aria-label="From">
-                  <SelectValue placeholder="Select account" />
-                </SelectTrigger>
-                <SelectContent>
-                  {senders.map((account) => (
-                    <SelectItem key={account.id} value={account.id}>
-                      {account.email_address}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <RecipientRows compose={compose} />
-            <div className="space-y-2">
-              <Label htmlFor="compose-subject">Subject</Label>
-              <Input 
-                id="compose-subject"
-                placeholder="Enter subject"
-                value={compose.composeForm.subject}
-                onChange={(e) => compose.updateComposeForm({ subject: e.target.value })}
-              />
-            </div>
-          </div>
-          <div className={`min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-3 ${isMobile ? SHORT_SCREEN_STATIC : ''}`}>
-            <div className="flex min-h-0 flex-col space-y-2">
-              <Label htmlFor="compose-body">Message</Label>
-              <ComposeBodyEditor
-                compose={compose}
-                editorId="compose-body"
-                editorRef={compose.dialogComposeEditorRef}
-                editorClassName={isMobile ? 'h-[36dvh] min-h-[180px]' : 'h-[min(44vh,420px)] min-h-[220px]'}
-              />
-            </div>
-            <ComposeAttachmentsSection compose={compose} inputId="compose-attachments-dialog" />
-          </div>
-          </div>
-          {/* One row on phones (P-26): Add task as an icon, no Cancel (the close control does the same). */}
-          <div className={cn('flex shrink-0 items-center justify-end gap-3 border-t border-border bg-background px-4 py-3', !isMobile && 'flex-wrap')}>
-            <AddTaskFromDraft compose={compose} onAddTask={onAddTask} icon={isMobile} />
-            <Button type="button" variant="secondary" onClick={() => compose.saveCurrentDraft({ includeAttachments: true })} disabled={compose.isDraftSaving || compose.isSending}>
-              {compose.isDraftSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Save draft
-            </Button>
-            {!isMobile && (
-              <Button type="button" variant="outline" onClick={() => {
-                compose.closeComposeFlow();
-              }}>
-                Cancel
+      {isMobile ? (
+        // The whole screen, from the status bar down to the home indicator, following
+        // the keyboard (dynamic viewport units); the page's header and bottom bar are behind it.
+        <DialogContent hideClose onEscapeKeyDown={keepDialogOpenWhileSuggesting}
+          className="inset-0 !flex h-[100dvh] max-h-[100dvh] w-full max-w-none translate-x-0 translate-y-0 flex-col overflow-hidden rounded-none border-0 p-0 pt-[env(safe-area-inset-top,0px)] sm:rounded-none">
+          <DialogHeader className="flex h-12 shrink-0 flex-row items-center gap-1 space-y-0 border-b border-border pl-1 pr-3 text-left">
+            <DialogClose asChild>
+              <Button type="button" variant="ghost" size="icon" aria-label="Close" title="Close">
+                <X aria-hidden="true" />
               </Button>
-            )}
-            <SendButton compose={compose} />
-          </div>
-        </form>
-      </DialogContent>
+            </DialogClose>
+            <div className="min-w-0 flex-1">
+              <DialogTitle className="truncate text-base leading-tight">{title}</DialogTitle>
+              <DialogDescription className={hasStatus ? 'truncate text-xs leading-tight' : 'sr-only'}>
+                {status ?? 'Compose email message'}
+              </DialogDescription>
+            </div>
+          </DialogHeader>
+          <form onSubmit={compose.handleSendEmail} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            {/* The scroller is a size container, so the message area can be as tall as it (100cqh). */}
+            <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain [container-type:size]">
+              <FieldRow label="From">{from(INLINE_SELECT)}</FieldRow>
+              <RecipientRows compose={compose} variant="rows" />
+              <FieldRow label="Subject" htmlFor="compose-subject">{subject('compose-subject', INLINE_FIELD)}</FieldRow>
+              <div
+                ref={messageRef}
+                className="flex min-h-[60dvh] flex-col px-3 py-3"
+                style={{ minHeight: '100cqh' }}
+                onFocus={(event) => { if (isMessageField(event.target) && shortScreen()) giveMessageTheRoom(); }}
+                onInput={() => { if (shortScreen() && caretHidden()) giveMessageTheRoom(); }}
+              >
+                <Label htmlFor="compose-body" className="sr-only">Message</Label>
+                <ComposeBodyEditor
+                  compose={compose}
+                  editorId="compose-body"
+                  editorRef={compose.dialogComposeEditorRef}
+                  boxClassName="flex-1"
+                  editorClassName="flex-1 min-h-[10rem] [field-sizing:content]"
+                />
+              </div>
+              <div className="px-3 pb-3">
+                <ComposeAttachmentsSection compose={compose} inputId="compose-attachments-dialog" />
+              </div>
+            </div>
+            {footer}
+          </form>
+        </DialogContent>
+      ) : (
+        <DialogContent className="sm:max-w-3xl max-h-[90dvh] !flex flex-col overflow-hidden p-0" onEscapeKeyDown={keepDialogOpenWhileSuggesting}>
+          <DialogHeader className="shrink-0 border-b border-border px-4 py-3 pr-10">
+            <DialogTitle>{title}</DialogTitle>
+            <DialogDescription className={hasStatus ? undefined : 'sr-only'}>
+              {status ?? 'Compose email message'}
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={compose.handleSendEmail} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="shrink-0 space-y-4 px-4 py-3">
+              <div className="space-y-2">
+                <Label>From</Label>
+                {from()}
+              </div>
+              <RecipientRows compose={compose} />
+              <div className="space-y-2">
+                <Label htmlFor="compose-subject">Subject</Label>
+                {subject('compose-subject')}
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-3">
+              <div className="flex min-h-0 flex-col space-y-2">
+                <Label htmlFor="compose-body">Message</Label>
+                <ComposeBodyEditor
+                  compose={compose}
+                  editorId="compose-body"
+                  editorRef={compose.dialogComposeEditorRef}
+                  editorClassName="h-[min(44vh,420px)] min-h-[220px]"
+                />
+              </div>
+              <ComposeAttachmentsSection compose={compose} inputId="compose-attachments-dialog" />
+            </div>
+            {footer}
+          </form>
+        </DialogContent>
+      )}
     </Dialog>
   );
 }

@@ -40,7 +40,7 @@ and the mail reader's `xl:` classes):
 | Wide | 1440 × 900, fine pointer | Rail, panel column, mail split view with resizable reader. |
 | Laptop | 1100 × 800, fine pointer | Rail and panel column; the reader fills the page (below 1280). |
 | Tablet | 900 × 1200, coarse pointer | Rail; panel opens as a sheet (below 1024); touch sizes. |
-| Phone | 412 × 915, coarse pointer | Top bar, bottom bar, full-screen reader, composer as a bottom sheet, safe areas. |
+| Phone | 412 × 915, coarse pointer | Top bar, bottom bar, full-screen reader, full-screen composer, safe areas. |
 
 **Themes.** Every scenario in Dark Default and Light Default (P-02). Appearance
 scenarios also take one spot check in each remaining look (P-03). System mode is

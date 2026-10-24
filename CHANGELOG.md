@@ -6,6 +6,30 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.24.1
+
+The phone composer: a fix for writing mail on a phone with the keyboard open.
+
+### Fixed
+
+- **Mail, phones: the composer fills the screen and the message gets the
+  room.** On a phone the composer now covers the whole screen from the status
+  bar down, above the page's own header and bottom bar, and follows the
+  keyboard. The title bar is one compact line (close, title and the draft
+  status), From, To, Cc, Bcc and Subject are one row each with the label at
+  the left and a hairline between rows, the Cc and Bcc buttons end the To
+  row, and the message area is at least as tall as the space between the
+  title bar and the button bar. When the message gets focus with the keyboard
+  open, the field rows scroll away and the message keeps everything down to
+  the Send row; before, the keyboard left one line of the message in view.
+  The wide composer and the reply under a message are unchanged. The title
+  reads "New message".
+
+### Pinned interface pictures
+
+- `composer-phone-dark` and `composer-phone-light` change with the layout
+  above (P-27: it carries out the maintainer's 2026-10-24 direction).
+
 ## 0.24.0
 
 Notifications, settings and mail essentials: settings per account, mail

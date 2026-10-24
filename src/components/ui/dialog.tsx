@@ -29,8 +29,11 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName;
 
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
+    /** The content renders its own DialogClose (a full-screen phone dialog with a title bar). */
+    hideClose?: boolean;
+  }
+>(({ className, children, hideClose = false, ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay />
     <DialogPrimitive.Content
@@ -42,10 +45,10 @@ const DialogContent = React.forwardRef<
       {...props}
     >
       {children}
-      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity touch:right-1 touch:top-1 touch:flex touch:h-10 touch:w-10 touch:items-center touch:justify-center data-[state=open]:bg-accent data-[state=open]:text-muted-foreground hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none">
+      {!hideClose && <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity touch:right-1 touch:top-1 touch:flex touch:h-10 touch:w-10 touch:items-center touch:justify-center data-[state=open]:bg-accent data-[state=open]:text-muted-foreground hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none">
         <X className="h-4 w-4 touch:h-[18px] touch:w-[18px]" />
         <span className="sr-only">Close</span>
-      </DialogPrimitive.Close>
+      </DialogPrimitive.Close>}
     </DialogPrimitive.Content>
   </DialogPortal>
 ));
