@@ -23,20 +23,20 @@
   },
   "baselines": {
     "composer-phone-dark.png": {
-      "sha256": "dbacf1075e4ae3dcef469ddcd84038f58abc785568a15d798269bb493ff8d487",
-      "bytes": 38149
+      "sha256": "951c41ce402cd8c4ab6580e764602d4f1baa294c1b023169978f1f20eb40786c",
+      "bytes": 36074
     },
     "composer-phone-light.png": {
-      "sha256": "0ca31c95181a987411ea9f0eb541958608ee6104a3c4f54902957cf617ad507c",
-      "bytes": 40486
+      "sha256": "ec964e16d7ec7493645d17a8b395e083ae5d2099a67ccb2d32631c22bcdaeb5d",
+      "bytes": 37987
     },
     "mail-reader-wide-dark.png": {
-      "sha256": "1eb86d4f05ecedf3a6fcbeaaa7436f5936508de32b7576ce2acb8c5b10eb59a0",
-      "bytes": 208640
+      "sha256": "1f24aa99d3b156f46fb8ad11480d4b3f98cd1b3166db3340ae7d2b671f7e4de4",
+      "bytes": 211562
     },
     "mail-reader-wide-light.png": {
-      "sha256": "9b74f5d9a41611c5e134daeca0161efe3494a50033fe3748e104404dc14b5e76",
-      "bytes": 216735
+      "sha256": "5a388bfa04851728abc23763837a8f96be5711bc84eed46e535be82fff2dd208",
+      "bytes": 220321
     },
     "recordings-phone-dark.png": {
       "sha256": "30b8530f865fd11b7e05379b33d2bb208fef68a34c36933b94d1f77df017952b",
@@ -47,12 +47,12 @@
       "bytes": 50768
     },
     "settings-appearance-wide-dark.png": {
-      "sha256": "85561d231f6ff02060b211eb6ac568d5dcd5b7ff76a6bf7cf1c01256ff544b7a",
-      "bytes": 109720
+      "sha256": "b7035d44ed8b3de2cbe127350aaa3d9a6f9e8fea6cdb334c5476246e6c99e19d",
+      "bytes": 110521
     },
     "settings-appearance-wide-light.png": {
-      "sha256": "856cc5a7a62e730278c6b6f523864453f6d8e84dde4d02ba3934178ae07a9815",
-      "bytes": 102509
+      "sha256": "3a19117b8e77764a94911efc3d2780c9db3413d5b537a541f7b12db36c05b3fd",
+      "bytes": 103347
     },
     "todo-phone-dark.png": {
       "sha256": "da157bcce7c5d7f4558c4823a1ecbff2cb1efaad5929af93df1e9bd692f24509",
@@ -161,6 +161,50 @@
         "todo-phone-light.png",
         "todo-wide-dark.png",
         "todo-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-10-24T05:47:14.786Z",
+      "reason": "0.24.0: Reply all, Snooze and the Snoozed folder in the mail reader; P-26 layout A one-row phone composer footer; the Mail section in Settings (approved by the maintainer 2026-10-24, P-27); the reader's flag buttons on the top row (fix for the misalignment the maintainer reported 2026-10-24). CHANGELOG 0.24.0, Pinned interface pictures.",
+      "source": {
+        "commit": "db62dde466919cc4aaf721175edcb8ebabf5281d",
+        "branch": "feat/0.24.0-notifications-settings-mail",
+        "dirty": false,
+        "digest": "75d730bf5052ca60aaa323d309d6a521bf2bf9ecbd19acea197439dc9ebadb26"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [],
+      "changed": [
+        "composer-phone-dark.png",
+        "composer-phone-light.png",
+        "mail-reader-wide-dark.png",
+        "mail-reader-wide-light.png",
+        "settings-appearance-wide-dark.png",
+        "settings-appearance-wide-light.png"
       ],
       "removed": []
     }
