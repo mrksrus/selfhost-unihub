@@ -167,6 +167,31 @@ describe('mail settings', () => {
     expect(within(row).getByText('Bo Example')).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: 'Edit' })).toBeInTheDocument();
   });
+
+  it('a signature save that answers late does not close the signature being written for another account', async () => {
+    let answerA!: () => void;
+    const put = vi.mocked(api.put).getMockImplementation()!;
+    vi.mocked(api.put).mockImplementation(async (path: string, body: unknown) => {
+      if (path === '/mail/accounts/acc-a/signature') await new Promise<void>(resolve => { answerA = resolve; });
+      return put(path, body);
+    });
+    mount('mail');
+    const rowOf = async (address: string) => (await screen.findByText(address)).closest('div')!.parentElement!;
+    fireEvent.click(within(await rowOf('alex@example.test')).getByRole('button', { name: 'Edit' }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Signature' })).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/accounts/acc-a/signature', expect.anything()));
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Signature' }), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    fireEvent.click(within(await rowOf('bo@example.test')).getByRole('button', { name: 'Add signature' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Signature' });
+    const editor = within(dialog).getByRole('textbox', { name: 'Signature' });
+    editor.innerHTML = '<p>Bo</p>';
+    fireEvent.input(editor);
+    answerA();
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Signature saved' })));
+    expect(screen.getByRole('dialog', { name: 'Signature' })).toHaveTextContent('For bo@example.test');
+    expect(within(screen.getByRole('dialog')).getByRole('textbox', { name: 'Signature' }).innerHTML).toBe('<p>Bo</p>');
+  });
 });
 
 describe('notification choices', () => {
@@ -203,6 +228,15 @@ describe('notification choices', () => {
     expect(await screen.findByRole('option', { name: 'Sender and subject' })).toHaveAttribute('aria-disabled', 'true');
     expect(screen.getByRole('option', { name: 'Sender only' })).not.toHaveAttribute('aria-disabled', 'true');
     expect(screen.getByRole('option', { name: 'Nothing, just “New email”' })).not.toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('a switched-off account still shows a detail an administrator fixed, with the reason', async () => {
+    mailAccountAnswer['acc-b'] = { ...mailSettings({ notify_enabled: false }), notify_detail: { value: 'none', source: 'policy', locked: true } };
+    mount('notifications');
+    const bo = await screen.findByRole('group', { name: 'bo@example.test' });
+    const detail = await within(bo).findByRole('combobox', { name: 'What it shows' });
+    expect(detail).toBeDisabled();
+    expect(within(bo).getByText('Set by your administrator')).toBeInTheDocument();
   });
 
   it('switches a calendar off and saves the reminder detail', async () => {

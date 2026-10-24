@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
@@ -177,19 +177,23 @@ function TemplatesSection({ defaultFormat }: { defaultFormat: ComposeFormat }) {
   const templates = useQuery({ queryKey: mailTemplatesKey, queryFn: fetchMailTemplates });
   const refresh = () => client.invalidateQueries({ queryKey: mailTemplatesKey });
   const failed = (title: string) => (error: Error) => toast({ title, description: error.message, variant: 'destructive' });
-  const open = (next: TemplateEditing) => { setNameTaken(false); setEditing(next); };
+  // Each opened editor has its own number: a save that answers after its
+  // editor was closed (and maybe another opened) leaves the open one alone.
+  const opened = useRef(0);
+  const open = (next: TemplateEditing) => { opened.current += 1; setNameTaken(false); setEditing(next); };
+  const close = () => { opened.current += 1; setEditing(null); };
   const save = useMutation({
-    mutationFn: ({ id, draft }: { id?: string; draft: TemplateDraft }) => id ? updateMailTemplate(id, templateRequest(draft)) : createMailTemplate(templateRequest(draft)),
+    mutationFn: ({ id, draft }: { id?: string; draft: TemplateDraft; editor: number }) => id ? updateMailTemplate(id, templateRequest(draft)) : createMailTemplate(templateRequest(draft)),
     onMutate: () => setNameTaken(false),
-    onSuccess: (_template, { id }) => { void refresh(); setEditing(null); toast({ title: id ? 'Template saved' : 'Template added' }); },
-    onError: error => {
-      if (error instanceof ApiError && error.code === 'TEMPLATE_NAME_TAKEN') setNameTaken(true);
+    onSuccess: (_template, { id, editor }) => { void refresh(); if (editor === opened.current) close(); toast({ title: id ? 'Template saved' : 'Template added' }); },
+    onError: (error, { editor }) => {
+      if (error instanceof ApiError && error.code === 'TEMPLATE_NAME_TAKEN') { if (editor === opened.current) setNameTaken(true); else failed('Could not save the template')(error); }
       else failed('Could not save the template')(error);
     },
   });
   const remove = useMutation({
     mutationFn: (id: string) => deleteMailTemplate(id),
-    onSuccess: () => { void refresh(); setDeleting(null); setEditing(null); toast({ title: 'Template deleted' }); },
+    onSuccess: (_result, id) => { void refresh(); setDeleting(null); setEditing(current => current?.id === id ? null : current); toast({ title: 'Template deleted' }); },
     onError: failed('Could not delete the template'),
   });
 
@@ -200,7 +204,7 @@ function TemplatesSection({ defaultFormat }: { defaultFormat: ComposeFormat }) {
     if (rows.length === 0) return <SettingsBlock><p className="text-sm text-muted-foreground">No templates yet. Add one to start messages from it.</p></SettingsBlock>;
     return rows.map(template => (
       <SettingsRow key={template.id} label={template.name} description={template.subject || firstLine(template.body_text) || 'Empty'}>
-        <Button variant="ghost" size="sm" className="text-accent hover:text-accent" onClick={() => open({ id: template.id, draft: templateDraft(template, defaultFormat) })}>Edit</Button>
+        <Button variant="ghost" size="sm" className="tap-area text-accent hover:text-accent" onClick={() => open({ id: template.id, draft: templateDraft(template, defaultFormat) })}>Edit</Button>
       </SettingsRow>
     ));
   };
@@ -209,8 +213,8 @@ function TemplatesSection({ defaultFormat }: { defaultFormat: ComposeFormat }) {
     <SettingsSection title="Templates" description="Saved starts for new messages and replies."
       action={<Button variant="outline" onClick={() => open({ draft: templateDraft(null, defaultFormat) })}>New template</Button>}>
       {list()}
-      <TemplateDialog editing={editing} saving={save.isPending} nameTaken={nameTaken} onClose={() => setEditing(null)}
-        onSave={(id, draft) => save.mutate({ id, draft })} onDelete={() => { const current = (templates.data ?? []).find(template => template.id === editing?.id); if (current) setDeleting(current); }} />
+      <TemplateDialog editing={editing} saving={save.isPending} nameTaken={nameTaken} onClose={close}
+        onSave={(id, draft) => save.mutate({ id, draft, editor: opened.current })} onDelete={() => { const current = (templates.data ?? []).find(template => template.id === editing?.id); if (current) setDeleting(current); }} />
       <AlertDialog open={!!deleting} onOpenChange={open => { if (!open) setDeleting(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -242,7 +246,7 @@ function TemplateDialog({ editing, saving, nameTaken, onClose, onSave, onDelete 
   });
   return (
     <Dialog open={!!editing} onOpenChange={open => { if (!open) onClose(); }}>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{editing?.id ? 'Edit template' : 'New template'}</DialogTitle>
           <DialogDescription>The composer inserts the subject and text when the template is chosen.</DialogDescription>
@@ -291,13 +295,16 @@ function SignaturesSection({ senders, loading }: { senders: MailAccount[]; loadi
   const client = useQueryClient();
   const { toast } = useToast();
   const [editing, setEditing] = useState<MailAccount | null>(null);
+  // As with templates: a late save closes only the editor it came from.
+  const opened = useRef(0);
+  const edit = (account: MailAccount | null) => { opened.current += 1; setEditing(account); };
   const save = useMutation({
-    mutationFn: ({ account, html }: { account: MailAccount; html: string }) => saveMailSignature(account.id, { html, text: htmlToPlainText(html) }),
-    onSuccess: saved => {
+    mutationFn: ({ account, html }: { account: MailAccount; html: string; editor: number }) => saveMailSignature(account.id, { html, text: htmlToPlainText(html) }),
+    onSuccess: (saved, { editor }) => {
       // The composer reads the signature from the accounts query; the answer is the stored signature.
       client.setQueryData<MailAccount[]>(mailQueryKeys.accounts, accounts => accounts?.map(account => account.id === saved.id
         ? { ...account, signature_html: saved.signature_html, signature_text: saved.signature_text } : account));
-      setEditing(null);
+      if (editor === opened.current) edit(null);
       toast({ title: saved.signature_text ? 'Signature saved' : 'Signature removed' });
     },
     onError: (error: Error) => toast({ title: 'Could not save the signature', description: error.message, variant: 'destructive' }),
@@ -309,10 +316,10 @@ function SignaturesSection({ senders, loading }: { senders: MailAccount[]; loadi
       {senders.map(account => (
         <SettingsRow key={account.id} label={account.email_address}
           description={account.signature_text ? <span className="block truncate">{firstLine(account.signature_text)}</span> : 'No signature'}>
-          <Button variant="ghost" size="sm" className="text-accent hover:text-accent" onClick={() => setEditing(account)}>{account.signature_text ? 'Edit' : 'Add signature'}</Button>
+          <Button variant="ghost" size="sm" className="tap-area text-accent hover:text-accent" onClick={() => edit(account)}>{account.signature_text ? 'Edit' : 'Add signature'}</Button>
         </SettingsRow>
       ))}
-      <SignatureDialog account={editing} saving={save.isPending} onClose={() => setEditing(null)} onSave={(account, html) => save.mutate({ account, html })} />
+      <SignatureDialog account={editing} saving={save.isPending} onClose={() => edit(null)} onSave={(account, html) => save.mutate({ account, html, editor: opened.current })} />
     </SettingsSection>
   );
 }
@@ -328,7 +335,7 @@ function SignatureDialog({ account, saving, onClose, onSave }: {
   const empty = !htmlToPlainText(html).trim();
   return (
     <Dialog open={!!account} onOpenChange={open => { if (!open) onClose(); }}>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Signature</DialogTitle>
           <DialogDescription>For {account?.email_address}. Plain-text messages carry it without formatting.</DialogDescription>

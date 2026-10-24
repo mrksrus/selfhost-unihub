@@ -75,7 +75,8 @@ function AccountNotifications({ account, settings, unavailable, change }: {
         <SettingsRow label="Notifications" description="New mail in this account." htmlFor={id('enabled')} lock={lock('notify_enabled')}>
           <Switch id={id('enabled')} checked={values.notify_enabled} disabled={disabled('notify_enabled')} onCheckedChange={checked => change({ notify_enabled: checked })} />
         </SettingsRow>
-        {values.notify_enabled && (
+        {/* Off hides the details, except those an administrator fixed: their reason stays in view. */}
+        {(values.notify_enabled || [settings.notify_folder_mode, settings.notify_folders, settings.notify_detail].some(setting => policyReason<unknown>(setting))) && (
           <>
             <SettingsRow label="Folders" description="Which folders announce new mail." htmlFor={id('mode')} lock={lock('notify_folder_mode')}>
               <Select value={values.notify_folder_mode} disabled={disabled('notify_folder_mode')} onValueChange={value => change({ notify_folder_mode: value as MailAccountSettingValues['notify_folder_mode'] })}>

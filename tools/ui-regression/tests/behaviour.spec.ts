@@ -290,6 +290,28 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     await open('/recordings');
     expectOnlyKnown(await touchViolations(page), [KNOWN_DEFECTS.recordingTagTargets]);
   });
+
+  test('Settings, Mail', async ({ page, open }) => {
+    await open('/settings?section=mail');
+    await expect(page.getByRole('heading', { name: 'Signatures' })).toBeVisible();
+    expectOnlyKnown(await touchViolations(page), []);
+  });
+
+  // A long template must not push the dialog's buttons off the screen.
+  test('a long template keeps Save on screen', async ({ page, open, settle }) => {
+    await open('/settings?section=mail');
+    await page.getByRole('button', { name: 'New template' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Name').fill('Long');
+    await dialog.getByRole('textbox', { name: 'Text' }).click();
+    await page.keyboard.type('Line\n'.repeat(50));
+    await settle();
+    const save = dialog.getByRole('button', { name: 'Save' });
+    await save.scrollIntoViewIfNeeded();
+    const box = (await save.boundingBox())!;
+    expect(box.y + box.height).toBeLessThanOrEqual(page.viewportSize()!.height);
+    expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
+  });
 });
 
 // With the keyboard open the Android app's page is only about 560 px tall. The

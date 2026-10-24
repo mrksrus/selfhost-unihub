@@ -63,7 +63,7 @@ export function MailReader({ email, loading = false, accounts, location, backLab
           'hover:before:opacity-100 active:before:opacity-100 focus-visible:before:opacity-100')} />
       <div className="flex flex-col h-full">
         {/* Header */}
-        <div className="shrink-0 border-b border-border p-3 sm:p-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="shrink-0 border-b border-border p-3 sm:p-4 flex flex-wrap items-start justify-between gap-3">
           <div className="flex min-w-0 flex-1 basis-64 flex-wrap items-center gap-2 sm:gap-4">
             <Button
               variant="ghost"

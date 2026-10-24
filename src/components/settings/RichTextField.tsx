@@ -17,7 +17,7 @@ export function RichTextField({ id, value, onChange, format, placeholder, classN
 }) {
   const editorRef = useRef<HTMLDivElement>(null);
   if (format === 'plain') {
-    return <Textarea id={id} value={value} placeholder={placeholder} aria-label={ariaLabel} className={cn('min-h-[120px] font-sans text-sm', className)} onChange={event => onChange(event.target.value)} />;
+    return <Textarea id={id} value={value} placeholder={placeholder} aria-label={ariaLabel} className={cn('min-h-[120px] max-h-[40dvh] font-sans text-sm', className)} onChange={event => onChange(event.target.value)} />;
   }
   return <RichEditor id={id} value={value} onChange={onChange} placeholder={placeholder} className={className} editorRef={editorRef} ariaLabel={ariaLabel} />;
 }
@@ -66,7 +66,7 @@ function RichEditor({ id, value, onChange, placeholder, className, editorRef, ar
         contentEditable
         suppressContentEditableWarning
         data-placeholder={placeholder}
-        className="min-h-[120px] break-words p-3 text-sm outline-none [&:empty:before]:text-muted-foreground [&:empty:before]:content-[attr(data-placeholder)] [&_a]:text-accent [&_a]:underline [&_ol]:list-decimal [&_ol]:pl-6 [&_ul]:list-disc [&_ul]:pl-6"
+        className="min-h-[120px] max-h-[40dvh] overflow-y-auto break-words p-3 text-sm outline-none [&:empty:before]:text-muted-foreground [&:empty:before]:content-[attr(data-placeholder)] [&_a]:text-accent [&_a]:underline [&_ol]:list-decimal [&_ol]:pl-6 [&_ul]:list-disc [&_ul]:pl-6"
         onInput={read}
         onBlur={read}
       />

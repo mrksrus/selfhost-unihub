@@ -573,6 +573,20 @@ The broken Android 17 emulator step stays off until a working image ships.
 Evidence: `.github/workflows/docker-image.yml` (`promote` job, "Keep the
 tested image for its release"), `docs/RELEASE_CONTRACT.md`.
 
+#### P-27 A new pinned picture needs approval only for a change of design
+
+Accepted, 2026-10-24 (maintainer's direction while reviewing the 0.24.0
+pictures). Refines the approval policy in docs/UI_ACCEPTANCE.md.
+
+A changed reference picture that only adds content within the accepted design
+(a new folder, setting, menu entry or button in the existing style) or carries
+out a design the maintainer already chose (for example P-26's layout A) is
+updated by the version's integrator: recorded in the CHANGELOG and shown old
+beside new in the pull request, without asking first. A change of design
+itself (layout, hierarchy, alignment, look, a control's style) and every
+defect still waits for the maintainer, and a defect is fixed, not pinned.
+Regenerating pictures just to make the check pass stays forbidden.
+
 ## Open decisions and conflicts
 
 Open proposals do not override accepted decisions.

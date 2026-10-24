@@ -147,10 +147,11 @@ interface ScheduleLockRow extends RowDataPacket { id: string; status: string; or
  * draft uses. Null when there is no such draft.
  */
 async function lockDraftForSend(connection: SqlExecutor, userId: string, draftId: string) {
-  const [drafts] = await connection.execute<RowDataPacket[]>('SELECT id FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE FOR UPDATE', [draftId, userId]);
+  const [drafts] = await connection.execute<RowDataPacket[]>('SELECT id, mail_account_id FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE FOR UPDATE', [draftId, userId]);
   if (!drafts.length) return null;
   const [rows] = await connection.execute<ScheduleLockRow[]>('SELECT id, status, origin, client_key FROM mail_scheduled_sends WHERE email_id = ? AND user_id = ? FOR UPDATE', [draftId, userId]);
-  return { send: rows[0] ?? null };
+  // The account as the lock holds it: a From change saved meanwhile is already in it.
+  return { accountId: String(drafts[0].mail_account_id), send: rows[0] ?? null };
 }
 
 // Draft sends running in this process (by hand or scheduled). A mail restore

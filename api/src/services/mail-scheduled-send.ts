@@ -73,10 +73,10 @@ async function scheduleDraft(userId: string, draftId: string, input: unknown): P
       const newKey = current.status !== 'scheduled' || current.origin !== 'schedule';
       await connection.execute(`UPDATE mail_scheduled_sends SET send_at = ?, status = 'scheduled', origin = 'schedule', attempts = 0, last_error = NULL,
         mail_account_id = ?${newKey ? ', client_key = ?' : ''} WHERE id = ? AND user_id = ?`,
-      [sendAt, draft.mail_account_id, ...(newKey ? [`scheduled-${crypto.randomUUID()}`] : []), current.id, userId]);
+      [sendAt, locked.accountId, ...(newKey ? [`scheduled-${crypto.randomUUID()}`] : []), current.id, userId]);
     } else {
       await connection.execute(`INSERT INTO mail_scheduled_sends (id, user_id, email_id, mail_account_id, send_at, client_key)
-        VALUES (?, ?, ?, ?, ?, ?)`, [crypto.randomUUID(), userId, draftId, draft.mail_account_id, sendAt, `scheduled-${crypto.randomUUID()}`]);
+        VALUES (?, ?, ?, ?, ?, ?)`, [crypto.randomUUID(), userId, draftId, locked.accountId, sendAt, `scheduled-${crypto.randomUUID()}`]);
     }
     const [[saved]] = await connection.execute<ScheduleRow[]>('SELECT * FROM mail_scheduled_sends WHERE email_id = ? AND user_id = ?', [draftId, userId]);
     return present(saved);

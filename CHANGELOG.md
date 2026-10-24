@@ -83,6 +83,18 @@ upgrade; no configuration change is needed (see
   itself now follows both, as the server's reminders do: at the "nothing"
   level it says only "Event reminder" or "ToDo reminder", and a calendar
   switched off stays quiet.
+- **The mail reader's Mark read/unread and star stay on the top row.** They
+  sat centred beside the reply buttons and drifted between rows as the
+  buttons wrapped; they now sit beside the back arrow at every width.
+
+### Pinned interface pictures
+
+- The reference pictures of the mail reader (wide), the phone composer and
+  Settings → Appearance (wide), in Dark and Light, are replaced: Reply all,
+  Snooze and the Snoozed folder; the one-row phone composer footer of compose
+  layout A; the new Mail section in Settings (approved by the maintainer on
+  2026-10-24, PROJECT-PREFERENCES P-27); and the reader's flag buttons on the
+  top row, the fix for the misalignment the maintainer reported that day.
 
 ## 0.23.3
 

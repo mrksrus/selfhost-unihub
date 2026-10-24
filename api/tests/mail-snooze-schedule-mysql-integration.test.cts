@@ -152,6 +152,19 @@ test('a scheduled draft sends once at its time, waits while Mail is off, recover
   const scheduleAccount = async () => (await pool.execute<RowDataPacket[]>('SELECT mail_account_id FROM mail_scheduled_sends WHERE email_id = ?', [draft]))[0][0]?.mail_account_id;
   assert.equal((await owner.request('PUT', `/api/mail/drafts/${draft}`, { account_id: other })).status, 200);
   assert.equal(await scheduleAccount(), other);
+  // Scheduled while another save changes the From account: the schedule takes
+  // the account the draft has once its lock is held.
+  const holder = await pool.getConnection();
+  await holder.beginTransaction();
+  await holder.execute('SELECT id FROM emails WHERE id = ? FOR UPDATE', [draft]);
+  await holder.execute('UPDATE emails SET mail_account_id = ? WHERE id = ?', [account, draft]);
+  const rescheduling = schedule(owner, draft, 20);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  await holder.commit();
+  holder.release();
+  assert.equal((await rescheduling).status, 200);
+  assert.equal(await scheduleAccount(), account);
+  assert.equal((await owner.request('PUT', `/api/mail/drafts/${draft}`, { account_id: other })).status, 200);
   assert.equal((await owner.request('PUT', `/api/mail/drafts/${draft}`, { account_id: account })).status, 200);
   await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [other]);
   assert.equal(await scheduleAccount(), account);

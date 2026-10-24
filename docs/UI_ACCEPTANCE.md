@@ -142,7 +142,11 @@ total; add a screen only when a decision depends on it.
 
 1. A baseline is created or replaced only with an explicit maintainer decision
    recorded in the release notes (CHANGELOG under the release) and, if it
-   changes a pinned decision, in PROJECT-PREFERENCES.md.
+   changes a pinned decision, in PROJECT-PREFERENCES.md. A picture that only
+   adds content within the accepted design, or carries out a design the
+   maintainer already chose, is replaced by the release's integrator without
+   asking first (PROJECT-PREFERENCES P-27); it is still recorded in the
+   CHANGELOG and shown beside the old one in the pull request.
 2. A changed picture fails the check. The change is either a defect to fix or a
    proposed new baseline that the pull request shows side by side with the old
    one. Regenerating baselines in bulk to make a check pass is not approval.
