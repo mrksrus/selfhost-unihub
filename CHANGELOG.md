@@ -19,8 +19,8 @@ change (see [Upgrading](docs/UPGRADING.md#0241-phone-composer)).
   phones the composer now fills the screen from the top, its header is
   compact, and From, To, Cc, Bcc and Subject each take one row with the label
   beside the field. Once you write in the message, the fields scroll away and
-  the message keeps the space above the keyboard. The composer on wide screens
-  is unchanged.
+  the message keeps the space above the keyboard. The title reads "New
+  message". The composer on wide screens is unchanged.
 
 ### Pinned interface pictures
 
