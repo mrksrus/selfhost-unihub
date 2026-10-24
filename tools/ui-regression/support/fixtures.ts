@@ -199,6 +199,14 @@ function unreadCounts(emails: typeof EMAILS) {
   return { unreadByFolder, unreadByFolderAccount };
 }
 
+function savedDraft(id: string, body: unknown) {
+  const { subject = '', attachments = [] } = (body ?? {}) as { subject?: string; attachments?: Array<{ client_id: string }> };
+  return {
+    draft: { id, subject, folder: 'drafts', attachments: [] },
+    uploaded: attachments.map((file, index) => ({ client_id: file.client_id, id: `att-${id}-${index}` })),
+  };
+}
+
 /**
  * Routes the reference screens use. A request without a route is
  * answered 501 and fails the test (see support/test.ts), so a new request in
@@ -233,6 +241,9 @@ function defaultRoutes(emails: typeof EMAILS): Route[] {
       row.is_read = (body as { is_read?: boolean } | null)?.is_read !== false;
       return ok({ sync_pending: false, operation_ids: [] });
     }],
+    // Draft saves (the composer's autosave): each uploaded file answers with the attachment it became.
+    ['POST', /^\/mail\/drafts$/, (_url, _method, body) => ok(savedDraft('draft-synthetic', body))],
+    ['PUT', /^\/mail\/drafts\/[^/]+$/, (url, _method, body) => ok(savedDraft(decodeURIComponent(url.pathname.split('/').pop()!), body))],
     ['GET', /^\/mail\/operations$/, () => ok({ found: false })],
     ['GET', /^\/mail\/sync\/status$/, () => ok({ accounts: MAIL_ACCOUNTS.map(account => ({
       account_id: account.id, job_id: null, state: 'idle', phase: null, processed: 0, total: null,

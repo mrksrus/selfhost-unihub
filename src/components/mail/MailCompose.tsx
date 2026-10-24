@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObjec
 import { useQuery } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import {
-  Bold, ChevronDown, Image as ImageIcon, Italic, LayoutTemplate, Link as LinkIcon, List, ListOrdered, ListTodo, Loader2, Palette, Paperclip,
-  RemoveFormatting, Send, Underline, X,
+  Bold, Check, ChevronDown, Image as ImageIcon, Italic, LayoutTemplate, Link as LinkIcon, List, ListOrdered, ListTodo, Loader2, Palette, Paperclip,
+  RemoveFormatting, Send, TriangleAlert, Underline, X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -28,7 +28,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import type { MailAccount } from '@/lib/mail-api';
-import type { MailCompose } from '@/hooks/use-mail-compose';
+import type { AttachmentUpload, MailCompose } from '@/hooks/use-mail-compose';
 import { formatAttachmentSize, getActiveRecipientSearchTerm } from '@/components/mail/mail-page-model';
 
 type RecipientField = 'to' | 'cc' | 'bcc';
@@ -336,33 +336,40 @@ function ComposeBodyEditor(props: {
   compose: MailCompose; editorId: string; editorRef: RefObject<HTMLDivElement>; editorClassName?: string;
   /** The box around toolbar and text (the phone composer lets it fill the message's room). */
   boxClassName?: string;
+  /** Attach button and file chips in the toolbar row (phones), instead of a section below the message. */
+  attachments?: ReactNode;
 }) {
   const features = composeFeatureButtons(props.compose);
   const ownLine = features.length > FEATURES_IN_TOOLBAR;
   if (props.compose.bodyFormat === 'rich') return <RichComposeEditor {...props} features={ownLine ? [] : features} strip={ownLine ? features : null} />;
-  const { compose, editorId, editorClassName = '', boxClassName = '' } = props;
+  const { compose, editorId, editorClassName = '', boxClassName = '', attachments } = props;
+  const hasStrip = features.length > 0 || !!attachments;
   const textarea = (
     <Textarea
       id={editorId}
       value={compose.composeForm.body}
       placeholder="Write your message..."
-      className={cn('resize-none overscroll-contain font-sans text-sm', features.length > 0 ? 'rounded-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0' : boxClassName, editorClassName)}
+      className={cn('resize-none overscroll-contain font-sans text-sm', hasStrip ? 'rounded-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0' : boxClassName, editorClassName)}
       onChange={event => compose.updateComposeForm({ body: event.target.value })}
       onSelect={event => compose.rememberPlainSelection(event.currentTarget.selectionStart, event.currentTarget.selectionEnd)}
       onBlur={event => compose.rememberPlainSelection(event.currentTarget.selectionStart, event.currentTarget.selectionEnd)}
     />
   );
-  if (features.length === 0) return textarea;
+  if (!hasStrip) return textarea;
   return (
     <div className={`rounded-md border border-input bg-background overflow-hidden ${editorClassName.includes('flex-1') ? 'flex flex-col min-h-0' : ''} ${boxClassName}`}>
-      <div className="flex items-center justify-end gap-1 border-b border-border bg-muted/30 px-2 py-1">{features}</div>
+      <div className="flex items-center justify-end gap-1 border-b border-border bg-muted/30 px-2 py-1">
+        {attachments && <div className="mr-auto flex min-w-0 flex-1 items-center">{attachments}</div>}
+        {features}
+      </div>
       {textarea}
     </div>
   );
 }
 
-function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '', boxClassName = '', features, strip }: {
+function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '', boxClassName = '', attachments, features, strip }: {
   compose: MailCompose; editorId: string; editorRef: RefObject<HTMLDivElement>; editorClassName?: string; boxClassName?: string;
+  attachments?: ReactNode;
   /** Feature buttons ending the toolbar row. */
   features: ReactNode[];
   /** Feature buttons on a line of their own (four or more). */
@@ -446,6 +453,7 @@ function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '',
         >
           <ImageIcon className="h-4 w-4" />
         </Button>
+        {attachments}
         {features.length > 0 && <div className="ml-auto flex items-center gap-1">{features}</div>}
       </div>
       {strip && <div className="flex items-center gap-1 border-b border-border bg-muted/30 px-2 py-1">{strip}</div>}
@@ -464,6 +472,102 @@ function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '',
         onMouseUp={() => compose.rememberRichSelection(editorRef)}
         onBlur={() => { compose.rememberRichSelection(editorRef); compose.updateComposeBodyFromEditor(editorRef); }}
       />
+    </div>
+  );
+}
+
+type FileState = AttachmentUpload | 'pending';
+
+const FILE_STATE_TEXT: Record<FileState, string> = {
+  pending: 'Not saved with the draft yet',
+  uploading: 'Saving with the draft...',
+  saved: 'Saved with the draft',
+  failed: 'Could not be saved with the draft',
+};
+
+/** What a file chip shows: the name's extension (".pdf"), at most four letters. */
+const fileTypeLabel = (filename: string) => {
+  const extension = /\.([^./\\]+)$/.exec(filename)?.[1];
+  return extension ? `.${extension.slice(0, 4).toLowerCase()}` : 'file';
+};
+
+/**
+ * One attached file in the toolbar row: a small square with its file type and
+ * a mark for whether the draft holds it. Tapping it shows the name and size,
+ * and removes it.
+ */
+function AttachmentChip({ name, size, state, onRemove, onRetry }: {
+  name: string; size: number; state: FileState; onRemove: () => void; onRetry: () => void;
+}) {
+  const sizeText = formatAttachmentSize(size);
+  return (
+    <li className="shrink-0">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button type="button" aria-label={`${name}, ${sizeText}, ${FILE_STATE_TEXT[state]}`} title={name}
+            className={cn('relative flex h-8 w-8 items-center justify-center rounded-md border bg-background pb-1 font-mono text-[10px] font-medium leading-none touch:h-10 touch:w-10',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+              state === 'failed' ? 'border-destructive text-destructive' : 'border-border text-muted-foreground hover:text-foreground')}>
+            {fileTypeLabel(name)}
+            {state !== 'pending' && (
+              <span aria-hidden="true" className={cn('absolute bottom-0.5 right-0.5 flex h-3 w-3 items-center justify-center rounded-full',
+                state === 'saved' && 'bg-success text-success-foreground',
+                state === 'failed' && 'bg-destructive text-destructive-foreground',
+                state === 'uploading' && 'text-muted-foreground')}>
+                {state === 'saved' && <Check className="h-2.5 w-2.5" strokeWidth={3} />}
+                {state === 'failed' && <TriangleAlert className="h-2 w-2" strokeWidth={3} />}
+                {state === 'uploading' && <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" />}
+              </span>
+            )}
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="max-w-[min(20rem,calc(100vw-2rem))]">
+          <DropdownMenuLabel className="font-normal">
+            <span className="block break-all font-medium">{name}</span>
+            <span className={cn('block text-xs', state === 'failed' ? 'text-destructive' : 'text-muted-foreground')}>
+              {sizeText} · {FILE_STATE_TEXT[state]}
+            </span>
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          {state === 'failed' && <DropdownMenuItem onSelect={onRetry}>Try again</DropdownMenuItem>}
+          <DropdownMenuItem onSelect={onRemove}>Remove attachment</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </li>
+  );
+}
+
+/**
+ * Phones (P-26): the attach button and one small chip per file end the
+ * message's toolbar row, so they stay on screen with the keyboard open. The
+ * chips scroll sideways when they do not fit.
+ */
+function ToolbarAttachments({ compose, inputId }: { compose: MailCompose; inputId: string }) {
+  const retry = () => { compose.saveCurrentDraft({ includeAttachments: true }).catch(() => {}); };
+  const files = [
+    ...compose.existingDraftAttachments.map(attachment => ({
+      key: attachment.id, name: attachment.filename, size: attachment.size_bytes, state: 'saved' as FileState,
+      remove: () => compose.removeExistingDraftAttachment(attachment.id),
+    })),
+    ...compose.composeAttachments.map(({ id, file }) => ({
+      key: id, name: file.name, size: file.size, state: (compose.attachmentUploads[id] ?? 'pending') as FileState,
+      remove: () => compose.removeComposeAttachment(id),
+    })),
+  ];
+  return (
+    <div className={cn('flex items-center gap-1', files.length > 0 && 'min-w-[7.5rem] flex-1')}>
+      <input id={inputId} type="file" multiple className="hidden" onChange={compose.handleComposeAttachmentInput} />
+      <Button type="button" variant="ghost" size="icon-sm" className="shrink-0" title="Attach files" aria-label="Attach files"
+        onClick={() => (document.getElementById(inputId) as HTMLInputElement | null)?.click()}>
+        <Paperclip className="h-4 w-4" />
+      </Button>
+      {files.length > 0 && (
+        <ul aria-label="Attachments" className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overscroll-x-contain">
+          {files.map(file => (
+            <AttachmentChip key={file.key} name={file.name} size={file.size} state={file.state} onRemove={file.remove} onRetry={retry} />
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -615,9 +719,10 @@ export function MailInlineCompose({ compose, onAddTask, fill = false }: { compos
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-3">
             <div className="space-y-2">
               <Label htmlFor="compose-body-inline">Message</Label>
-              <ComposeBodyEditor compose={compose} editorId="compose-body-inline" editorRef={compose.inlineComposeEditorRef} editorClassName="h-[220px] min-h-[180px]" />
+              <ComposeBodyEditor compose={compose} editorId="compose-body-inline" editorRef={compose.inlineComposeEditorRef} editorClassName="h-[220px] min-h-[180px]"
+                attachments={fill ? <ToolbarAttachments compose={compose} inputId="compose-attachments-inline" /> : undefined} />
             </div>
-            <ComposeAttachmentsSection compose={compose} inputId="compose-attachments-inline" />
+            {!fill && <ComposeAttachmentsSection compose={compose} inputId="compose-attachments-inline" />}
           </div>
           <div className={cn('flex shrink-0 items-center justify-end gap-3 border-t border-border pt-3', !fill && 'flex-wrap')}>
             <AddTaskFromDraft compose={compose} onAddTask={onAddTask} icon={fill} />
@@ -778,10 +883,8 @@ export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
                   editorRef={compose.dialogComposeEditorRef}
                   boxClassName="flex-1"
                   editorClassName="flex-1 min-h-[10rem] [field-sizing:content]"
+                  attachments={<ToolbarAttachments compose={compose} inputId="compose-attachments-dialog" />}
                 />
-              </div>
-              <div className="px-3 pb-3">
-                <ComposeAttachmentsSection compose={compose} inputId="compose-attachments-dialog" />
               </div>
             </div>
             {footer}

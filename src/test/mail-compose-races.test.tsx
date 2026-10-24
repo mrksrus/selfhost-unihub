@@ -208,6 +208,36 @@ describe('attachments and saves of one draft (B-12)', () => {
     expect(putBody(1)).toEqual(expect.objectContaining({ subject: 'while uploading', existing_attachment_ids: ['att-report'], attachments: [] }));
   });
 
+  // The phone composer's file chips show this: uploading, saved, or failed.
+  it('each added file says whether the draft holds it, and a failed upload is tried again', async () => {
+    const first = deferred<Awaited<ReturnType<typeof api.put>>>();
+    vi.mocked(api.put).mockReturnValueOnce(first.promise).mockRejectedValueOnce(new Error('offline'))
+      .mockImplementation(async (_path, body) => answer(((body as { attachments?: Array<{ client_id: string }> }).attachments ?? [])
+        .map(attachment => ({ client_id: attachment.client_id, id: 'att-later' }))));
+    const hook = mount();
+    act(() => hook.result.current.openDraftForCompose(draft));
+    act(() => hook.result.current.addComposeFiles([file('report.txt')]));
+    const [report] = hook.result.current.composeAttachments;
+    expect(hook.result.current.attachmentUploads[report.id]).toBeUndefined();
+    await waitFor(() => expect(hook.result.current.attachmentUploads[report.id]).toBe('uploading'), { timeout: 2500 });
+    await act(async () => first.resolve(answer([{ client_id: report.id, id: 'att-report' }])));
+    expect(hook.result.current.attachmentUploads[report.id]).toBe('saved');
+
+    act(() => hook.result.current.addComposeFiles([file('plan.txt')]));
+    const plan = hook.result.current.composeAttachments[1];
+    await act(async () => { await hook.result.current.saveCurrentDraft({ includeAttachments: true, quiet: true }).catch(() => {}); });
+    expect(hook.result.current.attachmentUploads).toEqual({ [report.id]: 'saved', [plan.id]: 'failed' });
+    await act(async () => { await hook.result.current.saveCurrentDraft({ includeAttachments: true, quiet: true }); });
+    expect(hook.result.current.attachmentUploads[plan.id]).toBe('saved');
+    // Only the failed file is uploaded again.
+    expect(putBody(2)).toEqual(expect.objectContaining({ existing_attachment_ids: ['att-report'] }));
+    expect((putBody(2).attachments as Array<{ client_id: string }>).map(({ client_id }) => client_id)).toEqual([plan.id]);
+
+    // Another message starts with no marks.
+    act(() => hook.result.current.openDraftForCompose(draft));
+    expect(hook.result.current.attachmentUploads).toEqual({});
+  });
+
   it('of two files with the same name and size, the one removed is the one dropped', async () => {
     vi.mocked(api.put).mockImplementation(async (_path, body) => answer(((body as { attachments?: Array<{ client_id: string }> }).attachments ?? [])
       .map((attachment, index) => ({ client_id: attachment.client_id, id: `att-${index}` }))));

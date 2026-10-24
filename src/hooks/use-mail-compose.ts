@@ -51,6 +51,9 @@ const buildAttachmentPayload = (attachments: ComposeAttachment[]): Promise<Attac
     }))
   );
 
+/** An added file in the draft: being uploaded with a save, stored with it, or that save failed. */
+export type AttachmentUpload = 'uploading' | 'saved' | 'failed';
+
 interface ComposeOptions {
   /** The account in view, which a new message starts from; virtual views (all, legacy) have none. */
   activeMailAccountId: string | null;
@@ -102,6 +105,9 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   const [focusedRecipientInput, setFocusedRecipientInput] = useState<string | null>(null);
   const [composeAttachments, setComposeAttachments] = useState<ComposeAttachment[]>([]);
   const [existingDraftAttachments, setExistingDraftAttachments] = useState<EmailAttachment[]>([]);
+  // What the last draft save did with each added file (by its composer id);
+  // a file without an entry has not been saved with the draft yet.
+  const [attachmentUploads, setAttachmentUploads] = useState<Record<string, AttachmentUpload>>({});
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   // When the open draft is scheduled to be sent (opened from Drafts); null otherwise.
   const [scheduledAt, setScheduledAt] = useState<string | null>(null);
@@ -140,6 +146,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     compositionRef.current += 1;
     sendKeyRef.current = null;
     draftRef.current = { composition: compositionRef.current, id: null, uploaded: new Map() };
+    setAttachmentUploads({});
   };
   // Counts the edits of the open message: a save marks it saved only when
   // nothing changed while the save ran.
@@ -556,6 +563,15 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     const saving = {};
     savingRef.current = saving;
     setIsDraftSaving(true);
+    let uploading: string[] = [];
+    const markUploads = (ids: string[], state: AttachmentUpload | null) => {
+      if (ids.length === 0 || composition !== compositionRef.current) return;
+      setAttachmentUploads(prev => {
+        const next = { ...prev };
+        for (const id of ids) if (state) next[id] = state; else delete next[id];
+        return next;
+      });
+    };
     try {
       const includeAttachments = options.includeAttachments ?? attachmentsDirty;
       const payload: DraftInput = {
@@ -577,7 +593,10 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
           ...existingDraftAttachments.map(attachment => attachment.id),
           ...composeAttachments.flatMap(attachment => uploaded.has(attachment.id) ? [uploaded.get(attachment.id)!] : []),
         ];
-        payload.attachments = await buildAttachmentPayload(composeAttachments.filter(attachment => !uploaded.has(attachment.id)));
+        const toUpload = composeAttachments.filter(attachment => !uploaded.has(attachment.id));
+        uploading = toUpload.map(attachment => attachment.id);
+        markUploads(uploading, 'uploading');
+        payload.attachments = await buildAttachmentPayload(toUpload);
         if (composition !== compositionRef.current) return null;
       }
 
@@ -585,6 +604,9 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       owner.id = savedDraft.id;
       for (const { client_id, id } of uploaded) owner.uploaded.set(client_id, id);
       if (composition !== compositionRef.current) return savedDraft;
+      const stored = new Set(uploaded.map(({ client_id }) => client_id));
+      markUploads(uploading.filter(id => stored.has(id)), 'saved');
+      markUploads(uploading.filter(id => !stored.has(id)), null);
       // Edits made while it was saved stay unsaved, and are saved next; a file
       // removed meanwhile is dropped from the draft then.
       const current = revision === revisionRef.current;
@@ -596,6 +618,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       if (!options.quiet) toast({ title: 'Draft saved' });
       return savedDraft;
     } catch (error) {
+      markUploads(uploading, 'failed');
       // A quiet save (autosave) keeps typing uninterrupted, except when the
       // draft is being sent by its schedule: the person must know their
       // edits did not reach the message.
@@ -898,7 +921,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     rememberRichSelection, rememberPlainSelection,
     scheduledAt, scheduleSend, cancelScheduledSend,
     focusedRecipientInput, setFocusedRecipientInput, replaceActiveRecipient, contactEmailSuggestions,
-    composeAttachments, existingDraftAttachments, isAttachmentDragOver, setIsAttachmentDragOver,
+    composeAttachments, existingDraftAttachments, attachmentUploads, isAttachmentDragOver, setIsAttachmentDragOver,
     addComposeFiles, removeComposeAttachment, removeExistingDraftAttachment, handleComposeAttachmentInput,
     inlineComposeEditorRef, dialogComposeEditorRef, updateComposeBodyFromEditor, applyComposeCommand,
     activeDraftId, isDirty: isComposeDirty || attachmentsDirty, isDraftSaving, draftSavedAt,

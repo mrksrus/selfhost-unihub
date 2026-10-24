@@ -9,6 +9,10 @@ import { touchViolations } from '../support/geometry.ts';
 import { expectOnlyKnown, KNOWN_DEFECTS } from '../support/known-defects.ts';
 import { expect, pointerIsCoarse, test, VIEWPORTS } from '../support/test.ts';
 
+// Synthetic files for the composer's attachments.
+const SYNTHETIC_PDF = { name: 'quarterly-report.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 synthetic') };
+const SYNTHETIC_JPG = { name: 'site-photo.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('synthetic jpeg') };
+
 /**
  * Row content the page body cannot show: anything past the body's visible width
  * (cut off, or reachable only by scrolling sideways), and sideways scrolling itself.
@@ -282,6 +286,9 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     await open('/mail');
     await page.getByRole('button', { name: 'Compose', exact: true }).click();
     await expect(page.getByRole('dialog')).toBeVisible();
+    // With files attached: their chips share the message's toolbar row.
+    await page.locator('#compose-attachments-dialog').setInputFiles([SYNTHETIC_PDF, SYNTHETIC_JPG]);
+    await expect(page.getByRole('list', { name: 'Attachments' }).getByRole('button')).toHaveCount(2);
     await settle();
     expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
   });
@@ -330,10 +337,26 @@ test.describe('the phone composer leaves the message room with the keyboard open
         const dialog = page.getByRole('dialog');
         await expect(dialog).toBeVisible();
         await settle();
+        // A file attached first: its chip stays in the toolbar row, not below the message.
+        await page.locator('#compose-attachments-dialog').setInputFiles(SYNTHETIC_PDF);
         const editor = page.locator('#compose-body');
         await editor.click();
         await page.keyboard.type('Hello');
         await settle();
+        const chip = page.getByRole('list', { name: 'Attachments' }).getByRole('button');
+        await expect(chip).toHaveText('.pdf');
+        // Autosave stores the file with the draft, and the chip says so.
+        await expect(chip).toHaveAccessibleName(/^quarterly-report\.pdf, .*, Saved with the draft$/);
+        // On screen: inside the scroller between the title bar and the button bar.
+        const room = await dialog.evaluate(element => {
+          const { top, bottom } = element.querySelector('form')!.firstElementChild!.getBoundingClientRect();
+          return { top, bottom };
+        });
+        for (const control of [chip, dialog.getByRole('button', { name: 'Attach files' })]) {
+          const box = (await control.boundingBox())!;
+          expect(box.y).toBeGreaterThanOrEqual(room.top);
+          expect(box.y + box.height).toBeLessThanOrEqual(room.bottom);
+        }
         // The part of the editor that is on screen: clipped by every scrolling or
         // clipping box around it, and above the dialog's button bar.
         const visible = await editor.evaluate(element => {
