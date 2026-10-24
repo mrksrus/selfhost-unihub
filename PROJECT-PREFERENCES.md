@@ -400,7 +400,8 @@ Evidence: `api/src/routes/search.ts`, `api/src/routes/mail-messages.ts`
 Accepted, in source since 0.24.0 (`MailCompose.tsx`: `SendButton`,
 `FEATURES_IN_TOOLBAR`; `src/test/compose-essentials.test.tsx`). Decided
 2026-10-20 (for 0.24.0 and the 0.25.0 phone composer); layout chosen 2026-10-23;
-phone composer made full screen and compact 2026-10-24 (0.24.1).
+phone composer made full screen and compact 2026-10-24 (0.24.1); its
+attachments moved into the toolbar row 2026-10-24 (0.24.2).
 
 Optional compose features (templates, scheduled send, the compose format
 switch and later ones) are off until the person switches them on in Settings;
@@ -432,6 +433,13 @@ and From, To, Cc, Bcc and Subject each take one row with the label beside the
 field. Typing in the message scrolls the field rows away so the message keeps
 the space above the keyboard. The wide dialog and the desktop inline reply are
 unchanged.
+
+Phone attachments, decided 2026-10-24 by the maintainer after 0.24.1 left the
+Attachments section below the screen: on phones (the composer and the peek's
+reply) the attach button follows Image URL in the message's toolbar, and each
+file is a small square in that row showing its type (".pdf", ".jpg") and a
+mark for whether the draft holds it (saving, saved, failed). There is no
+attachments section below the message on phones; wide windows keep theirs.
 
 ### Product reliability
 

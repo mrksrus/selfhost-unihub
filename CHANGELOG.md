@@ -6,6 +6,29 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.24.2
+
+Attachments stay in reach on a phone. No database upgrade and no configuration
+change (see [Upgrading](docs/UPGRADING.md#0242-phone-attachments)).
+
+### Fixed
+
+- **On a phone the attachments were below the screen.** The phone composer
+  kept its Attachments section under the message, which fills the screen, so
+  adding or seeing a file meant scrolling past the whole message. The attach
+  button (a paperclip) now follows Image URL in the message's toolbar, and each
+  attached file shows there as a small square with its type (`.pdf`, `.jpg`).
+  A mark on the square says whether the draft holds it: a spinner while it is
+  saved, a green check once it is, red when saving failed. Tap the square for
+  the name and size, to remove it, or to try a failed save again. Many files
+  scroll sideways in the row. The composer on wide screens is unchanged.
+
+### Pinned interface pictures
+
+- The phone composer's reference pictures (Dark and Light) show the paperclip
+  after Image URL, as the maintainer asked on 2026-10-24
+  (PROJECT-PREFERENCES P-26).
+
 ## 0.24.1
 
 The phone composer gets the screen. No database upgrade and no configuration
