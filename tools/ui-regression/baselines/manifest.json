@@ -23,12 +23,12 @@
   },
   "baselines": {
     "composer-phone-dark.png": {
-      "sha256": "951c41ce402cd8c4ab6580e764602d4f1baa294c1b023169978f1f20eb40786c",
-      "bytes": 36074
+      "sha256": "7723aa79d231db895865eb350791f200cba93f505f0e2ef5f36f5ce637aa6e3d",
+      "bytes": 25556
     },
     "composer-phone-light.png": {
-      "sha256": "ec964e16d7ec7493645d17a8b395e083ae5d2099a67ccb2d32631c22bcdaeb5d",
-      "bytes": 37987
+      "sha256": "0cf731cd150151a550f595b5302d2ae4d861906a7917a14d0a34f56b32ab65ac",
+      "bytes": 26690
     },
     "mail-reader-wide-dark.png": {
       "sha256": "1f24aa99d3b156f46fb8ad11480d4b3f98cd1b3166db3340ae7d2b671f7e4de4",
@@ -205,6 +205,46 @@
         "mail-reader-wide-light.png",
         "settings-appearance-wide-dark.png",
         "settings-appearance-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-10-24T09:00:06.976Z",
+      "reason": "0.24.1 (B-17): the phone composer fills the screen from the top, compact header, one row per field (maintainer's direction 2026-10-24, P-26; replaced under P-27). CHANGELOG 0.24.1, Pinned interface pictures.",
+      "source": {
+        "commit": "a7a15452626cbcac6b32c7cffc28d5c173caae02",
+        "branch": "fix/0.24.1-phone-composer",
+        "dirty": false,
+        "digest": "29d24afd84746ecbb173c5a7afaff33133644815309a579d215b7a6cf5e6ce14"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [],
+      "changed": [
+        "composer-phone-dark.png",
+        "composer-phone-light.png"
       ],
       "removed": []
     }
