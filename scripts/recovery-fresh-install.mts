@@ -98,6 +98,11 @@ async function publicView(session: Session) {
   const recordingBytes: { title: unknown; sha256: string }[] = [];
   for (const recording of recordings) recordingBytes.push({ title: recording.title, sha256: sha256(await session.bytes(`/api/recordings/${recording.id}/file?download=1`)) });
   const preferences = (await session.json<{ preferences: Row }>('GET', '/api/settings/preferences')).preferences;
+  // 0.24 settings by record: a folder reference is compared by the folder it names.
+  type Resolved = Record<string, { value: unknown }>;
+  const folderName = (ref: unknown) => String(ref).startsWith('folder:') ? `folder:${folders.find(folder => folder.id === String(ref).slice(7))?.slug ?? 'missing'}` : ref;
+  const accountSettings = (await session.json<{ accounts: Record<string, Resolved> }>('GET', '/api/settings/values/mail-accounts')).accounts;
+  const calendarSettings = (await session.json<{ calendars: Record<string, Resolved> }>('GET', '/api/settings/values/calendars')).calendars;
   return {
     profile: { full_name: me.full_name, timezone: me.timezone },
     preferences: { ...preferences, default_mail_account_id: accountEmail(preferences.default_mail_account_id || null) },
@@ -105,7 +110,14 @@ async function publicView(session: Session) {
     contacts: sort((await session.json<{ contacts: Row[] }>('GET', '/api/contacts')).contacts.map(contact => ({ first_name: contact.first_name, last_name: contact.last_name,
       email: contact.email, email2: contact.email2, phone: contact.phone, company: contact.company, notes: contact.notes, favorite: Boolean(contact.is_favorite) }))),
     mailAccounts: sort(accounts.map(account => ({ email_address: account.email_address, display_name: account.display_name, provider: account.provider, username: account.username,
-      imap: `${account.imap_host}:${account.imap_port}`, sync_mode: account.sync_mode, has_saved_password: account.has_saved_password }))),
+      imap: `${account.imap_host}:${account.imap_port}`, sync_mode: account.sync_mode, has_saved_password: account.has_saved_password,
+      signature_html: account.signature_html, signature_text: account.signature_text }))),
+    mailAccountSettings: sort(Object.entries(accountSettings).map(([id, settings]) => ({ account: accountEmail(id),
+      ...Object.fromEntries(Object.entries(settings).map(([key, setting]) => [key, Array.isArray(setting.value) ? setting.value.map(folderName) : setting.value])) }))),
+    calendarSettings: sort(Object.entries(calendarSettings).map(([id, settings]) => ({ calendar: calendars.find(calendar => calendar.id === id)?.name ?? `missing calendar ${id}`,
+      ...Object.fromEntries(Object.entries(settings).map(([key, setting]) => [key, setting.value])) }))),
+    templates: sort((await session.json<{ templates: Row[] }>('GET', '/api/mail/templates')).templates.map(template => ({ name: template.name, subject: template.subject,
+      body_html: template.body_html, body_text: template.body_text }))),
     folders: sort(folders.filter(folder => !folder.is_system).map(folder => ({ slug: folder.slug, display_name: folder.display_name, position: folder.position,
       special_use: folder.special_use, account: accountEmail(folder.mail_account_id), total: folder.total_count }))),
     senderRules: sort((await session.json<{ rules: Row[] }>('GET', '/api/mail/sender-rules')).rules.map(rule => ({ account: rule.account_email, match: rule.match_value, target: rule.target_folder, active: rule.is_active }))),

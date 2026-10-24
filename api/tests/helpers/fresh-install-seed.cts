@@ -82,6 +82,12 @@ async function main() {
     await db.execute('UPDATE emails SET filing_account_id = ? WHERE id = ?', [accounts[1], emails[0]]);
     await db.execute('UPDATE emails SET is_legacy = TRUE WHERE id = ?', [emails[1]]);
     await insert('user_settings', { user_id: userId, setting_key: 'default_mail_account_id', setting_value: accounts[1] });
+    // 0.24 settings of an account and a calendar, a signature and a template.
+    // The folder reference must follow the restored folder.
+    await insert('mail_account_settings', { mail_account_id: accounts[1], user_id: userId, setting_key: 'notify_folders', setting_value: JSON.stringify(['role:junk', `folder:${folders.research}`]) });
+    await insert('mail_account_settings', { mail_account_id: accounts[1], user_id: userId, setting_key: 'notify_detail', setting_value: 'sender' });
+    await db.execute('UPDATE mail_accounts SET signature_html = ?, signature_text = ? WHERE id = ?', ['<p>Fresh <b>Grüße</b></p>', 'Fresh Grüße', accounts[1]]);
+    await insert('mail_templates', { id: uuid(), user_id: userId, name: 'Weekly Grüße', subject: 'Weekly report', body_html: '<p>Numbers attached.</p>', body_text: 'Numbers attached.' });
     for (const accountId of accounts) {
       const [mappings] = await db.execute('SELECT * FROM mail_folder_remote_boxes WHERE mail_account_id = ?', [accountId]);
       await insert('mail_folder_reconciliations', { mail_account_id: accountId, user_id: userId, inventory: JSON.stringify(['INBOX/Research', 'Archive/Copies']),
@@ -103,6 +109,7 @@ async function main() {
     await insert('calendar_calendars', { id: calendarId, user_id: userId, account_id: calendarAccountId, name: 'Research Calendar', external_id: `${dav}calendar/`, color: '#2244ff', is_visible: 1 });
     await insert('calendar_events', { id: eventId, user_id: userId, calendar_id: calendarId, title: 'Remote weekly event', description: 'Preserve Grüße\nSecond line',
       start_time: '2030-02-03 10:00:00', end_time: '2030-02-03 11:00:00', recurrence: 'FREQ=WEEKLY;COUNT=3', reminders: JSON.stringify([10, 60]), reminder_minutes: 10, location: 'Vienna' });
+    await insert('calendar_settings', { calendar_id: calendarId, user_id: userId, setting_key: 'notify_enabled', setting_value: 'false' });
     await insert('calendar_event_attendees', { id: uuid(), user_id: userId, event_id: eventId, email: 'attendee@example.test', display_name: 'Attendee', response_status: 'accepted' });
     await insert('calendar_event_external_refs', { id: uuid(), user_id: userId, event_id: eventId, calendar_id: calendarId, account_id: calendarAccountId,
       provider: 'caldav', external_event_id: 'event.ics', external_etag: 'etag-one' });
