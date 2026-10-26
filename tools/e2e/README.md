@@ -21,7 +21,9 @@ Sign in as `admin@example.com` or `alex@example.com` with
 `local-dev-admin-password`. GreenMail has the mailboxes
 `admin@example.com`, `alex@example.com` and `sam@example.org` with the
 password `e2e-mail-password`; add them in UniHub as mail accounts with host
-`127.0.0.1` and confirm the certificate fingerprint. GreenMail's REST API
+`127.0.0.1` and confirm the certificate fingerprint. The dev seed already has
+mail accounts named like the first two (pointing at an unreachable host), so
+`sam@example.org` is the simplest one to add. GreenMail's REST API
 (`http://127.0.0.1:8085/api/user`, `/api/mail/purge`) shows what was
 delivered.
 
