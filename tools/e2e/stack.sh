@@ -37,7 +37,7 @@ GREENMAIL_JAR=${UNIHUB_E2E_GREENMAIL_JAR:-}
 RADICALE=${UNIHUB_E2E_RADICALE:-$(command -v radicale || true)}
 JAVA=${JAVA:-$(command -v java || true)}
 
-DB_PORT=$((3310 + INSTANCE)) API_PORT=$((4099 + INSTANCE)) WEB_PORT=$((8087 + INSTANCE)) GREENMAIL_API_PORT=$((8084 + INSTANCE))
+DB_PORT=$((3310 + INSTANCE)) API_PORT=$((4099 + INSTANCE)) WEB_PORT=$((8087 + INSTANCE)) GREENMAIL_API_PORT=$((8184 + INSTANCE))
 # Implicit TLS on the standard ports (the API uses implicit TLS for SMTP only
 # on 465), so each instance's providers get their own loopback address.
 PROVIDER_HOST=127.0.0.$INSTANCE IMAPS_PORT=993 SMTPS_PORT=465 CALDAV_PORT=5232
@@ -233,7 +233,8 @@ EOF
 
 down() {
   stop_one nginx; stop_one api; stop_one radicale; stop_one greenmail
-  "$REPO/scripts/local-db.sh" stop
+  [ -d "$STATE/mariadb" ] && "$REPO/scripts/local-db.sh" stop
+  return 0
 }
 
 cmd=${1:-status}; shift || true

@@ -17,7 +17,7 @@ Playwright's Android driver for the app.
 | nginx with `docker/nginx/*.conf` | 127.0.0.1:8088 | Alpine's `mime.types`, so headers match the image |
 | API (`api/dist/server.js`) | 127.0.0.1:4100 | development cookies (plain HTTP); trusts the test CA |
 | MariaDB (`scripts/local-db.sh`) | 127.0.0.1:3311 | database `unihub_dev` with the dev seed |
-| GreenMail (IMAP/SMTP) | 127.0.0.1:993 and :465, REST :8085 | accepts mail for any address |
+| GreenMail (IMAP/SMTP) | 127.0.0.1:993 and :465, REST 127.0.0.1:8185 | accepts mail for any address |
 | Radicale (CalDAV) | https://127.0.0.1:5232/ | one calendar and one task list per account |
 
 Users (password `local-dev-admin-password`): `admin@example.com` (admin),
@@ -63,9 +63,10 @@ need `net.ipv4.ip_unprivileged_port_start` at or below 465, or root.
 
 ```bash
 cd tools/e2e && npm ci
-npm test                          # every area except real providers
-npm run test:smoke                # the fast subset for every change
-npx e2e run tests/mail/reply.e2e.ts --target android-app
+npm test                          # every area except real providers (about 22 min here)
+npm run test:smoke                # tests tagged smoke, for every change (about 5 min)
+npm run test:providers            # real accounts from .private/e2e-providers.env
+npx e2e run tests/mail/sending.e2e.ts --target android-app
 npx e2e guide                     # the framework's instructions for agents
 ```
 
@@ -75,13 +76,21 @@ page in app mode). Set `PLAYWRIGHT_BROWSERS_PATH` to a Chromium matching the
 installed `playwright-core` (for example `../ui-regression/.browsers` after
 `npm run browsers` there) and `E2E_TELEMETRY_DISABLED=1`.
 
-Tests sit in `tests/<area>/` and share `tests/support/`. A test is named after
+Tests sit in `tests/<area>/` and share `tests/support/`: `env.ts` (the
+instance's values, the three people, run ids, fixtures, `restartApi`),
+`mail.ts` (delivered mail, MIME, sending synthetic mail, IMAP flags and
+threading headers), `api.ts` (server-side sessions, settings, drafts),
+`caldav.ts` (reading and editing Radicale or a real CalDAV server as another
+client), `ui.ts` (compose, sender, folders, attachments) and `providers.ts`.
+Tags: `smoke` for the fast subset, `slow` for tests that wait on server
+timers, `providers` for real accounts. Signing in counts against the
+sign-in limit (10 per account in 10 minutes), so the setup reuses a cached
+server session. A test is named after
 the behaviour and its tracker row or bug, for example
 `[24-12] reply all reaches To and Cc but not the sender`, checks outcomes
 (what was delivered, stored or shown) rather than incidental layout, and
 creates its own uniquely named data, so tests run in any order on a used
-database. Tests that wait on server timers (scheduled send, snooze) stay out
-of `test:smoke`. No model is configured: tests use locators, not `agent.act`.
+database. No model is configured: tests use locators, not `agent.act`.
 
 ## Android app tests
 
@@ -104,10 +113,12 @@ uiautomator; it answers the "isn't responding" dialogs a slow emulator shows.
 ## Real providers
 
 `npm run test:providers` connects real accounts (for example Stalwart for
-IMAP, SMTP and CalDAV) read from `.private/e2e-providers.env` of the canonical
-checkout (`UNIHUB_E2E_PROVIDERS` overrides the path). The tests skip when the
-file or an account block is empty and never print its values. Use test
-accounts only.
+IMAP, SMTP and CalDAV) read from `.private/e2e-providers.env` of this checkout,
+or the file `UNIHUB_E2E_PROVIDERS` names (set it for worktrees). The tests skip
+when the file or an account block is empty; every value is registered as an
+e2e secret, so reports show `<secret:…>`. The stack adds the file's hosts to
+`TRUSTED_MAIL_HOSTS`, as an administrator would for a provider that resolves
+to a private address. Use test accounts only.
 
 ## What it cannot prove
 
