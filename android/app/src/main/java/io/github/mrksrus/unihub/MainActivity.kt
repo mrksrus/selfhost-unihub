@@ -651,7 +651,10 @@ class MainActivity : Activity() {
     @Deprecated("Activity result API needs AndroidX; the framework call is enough here.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         if (requestCode == REQUEST_FILE) {
-            fileCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data))
+            val clip = data?.clipData
+            val picked = PickedFiles.collect(resultCode == RESULT_OK, data?.data,
+                if (clip == null) emptyList() else List(clip.itemCount) { clip.getItemAt(it).uri })
+            fileCallback?.onReceiveValue(picked?.toTypedArray())
             fileCallback = null
             return
         }
