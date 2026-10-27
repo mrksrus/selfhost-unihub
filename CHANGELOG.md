@@ -6,6 +6,47 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## Unreleased (0.24.3)
+
+Follow-up fixes for 0.24: PDFs, attachments, links from tasks, signatures,
+sending and chords. No database upgrade and no configuration change.
+
+### Fixed
+
+- **PDFs did not open.** The container served the PDF viewer's worker
+  (`.mjs`) with a type browsers refuse to run as a script, so every PDF
+  failed with "Setting up fake worker failed". It is now served as
+  JavaScript.
+- **While UniHub restarted, the app reported a missing endpoint.** Requests
+  that reached the container while the API was starting got a 404 page. They
+  now get a 502 with the message that UniHub is starting or restarting, which
+  the app treats as a temporary outage.
+- **Files picked in the Android app were not attached.** When the picker
+  allowed several files, the app ignored them. Every picked file is attached
+  now.
+- **On a wide window the attachments were out of view.** In the compose
+  dialog the Attachments section sat below the visible part. The message box
+  now gets shorter when the window is not tall enough, so the section shows,
+  and files just added scroll into view.
+- **Open in Mail from a task kept loading.** The message opened from a task
+  (or from a notification or search link) was loaded again and again, and
+  its read mark repeated. It now opens once.
+- **A signature lost its line breaks in plain text.** A signature written as
+  two lines ("Sam Sender", then the company on the next line) became one line
+  in plain-text mail. Save the signature again in Settings → Mail to store
+  the corrected plain version; the same fix applies to templates and the
+  plain-text part of formatted mail.
+- **Sending a saved draft showed no progress.** Send went back to normal
+  while the draft was still being sent, and a second press showed "Attachment
+  error". Send now shows "Sending…" until the draft has gone, and a second
+  press waits for the first.
+- **Long chords were cut without a word.** Chords over 10,000 characters were
+  saved shortened while Music said "Chords saved". They are now refused with
+  the limit and their length, and the editor stays open to shorten them. A
+  new recording with chords that long is refused before it is queued.
+- **A failed Save draft left an error behind in the browser console** after
+  its message. It no longer does.
+
 ## 0.24.2
 
 Attachments stay in reach on a phone. No database upgrade and no configuration
