@@ -19,7 +19,7 @@ export interface BodyParts {
 export function htmlToPlainText(html: string) {
   if (!html) return '';
   const template = document.createElement('template');
-  template.innerHTML = html;
+  template.innerHTML = html.replace(/\uE000/g, '');
   const content = template.content;
   content.querySelectorAll('script, style, noscript, template').forEach(node => node.remove());
   content.querySelectorAll('br').forEach(node => node.replaceWith('\n'));
@@ -27,9 +27,16 @@ export function htmlToPlainText(html: string) {
   content.querySelectorAll('blockquote').forEach(node => {
     node.replaceWith(`\n${(node.textContent || '').split('\n').map(line => `> ${line}`).join('\n')}\n`);
   });
-  content.querySelectorAll('p, div, li, tr, h1, h2, h3, h4').forEach(node => node.append('\n'));
-  return (content.textContent || '').replace(/\u00a0/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  // A block ends its line, and starts a new one after text on the same line
+  // ("Name<div>Company</div>", as the editor writes a second line). The start
+  // is marked first and becomes a line break only where no break precedes it.
+  content.querySelectorAll('p, div, li, tr, h1, h2, h3, h4').forEach(node => { node.prepend(BLOCK_START); node.append('\n'); });
+  return (content.textContent || '')
+    .replace(/\uE000+/g, (_, offset: number, text: string) => offset === 0 || text[offset - 1] === '\n' ? '' : '\n')
+    .replace(/\u00a0/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
 }
+
+const BLOCK_START = '\uE000';
 
 /** The account's signature in the given format, with the usual "-- " separator; empty without one. */
 export function signatureFor(account: Pick<MailAccount, 'signature_html' | 'signature_text'> | null | undefined, bodyFormat: ComposeFormat) {

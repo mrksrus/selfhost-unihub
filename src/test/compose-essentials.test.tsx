@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
 import type { Email, MailAccount } from '@/lib/mail-api';
 import { userSettingsQueryOptions, type UserSettingValues } from '@/lib/settings-api';
-import { composeBody, responseRecipients } from '@/lib/compose-body';
+import { composeBody, htmlToPlainText, responseRecipients } from '@/lib/compose-body';
 import { useMailCompose } from '@/hooks/use-mail-compose';
 import { useMailAccounts } from '@/hooks/use-mail-queries';
 import { MailComposeDialog, MailComposeDialogs, MailInlineCompose } from '@/components/mail/MailCompose';
@@ -85,6 +85,18 @@ describe('reply all', () => {
 });
 
 describe('signatures', () => {
+  // B-27: the editor writes a second line as a <div> after the first line's text.
+  it('the plain-text form keeps each line of a formatted signature on its own line', () => {
+    expect(htmlToPlainText('Sam Sender<div>Synthetic Testing Ltd</div>')).toBe('Sam Sender\nSynthetic Testing Ltd');
+    expect(htmlToPlainText('Sam Sender<div>Synthetic Testing Ltd</div><div>+1 555 0100</div>')).toBe('Sam Sender\nSynthetic Testing Ltd\n+1 555 0100');
+    expect(htmlToPlainText('<b>Sam</b> Sender<p>Synthetic Testing Ltd</p>')).toBe('Sam Sender\nSynthetic Testing Ltd');
+    expect(htmlToPlainText('Sam Sender<div><br></div><div>Synthetic Testing Ltd</div>')).toBe('Sam Sender\n\nSynthetic Testing Ltd');
+    // Blocks one after another are not doubled.
+    expect(htmlToPlainText('<p>a</p><p>b</p>')).toBe('a\nb');
+    expect(htmlToPlainText('<div>a</div><div>b</div>')).toBe('a\nb');
+    expect(htmlToPlainText('Line one<br>Line two')).toBe('Line one\nLine two');
+  });
+
   it('a new message carries the account signature, and follows the From account until something is written', async () => {
     wrap();
     await screen.findByText('2 accounts, settings');
