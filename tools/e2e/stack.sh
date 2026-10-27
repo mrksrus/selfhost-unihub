@@ -54,7 +54,16 @@ export UNIHUB_DB_PORT=$DB_PORT UNIHUB_DB_DATA=$STATE/mariadb UNIHUB_DB_ENV_FILE=
 
 die() { echo "e2e-stack: $*" >&2; exit 1; }
 pidfile() { echo "$STATE/run/$1.pid"; }
-alive() { local f; f=$(pidfile "$1"); [ -f "$f" ] && kill -0 "$(cat "$f")" 2>/dev/null; }
+# A pid file holds "pid start-time"; a process only counts as ours when both
+# match, so a pid reused after a crash is never signalled.
+started_at() { sed -E 's/^.*\) //' "/proc/$1/stat" 2>/dev/null | awk '{print $20}'; }
+owned_pid() { # name -> pid of our live process, or nothing
+  local f pid start; f=$(pidfile "$1")
+  [ -f "$f" ] || return 1
+  read -r pid start < "$f" || true
+  [ -n "${pid:-}" ] && [ -n "${start:-}" ] && [ "$(started_at "$pid")" = "$start" ] && echo "$pid"
+}
+alive() { owned_pid "$1" >/dev/null; }
 wait_port() { # port name [host]
   for _ in $(seq 1 240); do (exec 3<>"/dev/tcp/${3:-127.0.0.1}/$1") 2>/dev/null && return 0; sleep 0.5; done
   die "$2 did not open port $1 (log: $STATE/log/$2.log)"
@@ -63,17 +72,18 @@ spawn() { # name command...
   local name=$1; shift
   alive "$name" && return 0
   setsid "$@" >"$STATE/log/$name.log" 2>&1 < /dev/null &
-  echo $! > "$(pidfile "$name")"
+  echo "$! $(started_at $!)" > "$(pidfile "$name")"
 }
 stop_one() {
-  local f; f=$(pidfile "$1")
-  if alive "$1"; then
-    kill -TERM -- "-$(cat "$f")" 2>/dev/null || kill -TERM "$(cat "$f")"
+  local pid
+  if pid=$(owned_pid "$1"); then
+    # spawn() made the process a session and group leader: stop the whole group.
+    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid"
     for _ in $(seq 1 40); do alive "$1" || break; sleep 0.25; done
-    alive "$1" && kill -KILL -- "-$(cat "$f")" 2>/dev/null
+    alive "$1" && kill -KILL -- "-$pid" 2>/dev/null
     echo "e2e-stack: $1 stopped"
   fi
-  rm -f "$f"
+  rm -f "$(pidfile "$1")"
 }
 
 test_ca() {
@@ -98,7 +108,7 @@ app_env() {
   export JWT_SECRET=local-dev-jwt-secret-not-for-production-0001 ENCRYPTION_KEY=local-dev-encryption-key-not-for-production-01
   export BACKUP_MASTER_KEY=local-dev-backup-master-key-not-for-production
   export BOOTSTRAP_ADMIN_EMAIL=admin@example.com BOOTSTRAP_ADMIN_PASSWORD=local-dev-admin-password
-  export PORT=$API_PORT ALLOWED_ORIGINS=http://127.0.0.1:$WEB_PORT,http://localhost:$WEB_PORT
+  export PORT=$API_PORT API_LISTEN_HOST=127.0.0.1 ALLOWED_ORIGINS=http://127.0.0.1:$WEB_PORT,http://localhost:$WEB_PORT
   # The real providers' hosts may resolve to private addresses (split DNS), which
   # UniHub refuses unless they are trusted, as an administrator would set them.
   local real_hosts=""
