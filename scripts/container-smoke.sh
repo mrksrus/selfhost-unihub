@@ -141,6 +141,11 @@ docker exec "$container_name" node -e 'const fs=require("node:fs");for(const nam
 # Security headers on every static response: nginx drops inherited add_header
 # lines in a location that sets its own, so the cache locations re-include them.
 # The page must carry no inline script, which the CSP (script-src 'self') refuses.
+# ES module assets (the pdf.js worker) must be served as JavaScript: with
+# nosniff a browser refuses to import application/octet-stream.
+SMOKE_MODULE_ASSET="$(docker exec "$container_name" sh -c 'cd /usr/share/nginx/html && ls assets/*.mjs | head -n 1')"
+[[ "$SMOKE_MODULE_ASSET" == assets/*.mjs ]] || { echo 'The image has no .mjs asset (pdf.js worker) to check.' >&2; exit 1; }
+export SMOKE_MODULE_ASSET
 node --input-type=module <<'NODE'
 async function secured(path) {
   const response = await fetch(`http://localhost${path}`);
@@ -160,6 +165,10 @@ const icon = page.match(/\/icons\/[^"']+/)?.[0];
 if (!asset || !icon) throw new Error('index.html names no asset or icon');
 for (const path of ['/theme-init.js', '/sw.js', '/manifest.webmanifest', asset, icon]) await secured(path);
 console.log(`Security headers present on /, ${asset}, /sw.js, /theme-init.js, the manifest and ${icon}; no inline script`);
+const moduleAsset = `/${process.env.SMOKE_MODULE_ASSET}`;
+const moduleType = (await secured(moduleAsset)).headers.get('content-type') || '';
+if (!/^(text|application)\/javascript\b/.test(moduleType)) throw new Error(`${moduleAsset} is served as ${moduleType || '(no type)'}, not JavaScript`);
+console.log(`${moduleAsset} served as ${moduleType}`);
 // HSTS only when the proxy in front reports HTTPS; plain HTTP gets none.
 const hsts = async headers => (await fetch('http://localhost/', { headers })).headers.get('strict-transport-security');
 if (await hsts({})) throw new Error('Plain HTTP must not carry Strict-Transport-Security');
