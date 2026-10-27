@@ -34,7 +34,7 @@ cleanup() {
   trap - EXIT
   echo 'Container startup and smoke logs:'
   docker logs --tail 100 "$container_name" 2>&1 || true
-  docker rm -f "$container_name" >/dev/null 2>&1 || true
+  docker rm -f "$container_name" "${container_name}-nginx" >/dev/null 2>&1 || true
   docker volume rm "$volume_name" >/dev/null 2>&1 || true
   exit "$status"
 }
@@ -217,4 +217,29 @@ for ((attempt=0; attempt<20; attempt++)); do
 done
 [[ "$(docker inspect --format '{{.State.Running}}' "$container_name")" == false ]] || { echo 'Container stayed running after API death.' >&2; exit 1; }
 [[ "$(docker inspect --format '{{.State.ExitCode}}' "$container_name")" == 1 ]] || { echo 'Container did not report essential service failure.' >&2; exit 1; }
-echo 'Container smoke passed: startup, non-root API and uploads handover, health, security headers, Android app download, authentication, isolation, malformed requests, audio and encrypted backup round-trips, graceful stop, and essential-service recovery.'
+# While the API starts or restarts, Nginx is up and nothing listens on port
+# 4000. Run the image's Nginx alone (the app container has exited, so port 80
+# is free): API requests must get a 502 with a JSON error, not a 404 that the
+# app would read as a missing endpoint, and the page must still load.
+docker run -d --name "${container_name}-nginx" --network host \
+  --init --cap-drop ALL --security-opt no-new-privileges \
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add NET_BIND_SERVICE \
+  --cap-add SETGID --cap-add SETUID \
+  --entrypoint nginx "$image" -g 'daemon off;' >/dev/null
+node --input-type=module <<'NODE'
+let page;
+for (let attempt = 0; attempt < 30 && page?.status !== 200; attempt++) {
+  page = await fetch('http://localhost/').catch(() => undefined);
+  if (page?.status !== 200) await new Promise(resolve => setTimeout(resolve, 1000));
+}
+if (page?.status !== 200) throw new Error(`Nginx without the API: the page answered ${page?.status ?? 'nothing'}`);
+for (const path of ['/api/version', '/api/auth/me', '/health']) {
+  const response = await fetch(`http://localhost${path}`);
+  const type = response.headers.get('content-type') || '';
+  const body = type.includes('application/json') ? await response.json() : await response.text();
+  if (response.status !== 502 || typeof body?.error !== 'string') throw new Error(`${path} without the API answered ${response.status} ${type}: ${JSON.stringify(body).slice(0, 120)}`);
+}
+console.log('With the API down, API requests answer 502 with a JSON error and the page still loads');
+NODE
+docker rm -f "${container_name}-nginx" >/dev/null
+echo 'Container smoke passed: startup, non-root API and uploads handover, health, security headers, Android app download, authentication, isolation, malformed requests, audio and encrypted backup round-trips, graceful stop, essential-service recovery, and API-down answers.'
