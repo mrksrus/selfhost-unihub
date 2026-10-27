@@ -577,9 +577,18 @@ function ToolbarAttachments({ compose, inputId }: { compose: MailCompose; inputI
   );
 }
 
-function ComposeAttachmentsSection({ compose, inputId }: { compose: MailCompose; inputId: string }) {
+function ComposeAttachmentsSection({ compose, inputId, className }: { compose: MailCompose; inputId: string; className?: string }) {
+  // Files just added may land below the scroller's visible part: bring the
+  // last one into view (not on opening a draft, whose files are already saved).
+  const listRef = useRef<HTMLDivElement>(null);
+  const added = compose.composeAttachments.length;
+  const addedBefore = useRef(added);
+  useEffect(() => {
+    if (added > addedBefore.current) listRef.current?.lastElementChild?.scrollIntoView?.({ block: 'nearest' });
+    addedBefore.current = added;
+  }, [added]);
   return (
-    <div className="space-y-2">
+    <div className={cn('space-y-2', className)}>
       <Label>Attachments</Label>
       <input
         id={inputId}
@@ -627,7 +636,7 @@ function ComposeAttachmentsSection({ compose, inputId }: { compose: MailCompose;
       </div>
 
       {(compose.existingDraftAttachments.length > 0 || compose.composeAttachments.length > 0) && (
-        <div className="space-y-2">
+        <div ref={listRef} className="space-y-2">
           {compose.existingDraftAttachments.map((attachment) => (
             <div key={attachment.id} className="flex items-center justify-between gap-2 rounded border border-border px-3 py-2">
               <div className="min-w-0">
@@ -915,17 +924,19 @@ export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
                 {subject('compose-subject')}
               </div>
             </div>
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-3">
-              <div className="flex min-h-0 flex-col space-y-2">
+            {/* The message is as tall as min(44vh, 420px) when the dialog has the room, and
+                gives way (down to its minimum) so the Attachments section stays in view. */}
+            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-3">
+              <div className="flex min-h-[15rem] flex-col gap-2">
                 <Label htmlFor="compose-body">Message</Label>
                 <ComposeBodyEditor
                   compose={compose}
                   editorId="compose-body"
                   editorRef={compose.dialogComposeEditorRef}
-                  editorClassName="h-[min(44vh,420px)] min-h-[220px]"
+                  editorClassName="flex-1 basis-[min(44vh,420px)] min-h-0"
                 />
               </div>
-              <ComposeAttachmentsSection compose={compose} inputId="compose-attachments-dialog" />
+              <ComposeAttachmentsSection compose={compose} inputId="compose-attachments-dialog" className="shrink-0" />
             </div>
             {footer}
           </form>

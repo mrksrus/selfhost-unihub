@@ -199,6 +199,24 @@ describe('templates', () => {
 // The optional compose features (P-26, layout A): off until switched on in
 // Settings; then Templates and the format switch end the toolbar row and
 // Send later turns Send into a split button.
+// B-20: on a wide window the Attachments section sits below the message, and
+// files added there could land out of view.
+describe('attachments in the wide composer', () => {
+  it('brings the files just added into view', async () => {
+    wrap();
+    await screen.findByText('2 accounts, settings');
+    fireEvent.click(screen.getByRole('button', { name: 'New message' }));
+    await screen.findByRole('dialog');
+    const scrolled = vi.spyOn(Element.prototype, 'scrollIntoView');
+    const input = document.getElementById('compose-attachments-dialog') as HTMLInputElement;
+    const files = ['a.pdf', 'b.pdf'].map(name => new File(['synthetic'], name, { type: 'application/pdf' }));
+    fireEvent.change(input, { target: { files } });
+    const last = await screen.findByText('b.pdf');
+    await waitFor(() => expect(scrolled.mock.contexts).toContain(last.closest('.rounded')));
+    expect(scrolled).toHaveBeenLastCalledWith({ block: 'nearest' });
+  });
+});
+
 describe('optional compose features', () => {
   const optional = () => ({
     templates: screen.queryByRole('button', { name: 'Templates' }),
