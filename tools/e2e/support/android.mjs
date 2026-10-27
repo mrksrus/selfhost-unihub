@@ -91,7 +91,12 @@ export async function dismissFirstRunOffers() {
 }
 
 /** The app's page, signed in as the given synthetic user. */
-export async function openApp({ email = 'admin@example.com', password = 'local-dev-admin-password' } = {}) {
+export async function openApp({ email = 'admin@example.com', password = 'local-dev-admin-password', restart = true } = {}) {
+  // Each test starts from a freshly launched app, not from what an earlier test left open.
+  if (restart) {
+    adb('shell', 'am', 'force-stop', PACKAGE);
+    adb('shell', 'am', 'start', '-n', `${PACKAGE}/.MainActivity`);
+  }
   const device = (await android.devices()).find(d => d.serial() === serial);
   if (!device) throw new Error(`${serial} not found; run tools/e2e/android.sh up`);
   const webView = await device.webView({ pkg: PACKAGE }, { timeout: 180_000 });
