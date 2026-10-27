@@ -164,6 +164,20 @@ describe('MailPage UI regressions', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
     expect(api.post).not.toHaveBeenCalled();
   });
 
+  // B-25: "Open in Mail" from a task's email. React Router applies the URL
+  // change as a transition, so the page renders again with the link still in it
+  // before the parameter is gone; the link must open the message only once.
+  it('opens a linked unread message once, marks it read and finishes loading', async () => {
+    renderMailPage([inboxEmail], '/mail?email=email-1');
+    expect(await screen.findByText('Inbox body')).toBeInTheDocument();
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/emails/email-1/read', { is_read: true }, expect.any(Object)));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const opened = vi.mocked(api.get).mock.calls.filter(([endpoint]) => endpoint === '/mail/emails/email-1');
+    expect(opened).toHaveLength(1);
+    expect(api.put).not.toHaveBeenCalledWith('/mail/emails/email-1/read', { is_read: false }, expect.anything());
+    expect(screen.queryByText('Loading email…')).not.toBeInTheDocument();
+  });
+
   it('opens the sync panel when arriving from the attention tray', async () => {
     renderMailPage([inboxEmail], '/mail?review=sync');
     expect(await screen.findByRole('dialog', { name: 'Mail sync' })).toBeInTheDocument();

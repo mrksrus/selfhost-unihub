@@ -125,16 +125,22 @@ const MailPage = () => {
     staleTime: 60000,
   });
 
-  // Open a message linked from a notification or search, then drop the parameter.
+  // Open a message linked from a notification, search or task, then drop the
+  // parameter. React Router applies that URL change as a transition, so the page
+  // renders again (with a new loadEmailForReader) before the link is gone; the
+  // effect follows only the URL, or each such render would open the message
+  // again, cancelling the load before and repeating the read mark.
+  const openLinkedEmail = useRef(loadEmailForReader);
+  openLinkedEmail.current = loadEmailForReader;
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const emailId = params.get('email');
     if (!emailId) return;
 
-    void loadEmailForReader(emailId);
+    void openLinkedEmail.current(emailId);
     params.delete('email');
     navigate({ pathname: location.pathname, search: params.toString(), hash: location.hash }, { replace: true });
-  }, [loadEmailForReader, location.pathname, location.search, location.hash, navigate]);
+  }, [location.pathname, location.search, location.hash, navigate]);
 
   // The attention tray links here to review mail decisions in the sync panel.
   useEffect(() => {
