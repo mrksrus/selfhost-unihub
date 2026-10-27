@@ -7,7 +7,10 @@
   "scripts": {
     "up": "./stack.sh up",
     "down": "./stack.sh down",
-    "test": "e2e run"
+    "test": "e2e run --exclude-tag providers",
+    "test:smoke": "e2e run --tag smoke --exclude-tag providers",
+    "test:providers": "e2e run --tag providers --target desktop",
+    "android": "node --test android/*.test.mjs"
   },
   "devDependencies": {
     "@e2e-dev/web": "0.15.3",

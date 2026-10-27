@@ -1,5 +1,6 @@
 import type { E2EConfig } from 'e2e';
 import { web } from '@e2e-dev/web';
+import { providerSecrets } from './tests/support/providers.ts';
 
 // The stack from ./stack.sh: nginx in front of the API, as in the image.
 // Instance N serves on port 8087 + N.
@@ -30,5 +31,9 @@ export default {
   credentials: {
     admin: { username: 'admin@example.com', password: 'local-dev-admin-password' },
     alex: { username: 'alex@example.com', password: 'local-dev-admin-password' },
+    blair: { username: 'blair@example.com', password: 'local-dev-admin-password' },
   },
+  // Real-provider test accounts (tests/providers), when the private file has them: registered
+  // as secrets so every report, trace and step label shows <secret:…> instead of the value.
+  secrets: providerSecrets(),
 } satisfies E2EConfig;

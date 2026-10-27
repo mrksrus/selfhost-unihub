@@ -37,7 +37,7 @@ GREENMAIL_JAR=${UNIHUB_E2E_GREENMAIL_JAR:-}
 RADICALE=${UNIHUB_E2E_RADICALE:-$(command -v radicale || true)}
 JAVA=${JAVA:-$(command -v java || true)}
 
-DB_PORT=$((3310 + INSTANCE)) API_PORT=$((4099 + INSTANCE)) WEB_PORT=$((8087 + INSTANCE)) GREENMAIL_API_PORT=$((8084 + INSTANCE))
+DB_PORT=$((3310 + INSTANCE)) API_PORT=$((4099 + INSTANCE)) WEB_PORT=$((8087 + INSTANCE)) GREENMAIL_API_PORT=$((8184 + INSTANCE))
 # Implicit TLS on the standard ports (the API uses implicit TLS for SMTP only
 # on 465), so each instance's providers get their own loopback address.
 PROVIDER_HOST=127.0.0.$INSTANCE IMAPS_PORT=993 SMTPS_PORT=465 CALDAV_PORT=5232
@@ -45,6 +45,10 @@ PROVIDER_HOST=127.0.0.$INSTANCE IMAPS_PORT=993 SMTPS_PORT=465 CALDAV_PORT=5232
 # plus outside correspondents. GreenMail also accepts mail for any other address.
 PROVIDER_PASSWORD=e2e-provider-password
 PROVIDER_USERS="admin@mail.test alex@mail.test blair@mail.test sam@example.org carol@example.org"
+
+# Real test accounts (tests/providers): this checkout's .private/, unless
+# UNIHUB_E2E_PROVIDERS names the canonical checkout's file for worktrees.
+PROVIDERS_FILE=${UNIHUB_E2E_PROVIDERS:-$REPO/.private/e2e-providers.env}
 
 export UNIHUB_DB_PORT=$DB_PORT UNIHUB_DB_DATA=$STATE/mariadb UNIHUB_DB_ENV_FILE=$STATE/local-db.env
 
@@ -95,7 +99,11 @@ app_env() {
   export BACKUP_MASTER_KEY=local-dev-backup-master-key-not-for-production
   export BOOTSTRAP_ADMIN_EMAIL=admin@example.com BOOTSTRAP_ADMIN_PASSWORD=local-dev-admin-password
   export PORT=$API_PORT ALLOWED_ORIGINS=http://127.0.0.1:$WEB_PORT,http://localhost:$WEB_PORT
-  export TRUST_PROXY_HEADERS=true TRUSTED_MAIL_HOSTS=$PROVIDER_HOST NODE_EXTRA_CA_CERTS=$CA_DIR/ca.pem
+  # The real providers' hosts may resolve to private addresses (split DNS), which
+  # UniHub refuses unless they are trusted, as an administrator would set them.
+  local real_hosts=""
+  [ -f "$PROVIDERS_FILE" ] && real_hosts=$(sed -n -E 's/^E2E_[A-Z0-9_]+_(IMAP_HOST|SMTP_HOST)=([^[:space:]]+).*/\2/p; s#^E2E_[A-Z0-9_]+_CALDAV_URL=https?://([^/:[:space:]]+).*#\1#p' "$PROVIDERS_FILE" | sort -u | paste -sd, -)
+  export TRUST_PROXY_HEADERS=true TRUSTED_MAIL_HOSTS=$PROVIDER_HOST${real_hosts:+,$real_hosts} NODE_EXTRA_CA_CERTS=$CA_DIR/ca.pem
   export MAIL_ATTACHMENT_UPLOAD_ROOT=$STATE/uploads/attachments MAIL_RAW_STORAGE_ROOT=$STATE/uploads/mail-raw
   export RECORDINGS_ROOT=$STATE/uploads/recordings BACKUP_ARCHIVES_ROOT=$STATE/uploads/backups
 }
@@ -206,6 +214,7 @@ UNIHUB_E2E_GREENMAIL_API=http://127.0.0.1:$GREENMAIL_API_PORT
 UNIHUB_E2E_CA=$CA_DIR/ca.pem
 UNIHUB_E2E_DB_PORT=$DB_PORT
 UNIHUB_E2E_DB_ENV=$UNIHUB_DB_ENV_FILE
+UNIHUB_E2E_PROVIDERS=$PROVIDERS_FILE
 EOF
 }
 
@@ -224,7 +233,8 @@ EOF
 
 down() {
   stop_one nginx; stop_one api; stop_one radicale; stop_one greenmail
-  "$REPO/scripts/local-db.sh" stop
+  [ -d "$STATE/mariadb" ] && "$REPO/scripts/local-db.sh" stop
+  return 0
 }
 
 cmd=${1:-status}; shift || true
