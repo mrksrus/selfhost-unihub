@@ -605,6 +605,27 @@ itself (layout, hierarchy, alignment, look, a control's style) and every
 defect still waits for the maintainer, and a defect is fixed, not pinned.
 Regenerating pictures just to make the check pass stays forbidden.
 
+#### P-28 Agents build and test the roadmap; the maintainer checks what they cannot reach
+
+Accepted, 2026-10-27 (maintainer's direction after the first agent e2e run:
+"start a goal or thread where the full roadmap gets just implemented and
+tested without me having to cover everything myself … I'm comfortable with
+switching the approach now"). Supersedes the habit of the maintainer testing
+every tracker row by hand; the five-step version flow in AGENTS.md stays.
+
+Agents implement each version and prove it end to end themselves: the web e2e
+harness (`tools/e2e`: the image's nginx, API, MariaDB, synthetic mail
+provider) on desktop, phone and app-mode targets, the Android emulator with
+the real shell where the device boundary matters, and several synthetic users
+for sharing. A check an agent can run counts only from its own run, recorded
+in the tracker with its evidence. The maintainer receives a short list per
+version of what no agent can reach (their real phone, the live server, real
+providers and people), not every row. How those remaining rows gate a release
+is decision D25 in the private roadmap.
+
+Evidence: `tools/e2e/README.md` (branch `test/e2e-harness`), tracker session
+log 2026-10-26.
+
 ## Open decisions and conflicts
 
 Open proposals do not override accepted decisions.

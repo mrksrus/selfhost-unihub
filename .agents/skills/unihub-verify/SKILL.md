@@ -25,6 +25,8 @@ Pick checks by what the change touches; run every row that applies.
 | Email rendering | `node scripts/email-privacy-browser-check.mts` and the safe-email tests |
 | `android/`, `src/lib/platform.ts`, `api/src/services/app-version.ts` | `node scripts/android-support-window.mts`; on an emulator `android/scripts/launch-test.sh` and `android/scripts/window-test.sh` (see `docs/ANDROID_COMPATIBILITY.md`) |
 | Dockerfile, `docker/`, start-up | `npm --prefix api run test:ci` with a disposable database, then CI (`scripts/container-smoke.sh`, `--image` runs) |
+| A user-visible flow (any feature or fix a person can see) | add or extend its test in `tools/e2e/tests/<area>/` and run it on the targets it affects (`tools/e2e/stack.sh up`, then `npx e2e run <file> --target <desktop/phone/android-app>` in `tools/e2e`); sharing and policies with the three seeded users |
+| The device boundary (file picker, keyboard, downloads, notifications, contacts sync, app lock) | an `android/` test on the emulator (`tools/e2e/android.sh up`, `npm run android`) |
 | Documentation only | links, paths and the diff; no application run |
 
 A `--local` run needs `npm --prefix api run build`, the MariaDB tarball
@@ -45,6 +47,8 @@ Android/server pairings and any cross-version data upgrade/import checks.
 These are currently manual gates. Missing evidence blocks release even when
 CI is green. Before tagging, run real-phone/provider checks relevant to the
 change and label their evidence separately.
+
+Run the whole end-to-end suite on the candidate (`npm test` and `npm run android` in `tools/e2e`, plus `npm run test:providers` when real provider accounts are configured) and attach the results to the pull request; until CI runs it, it is a local gate.
 
 When the version changes, update `android/support-window.json` first (this
 version and the three releases before it), or the Android window check fails.
