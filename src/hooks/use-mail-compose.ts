@@ -129,6 +129,11 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   // response returns the first result instead of sending the message twice.
   const sendKeyRef = useRef<string | null>(null);
   const sendKey = () => (sendKeyRef.current ??= `send-${crypto.randomUUID()}`);
+  // A send in progress before (or instead of) the send mutation: saving the
+  // draft, sending a stored draft, reading the attachments. Send shows it as
+  // pending, and a second press waits for the first instead of starting again.
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   // Counts the messages composed here: a send's result (and its "Send again")
   // belongs to the message it sent, not to one opened since.
   const compositionRef = useRef(0);
@@ -749,6 +754,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       return;
     }
 
+    if (submittingRef.current || sendEmailMutation.isPending) return;
     // Taken before anything is awaited: a message closed or replaced while
     // its draft is saved or its attachments are read is not sent.
     const composition = compositionRef.current;
@@ -758,6 +764,8 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       toast({ title: 'Not sent', description: 'The message was closed before it was sent.' });
       return true;
     };
+    submittingRef.current = true;
+    setIsSubmitting(true);
     try {
       // A first save still running may be creating this message's draft: the
       // message is then sent as that draft, which leaves no copy in Drafts.
@@ -767,11 +775,10 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       }
       const owner = draftRef.current;
       if (owner.id) {
-        const savedDraft = await saveCurrentDraft({ includeAttachments: true, quiet: true });
-        if (closedMeanwhile()) return;
-        const draftId = savedDraft?.id || owner.id!;
         try {
-          await sendDraft(draftId, key, threading);
+          const savedDraft = await saveCurrentDraft({ includeAttachments: true, quiet: true });
+          if (closedMeanwhile()) return;
+          await sendDraft(savedDraft?.id || owner.id!, key, threading);
         } catch (error) {
           toast(sendFailureToast(error, sendAgainFor(composition)));
           return;
@@ -804,6 +811,9 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
         description: error instanceof Error ? error.message : 'Failed to prepare attachments',
         variant: 'destructive',
       });
+    } finally {
+      submittingRef.current = false;
+      setIsSubmitting(false);
     }
   };
   /**
@@ -925,7 +935,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     addComposeFiles, removeComposeAttachment, removeExistingDraftAttachment, handleComposeAttachmentInput,
     inlineComposeEditorRef, dialogComposeEditorRef, updateComposeBodyFromEditor, applyComposeCommand,
     activeDraftId, isDirty: isComposeDirty || attachmentsDirty, isDraftSaving, draftSavedAt,
-    isSending: sendEmailMutation.isPending,
+    isSending: isSubmitting || sendEmailMutation.isPending,
     openDraftForCompose, startResponse, resetComposeState, closeComposeFlow, handleSendEmail, saveCurrentDraft,
     composeClosePromptOpen, setComposeClosePromptOpen, discardCurrentCompose, saveAndClose,
     draftToDelete, setDraftToDelete, confirmDeleteDraft,

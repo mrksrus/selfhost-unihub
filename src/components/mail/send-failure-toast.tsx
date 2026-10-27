@@ -10,7 +10,8 @@ import { ApiError } from '@/lib/api-error';
 export function sendFailureToast(error: unknown, sendAgain: () => void) {
   const code = error instanceof ApiError ? error.code : undefined;
   const description = error instanceof Error ? error.message : undefined;
-  if (code === 'SEND_IN_PROGRESS') return { title: 'Still sending', description, duration: 8000 };
+  // SCHEDULED_SEND_IN_PROGRESS: the stored draft is being sent (by its schedule), so it cannot be saved or sent again now.
+  if (code === 'SEND_IN_PROGRESS' || code === 'SCHEDULED_SEND_IN_PROGRESS') return { title: 'Still sending', description, duration: 8000 };
   if (code === 'SEND_OUTCOME_UNKNOWN' || code === 'IDEMPOTENCY_KEY_REUSED') {
     return {
       title: 'The email may have been sent',

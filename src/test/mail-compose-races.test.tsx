@@ -116,6 +116,42 @@ describe('a send or save that ends after its message was closed', () => {
   });
 });
 
+describe('sending a saved draft (B-28)', () => {
+  it('is pending until the draft is sent, and a second Send waits for the first', async () => {
+    const sent = deferred<Awaited<ReturnType<typeof api.post>>>();
+    vi.mocked(api.post).mockReturnValueOnce(sent.promise);
+    const hook = mount();
+    act(() => hook.result.current.openDraftForCompose(draft));
+    send(hook);
+    expect(hook.result.current.isSending).toBe(true);
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/drafts/draft-a/send', undefined, expect.anything()));
+    // The draft is saved; its send has not answered yet.
+    expect(hook.result.current.isDraftSaving).toBe(false);
+    expect(hook.result.current.isSending).toBe(true);
+    send(hook);
+    await act(async () => { await Promise.resolve(); });
+    expect(api.put).toHaveBeenCalledTimes(1);
+    expect(api.post).toHaveBeenCalledTimes(1);
+    expect(state.toast).not.toHaveBeenCalled();
+
+    await act(async () => sent.resolve({ data: { message: 'sent' } }));
+    expect(hook.result.current.isSending).toBe(false);
+    expect(state.toast).toHaveBeenCalledWith({ title: '✓ Email sent successfully' });
+    expect(hook.result.current.isComposeOpen).toBe(false);
+  });
+
+  it('a draft its schedule is sending right now is reported as still sending, not as an attachment error', async () => {
+    vi.mocked(api.put).mockResolvedValueOnce({ error: 'This message is being sent now.', status: 409, code: 'SCHEDULED_SEND_IN_PROGRESS' });
+    const hook = mount();
+    act(() => hook.result.current.openDraftForCompose(draft));
+    send(hook);
+    await waitFor(() => expect(hook.result.current.isSending).toBe(false));
+    expect(state.toast).toHaveBeenLastCalledWith(expect.objectContaining({ title: 'Still sending', description: 'This message is being sent now.' }));
+    expect(state.toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Attachment error' }));
+    expect(api.post).not.toHaveBeenCalled();
+  });
+});
+
 describe('edits made while a draft is saved', () => {
   it('stay unsaved, and the next autosave stores them', async () => {
     const save = deferred<Awaited<ReturnType<typeof api.put>>>();
