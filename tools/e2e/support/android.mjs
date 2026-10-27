@@ -74,6 +74,14 @@ export async function pickFromDownloads(names) {
   if (select) adb('shell', 'input', 'tap', `${select.x}`, `${select.y}`);
 }
 
+/** A fresh app asks once whether to show UniHub contacts on the phone; tests that are not about it answer Not now. */
+export async function dismissContactsOffer() {
+  const nodes = screenNodes();
+  if (!nodes.some(n => /contacts on this phone/i.test(n.text))) return;
+  const notNow = nodes.find(n => /^not now$/i.test(n.text));
+  if (notNow) adb('shell', 'input', 'tap', `${notNow.x}`, `${notNow.y}`);
+}
+
 /** The app's page, signed in as the given synthetic user. */
 export async function openApp({ email = 'admin@example.com', password = 'local-dev-admin-password' } = {}) {
   const device = (await android.devices()).find(d => d.serial() === serial);
@@ -88,10 +96,22 @@ export async function openApp({ email = 'admin@example.com', password = 'local-d
     await page.getByRole('button', { name: 'Sign in' }).click();
     await page.waitForURL(url => !url.pathname.startsWith('/auth'), { timeout: 120_000 }).catch(() => {});
   }
-  // Signing in can replace the WebView's page target; take the current one.
-  const current = await (await device.webView({ pkg: PACKAGE }, { timeout: 180_000 })).page();
-  current.setDefaultTimeout(60_000);
-  return { device, page: current };
+  // Signing in reloads the app, which replaces the WebView's page target:
+  // wait for a page that is signed in and answers.
+  for (let attempt = 0; attempt < 30; attempt++) {
+    try {
+      const current = await (await device.webView({ pkg: PACKAGE }, { timeout: 60_000 })).page();
+      const path = await current.evaluate(() => location.pathname);
+      if (!path.startsWith('/auth')) {
+        await current.waitForLoadState();
+        await dismissContactsOffer();
+        current.setDefaultTimeout(60_000);
+        return { device, page: current };
+      }
+    } catch { /* the target went away mid-check; take the next one */ }
+    await sleep(2000);
+  }
+  throw new Error('the app did not reach a signed-in page');
 }
 
 /** Opens a path of the app the way a person would land there, without a new page target. */
