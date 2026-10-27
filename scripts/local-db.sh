@@ -12,7 +12,8 @@
 #   scripts/local-db.sh reset                               delete all local data (asks first)
 #
 # Overrides: UNIHUB_DB_HOME (default ~/.local/opt/mariadb-11.8),
-# UNIHUB_DB_DATA (~/.local/share/unihub-mariadb), UNIHUB_DB_PORT (3307).
+# UNIHUB_DB_DATA (~/.local/share/unihub-mariadb), UNIHUB_DB_PORT (3307),
+# UNIHUB_DB_ENV_FILE (.private/local-db.env; a second instance needs its own).
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -22,7 +23,7 @@ PORT=${UNIHUB_DB_PORT:-3307}
 # Per port, so separate instances (e.g. parallel test runs) never share a socket.
 RUN=${XDG_RUNTIME_DIR:-/tmp}/unihub-mariadb-$(id -u)-$PORT
 CNF=$DATA.cnf
-ENV_FILE=$REPO/.private/local-db.env
+ENV_FILE=${UNIHUB_DB_ENV_FILE:-$REPO/.private/local-db.env}
 SOCKET=$RUN/mariadbd.sock
 
 die() { echo "local-db: $*" >&2; exit 1; }

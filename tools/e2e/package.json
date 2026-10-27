@@ -1,0 +1,20 @@
+{
+  "name": "unihub-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Development-only end-to-end checks that agents run against a disposable local UniHub (tools/e2e/README.md). Never shipped with the app.",
+  "type": "module",
+  "scripts": {
+    "up": "./stack.sh up",
+    "down": "./stack.sh down",
+    "test": "e2e run"
+  },
+  "devDependencies": {
+    "@e2e-dev/web": "0.15.3",
+    "e2e": "0.21.3"
+  },
+  "engines": {
+    "node": ">=26"
+  },
+  "license": "PolyForm-Noncommercial-1.0.0"
+}

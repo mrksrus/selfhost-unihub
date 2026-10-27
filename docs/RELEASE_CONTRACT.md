@@ -51,6 +51,8 @@ shown before publishing and how.
 | The candidate app's contacts sync both ways with the server (added, edited, joined and deleted on either side, many deletions held for an answer), survive the update from the previous release's app, and follow a session end and a server change | `android/scripts/contacts-test.sh` on each emulator | an emulator and `adb` ([Android](ANDROID.md#contacts-on-the-phone)) |
 | The candidate app receives, shows, acknowledges and opens notifications over its own connection, survives an app update and stops on sign-out | `android/scripts/notifications-test.sh` on each emulator | an emulator and `adb` ([Android](ANDROID.md#notifications)) |
 | A published image carries the release-signed Android app | Check and keep the Android app | — |
+| Every user flow covered by the end-to-end suite works through the image's nginx configuration, the API, the database and synthetic mail and CalDAV providers, on desktop, phone and Android-app targets | not in CI yet: run locally on the candidate and attach the result to the pull request | `tools/e2e/stack.sh up`, then `npm test` in `tools/e2e` ([e2e](../tools/e2e/README.md)) |
+| The candidate Android app works against the candidate server: signing in, the document picker and the flows under `tools/e2e/android/` | not in CI yet: run locally on the candidate | `tools/e2e/android.sh up`, then `npm run android` in `tools/e2e` |
 
 `scripts/pwa-update-check.mts` exits with 75 when headless Chrome itself stops
 answering (a browser-level DevTools command times out), which says nothing
@@ -184,9 +186,10 @@ any of these.
 
 These are not covered yet; do not report them as passing.
 
-- **Android with a real server.** The emulator runs load a stub page. Signing
-  in, two-factor codes, downloads and uploads, the file picker, the microphone
-  and logout in the app are not tested, nor are older apps against the real
+- **Android with a real server.** The CI emulator runs load a stub page. The
+  local e2e suite runs the candidate app against the candidate server for the
+  flows under `tools/e2e/android/` (signing in, the document picker); two-factor
+  codes, downloads, the microphone and logout in the app are not tested yet, nor are older apps against the real
   candidate server or the candidate app against older servers. The app's
   notifications are checked against a stub server on the emulators and the real
   server's side by `android-notifications-mysql-integration.test.cts`, not the
