@@ -5,6 +5,19 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.24.3 Follow-up fixes
+
+No database upgrade and no configuration change. Going back to 0.24.2 is
+possible.
+
+- **Android app.** Install 0.24.3's app (the update offer appears in the app)
+  so files picked in Android's picker are attached; the other fixes come with
+  the server's pages. Reload an open page or reopen the app after updating.
+  The window is 0.24.3, 0.24.2, 0.24.1 and 0.24.0.
+- **Behind a reverse proxy.** While the container restarts, `/api/` now
+  answers 502 with a short JSON message instead of a 404 page. A proxy that
+  shows its own error page for 502 keeps doing so.
+
 ## 0.24.2 Phone attachments
 
 No database upgrade and no configuration change. Going back to 0.24.1 is

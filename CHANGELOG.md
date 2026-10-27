@@ -6,10 +6,11 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
-## Unreleased (0.24.3)
+## 0.24.3
 
 Follow-up fixes for 0.24: PDFs, attachments, links from tasks, signatures,
-sending, reply subjects and chords. No database upgrade and no configuration change.
+sending, reply subjects and chords. No database upgrade and no configuration
+change (see [Upgrading](docs/UPGRADING.md#0243-follow-up-fixes)).
 
 ### Fixed
 
