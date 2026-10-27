@@ -131,6 +131,28 @@ describe('compose format', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ isHtml: false, body: 'Plain hello\n\n-- \nAlex Example' }), expect.anything()));
   });
 
+  // B-15: the failed save's toast was followed by an unhandled promise rejection.
+  it('a Save draft that fails shows its error and leaves no unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown) => { unhandled.push(reason); };
+    process.on('unhandledRejection', record);
+    try {
+      vi.mocked(api.post).mockResolvedValue({ error: 'Temporary outage', status: 503 });
+      state.settings = { compose_format: 'plain' };
+      wrap();
+      await screen.findByText('2 accounts, settings');
+      fireEvent.click(screen.getByRole('button', { name: 'New message' }));
+      const body = await screen.findByPlaceholderText('Write your message...');
+      fireEvent.change(body, { target: { value: 'Unsaved words' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+      await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Failed to save draft', description: 'Temporary outage' })));
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', record);
+    }
+  });
+
   it('a compose link opens in the saved format once the settings have answered', async () => {
     state.settings = { compose_format: 'plain' };
     window.history.replaceState({}, '', '/mail?action=compose&to=sparks%40example.test&body=Call+me');

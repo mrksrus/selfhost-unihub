@@ -292,6 +292,11 @@ function composeFeatureButtons(compose: MailCompose): ReactNode[] {
   return buttons;
 }
 
+/** Save draft: a failed save reports itself in a toast, and its rejection ends here. */
+function saveDraftNow(compose: MailCompose) {
+  compose.saveCurrentDraft({ includeAttachments: true }).catch(() => {});
+}
+
 /** Send, and with Send later on (Settings, Mail) a split button whose arrow half offers the times. */
 function SendButton({ compose }: { compose: MailCompose }) {
   const busy = compose.isSending || compose.isDraftSaving;
@@ -726,7 +731,7 @@ export function MailInlineCompose({ compose, onAddTask, fill = false }: { compos
           </div>
           <div className={cn('flex shrink-0 items-center justify-end gap-3 border-t border-border pt-3', !fill && 'flex-wrap')}>
             <AddTaskFromDraft compose={compose} onAddTask={onAddTask} icon={fill} />
-            <Button type="button" variant="secondary" onClick={() => compose.saveCurrentDraft({ includeAttachments: true })} disabled={compose.isDraftSaving || compose.isSending}>
+            <Button type="button" variant="secondary" onClick={() => saveDraftNow(compose)} disabled={compose.isDraftSaving || compose.isSending}>
               {compose.isDraftSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Save draft
             </Button>
@@ -825,7 +830,7 @@ export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
     <div className={cn('flex shrink-0 items-center justify-end gap-3 border-t border-border bg-background',
       isMobile ? 'px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom,0px))]' : 'flex-wrap px-4 py-3')}>
       <AddTaskFromDraft compose={compose} onAddTask={onAddTask} icon={isMobile} />
-      <Button type="button" variant="secondary" onClick={() => compose.saveCurrentDraft({ includeAttachments: true })} disabled={compose.isDraftSaving || compose.isSending}>
+      <Button type="button" variant="secondary" onClick={() => saveDraftNow(compose)} disabled={compose.isDraftSaving || compose.isSending}>
         {compose.isDraftSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
         Save draft
       </Button>
