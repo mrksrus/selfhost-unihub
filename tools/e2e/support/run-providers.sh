@@ -25,12 +25,13 @@ clean() {
 # script stops the group (KILL after 20 s if it does not stop), then cleans.
 # A signal that arrives before the runner's pid is known is held until it is.
 runner= pending=
-group_alive() { ps -eo pgid=,stat= | awk -v g="$runner" '$1 == g && $2 !~ /^Z/ { found = 1 } END { exit !found }'; }
+# The pid is signalled too: a signal can come before the child has called setsid.
+group_alive() { ps -eo pid=,pgid=,stat= | awk -v g="$runner" '($1 == g || $2 == g) && $3 !~ /^Z/ { found = 1 } END { exit !found }'; }
 stop() {
   if [ -z "$runner" ]; then pending=$1; return; fi
-  kill -TERM -- "-$runner" 2>/dev/null
+  kill -TERM -- "-$runner" "$runner" 2>/dev/null
   for _ in $(seq 40); do group_alive || break; sleep 0.5; done
-  kill -KILL -- "-$runner" 2>/dev/null
+  kill -KILL -- "-$runner" "$runner" 2>/dev/null
   wait "$runner" 2>/dev/null
   clean
   exit "$1"
