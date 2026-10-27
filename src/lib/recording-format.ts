@@ -91,6 +91,16 @@ export const recordingDetailsFrom = (recording: Recording): RecordingDetailsForm
   chords: recording.metadata?.chords || '',
 });
 
+/** The longest chord sheet the server stores (MAX_CHORDS_LENGTH in api/src/services/recordings.ts). */
+export const MAX_CHORDS_LENGTH = 10000;
+
+/** Why a details form's chords cannot be saved, or null. */
+export function chordsLengthError(form: Pick<RecordingDetailsForm, 'category' | 'chords'>) {
+  const length = form.category === 'music' ? form.chords.trim().length : 0;
+  if (length <= MAX_CHORDS_LENGTH) return null;
+  return `Chords can be up to ${MAX_CHORDS_LENGTH.toLocaleString('en')} characters long; these have ${length.toLocaleString('en')}. Shorten them and save again.`;
+}
+
 /** The server fields of a details form. */
 export const recordingDetailsPayload = (form: RecordingDetailsForm) => ({
   title: form.title.trim(),

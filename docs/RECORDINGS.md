@@ -74,6 +74,7 @@ fields; V1 uses `metadata.chords` for Music recordings.
 | Max tag length | 80 characters |
 | Max title length | 255 characters |
 | Max description length | 5000 characters |
+| Max Music chords length | 10,000 characters; a longer sheet is refused, not cut |
 | Concurrent MP3 conversions | 1 per app container |
 | Waiting MP3 conversions | 4 total; 2 active/waiting requests per user |
 | MP3 queue wait | 60 seconds, then retry response |

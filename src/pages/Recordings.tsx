@@ -10,7 +10,7 @@ import {
   type StoredRecording,
 } from '@/lib/recording-queue';
 import {
-  emptyRecordingDetails, filenameWithoutExtension, formatDuration, recordingDetailsFrom, recordingDetailsPayload, toDatetimeLocalValue,
+  chordsLengthError, emptyRecordingDetails, filenameWithoutExtension, formatDuration, recordingDetailsFrom, recordingDetailsPayload, toDatetimeLocalValue,
   type RecordingDetailsForm,
 } from '@/lib/recording-format';
 import { recordingCategories, recordingCategoryLabels, recordingsApi, recordingsQueryKeys, type Recording, type RecordingCategory } from '@/lib/recordings-api';
@@ -122,6 +122,9 @@ const Recordings = () => {
 
   const saveAudio = useMutation({
     mutationFn: async (audio: PendingAudio): Promise<'queued' | 'uploaded'> => {
+      // Refused before the recording is queued: a queued upload cannot be edited.
+      const chordsError = chordsLengthError(details);
+      if (chordsError) throw new Error(chordsError);
       const fields = recordingDetailsPayload(details);
       const jobDetails: RecordingUploadJob['details'] = {
         ...fields,

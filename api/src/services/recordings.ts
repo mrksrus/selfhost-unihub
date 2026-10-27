@@ -94,7 +94,9 @@ function normalizeRecordedAt(value: unknown, fallback: Date | string = new Date(
   return date;
 }
 
-function normalizeMetadata(value: unknown) {
+const MAX_CHORDS_LENGTH = 10000;
+
+function metadataChords(value: unknown) {
   let source = value;
   if (typeof source === 'string') {
     try {
@@ -103,14 +105,32 @@ function normalizeMetadata(value: unknown) {
       source = {};
     }
   }
-  if (!source || typeof source !== 'object' || Array.isArray(source)) return {};
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
+  if (!Object.prototype.hasOwnProperty.call(source, 'chords')) return null;
+  return String((source as Record<string, unknown>).chords || '').trim();
+}
 
+function normalizeMetadata(value: unknown) {
   const metadata: { chords?: string } = {};
-  if (Object.prototype.hasOwnProperty.call(source, 'chords')) {
-    const chords = String((source as Record<string, unknown>).chords || '').trim().slice(0, 10000);
-    if (chords) metadata.chords = chords;
-  }
+  const chords = metadataChords(value)?.slice(0, MAX_CHORDS_LENGTH);
+  if (chords) metadata.chords = chords;
   return metadata;
+}
+
+/**
+ * An edit refuses a chord sheet over the limit instead of saving it cut short.
+ * An upload start still caps it: the page refuses longer chords before it
+ * queues a recording, and one already queued on a device must not fail (and
+ * keep its audio off the server) over its chords.
+ */
+function chordsTooLong(value: unknown) {
+  const length = metadataChords(value)?.length ?? 0;
+  if (length <= MAX_CHORDS_LENGTH) return null;
+  return {
+    error: `Chords can be up to ${MAX_CHORDS_LENGTH.toLocaleString('en')} characters long; these have ${length.toLocaleString('en')}. Shorten them and save again.`,
+    status: 400,
+    code: 'CHORDS_TOO_LONG',
+  };
 }
 
 function serializeMetadata(value: unknown) {
@@ -673,6 +693,10 @@ async function abortRecordingUpload(userId: string, uploadId: string) {
 }
 
 async function updateRecording(userId: string, recordingId: string, input: UploadInput = {}) {
+  if (Object.prototype.hasOwnProperty.call(input, 'metadata')) {
+    const refused = chordsTooLong(input.metadata);
+    if (refused) return refused;
+  }
   const existing = await getRecordingForUser(userId, recordingId);
   if (!existing) return { error: 'Recording not found', status: 404 };
   const updates = [];
@@ -749,6 +773,7 @@ export {
   calculateFileSha256,
   normalizeCategory,
   normalizeMetadata,
+  MAX_CHORDS_LENGTH,
   normalizeTags,
   serializeRecording,
   listRecordings,

@@ -13,7 +13,22 @@ const {
   normalizeTags,
   replaceFilenameExtension,
   serializeRecording,
+  updateRecording,
+  MAX_CHORDS_LENGTH,
 } = require('../dist/src/services/recordings') as typeof import('../src/services/recordings');
+
+// B-26: the Music page said "Chords saved" while the stored sheet was cut at 10,000 characters.
+test('an edit refuses chords over the limit instead of saving them cut short', async () => {
+  const long = 'C  G  Am  F\n'.repeat(1000);
+  // Refused before the recording is looked up or anything is written.
+  const refused = await updateRecording('user-1', 'recording-1', { category: 'music', metadata: { chords: long } }) as { error?: string; status?: number; code?: string };
+  assert.equal(refused.status, 400);
+  assert.equal(refused.code, 'CHORDS_TOO_LONG');
+  assert.match(refused.error ?? '', /up to 10,000 characters long; these have 11,999/);
+  // Reading (and an upload already queued on a device) keeps the cap.
+  assert.equal(normalizeMetadata({ chords: long }).chords?.length, MAX_CHORDS_LENGTH);
+  assert.deepEqual(normalizeMetadata(JSON.stringify({ chords: '  Em  D  ' })), { chords: 'Em  D' });
+});
 
 test('recording path guard allows root descendants only', () => {
   assert.equal(isPathUnderRoot('/app/uploads/recordings/user-1/file.webm'), true);
