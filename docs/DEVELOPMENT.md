@@ -130,6 +130,8 @@ The backend requires MariaDB configuration through either `DATABASE_URL` or
 credentials in the backend process environment as well. The Compose `.env`
 variable names are mapped by Compose; the standalone API reads its runtime
 names directly. Local HTTP development uses non-production cookie settings.
+`API_LISTEN_HOST` (unset in the image) makes the API listen on one address
+only, for example `127.0.0.1` for a run on a shared host.
 
 `MAIL_ATTACHMENT_UPLOAD_ROOT` and `MAIL_RAW_STORAGE_ROOT` move the mail
 attachment and raw-message roots away from `/app/uploads/attachments` and

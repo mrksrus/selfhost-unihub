@@ -1,4 +1,7 @@
 const PORT = process.env.PORT || 4000;
+// Unset (the image) listens on every interface of the container; a host run
+// such as tools/e2e sets 127.0.0.1 so the API is reachable only through nginx.
+const API_LISTEN_HOST = process.env.API_LISTEN_HOST || undefined;
 const JWT_SECRET = process.env.JWT_SECRET;
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
 // The key before the last change: stored values encrypted with it stay readable.
@@ -30,6 +33,7 @@ const MAIL_COMPOSE_REQUEST_MAX_SIZE = 40 * 1024 * 1024;
 
 export {
   PORT,
+  API_LISTEN_HOST,
   JWT_SECRET,
   ENCRYPTION_KEY,
   ENCRYPTION_KEY_PREVIOUS,

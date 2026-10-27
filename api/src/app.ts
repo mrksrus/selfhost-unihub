@@ -1,6 +1,6 @@
 import { prepareFolderReconciliation } from './services/mail-folder-reconciliation';
 import http from 'http';
-import { PORT } from './config';
+import { API_LISTEN_HOST, PORT } from './config';
 import { db } from './state';
 import { initDatabase } from './services/database';
 import { suspendPendingBackupJobs, DISABLED_BACKUP_ROUTES } from './services/backup-availability';
@@ -68,8 +68,8 @@ async function start() {
   installShutdownHandler({ server, onShutdown: [() => { stopping = true; work?.stop(); }, closeAndroidStreams], drainMs: 8000,
     drain: () => drainProcess({ serverClosed, scheduler: durableScheduler, expireWorkerLeases,
       closePool: async () => { await ownership?.stop(); await db.end(); } }) });
-  server.listen(PORT, () => {
-    log.info('STARTUP', 'UniHub API listening', { port: PORT });
+  server.listen({ port: Number(PORT), ...(API_LISTEN_HOST ? { host: API_LISTEN_HOST } : {}) }, () => {
+    log.info('STARTUP', 'UniHub API listening', { port: PORT, ...(API_LISTEN_HOST ? { host: API_LISTEN_HOST } : {}) });
   });
 
   // Only the process holding the database lock runs the background work
