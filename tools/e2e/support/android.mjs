@@ -74,12 +74,20 @@ export async function pickFromDownloads(names) {
   if (select) adb('shell', 'input', 'tap', `${select.x}`, `${select.y}`);
 }
 
-/** A fresh app asks once whether to show UniHub contacts on the phone; tests that are not about it answer Not now. */
-export async function dismissContactsOffer() {
-  const nodes = screenNodes();
-  if (!nodes.some(n => /contacts on this phone/i.test(n.text))) return;
-  const notNow = nodes.find(n => /^not now$/i.test(n.text));
-  if (notNow) adb('shell', 'input', 'tap', `${notNow.x}`, `${notNow.y}`);
+/**
+ * The app's own first-run questions (contacts on the phone, notifications)
+ * appear over the page whenever it meets a server for the first time; tests
+ * that are not about them answer Not now.
+ */
+export async function dismissFirstRunOffers() {
+  for (let i = 0; i < 3; i++) {
+    const nodes = screenNodes();
+    if (!nodes.some(n => /contacts on this phone|notifications on this phone/i.test(n.text))) return;
+    const notNow = nodes.find(n => /^not now$/i.test(n.text));
+    if (!notNow) return;
+    adb('shell', 'input', 'tap', `${notNow.x}`, `${notNow.y}`);
+    await sleep(1500);
+  }
 }
 
 /** The app's page, signed in as the given synthetic user. */
@@ -104,7 +112,7 @@ export async function openApp({ email = 'admin@example.com', password = 'local-d
       const path = await current.evaluate(() => location.pathname);
       if (!path.startsWith('/auth')) {
         await current.waitForLoadState();
-        await dismissContactsOffer();
+        await dismissFirstRunOffers();
         current.setDefaultTimeout(60_000);
         return { device, page: current };
       }
