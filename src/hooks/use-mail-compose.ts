@@ -7,7 +7,7 @@ import { ApiError } from '@/lib/api-error';
 import { cancelMailSchedule, createMailTemplate, mailTemplatesKey, scheduleMailDraft, type MailTemplate } from '@/lib/mail-essentials-api';
 import { contactsQueryOptions } from '@/lib/contacts-api';
 import { plainTextToHtml, sanitizeComposeHtml, sanitizeReturnTo, isComposeBodyEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
-import { composeBody, convertBody, htmlToPlainText, quoteOf, responseRecipients, signatureFor, type BodyParts, type ComposeFormat, type ResponseMode } from '@/lib/compose-body';
+import { composeBody, convertBody, htmlToPlainText, quoteOf, responseRecipients, responseSubject, signatureFor, type BodyParts, type ComposeFormat, type ResponseMode } from '@/lib/compose-body';
 import { formatWhen } from '@/lib/mail-times';
 import { useToast } from '@/hooks/use-toast';
 import { sendFailureToast } from '@/components/mail/send-failure-toast';
@@ -419,7 +419,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     setComposeForm({
       ...EMPTY_COMPOSE_FORM,
       ...recipients,
-      subject: `${mode === 'forward' ? 'Fwd' : 'Re'}: ${email.subject || ''}`,
+      subject: responseSubject(mode, email.subject),
       body: startingBody(email.mail_account_id, defaultFormat, { quote: quoteOf(email, mode) }),
     });
     if (isMobile) {

@@ -9,7 +9,7 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 ## Unreleased (0.24.3)
 
 Follow-up fixes for 0.24: PDFs, attachments, links from tasks, signatures,
-sending and chords. No database upgrade and no configuration change.
+sending, reply subjects and chords. No database upgrade and no configuration change.
 
 ### Fixed
 
@@ -46,6 +46,9 @@ sending and chords. No database upgrade and no configuration change.
   new recording with chords that long is refused before it is queued.
 - **A failed Save draft left an error behind in the browser console** after
   its message. It no longer does.
+- **Replies to replies said "Re: Re:".** A reply or forward now adds its
+  prefix only when the subject does not already carry it (also "AW:", "SV:"
+  or "WG:" from other mail apps).
 
 ## 0.24.2
 

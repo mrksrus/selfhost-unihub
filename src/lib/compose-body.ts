@@ -58,6 +58,18 @@ export function composeBody(bodyFormat: ComposeFormat, signature: string, { intr
   return `${start}${signature}${quote ? `<hr>${quote.html}` : ''}`;
 }
 
+/**
+ * The subject of a reply or forward. A subject that already carries the same
+ * kind of prefix (also as other mail apps write it: "AW:", "SV:", "WG:")
+ * keeps it, so a conversation does not grow "Re: Re: …".
+ */
+export function responseSubject(mode: ResponseMode, subject: string | null | undefined) {
+  const text = (subject || '').trim();
+  const forward = mode === 'forward';
+  const existing = forward ? /^(fwd?|wg|tr|vs)\s*:/i : /^(re|aw|sv|antw|odp)\s*:/i;
+  return existing.test(text) ? text : `${forward ? 'Fwd' : 'Re'}: ${text}`;
+}
+
 /** The quoted message for a reply or forward, in both formats. */
 export function quoteOf(email: Email, mode: ResponseMode) {
   const label = mode === 'forward' ? 'Forwarded Message' : 'Original Message';

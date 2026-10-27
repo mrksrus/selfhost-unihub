@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
 import type { Email, MailAccount } from '@/lib/mail-api';
 import { userSettingsQueryOptions, type UserSettingValues } from '@/lib/settings-api';
-import { composeBody, htmlToPlainText, responseRecipients } from '@/lib/compose-body';
+import { composeBody, htmlToPlainText, responseRecipients, responseSubject } from '@/lib/compose-body';
 import { useMailCompose } from '@/hooks/use-mail-compose';
 import { useMailAccounts } from '@/hooks/use-mail-queries';
 import { MailComposeDialog, MailComposeDialogs, MailInlineCompose } from '@/components/mail/MailCompose';
@@ -81,6 +81,19 @@ describe('reply all', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reply all' }));
     expect(await screen.findByLabelText('To')).toHaveValue('sparks@example.test, Bo <bo@example.test>');
     expect(screen.getByLabelText('Cc')).toHaveValue('cy@example.test');
+  });
+});
+
+describe('response subjects', () => {
+  // B-32: a reply to a reply went out as "Re: Re: …".
+  it('a reply or forward adds its prefix once, also after other mail apps\' prefixes', () => {
+    expect(responseSubject('reply', 'Invoice 4711')).toBe('Re: Invoice 4711');
+    expect(responseSubject('replyAll', 'Re: Invoice 4711')).toBe('Re: Invoice 4711');
+    expect(responseSubject('reply', 'AW: Rechnung')).toBe('AW: Rechnung');
+    expect(responseSubject('forward', 'Re: Invoice 4711')).toBe('Fwd: Re: Invoice 4711');
+    expect(responseSubject('forward', 'Fwd: Invoice 4711')).toBe('Fwd: Invoice 4711');
+    expect(responseSubject('reply', 'Reminder: rent')).toBe('Re: Reminder: rent');
+    expect(responseSubject('reply', null)).toBe('Re: ');
   });
 });
 
