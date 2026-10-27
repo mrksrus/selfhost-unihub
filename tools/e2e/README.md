@@ -118,7 +118,9 @@ or the file `UNIHUB_E2E_PROVIDERS` names (set it for worktrees). The tests skip
 when the file or an account block is empty; every value is registered as an
 e2e secret, so reports show `<secret:…>`. The stack adds the file's hosts to
 `TRUSTED_MAIL_HOSTS`, as an administrator would for a provider that resolves
-to a private address. Use test accounts only.
+to a private address. A provider run deletes its screenshots, videos and
+trace pages when it ends (a screen of a real account shows its address);
+only the report remains. Use test accounts only.
 
 ## What it cannot prove
 

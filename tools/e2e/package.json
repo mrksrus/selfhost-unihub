@@ -9,7 +9,7 @@
     "down": "./stack.sh down",
     "test": "e2e run --exclude-tag providers",
     "test:smoke": "e2e run --tag smoke --exclude-tag providers",
-    "test:providers": "e2e run --tag providers --target desktop",
+    "test:providers": "./support/run-providers.sh",
     "android": "node --test android/*.test.mjs"
   },
   "devDependencies": {

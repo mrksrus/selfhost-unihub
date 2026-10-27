@@ -30,6 +30,10 @@ LOG=${TMPDIR:-/tmp}/unihub-e2e-emulator-$EMU_PORT.log
 adb() { "$SDK/platform-tools/adb" -s "$SERIAL" "$@"; }
 die() { echo "e2e-android: $*" >&2; exit 1; }
 booted() { [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; }
+# Only the disposable test AVD is ever installed on, wiped or stopped: another
+# emulator on this port (someone else's work) is refused.
+ours() { [ "$(adb emu avd name 2>/dev/null | head -1 | tr -d '\r')" = "$AVD" ]; }
+require_ours() { ours || die "$SERIAL is not the test AVD $AVD; refusing to touch it"; }
 
 build() {
   echo "e2e-android: building the debug app"
@@ -37,6 +41,7 @@ build() {
 }
 
 install() {
+  require_ours
   if [ "${1:-}" != --no-build ] || [ ! -f "$APK" ]; then build; fi
   # A release build or another signer is replaced: this emulator only holds test data.
   adb install -r "$APK" >/dev/null 2>&1 || { adb uninstall "$PACKAGE" >/dev/null 2>&1 || true; adb install "$APK" >/dev/null; }
@@ -44,6 +49,7 @@ install() {
 }
 
 connect() {
+  require_ours
   # The app allows plain HTTP only for localhost; adb reverse maps the stack's port into the emulator.
   adb reverse "tcp:$WEB_PORT" "tcp:$WEB_PORT" >/dev/null
   adb shell am force-stop "$PACKAGE"
@@ -73,7 +79,11 @@ up() {
   install "${1:-}"
 }
 
-down() { adb emu kill >/dev/null 2>&1 && echo "e2e-android: $SERIAL stopped" || echo "e2e-android: $SERIAL was not running"; }
+down() {
+  booted || { echo "e2e-android: $SERIAL was not running"; return 0; }
+  require_ours
+  adb emu kill >/dev/null 2>&1 && echo "e2e-android: $SERIAL stopped"
+}
 
 status() { booted && echo "e2e-android: $SERIAL running ($(adb shell getprop ro.build.version.release | tr -d '\r'))" || echo "e2e-android: $SERIAL stopped"; }
 
