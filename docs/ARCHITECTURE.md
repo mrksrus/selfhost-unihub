@@ -190,6 +190,7 @@ treatment.
 | `body` | `limit` in bytes (default 16 KiB, `DEFAULT_BODY_LIMIT`) and `kind`: `'json'` (default), `'backup-upload'` (spooled to a file when the content type is an archive) or `'none'` (not read). |
 | `csrf` | `'token'` (default: cookie/header pair), `'background-header'` (the service worker's `X-Background-Sync: 1` also passes) or `'none'` (sign-in and sign-up, which issue the token). The bearer-without-cookie rule is global. |
 | `response` | `'json'` (default) or `'stream'`: the handler writes and owns the response and returns nothing; a refusal before that is an ordinary JSON error. `GET /api/events` and `GET /api/notifications/android/stream`. |
+| `destructive` | F13: the data-safety policies of what the route removes or resets (`DESTRUCTIVE_POLICIES`), each for every request or only when named query parameters have given values (`destructivePolicies()` resolves them for a request). Only on `POST`/`PUT`/`DELETE`. Declared so far by `DELETE /api/mail/accounts/:id`: `accounts.mail.remove`, plus `accounts.mail.purge` with `purge=true`. The boundary does not enforce them yet; the 0.28 policies refuse a forbidden action with `POLICY_FORBIDS` before any side effect. |
 
 `routes/index.ts` merges the files with `mergeRouteTables()` (a duplicate key
 throws) and runs `assertRouteTable()` at startup and in `routes-policy.test.cts`:
@@ -203,7 +204,8 @@ Route files not yet declared with specs (`calendar`, `mail-*` except
 `mail-threads`, `contacts`,
 `recordings`, `backup`) export plain handlers that `routes/legacy-spec.ts`
 wraps with the derived policy (public keys, body limits, `getModuleForPath`,
-a restore-section prefix table, the background-header keys);
+a restore-section prefix table, the background-header keys, and the
+destructive policies in `DESTRUCTIVE_BY_ROUTE`);
 `route-spec.test.cts` pins that derivation. To add a route, declare it in its
 feature file with `defineRoutes()`; the invariants refuse a missing module,
 restore section or admin level at startup.

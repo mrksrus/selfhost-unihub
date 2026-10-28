@@ -1,7 +1,7 @@
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const routes = require('../dist/src/routes') as typeof import('../src/routes');
-const { PUBLIC_ROUTE_KEYS, BACKGROUND_HEADER_CSRF_KEYS, bodyLimitFor } = require('../dist/src/routes/legacy-spec') as typeof import('../src/routes/legacy-spec');
+const { PUBLIC_ROUTE_KEYS, BACKGROUND_HEADER_CSRF_KEYS, DESTRUCTIVE_BY_ROUTE, bodyLimitFor } = require('../dist/src/routes/legacy-spec') as typeof import('../src/routes/legacy-spec');
 const { getModuleForPath } = require('../dist/src/services/module-catalog') as typeof import('../src/services/module-catalog');
 
 // Route files converted to defineRoutes() declare their own policy; the rest
@@ -32,6 +32,8 @@ test('every derived route spec equals the policy the boundary looked up before s
       restoreSection: mutating ? oldRestoreSection(pathname) : undefined,
       body: { limit: bodyLimitFor(key), kind: key === 'POST /api/backup/import' ? 'backup-upload' : 'json' },
       ...(BACKGROUND_HEADER_CSRF_KEYS.has(key) ? { csrf: 'background-header' } : {}),
+      // Declared since F13 (0.25), not derived from an older lookup.
+      ...(DESTRUCTIVE_BY_ROUTE[key] ? { destructive: DESTRUCTIVE_BY_ROUTE[key] } : {}),
     };
     const { handler, ...policy } = spec;
     assert.equal(typeof handler, 'function', key);
@@ -39,6 +41,6 @@ test('every derived route spec equals the policy the boundary looked up before s
   }
 });
 
-test('the derived public and background-header sets name routes that exist', () => {
-  for (const key of [...PUBLIC_ROUTE_KEYS, ...BACKGROUND_HEADER_CSRF_KEYS]) assert.ok(key in routes, `${key} is listed but has no route`);
+test('the derived public, background-header and destructive sets name routes that exist', () => {
+  for (const key of [...PUBLIC_ROUTE_KEYS, ...BACKGROUND_HEADER_CSRF_KEYS, ...Object.keys(DESTRUCTIVE_BY_ROUTE)]) assert.ok(key in routes, `${key} is listed but has no route`);
 });

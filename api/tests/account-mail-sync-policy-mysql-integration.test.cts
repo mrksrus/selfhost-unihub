@@ -294,7 +294,7 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     assert.equal(impact.local_only, 0);
     assert.ok(impact.notes.some((note) => /Show in IMAP/.test(note)));
     const { membershipCountQuery } = require('../dist/src/services/mail-folder-view') as typeof import('../src/services/mail-folder-view');
-    const counts = await rows(membershipCountQuery('emails.is_read', accountId), [userId, accountId]);
+    const counts = await rows(membershipCountQuery('emails.is_read', accountId, false), [userId, accountId]);
     assert.deepEqual(counts.map((row) => [row.folder, Number(row.total_count)]), [['archive', 1]], 'Shown in the local Archive view');
     // Once All Mail is visible, absence from every mailbox proves deletion.
     box('[Gmail]/All Mail', { gmail: true });

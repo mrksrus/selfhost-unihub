@@ -6,6 +6,26 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.25.0 (unreleased)
+
+### Added
+
+- **Snoozed messages can stay in their folder.** Settings > Mail > Snooze has
+  a new choice, **Snoozed messages**: *Hide until due* (as before, the
+  default) or *Keep in the folder*. Kept, a snoozed message stays in its
+  folder and conversation with a "Snoozed until …" mark and still counts as
+  unread, and it still comes back with a notification at its time. The
+  Snoozed view lists it either way. Changing the choice applies at once to
+  messages already snoozed.
+
+### Changed
+
+- **Removing a mail account is recorded.** Disconnecting a mail account and
+  deleting it with UniHub's copy of its mail each add an entry to the
+  activity log (Settings > Server settings > Activity), with the account's
+  id and how many messages and events were removed, never its address. The
+  provider's mail is not touched.
+
 ## 0.24.3
 
 Follow-up fixes for 0.24: PDFs, attachments, links from tasks, signatures,

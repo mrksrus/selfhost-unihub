@@ -461,6 +461,37 @@ export function showRequestedSnoozeInMailCaches(client: QueryClient, ids: Readon
   };
 }
 
+/**
+ * Shows a requested snooze time (null: its end) on the message's rows in every
+ * cached list, for the lists that keep showing it (all of them while the user
+ * keeps snoozed messages in the lists). Returns the undo for a rejected
+ * request, which leaves a row alone once something else changed its time.
+ */
+export function markRequestedSnoozeInMailCaches(client: QueryClient, ids: ReadonlySet<string>, until: string | null) {
+  const marked: { key: readonly unknown[]; id: string; before: string | null }[] = [];
+  const mark = (key: readonly unknown[]) => (email: Email) => {
+    if (!ids.has(email.id)) return email;
+    marked.push({ key, id: email.id, before: email.snoozed_until ?? null });
+    return { ...email, snoozed_until: until };
+  };
+  const apply = (key: readonly unknown[], data: MailListResponse | MailThreadListResponse | undefined, change: (email: Email) => Email) => {
+    if (isThreadList(data)) client.setQueryData<MailThreadListResponse>(key, { ...data,
+      threads: data.threads.map(thread => ({ ...thread, latest: change(thread.latest as unknown as Email) as unknown as MailListRow })) });
+    else if (isMessageList(data)) client.setQueryData<MailListResponse>(key, { ...data, emails: data.emails.map(change) });
+  };
+  for (const query of client.getQueryCache().findAll({ queryKey: mailQueryKeys.all })) {
+    const data = query.state.data as MailListResponse | MailThreadListResponse | undefined;
+    const rows = isThreadList(data) ? data.threads.map(thread => thread.latest as unknown as Email) : isMessageList(data) ? data.emails : [];
+    if (rows.some(email => ids.has(email.id))) apply(query.queryKey, data, mark(query.queryKey));
+  }
+  return () => {
+    for (const { key, id, before } of marked) {
+      apply(key, client.getQueryData<MailListResponse | MailThreadListResponse>(key),
+        email => email.id === id && (email.snoozed_until ?? null) === until ? { ...email, snoozed_until: before } : email);
+    }
+  };
+}
+
 /** After a move or trash was accepted or rejected: the lists, folder counts and the server-change list. */
 export function invalidateMailMoveViews(client: QueryClient) {
   return client.invalidateQueries({ predicate: query => ['emails', 'mail-folders', 'mail-unread-counts', 'mail-writebacks', 'dashboard-unread-mail'].includes(String(query.queryKey[0])) });

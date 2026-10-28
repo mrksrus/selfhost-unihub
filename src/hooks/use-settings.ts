@@ -21,6 +21,7 @@ import {
   type UserSettingValues,
 } from '@/lib/settings-api';
 import { useToast } from '@/hooks/use-toast';
+import { invalidateMailQueries } from '@/lib/mail-api';
 
 // Saves run one after another (the mutation scope), so the server stores the
 // choices in the order they were made. Only the latest save of a setting may
@@ -115,13 +116,25 @@ function useSettingsMutation<T extends object>(save: (id: string, patch: Partial
   });
 }
 
+// Settings the server applies to what it lists: those views load again once
+// the server has the new value (not on the optimistic change, which a list
+// loaded meanwhile would not yet reflect).
+const RELOAD_AFTER_SAVE: Partial<Record<keyof UserSettingValues, (client: QueryClient) => unknown>> = {
+  snoozed_messages: invalidateMailQueries,
+};
+
 /**
  * The signed-in person's settings for a settings page or a feature. A choice
  * is saved as soon as it is made and shown at once.
  */
 export function useUserSettings() {
+  const client = useQueryClient();
   const query = useQuery(userSettingsQueryOptions);
-  const mutation = useSettingsMutation<UserSettingValues>((_id, patch) => saveUserSettings(patch));
+  const mutation = useSettingsMutation<UserSettingValues>(async (_id, patch) => {
+    const saved = await saveUserSettings(patch);
+    for (const key of Object.keys(patch) as (keyof UserSettingValues)[]) void RELOAD_AFTER_SAVE[key]?.(client);
+    return saved;
+  });
   const settings: UserSettings = query.data ?? defaultsResolved(DEFAULT_USER_SETTINGS);
   const target: Target<UserSettingValues> = { queryKey: userSettingsQueryKey, id: '', read: data => data as UserSettings | undefined, write: (_data, next) => next };
   return {

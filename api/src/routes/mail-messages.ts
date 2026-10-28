@@ -2,6 +2,7 @@ import type { RowDataPacket } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
 import { presentMailFiling } from '../services/mail-filing';
 import { mailListColumns, mailListView, presentMailListRow } from '../services/mail-list';
+import { keepsSnoozedInLists } from '../services/mail-snooze';
 import { parseStoredRecipients } from '../services/mail-recipients';
 import fs from 'fs';
 import { db } from '../state';
@@ -22,7 +23,7 @@ export = {
     try {
       const url = new URL(req.url, `http://${req.headers.host}`);
       // The view and row shape are shared with the conversation list (services/mail-list.ts).
-      const view = mailListView(url.searchParams, userId);
+      const view = mailListView(url.searchParams, userId, await keepsSnoozedInLists(userId));
       ({ folder, accountId, params } = view);
       const { hasFolderFilter, hasAccountFilter, includeCount, limit, offset, page, whereSql } = view;
 

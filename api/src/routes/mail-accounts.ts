@@ -7,6 +7,7 @@ import { parseMailAccountInput } from '../services/mail-account-input';
 import * as mailSyncPolicy from '../services/mail-sync-policy';
 import { withMailAccountLock } from '../services/mail-account-lock';
 import { accountUnreadQuery } from '../services/mail-folder-view';
+import { keepsSnoozedInLists } from '../services/mail-snooze';
 import crypto from 'crypto';
 import { db } from '../state';
 import { encrypt } from '../security/encryption';
@@ -136,7 +137,7 @@ export = {
 
       // The badge is the sum of the account's folder counts, so mail that sits
       // in no folder (gone from the server, awaiting cleanup) is not counted.
-      const [unreadRows] = await db.execute<(RowDataPacket & AccountRow)[]>(accountUnreadQuery(EFFECTIVE_READ_SQL), [userId]);
+      const [unreadRows] = await db.execute<(RowDataPacket & AccountRow)[]>(accountUnreadQuery(EFFECTIVE_READ_SQL, await keepsSnoozedInLists(userId)), [userId]);
 
       const unreadByAccount: Record<string, number> = {};
       for (const row of unreadRows) {
@@ -664,10 +665,10 @@ export = {
       const query = new URL(req.url, 'http://localhost').searchParams;
       if (query.get('purge') === 'true') {
         return query.get('disconnect') === 'true'
-          ? await mailAccountLifecycle.disconnectAndPurgeAccount(userId, id, query.get('confirm_purge'))
-          : await mailAccountLifecycle.purgeAccount(userId, id, query.get('confirm_purge'));
+          ? await mailAccountLifecycle.disconnectAndPurgeAccount(userId, id, query.get('confirm_purge'), { req })
+          : await mailAccountLifecycle.purgeAccount(userId, id, query.get('confirm_purge'), { req });
       }
-      return await mailAccountLifecycle.disconnectAccount(userId, id);
+      return await mailAccountLifecycle.disconnectAccount(userId, id, { req });
     } catch (error) {
       return routeError(error, 'Could not change mail account connection');
     }

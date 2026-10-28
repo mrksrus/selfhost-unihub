@@ -81,7 +81,7 @@ beforeEach(() => {
       if (failLists) return { error: 'List refresh unavailable' };
       const params = new URLSearchParams(path.split('?')[1]);
       const emails = stored.filter(email => (params.get('folder') === 'snoozed' ? snoozedNow(email)
-        : (!params.get('folder') || email.folder === params.get('folder')) && !snoozedNow(email))
+        : (!params.get('folder') || email.folder === params.get('folder')) && (settings.snoozed_messages === 'keep' || !snoozedNow(email)))
         && (!params.get('account_id') || email.mail_account_id === params.get('account_id')));
       return { data: { emails: structuredClone(emails), pagination: { total: emails.length, limit: 50, offset: 0, page: 1, totalPages: 1 } } };
     }
@@ -170,6 +170,30 @@ describe('snooze', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
     expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Brought back' }));
     fireEvent.click(within(nav).getByRole('button', { name: /^Inbox/ }));
     expect(await screen.findByText('Subject b')).toBeInTheDocument();
+  });
+
+  it('kept in the folder, the row stays with its time, loses it when the server refuses, and loses it when brought back', async () => {
+    settings = { snoozed_messages: 'keep' };
+    const request = deferred<Reply>();
+    vi.mocked(api.post).mockReturnValueOnce(request.promise as never);
+    mount();
+    await screen.findByText('Subject a');
+    await snoozeFromRow('a');
+    expect(await within(row('a')).findByText(/^Snoozed until /)).toBeInTheDocument();
+    await act(async () => { request.resolve({ error: 'Mail is paused' }); });
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not snooze' })));
+    await waitFor(() => expect(within(row('a')).queryByText(/^Snoozed until /)).not.toBeInTheDocument());
+
+    await snoozeFromRow('a');
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: expect.stringMatching(/^Snoozed until /),
+      description: 'It stays in its folder. You get a notification then.' })));
+    // Still listed after the refresh that follows the answer.
+    await wait(50);
+    expect(within(row('a')).getByText(/^Snoozed until /)).toBeInTheDocument();
+    fireEvent.contextMenu(row('a'), { clientX: 20, clientY: 20 });
+    fireEvent.click(await screen.findByRole('button', { name: 'Unsnooze' }));
+    await waitFor(() => expect(api.delete).toHaveBeenCalledExactlyOnceWith('/mail/emails/a/snooze'));
+    await waitFor(() => expect(within(row('a')).queryByText(/^Snoozed until /)).not.toBeInTheDocument());
   });
 
   it('is not offered while offline', async () => {

@@ -3,6 +3,7 @@ import type { RouteRequest, ApiError, SqlExecutor } from '../types';
 import { folderConnections } from '../services/mail-folder-reconciliation';
 import { deleteMailFolder } from '../services/mail-folder-delete';
 import { folderMembershipSql, membershipCountQuery, unreadMembershipQuery } from '../services/mail-folder-view';
+import { keepsSnoozedInLists } from '../services/mail-snooze';
 import { filingAccountId, folderAcceptsAccount } from '../services/mail-filing';
 import crypto from 'crypto';
 import * as mailWritebacks from '../services/mail-writebacks';
@@ -105,7 +106,7 @@ async function applySenderRuleMoves(userId: string, updates: Move[], originals: 
 async function getMailFolderRowsWithCounts(userId: string, accountId: string | null = null) {
   const folders: Folder[] = await loadMailFoldersForUser(userId);
   const [countRows] = await db.execute<RowDataPacket[]>(
-    membershipCountQuery(EFFECTIVE_READ_SQL, accountId),
+    membershipCountQuery(EFFECTIVE_READ_SQL, accountId, await keepsSnoozedInLists(userId)),
     accountId && accountId !== 'legacy' && accountId !== 'all' ? [userId, accountId] : [userId]
   );
   const countsByFolder = new Map((countRows || []).map(row => [
@@ -525,7 +526,7 @@ export = {
       const includeByAccount = url.searchParams.get('include_by_account') === 'true';
       const hasAccountFilter = !!accountId && accountId !== 'all';
 
-      const folderQuery = unreadMembershipQuery(EFFECTIVE_READ_SQL, accountId);
+      const folderQuery = unreadMembershipQuery(EFFECTIVE_READ_SQL, accountId, await keepsSnoozedInLists(userId));
       const folderParams = [userId];
       if (hasAccountFilter && accountId !== 'legacy') folderParams.push(accountId);
 

@@ -49,6 +49,9 @@ export const SETTINGS = {
     mail_threaded_view: { scope: 'user', kind: { type: 'boolean' }, default: false },
     mail_preview_lines: { scope: 'user', kind: { type: 'integer', min: 0, max: 5 }, default: 1 },
     snooze_choices: { scope: 'user', kind: { type: 'list', item: /^[a-z0-9_]{1,16}$/, maxItems: SNOOZE_CHOICES.length, unique: true, allowed: SNOOZE_CHOICES }, default: ['1h', '1d', '1w'] },
+    // A view rule (mail-snooze.ts): which lists show a message while it is
+    // snoozed. 'hide' is the behaviour before 0.25.
+    snoozed_messages: { scope: 'user', kind: { type: 'enum', values: ['hide', 'keep'] }, default: 'hide' },
   },
   mail_account: {
     notify_enabled: { scope: 'mail_account', kind: { type: 'boolean' }, default: true },

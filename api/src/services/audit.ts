@@ -5,7 +5,8 @@ import { db } from '../state';
 import { getClientIP } from '../auth';
 import { currentRequestId, log } from '../log';
 
-// Who did what to which account: administration and account security. An
+// Who did what to which account: administration, account security and the
+// removal of a person's data (removing a mail account and its mail). An
 // entry is written in the same transaction as the change where there is one,
 // so a change and its record commit together. Entries carry ids, the client
 // address and a few allowlisted values, never passwords, codes or content,
@@ -15,6 +16,7 @@ const AUDIT_ACTIONS = [
   'auth.recovery_codes_replaced', 'auth.session_revoked', 'auth.account_deleted',
   'admin.password_reset', 'admin.role_changed', 'admin.two_factor_reset', 'admin.user_activated', 'admin.user_deactivated',
   'admin.user_deleted', 'admin.signup_mode_changed',
+  'mail.account_disconnected', 'mail.account_purged',
 ] as const;
 type AuditAction = typeof AUDIT_ACTIONS[number];
 type AuditDetails = Record<string, string | number | boolean | null>;

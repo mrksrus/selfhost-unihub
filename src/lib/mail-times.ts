@@ -37,6 +37,11 @@ const SNOOZE_LABELS: Record<SnoozeChoice, string> = {
 };
 export const snoozeChoiceLabel = (choice: SnoozeChoice) => SNOOZE_LABELS[choice];
 
+/** What happens to a snoozed message (Settings > Mail: Snoozed messages), for the snooze time pickers. */
+export const snoozeDescription = (keep: boolean) => keep
+  ? 'The message stays in its folder. At this time you get a notification.'
+  : 'The message leaves its list and comes back at this time, with a notification.';
+
 /** The person's snooze choices (Settings, Mail) as menu entries; unknown tokens are left out. */
 export function snoozeChoices(choices: readonly string[], now = new Date()): WhenChoice[] {
   return choices.filter((choice): choice is SnoozeChoice => choice in SNOOZE_LABELS)

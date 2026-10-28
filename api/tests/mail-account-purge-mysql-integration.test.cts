@@ -74,6 +74,10 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     const other = await seed('other');
     const paused = await seed('paused');
     const count = async (sql: string, params: FixtureValue) => Number((await connection.execute<RowDataPacket[]>(sql, params))[0][0].n);
+    // The activity log (audit_log): who removed which account, committed with the change.
+    const activity = async (user: string) => (await connection.execute<RowDataPacket[]>(
+      'SELECT action, actor_id, target_user_id, details FROM audit_log WHERE target_user_id = ? ORDER BY created_at, action', [user]))[0]
+      .map(row => ({ action: row.action, actor: row.actor_id, details: typeof row.details === 'string' ? JSON.parse(row.details) : row.details }));
 
     const preview = await lifecycle.purgePreview(owner.user, owner.mail, undefined, { disconnecting: true });
     assert.deepEqual({ emails: preview.email_count, calendars: preview.calendar_accounts, events: preview.calendar_events, blocked: preview.blocked },
@@ -87,6 +91,7 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     assert.match((await lifecycle.purgePreview(owner.user, owner.mail, undefined, { disconnecting: true })).reason!, /Calendar is turned off/);
     await assert.rejects(lifecycle.disconnectAndPurgeAccount(owner.user, owner.mail, 'owner@example.test'), /Calendar is turned off/);
     assert.equal(await count('SELECT COUNT(*) AS n FROM mail_accounts WHERE user_id = ? AND is_active = TRUE', [owner.user]), 1);
+    assert.deepEqual(await activity(owner.user), [], 'a refused removal leaves no entry');
     await setUserModules(owner.user, { modules: { calendar: { enabled: true } } });
 
     // A failing calendar delete rolls the whole purge back.
@@ -98,10 +103,18 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
       'The disconnect happened, the purge did not');
     assert.equal(await count('SELECT COUNT(*) AS n FROM emails WHERE user_id = ?', [owner.user]), 2);
     assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [owner.user]), 2);
+    const disconnected = { action: 'mail.account_disconnected', actor: owner.user, details: { mail_account: owner.mail } };
+    assert.deepEqual(await activity(owner.user), [disconnected], 'the disconnect is recorded, the rolled-back purge is not');
+    await lifecycle.disconnectAccount(owner.user, owner.mail);
+    assert.deepEqual(await activity(owner.user), [disconnected], 'disconnecting again changes nothing and records nothing');
 
     // Retry of the now disconnected account: a plain purge removes everything.
     const result = await lifecycle.purgeAccount(owner.user, owner.mail, 'owner@example.test');
     assert.equal(result.purged, true);
+    const purged = { action: 'mail.account_purged', actor: owner.user, details: { mail_account: owner.mail, messages: 2, calendar_events: 2 } };
+    assert.deepEqual(await activity(owner.user), [disconnected, purged]);
+    assert.ok(!JSON.stringify(await activity(owner.user)).includes('owner@example.test'), 'ids and counts, no address');
+    assert.deepEqual(await activity(other.user), []);
 
     assert.equal(await count('SELECT COUNT(*) AS n FROM mail_accounts WHERE user_id = ?', [owner.user]), 0);
     assert.equal(await count('SELECT COUNT(*) AS n FROM emails WHERE user_id = ?', [owner.user]), 0);

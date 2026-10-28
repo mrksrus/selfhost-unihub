@@ -29,7 +29,7 @@ export interface MailListRow {
   task_count: number;
   /** The conversation; null for older mail the background backfill has not reached yet (a conversation of its own). */
   thread_key: string | null;
-  /** Until when the message is snoozed (only in the Snoozed view and search); null otherwise. */
+  /** Until when the message is snoozed (in the Snoozed view and search, and in every list while the user keeps snoozed messages there); null otherwise. */
   snoozed_until: string | null;
   /** When a snooze last brought it back; the list may mark it. */
   snooze_returned_at: string | null;

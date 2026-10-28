@@ -15,6 +15,22 @@ type RouteBodyKind = 'json' | 'backup-upload' | 'none';
 type RouteCsrf = 'token' | 'background-header' | 'none';
 type RouteResponseMode = 'json' | 'stream';
 
+// F13: the data-safety policies a destructive action is subject to, named by
+// the route that removes or resets the data. 0.28 resolves them through the
+// settings and policies owner (F1) and refuses a forbidden action at the
+// boundary with POLICY_FORBIDS, before any side effect; until then the
+// declaration is checked here and walked by the route policy test.
+const DESTRUCTIVE_POLICIES = [
+  // Removing a mail account: disconnecting it, or deleting the disconnected account.
+  'accounts.mail.remove',
+  // Deleting UniHub's copy of an account's mail; the provider keeps its mail.
+  'accounts.mail.purge',
+] as const;
+type DestructivePolicy = typeof DESTRUCTIVE_POLICIES[number];
+// A policy that applies to every request of the route, or only when each
+// named query parameter has the given value (one route, several actions).
+type DestructiveDeclaration = DestructivePolicy | { policy: DestructivePolicy; query: Readonly<Record<string, string>> };
+
 interface RoutePolicy {
   // A module id gates the route behind that module's switch; null is a core route.
   module?: string | null;
@@ -31,6 +47,8 @@ interface RoutePolicy {
   // 'stream': the handler may write and own the response (SSE); the boundary
   // serializes nothing once headers were sent.
   response?: RouteResponseMode;
+  // F13: the policies of the data this route removes or resets (mutating routes only).
+  destructive?: readonly DestructiveDeclaration[];
 }
 // Method signatures so a handler declared with a narrower request or body
 // type (`body: Input`) is accepted; the body stays untrusted at dispatch.
@@ -56,6 +74,7 @@ const AUTH_VALUES = new Set<string>(['public', 'user', 'admin']);
 const BODY_KINDS = new Set<string>(['json', 'backup-upload', 'none']);
 const CSRF_VALUES = new Set<string>(['token', 'background-header', 'none']);
 const RESPONSE_MODES = new Set<string>(['json', 'stream']);
+const isDestructivePolicy = (value: unknown): value is DestructivePolicy => DESTRUCTIVE_POLICIES.includes(value as DestructivePolicy);
 
 function splitRouteKey(key: string) {
   const space = key.indexOf(' ');
@@ -86,6 +105,17 @@ function defineRoutes<T extends RouteTable>(table: T): T {
     }
     if (spec.csrf !== undefined && !CSRF_VALUES.has(spec.csrf)) invalid(key, `unknown csrf ${String(spec.csrf)}`);
     if (spec.response !== undefined && !RESPONSE_MODES.has(spec.response)) invalid(key, `unknown response ${String(spec.response)}`);
+    if (spec.destructive !== undefined) {
+      if (!MUTATING_METHODS.has(method)) invalid(key, 'only a mutating route is destructive');
+      if (!Array.isArray(spec.destructive) || !spec.destructive.length) invalid(key, 'destructive lists at least one policy');
+      for (const entry of spec.destructive) {
+        const conditional = typeof entry === 'object' && entry !== null;
+        if (!isDestructivePolicy(conditional ? entry.policy : entry)) invalid(key, `unknown destructive policy ${JSON.stringify(entry)}`);
+        if (conditional && (!entry.query || !Object.keys(entry.query).length || !Object.values(entry.query).every(value => typeof value === 'string'))) {
+          invalid(key, 'a conditional destructive policy names its query values');
+        }
+      }
+    }
     Object.freeze(spec);
   }
   return table;
@@ -138,5 +168,11 @@ function assertRouteTable(table: RouteTable, { moduleIds, sections = [], restore
   }
 }
 
-export { defineRoutes, mergeRouteTables, assertRouteTable, DEFAULT_BODY_LIMIT, MUTATING_METHODS };
-export type { RouteSpec, RouteTable, RoutePolicy, RouteAuth, RouteBodyKind, RouteCsrf, RouteResponseMode, PublicRouteSpec, UserRouteSpec };
+/** The destructive policies one request of the route is subject to. */
+function destructivePolicies(spec: Pick<RoutePolicy, 'destructive'>, query: URLSearchParams): DestructivePolicy[] {
+  return (spec.destructive ?? []).flatMap(entry => typeof entry === 'string' ? [entry]
+    : Object.entries(entry.query).every(([name, value]) => query.get(name) === value) ? [entry.policy] : []);
+}
+
+export { defineRoutes, mergeRouteTables, assertRouteTable, destructivePolicies, DEFAULT_BODY_LIMIT, MUTATING_METHODS, DESTRUCTIVE_POLICIES };
+export type { RouteSpec, RouteTable, RoutePolicy, RouteAuth, RouteBodyKind, RouteCsrf, RouteResponseMode, PublicRouteSpec, UserRouteSpec, DestructivePolicy, DestructiveDeclaration };

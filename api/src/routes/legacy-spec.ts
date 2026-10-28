@@ -1,6 +1,6 @@
 import type { ServerResponse } from 'node:http';
 import type { RouteRequest, RouteResponse } from '../types';
-import type { RouteSpec, RouteTable } from '../http/route';
+import type { DestructiveDeclaration, RouteSpec, RouteTable } from '../http/route';
 import { DEFAULT_BODY_LIMIT, MUTATING_METHODS, defineRoutes } from '../http/route';
 import { getModuleForPath } from '../services/module-catalog';
 import { BACKUP_UPLOAD_MAX_SIZE, MAIL_COMPOSE_REQUEST_MAX_SIZE } from '../config';
@@ -82,6 +82,14 @@ const BACKGROUND_HEADER_CSRF_KEYS: ReadonlySet<string> = new Set([
   'DELETE /api/recordings/uploads/:id',
 ]);
 
+// F13: the data-safety policies of the destructive actions among these
+// routes (http/route.ts). DELETE /api/mail/accounts/:id disconnects an
+// account, or with purge=true deletes the disconnected account with UniHub's
+// copy of its mail (disconnect=true does both in one step).
+const DESTRUCTIVE_BY_ROUTE: Readonly<Record<string, readonly DestructiveDeclaration[]>> = {
+  'DELETE /api/mail/accounts/:id': ['accounts.mail.remove', { policy: 'accounts.mail.purge', query: { purge: 'true' } }],
+};
+
 function legacyRouteSpec(key: string, handler: LegacyHandler): RouteSpec {
   const space = key.indexOf(' ');
   const method = key.slice(0, space);
@@ -91,6 +99,7 @@ function legacyRouteSpec(key: string, handler: LegacyHandler): RouteSpec {
     restoreSection: restoreSectionFor(method, pathname),
     body: { limit: bodyLimitFor(key), kind: (key === 'POST /api/backup/import' ? 'backup-upload' : 'json') as 'backup-upload' | 'json' },
     ...(BACKGROUND_HEADER_CSRF_KEYS.has(key) ? { csrf: 'background-header' as const } : {}),
+    ...(DESTRUCTIVE_BY_ROUTE[key] ? { destructive: DESTRUCTIVE_BY_ROUTE[key] } : {}),
   };
   // A legacy handler accepts a nullable user id, so it serves either auth level.
   const run = handler as unknown as (req: RouteRequest, userId: string | null, body: unknown, res: ServerResponse) => Promise<RouteResponse | undefined>;
@@ -101,5 +110,5 @@ function legacyRoutes(table: LegacyRouteTable): RouteTable {
   return defineRoutes(Object.fromEntries(Object.entries(table).map(([key, handler]) => [key, legacyRouteSpec(key, handler)])));
 }
 
-export { legacyRoutes, legacyRouteSpec, PUBLIC_ROUTE_KEYS, BODY_LIMIT_BY_ROUTE, RESTORE_SECTION_BY_PATH_PREFIX, BACKGROUND_HEADER_CSRF_KEYS, bodyLimitFor };
+export { legacyRoutes, legacyRouteSpec, PUBLIC_ROUTE_KEYS, BODY_LIMIT_BY_ROUTE, RESTORE_SECTION_BY_PATH_PREFIX, BACKGROUND_HEADER_CSRF_KEYS, DESTRUCTIVE_BY_ROUTE, bodyLimitFor };
 export type { LegacyHandler, LegacyRouteTable };

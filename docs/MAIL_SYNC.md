@@ -698,9 +698,26 @@ the snoozed messages.
 ### Snooze
 
 Snooze is UniHub's own state (`emails.snoozed_until`); nothing changes at the
-provider and the message keeps its folders. Until its time the message is left
-out of every list, conversation and count; search still finds it and the
-Snoozed view lists it. The time must lie between one minute and a year ahead;
+provider and the message keeps its folders. Where the message waits is the
+user setting `snoozed_messages` (Settings, Mail: Snoozed messages):
+
+- `hide` (default, the behaviour before 0.25): until its time the message is
+  left out of every list, conversation and count; search still finds it and
+  the Snoozed view lists it.
+- `keep`: the message stays in every list it belongs to (its folders, All
+  mail, Starred, its conversation), marked "Snoozed until …", and the folder
+  counts, unread counts and account badges count it as they count any other
+  message. The Snoozed view still lists it.
+
+Either way it comes back the same: at its time the worker clears the snooze,
+sends the notification and marks it "Back from snooze". The setting is a view
+rule, not part of a snooze: changing it applies at once to every message that
+is snoozed then, which keeps its time (switching to `hide` takes snoozed
+messages out of the lists until their time; switching to `keep` shows them
+again). The server applies it to `GET /api/mail/emails`, `/api/mail/threads`,
+`/api/mail/emails/:id/thread`, `/api/mail/folders`, `/api/mail/unread-counts`
+and the badges of `/api/mail/accounts`; the offline snapshot carries it as
+`keepSnoozed`, so offline lists follow the setting saved with the snapshot. The time must lie between one minute and a year ahead;
 drafts cannot be snoozed. Every 30 seconds the worker brings back the messages
 whose time has come (`services/mail-snooze.ts`), each in one transaction with
 its notification (kind `snooze`), so a crash neither loses nor repeats it. The
@@ -713,8 +730,9 @@ comes back on the next worker pass.
 In the app, Snooze is on the reader's toolbar and in a row's menu, offering
 the person's `snooze_choices` (Settings, Mail; "tomorrow" and "next week" mean
 08:00 local on that day) and a date and time of their own. The row leaves its
-list before the server answers, with Undo on the toast; a refused request puts
-it back and says why. The **Snoozed** view (`folder=snoozed`) lists the waiting
+list before the server answers (with `keep` it stays and shows its time), with
+Undo on the toast; a refused request puts it back and says why. After the
+setting is saved, the app loads the mail lists and counts again. The **Snoozed** view (`folder=snoozed`) lists the waiting
 messages with their return time and an "Unsnooze" action. A message that came
 back within the last day and is still unread carries a "Back from snooze"
 mark. Offline reading mode disables both actions (`src/hooks/use-mail-snooze.tsx`).

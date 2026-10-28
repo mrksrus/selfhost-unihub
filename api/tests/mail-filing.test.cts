@@ -20,6 +20,8 @@ test('list and detail preserve provider identity while presenting the receiving 
   stored.is_read = 1;
   stored.is_starred = 0;
   installDb(t, { async execute(sql: string, params: FixtureValue) {
+    // The installation's setting policies (the snoozed_messages lookup) belong to no user.
+    if (sql.includes('FROM setting_policies')) return [[]];
     assert.equal(params.includes('user'), true);
     if (sql.includes('COUNT(*)')) return [[{ total: 1 }]];
     if (sql.includes('FROM email_attachments')) return [[]];

@@ -12,7 +12,10 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 for (const [read, star] of [[0, 0], [0, 1], [1, 0], [1, 1], ['0', '0'], ['0', '1'], ['1', '0'], ['1', '1']] as const) {
   test(`list/detail decode independent read=${JSON.stringify(read)} star=${JSON.stringify(star)}`, async t => {
     installDb(t, { execute: async (sql: string, args: FixtureValue) => {
+      // The user's settings and the installation's policies (the snoozed_messages lookup).
+      if (sql.includes('FROM setting_policies')) return [[]];
       assert(args.includes('owner'));
+      if (sql.includes('FROM user_settings')) return [[]];
       if (sql.includes('COUNT(*)')) return [[{ total: 1 }]];
       if (sql.includes('FROM email_attachments') || sql.startsWith('SELECT e.id, e.title, e.todo_status')) return [[]];
       return [[{ id: 'email', user_id: 'owner', to_addresses: '[]', is_read: read, is_starred: star,

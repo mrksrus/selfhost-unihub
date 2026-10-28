@@ -10,7 +10,7 @@ import { escapeLike } from './sql';
 import { EMAIL_TASK_COUNT_SQL } from './email-tasks';
 import { isModuleEnabled } from './module-settings';
 import { badRequest, notFound } from '../http/errors';
-import { NOT_SNOOZED_SQL, SNOOZED_SQL } from './mail-snooze';
+import { keepsSnoozedInLists, NOT_SNOOZED_SQL, SNOOZED_SQL } from './mail-snooze';
 
 // The mail list's view (folder, account, read/star and search filters) and
 // row shape, shared by the message list (GET /api/mail/emails) and the
@@ -30,13 +30,16 @@ interface MailListView {
   accountId: string | null;
   hasFolderFilter: boolean;
   hasAccountFilter: boolean;
+  /** The view shows snoozed messages: the Snoozed view, a search, or the user keeps them in the lists. */
+  showsSnoozed: boolean;
   includeCount: boolean;
   limit: number;
   offset: number;
   page: number;
 }
 
-function mailListView(searchParams: URLSearchParams, userId: string): MailListView {
+/** `keepSnoozed` is the user's snoozed_messages setting (keepsSnoozedInLists). */
+function mailListView(searchParams: URLSearchParams, userId: string, keepSnoozed: boolean): MailListView {
   const folder = searchParams.get('folder');
   const accountId = searchParams.get('account_id');
   const hasFolderFilter = !!folder && folder !== 'all';
@@ -67,8 +70,10 @@ function mailListView(searchParams: URLSearchParams, userId: string): MailListVi
     where.push(`${EFFECTIVE_STAR_SQL} = ?`);
     params.push(isStarredParam === 'true' ? 1 : 0);
   }
-  // Snoozed messages leave the lists until they come back; search finds them.
-  if (folder !== 'snoozed' && !searchParam) where.push(NOT_SNOOZED_SQL);
+  // Snoozed messages leave the lists until they come back, unless the user
+  // keeps them there; search finds them.
+  const showsSnoozed = folder === 'snoozed' || !!searchParam || keepSnoozed;
+  if (!showsSnoozed) where.push(NOT_SNOOZED_SQL);
   if (searchParam) {
     const searchValue = `%${escapeLike(searchParam.toLowerCase())}%`;
     where.push(`(
@@ -84,7 +89,7 @@ function mailListView(searchParams: URLSearchParams, userId: string): MailListVi
   const requestedOffset = parseInt(searchParams.get('offset') || '0', 10);
   const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50;
   const offset = Number.isFinite(requestedOffset) ? Math.max(requestedOffset, 0) : 0;
-  return { whereSql: where.join(' AND '), params, folder, accountId, hasFolderFilter, hasAccountFilter,
+  return { whereSql: where.join(' AND '), params, folder, accountId, hasFolderFilter, hasAccountFilter, showsSnoozed,
     includeCount: searchParams.get('include_count') !== 'false', limit, offset, page: Math.max(1, Math.floor(offset / limit) + 1) };
 }
 
@@ -166,7 +171,7 @@ const placeholders = (values: readonly unknown[]) => values.map(() => '?').join(
  * conversation is listed once, at the place of its newest such message.
  */
 async function listMailThreads(userId: string, searchParams: URLSearchParams): Promise<MailThreadListResponse> {
-  const view = mailListView(searchParams, userId);
+  const view = mailListView(searchParams, userId, await keepsSnoozedInLists(userId));
   const cursor = parseCursor(searchParams.get('cursor'));
   const columns = await mailListColumns(userId);
   // The newest message in the view of its conversation: no message of the
@@ -201,8 +206,8 @@ async function listMailThreads(userId: string, searchParams: URLSearchParams): P
 
   const keys = [...new Set(page.map(row => row.thread_key).filter((key): key is string => typeof key === 'string'))];
   // A conversation's size and senders leave out its snoozed messages, except
-  // where the view shows them (the Snoozed view and search).
-  const snoozedSql = view.folder === 'snoozed' || (searchParams.get('search') || '').trim() ? '' : ` AND ${NOT_SNOOZED_SQL}`;
+  // where the view shows them (the Snoozed view, search, or kept in the lists).
+  const snoozedSql = view.showsSnoozed ? '' : ` AND ${NOT_SNOOZED_SQL}`;
   const inView = new Map<string, RowDataPacket>(), totals = new Map<string, number>(), senders = new Map<string, RowDataPacket[]>();
   if (keys.length) {
     const [counted] = await db.execute<RowDataPacket[]>(`SELECT thread_key, COUNT(*) AS message_count,
@@ -244,14 +249,19 @@ async function listMailThreads(userId: string, searchParams: URLSearchParams): P
   };
 }
 
-/** Every message of the conversation the user's message belongs to, oldest first, for the reader; its other snoozed messages stay hidden. */
+/**
+ * Every message of the conversation the user's message belongs to, oldest
+ * first, for the reader; its other snoozed messages stay hidden unless the
+ * user keeps snoozed messages in the lists.
+ */
 async function mailThreadMessages(userId: string, emailId: string): Promise<MailThreadResponse> {
   const [[anchor]] = await db.execute<RowDataPacket[]>('SELECT thread_key FROM emails WHERE id = ? AND user_id = ?', [emailId, userId]);
   if (!anchor) throw notFound('EMAIL_NOT_FOUND', 'Email not found');
   const columns = await mailListColumns(userId);
+  const snoozedSql = await keepsSnoozedInLists(userId) ? '' : ` AND (id = ? OR ${NOT_SNOOZED_SQL})`;
   const [rows] = anchor.thread_key
-    ? await db.execute<RowDataPacket[]>(`SELECT ${columns} FROM emails WHERE user_id = ? AND thread_key = ? AND (id = ? OR ${NOT_SNOOZED_SQL})
-        ORDER BY received_at DESC, id DESC LIMIT ${MAIL_THREAD_MAX_MESSAGES + 1}`, [userId, anchor.thread_key, emailId])
+    ? await db.execute<RowDataPacket[]>(`SELECT ${columns} FROM emails WHERE user_id = ? AND thread_key = ?${snoozedSql}
+        ORDER BY received_at DESC, id DESC LIMIT ${MAIL_THREAD_MAX_MESSAGES + 1}`, [userId, anchor.thread_key, ...(snoozedSql ? [emailId] : [])])
     : await db.execute<RowDataPacket[]>(`SELECT ${columns} FROM emails WHERE user_id = ? AND id = ?`, [userId, emailId]);
   const truncated = rows.length > MAIL_THREAD_MAX_MESSAGES;
   let kept = rows.slice(0, MAIL_THREAD_MAX_MESSAGES);

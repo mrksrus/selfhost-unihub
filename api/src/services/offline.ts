@@ -6,6 +6,7 @@ import { db } from '../state';
 import { getOrderedUserModules, getUserPages } from './module-settings';
 import { presentMailFiling } from './mail-filing';
 import { folderConnections } from './mail-folder-reconciliation';
+import { keepsSnoozedInLists } from './mail-snooze';
 import {
   serializeCalendarEvent,
   serializeCalendarAccount,
@@ -117,6 +118,8 @@ async function collectOfflineSnapshot(connection: SqlExecutor, userId: string) {
     attachmentsByEmail.set(attachment.email_id, list);
   }
   const links = modules.get('mail') ? await folderConnections(userId, connection) : new Map();
+  // The lists offline show snoozed messages as the user's lists do online.
+  const keepSnoozed = modules.get('mail') ? await keepsSnoozedInLists(userId, connection) : false;
   const emails = data.emails.map(row => ({ ...presentMailFiling(row), to_addresses: parseRecipients(row.to_addresses),
     cc_addresses: parseRecipients(row.cc_addresses), bcc_addresses: parseRecipients(row.bcc_addresses),
     is_read: !!row.is_read, is_starred: !!row.is_starred, is_draft: false, has_attachments: !!row.has_attachments,
@@ -127,7 +130,7 @@ async function collectOfflineSnapshot(connection: SqlExecutor, userId: string) {
     calendars: projectRows(data.calendars.map(serializeCalendarCalendar), SECTIONS.calendars),
     calendarAccounts: projectRows(data.calendarAccounts.map(serializeCalendarAccount), SECTIONS.calendarAccounts),
     mailAccounts: data.mailAccounts.map(row => ({ ...row, is_active: !!row.is_active })),
-    folders: data.folders.map(row => ({ ...row, is_system: !!row.is_system, connected_account_ids: links.get(row.slug) || [] })), emails,
+    folders: data.folders.map(row => ({ ...row, is_system: !!row.is_system, connected_account_ids: links.get(row.slug) || [] })), emails, keepSnoozed,
     limits: { mail: OFFLINE_MAIL_LIMIT, bytes: OFFLINE_MAX_BYTES, attachments: false }, bytes: 0 };
   let measuredBytes;
   while ((measuredBytes = Buffer.byteLength(JSON.stringify(snapshot))) !== snapshot.bytes) snapshot.bytes = measuredBytes;
