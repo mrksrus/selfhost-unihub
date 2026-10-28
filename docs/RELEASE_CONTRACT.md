@@ -50,9 +50,10 @@ shown before publishing and how.
 | The Android apps of the support window behave as recorded on Android 10, 16 and 17 (17 on a real phone while its emulator image is broken, see [Android compatibility](ANDROID_COMPATIBILITY.md)), and updating keeps the saved server | `scripts/android-support-window.mts`, then `android/scripts/window-test.sh` on each emulator | an emulator and `adb` ([Android compatibility](ANDROID_COMPATIBILITY.md)) |
 | The candidate app's contacts sync both ways with the server (added, edited, joined and deleted on either side, many deletions held for an answer), survive the update from the previous release's app, and follow a session end and a server change | `android/scripts/contacts-test.sh` on each emulator | an emulator and `adb` ([Android](ANDROID.md#contacts-on-the-phone)) |
 | The candidate app receives, shows, acknowledges and opens notifications over its own connection, survives an app update and stops on sign-out | `android/scripts/notifications-test.sh` on each emulator | an emulator and `adb` ([Android](ANDROID.md#notifications)) |
+| The Android apps work against real servers: the candidate app against this image and each earlier server release in the window, and each earlier app against this image. Connecting, signing in with and without a two-factor code, staying signed in after the app is ended, an upload through Android's document picker, a byte-identical download, the microphone permission and a recording, and signing out, each confirmed on the server (Android 16) | `scripts/android-server-check.mts` on the Android 16 emulator (its table is in the step log and the run summary) | an emulator and `adb`; `--local <url> --apk <apk>` against `tools/e2e/stack.sh` ([below](#what-the-android-server-check-proves)) |
 | A published image carries the release-signed Android app | Check and keep the Android app | — |
 | Every user flow covered by the end-to-end suite works through the image's nginx configuration, the API, the database and synthetic mail and CalDAV providers, on desktop, phone and Android-app targets | not in CI yet: run locally on the candidate and attach the result to the pull request | `tools/e2e/stack.sh up`, then `npm test` in `tools/e2e` ([e2e](../tools/e2e/README.md)) |
-| The candidate Android app works against the candidate server: signing in, the document picker and the flows under `tools/e2e/android/` | not in CI yet: run locally on the candidate | `tools/e2e/android.sh up`, then `npm run android` in `tools/e2e` |
+| The candidate Android app's debug build passes the flows under `tools/e2e/android/` against the candidate server (attachments in the phone composer) | not in CI yet: run locally on the candidate | `tools/e2e/android.sh up`, then `npm run android` in `tools/e2e` |
 
 `scripts/pwa-update-check.mts` exits with 75 when headless Chrome itself stops
 answering (a browser-level DevTools command times out), which says nothing
@@ -66,13 +67,15 @@ results for the exact candidate and artifacts. Missing evidence blocks release.
 This is a workflow requirement; the present CI does not enforce these manual
 rows. Do not describe a green CI run as full release acceptance.
 
-- **Android/server pairings, every release.** Test the candidate app against
-  the candidate server and the three previous server releases, and each
-  supported earlier app in the window against the candidate server. Record
-  app version/hash, server version/image digest, OS/WebView and outcomes for
-  login, two-factor login, session reload, deep links, upload/download bytes,
-  file picker, microphone permission/recording, theme chrome and logout.
-  An explicitly known-broken historical app uses its documented installation
+- **Android/server pairings, every release.** CI runs the pairings (the
+  candidate app against the candidate server and the three previous server
+  releases, each supported earlier app in the window against the candidate
+  server) on the Android 16 emulator for sign-in, two-factor sign-in, session
+  reload, upload/download bytes, file picker, microphone and logout. The
+  release owner still records deep links and theme chrome for those pairings,
+  and the candidate app against the candidate server on a real phone, with
+  app version/hash, server version/image digest and OS/WebView. An
+  explicitly known-broken historical app uses its documented installation
   upgrade path instead, and is reported as an exception, never as compatible.
   Next release's candidate supplies the forward pairing; unknown future
   server versions cannot be tested today.
@@ -160,6 +163,51 @@ finish its upload, and must save the contact.
   notice and then that closing the tabs, as the notice says, opens the new
   version still signed in. Identical builds are reported as not run.
 
+## What the Android server check proves
+
+`scripts/android-server-check.mts` runs on the Android 16 emulator after the
+support-window, contacts and notifications tests. For each pairing it starts a
+server from scratch: the image on the host network as in the container smoke
+test (production settings, Secure cookies), with an empty `_test` database,
+its own uploads volume and `ALLOWED_ORIGINS` naming the app's address, as an
+installation behind a proxy would. Through the API it creates two synthetic
+people, one of them with two-factor sign-in. The earlier server releases are
+their published images; the earlier apps are the ones the support window
+collected and checked.
+
+The app is installed fresh and reaches the server as `http://127.0.0.1:8098`
+through `adb reverse`: the app allows plain HTTP only for development hosts,
+and `127.0.0.1` is a secure context, so cookies, service workers and the
+microphone behave as over HTTPS. The release-built app cannot be inspected
+from outside, so the check reads and taps Android's accessibility tree
+(uiautomator), WebView content included, as a person would. Each step is
+confirmed on the server, not on the screen alone:
+
+1. **Install and connect:** the "Open in app" link, Android's question, the
+   server's sign-in page.
+2. **Sign in:** email and password; the server lists a session with the app's
+   user agent. The app's own questions about contacts and notifications are
+   answered Not now.
+3. **Reopen:** the app is left with Home, ended and started again, and is still
+   signed in.
+4. **Upload:** a synthetic WAV file is picked in Android's document picker on
+   the Recordings page; the server holds exactly its bytes.
+5. **Download:** the recording's Download saves the same bytes in Downloads.
+6. **Microphone:** Record asks for Android's microphone permission, which is
+   granted; the recording reaches the server with content.
+7. **Sign out:** the app shows the sign-in page, and the server no longer
+   lists the app's session.
+8. **Two-factor sign-in:** password, then a current authentication code; the
+   server lists the app's session.
+
+It prints a table (one row per pairing, one mark per step), adds it to the
+run's summary and keeps it, with a screenshot of any failed step, under
+`release-evidence/android-server/`. Any failed pairing fails the step. With
+`--local <url> --apk <apk>` and `UNIHUB_ANDROID_ADMIN=<email>:<password>` it
+runs one app against a server that is already running, such as
+`tools/e2e/stack.sh` (sign-ups are rate-limited per address, so restart its
+API after a few runs).
+
 ## Android
 
 The support window and its checks are described in
@@ -174,7 +222,8 @@ Report, for the exact commit and image:
 
 - the CI run and its result for each step above, the image digest and the
   `unihub-release-evidence` artifact;
-- the Android table printed by each emulator step;
+- the Android table printed by each emulator step, and the real-server
+  table of the Android 16 step;
 - anything verified outside CI (a real phone, a real mail provider), named as
   such and kept separate from CI results;
 - every check that did not run, as not run.
@@ -186,16 +235,16 @@ any of these.
 
 These are not covered yet; do not report them as passing.
 
-- **Android with a real server.** The CI emulator runs load a stub page. The
-  local e2e suite runs the candidate app against the candidate server for the
-  flows under `tools/e2e/android/` (signing in, the document picker); two-factor
-  codes, downloads, the microphone and logout in the app are not tested yet, nor are older apps against the real
-  candidate server or the candidate app against older servers. The app's
-  notifications are checked against a stub server on the emulators and the real
-  server's side by `android-notifications-mysql-integration.test.cts`, not the
-  app and the real server together, nor battery-saving behaviour of real
-  phones (Doze, manufacturer task killers). The app reads `features` (from
-  0.22.1, for notifications) but not `protocol` or `minApp` yet.
+- **Android with a real server.** The real-server check runs on Android 16
+  only: the Android 10 emulator image's WebView (74) cannot run the web app,
+  which needs a current WebView, as on any phone that updates it, and the
+  Android 17 image does not boot. Android 10 and 17 with a real server rely on
+  real phones. Deep links into pages and the theme colours of the system bars
+  are checked against a stub page only. The app's contacts and notifications
+  are checked against stub servers on the emulators and the real server's
+  side by `android-notifications-mysql-integration.test.cts`, not the app and
+  the real server together, nor battery-saving behaviour of real phones
+  (Doze, manufacturer task killers).
 - **Server upgrades.** Starting an earlier release with data, then updating its
   image and checking migrations, reads, writes and a backup, is not automated.
 - **Restores across versions.** Only frozen 0.9.23/0.10.3 archives and

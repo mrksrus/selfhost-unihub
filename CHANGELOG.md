@@ -6,6 +6,21 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.25.0 (unreleased)
+
+### Release checks
+
+- **The Android app is tested against a real server.** Every pull request
+  now runs the Android app on the Android 16 emulator against the image it
+  built, and against the earlier server releases it supports, instead of a
+  stub page; the apps of those earlier releases run against the new image.
+  Each run connects, signs in with and without a two-factor code, stays
+  signed in after the app is ended, uploads a file picked in Android's
+  document picker, downloads it again unchanged, records with the
+  microphone after Android asks for permission, and signs out. The results
+  appear as a table in the run (see the
+  [release contract](docs/RELEASE_CONTRACT.md)).
+
 ## 0.24.3
 
 Follow-up fixes for 0.24: PDFs, attachments, links from tasks, signatures,
