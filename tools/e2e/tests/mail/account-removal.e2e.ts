@@ -17,6 +17,8 @@ async function connectedAccount(app: App, screen: Screen, browser: unknown, what
   await sendMail({ from: `Sam Sender <${outside.sam}>`, to: [mailbox], subject, text: 'Kept at the provider.' });
   await app.open('/mail');
   const account = await addMailAccount(browser, mailbox);
+  // Opened again, so the page's account and sync lists include the new account.
+  await app.open('/mail');
   await waitForRow(screen, subject, mailbox);
   expect((await emailsWithSubject(browser, 'inbox', subject)).length, 'synced into UniHub').toBe(1);
   return { mailbox, subject, account };

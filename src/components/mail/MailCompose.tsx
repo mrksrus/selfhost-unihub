@@ -296,7 +296,7 @@ function PhoneComposeHeader({ compose, from, fromAddress }: { compose: MailCompo
         </button>
       )}
       <FieldRow label="Subject" htmlFor="compose-subject">
-        <Input id="compose-subject" className={INLINE_FIELD} placeholder="Subject" value={compose.composeForm.subject}
+        <Input id="compose-subject" className={INLINE_FIELD} value={compose.composeForm.subject}
           onChange={(e) => compose.updateComposeForm({ subject: e.target.value })} />
       </FieldRow>
     </>
@@ -511,12 +511,17 @@ function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '',
   );
 }
 
-/** The formatting buttons; the attachments follow Image URL on phones, and the optional features end the row. */
-function RichToolbar({ compose, editorRef, attachments, features, className }: {
-  compose: MailCompose; editorRef: RefObject<HTMLDivElement>; attachments?: ReactNode; features: ReactNode[]; className?: string;
+/**
+ * The formatting buttons; the attachments follow Image URL on phones, and the
+ * optional features end the row. `scrolling` is the phone's one-row toolbar:
+ * the formatting buttons scroll sideways under a fade, while the attach button
+ * and the file squares stay in view at the row's end (P-26).
+ */
+function RichToolbar({ compose, editorRef, attachments, features, className, scrolling = false }: {
+  compose: MailCompose; editorRef: RefObject<HTMLDivElement>; attachments?: ReactNode; features: ReactNode[]; className?: string; scrolling?: boolean;
 }) {
-  return (
-    <div className={cn('flex items-center gap-1', className)}>
+  const formatting = (
+    <>
       <Button type="button" variant="ghost" size="icon-sm" title="Bold" onMouseDown={(e) => e.preventDefault()} onClick={() => compose.applyComposeCommand(editorRef, 'bold')}>
         <Bold className="h-4 w-4" />
       </Button>
@@ -584,6 +589,20 @@ function RichToolbar({ compose, editorRef, attachments, features, className }: {
       >
         <ImageIcon className="h-4 w-4" />
       </Button>
+    </>
+  );
+  if (scrolling) return (
+    <div className={cn('flex items-center gap-1', className)}>
+      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>*]:shrink-0 [mask-image:linear-gradient(to_right,black_calc(100%-1.25rem),transparent)]">
+        {formatting}
+      </div>
+      {attachments && <div className="flex max-w-[55%] shrink-0 items-center">{attachments}</div>}
+      {features.length > 0 && <div className="flex shrink-0 items-center gap-1">{features}</div>}
+    </div>
+  );
+  return (
+    <div className={cn('flex items-center gap-1', className)}>
+      {formatting}
       {attachments}
       {features.length > 0 && <div className="ml-auto flex shrink-0 items-center gap-1">{features}</div>}
     </div>
@@ -655,8 +674,7 @@ function phoneComposeParts({ compose, editorRef, messageRef, onFocusMessage, onI
       <div className="shrink-0 border-t border-border bg-muted/30">
         {ownLine && <div className="flex items-center gap-1 border-b border-border px-2 py-1">{features}</div>}
         {rich
-          ? <RichToolbar compose={compose} editorRef={editorRef} attachments={attachments} features={ownLine ? [] : features}
-            className="flex-nowrap overflow-x-auto overscroll-x-contain px-2 py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" />
+          ? <RichToolbar compose={compose} editorRef={editorRef} attachments={attachments} features={ownLine ? [] : features} scrolling className="px-2 py-1" />
           : <div className="flex items-center gap-1 px-2 py-1">
             <div className="mr-auto flex min-w-0 flex-1 items-center">{attachments}</div>
             {!ownLine && features}

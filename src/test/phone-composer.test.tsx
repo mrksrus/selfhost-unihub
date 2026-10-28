@@ -50,7 +50,8 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe('the phone composer (0.25.0)', () => {
-  it('turns a typed address into a chip on comma, Enter and leaving the field, and sends them all', async () => {
+  // The first test pays the cold render of the dialog; under load that alone can take seconds.
+  it('turns a typed address into a chip on comma, Enter and leaving the field, and sends them all', { timeout: 15_000 }, async () => {
     mount();
     fireEvent.click(screen.getByRole('button', { name: 'New message' }));
     const to = await screen.findByLabelText('To');

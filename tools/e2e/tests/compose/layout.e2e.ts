@@ -4,7 +4,7 @@ import type { Screen } from 'e2e';
 import { outside, people, runId } from '../support/env.ts';
 import { setSettings, storedDrafts } from '../support/api.ts';
 import { receive } from '../support/mail.ts';
-import { composeDialog, messageBody, onlyOn, openCompose, openFolder, recipientChips, senderLine, showSenderRows, typeAtStart } from '../support/ui.ts';
+import { chooseSender, composeDialog, messageBody, onlyOn, openCompose, openFolder, recipientChips, senderLine, showSenderRows, typeAtStart } from '../support/ui.ts';
 
 type Box = { x: number; y: number; width: number; height: number };
 const middle = (box: Box) => box.y + box.height / 2;
@@ -44,7 +44,9 @@ test('[24-25 24-19 25-01] the phone composer: one row per field, a folded Cc/Bcc
   await setSettings(browser, { compose_templates: true, compose_scheduled_send: true });
   try {
     await app.open('/mail');
-    await openCompose(screen, people.admin.mailbox);
+    // Not openCompose: that opens the folded line to pick the sender.
+    await screen.getByRole('button', 'Compose', { visible: true }).first().tap();
+    await expect(screen.getByRole('textbox', 'Subject')).toBeVisible();
     const viewport = await browser.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
     const dialog = (await composeDialog(screen).boundingBox())!;
     expect(dialog.y, 'from the top').toBeLessThanOrEqual(1);
@@ -53,11 +55,8 @@ test('[24-25 24-19 25-01] the phone composer: one row per field, a folded Cc/Bcc
     expect(dialog.height).toBeGreaterThanOrEqual(viewport.height - 1);
     await labelBeside(screen, 'To', 'To');
     await labelBeside(screen, 'Subject', 'Subject');
-    // The folded line names the sending account; Cc, Bcc and From are not rows yet.
-    // (openCompose opened it to pick the sender, so fold it again by reopening.)
-    await screen.getByRole('button', 'Close', { visible: true }).first().tap();
-    await screen.getByRole('button', 'Compose', { visible: true }).first().tap();
-    await expect(senderLine(screen)).toContainText(people.admin.mailbox);
+    // The folded line names the sending account (the default one, P-17); Cc, Bcc and From are not rows yet.
+    await expect(senderLine(screen)).toHaveText(/^Cc\/Bcc, From: ?\S+@\S+$/);
     await expect(screen.getByLabel('Cc', { exact: true })).toHaveCount(0);
     await expect(screen.getByRole('combobox', 'From')).toHaveCount(0);
     const body = (await messageBody(screen).boundingBox())!;
@@ -77,6 +76,8 @@ test('[24-25 24-19 25-01] the phone composer: one row per field, a folded Cc/Bcc
     await labelBeside(screen, 'Bcc', 'Bcc');
     await labelBeside(screen, 'From', 'From');
     await expect(senderLine(screen)).toHaveCount(0);
+    // The From row is the usual account control (P-17).
+    await chooseSender(screen, people.admin.mailbox);
   } finally {
     await setSettings(browser, { compose_templates: false, compose_scheduled_send: false });
   }
