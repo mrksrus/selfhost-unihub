@@ -31,7 +31,8 @@ let chooserShots = 0;
 async function closeChooser() {
   for (let attempt = 0; attempt < 30; attempt++) {
     const top = adb('shell', 'dumpsys', 'activity', 'activities').split('\n').find(line => line.includes('topResumedActivity')) ?? '';
-    if (!top.includes(PACKAGE)) {
+    // Between two activities nothing is resumed; wait for the next one.
+    if (top.includes('ActivityRecord') && !top.includes(PACKAGE)) {
       // Android's chooser, or the only app for the type, which it starts at once (a PDF viewer).
       console.log(`over the app: ${top.trim()}`);
       await sleep(2500);
