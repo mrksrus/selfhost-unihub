@@ -40,6 +40,13 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   Snoozed view lists it either way. Changing the choice applies at once to
   messages already snoozed.
 
+- **Open with, Save to Downloads and Share in the Android app.** The
+  attachment viewer in the app offers Android's own "Open with" and "Share"
+  sheets and saves to Downloads. The app fetches the file with a download
+  link that works once, for one minute, for that file only; the app's sign-in
+  never leaves it. Copies made for other apps are deleted after six hours and
+  when you sign out. Browsers keep Download as before.
+
 ### Changed
 
 - **Removing a mail account is recorded.** Disconnecting a mail account and
@@ -47,6 +54,22 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   activity log (Settings > Server settings > Activity), with the account's
   id and how many messages and events were removed, never its address. The
   provider's mail is not touched.
+
+### Fixed
+
+- **Files picked in the Android app arrived empty on Android 16.** A file
+  chosen in Android's picker reached the page as 0 bytes on Android 16, so a
+  recording upload was refused and an attachment was empty. The app now
+  passes the picked files so that the WebView can read them. Apps up to
+  0.24.3 have this problem; install the new app from the server.
+- **The keyboard in the Android app.** The app now makes room for the
+  keyboard itself on every Android version (before only from Android 15),
+  so the page ends at the keyboard on Android 10 to 16.
+
+### Database upgrade
+
+- Upgrade step 21 adds the table of download links (`file_tickets`). It is
+  not part of backups.
 
 ### Release checks
 

@@ -22,6 +22,12 @@
     <string name="download_started">Downloading %1$s</string>
     <string name="download_saved">Saved %1$s to Downloads</string>
     <string name="download_failed">Could not save the file</string>
+    <string name="files_open_with">Open with</string>
+    <string name="files_share">Share</string>
+    <string name="files_no_app">No app can open this file</string>
+    <string name="files_failed">Could not get the file. Try again.</string>
+    <string name="files_too_large">This file is too large for the app</string>
+    <string name="files_refused">The app cannot fetch this file</string>
     <string name="no_app_for_link">No app can open this link</string>
     <string name="contacts_title">Show UniHub contacts on this phone?</string>
     <string name="contacts_body">Phone, WhatsApp and other apps can then show their names. They stay in step both ways: contacts you add, change or delete in the phone\'s UniHub account change in UniHub too. To stop, remove the UniHub account in the phone\'s settings under Accounts.</string>

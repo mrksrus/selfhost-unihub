@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
 import type { PDFDocumentProxy, RenderTask, TextLayer as PdfTextLayer } from 'pdfjs-dist';
-import { ChevronLeft, ChevronRight, Download, ExternalLink, FileQuestion, Minus, Plus, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Download, ExternalLink, FileQuestion, Minus, Plus, Share2, SquareArrowOutUpRight, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import { loadPdfJs, pdfDocumentOptions, pdfFailureDetail, type PdfJs } from '@/lib/pdf';
-import { saveFile } from '@/lib/platform';
+import { appFileActions, saveFile, type AppFileAction } from '@/lib/platform';
+import { createFileTicket } from '@/lib/file-tickets-api';
 import { emailSrcDoc, prepareEmailHtml } from '@/lib/email-privacy';
 import type { EmailAttachment } from '@/lib/mail-api';
 import { useAttachmentDownload } from '@/hooks/use-attachment-download';
+import { useToast } from '@/hooks/use-toast';
 import { formatAttachmentSize } from '@/components/mail/mail-page-model';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
@@ -129,6 +131,10 @@ function ViewerContent({ attachments, initialId }: { attachments: EmailAttachmen
   const [pdfFit, setPdfFit] = useState(1);
   const [pdfPages, setPdfPages] = useState<{ current: number; total: number } | null>(null);
   const fallbackDownload = useAttachmentDownload();
+  const { toast } = useToast();
+  // In the Android app the file goes to Android's own sheets through a download ticket.
+  const [appFiles] = useState(appFileActions);
+  const [running, setRunning] = useState<AppFileAction | null>(null);
   const id = attachment?.id;
 
   useEffect(() => {
@@ -176,6 +182,18 @@ function ViewerContent({ attachments, initialId }: { attachments: EmailAttachmen
     if (current && 'blob' in current) void saveFile(current.blob, current.filename || attachment.filename || 'attachment').catch(() => fallbackDownload(attachment));
     else void fallbackDownload(attachment);
   };
+  const runInApp = async (action: AppFileAction) => {
+    if (!appFiles || running) return;
+    setRunning(action);
+    try {
+      const ticket = await createFileTicket({ kind: 'mail-attachment', id: attachment.id });
+      await appFiles.run(action, { url: ticket.url, name: ticket.filename || attachment.filename || 'attachment', type: ticket.content_type });
+    } catch (error) {
+      toast({ title: action === 'save' ? 'Could not save the file' : 'Could not hand over the file', description: error instanceof Error && error.message ? error.message : 'Try again.', variant: 'destructive' });
+    } finally {
+      setRunning(null);
+    }
+  };
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
     if ((event.target as HTMLElement).closest('input, textarea, select, audio, video, [contenteditable="true"]')) return;
@@ -185,7 +203,9 @@ function ViewerContent({ attachments, initialId }: { attachments: EmailAttachmen
   const pdfScale = pdfZoom ?? pdfFit;
   const zoomBy = (step: number) => setPdfZoom(Math.min(3, Math.max(0.5, Math.round((pdfScale + step) * 4) / 4)));
 
-  const downloadButton = <Button type="button" onClick={download}><Download aria-hidden="true" />Download</Button>;
+  const downloadButton = appFiles
+    ? <Button type="button" disabled={running !== null} onClick={() => void runInApp('open')}><SquareArrowOutUpRight aria-hidden="true" />Open with…</Button>
+    : <Button type="button" onClick={download}><Download aria-hidden="true" />Download</Button>;
   const fileLine = `${attachment.filename} · ${formatAttachmentSize(attachment.size_bytes)}`;
   let body: ReactNode;
   if (!current) body = <LoadingState label="Loading attachment…" className="h-full" />;
@@ -193,7 +213,7 @@ function ViewerContent({ attachments, initialId }: { attachments: EmailAttachmen
     body = <EmptyState title="Could not load this attachment" description={loadErrorMessage(current.error)} className="h-full px-4"
       action={<Button type="button" variant="outline" onClick={() => { setLoaded(null); setAttempt(value => value + 1); }}>Try again</Button>} />;
   } else if (kind === 'none') {
-    body = <EmptyState icon={FileQuestion} title="No preview for this file type" description={<>{fileLine}<br />Download it to open it in another app.</>}
+    body = <EmptyState icon={FileQuestion} title="No preview for this file type" description={<>{fileLine}<br />{appFiles ? 'Open it in another app.' : 'Download it to open it in another app.'}</>}
       action={downloadButton} className="h-full px-4" />;
   } else if (kind === 'pdf') {
     body = <PdfPreview key={id} blob={current.blob} zoom={pdfZoom} onFitScale={setPdfFit} onPages={setPdfPages} download={downloadButton} />;
@@ -230,14 +250,26 @@ function ViewerContent({ attachments, initialId }: { attachments: EmailAttachmen
             <Button type="button" variant="ghost" size="icon" aria-label="Zoom in" title="Zoom in" disabled={pdfScale >= 3} onClick={() => zoomBy(0.25)}><Plus aria-hidden="true" /></Button>
           </div>}
           <div className="ml-auto flex items-center gap-1">
-            {href && canOpenInTab(kind, type) && (
-              <Button asChild variant="ghost" className="px-3" aria-label="Open in new tab" title="Open in new tab">
-                <a href={href} target="_blank" rel="noopener noreferrer"><ExternalLink aria-hidden="true" /><span className="hidden md:inline">Open in new tab</span></a>
+            {appFiles ? <>
+              <Button type="button" variant="ghost" className="px-3" aria-label="Open with…" title="Open with…" disabled={running !== null} onClick={() => void runInApp('open')}>
+                <SquareArrowOutUpRight aria-hidden="true" /><span className="hidden md:inline">Open with…</span>
               </Button>
-            )}
-            <Button type="button" variant="ghost" className="px-3" aria-label="Download" title="Download" onClick={download}>
-              <Download aria-hidden="true" /><span className="hidden md:inline">Download</span>
-            </Button>
+              <Button type="button" variant="ghost" className="px-3" aria-label="Save to Downloads" title="Save to Downloads" disabled={running !== null} onClick={() => void runInApp('save')}>
+                <Download aria-hidden="true" /><span className="hidden md:inline">Save</span>
+              </Button>
+              <Button type="button" variant="ghost" className="px-3" aria-label="Share" title="Share" disabled={running !== null} onClick={() => void runInApp('share')}>
+                <Share2 aria-hidden="true" /><span className="hidden md:inline">Share</span>
+              </Button>
+            </> : <>
+              {href && canOpenInTab(kind, type) && (
+                <Button asChild variant="ghost" className="px-3" aria-label="Open in new tab" title="Open in new tab">
+                  <a href={href} target="_blank" rel="noopener noreferrer"><ExternalLink aria-hidden="true" /><span className="hidden md:inline">Open in new tab</span></a>
+                </Button>
+              )}
+              <Button type="button" variant="ghost" className="px-3" aria-label="Download" title="Download" onClick={download}>
+                <Download aria-hidden="true" /><span className="hidden md:inline">Download</span>
+              </Button>
+            </>}
             {attachments.length > 1 && <>
               <Button type="button" variant="ghost" size="icon" aria-label="Previous attachment" title="Previous attachment (Left arrow)" onClick={() => move(-1)}><ChevronLeft aria-hidden="true" /></Button>
               <Button type="button" variant="ghost" size="icon" aria-label="Next attachment" title="Next attachment (Right arrow)" onClick={() => move(1)}><ChevronRight aria-hidden="true" /></Button>

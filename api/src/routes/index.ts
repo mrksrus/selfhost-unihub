@@ -14,6 +14,7 @@ import adminRoutes = require('./admin');
 import notificationsRoutes = require('./notifications');
 import offlineRoutes = require('./offline');
 import eventsRoutes = require('./events');
+import filesRoutes = require('./files');
 import { assertRouteTable, mergeRouteTables } from '../http/route';
 import { legacyRoutes } from './legacy-spec';
 import { MODULE_CATALOG } from '../services/module-catalog';
@@ -38,6 +39,7 @@ const routes = mergeRouteTables(
   notificationsRoutes,
   offlineRoutes,
   eventsRoutes,
+  filesRoutes,
 );
 assertRouteTable(routes, { moduleIds: MODULE_CATALOG.map(module => module.id), sections: Object.keys(SECTION_POLICIES) });
 

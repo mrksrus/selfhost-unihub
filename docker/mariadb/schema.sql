@@ -3,7 +3,7 @@
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
--- Through migration 20.
+-- Through migration 21.
 
 CREATE TABLE `audit_log` (
   `id` char(36) NOT NULL DEFAULT uuid(),
@@ -397,6 +397,24 @@ CREATE TABLE `emails` (
   CONSTRAINT `emails_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `emails_ibfk_2` FOREIGN KEY (`mail_account_id`) REFERENCES `mail_accounts` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_emails_filing_account` FOREIGN KEY (`filing_account_id`) REFERENCES `mail_accounts` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `file_tickets` (
+  `id` char(36) NOT NULL,
+  `token_hash` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `session_id` char(36) NOT NULL,
+  `kind` varchar(32) NOT NULL,
+  `resource_id` varchar(64) NOT NULL,
+  `expires_at` datetime NOT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_file_ticket_token` (`token_hash`),
+  KEY `idx_file_tickets_session` (`session_id`),
+  KEY `idx_file_tickets_expires` (`expires_at`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `file_tickets_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `file_tickets_ibfk_2` FOREIGN KEY (`session_id`) REFERENCES `sessions` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `mail_account_settings` (

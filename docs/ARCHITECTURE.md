@@ -347,6 +347,32 @@ image sets `NODE_ENV=production`, so a deployment gets secure cookies however
 the container is started; serve UniHub through HTTPS. Local HTTP development
 runs the API without it.
 
+### Download tickets
+
+Whatever fetches a file outside the page (the Android app's Open with, Save
+and Share; later the system downloader, backup downloads and chat
+attachments) gets a download ticket instead of the session cookie (F9;
+`api/src/services/file-tickets.ts`, contract `api/src/contracts/files.ts`):
+
+- `POST /api/files/tickets` `{ kind, id }` (signed in, CSRF token) answers
+  `{ url, expires_at, filename, content_type, size }`. The kind names its
+  module and recovery section (`mail-attachment`: Mail); the module must be on,
+  no restore of the section running and the record the caller's own. At most
+  20 unused tickets per session.
+- `GET /api/files/tickets/<token>` needs no cookie. It answers once: the row is
+  deleted before the file is sent, so a second request, even during the first,
+  gets 410. It checks again that the ticket is younger than 60 seconds, its
+  session live, its user active, the module on, no restore running and the file
+  the user's, then streams it as `attachment` with `nosniff`, a sandbox CSP,
+  `no-store` and no byte ranges (a resumed request would be a second use).
+- A ticket is bound to its user and the session that asked for it (foreign
+  key with cascade): signing out or ending the session elsewhere removes its
+  tickets. When devices become records (F5, 0.29) a device id replaces the
+  session in this binding.
+- The table keeps an HMAC-SHA-256 of each token under a key derived (HKDF)
+  from `JWT_SECRET`, never the token. It is installation data, never exported
+  or restored; expired rows are deleted when tickets are issued.
+
 ## Database Initialization
 
 `initDatabase` accepts either:

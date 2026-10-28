@@ -77,6 +77,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        drawEdgeToEdge()
+        Thread { FileActions.prune(this) }.start()
         val saved = ServerAddress.saved(this)
         if (saved != null) PageTheme.saved(this)?.let { (dark, background) -> applyTheme(dark, background) }
         val opened = notificationPath(intent, saved)?.takeIf { savedInstanceState == null }
@@ -196,6 +198,7 @@ class MainActivity : Activity() {
     private fun changeServer() {
         val current = origin
         ServerAddress.clear(this)
+        Thread { FileActions.clear(this) }.start()
         NotificationService.stop(this)
         showConnect(prefill = current)
     }
@@ -223,8 +226,9 @@ class MainActivity : Activity() {
             // Pinch zoom as in a browser, without the on-screen zoom buttons.
             builtInZoomControls = true
             displayZoomControls = false
-            // The page reads this to know it runs in the app (src/lib/platform.ts).
-            userAgentString = "$userAgentString UniHubAndroid/${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
+            // The page reads this to know it runs in the app, and which messages
+            // the bridge (WebBridge) understands (src/lib/platform.ts).
+            userAgentString = "$userAgentString UniHubAndroid/${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) UniHubBridge/$BRIDGE_LEVEL"
         }
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         CookieManager.getInstance().setAcceptCookie(true)
@@ -255,6 +259,8 @@ class MainActivity : Activity() {
             // Also after signing in, which changes the page without loading one.
             override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
                 ContactsSync.pageShown(this@MainActivity, url)
+                // Signed out (here, elsewhere or expired): the files handed to other apps go.
+                if (isSignInPage(url)) Thread { FileActions.clear(this@MainActivity) }.start()
                 offerContacts(server)
                 offerNotifications(server)
                 resumeNotifications()
@@ -633,18 +639,47 @@ class MainActivity : Activity() {
         decor.systemUiVisibility = if (dark) decor.systemUiVisibility and light.inv() else decor.systemUiVisibility or light
     }
 
-    // From Android 15 on, an app targeting it is drawn behind the status and
-    // navigation bars. Padding keeps UniHub's pages (and the keyboard) clear of
-    // them. Older versions keep the content between the bars by themselves.
+    // The app is drawn behind the status and navigation bars on every Android
+    // version (Android 15 requires it of an app targeting it), and pads its
+    // content by the bars, the display cutout and the keyboard itself. The
+    // WebView is therefore exactly the visible area above the keyboard, as in
+    // a browser that resizes for it: the page's own keyboard handling
+    // (visualViewport) then finds nothing covered and adds nothing. The insets
+    // are consumed here, so the WebView does not pad a second time.
+    @Suppress("DEPRECATION")
+    private fun drawEdgeToEdge() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+        } else {
+            // Android 10: with adjustResize, the system window insets include the keyboard.
+            window.decorView.systemUiVisibility = window.decorView.systemUiVisibility or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+        }
+    }
+
+    @Suppress("DEPRECATION")
     private fun applyInsets(view: View) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) return
         view.setOnApplyWindowInsetsListener { target, insets ->
-            val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime())
-            target.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-            WindowInsets.CONSUMED
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val area = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime())
+                target.setPadding(area.left, area.top, area.right, area.bottom)
+                WindowInsets.CONSUMED
+            } else {
+                val cutout = insets.displayCutout
+                target.setPadding(
+                    maxOf(insets.systemWindowInsetLeft, cutout?.safeInsetLeft ?: 0),
+                    maxOf(insets.systemWindowInsetTop, cutout?.safeInsetTop ?: 0),
+                    maxOf(insets.systemWindowInsetRight, cutout?.safeInsetRight ?: 0),
+                    maxOf(insets.systemWindowInsetBottom, cutout?.safeInsetBottom ?: 0),
+                )
+                insets.consumeSystemWindowInsets().consumeDisplayCutout()
+            }
         }
         view.requestApplyInsets()
     }
+
+    private fun isSignInPage(url: String?) =
+        url != null && Uri.parse(url).path.let { it == "/auth" || it?.startsWith("/auth/") == true }
 
     // ── Results, back, lifecycle ───────────────────────────────────────
 
@@ -654,8 +689,18 @@ class MainActivity : Activity() {
             val clip = data?.clipData
             val picked = PickedFiles.collect(resultCode == RESULT_OK, data?.data,
                 if (clip == null) emptyList() else List(clip.itemCount) { clip.getItemAt(it).uri })
-            fileCallback?.onReceiveValue(picked?.toTypedArray())
+            val callback = fileCallback ?: return
             fileCallback = null
+            if (picked == null) {
+                callback.onReceiveValue(null)
+                return
+            }
+            // WebView 133 (Android 16) reads a picker's document URI as an
+            // empty file; it reads the app's own copy correctly everywhere.
+            Thread {
+                val copies = picked.mapNotNull { FileActions.copyPicked(this, it) }
+                runOnUiThread { callback.onReceiveValue(copies.ifEmpty { null }?.toTypedArray()) }
+            }.start()
             return
         }
         if (requestCode == REQUEST_BACKGROUND) {
@@ -762,5 +807,9 @@ class MainActivity : Activity() {
         private const val REQUEST_NOTIFICATIONS = 4
         private const val REQUEST_BACKGROUND = 5
         private const val CONTACTS_CHECK_INTERVAL_MS = 15_000L
+        // What the page may ask of WebBridge, announced in the user agent:
+        // 1 up to 0.24 (files from the page, downloads, theme, notifications),
+        // 2 from 0.25 (fileAction: open with, save, share with a download ticket).
+        const val BRIDGE_LEVEL = 2
     }
 }

@@ -1,8 +1,11 @@
+import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, ComposerAttachment, StagedAttachment } from '../types';
 import crypto from 'crypto';
 import { promises as fs } from 'node:fs';
 import path from 'path';
-import { attachmentsRoot } from './mail-storage';
+import { db } from '../state';
+import { badRequest } from '../http/errors';
+import { attachmentsRoot, mailPathUnderRoot } from './mail-storage';
 
 function attachmentError(message: string) {
   return Object.assign(new Error(message), { status: 400 });
@@ -84,7 +87,39 @@ function rewriteInlineAttachments(html: string | false | null | undefined, stage
   return result;
 }
 
+interface AttachmentFile { path: string; size: number; filename: string; contentType: string }
+
+/**
+ * The stored file of one of the user's attachments, as GET
+ * /api/mail/attachments/:id and a download ticket (services/file-tickets.ts)
+ * stream it; null when the user has no such attachment or its file is gone.
+ * The row proves ownership; the path must stay inside the attachments root.
+ */
+async function attachmentFileForUser(userId: string, attachmentId: string, executor: SqlExecutor = db): Promise<AttachmentFile | null> {
+  const [rows] = await executor.execute<RowDataPacket[]>(
+    'SELECT filename, content_type, storage_path FROM email_attachments WHERE id = ? AND user_id = ?', [attachmentId, userId]);
+  if (!rows.length) return null;
+  const resolved = mailPathUnderRoot('attachment', rows[0].storage_path);
+  if (!resolved) throw badRequest('ATTACHMENT_PATH_INVALID', 'Invalid attachment path');
+  const stat = await fs.stat(resolved).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
+  if (!stat?.isFile()) return null;
+  const filename = rows[0].filename || 'download';
+  return { path: resolved, size: stat.size, filename, contentType: attachmentContentType(rows[0].content_type, filename) };
+}
+
+// Senders often label common files generically; the extension decides then.
+function attachmentContentType(declared: string | null, filename: string) {
+  const type = declared || 'application/octet-stream';
+  const name = filename.toLowerCase();
+  if (name.endsWith('.pdf') && !type.includes('pdf')) return 'application/pdf';
+  if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
+  if (name.endsWith('.png')) return 'image/png';
+  if (name.endsWith('.txt')) return 'text/plain';
+  return type;
+}
+
 export {
+  attachmentFileForUser,
   normalizeComposerAttachments,
   validateAttachmentTotals,
   stageAttachments,

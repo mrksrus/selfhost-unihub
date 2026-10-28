@@ -26,6 +26,17 @@ export function screenNodes() {
   });
 }
 
+/** Answers "isn't responding" dialogs of a slow emulator with Wait, so they do not cover the app. */
+export async function answerSlowDialogs() {
+  for (let i = 0; i < 5; i++) {
+    const nodes = screenNodes();
+    if (!nodes.some(n => /isn't responding|keeps stopping/.test(n.text))) return;
+    const wait = nodes.find(n => n.text === 'Wait') ?? nodes.find(n => n.text === 'Close app');
+    if (wait) adb('shell', 'input', 'tap', `${wait.x}`, `${wait.y}`);
+    await sleep(2000);
+  }
+}
+
 /**
  * Taps the first native node whose text or description matches. A slow
  * emulator shows "isn't responding" dialogs for system processes; they are
@@ -52,10 +63,28 @@ export async function tapNative(pattern, { long = false, timeoutMs = 60_000 } = 
   throw new Error(`no native element matching ${pattern} within ${timeoutMs} ms`);
 }
 
-/** Copies synthetic files into the emulator's Downloads, where the picker shows them. */
-export function pushToDownloads(...files) {
+/** The names MediaStore lists in Downloads (what the picker shows). */
+export function downloadsIndex() {
+  return [...adb('shell', 'content', 'query', '--uri', 'content://media/external/file', '--projection', '_display_name',
+    // adb joins the arguments into one shell line on the device, which would drop plain quotes.
+    '--where', "relative_path=\\'Download/\\'").matchAll(/_display_name=([^,\r\n]+)/g)].map(match => match[1].trim());
+}
+
+/**
+ * Copies synthetic files into the emulator's Downloads, where the picker shows
+ * them. Each file is scanned on its own: a whole-volume scan takes minutes on a
+ * two-core Android 16 emulator.
+ */
+export async function pushToDownloads(...files) {
   adb('push', ...files, '/sdcard/Download/');
-  adb('shell', 'content', 'call', '--method', 'scan_volume', '--uri', 'content://media', '--arg', 'external_primary');
+  const names = files.map(file => file.split('/').pop());
+  for (const name of names) adb('shell', 'am', 'broadcast', '-a', 'android.intent.action.MEDIA_SCANNER_SCAN_FILE', '-d', `file:///sdcard/Download/${name}`);
+  for (let attempt = 0; attempt < 90; attempt++) {
+    const listed = downloadsIndex();
+    if (names.every(name => listed.includes(name))) return;
+    await sleep(2000);
+  }
+  throw new Error(`MediaStore did not list ${names.join(', ')}`);
 }
 
 /** Picks files in Android's document picker from Downloads; several files use its selection mode. */
@@ -99,26 +128,33 @@ export async function openApp({ email = 'admin@example.com', password = 'local-d
   }
   const device = (await android.devices()).find(d => d.serial() === serial);
   if (!device) throw new Error(`${serial} not found; run tools/e2e/android.sh up`);
-  const webView = await device.webView({ pkg: PACKAGE }, { timeout: 180_000 });
-  const page = await webView.page();
-  page.setDefaultTimeout(60_000);
-  await page.waitForLoadState();
-  if (new URL(page.url()).pathname.startsWith('/auth')) {
-    await page.getByLabel('Email').fill(email);
-    await page.getByLabel('Password').fill(password);
-    await page.getByRole('button', { name: 'Sign in' }).click();
-    await page.waitForURL(url => !url.pathname.startsWith('/auth'), { timeout: 120_000 }).catch(() => {});
-  }
-  // Signing in reloads the app, which replaces the WebView's page target:
-  // wait for a page that is signed in and answers.
-  for (let attempt = 0; attempt < 30; attempt++) {
+  await device.webView({ pkg: PACKAGE }, { timeout: 180_000 });
+  // The page may still be on its way to /auth or to the start page (slow
+  // emulators), and signing in reloads it, which replaces the WebView's page
+  // target: look at the current page until it is signed in, signing in
+  // whenever it shows the sign-in form.
+  let signIns = 0;
+  for (let attempt = 0; attempt < 40; attempt++) {
     try {
       const current = await (await device.webView({ pkg: PACKAGE }, { timeout: 60_000 })).page();
+      current.setDefaultTimeout(60_000);
+      await current.waitForLoadState();
       const path = await current.evaluate(() => location.pathname);
-      if (!path.startsWith('/auth')) {
-        await current.waitForLoadState();
+      if (path.startsWith('/auth')) {
+        if (signIns < 3 && await current.getByLabel('Email').isVisible()) {
+          await answerSlowDialogs();
+          await current.getByLabel('Email').fill(email);
+          await current.getByLabel('Password').fill(password);
+          // A form still rendering may clear what was typed; then try again.
+          if (await current.getByLabel('Email').inputValue() === email) {
+            signIns++;
+            await current.getByRole('button', { name: 'Sign in' }).last().click();
+            await current.waitForURL(url => !url.pathname.startsWith('/auth'), { timeout: 60_000 }).catch(() => {});
+          }
+        }
+      } else if (path !== '/') {
+        await answerSlowDialogs();
         await dismissFirstRunOffers();
-        current.setDefaultTimeout(60_000);
         return { device, page: current };
       }
     } catch { /* the target went away mid-check; take the next one */ }

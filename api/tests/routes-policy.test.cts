@@ -75,10 +75,10 @@ test('the two live streams are the only routes that own their response', () => {
   assert.deepEqual(streaming, ['GET /api/events', 'GET /api/notifications/android/stream']);
 });
 
-test('the public routes are exactly the ones a client needs before signing in', () => {
+test('the public routes are exactly the ones a client needs before signing in, and the download ticket', () => {
   const publicKeys = Object.keys(routes).filter(key => routes[key].auth === 'public').sort();
   assert.deepEqual(publicKeys, [
-    'GET /api/auth/signup-mode', 'GET /api/backup/export', 'GET /api/version', 'GET /health',
+    'GET /api/auth/signup-mode', 'GET /api/backup/export', 'GET /api/files/tickets/:token', 'GET /api/version', 'GET /health',
     'POST /api/auth/2fa/login', 'POST /api/auth/signin', 'POST /api/auth/signup',
   ]);
 });

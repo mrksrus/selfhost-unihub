@@ -324,6 +324,16 @@ const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    // 0.25.0: download tickets (F9), so the Android app fetches a file
+    // without the session cookie (services/file-tickets.ts).
+    id: 21,
+    name: 'file-tickets',
+    up: createFileTickets,
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 21 });
+    },
+  },
 ];
 const LATEST_MIGRATION_ID = MIGRATIONS[MIGRATIONS.length - 1].id;
 
@@ -533,6 +543,26 @@ async function addSettingsAndMailEssentials(connection: SqlExecutor) {
   if (!await hasIndex(connection, 'emails', 'idx_emails_user_snoozed')) {
     await connection.execute('ALTER TABLE emails ADD KEY idx_emails_user_snoozed (user_id, snoozed_until)');
   }
+}
+
+// Upgrade step 21 (0.25.0). A ticket is bound to the session that asked for
+// it and goes with it; from 0.29 a device record takes the session's place.
+async function createFileTickets(connection: SqlExecutor) {
+  await connection.execute(`CREATE TABLE IF NOT EXISTS file_tickets (
+    id CHAR(36) NOT NULL PRIMARY KEY,
+    token_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    user_id CHAR(36) NOT NULL,
+    session_id CHAR(36) NOT NULL,
+    kind VARCHAR(32) NOT NULL,
+    resource_id VARCHAR(64) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_file_ticket_token (token_hash),
+    KEY idx_file_tickets_session (session_id),
+    KEY idx_file_tickets_expires (expires_at),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 }
 
 async function addPushTransport(connection: SqlExecutor) {

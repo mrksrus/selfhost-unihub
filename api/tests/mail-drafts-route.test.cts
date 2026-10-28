@@ -134,7 +134,8 @@ async function createDraftRouteHarness(t: import('node:test').TestContext, optio
         return [{ affectedRows: 1 }];
       }
 
-      if (sql.includes('SELECT a.id, a.filename, a.content_type, a.storage_path, a.user_id')) {
+      // One attachment by id and owner (services/mail-attachments.ts, attachmentFileForUser).
+      if (sql.includes('FROM email_attachments WHERE id = ? AND user_id = ?')) {
         const attachment = state.attachments.get(params[0]);
         return [[attachment && attachment.user_id === params[1] ? attachment : null].filter(Boolean)];
       }

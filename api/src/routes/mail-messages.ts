@@ -4,9 +4,8 @@ import { presentMailFiling } from '../services/mail-filing';
 import { mailListColumns, mailListView, presentMailListRow } from '../services/mail-list';
 import { keepsSnoozedInLists } from '../services/mail-snooze';
 import { parseStoredRecipients } from '../services/mail-recipients';
-import fs from 'fs';
 import { db } from '../state';
-import { mailPathUnderRoot } from '../services/mail-storage';
+import { attachmentFileForUser } from '../services/mail-attachments';
 import { tasksForEmail } from '../services/email-tasks';
 import { isModuleEnabled } from '../services/module-settings';
 import { toBooleanFlag } from '../services/mail';
@@ -128,63 +127,19 @@ export = {
     }
   },
 
-  'GET /api/mail/attachments/:id': async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
+  'GET /api/mail/attachments/:id': async (req: Request, userId: string | null) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
-      const attachmentId = extractMailRouteId(req)!;
-
-      // Get attachment info and verify it belongs to user's email
-      const [attachments] = await db.execute<RowDataPacket[]>(
-        `SELECT a.id, a.filename, a.content_type, a.storage_path, a.user_id
-         FROM email_attachments a
-         WHERE a.id = ? AND a.user_id = ?`,
-        [attachmentId, userId]
-      );
-
-      if (attachments.length === 0) {
-        return { error: 'Attachment not found', status: 404 };
-      }
-
-      const attachment = attachments[0];
-
-      // Read file from storage (must stay under attachments root)
-      try {
-        const resolvedPath = mailPathUnderRoot('attachment', attachment.storage_path);
-        if (!resolvedPath) {
-          console.error('[ATTACH] Rejected attachment path outside uploads root:', attachment.storage_path);
-          return { error: 'Invalid attachment path', status: 400 };
-        }
-
-        const fileStat = await fs.promises.stat(resolvedPath);
-        if (!fileStat.isFile()) return { error: 'Attachment not found', status: 404 };
-
-        // Reuse the bounded-memory download response used by recordings/backups.
-        // Ensure proper content type for PDFs and other common types
-        let contentType = attachment.content_type || 'application/octet-stream';
-        const filename = attachment.filename || 'download';
-
-        // Fix common content type issues
-        if (filename.toLowerCase().endsWith('.pdf') && !contentType.includes('pdf')) {
-          contentType = 'application/pdf';
-        } else if (filename.toLowerCase().endsWith('.jpg') || filename.toLowerCase().endsWith('.jpeg')) {
-          contentType = 'image/jpeg';
-        } else if (filename.toLowerCase().endsWith('.png')) {
-          contentType = 'image/png';
-        } else if (filename.toLowerCase().endsWith('.txt')) {
-          contentType = 'text/plain';
-        }
-
-        return {
-          __streamPath: resolvedPath,
-          __contentLength: fileStat.size,
-          __contentType: contentType,
-          __filename: filename,
-        };
-      } catch (fileError) {
-        console.error(`[ATTACH] Failed to read attachment file:`, (fileError as Error).message);
-        return routeError(fileError, 'Failed to read attachment file');
-      }
+      const file = await attachmentFileForUser(userId, extractMailRouteId(req)!);
+      if (!file) return { error: 'Attachment not found', status: 404 };
+      // The bounded-memory download response used by recordings/backups.
+      return {
+        __streamPath: file.path,
+        __contentLength: file.size,
+        __contentType: file.contentType,
+        __filename: file.filename,
+      };
     } catch (error) {
       console.error('[ATTACH] Error:', error);
       return routeError(error, 'Failed to fetch attachment');

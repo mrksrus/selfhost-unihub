@@ -46,3 +46,36 @@ test('[0-03] a mailed photo opens in the viewer', { session: 'admin' }, async ({
   await expect.poll(() => browser.evaluate((name: string) => (document.querySelector(`[role=dialog] img[alt="${name}"]`) as HTMLImageElement | null)?.naturalWidth ?? 0, fixtures.jpg.name))
     .toBeGreaterThan(0);
 });
+
+// 25-07 (0.25.0): Open with, Save and Share are the Android app's (with a native
+// bridge); in a browser, and in app mode without the bridge, the viewer still
+// downloads the file itself, whole, under its name.
+test('[25-07] the viewer still downloads the file in a browser and without the app\'s bridge', { session: 'admin' }, async ({ app, screen, browser }) => {
+  await onlyOn(browser, 'desktop', 'android-app');
+  const subject = `Download ${runId()}`;
+  await mailWithAttachments(subject);
+  await app.open('/mail');
+  await openMessage(screen, subject, mailbox);
+  await screen.getByRole('region', 'Attachments').getByRole('button', new RegExp(`^${fixtures.jpg.name.replace('.', '\\.')}`)).tap();
+  const viewer = screen.getByRole('dialog', fixtures.jpg.name);
+  await expect(viewer.getByRole('image', fixtures.jpg.name)).toBeVisible();
+  await expect(viewer.getByRole('button', 'Share')).toHaveCount(0);
+  // The page saves through a download link to the loaded file; record what it hands the browser.
+  await browser.evaluate(() => {
+    const record = window as unknown as { blobs: Map<string, number>; saved?: { name: string; size: number } };
+    record.blobs = new Map();
+    const create = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = (object: Blob | MediaSource) => {
+      const url = create(object);
+      if (object instanceof Blob) record.blobs.set(url, object.size);
+      return url;
+    };
+    HTMLAnchorElement.prototype.click = function click(this: HTMLAnchorElement) {
+      record.saved = { name: this.download, size: record.blobs.get(this.href) ?? -1 };
+    };
+  });
+  await viewer.getByRole('button', 'Download', { exact: true }).tap();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { saved?: unknown }).saved ?? null)).not.toBeNull();
+  const saved = await browser.evaluate(() => (window as unknown as { saved?: { name: string; size: number } }).saved ?? null);
+  expect(saved).toEqual({ name: fixtures.jpg.name, size: fixtures.jpg.size });
+});
