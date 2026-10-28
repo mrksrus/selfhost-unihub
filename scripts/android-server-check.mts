@@ -113,32 +113,43 @@ function displaySize() {
   return display;
 }
 /**
- * Taps an element, scrolling the page first when it is out of view: the tree
- * also lists page elements outside the WebView's viewport, with empty bounds,
- * and one scrolled in from below can still sit behind the navigation bar.
- * The navigation bar's own items never move, so they are not scrolled for.
+ * Taps an element, scrolling the page first when it is not plainly in view:
+ * the tree also lists page elements outside the WebView's viewport (with empty
+ * bounds or bounds past the screen), and one near the bottom edge can sit
+ * behind the navigation bar. Elements of the navigation bar itself are fixed
+ * and tapped where they are.
  */
-async function tapOn(what: string, pattern: RegExp, cls?: RegExp, timeoutMs?: number) {
+async function tapOn(what: string, pattern: RegExp, { cls, fixed = false, timeoutMs }: { cls?: RegExp; fixed?: boolean; timeoutMs?: number } = {}) {
   let node = await waitFor(what, find(pattern, cls), timeoutMs);
   const { width, height } = displaySize();
   const x = Math.round(width * 0.3);
-  const swipe = (distance: number) => shell(`input swipe ${x} ${Math.round(height / 2 + distance / 2)} ${x} ${Math.round(height / 2 - distance / 2)} 500`);
-  let scrolled = false;
-  for (let scroll = 0; scroll < 12 && node.pkg === PACKAGE && node.bottom === 0; scroll++) {
-    // Down through the page first (forms grow downwards), then back up.
-    swipe(scroll < 6 ? height * 0.4 : -height * 0.4);
-    scrolled = true;
+  const outOfView = (item: UiNode) => item.bottom === 0 || item.y > height * 0.8 || item.y < height * 0.06;
+  for (let scroll = 0; scroll < 8 && !fixed && node.pkg === PACKAGE && height && outOfView(node); scroll++) {
+    // Towards the element; with empty bounds its place is unknown, so down
+    // through the page first (forms grow downwards), then back up.
+    const distance = node.bottom === 0 ? (scroll < 5 ? height * 0.4 : -height * 0.4) : Math.max(-height * 0.4, Math.min(height * 0.4, node.y - height / 2));
+    shell(`input swipe ${x} ${Math.round(height / 2 + distance / 2)} ${x} ${Math.round(height / 2 - distance / 2)} 500`);
     await sleep(800);
+    const before = node;
     node = await waitFor(what, find(pattern, cls), timeoutMs);
+    // A page that does not scroll (or is at its end) leaves the element where it was.
+    if (before.bottom !== 0 && node.y === before.y) break;
   }
-  if (scrolled && node.y > height * 0.7) {
-    swipe(node.y - height / 2);
-    await sleep(800);
-    node = await waitFor(what, find(pattern, cls), timeoutMs);
-  }
-  if (process.env.UNIHUB_ANDROID_DEBUG) log(`       tap ${what} at ${node.x},${node.y} (${node.top}-${node.bottom}) of ${width}x${height}`);
+  log(`       tap ${what} at ${node.x},${node.y} of ${width}x${height}`);
   tap(node);
   return node;
+}
+
+/** Taps until the screen shows the tap took effect, scrolling between tries (a tap can land behind the navigation bar). */
+async function tapUntil(what: string, pattern: RegExp, done: (nodes: UiNode[]) => unknown, options: { cls?: RegExp } = {}) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await tapOn(what, pattern, options);
+    if (await waitFor(`${what} to take effect`, nodes => nodes.length > 0 && !!done(nodes), 20_000).catch(() => false)) return;
+    const { width, height } = displaySize();
+    shell(`input swipe ${Math.round(width * 0.3)} ${Math.round(height * 0.6)} ${Math.round(width * 0.3)} ${Math.round(height * 0.35)} 500`);
+    await sleep(800);
+  }
+  throw new Error(`tapping ${what} had no effect`);
 }
 
 const appFields = (nodes: UiNode[]) => nodes.filter(node => /EditText/.test(node.cls) && node.pkg === PACKAGE);
@@ -316,7 +327,7 @@ async function connect(origin: string) {
   shell(`am force-stop ${PACKAGE}`);
   shell(`am start -a android.intent.action.VIEW -d '${`unihub://connect?server=${encodeURIComponent(origin)}`}' ${PACKAGE}`);
   const host = new URL(origin).hostname;
-  await tapOn('the question to connect', /^connect$/i, /Button/);
+  await tapOn('the question to connect', /^connect$/i, { cls: /Button/, fixed: true });
   await waitFor(`the sign-in page of ${host}`, authPage, 180_000);
 }
 
@@ -325,16 +336,15 @@ async function fillSignIn(person: Person) {
   await typeInto(0, person.email);
   await typeInto(1, person.password);
   await hideKeyboard();
-  await tapOn('Sign in', /^Sign in$/, /Button/);
+  await tapOn('Sign in', /^Sign in$/, { cls: /Button/ });
 }
 
 async function navigateTo(page: string) {
-  const nodes = await waitFor('the navigation bar', signedIn);
-  void nodes;
+  await waitFor('the navigation bar', signedIn);
   const direct = screen().find(node => label(node) === page && node.pkg === PACKAGE);
-  if (direct) tap(direct);
+  if (direct) { log(`       tap ${page} at ${direct.x},${direct.y}`); tap(direct); }
   else {
-    await tapOn('More', /^More/);
+    await tapOn('More', /^More/, { fixed: true });
     await tapOn(page, new RegExp(`^${page}$`));
   }
 }
@@ -419,7 +429,7 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
       await pickFromDownloads(toneName);
       await waitFor('the imported audio', find(/^Save the imported audio$/), 60_000);
       await hideKeyboard();
-      await tapOn('Save recording', /^Save recording$/, /Button/);
+      await tapUntil('Save recording', /^Save recording$/, nodes => !find(/^Save the imported audio$/)(nodes), { cls: /Button/ });
       const recording = await until('the uploaded recording on the server', async () => {
         const { recordings } = await plainApi.json<{ recordings: { id: string; title: string }[] }>('GET', '/api/recordings');
         return recordings.find(item => item.title === toneName.replace(/\.wav$/, ''));
@@ -447,17 +457,17 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
     // servers from 0.25.0, and their names join STEP_NAMES below.
     await step('microphone', async () => {
       const before = (await plainApi.json<{ recordings: unknown[] }>('GET', '/api/recordings')).recordings.length;
-      await tapOn('Record', /^Record$/, /Button/);
+      await tapOn('Record', /^Record$/, { cls: /Button/ });
       const allow = await waitFor('Android\'s microphone question', find(/^(While using the app|Allow|ALLOW|Only this time)$/), 60_000);
       tap(allow);
       await waitFor('the running recorder', find(/^Stop$/, /Button/), 60_000);
       const granted = shell(`dumpsys package ${PACKAGE}`).includes('android.permission.RECORD_AUDIO: granted=true');
       if (!granted) throw new Error('Android does not list the microphone permission as granted');
       await sleep(3000);
-      await tapOn('Stop', /^Stop$/, /Button/);
+      await tapOn('Stop', /^Stop$/, { cls: /Button/ });
       await waitFor('the recording to save', find(/^Save the recording$/), 60_000);
       await hideKeyboard();
-      await tapOn('Save recording', /^Save recording$/, /Button/);
+      await tapUntil('Save recording', /^Save recording$/, nodes => !find(/^Save the recording$/)(nodes), { cls: /Button/ });
       const made = await until('the recording on the server', async () => {
         const { recordings: list } = await plainApi.json<{ recordings: { id: string; size_bytes?: number }[] }>('GET', '/api/recordings');
         return list.length > before && list.find(item => item.id !== recordingId);
@@ -479,7 +489,7 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
       if (Date.now() % 30_000 > 22_000) await sleep(30_000 - (Date.now() % 30_000) + 500);
       await typeInto(0, totp(twoFactor.totpSecret!));
       await hideKeyboard();
-      await tapOn('Verify and sign in', /^Verify and sign in$/, /Button/);
+      await tapOn('Verify and sign in', /^Verify and sign in$/, { cls: /Button/ });
       await waitFor('the signed-in app', signedIn, 120_000);
       const twoFactorApi = await new Session(pairing.base).signIn(twoFactor.email, twoFactor.password, twoFactor.totpSecret);
       await until('the two-factor session on the server', async () => (await appSessions(twoFactorApi)).length === 1);
