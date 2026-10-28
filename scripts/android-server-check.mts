@@ -47,7 +47,7 @@ function adb(...args: string[]) {
 }
 const shell = (command: string) => adb('shell', command);
 
-interface UiNode { text: string; desc: string; cls: string; pkg: string; hint: string; focused: boolean; x: number; y: number; top: number; bottom: number }
+interface UiNode { text: string; desc: string; cls: string; pkg: string; hint: string; focused: boolean; password: boolean; x: number; y: number; top: number; bottom: number }
 
 /** The screen as Android's accessibility tree sees it, WebView content included. */
 function screen(): UiNode[] {
@@ -62,7 +62,7 @@ function screen(): UiNode[] {
         const box = /\[(\d+),(\d+)\]\[(\d+),(\d+)\]/.exec(attrs.bounds ?? '') ?? ['', '0', '0', '0', '0'];
         const decode = (value = '') => value.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#10;/g, '\n').replace(/&amp;/g, '&');
         return { text: decode(attrs.text), desc: decode(attrs['content-desc']), cls: attrs.class ?? '', pkg: attrs.package ?? '', hint: decode(attrs.hint),
-          focused: attrs.focused === 'true', x: Math.round((+box[1] + +box[3]) / 2), y: Math.round((+box[2] + +box[4]) / 2), top: +box[2], bottom: +box[4] };
+          focused: attrs.focused === 'true', password: attrs.password === 'true', x: Math.round((+box[1] + +box[3]) / 2), y: Math.round((+box[2] + +box[4]) / 2), top: +box[2], bottom: +box[4] };
       });
     }
     execFileSync('sleep', ['1']);
@@ -105,20 +105,75 @@ async function waitFor<T>(what: string, check: (nodes: UiNode[]) => T | undefine
   throw new Error(`${what} did not appear within ${timeoutMs / 1000} s; the screen showed: ${nodes.map(label).filter(Boolean).slice(0, 40).join(' | ') || '(nothing)'}`);
 }
 const find = (pattern: RegExp, cls?: RegExp) => (nodes: UiNode[]) => nodes.find(node => matches(node, pattern) && (!cls || cls.test(node.cls)));
-async function tapOn(what: string, pattern: RegExp, cls?: RegExp, timeoutMs?: number) { const node = await waitFor(what, find(pattern, cls), timeoutMs); tap(node); return node; }
+let display: { width: number; height: number } | undefined;
+/** The display's size, after any `wm size` override. */
+function displaySize() {
+  const size = [...shell('wm size').matchAll(/(\d+)x(\d+)/g)].at(-1);
+  display ??= { width: Number(size?.[1] ?? 0), height: Number(size?.[2] ?? 0) };
+  return display;
+}
+/**
+ * Taps an element, scrolling the page first when it is out of view: the tree
+ * also lists page elements outside the WebView's viewport, with empty bounds,
+ * and one scrolled in from below can still sit behind the navigation bar.
+ * The navigation bar's own items never move, so they are not scrolled for.
+ */
+async function tapOn(what: string, pattern: RegExp, cls?: RegExp, timeoutMs?: number) {
+  let node = await waitFor(what, find(pattern, cls), timeoutMs);
+  const { width, height } = displaySize();
+  const x = Math.round(width * 0.3);
+  const swipe = (distance: number) => shell(`input swipe ${x} ${Math.round(height / 2 + distance / 2)} ${x} ${Math.round(height / 2 - distance / 2)} 500`);
+  let scrolled = false;
+  for (let scroll = 0; scroll < 12 && node.pkg === PACKAGE && node.bottom === 0; scroll++) {
+    // Down through the page first (forms grow downwards), then back up.
+    swipe(scroll < 6 ? height * 0.4 : -height * 0.4);
+    scrolled = true;
+    await sleep(800);
+    node = await waitFor(what, find(pattern, cls), timeoutMs);
+  }
+  if (scrolled && node.y > height * 0.7) {
+    swipe(node.y - height / 2);
+    await sleep(800);
+    node = await waitFor(what, find(pattern, cls), timeoutMs);
+  }
+  if (process.env.UNIHUB_ANDROID_DEBUG) log(`       tap ${what} at ${node.x},${node.y} (${node.top}-${node.bottom}) of ${width}x${height}`);
+  tap(node);
+  return node;
+}
 
 const appFields = (nodes: UiNode[]) => nodes.filter(node => /EditText/.test(node.cls) && node.pkg === PACKAGE);
+
+/** Whether the on-screen keyboard is shown (it can cover the field below the one being typed in). */
+const keyboardShown = () => /mInputShown=true/.test(shell('dumpsys input_method'));
+/** Hides the keyboard; Back only while it is shown, since Back otherwise leaves the page. */
+async function hideKeyboard() {
+  if (!keyboardShown()) return;
+  shell('input keyevent 4');
+  await sleep(800);
+}
+
+/** A field shows what was typed; Android may mask a password field's text in the tree. */
+const shows = (node: UiNode | undefined, typed: string) => !!node && (node.text === typed || (node.password && node.text.length === typed.length));
 
 /**
  * Types into the index-th field of the page as key events, a few characters
  * at a time, and reads the field back: a slow emulator can drop key events, so
- * a field that does not show what was typed is cleared and typed again.
+ * a field that does not show what was typed is cleared and typed again. The
+ * field is focused with Tab from the one before it, or by a tap with the
+ * keyboard hidden, and typing starts only once the tree shows it focused.
  */
 async function typeInto(index: number, text: string) {
   for (let attempt = 0; attempt < 4; attempt++) {
-    const field = await waitFor(`input field ${index + 1}`, nodes => appFields(nodes)[index]);
-    tap(field);
-    await sleep(800);
+    let field = await waitFor(`input field ${index + 1}`, nodes => appFields(nodes)[index]);
+    if (!field.focused) {
+      const previous = appFields(screen())[index - 1];
+      if (previous?.focused) shell('input keyevent 61');
+      else { await hideKeyboard(); tap(await waitFor(`input field ${index + 1}`, nodes => appFields(nodes)[index])); }
+      field = await waitFor(`focus in field ${index + 1}`, nodes => { const node = appFields(nodes)[index]; return node?.focused && node; }, 15_000).catch(() => field);
+      if (!field.focused) { log(`       field ${index + 1} did not take focus`); continue; }
+    }
+    await sleep(500);
+    // To the end, then delete what is there.
     if (field.text) shell(`input keyevent 123 ${'67 '.repeat(field.text.length + 4)}`);
     let typed = '';
     let ok = true;
@@ -126,15 +181,19 @@ async function typeInto(index: number, text: string) {
       // `input text` splits at spaces and the device shell reads quotes.
       shell(`input text '${chunk.replace(/ /g, '%s').replace(/'/g, '')}'`);
       typed += chunk;
-      const shown = await waitFor(`the typed text in field ${index + 1}`, nodes => { const value = appFields(nodes)[index]?.text; return value === typed || (value !== undefined && !typed.startsWith(value)) ? { value } : undefined; }, 15_000).catch(() => ({ value: '?' }));
-      if (shown.value !== typed) { ok = false; break; }
+      const shown = await waitFor(`the typed text in field ${index + 1}`, nodes => {
+        const node = appFields(nodes)[index];
+        if (shows(node, typed)) return { ok: true };
+        // Longer than typed, or not focused any more: typing went astray.
+        return node && (!node.focused || node.text.length > typed.length) ? { ok: false } : undefined;
+      }, 15_000).catch(() => ({ ok: false }));
+      if (!shown.ok) { ok = false; break; }
     }
     if (ok) return;
     log(`       retyping field ${index + 1}`);
   }
   throw new Error(`could not type into field ${index + 1}`);
 }
-const hideKeyboard = () => { try { shell('input keyevent 111'); } catch { /* no keyboard shown */ } };
 
 function webViewMajor() {
   const provider = /Current WebView package \(name, version\): \(([^,]+), ([\d.]+)\)/.exec(shell('dumpsys webviewupdate'));
@@ -265,7 +324,7 @@ async function fillSignIn(person: Person) {
   await waitFor('the sign-in fields', nodes => appFields(nodes).length >= 2);
   await typeInto(0, person.email);
   await typeInto(1, person.password);
-  hideKeyboard();
+  await hideKeyboard();
   await tapOn('Sign in', /^Sign in$/, /Button/);
 }
 
@@ -359,7 +418,7 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
       await tapOn('Import audio file', /^Import audio file$/);
       await pickFromDownloads(toneName);
       await waitFor('the imported audio', find(/^Save the imported audio$/), 60_000);
-      hideKeyboard();
+      await hideKeyboard();
       await tapOn('Save recording', /^Save recording$/, /Button/);
       const recording = await until('the uploaded recording on the server', async () => {
         const { recordings } = await plainApi.json<{ recordings: { id: string; title: string }[] }>('GET', '/api/recordings');
@@ -397,7 +456,7 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
       await sleep(3000);
       await tapOn('Stop', /^Stop$/, /Button/);
       await waitFor('the recording to save', find(/^Save the recording$/), 60_000);
-      hideKeyboard();
+      await hideKeyboard();
       await tapOn('Save recording', /^Save recording$/, /Button/);
       const made = await until('the recording on the server', async () => {
         const { recordings: list } = await plainApi.json<{ recordings: { id: string; size_bytes?: number }[] }>('GET', '/api/recordings');
@@ -419,7 +478,7 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
       // A fresh code, not one about to expire while it is typed.
       if (Date.now() % 30_000 > 22_000) await sleep(30_000 - (Date.now() % 30_000) + 500);
       await typeInto(0, totp(twoFactor.totpSecret!));
-      hideKeyboard();
+      await hideKeyboard();
       await tapOn('Verify and sign in', /^Verify and sign in$/, /Button/);
       await waitFor('the signed-in app', signedIn, 120_000);
       const twoFactorApi = await new Session(pairing.base).signIn(twoFactor.email, twoFactor.password, twoFactor.totpSecret);
