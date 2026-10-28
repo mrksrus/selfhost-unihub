@@ -28,15 +28,15 @@ async function delivered(mailbox, subject) {
 
 test('a PDF and a photo picked in Android\'s picker are sent from the phone composer with their bytes', { timeout: 900_000 }, async () => {
   const files = ['synthetic-report.pdf', 'synthetic-photo.jpg'];
-  pushToDownloads(...files.map(fixture));
+  await pushToDownloads(...files.map(fixture));
   const { device, page } = await openApp();
   try {
     const subject = `Picked files ${Date.now().toString(36)}`;
     await navigate(page, '/mail');
     await page.getByRole('button', { name: 'Compose' }).filter({ visible: true }).first().click();
     await page.getByRole('dialog').waitFor();
-    await page.getByLabel('To').filter({ visible: true }).first().fill('sam@example.org');
-    await page.getByLabel('Subject').filter({ visible: true }).first().fill(subject);
+    await page.locator('input').and(page.getByLabel('To')).filter({ visible: true }).first().fill('sam@example.org');
+    await page.locator('input').and(page.getByLabel('Subject')).filter({ visible: true }).first().fill(subject);
     await page.getByRole('button', { name: 'Attach files' }).click();
     await pickFromDownloads(files);
 
