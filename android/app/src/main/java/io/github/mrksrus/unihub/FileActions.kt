@@ -5,6 +5,8 @@ import android.content.ClipData
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.provider.MediaStore
 import android.webkit.MimeTypeMap
 import android.widget.Toast
@@ -164,16 +166,45 @@ class FileActions(private val activity: Activity, private val origin: String) {
         fun authority(context: Context) = "${context.packageName}.files"
 
         private fun sharedDir(context: Context) = File(context.cacheDir, "shared")
+        private fun pickedDir(context: Context) = File(context.cacheDir, "picked")
 
-        /** Deletes copies handed to other apps longer ago than SharedFiles.MAX_AGE_MS. */
+        /**
+         * A copy of a file picked for the page's file input, as the app's own
+         * content:// address with the picked file's name. The page may read it
+         * for a while (a recording uploads in pieces), so it is kept like the
+         * shared copies. Null when the file cannot be read.
+         */
+        fun copyPicked(context: Context, source: Uri): Uri? = try {
+            val resolver = context.contentResolver
+            val name = resolver.query(source, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getString(0) else null
+            } ?: source.lastPathSegment ?: "file"
+            val folder = File(pickedDir(context), UUID.randomUUID().toString())
+            if (!folder.mkdirs()) throw IOException("No cache folder")
+            val file = File(folder, WebBridge.safeFileName(name))
+            try {
+                (resolver.openInputStream(source) ?: throw IOException("Unreadable")).use { input -> file.outputStream().use { input.copyTo(it, 64 * 1024) } }
+            } catch (error: Exception) {
+                folder.deleteRecursively()
+                throw error
+            }
+            FileProvider.getUriForFile(context, authority(context), file)
+        } catch (_: Exception) {
+            null
+        }
+
+        /** Deletes copies made longer ago than SharedFiles.MAX_AGE_MS. */
         fun prune(context: Context) {
             val now = System.currentTimeMillis()
-            sharedDir(context).listFiles()?.filter { SharedFiles.stale(it.lastModified(), now) }?.forEach { it.deleteRecursively() }
+            for (dir in listOf(sharedDir(context), pickedDir(context))) {
+                dir.listFiles()?.filter { SharedFiles.stale(it.lastModified(), now) }?.forEach { it.deleteRecursively() }
+            }
         }
 
         /** Deletes every copy: the person signed out or left the server. */
         fun clear(context: Context) {
             sharedDir(context).deleteRecursively()
+            pickedDir(context).deleteRecursively()
         }
     }
 }

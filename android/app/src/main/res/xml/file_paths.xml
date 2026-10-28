@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- FileActions: only the copies made for "Open with…" and "Share". -->
+<!-- FileActions: only the copies made for "Open with…" and "Share", and the
+     copies of picked files the page reads. -->
 <paths>
     <cache-path name="shared" path="shared/" />
+    <cache-path name="picked" path="picked/" />
 </paths>

@@ -689,8 +689,18 @@ class MainActivity : Activity() {
             val clip = data?.clipData
             val picked = PickedFiles.collect(resultCode == RESULT_OK, data?.data,
                 if (clip == null) emptyList() else List(clip.itemCount) { clip.getItemAt(it).uri })
-            fileCallback?.onReceiveValue(picked?.toTypedArray())
+            val callback = fileCallback ?: return
             fileCallback = null
+            if (picked == null) {
+                callback.onReceiveValue(null)
+                return
+            }
+            // WebView 133 (Android 16) reads a picker's document URI as an
+            // empty file; it reads the app's own copy correctly everywhere.
+            Thread {
+                val copies = picked.mapNotNull { FileActions.copyPicked(this, it) }
+                runOnUiThread { callback.onReceiveValue(copies.ifEmpty { null }?.toTypedArray()) }
+            }.start()
             return
         }
         if (requestCode == REQUEST_BACKGROUND) {

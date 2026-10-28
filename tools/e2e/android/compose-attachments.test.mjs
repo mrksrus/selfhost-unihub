@@ -35,6 +35,12 @@ test('a PDF and a photo picked in Android\'s picker are sent from the phone comp
     await navigate(page, '/mail');
     await page.getByRole('button', { name: 'Compose' }).filter({ visible: true }).first().click();
     await page.getByRole('dialog').waitFor();
+    // The seeded GreenMail account; the dev seed's other accounts have no reachable server.
+    const from = page.getByRole('combobox', { name: 'From' }).filter({ visible: true }).first();
+    if (!(await from.textContent())?.includes('admin@mail.test')) {
+      await from.click();
+      await page.getByRole('option', { name: /admin@mail\.test/ }).first().click();
+    }
     await page.locator('input').and(page.getByLabel('To')).filter({ visible: true }).first().fill('sam@example.org');
     await page.locator('input').and(page.getByLabel('Subject')).filter({ visible: true }).first().fill(subject);
     await page.getByRole('button', { name: 'Attach files' }).click();
