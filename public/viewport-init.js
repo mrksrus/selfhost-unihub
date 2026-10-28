@@ -4,5 +4,5 @@
 (() => {
   const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const viewport = document.querySelector('meta[name="viewport"]');
-  if (ios && viewport) viewport.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0');
+  if (ios && viewport) viewport.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, interactive-widget=resizes-content');
 })();

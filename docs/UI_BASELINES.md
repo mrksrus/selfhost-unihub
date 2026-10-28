@@ -42,7 +42,7 @@ twelve pictures in all, compared with zero tolerance:
 | `todo-wide-*`, `todo-phone-*` | Wide, Phone | ToDo, Open view, all lists. |
 | `recordings-phone-*` | Phone | Recordings library. |
 | `settings-appearance-wide-*` | Wide | Settings → Appearance. |
-| `composer-phone-*` | Phone | Mail, Compose (full screen: title bar, one row per field, the message filling the rest). |
+| `composer-phone-*` | Phone | Mail, Compose (full screen: title bar; To, the folded "Cc/Bcc, From" line and Subject one row each; the message filling the rest; the formatting toolbar pinned above the buttons). |
 
 **Behaviour checks.** These run against the same build and the same data.
 
@@ -54,7 +54,7 @@ twelve pictures in all, compared with zero tolerance:
 | P-12, N-05 | Wide Mail: 45 Tab presses cover the rail, then the panel, then the page, in that order. Every stop shows a focus ring (outline or ring shadow) and is on screen. Ctrl+K opens search with its input focused, Escape closes it, and Tab continues afterwards. |
 | P-02, A-01 | With the app script held back, the first paint is already black (default) or the stored Light colour, even when the OS prefers the other mode. After start-up, `theme-color` equals the page colour. Settings switches Light (kept after reload), System (follows a live OS change both ways) and Dark (kept after reload against a light OS). |
 | P-11, M-10, T-02 | Phone, coarse pointer (asserted). On ToDo, the Mail list, the composer and Recordings: every control in view has a tap area of at least 40 px, counting its `tap-area` pseudo-element. No two neighbouring tap areas overlap; edges that touch along one CSS pixel or less count as touching. Every control is reachable by hit-testing once scrolled into view, so nothing stays under the bottom bar. |
-| P-15, P-26, B-11 | 412 × 560 and 450 × 600, as with the keyboard open in the Android app: the composer fills the screen from the very top, and after typing one line in a new message at least 240 px of the message editor is on screen, counting every clipping box around it and the button bar, with the typed line in view. The field rows scroll away above the message when it gets focus on a screen under 44rem; at full height the layout is the approved picture. |
+| P-15, P-26, B-11 | 412 × 560 and 450 × 600, as with the keyboard open in the Android app: the composer fills the screen from the very top, and after typing one line in a new message at least 240 px of the message editor is on screen, counting every clipping box around it and the toolbar pinned above the button bar, with the typed line in view. The header rows scroll away above the message when it gets focus; at full height the layout is the approved picture. |
 
 Every test also fails on an uncaught page error, on an `/api` request that has
 no fixture, and on any request outside the loopback app and the intercepted

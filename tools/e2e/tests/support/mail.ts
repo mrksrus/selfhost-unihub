@@ -41,6 +41,20 @@ export async function delivered(mailbox: string): Promise<Delivered[]> {
   return list.map((m) => ({ uid: m.uid, messageId: m['Message-ID'], subject: m.subject, raw: m.mimeMessage }));
 }
 
+/**
+ * A provider mailbox that exists only for one test (GreenMail's REST API
+ * creates it; it is gone when the stack restarts). Same password as the
+ * seeded ones, so UniHub can connect it.
+ */
+export async function createProviderMailbox(address: string) {
+  const response = await fetch(`${stack.greenmailApi}/api/user`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: address, login: address, password: stack.providerPassword }),
+  });
+  if (!response.ok) throw new Error(`GreenMail could not create ${address}: ${response.status} ${await response.text()}`);
+  providerUsers.add(address);
+}
+
 export async function deliveredWithSubject(mailbox: string, subject: string) {
   return (await delivered(mailbox)).filter((message) => message.subject === subject);
 }

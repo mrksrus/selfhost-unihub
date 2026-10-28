@@ -23,12 +23,12 @@
   },
   "baselines": {
     "composer-phone-dark.png": {
-      "sha256": "ffc647c089e1a3d9cf194a7f28329bbc461c0817fc4f4a231195eb043eb9ba53",
-      "bytes": 26182
+      "sha256": "434bd2f9e2529bdc972654ac3716f26958c6e8747598c4d3ec637b89972a902d",
+      "bytes": 23093
     },
     "composer-phone-light.png": {
-      "sha256": "c460e8648e30ad4d31132e0b31fcb92d2882d2849d258940c10af1ff0a9076b6",
-      "bytes": 27349
+      "sha256": "bc68f5b760c1d09b89dd460a616bce63748164e29b1abf28bfa8e861b84086b9",
+      "bytes": 24198
     },
     "mail-reader-wide-dark.png": {
       "sha256": "1f24aa99d3b156f46fb8ad11480d4b3f98cd1b3166db3340ae7d2b671f7e4de4",
@@ -256,6 +256,46 @@
         "branch": "fix/0.24.2-phone-attachments",
         "dirty": true,
         "digest": "f3d154444dbf94df2990655ed5e4819bcf9ac9d931a86f5dc5c201d958055f97"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [],
+      "changed": [
+        "composer-phone-dark.png",
+        "composer-phone-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-10-28T18:07:32.255Z",
+      "reason": "0.25.0 phone composer (D29): To with recipient chips, the folded Cc/Bcc, From line, Subject row, the message filling the rest and the formatting toolbar pinned above the buttons; CHANGELOG Unreleased (0.25.0)",
+      "source": {
+        "commit": "5da242471651917a8bb4c64f2c00a9604b962563",
+        "branch": "feat/0.25.0-composer",
+        "dirty": false,
+        "digest": "e4fc045c630e3a3c25585497ab6cc8144f26e6a401d5148d5d507bcd2e52de9c"
       },
       "render": {
         "playwright": "1.64.0",

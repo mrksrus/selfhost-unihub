@@ -80,7 +80,21 @@ export async function setSettings(browser: unknown, values: Record<string, unkno
   ok(await pageApi(browser, 'PUT', '/api/settings/values', { values }), 'save settings');
 }
 
-export interface MailAccount { id: string; email_address: string; display_name: string; sync_mode: string }
+export interface MailAccount { id: string; email_address: string; display_name: string; sync_mode: string; disconnected_at?: string | null }
+
+export async function mailAccounts(browser: unknown): Promise<MailAccount[]> {
+  return ok(await pageApi<{ accounts: MailAccount[] }>(browser, 'GET', '/api/mail/accounts'), 'list mail accounts').accounts;
+}
+
+/** Connects a provider mailbox as a Sync-mode account of the signed-in person, as the seed does. */
+export async function addMailAccount(browser: unknown, address: string, displayName = address): Promise<MailAccount> {
+  ok(await pageApi(browser, 'POST', '/api/mail/accounts', {
+    email_address: address, display_name: displayName, provider: 'custom', username: address, encrypted_password: stack.providerPassword,
+    imap_host: stack.providerHost, imap_port: stack.imapsPort, smtp_host: stack.providerHost, smtp_port: stack.smtpsPort,
+    sync_mode: 'sync', sync_fetch_limit: 'all', try_calendar_sync: false,
+  }), `add mail account ${address}`);
+  return mailAccount(browser, address);
+}
 
 export async function mailAccount(browser: unknown, address: string): Promise<MailAccount> {
   const { accounts } = ok(await pageApi<{ accounts: MailAccount[] }>(browser, 'GET', '/api/mail/accounts'), 'list mail accounts');

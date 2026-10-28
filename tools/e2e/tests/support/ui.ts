@@ -13,7 +13,17 @@ export async function isNarrow(browser: unknown) {
 }
 
 /** The compose dialog, whatever its title (New message, Reply, Edit draft). */
-export const composeDialog = (screen: Screen) => screen.getByRole('dialog').filter({ has: screen.getByRole('combobox', 'From') });
+export const composeDialog = (screen: Screen) => screen.getByRole('dialog').filter({ has: screen.getByRole('textbox', 'Subject') });
+
+/** The phone composer's collapsed "Cc/Bcc, From: <account>" line (0.25.0); absent on wide windows and once opened. */
+export const senderLine = (screen: Screen) => screen.getByRole('button', /^Cc\/Bcc, From:/);
+
+/** Opens the Cc, Bcc and From rows of the phone composer when they are still folded into one line. */
+export async function showSenderRows(screen: Screen) {
+  const line = senderLine(screen);
+  if (await line.count()) await line.tap();
+  await expect(screen.getByRole('combobox', 'From')).toBeVisible();
+}
 
 /** The composer's message body (rich editor or plain textarea). */
 export const messageBody = (screen: Screen) => screen.getByRole('textbox', 'Message', { visible: true });
@@ -21,11 +31,17 @@ export const messageBody = (screen: Screen) => screen.getByRole('textbox', 'Mess
 /** Opens a new message on the mail page and picks the sender account. */
 export async function openCompose(screen: Screen, from: string) {
   await screen.getByRole('button', 'Compose', { visible: true }).first().tap();
-  await expect(screen.getByRole('combobox', 'From')).toBeVisible();
+  await expect(screen.getByRole('textbox', 'Subject')).toBeVisible();
   await chooseSender(screen, from);
 }
 
 export async function chooseSender(screen: Screen, from: string) {
+  // On a phone the account is on the folded "Cc/Bcc, From" line until it is opened.
+  const line = senderLine(screen);
+  if (await line.count()) {
+    if ((await line.textContent())?.includes(from)) return;
+    await line.tap();
+  }
   const sender = screen.getByRole('combobox', 'From');
   if ((await sender.textContent())?.includes(from)) return;
   await sender.tap();
@@ -139,6 +155,15 @@ export async function removeAttachment(screen: Screen, browser: unknown, filenam
     await (browser as { locator: (css: string) => { tap: () => Promise<void> } })
       .locator(`xpath=//div[@role="dialog"]//p[normalize-space()="${filename}"]/ancestor::div[1]/following-sibling::button[@title="Remove attachment"]`).tap();
   }
+}
+
+/** The chips of a phone composer recipient field (0.25.0), by their full entries. */
+export async function recipientChips(screen: Screen, field: 'To' | 'Cc' | 'Bcc') {
+  const list = screen.getByRole('list', `${field} recipients`);
+  if (!(await list.count())) return [];
+  const names: string[] = [];
+  for (const chip of await list.getByRole('button').all()) names.push((await chip.getAttribute('aria-label')) ?? '');
+  return names;
 }
 
 /** An attached file as the composer shows it: a square on narrow screens, a row on desktop. */

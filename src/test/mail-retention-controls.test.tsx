@@ -55,8 +55,8 @@ describe('mail retention controls', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
     mount();
     await screen.findByText('owner@example.test');
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect owner@example.test' }));
-    expect(screen.getByText(/Your local emails and attachments stay in UniHub/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Disconnect and keep mail' }));
+    expect(screen.getByText(/Your mail at the provider stays either way/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^Disconnect and keep mail/ }));
     await waitFor(() => expect(api.delete).toHaveBeenCalledExactlyOnceWith('/mail/accounts/account-1'));
     expect(await screen.findByText('Disconnected · local mail')).toBeInTheDocument();
     expect(screen.getByText('Local copy · provider presence unverified')).toBeInTheDocument();
@@ -80,15 +80,20 @@ describe('mail retention controls', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
     fireEvent.click(button);
     await waitFor(() => expect(api.delete).toHaveBeenCalledExactlyOnceWith('/mail/accounts/account-1?purge=true&confirm_purge=Owner%40Example.test'));
   });
-  it('disconnects and deletes a connected account in one confirmed step', async () => {
+  // D27: removing the account with its mail is a first-class choice of the disconnect
+  // dialog; it continues in the typed confirmation and says the provider keeps its mail.
+  it('removes a connected account with its mail in one confirmed step', async () => {
     calendarLinked = true; mount();
     await screen.findByText('owner@example.test');
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect owner@example.test' }));
-    fireEvent.click(screen.getByRole('button', { name: 'delete local data…' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Remove the account with its mail/ }));
     expect(await screen.findByText(/1 linked calendar account with 4 events/)).toBeInTheDocument();
+    expect(screen.getByText(/stay at the provider/)).toBeInTheDocument();
     expect(api.get).toHaveBeenCalledWith('/mail/accounts/account-1/purge-preview?disconnect=true');
-    const button = screen.getByRole('button', { name: 'Disconnect and delete' });
+    const button = screen.getByRole('button', { name: 'Remove account and mail' });
+    expect(button).toBeDisabled();
     fireEvent.change(screen.getByLabelText(/Type the account address/), { target: { value: 'owner@example.test' } });
+    expect(button).toBeEnabled();
     fireEvent.click(button);
     await waitFor(() => expect(api.delete).toHaveBeenCalledExactlyOnceWith('/mail/accounts/account-1?purge=true&disconnect=true&confirm_purge=owner%40example.test'));
   });
