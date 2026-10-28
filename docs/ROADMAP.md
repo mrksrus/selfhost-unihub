@@ -6,8 +6,8 @@ released when it is ready and has been tested. The [changelog](../CHANGELOG.md)
 shows what has shipped.
 
 The plan may still change, but only under the rules below. Details that are
-still open, such as exactly which contact fields 0.26 adds, are decided when
-that version starts.
+still open, such as how chats recover their history on a new phone, are
+decided when that version starts.
 
 ## What 1.0 is
 
@@ -53,8 +53,11 @@ UniHub servers, AI features and new Music features.
 - **One theme per minor version.** `0.N.0` delivers the theme. A test window
   follows on real phones, a live server and with several people. Fixes ship
   as `0.N.1`, `0.N.2` and so on, and contain fixes only.
-- **The next version is released only when the previous one has passed its
-  tests.** It may be developed in the meantime.
+- **A version is released when its automated checks pass:** review, the
+  release contract, lint, the end-to-end suite (web and the Android app in an
+  emulator) and CI. Checks only people can do, on real phones, a live server
+  and with several people, follow in its test window; a failure there becomes
+  a patch.
 - **Numbers are fixed per theme.** If a theme turns out too big, its second
   half takes the reserve number 0.37.0 and nothing else moves. Otherwise
   0.37.0 is skipped.
@@ -70,12 +73,12 @@ UniHub servers, AI features and new Music features.
 | --- | --- | --- |
 | 0.23.x | Hardening | Released. Patch releases carry the fixes found in review and testing. |
 | 0.24.0 | Notifications, settings and mail essentials | Per-account folder filter for notifications ("notify except selected", Junk excluded by default, or "only selected"); how much a notification shows (sender and subject, sender only, or nothing); notifications per calendar; a typed settings registry that later admin policies build on; a signature per mail account, the week start and the default event reminder; mail essentials: reply all, formatted or plain-text compose, a default reading format, conversations, preview lines, templates, snooze and scheduled send, each optional compose feature switched on in Settings before it adds a button. |
-| 0.25.0 | Mail on the phone | A phone composer modelled on Apple Mail (compact header, recipient chips, a body that stays above the keyboard); keyboard handling in the Android app and PWA; attachments: open with another app, save and share on Android; an automated Android check against a real server. |
-| 0.26.0 | Contacts | Any number of emails and phone numbers per contact; duplicate detection by name as well as email and phone, with a reason for each match; side-by-side merge review that keeps every value, can be undone, and lets you mark contacts as "not the same person"; a written contacts input contract. |
+| 0.25.0 | Mail on the phone | A phone composer modelled on Apple Mail (compact header, recipient chips, a body that stays above the keyboard); keyboard handling in the Android app and PWA; attachments: open with another app, save and share on Android; removing a mail account together with its mail in one step; an option to keep snoozed messages visible in their folder; an automated Android check against a real server. |
+| 0.26.0 | Contacts | Contacts follow the vCard standard: any number of labelled emails, phone numbers and addresses, birthday, organisation, photo and every other vCard 4.0 field, kept intact on export; import and export of vCard 4.0, 3.0 and 2.1 and Google and Outlook CSV; photos resized by the server; duplicate detection by name as well as email and phone, with a reason for each match; side-by-side merge review that keeps every value, can be undone, and lets you mark contacts as "not the same person"; a written contacts input contract. |
 | 0.27.0 | ToDo and calendar order and defaults | Drag handles to reorder tasks, subtasks and module pages; choose the list or calendar when creating an item, and move tasks between lists; default task list and calendar in Settings. |
-| 0.28.0 | Data safety | Smaller encrypted user backups (basics plus data only UniHub holds; provider data syncs again after a restore); a scheduled, encrypted instance backup for administrators; data-safety policies, so an administrator can require mail to be in backups and stop users from deleting accounts or backups or removing mail accounts; automated upgrade tests across releases. |
-| 0.29.0 | App lock | Fingerprint or face lock in the Android app, for the whole app or chosen modules, with lock timing and hidden notification content; administrators can require it. |
-| 0.30.0 | Organisation I | Users created or invited by administrators; groups and departments; owner, admin and member roles; a complete policies page per installation or group (2FA, sessions, modules, notification detail, app lock, phone sync, offline copies, data safety); login limits that survive a restart. |
+| 0.28.0 | Data safety | A bin for deleted contacts, events, tasks and other items without a provider trash, kept 7, 30 or 90 days or for good as each user chooses, with an administrator policy on whether it may be emptied; smaller encrypted user backups (basics plus data only UniHub holds; provider data syncs again after a restore); a scheduled, encrypted instance backup for administrators; data-safety policies, so an administrator can require mail to be in backups and stop users from deleting accounts or backups or removing mail accounts; automated upgrade tests across releases. |
+| 0.29.0 | App lock | Fingerprint or face lock in the Android app and a PIN lock in the browser and PWA, for the whole app or chosen modules, with lock timing and hidden notification content; administrators can require it. |
+| 0.30.0 | Organisation I | Users created by administrators or invited with a link; groups and departments; owner, admin and member roles; a complete policies page per installation or group (2FA, sessions, modules, notification detail, app lock, phone sync, offline copies, data safety); login limits that survive a restart. |
 | 0.31.0 | Organisation II | A company directory of every active user; shared address books for everyone or chosen groups, with read and edit permissions, also on the phone (read-only). |
 | 0.32.0 | Organisation III | Share local calendars and task lists with people or groups (free/busy, read, edit, manage); organisation calendars such as a holiday or support rota. |
 | 0.33.0 | Messaging I | A Chat module with end-to-end encrypted 1:1 chats (MLS) on the web, PWA and Android; delivery and read state; presence; a key backup so a new phone keeps the history. |
@@ -122,6 +125,7 @@ These items are not planned. Each one can come after 1.0, or never.
 
 - iOS app
 - Single sign-on (OIDC, SAML) or LDAP
+- Invitations sent by email from the server
 - Passkeys for sign-in
 - Several organisations on one installation
 - Meeting invitations inside the organisation, "find a time", free/busy

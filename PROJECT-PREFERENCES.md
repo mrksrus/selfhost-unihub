@@ -409,7 +409,8 @@ only then does the composer show their button. One to three such buttons share
 an existing line; more get a line of their own. Phones come first: the message
 body keeps most of the screen while typing, and the header may scroll away.
 Desktop may show more at once. Before a new compose layout is built, the
-maintainer is offered two or three options to choose from.
+maintainer is offered two or three options to choose from; for 0.25.0 to
+0.30.0, P-29 replaces that step.
 
 Source: maintainer's direction while deciding the 0.24.0 scope (Road to 1.0
 D21), prompted by the Android composer leaving almost no room for the body.
@@ -620,11 +621,63 @@ the real shell where the device boundary matters, and several synthetic users
 for sharing. A check an agent can run counts only from its own run, recorded
 in the tracker with its evidence. The maintainer receives a short list per
 version of what no agent can reach (their real phone, the live server, real
-providers and people), not every row. How those remaining rows gate a release
-is decision D25 in the private roadmap.
+providers and people), not every row. Those rows do not hold back a release:
+a version is released when independent review, the release contract, lint,
+the agent e2e suite and CI pass on its candidate, and only an open product
+decision waits for the maintainer; a failure the maintainer finds later
+becomes a patch (decided 2026-10-28). The maintainer pauses after 0.30.0 to
+test everything and review this way of working.
 
 Evidence: `tools/e2e/README.md` (branch `test/e2e-harness`), tracker session
 log 2026-10-26.
+
+#### P-29 Agents design the new screens of 0.25.0 to 0.30.0
+
+Accepted, 2026-10-28 (maintainer, at the start of 0.25.0). Refines P-26's
+options step and P-27 for these versions.
+
+New screens and dialogs in 0.25.0 to 0.30.0 (the removal of a mail account
+with its mail, contact merge review, drag handles, the bin, policies, app
+lock, people and groups) are designed by the frontend agent within
+docs/UI_ACCEPTANCE.md and the accepted tokens and components, and released
+when the gates pass, without waiting for the maintainer to choose between
+options. The maintainer reviews the look after 0.30.0; whatever they dislike
+becomes a patch. Accepted decisions above still bind these designs.
+
+#### P-30 Contacts follow the vCard standard, with nothing UniHub-specific
+
+Accepted, 2026-10-28 (maintainer: "Use the newest vcard standard. I dont want
+custom stuff just for this app, just support of all the vCard stuff and other
+Contact formats."). Built in 0.26.0.
+
+A contact holds the vCard 4.0 (RFC 6350) model: any number of labelled
+emails, phone numbers and addresses, birthday and anniversary, nickname,
+organisation and title, web addresses, messaging handles, notes, categories,
+related people and a photo. Properties UniHub does not show are kept and
+written back, so an import followed by an export loses nothing. Import reads
+vCard 4.0, 3.0 and 2.1 and the Google and Outlook CSV layouts; export writes
+vCard 4.0 (3.0 where a target needs it) and both CSV layouts. Photos are
+resized and converted by the server; a person never has to crop or shrink a
+picture before it is accepted.
+
+#### P-31 A bin for everything without a provider trash
+
+Accepted, 2026-10-28 (maintainer). Built in 0.28.0.
+
+Deleted contacts, calendar events and tasks (also those synced from a CalDAV
+account), recordings and similar items go into a bin; mail keeps its Trash
+folders. Each person chooses how long their bin keeps items: 7, 30 or 90 days
+or for good. An administrator policy decides whether people may empty the
+bin or delete from it for good, for retention and proof against deletion.
+People are told about that policy plainly when they sign up and whenever an
+administrator changes it, so a rule never surprises them later.
+
+#### P-32 Removing a mail account never deletes mail at the provider
+
+Accepted, 2026-10-28 (maintainer, for 0.25.0). Removing a mail account
+together with its mail is a first-class choice when disconnecting it, and it
+removes only UniHub's copy; the provider keeps its mail. The dialog says so
+plainly and asks for the typed address.
 
 ## Open decisions and conflicts
 
