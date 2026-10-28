@@ -16,8 +16,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   stub page; the apps of those earlier releases run against the new image.
   Each run connects, signs in with and without a two-factor code, stays
   signed in after the app is ended, uploads a file picked in Android's
-  document picker, downloads it again unchanged, records with the
-  microphone after Android asks for permission, and signs out. The results
+  document picker, records with the microphone after Android asks for
+  permission, downloads the recording unchanged, and signs out. The results
   appear as a table in the run (see the
   [release contract](docs/RELEASE_CONTRACT.md)).
 

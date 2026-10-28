@@ -67,10 +67,12 @@ the Android 16 emulator: the current app against the image being built and
 against the published image of every earlier release in the window, and every
 earlier app in the window against the image being built. Each pairing
 connects, signs in with and without a two-factor code, reopens, uploads a file
-from Android's document picker, downloads it, records with the microphone and
-signs out, each confirmed on the server ([what it
+from Android's document picker, records with the microphone, downloads the
+recording and signs out, each confirmed on the server ([what it
 proves](RELEASE_CONTRACT.md#what-the-android-server-check-proves)). An app
-recorded as broken or unavailable is listed as not run. The Android 10
+recorded as broken or unavailable is listed as not run. On this emulator a
+file picked in the 0.24.x apps reaches the page empty (WebView 133); that
+upload step is recorded as a known failure, shown as such in the table. The Android 10
 emulator is left out: its system WebView (74) cannot run the web app, which
 needs a current WebView; phones update theirs through the Play Store.
 

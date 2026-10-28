@@ -154,15 +154,6 @@ async function tapUntil(what: string, pattern: RegExp, done: (nodes: UiNode[]) =
 
 const appFields = (nodes: UiNode[]) => nodes.filter(node => /EditText/.test(node.cls) && node.pkg === PACKAGE);
 
-/** Whether the on-screen keyboard is shown (it can cover the field below the one being typed in). */
-const keyboardShown = () => /mInputShown=true/.test(shell('dumpsys input_method'));
-/** Hides the keyboard; Back only while it is shown, since Back otherwise leaves the page. */
-async function hideKeyboard() {
-  if (!keyboardShown()) return;
-  shell('input keyevent 4');
-  await sleep(800);
-}
-
 /** A field shows what was typed; Android may mask a password field's text in the tree. */
 const shows = (node: UiNode | undefined, typed: string) => !!node && (node.text === typed || (node.password && node.text.length === typed.length));
 
@@ -170,8 +161,9 @@ const shows = (node: UiNode | undefined, typed: string) => !!node && (node.text 
  * Types into the index-th field of the page as key events, a few characters
  * at a time, and reads the field back: a slow emulator can drop key events, so
  * a field that does not show what was typed is cleared and typed again. The
- * field is focused with Tab from the one before it, or by a tap with the
- * keyboard hidden, and typing starts only once the tree shows it focused.
+ * field is focused with Tab from the one before it (the on-screen keyboard
+ * can cover a field below), or by a tap, and typing starts only once the tree
+ * shows it focused.
  */
 async function typeInto(index: number, text: string) {
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -179,7 +171,7 @@ async function typeInto(index: number, text: string) {
     if (!field.focused) {
       const previous = appFields(screen())[index - 1];
       if (previous?.focused) shell('input keyevent 61');
-      else { await hideKeyboard(); tap(await waitFor(`input field ${index + 1}`, nodes => appFields(nodes)[index])); }
+      else tap(field);
       field = await waitFor(`focus in field ${index + 1}`, nodes => { const node = appFields(nodes)[index]; return node?.focused && node; }, 15_000).catch(() => field);
       if (!field.focused) { log(`       field ${index + 1} did not take focus`); continue; }
     }
@@ -327,7 +319,9 @@ async function connect(origin: string) {
   shell(`am force-stop ${PACKAGE}`);
   shell(`am start -a android.intent.action.VIEW -d '${`unihub://connect?server=${encodeURIComponent(origin)}`}' ${PACKAGE}`);
   const host = new URL(origin).hostname;
-  await tapOn('the question to connect', /^connect$/i, { cls: /Button/, fixed: true });
+  // The connect screen has a Connect button of its own: wait for the question about this server.
+  await waitFor('the question to connect', nodes => nodes.some(node => node.text === `Connect to ${host}?`));
+  await tapOn('Connect in the question', /^connect$/i, { cls: /Button/, fixed: true });
   await waitFor(`the sign-in page of ${host}`, authPage, 180_000);
 }
 
@@ -335,8 +329,8 @@ async function fillSignIn(person: Person) {
   await waitFor('the sign-in fields', nodes => appFields(nodes).length >= 2);
   await typeInto(0, person.email);
   await typeInto(1, person.password);
-  await hideKeyboard();
-  await tapOn('Sign in', /^Sign in$/, { cls: /Button/ });
+  // Enter submits the form, as on a phone's keyboard; the button may be under the keyboard.
+  shell('input keyevent 66');
 }
 
 async function navigateTo(page: string) {
@@ -362,24 +356,57 @@ async function pickFromDownloads(name: string) {
 
 const deviceSha = (file: string) => shell(`sha256sum '${file}' 2>/dev/null | cut -d' ' -f1; true`).trim();
 
-interface Step { name: string; ok: boolean; detail: string }
+interface Step { name: string; ok: boolean; detail: string; known?: string }
 interface Pairing { app: string; apk: string; server: string; origin: string; base: string; admin: { email: string; password: string } }
 
-/** Every flow for one app and one server; a failed step ends the pairing. */
+/**
+ * Failures that are known and recorded, as android/support-window.json records
+ * broken apps: such a step must still fail exactly this way (the table shows
+ * it as known, not as working), and the check fails once it passes, so the
+ * record is removed. The apps are listed by version, so a new app is expected
+ * to work.
+ */
+const KNOWN: { step: string; api: string; apps: string[]; symptom: RegExp; note: string }[] = [
+  { step: 'upload (file picker)', api: '36', apps: ['0.24.0', '0.24.1', '0.24.2', '0.24.3'], symptom: /picked file reached the page empty/,
+    note: 'Android 16 emulator (WebView 133): a file picked in the app reaches the page with 0 bytes ("Failed to get Documents URI" in logcat), from Downloads and from device storage alike' },
+];
+const knownFor = (app: string, name: string) => KNOWN.find(item => item.step === name && item.api === sdkLevel && item.apps.includes(app));
+
+/**
+ * Every flow for one app and one server. Connecting and signing in end the
+ * pairing when they fail; a later failed step is recorded and the app is
+ * started again for the next one.
+ */
 async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
   const steps: Step[] = [];
-  const step = async (name: string, action: () => Promise<string>) => {
+  const step = async (name: string, action: () => Promise<string>, { fatal = false } = {}) => {
     const started = Date.now();
+    const known = knownFor(pairing.app, name);
     try {
       const detail = await action();
-      steps.push({ name, ok: true, detail });
-      log(`  ok   ${name}: ${detail} (${Math.round((Date.now() - started) / 1000)} s)`);
+      if (known) {
+        steps.push({ name, ok: false, detail: `recorded as failing but passed: remove it from KNOWN (${detail})` });
+        log(`  FAIL ${name}: passed, but is recorded as a known failure; remove the record`);
+      } else {
+        steps.push({ name, ok: true, detail });
+        log(`  ok   ${name}: ${detail} (${Math.round((Date.now() - started) / 1000)} s)`);
+      }
     } catch (error) {
-      steps.push({ name, ok: false, detail: (error as Error).message.split('\n')[0].slice(0, 300) });
-      log(`  FAIL ${name}: ${(error as Error).message}`);
+      const message = (error as Error).message.split('\n')[0].slice(0, 300);
+      if (known && known.symptom.test(message)) {
+        steps.push({ name, ok: false, detail: message, known: known.note });
+        log(`  known ${name}: ${message} (recorded: ${known.note})`);
+      } else {
+        steps.push({ name, ok: false, detail: message });
+        log(`  FAIL ${name}: ${(error as Error).message}`);
+      }
       const shot = path.join(evidence, `${pairing.app}-app-${pairing.server}-server-${name.replace(/\W+/g, '-')}.png`);
       try { shell('screencap -p /data/local/tmp/unihub-screen.png'); adb('pull', '/data/local/tmp/unihub-screen.png', shot); log(`       screen: ${shot}`); } catch { /* best effort */ }
-      throw error;
+      if (fatal) throw error;
+      // A fresh start for the next step, still signed in.
+      shell(`am force-stop ${PACKAGE}`);
+      shell(`am start -n ${PACKAGE}/.MainActivity`);
+      await waitFor('the signed-in app after a failed step', signedIn, 120_000).catch(() => {});
     }
   };
 
@@ -397,6 +424,8 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
   const toneSha = crypto.createHash('sha256').update(tone).digest('hex');
   const local = path.join(os.tmpdir(), toneName);
   fs.writeFileSync(local, tone);
+  const sha = (bytes: Buffer) => crypto.createHash('sha256').update(bytes).digest('hex');
+  const recordings = async () => (await plainApi.json<{ recordings: { id: string; title: string; size_bytes?: number }[] }>('GET', '/api/recordings')).recordings;
 
   try {
     await step('install and connect', async () => {
@@ -404,13 +433,13 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
       adb('reverse', `tcp:${new URL(pairing.origin).port}`, `tcp:${new URL(pairing.base).port || 80}`);
       await connect(pairing.origin);
       return `${pairing.app} app at ${pairing.origin}`;
-    });
+    }, { fatal: true });
     await step('sign in', async () => {
       await fillSignIn(plain);
       await waitFor('the signed-in app', signedIn, 120_000);
       const sessions = await until('the app\'s session on the server', async () => { const list = await appSessions(plainApi); return list.length === 1 && list; });
       return `signed in; server lists the app's session (${sessions[0].userAgent ?? sessions[0].user_agent})`;
-    });
+    }, { fatal: true });
     await step('reopen', async () => {
       // Left with Home, then ended as Android ends a background app.
       shell('input keyevent 3');
@@ -420,43 +449,35 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
       await waitFor('the signed-in app after a restart', signedIn, 120_000);
       return 'still signed in after the app was left, ended and started again';
     });
-    let recordingId = '';
     await step('upload (file picker)', async () => {
       adb('push', local, `/sdcard/Download/${toneName}`);
       shell('content call --method scan_volume --uri content://media --arg external_primary >/dev/null 2>&1; true');
-      await navigateTo('Recordings');
-      await tapOn('Import audio file', /^Import audio file$/);
-      await pickFromDownloads(toneName);
-      await waitFor('the imported audio', find(/^Save the imported audio$/), 60_000);
-      await hideKeyboard();
-      await tapUntil('Save recording', /^Save recording$/, nodes => !find(/^Save the imported audio$/)(nodes), { cls: /Button/ });
-      const recording = await until('the uploaded recording on the server', async () => {
-        const { recordings } = await plainApi.json<{ recordings: { id: string; title: string }[] }>('GET', '/api/recordings');
-        return recordings.find(item => item.title === toneName.replace(/\.wav$/, ''));
-      }, 120_000);
-      recordingId = recording.id;
-      const stored = await plainApi.bytes(`/api/recordings/${recording.id}/file?download=1`);
-      if (crypto.createHash('sha256').update(stored).digest('hex') !== toneSha) throw new Error(`the server holds ${stored.length} bytes, not the ${tone.length} picked`);
-      shell(`rm -f '/sdcard/Download/${toneName}'`);
-      return `${toneName} picked in Android's picker; the server holds the same ${tone.length} bytes (sha256 ${toneSha.slice(0, 12)})`;
+      try {
+        await navigateTo('Recordings');
+        await tapOn('Import audio file', /^Import audio file$/);
+        await pickFromDownloads(toneName);
+        await waitFor('the imported audio', find(/^Save the imported audio$/), 60_000);
+        await tapUntil('Save recording', /^Save recording$/, nodes => !find(/^Save the imported audio$/)(nodes), { cls: /Button/ });
+        const title = toneName.replace(/\.wav$/, '');
+        const outcome = await until('the uploaded recording on the server', async () => {
+          const found = (await recordings()).find(item => item.title === title);
+          if (found) return { recording: found };
+          // The page refuses a file that reached it without content.
+          if (screen().some(node => /total_bytes must be a positive number/.test(node.text))) return { refused: true };
+        }, 120_000);
+        if (!('recording' in outcome) || !outcome.recording) throw new Error('the picked file reached the page empty: "Upload refused: total_bytes must be a positive number"');
+        const { recording } = outcome;
+        const stored = await plainApi.bytes(`/api/recordings/${recording.id}/file?download=1`);
+        if (sha(stored) !== toneSha) throw new Error(`the server holds ${stored.length} bytes, not the ${tone.length} picked`);
+        return `${toneName} picked in Android's picker; the server holds the same ${tone.length} bytes (sha256 ${toneSha.slice(0, 12)})`;
+      } finally {
+        shell(`rm -f '/sdcard/Download/${toneName}'`);
+      }
     });
-    await step('download', async () => {
-      const title = toneName.replace(/\.wav$/, '');
-      await tapOn(`the actions of ${title}`, new RegExp(`^More actions for ${title}$`));
-      await tapOn('Download', /^Download$/);
-      const file = await until('the downloaded file in Downloads', async () => {
-        const listing = shell(`ls /sdcard/Download/ 2>/dev/null; true`).split(/\r?\n/).map(name => name.trim());
-        const name = listing.find(item => item.startsWith(title) && !item.endsWith('.pending'));
-        return name && deviceSha(`/sdcard/Download/${name}`) === toneSha && name;
-      }, 90_000);
-      shell(`rm -f '/sdcard/Download/${file}'`);
-      return `saved to Downloads as ${file}, byte-identical to the upload`;
-    });
-    // 0.25.0 adds Open with…, Save to Downloads and Share for files
-    // (feat/0.25.0-android-files): their steps join here, for apps and
-    // servers from 0.25.0, and their names join STEP_NAMES below.
+    let recorded: { id: string; title: string; size_bytes?: number } | undefined;
     await step('microphone', async () => {
-      const before = (await plainApi.json<{ recordings: unknown[] }>('GET', '/api/recordings')).recordings.length;
+      const before = new Set((await recordings()).map(item => item.id));
+      await navigateTo('Recordings');
       await tapOn('Record', /^Record$/, { cls: /Button/ });
       const allow = await waitFor('Android\'s microphone question', find(/^(While using the app|Allow|ALLOW|Only this time)$/), 60_000);
       tap(allow);
@@ -466,35 +487,47 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
       await sleep(3000);
       await tapOn('Stop', /^Stop$/, { cls: /Button/ });
       await waitFor('the recording to save', find(/^Save the recording$/), 60_000);
-      await hideKeyboard();
       await tapUntil('Save recording', /^Save recording$/, nodes => !find(/^Save the recording$/)(nodes), { cls: /Button/ });
-      const made = await until('the recording on the server', async () => {
-        const { recordings: list } = await plainApi.json<{ recordings: { id: string; size_bytes?: number }[] }>('GET', '/api/recordings');
-        return list.length > before && list.find(item => item.id !== recordingId);
-      }, 120_000);
-      if (!(Number(made.size_bytes) > 0)) throw new Error('the recording reached the server empty');
-      return `permission asked and granted; ${made.size_bytes} bytes recorded with the microphone reached the server`;
+      recorded = await until('the recording on the server', async () => (await recordings()).find(item => !before.has(item.id)), 120_000);
+      if (!(Number(recorded.size_bytes) > 0)) throw new Error('the recording reached the server empty');
+      return `permission asked and granted; ${recorded.size_bytes} bytes recorded with the microphone reached the server`;
     });
+    await step('download', async () => {
+      if (!recorded) throw new Error('no recording on the server to download (the microphone step failed)');
+      const expected = sha(await plainApi.bytes(`/api/recordings/${recorded.id}/file?download=1`));
+      const existing = new Set(shell('ls /sdcard/Download/ 2>/dev/null; true').split(/\r?\n/).map(name => name.trim()));
+      await navigateTo('Recordings');
+      await tapOn(`the actions of ${recorded.title}`, new RegExp(`^More actions for ${recorded.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+      await tapOn('Download', /^Download$/);
+      const file = await until('the downloaded file in Downloads', async () => {
+        const added = shell('ls /sdcard/Download/ 2>/dev/null; true').split(/\r?\n/).map(name => name.trim()).filter(name => name && !existing.has(name) && !name.startsWith('.pending'));
+        return added.find(name => deviceSha(`/sdcard/Download/${name}`) === expected);
+      }, 90_000);
+      shell(`rm -f '/sdcard/Download/${file}'`);
+      return `the recording saved to Downloads as ${file}, byte-identical to the server's copy`;
+    });
+    // 0.25.0 adds Open with…, Save to Downloads and Share for files
+    // (feat/0.25.0-android-files): their steps join here, for apps and
+    // servers from 0.25.0, and their names join STEP_NAMES below.
     await step('sign out', async () => {
       await navigateTo('More');
       await tapOn('Sign out', /^Sign out$/);
       await waitFor('the sign-in page after signing out', authPage, 120_000);
       await until('the app\'s session to end on the server', async () => (await appSessions(plainApi)).length === 0);
       return 'back on the sign-in page; the server no longer lists the app\'s session';
-    });
+    }, { fatal: true });
     await step('sign in with two-factor code', async () => {
       await fillSignIn(twoFactor);
       await waitFor('the authentication code field', nodes => codePage(nodes) && appFields(nodes).length === 1, 120_000);
       // A fresh code, not one about to expire while it is typed.
       if (Date.now() % 30_000 > 22_000) await sleep(30_000 - (Date.now() % 30_000) + 500);
       await typeInto(0, totp(twoFactor.totpSecret!));
-      await hideKeyboard();
-      await tapOn('Verify and sign in', /^Verify and sign in$/, { cls: /Button/ });
+      shell('input keyevent 66');
       await waitFor('the signed-in app', signedIn, 120_000);
       const twoFactorApi = await new Session(pairing.base).signIn(twoFactor.email, twoFactor.password, twoFactor.totpSecret);
       await until('the two-factor session on the server', async () => (await appSessions(twoFactorApi)).length === 1);
       return 'password and authentication code accepted; the server lists the app\'s session';
-    });
+    }, { fatal: true });
   } catch { /* recorded in steps */ } finally {
     fs.rmSync(local, { force: true });
   }
@@ -611,24 +644,29 @@ if (localServer) {
 }
 try { shell(`am force-stop ${PACKAGE}`); adb('reverse', '--remove-all'); } catch { /* already gone */ }
 
-const STEP_NAMES = ['install and connect', 'sign in', 'reopen', 'upload (file picker)', 'download', 'microphone', 'sign out', 'sign in with two-factor code'];
+const STEP_NAMES = ['install and connect', 'sign in', 'reopen', 'upload (file picker)', 'microphone', 'download', 'sign out', 'sign in with two-factor code'];
 let failed = false;
+const mark = (step?: Step) => !step ? '-' : step.ok ? '✓' : step.known ? 'k' : '✗';
+/** ok: every step passed; known: the only failures are recorded ones; not-run; FAILED. */
+const result = (row: typeof rows[number]) => row.error ? (row.error.startsWith('not run') ? 'not-run' : 'FAILED')
+  : row.steps.length !== STEP_NAMES.length || row.steps.some(item => !item.ok && !item.known) ? 'FAILED'
+  : row.steps.some(item => item.known) ? 'known' : 'ok';
 console.log(`\nAndroid ${release} (API ${sdkLevel}), WebView ${webView.version}: apps against real servers`);
 console.log(`App      Server   Result   ${STEP_NAMES.map((_, index) => index + 1).join(' ')}   Detail`);
 for (const row of rows) {
-  const notRun = row.error?.startsWith('not run');
-  const ok = !row.error && row.steps.length === STEP_NAMES.length && row.steps.every(item => item.ok);
-  if (!ok && !notRun) failed = true;
-  const marks = STEP_NAMES.map(name => { const item = row.steps.find(entry => entry.name === name); return item ? (item.ok ? '✓' : '✗') : '-'; }).join(' ');
-  const detail = row.error ?? row.steps.find(item => !item.ok)?.detail ?? 'every flow passed';
-  console.log(`${row.app.padEnd(8)} ${row.server.padEnd(8)} ${(notRun ? 'not-run' : ok ? 'ok' : 'FAILED').padEnd(8)} ${marks}   ${detail}`);
+  if (result(row) === 'FAILED') failed = true;
+  const marks = STEP_NAMES.map(name => mark(row.steps.find(entry => entry.name === name))).join(' ');
+  const detail = row.error ?? row.steps.find(item => !item.ok && !item.known)?.detail ?? row.steps.find(item => item.known)?.detail ?? 'every flow passed';
+  console.log(`${row.app.padEnd(8)} ${row.server.padEnd(8)} ${result(row).padEnd(8)} ${marks}   ${detail}`);
 }
 console.log(`Flows: ${STEP_NAMES.map((name, index) => `${index + 1} ${name}`).join(', ')}.`);
+const notes = [...new Set(rows.flatMap(row => row.steps.map(item => item.known).filter(Boolean)))];
+for (const note of notes) console.log(`k = known failure, recorded in KNOWN: ${note}`);
 fs.writeFileSync(path.join(evidence, `android-${sdkLevel}.json`), JSON.stringify({ android: release, api: sdkLevel, webView: webView.version, rows }, null, 2));
 if (process.env.GITHUB_STEP_SUMMARY) {
-  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, [`### Android ${release} (API ${sdkLevel}) against real servers`, '',
+  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, [`### Android ${release} (API ${sdkLevel}, WebView ${webView.version}) against real servers`, '',
     `| App | Server | Result | ${STEP_NAMES.join(' | ')} |`, `| --- | --- | --- | ${STEP_NAMES.map(() => '---').join(' | ')} |`,
-    ...rows.map(row => `| ${row.app} | ${row.server} | ${row.error ?? (row.steps.every(item => item.ok) && row.steps.length === STEP_NAMES.length ? 'ok' : 'FAILED')} | ${STEP_NAMES.map(name => { const item = row.steps.find(entry => entry.name === name); return item ? (item.ok ? '✓' : '✗') : '–'; }).join(' | ')} |`),
-    ''].join('\n') + '\n');
+    ...rows.map(row => `| ${row.app} | ${row.server} | ${result(row)} | ${STEP_NAMES.map(name => mark(row.steps.find(entry => entry.name === name))).join(' | ')} |`),
+    '', ...notes.map(note => `k = known failure: ${note}`), ''].join('\n') + '\n');
 }
 process.exitCode = failed ? 1 : 0;

@@ -192,13 +192,22 @@ confirmed on the server, not on the screen alone:
    signed in.
 4. **Upload:** a synthetic WAV file is picked in Android's document picker on
    the Recordings page; the server holds exactly its bytes.
-5. **Download:** the recording's Download saves the same bytes in Downloads.
-6. **Microphone:** Record asks for Android's microphone permission, which is
+5. **Microphone:** Record asks for Android's microphone permission, which is
    granted; the recording reaches the server with content.
+6. **Download:** that recording's Download saves the server's bytes in
+   Downloads.
 7. **Sign out:** the app shows the sign-in page, and the server no longer
    lists the app's session.
 8. **Two-factor sign-in:** password, then a current authentication code; the
    server lists the app's session.
+
+Connecting, signing in and signing out end a pairing when they fail; after
+another failed step the app is started again and the next step runs. A
+failure that is known is recorded in the script's `KNOWN` list (step, Android
+level, app versions, symptom), as broken apps are recorded in the support
+window: the step must still fail with exactly that symptom and shows as `k`,
+the pairing as `known`, never as passing; a listed step that passes, or fails
+otherwise, fails the check until the record is updated.
 
 It prints a table (one row per pairing, one mark per step), adds it to the
 run's summary and keeps it, with a screenshot of any failed step, under
@@ -235,7 +244,12 @@ any of these.
 
 These are not covered yet; do not report them as passing.
 
-- **Android with a real server.** The real-server check runs on Android 16
+- **Android with a real server.** On the Android 16 emulator (WebView 133) a
+  file picked in the app reaches the page empty, from Downloads and from the
+  device's storage alike, so the upload step of the 0.24.x apps is recorded
+  as a known failure there (it works on Android 15 with WebView 124); whether
+  phones with a current WebView are affected is checked on a real Android 16
+  phone. The real-server check runs on Android 16
   only: the Android 10 emulator image's WebView (74) cannot run the web app,
   which needs a current WebView, as on any phone that updates it, and the
   Android 17 image does not boot. Android 10 and 17 with a real server rely on

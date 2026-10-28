@@ -321,8 +321,8 @@ releases' images, each with an empty database and synthetic people. It drives
 the app through Android's accessibility tree, since a release build's WebView
 cannot be inspected, and confirms each step through the API: connecting,
 signing in with and without a two-factor code, reopening, an upload from the
-document picker, the download of the same bytes, a recording after the
-microphone permission, and signing out. To run it against a local
+document picker, a recording after the microphone permission, the download of
+that recording's bytes, and signing out. To run it against a local
 `tools/e2e/stack.sh` with an emulator:
 `UNIHUB_ANDROID_ADMIN=admin@example.com:<password> node scripts/android-server-check.mts --local <stack url> --apk <apk>`.
 
