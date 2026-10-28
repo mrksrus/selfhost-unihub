@@ -18,6 +18,7 @@ export const DEFAULT_USER_SETTINGS: UserSettingValues = {
   mail_threaded_view: false,
   mail_preview_lines: 1,
   snooze_choices: ['1h', '1d', '1w'],
+  snoozed_messages: 'hide',
 };
 export const DEFAULT_MAIL_ACCOUNT_SETTINGS: MailAccountSettingValues = {
   notify_enabled: true,

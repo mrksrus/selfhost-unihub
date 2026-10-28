@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { PenSquare, Plus } from 'lucide-react';
 import { captureMailFlagReconciler, fetchMailThread, mailQueryKeys, type Email } from '@/lib/mail-api';
 import { selectUserSetting, userSettingsQueryOptions } from '@/lib/settings-api';
-import { snoozeChoices } from '@/lib/mail-times';
+import { snoozeChoices, snoozeDescription } from '@/lib/mail-times';
 import type { TaskSource } from '@/lib/email-tasks';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
@@ -85,7 +85,8 @@ const MailPage = () => {
   const readOnly = useOfflineReadOnly();
   const snoozeTimes = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('snooze_choices') }).data ?? [];
   const threadedView = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('mail_threaded_view') }).data ?? false;
-  const snooze = useMailSnooze({ onSnoozedAway: id => { if (selectedEmail?.id === id && !compose.isReplying) closeReader(); } });
+  const snooze = useMailSnooze({ onSnoozedAway: id => { if (selectedEmail?.id === id && !compose.isReplying) closeReader(); },
+    onSnoozeChanged: (id, until) => setSelectedEmail(prev => prev?.id === id ? { ...prev, snoozed_until: until } : prev) });
   const schedule = useMailSchedule();
   // The message whose snooze time is being picked (row menu).
   const [snoozeTarget, setSnoozeTarget] = useState<Email | null>(null);
@@ -244,7 +245,7 @@ const MailPage = () => {
           onSnooze={setSnoozeTarget} onUnsnooze={snooze.unsnooze} readOnly={readOnly} />
       )}
       <WhenDialog open={!!snoozeTarget} onOpenChange={open => { if (!open) setSnoozeTarget(null); }} title="Snooze until"
-        description="The message leaves its list and comes back at this time, with a notification." choices={snoozeChoices(snoozeTimes)}
+        description={snoozeDescription(snooze.keep)} choices={snoozeChoices(snoozeTimes)}
         confirmLabel="Snooze" onPick={at => { if (snoozeTarget) snooze.snooze(snoozeTarget, at); }} />
       <WhenDialog open={!!schedule.picking} onOpenChange={open => { if (!open) schedule.setPicking(null); }} title="Send later"
         description="The draft is sent at this time." initial={schedule.picking?.scheduled_send_status === 'scheduled' && schedule.picking.scheduled_send_at ? new Date(schedule.picking.scheduled_send_at) : null}
@@ -271,7 +272,7 @@ const MailPage = () => {
           onForward={() => compose.startResponse(selectedEmail, 'forward')}
           onAddTask={() => setTaskEmail(selectedEmail)} timezone={timezone}
           snooze={{ choices: snoozeChoices(snoozeTimes), onSnooze: at => snooze.snooze(selectedEmail, at), onUnsnooze: () => snooze.unsnooze(selectedEmail),
-            pending: snooze.isPending(selectedEmail.id), readOnly }}
+            pending: snooze.isPending(selectedEmail.id), readOnly, keep: snooze.keep }}
           thread={threadedView ? thread.data ?? null : null}
           inlineCompose={!isMobile && compose.isReplying && <MailInlineCompose compose={compose} onAddTask={addTaskFromDraft} />} />
       )}

@@ -21,6 +21,8 @@ export interface ResolvedSetting<T> {
 
 export type ReadingFormat = 'theme' | 'simplified' | 'original' | 'auto';
 export type SnoozeChoice = '1h' | '3h' | 'tomorrow' | '1d' | '2d' | 'next_week' | '1w' | '2w' | '1mo';
+/** Where a snoozed message is until it comes back: out of its folder (hidden) or still listed there, marked. */
+export type SnoozedMessages = 'hide' | 'keep';
 export type StartPage = 'mail' | 'calendar' | 'todo' | 'contacts' | 'recordings' | 'music' | 'dashboard';
 
 export interface UserSettingValues {
@@ -44,6 +46,7 @@ export interface UserSettingValues {
   mail_threaded_view: boolean;
   mail_preview_lines: number;
   snooze_choices: SnoozeChoice[];
+  snoozed_messages: SnoozedMessages;
 }
 
 /** A folder by its role (inbox, sent, drafts, archive, trash, junk, ...) or by id. */

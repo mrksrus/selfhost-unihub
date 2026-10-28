@@ -406,6 +406,7 @@ are greyed out the same way. The shared types are in
 | `mail_threaded_view` | `true`, `false` | `false` | Mail |
 | `mail_preview_lines` | `0` to `5` | `1` | Mail |
 | `snooze_choices` | a list from `1h`, `3h`, `tomorrow`, `1d`, `2d`, `next_week`, `1w`, `2w`, `1mo`, each at most once | `1h`, `1d`, `1w` | Mail |
+| `snoozed_messages` | `hide` (out of the lists until due), `keep` (stays in its folder, marked); a view rule applied at once ([Snooze](MAIL_SYNC.md#snooze)) | `hide` | Mail |
 
 ### Mail account scope
 

@@ -7,6 +7,7 @@ import { parseMailAccountInput } from '../services/mail-account-input';
 import * as mailSyncPolicy from '../services/mail-sync-policy';
 import { withMailAccountLock } from '../services/mail-account-lock';
 import { accountUnreadQuery } from '../services/mail-folder-view';
+import { keepsSnoozedInLists } from '../services/mail-snooze';
 import crypto from 'crypto';
 import { db } from '../state';
 import { encrypt } from '../security/encryption';
@@ -136,7 +137,7 @@ export = {
 
       // The badge is the sum of the account's folder counts, so mail that sits
       // in no folder (gone from the server, awaiting cleanup) is not counted.
-      const [unreadRows] = await db.execute<(RowDataPacket & AccountRow)[]>(accountUnreadQuery(EFFECTIVE_READ_SQL), [userId]);
+      const [unreadRows] = await db.execute<(RowDataPacket & AccountRow)[]>(accountUnreadQuery(EFFECTIVE_READ_SQL, await keepsSnoozedInLists(userId)), [userId]);
 
       const unreadByAccount: Record<string, number> = {};
       for (const row of unreadRows) {

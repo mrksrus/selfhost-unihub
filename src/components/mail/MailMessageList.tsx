@@ -114,7 +114,9 @@ export function MailMessageList({ account, folder, folderLabel, accountLabel, li
             const starred = thread ? thread.is_starred : email.is_starred;
             const disconnected = accounts.find(entry => entry.id === email.mail_account_id)?.disconnected_at;
             const name = email.subject || 'message';
-            const snoozed = folder === SNOOZED && isSnoozed(email);
+            // Marked wherever it is listed (kept in its folder, a search, the
+            // Snoozed view); Unsnooze is the Snoozed view's row action.
+            const snoozed = isSnoozed(email);
             const backFromSnooze = isBackFromSnooze(email);
             // Who took part, most recent first: names, or the part of the address before the @.
             const participants = thread?.participants.map(person => person.name || person.address.split('@')[0]).join(', ');
@@ -166,7 +168,7 @@ export function MailMessageList({ account, folder, folderLabel, accountLabel, li
                       {email.body_text?.replace(/\s+/g, ' ').trim().substring(0, 140 * previewLines) || '(No content)'}
                     </span>}
                     {(disconnected || email.remote_missing || snoozed || backFromSnooze) && <span className="mt-1 flex flex-wrap gap-1.5 pl-4">
-                      {snoozed && <span className={cn(chip, 'inline-flex items-center gap-1')}><AlarmClock aria-hidden="true" className="h-3 w-3" />Until {formatWhen(email.snoozed_until!)}</span>}
+                      {snoozed && <span className={cn(chip, 'inline-flex items-center gap-1')}><AlarmClock aria-hidden="true" className="h-3 w-3" />{folder === SNOOZED ? 'Until' : 'Snoozed until'} {formatWhen(email.snoozed_until!)}</span>}
                       {backFromSnooze && <span className={cn(chip, 'inline-flex items-center gap-1 text-accent')} title="This message came back from a snooze"><AlarmClockOff aria-hidden="true" className="h-3 w-3" />Back from snooze</span>}
                       {disconnected && <span className={chip} title="This account is disconnected; this mail is retained locally, not verified at the provider">Disconnected · local mail</span>}
                       {email.remote_missing && <span className={chip} title="No currently verified provider occurrence; local copy retained">Local copy · provider presence unverified</span>}
@@ -174,7 +176,7 @@ export function MailMessageList({ account, folder, folderLabel, accountLabel, li
                   </button>
                   <ScheduledSendState email={email} schedule={schedule} readOnly={readOnly} />
                 </div>
-                {snoozed && snooze && (
+                {snoozed && folder === SNOOZED && snooze && (
                   <div className="shrink-0 self-center">
                     <Button type="button" variant="outline" size="sm" disabled={readOnly || snooze.isPending(email.id)}
                       title={readOnly ? 'Not available offline' : undefined} onClick={() => snooze.unsnooze(email)}>

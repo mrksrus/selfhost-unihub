@@ -29,6 +29,7 @@ function fixture({ oversizeTable, failTable, modules = {} }: FixtureValue = {}) 
   let transactionData: FixtureValue = null;
   function select(sql: string, params: FixtureValue) {
     if (sql.includes('FROM user_settings')) return [[{ setting_key: 'module_preferences', setting_value: JSON.stringify(modules) }]];
+    if (sql.includes('FROM setting_policies')) return [[]];
     if (sql.includes('JOIN mail_folder_remote_boxes')) {
       assert.equal(params[0], 'user-1');
       assert.match(sql, /JSON_CONTAINS/);

@@ -6,7 +6,7 @@ import { useResizableWidth } from '@/hooks/use-resizable-width';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import type { WhenChoice } from '@/lib/mail-times';
+import { formatWhen, snoozeDescription, type WhenChoice } from '@/lib/mail-times';
 import { MailPendingMark } from '@/components/mail/MailPendingMark';
 import { MailMessageView } from '@/components/mail/MailMessageView';
 import { MailConversation } from '@/components/mail/MailConversation';
@@ -37,7 +37,7 @@ interface Props {
   /** Desktop inline reply editor, shown below the message. */
   inlineCompose: ReactNode;
   /** Snooze: the person's choices and the actions; absent where the reader has none. */
-  snooze?: { choices: WhenChoice[]; onSnooze: (at: Date) => void; onUnsnooze: () => void; pending: boolean; readOnly: boolean };
+  snooze?: { choices: WhenChoice[]; onSnooze: (at: Date) => void; onUnsnooze: () => void; pending: boolean; readOnly: boolean; keep?: boolean };
   /** The conversation around the message (threaded view), once loaded. */
   thread?: MailThreadResponse | null;
 }
@@ -163,7 +163,9 @@ export function MailReader({ email, loading = false, accounts, location, backLab
             {(() => {
               const view = <MailMessageView email={email} loading={loading} timezone={timezone} senderInContacts={senderInContacts}
                 notice={<>
-                  {snoozed && <p className="mb-4 rounded-md border border-border p-3 text-sm text-muted-foreground">Snoozed: this message comes back to its folder at the chosen time.</p>}
+                  {snoozed && <p className="mb-4 rounded-md border border-border p-3 text-sm text-muted-foreground">{snooze?.keep
+                    ? `Snoozed until ${formatWhen(email.snoozed_until!)}. It stays in its folder; you get a notification then.`
+                    : 'Snoozed: this message comes back to its folder at the chosen time.'}</p>}
                   {email.remote_missing && <p className="mb-4 rounded-md border border-border p-3 text-sm text-muted-foreground">Local copy: this email was not found on the server during the last complete sync. Its content and attachments are kept here.</p>}
                 </>} />;
               return thread && !loading
@@ -176,7 +178,7 @@ export function MailReader({ email, loading = false, accounts, location, backLab
         {inlineCompose}
       </div>
       {snooze && <WhenDialog open={pickingSnooze} onOpenChange={setPickingSnooze} title="Snooze until" choices={snooze.choices}
-        description="The message leaves its list and comes back at this time, with a notification." confirmLabel="Snooze" onPick={snooze.onSnooze} />}
+        description={snoozeDescription(!!snooze.keep)} confirmLabel="Snooze" onPick={snooze.onSnooze} />}
     </div>
   );
 }

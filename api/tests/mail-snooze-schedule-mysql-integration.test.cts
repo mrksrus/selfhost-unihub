@@ -112,6 +112,77 @@ test('a snoozed message leaves the lists and counts, comes back once with a noti
   assert.equal(Number(total), 2, 'each return has its own notification');
 });
 
+test('kept in the folder, a snoozed message stays in its folder, conversation and counts, marked, and still comes back with its notification; the setting is the owner\'s own', {
+  skip: !process.env.MYSQL_TEST_HOST, timeout: 120000,
+}, async t => {
+  const { pool, owner, stranger, ownerId, email } = await setup(t, 'snooze-keep');
+  const snooze = require('../dist/src/services/mail-snooze') as typeof import('../src/services/mail-snooze');
+
+  const kept = await email({ subject: 'Stays in the inbox' });
+  const later = await email({ subject: 'Quarterly numbers' });
+  await pool.execute('UPDATE emails SET thread_key = ? WHERE id IN (?, ?)', ['d'.repeat(64), kept, later]);
+  // The stranger has a message of their own and leaves the setting at its default.
+  const strangerId = ((await stranger.request('GET', '/api/auth/me')).body.user as FixtureValue).id as string;
+  const strangerAccount = crypto.randomUUID(), strangerMail = crypto.randomUUID();
+  await pool.execute(`INSERT INTO mail_accounts (id, user_id, email_address, provider, imap_host, smtp_host, encrypted_password, sync_mode, is_active)
+    VALUES (?, ?, 'snooze-keep-stranger@example.test', 'custom', 'imap.example.test', 'smtp.example.test', 'x', 'download', TRUE)`, [strangerAccount, strangerId]);
+  await pool.execute(`INSERT INTO emails (id, user_id, mail_account_id, subject, from_address, to_addresses, body_text, folder, is_draft, is_read, received_at)
+    VALUES (?, ?, ?, 'Stranger mail', 'sender@example.test', '[]', 'Synthetic body', 'inbox', FALSE, FALSE, UTC_TIMESTAMP())`, [strangerMail, strangerId, strangerAccount]);
+
+  const rows = async (who: FixtureValue, query: string) => (await who.request('GET', `/api/mail/emails?${query}`)).body.emails as FixtureValue[];
+  const subjects = async (who: FixtureValue, query: string) => (await rows(who, query)).map(row => row.subject).sort();
+  const conversation = async (id: string) => ((await owner.request('GET', `/api/mail/emails/${id}/thread`)).body.messages as FixtureValue[]).map(row => row.id).sort();
+  const counts = async () => {
+    const unread = ((await owner.request('GET', '/api/mail/unread-counts')).body as FixtureValue).unreadByFolder.inbox ?? 0;
+    const inbox = ((await owner.request('GET', '/api/mail/folders')).body.folders as FixtureValue[]).find(folder => folder.slug === 'inbox');
+    const badge = ((await owner.request('GET', '/api/mail/accounts')).body.accounts as FixtureValue[])[0].unread_count;
+    const [thread] = (await owner.request('GET', '/api/mail/threads?folder=inbox')).body.threads as FixtureValue[];
+    return { unread, total: inbox.total_count, badge, conversation: [thread.message_count, thread.total_count] };
+  };
+  const setKeep = async (value: 'hide' | 'keep') => {
+    const saved = await owner.request('PUT', '/api/settings/values', { values: { snoozed_messages: value } });
+    assert.equal(saved.status, 200);
+    assert.equal((saved.body as FixtureValue).settings.snoozed_messages.value, value);
+  };
+  assert.equal((await owner.request('PUT', '/api/settings/values', { values: { snoozed_messages: 'show' } })).status, 400, 'only the two choices');
+
+  await setKeep('keep');
+  const until = inMinutes(60);
+  assert.equal((await owner.request('POST', `/api/mail/emails/${later}/snooze`, { until: until.toISOString() })).status, 200);
+  assert.deepEqual(await subjects(owner, 'folder=inbox'), ['Quarterly numbers', 'Stays in the inbox'], 'it stays in its folder');
+  const listed = (await rows(owner, 'folder=inbox')).find(row => row.id === later);
+  assert.ok(Math.abs(new Date(listed.snoozed_until).getTime() - until.getTime()) < 1000, 'with the time it is snoozed until, for its mark');
+  assert.deepEqual(await subjects(owner, 'folder=snoozed'), ['Quarterly numbers'], 'and the Snoozed view still lists it');
+  assert.deepEqual(await subjects(owner, 'folder=all'), ['Quarterly numbers', 'Stays in the inbox']);
+  assert.deepEqual(await conversation(kept), [kept, later].sort(), 'its conversation keeps it');
+  assert.deepEqual(await counts(), { unread: 2, total: 2, badge: 2, conversation: [2, 2] }, 'the counts follow the list');
+  assert.equal(((await owner.request('GET', '/api/offline/snapshot')).body.snapshot as FixtureValue).keepSnoozed, true, 'offline lists follow it too');
+
+  // A view rule: switching it applies at once to the message already snoozed.
+  await setKeep('hide');
+  assert.deepEqual(await subjects(owner, 'folder=inbox'), ['Stays in the inbox']);
+  assert.deepEqual(await conversation(kept), [kept]);
+  assert.deepEqual(await counts(), { unread: 1, total: 1, badge: 1, conversation: [1, 1] });
+  assert.equal(((await owner.request('GET', '/api/offline/snapshot')).body.snapshot as FixtureValue).keepSnoozed, false);
+  await setKeep('keep');
+
+  // The owner's choice is not the stranger's: their snoozed message leaves their inbox.
+  assert.equal(((await stranger.request('GET', '/api/settings/values')).body as FixtureValue).settings.snoozed_messages.value, 'hide');
+  assert.equal((await stranger.request('POST', `/api/mail/emails/${strangerMail}/snooze`, { until: inMinutes(60).toISOString() })).status, 200);
+  assert.deepEqual(await subjects(stranger, 'folder=inbox'), []);
+  assert.deepEqual(await subjects(stranger, 'folder=snoozed'), ['Stranger mail']);
+  assert.ok(!(await subjects(owner, 'folder=all')).includes('Stranger mail'));
+
+  // Its time comes: it comes back once, with its notification, as when hidden.
+  assert.deepEqual(await snooze.returnDueSnoozes(inMinutes(61)), { returned: 2 });
+  const [events] = await pool.execute<RowDataPacket[]>("SELECT user_id, source_id FROM notification_events WHERE kind = 'snooze' AND user_id = ?", [ownerId]);
+  assert.deepEqual(events.map(row => row.source_id), [later]);
+  const back = (await rows(owner, 'folder=inbox')).find(row => row.id === later);
+  assert.equal(back.snoozed_until, null);
+  assert.ok(back.snooze_returned_at, 'marked as back from snooze');
+  assert.deepEqual(await subjects(owner, 'folder=snoozed'), []);
+});
+
 test('a scheduled draft sends once at its time, waits while Mail is off, recovers a stopped send from its key, and reports a failure', {
   skip: !process.env.MYSQL_TEST_HOST, timeout: 120000,
 }, async t => {

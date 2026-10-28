@@ -122,8 +122,17 @@ export default function MailSettings() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title="Snooze" description="The times offered when you snooze a message.">
-        <SettingsRow label="Choices" description={chosen.size === 0 ? 'Nothing is offered until a time is chosen.' : undefined} lock={lock('snooze_choices')} stack>
+      <SettingsSection title="Snooze">
+        <SettingsRow label="Snoozed messages" description="Either way the message comes back with a notification at its time." htmlFor="snoozed-messages" lock={lock('snoozed_messages')}>
+          <Select value={values.snoozed_messages} disabled={disabled('snoozed_messages')} onValueChange={value => change({ snoozed_messages: value as UserSettingValues['snoozed_messages'] })}>
+            <SelectTrigger id="snoozed-messages" className="w-full sm:w-56"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="hide">Hide until due</SelectItem>
+              <SelectItem value="keep">Keep in the folder</SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+        <SettingsRow label="Choices" description={chosen.size === 0 ? 'Nothing is offered until a time is chosen.' : 'The times offered when you snooze a message.'} lock={lock('snooze_choices')} stack>
           <div role="group" aria-label="Snooze choices" className="grid w-full grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 touch:gap-y-4">
             {SNOOZE_OPTIONS.map(option => (
               <label key={option.value} className="flex min-h-6 cursor-pointer items-center gap-2 text-sm touch:min-h-11">

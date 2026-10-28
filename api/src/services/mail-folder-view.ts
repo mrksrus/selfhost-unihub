@@ -47,11 +47,13 @@ const folderMembershipSql = `(CASE
     THEN EXISTS(SELECT 1 FROM ${membershipTables} WHERE ${membershipWhere} AND f.slug = ?)
   ELSE ${fallbackFolderSql} = ? END)`;
 
-// Snoozed messages are counted again when they come back (mail-snooze.ts).
+// Snoozed messages are counted again when they come back (mail-snooze.ts),
+// unless the user keeps them in the lists: the counts follow what the lists show.
 const NOT_SNOOZED_EMAILS_SQL = '(emails.snoozed_until IS NULL OR emails.snoozed_until <= UTC_TIMESTAMP())';
 
-// One row per message and folder it is shown in.
-function folderViewRows(effectiveReadSql: string, accountId: string | null | undefined) {
+// One row per message and folder it is shown in. `keepSnoozed` is the
+// user's snoozed_messages setting (keepsSnoozedInLists in mail-snooze.ts).
+function folderViewRows(effectiveReadSql: string, accountId: string | null | undefined, keepSnoozed: boolean) {
   const hasAccount = accountId && accountId !== 'all';
   const filter = !hasAccount ? '' : accountId === 'legacy' ? ' AND emails.is_legacy = TRUE' :
     ' AND emails.is_legacy = FALSE AND COALESCE(emails.filing_account_id, emails.mail_account_id) = ?';
@@ -64,18 +66,19 @@ function folderViewRows(effectiveReadSql: string, accountId: string | null | und
       FROM ${membershipTables} WHERE o.presence = 'present'
     ) memberships ON memberships.email_id = emails.id AND memberships.user_id = emails.user_id
       AND memberships.mail_account_id = emails.mail_account_id AND NOT ${localFilingSql}
-    WHERE emails.user_id = ?${filter} AND ${NOT_SNOOZED_EMAILS_SQL}`;
+    WHERE emails.user_id = ?${filter}${keepSnoozed ? '' : ` AND ${NOT_SNOOZED_EMAILS_SQL}`}`;
 }
-function membershipCountQuery(effectiveReadSql: string, accountId: string | null | undefined, { onlyUnread = false, byAccount = false } = {}) {
+function membershipCountQuery(effectiveReadSql: string, accountId: string | null | undefined, keepSnoozed: boolean, { onlyUnread = false, byAccount = false } = {}) {
   return `SELECT folder${byAccount ? ', mail_account_id' : ''}, COUNT(*) AS total_count,
     SUM(CASE WHEN view_is_read = 0 THEN 1 ELSE 0 END) AS unread_count FROM (
-    ${folderViewRows(effectiveReadSql, accountId)}
+    ${folderViewRows(effectiveReadSql, accountId, keepSnoozed)}
   ) mail_view WHERE folder IS NOT NULL${onlyUnread ? ' AND view_is_read = 0' : ''} GROUP BY folder${byAccount ? ', mail_account_id' : ''}`;
 }
-const unreadMembershipQuery = (effectiveReadSql: string, accountId: string | null | undefined) => membershipCountQuery(effectiveReadSql, accountId, { onlyUnread: true, byAccount: true });
+const unreadMembershipQuery = (effectiveReadSql: string, accountId: string | null | undefined, keepSnoozed: boolean) =>
+  membershipCountQuery(effectiveReadSql, accountId, keepSnoozed, { onlyUnread: true, byAccount: true });
 // Unread messages per account that appear in at least one folder; a message
 // with several Gmail labels counts once. Takes one parameter: the user id.
-const accountUnreadQuery = (effectiveReadSql: string) => `SELECT mail_account_id, COUNT(DISTINCT id) AS unread_count FROM (
-    ${folderViewRows(effectiveReadSql, null)}
+const accountUnreadQuery = (effectiveReadSql: string, keepSnoozed: boolean) => `SELECT mail_account_id, COUNT(DISTINCT id) AS unread_count FROM (
+    ${folderViewRows(effectiveReadSql, null, keepSnoozed)}
   ) mail_view WHERE folder IS NOT NULL AND view_is_read = 0 GROUP BY mail_account_id`;
 export { folderMembershipSql, membershipCountQuery, unreadMembershipQuery, accountUnreadQuery, pendingMoveSql, pendingFlagSql, EFFECTIVE_READ_SQL, EFFECTIVE_STAR_SQL };

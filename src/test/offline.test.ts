@@ -77,6 +77,28 @@ describe('offline endpoint parity', () => {
     expect(resolve('/mail/emails/solo/thread')).toMatchObject({ thread_key: null, messages: [{ id: 'solo' }] });
     expect(resolveOfflineEndpoint(saved, '/mail/emails/missing/thread')).toMatchObject({ status: 404 });
   });
+  it('hides snoozed messages from the lists, counts and conversations unless the snapshot says the user keeps them there', () => {
+    const later = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const saved = snapshot();
+    saved.emails = [
+      { id: 'snoozed', thread_key: 'k1', mail_account_id: 'mail-1', folder: 'inbox', is_read: false, received_at: '2026-09-06T12:00:00Z', from_address: 'b@example.test', snoozed_until: later },
+      { id: 'first', thread_key: 'k1', mail_account_id: 'mail-1', folder: 'inbox', is_read: false, received_at: '2026-09-06T10:00:00Z', from_address: 'a@example.test' },
+    ];
+    const view = (keepSnoozed: boolean | undefined) => {
+      const resolve = <T,>(endpoint: string) => (resolveOfflineEndpoint({ ...saved, keepSnoozed }, endpoint) as { data: T }).data;
+      return {
+        inbox: resolve<{ emails: Array<{ id: string }> }>('/mail/emails?folder=inbox').emails.map(row => row.id),
+        snoozed: resolve<{ emails: Array<{ id: string }> }>('/mail/emails?folder=snoozed').emails.map(row => row.id),
+        unread: resolve<{ unreadByFolder: Record<string, number> }>('/mail/unread-counts').unreadByFolder.inbox,
+        badge: resolve<{ accounts: Array<{ unread_count: number }> }>('/mail/accounts').accounts[0].unread_count,
+        conversation: resolve<{ threads: Array<{ total_count: number }> }>('/mail/threads?folder=inbox').threads[0].total_count,
+        opened: resolve<{ messages: Array<{ id: string }> }>('/mail/emails/first/thread').messages.map(row => row.id),
+      };
+    };
+    // A snapshot saved before 0.25 has no keepSnoozed: hidden, as before.
+    expect(view(undefined)).toEqual({ inbox: ['first'], snoozed: ['snoozed'], unread: 1, badge: 1, conversation: 1, opened: ['first'] });
+    expect(view(true)).toEqual({ inbox: ['snoozed', 'first'], snoozed: ['snoozed'], unread: 2, badge: 2, conversation: 2, opened: ['first', 'snoozed'] });
+  });
   it('keeps cached folders readable in snapshots saved before folder account metadata existed', () => {
     expect(data('/mail/folders?account_id=mail-1').folders).toMatchObject([{ slug: 'inbox', total_count: 2, unread_count: 1 }]);
     expect(data('/mail/folders?account_id=mail-2').folders).toMatchObject([{ slug: 'archive', total_count: 1, unread_count: 1 }]);

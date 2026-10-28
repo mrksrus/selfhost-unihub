@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -39,8 +39,7 @@ const mailSettings = (values: Partial<MailAccountSettingValues> = {}) => default
 let userAnswer: { data: { settings: UserSettings } };
 let mailAccountAnswer: Record<string, ReturnType<typeof mailSettings>>;
 
-function mount(view: 'general' | 'mail' | 'notifications') {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+function mount(view: 'general' | 'mail' | 'notifications', client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
   const View = view === 'general' ? GeneralSettings : view === 'mail' ? MailSettings : NotificationChoices;
   return render(<QueryClientProvider client={client}><MemoryRouter><View /></MemoryRouter></QueryClientProvider>);
 }
@@ -122,6 +121,21 @@ describe('mail settings', () => {
     fireEvent.click(conversations);
     await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not save the setting', description: 'Server says no', variant: 'destructive' })));
     await waitFor(() => expect(conversations).not.toBeChecked());
+  });
+
+  it('keeps snoozed messages in the folder, and the mail lists load again once the server has the choice', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const inbox = ['emails', 'all', 'inbox', 1, '', false];
+    client.setQueryData(inbox, { emails: [] });
+    let save!: (value: unknown) => void;
+    vi.mocked(api.put).mockImplementationOnce(async (_path, body) => new Promise(resolve => { save = () => resolve(savedSettingsAnswer(body)); }) as never);
+    mount('mail', client);
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Snoozed messages' })).toBeEnabled());
+    await choose('Snoozed messages', 'Keep in the folder');
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/settings/values', { values: { snoozed_messages: 'keep' } }));
+    expect(client.getQueryState(inbox)?.isInvalidated).toBe(false);
+    await act(async () => { save(undefined); });
+    await waitFor(() => expect(client.getQueryState(inbox)?.isInvalidated).toBe(true));
   });
 
   it('adds a formatted template with its plain text, says when the name is taken, and deletes one after confirming', async () => {

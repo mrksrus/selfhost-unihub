@@ -7,12 +7,16 @@ import { log } from '../log';
 import { isModuleBackgroundEnabled } from './module-settings';
 import { blockedBackgroundModulesByUser } from './access-policy';
 import { withTransaction } from './transactions';
+import { settingValues } from './settings';
 
 // Snooze (0.24): a message leaves the mail lists until a chosen time, then
 // comes back with a notification (F6, kind 'snooze'). It is UniHub's own
 // state: nothing changes at the provider, and the message keeps its folder.
-// The lists leave out snoozed messages (mail-list.ts, mail-folder-view.ts);
-// search still finds them, and the Snoozed view lists them.
+// By default the lists and their counts leave out snoozed messages
+// (mail-list.ts, mail-folder-view.ts); search still finds them, and the
+// Snoozed view lists them. With the user setting snoozed_messages = 'keep'
+// (0.25) they stay in every list, marked, and come back the same way. It is
+// a view rule: changing it applies at once to every snoozed message.
 const MIN_SNOOZE_MS = 60 * 1000;
 const MAX_SNOOZE_MS = 366 * 24 * 60 * 60 * 1000;
 const RETURN_BATCH = 200;
@@ -20,6 +24,11 @@ const RETURN_BATCH = 200;
 /** Shown in the lists: not snoozed, or due to come back (the worker returns it within a minute). */
 const NOT_SNOOZED_SQL = '(snoozed_until IS NULL OR snoozed_until <= UTC_TIMESTAMP())';
 const SNOOZED_SQL = 'snoozed_until > UTC_TIMESTAMP()';
+
+/** Whether the user's lists keep snoozed messages (Settings, Mail: Snoozed messages). */
+async function keepsSnoozedInLists(userId: string, executor: SqlExecutor = db) {
+  return (await settingValues('user', userId, userId, executor)).snoozed_messages === 'keep';
+}
 
 function parseUntil(value: unknown, now = Date.now()) {
   const until = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) ? new Date(value) : null;
@@ -77,4 +86,4 @@ async function returnDueSnoozes(now = new Date()) {
   return { returned };
 }
 
-export { snoozeEmail, unsnoozeEmail, returnDueSnoozes, NOT_SNOOZED_SQL, SNOOZED_SQL };
+export { snoozeEmail, unsnoozeEmail, returnDueSnoozes, keepsSnoozedInLists, NOT_SNOOZED_SQL, SNOOZED_SQL };
