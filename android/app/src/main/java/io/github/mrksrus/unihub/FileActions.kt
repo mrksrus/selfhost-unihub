@@ -8,6 +8,7 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.provider.MediaStore
+import android.util.Log
 import android.webkit.MimeTypeMap
 import android.widget.Toast
 import androidx.core.content.FileProvider
@@ -125,6 +126,8 @@ class FileActions(private val activity: Activity, private val origin: String) {
                 .also { it.clipData = ClipData.newRawUri(name, uri) }
         }
         target.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        // For the emulator tests (tools/e2e/android/file-actions.test.mjs): the type Android's sheet gets.
+        if (BuildConfig.DEBUG) Log.i(TAG, "chooser $action $type")
         val title = activity.getString(if (action == "open") R.string.files_open_with else R.string.files_share)
         activity.runOnUiThread {
             if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
@@ -159,6 +162,7 @@ class FileActions(private val activity: Activity, private val origin: String) {
     }
 
     companion object {
+        private const val TAG = "UniHubFiles"
         private val ACTIONS = setOf("open", "save", "share")
         // Larger than any mail the server accepts; a bound on the cache and on Downloads.
         private const val MAX_BYTES = 1L shl 30
