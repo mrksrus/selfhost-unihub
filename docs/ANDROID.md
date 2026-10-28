@@ -48,21 +48,59 @@ its own connection to the server (no push service; see
 ## What the app does natively
 
 `src/lib/platform.ts` is the only place in the web code that knows about the
-app. The app adds `UniHubAndroid/<version> (<code>)` to the user agent and gives
+app. The app adds `UniHubAndroid/<version> (<code>) UniHubBridge/<level>` to the
+user agent and gives
 the server's own top-level page (not other sites, not frames such as displayed
 email) a `UniHubAndroid` object that takes JSON messages:
 
 | Message | What the app does |
 | --- | --- |
 | `saveFileStart`, `saveFileChunk`, `saveFileEnd`, `saveFileAbort` | Saves a file the page made (an attachment, an export, a recording) to Downloads, in pieces of 1.5 MB that the app confirms one by one. A WebView cannot download `blob:` links. |
-| `download` | Downloads a file the server streams (backups, attachments, the app update) with Android's download manager and the app's session. Only the server's own addresses. |
+| `download` | Downloads a file the server streams (backups, the app update) with Android's download manager and the app's session. Only the server's own addresses. |
+| `fileAction` (`action`: `open`, `save`, `share`; `url`, `name`, `mime`, with an `id`) | "Open with…", "Save to Downloads" and "Share" for a server file, by a [download ticket](#files-for-other-apps) URL; answers with the same `id` and `ok` or an `error` once Android has the file. From bridge level 2 (0.25.0). |
 | `changeServer` | Forgets the server and shows the connect screen. |
 | `theme` | Colours the status and navigation bars like the page (UniHub's own light/dark setting, not the phone's). |
 | `notifications` (`action`: `status`, `enable`, `disable`, `background`; with an `id`) | Settings → Notifications: reads or changes this phone's notifications and answers with the same `id`, `ok`, an `error` or the `state` (`enabled`, `endpoint`, `permission`, `background`, `connected`). From 0.22.1; the page sends it only to apps with version code 22001 or later. |
 
+The bridge level says which messages the app understands: apps up to 0.24
+send none and count as level 1 (everything above except `fileAction`), 0.25.0
+is level 2. The page offers a feature only to apps whose level has it, so a
+development build needs no version number of its own.
+
 Links to other sites, `mailto:` and `tel:` open in the matching phone app. File
 inputs open Android's file picker. Recordings ask for the microphone through
 Android's permission prompt.
+
+### Files for other apps
+
+From 0.25.0 the attachment viewer in the app offers **Open with…**, **Save to
+Downloads** and **Share** instead of Download and Open in new tab. The page
+asks the server for a download ticket (`POST /api/files/tickets`, see
+[architecture](ARCHITECTURE.md#download-tickets)) and passes its URL to the
+app, which:
+
+- fetches the file with the ticket alone, no cookie: the app's session never
+  goes to another app or to Android's download manager;
+- for Open with and Share, keeps a copy in its own cache and gives the app
+  chosen in Android's sheet read access to that copy only (a FileProvider
+  `content://` address), with the type the server named, or the extension's
+  when the server only said "binary";
+- for Save, writes it to Downloads (MediaStore), like a saved export.
+
+Copies for other apps are deleted six hours after they were made (an app
+may read a shared file some time later, a mail app when it sends) and all at
+once whenever the page shows the sign-in page (signing out, a session ended
+elsewhere) or the app leaves the server. A ticket works once, so a download
+that breaks off is started again from the page.
+
+### Keyboard
+
+The app draws behind the status and navigation bars on every Android version
+and makes room for them, a display cutout and the on-screen keyboard itself.
+The WebView therefore ends exactly at the top of the keyboard, as a browser
+page does when it resizes for it, and the page's own keyboard handling
+(`visualViewport`) finds nothing covered. Before 0.25.0 this was so only from
+Android 15; older versions resized the window themselves.
 
 ## Contacts on the phone
 
