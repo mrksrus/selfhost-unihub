@@ -13,6 +13,7 @@ import "./index.css";
 import { initServiceWorker } from "./utils/service-worker";
 import { createPwaUpdateManager } from "./lib/pwa-update";
 import { emitAppEvent, onAppEvent } from "./lib/app-events";
+import { trackVisibleArea } from "./lib/visible-area";
 
 const updates = 'serviceWorker' in navigator ? createPwaUpdateManager({
   serviceWorker: navigator.serviceWorker,
@@ -50,5 +51,8 @@ onAppEvent('unihub:apply-update', () => {
   if (updates) void updates.apply();
   else emitAppEvent('unihub:update-failed');
 });
+
+// The area above the on-screen keyboard, for full-screen views on phones.
+trackVisibleArea();
 
 createRoot(document.getElementById("root")!).render(<App />);

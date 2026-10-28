@@ -325,7 +325,8 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
 // tall. The phone composer fills the screen from the very top, and typing the
 // first line of the message must leave the message most of that screen: the
 // field rows scroll away, the message keeps the room between the title bar and
-// the button bar (0.24.1, the maintainer's Android report).
+// the toolbar pinned above the button bar (0.24.1, the maintainer's Android
+// report; toolbar placement from 0.25.0).
 test.describe('the phone composer leaves the message room with the keyboard open', () => {
   for (const [width, height] of [[412, 560], [450, 600]] as const) {
     test.describe(`${width}×${height}`, () => {
@@ -347,10 +348,10 @@ test.describe('the phone composer leaves the message room with the keyboard open
         await expect(chip).toHaveText('.pdf');
         // Autosave stores the file with the draft, and the chip says so.
         await expect(chip).toHaveAccessibleName(/^quarterly-report\.pdf, .*, Saved with the draft$/);
-        // On screen: inside the scroller between the title bar and the button bar.
+        // On screen: in the toolbar row pinned between the message and the button bar (0.25.0).
         const room = await dialog.evaluate(element => {
-          const { top, bottom } = element.querySelector('form')!.firstElementChild!.getBoundingClientRect();
-          return { top, bottom };
+          const form = element.querySelector('form')!;
+          return { top: form.firstElementChild!.getBoundingClientRect().bottom - 1, bottom: form.lastElementChild!.getBoundingClientRect().top + 1 };
         });
         for (const control of [chip, dialog.getByRole('button', { name: 'Attach files' })]) {
           const box = (await control.boundingBox())!;
@@ -367,8 +368,10 @@ test.describe('the phone composer leaves the message room with the keyboard open
             const rect = box.getBoundingClientRect();
             top = Math.max(top, rect.top); bottom = Math.min(bottom, rect.bottom);
           }
-          const buttons = element.closest('form')!.lastElementChild!.getBoundingClientRect();
-          return Math.min(bottom, buttons.top, window.innerHeight) - top;
+          // The toolbar and the buttons are pinned below the scroller.
+          const form = element.closest('form')!;
+          const pinned = form.children[1]!.getBoundingClientRect();
+          return Math.min(bottom, pinned.top, window.innerHeight) - top;
         });
         expect(visible).toBeGreaterThanOrEqual(240);
         // The typed line is on screen too, not hidden under the title bar.

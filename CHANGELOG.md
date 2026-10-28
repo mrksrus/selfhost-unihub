@@ -6,6 +6,38 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## Unreleased (0.25.0)
+
+### Added
+
+- **Phone composer modelled on Apple Mail.** On a phone, To holds the
+  recipients as chips: a typed address becomes a chip on a comma, on Enter or
+  when you leave the field; tap a chip for its full address and to remove it,
+  or press Backspace in the empty field to edit the last one. Cc, Bcc and From
+  are folded into one line, "Cc/Bcc, From: <account>", that opens into three
+  rows on tap (open from the start when a draft or reply already has a Cc or
+  Bcc). Subject is one row; the message fills the rest, the header rows scroll
+  away when you tap into the message, and the formatting toolbar is one row
+  that scrolls sideways, pinned above the buttons so it sits above the
+  keyboard while you write. Wide windows keep the previous composer.
+- **The page follows the keyboard in the browser and the PWA.** The browser
+  is asked to shrink the page above the on-screen keyboard
+  (`interactive-widget=resizes-content`); where it shrinks only the visible
+  area, the composer follows that height instead of staying under the
+  keyboard.
+- **Remove a mail account together with its mail.** "Disconnect mail
+  account?" now offers two choices: disconnect and keep the mail, or remove
+  the account with UniHub's copy of its mail, attachments and linked calendar.
+  The second continues in the existing preview with its counts and the typed
+  address confirmation. Only UniHub's copy is deleted; the provider keeps its
+  mail.
+
+### Pinned interface pictures
+
+- `composer-phone-dark` and `composer-phone-light` show the new phone composer
+  (the folded "Cc/Bcc, From" line and the toolbar above the buttons), the
+  design chosen under decision D29 for 0.25.0.
+
 ## 0.24.3
 
 Follow-up fixes for 0.24: PDFs, attachments, links from tasks, signatures,

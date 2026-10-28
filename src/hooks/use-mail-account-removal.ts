@@ -68,17 +68,18 @@ export function useMailAccountRemoval(onPurged: () => void) {
       const response = await api.delete(`/mail/accounts/${encodeURIComponent(id)}?purge=true${disconnect ? '&disconnect=true' : ''}&confirm_purge=${encodeURIComponent(address.trim())}`);
       if (response.error) throw new Error(response.error);
     },
-    onSuccess: () => {
+    onSuccess: (_result, { disconnect }) => {
       void invalidateMailQueries(queryClient);
       setAccountToPurge(null);
       setPurgePreview(null);
       onPurged();
-      toast({ title: 'Local mail account data deleted' });
+      toast({ title: disconnect ? 'Account removed with its mail' : 'Local mail account data deleted',
+        description: disconnect ? 'UniHub\'s copy is gone. Your mail stays at the provider.' : undefined });
     },
     onError: (error: Error) => {
       // A refused one-step delete may already have disconnected the account.
       void queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
-      toast({ title: 'Delete blocked', description: error.message, variant: 'destructive' });
+      toast({ title: 'Not removed', description: error.message, variant: 'destructive' });
     },
   });
 
