@@ -26,6 +26,19 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   id and how many messages and events were removed, never its address. The
   provider's mail is not touched.
 
+### Release checks
+
+- **The Android app is tested against a real server.** Every pull request
+  now runs the Android app on the Android 16 emulator against the image it
+  built, and against the earlier server releases it supports, instead of a
+  stub page; the apps of those earlier releases run against the new image.
+  Each run connects, signs in with and without a two-factor code, stays
+  signed in after the app is ended, uploads a file picked in Android's
+  document picker, records with the microphone after Android asks for
+  permission, downloads the recording unchanged, and signs out. The results
+  appear as a table in the run (see the
+  [release contract](docs/RELEASE_CONTRACT.md)).
+
 ## 0.24.3
 
 Follow-up fixes for 0.24: PDFs, attachments, links from tasks, signatures,

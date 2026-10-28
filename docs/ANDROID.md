@@ -315,6 +315,17 @@ to another server. Given the previous release's app, it starts there and
 checks that updating keeps the contacts and sends nothing back. CI runs it on
 every emulator after the support window.
 
+`scripts/android-server-check.mts` runs the release-built apps against real
+servers on the Android 16 emulator: the image the run built and the earlier
+releases' images, each with an empty database and synthetic people. It drives
+the app through Android's accessibility tree, since a release build's WebView
+cannot be inspected, and confirms each step through the API: connecting,
+signing in with and without a two-factor code, reopening, an upload from the
+document picker, a recording after the microphone permission, the download of
+that recording's bytes, and signing out. To run it against a local
+`tools/e2e/stack.sh` with an emulator:
+`UNIHUB_ANDROID_ADMIN=admin@example.com:<password> node scripts/android-server-check.mts --local <stack url> --apk <apk>`.
+
 Every CI run keeps the app it built under **Artifacts** (`unihub-android-app`)
 for trying it on a phone without publishing an image. Runs from this
 repository are signed with the release key, so that app updates an installed

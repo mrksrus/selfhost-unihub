@@ -62,6 +62,20 @@ CI runs both for Android 10 (API 29), 16 (API 36) and 17 (API 37, system image
 `android-37.0`). Any unexpected row fails the build before an image is
 published.
 
+`scripts/android-server-check.mts` then runs the apps against real servers on
+the Android 16 emulator: the current app against the image being built and
+against the published image of every earlier release in the window, and every
+earlier app in the window against the image being built. Each pairing
+connects, signs in with and without a two-factor code, reopens, uploads a file
+from Android's document picker, records with the microphone, downloads the
+recording and signs out, each confirmed on the server ([what it
+proves](RELEASE_CONTRACT.md#what-the-android-server-check-proves)). An app
+recorded as broken or unavailable is listed as not run. On this emulator a
+file picked in the 0.24.x apps reaches the page empty (WebView 133); that
+upload step is recorded as a known failure, shown as such in the table. The Android 10
+emulator is left out: its system WebView (74) cannot run the web app, which
+needs a current WebView; phones update theirs through the Play Store.
+
 ## Current window
 
 As recorded in `android/support-window.json` for 0.24.3. The CI table is the
@@ -112,10 +126,9 @@ is kept. Releases before 0.21.0 have no app.
 
 ## Not covered
 
-- Real server flows in the app: signing in with two-factor codes, reload,
-  deep links into pages, downloads and uploads, the file picker, the microphone,
-  theme colours and logout. Older apps against the candidate server and the
-  candidate app against older servers are therefore not shown.
+- Real server flows on Android 10 and 17 (see above), and deep links into
+  pages and theme colours against a real server; the launch test checks those
+  against a stub page.
 - Native handling of `protocol` and `minApp` before 0.23.0: older apps do not
   read them, so an unsupported server is not reported in those apps.
 - Physical phones and manufacturer changes, and WebView versions other than the
