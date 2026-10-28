@@ -99,7 +99,8 @@ jobs:
     if: ${{ !cancelled() && needs.promote.outputs.found != 'true' }}
     runs-on: ubuntu-latest
     # The image build includes the Android app (Android SDK and Gradle), which
-    # is then started on three emulators with the apps of earlier releases.
+    # is then started on three emulators with the apps of earlier releases,
+    # and run against this image and the earlier server releases.
     timeout-minutes: 120
     env:
       MYSQL_TEST_SCHEMA_SMOKE: "1"
@@ -327,6 +328,17 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # The real-server check on Android 16 below runs the current app against
+      # these images; pulling them here keeps that step's time for the app.
+      - name: Pull the earlier server releases
+        run: |
+          for version in $(node -p 'require("./android/support-window.json").releases.slice(1).map(release => release.version).join(" ")'); do
+            docker pull --quiet "$REGISTRY/$IMAGE_NAME:$version"
+          done
+
+      # The Android 10 image's WebView (74) cannot run the web app, which needs
+      # a current WebView as on any updated phone, so the real-server check
+      # runs on Android 16 only (docs/ANDROID_COMPATIBILITY.md).
       - name: Start the Android apps on Android 10
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
@@ -347,11 +359,16 @@ jobs:
           arch: x86_64
           target: google_apis
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          # With audio: the real-server check records with the emulator's microphone.
+          emulator-options: -no-window -gpu swiftshader_indirect -no-boot-anim -no-snapshot
+          # The last line runs the apps against real servers: this image and
+          # the earlier releases, each with its own empty database and
+          # synthetic people (scripts/android-server-check.mts).
           script: |
             bash android/scripts/window-test.sh android-window android-app/unihub.apk android-app/unihub-android.json
             bash android/scripts/contacts-test.sh android-app/unihub.apk "$(f="android-window/$(cat android-window/upgrade-from)/unihub.apk"; [ -f "$f" ] && echo "$f")"
             bash android/scripts/notifications-test.sh android-app/unihub.apk
+            node scripts/android-server-check.mts --window android-window --candidate-apk android-app/unihub.apk --candidate-image unihub:ci --evidence release-evidence/android-server
 
       # The system image is named android-37.0 (stable channel). That image
       # (google_apis x86_64, revision 6) is broken as of 2026-10-16: its
