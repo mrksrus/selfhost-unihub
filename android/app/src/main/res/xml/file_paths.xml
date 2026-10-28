@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileActions: only the copies made for "Open with…" and "Share". -->
+<paths>
+    <cache-path name="shared" path="shared/" />
+</paths>

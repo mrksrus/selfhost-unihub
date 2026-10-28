@@ -55,7 +55,10 @@ class WebBridge(
     fun close() {
         cancelFiles()
         files.shutdown()
+        fileActions.close()
     }
+
+    private val fileActions = FileActions(activity, origin)
 
     private fun handle(view: WebView, message: WebMessageCompat, reply: JavaScriptReplyProxy) {
         val data = try {
@@ -69,6 +72,20 @@ class WebBridge(
             "saveFileEnd" -> fileStep(reply, data) { id -> finishFile(id) }
             "saveFileAbort" -> data.optString("id").takeIf { validId(it) }?.let { id -> onFiles { abortFile(id) } }
             "download" -> download(data.optString("url"), data.optString("name"), view.settings.userAgentString)
+            // Open with, Save to Downloads, Share (FileActions), with a download ticket's URL.
+            "fileAction" -> data.optString("id").takeIf { validId(it) }?.let { id ->
+                fileActions.run(data.optString("action"), data.optString("url"), data.optString("name"), data.optString("mime")) { error ->
+                    activity.runOnUiThread {
+                        try {
+                            val answer = JSONObject().put("id", id).put("ok", error == null)
+                            error?.let { answer.put("error", it) }
+                            reply.postMessage(answer.toString())
+                        } catch (_: Exception) {
+                            // The page is gone.
+                        }
+                    }
+                }
+            }
             "openExternal" -> openExternal(activity, data.optString("url"))
             "changeServer" -> onChangeServer()
             "theme" -> parseColor(data.optString("background"))?.let { onTheme(data.optBoolean("dark", true), it) }

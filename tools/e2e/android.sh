@@ -11,7 +11,8 @@
 # Overrides (or ${XDG_CONFIG_HOME:-~/.config}/unihub-e2e/tools.env): ANDROID_HOME,
 # ANDROID_AVD_HOME, UNIHUB_E2E_AVD (unihub35), UNIHUB_E2E_EMULATOR_PORT (5560),
 # UNIHUB_E2E_EMULATOR_LIBS (a folder with libX11-xcb.so.1 for hosts without it),
-# JAVA_HOME, UNIHUB_E2E_INSTANCE.
+# JAVA_HOME, UNIHUB_E2E_INSTANCE, UNIHUB_E2E_EMULATOR_READONLY=1 (boot the AVD read-only, so
+# another emulator may run the same AVD at the same time; nothing it installs is kept).
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -67,7 +68,7 @@ up() {
     local e=$SDK/emulator
     export LD_LIBRARY_PATH="$e/lib64/vulkan:$e/lib64/gles_swiftshader:$e/lib64${UNIHUB_E2E_EMULATOR_LIBS:+:$UNIHUB_E2E_EMULATOR_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     echo "e2e-android: booting $AVD on $SERIAL (several minutes on a slow host)"
-    setsid "$e/emulator" -avd "$AVD" -port "$EMU_PORT" -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim \
+    setsid "$e/emulator" -avd "$AVD" -port "$EMU_PORT" ${UNIHUB_E2E_EMULATOR_READONLY:+-read-only} -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim \
       -no-snapshot -no-metrics -memory 2048 -prop ro.hw_timeout_multiplier=3 >"$LOG" 2>&1 < /dev/null &
     for _ in $(seq 1 180); do booted && break; sleep 5; done
     booted || die "emulator did not boot (log: $LOG)"

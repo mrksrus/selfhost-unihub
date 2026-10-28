@@ -70,6 +70,8 @@ android {
 
 dependencies {
     implementation("androidx.webkit:webkit:1.12.1")
+    // FileProvider for "Open with…" and "Share" (FileActions); the version webkit already brings.
+    implementation("androidx.core:core:1.1.0")
     // JVM tests of code without Android classes (PushCrypto), run by scripts/build-apk.sh.
     testImplementation("junit:junit:4.13.2")
 }
