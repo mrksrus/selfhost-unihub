@@ -81,6 +81,10 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
     ['mail_scheduled_sends', 'deliberately_excluded', 'A restore must not send mail again; the draft is restored and can be scheduled again.', 'id user_id email_id mail_account_id send_at status origin client_key attempts last_error created_at updated_at'],
   ].map(([name, treatment, reason, columns]) => [name, Object.freeze({ ...excluded(treatment, reason, columns),
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 20])) })])),
+  // Upgrade step 21 (0.25.0).
+  file_tickets: Object.freeze({ ...excluded('security_only', 'Download tickets are single-use credentials of a live session; a restore must not bring them back.',
+    'id token_hash user_id session_id kind resource_id expires_at created_at'),
+  introducedIn: Object.freeze(Object.fromEntries('id token_hash user_id session_id kind resource_id expires_at created_at'.split(' ').map(column => [column, 21]))) }),
 });
 
 // From upgrade step 20 on, a new table states who owns a row, whether it can
@@ -100,6 +104,8 @@ const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.fr
   calendar_settings: { owner: 'user', shareable: false, dataClass: 'local', module: 'calendar', restore: 'Restored with its calendar.' },
   setting_policies: { owner: 'installation', shareable: false, dataClass: 'config', module: null, restore: 'Not in personal backups; the instance backup carries it.' },
   mail_scheduled_sends: { owner: 'user', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: the draft comes back unscheduled.' },
+  // Each ticket's kind names the module that gates it (services/file-tickets.ts).
+  file_tickets: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: a ticket is a single-use credential of a live session.' },
 });
 
 function assertTableDeclarations(fields: ReadonlyMap<string, InventoryField>) {

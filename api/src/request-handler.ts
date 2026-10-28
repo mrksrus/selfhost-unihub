@@ -250,13 +250,15 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
       const contentLength = result.__contentLength === undefined || result.__contentLength === null
         ? null
         : Number(result.__contentLength);
+      const ranges = result.__ranges !== false;
       const headers: OutgoingHttpHeaders = {
         'Content-Type': result.__contentType || 'application/octet-stream',
         'Content-Disposition': contentDisposition,
         'Cache-Control': 'no-cache',
-        'Accept-Ranges': 'bytes',
+        'Accept-Ranges': ranges ? 'bytes' : 'none',
+        ...result.__headers,
       };
-      const validators = fileValidators(await fs.promises.stat(result.__streamPath).catch(() => null));
+      const validators = ranges ? fileValidators(await fs.promises.stat(result.__streamPath).catch(() => null)) : null;
       if (validators) {
         headers.ETag = validators.etag;
         headers['Last-Modified'] = validators.lastModified;
@@ -264,7 +266,7 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
 
       let status = 200;
       let streamOptions: { start: number; end: number } | undefined;
-      if (req.headers.range && Number.isSafeInteger(contentLength) && contentLength! > 0
+      if (ranges && req.headers.range && Number.isSafeInteger(contentLength) && contentLength! > 0
         && rangeAllowed(req.headers['if-range'], validators)) {
         const range = parseSingleByteRange(req.headers.range, contentLength!);
         if (!range) {
