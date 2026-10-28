@@ -36,6 +36,17 @@ export function androidApp(userAgent = typeof navigator === 'undefined' ? '' : n
 }
 
 /**
+ * The messages the app's bridge understands (MainActivity.BRIDGE_LEVEL, sent
+ * as "UniHubBridge/<level>" in the user agent): 1 for apps up to 0.24, which do
+ * not say, 2 from 0.25 (file actions). 0 outside the app.
+ */
+export function appBridgeLevel(userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent) {
+  if (!androidApp(userAgent)) return 0;
+  const match = /UniHubBridge\/(\d+)/.exec(userAgent);
+  return match ? Number(match[1]) : 1;
+}
+
+/**
  * An Android browser, where the app can be installed (not the app itself).
  * The app needs Android 10 (android/app/build.gradle.kts, minSdk 29). Newer
  * Chrome reports every version as "Android 10", so only older versions that
@@ -228,6 +239,33 @@ function readNotificationState(value: unknown): AppNotificationState {
     permission: state.permission === 'granted' || state.permission === 'denied' ? state.permission : 'default',
     background: state.background === 'restricted' ? 'restricted' : 'allowed',
     connected: state.connected === true,
+  };
+}
+
+// ── Files in the app: Open with, Save to Downloads, Share ────────
+// The page gets a download ticket (lib/file-tickets-api.ts) and hands its URL
+// to the app, which fetches the file without the session cookie and passes it
+// to Android's own chooser or to Downloads (android/.../FileActions.kt).
+
+export type AppFileAction = 'open' | 'save' | 'share';
+export interface AppFile { url: string; name: string; type: string }
+export interface AppFileActions {
+  /** Resolves once Android has the file (the chooser is open, or it is saved); rejects with the app's reason. */
+  run(action: AppFileAction, file: AppFile): Promise<void>;
+}
+
+// The app downloads the whole file before it answers.
+const FILE_ACTION_TIMEOUT_MS = 10 * 60_000;
+
+/** The Android app's file actions, or null in a browser and in apps before 0.25. */
+export function appFileActions(): AppFileActions | null {
+  const bridge = appBridgeLevel() >= 2 ? window.UniHubAndroid : undefined;
+  if (!bridge) return null;
+  return {
+    run: async (action, file) => {
+      await askApp(bridge, { type: 'fileAction', id: crypto.randomUUID(), action, url: new URL(file.url, window.location.href).href, name: file.name, mime: file.type },
+        { timeoutMs: FILE_ACTION_TIMEOUT_MS, failure: 'The app could not get the file. Try again.' });
+    },
   };
 }
 

@@ -7,6 +7,8 @@ import type { Email, EmailAttachment } from '@/lib/mail-api';
 import { MailMessageView } from '@/components/mail/MailMessageView';
 
 const pdf = vi.hoisted(() => ({ getDocument: vi.fn() }));
+const toast = vi.hoisted(() => vi.fn());
+vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast }) }));
 vi.mock('@/lib/api', () => ({ api: { getBlob: vi.fn(), get: vi.fn(), post: vi.fn() } }));
 vi.mock('@/lib/platform', async importOriginal => ({ ...(await importOriginal<typeof import('@/lib/platform')>()), saveFile: vi.fn(async () => {}) }));
 // jsdom cannot run pdf.js; the viewer's use of it is what is checked here.
@@ -152,5 +154,64 @@ describe('attachment viewer', () => {
     expect(await within(dialog).findByText('Could not show this PDF')).toBeInTheDocument();
     expect(within(dialog).getByText('InvalidPDFException: Invalid PDF structure.')).toBeInTheDocument();
     expect(within(dialog).getAllByRole('button', { name: /Download/ }).length).toBeGreaterThan(0);
+  });
+});
+
+describe('attachment viewer in the Android app', () => {
+  const APP = 'Mozilla/5.0 (Linux; Android 16; wv) Chrome/140.0 Mobile UniHubAndroid/0.25.0 (25000)';
+  let posted: Record<string, unknown>[];
+  let reply: ((event: { data: string }) => void) | null;
+  beforeEach(() => {
+    posted = [];
+    reply = null;
+    // The PDF stays loading: these tests are about the bar.
+    pdf.getDocument.mockReturnValue({ promise: new Promise(() => {}), destroy: async () => {} });
+    window.UniHubAndroid = {
+      postMessage: (message: string) => { posted.push(JSON.parse(message)); },
+      addEventListener: (_type, listener) => { reply = listener; },
+    };
+    vi.mocked(api.post).mockResolvedValue({ data: { url: '/api/files/tickets/T0k3n', expires_at: '2026-10-28T10:01:00.000Z', filename: 'invoice-4711.pdf', content_type: 'application/pdf', size: 1200 } });
+  });
+  afterEach(() => { delete window.UniHubAndroid; vi.restoreAllMocks(); });
+
+  it('opens, saves and shares through Android with a download ticket, never the loaded file', async () => {
+    vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(`${APP} UniHubBridge/2`);
+    show([files.invoice.attachment]);
+    openRow('invoice-4711.pdf');
+    const dialog = await screen.findByRole('dialog', { name: 'invoice-4711.pdf' });
+    expect(within(dialog).queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
+
+    for (const [label, action] of [['Share', 'share'], ['Save to Downloads', 'save'], ['Open with…', 'open']] as const) {
+      fireEvent.click(within(dialog).getByRole('button', { name: label }));
+      await waitFor(() => expect(posted).toHaveLength(1));
+      expect(api.post).toHaveBeenLastCalledWith('/files/tickets', { kind: 'mail-attachment', id: 'invoice' });
+      const [message] = posted.splice(0);
+      expect(message).toMatchObject({ type: 'fileAction', action, url: `${window.location.origin}/api/files/tickets/T0k3n`, name: 'invoice-4711.pdf', mime: 'application/pdf' });
+      // One action at a time, until the app answers.
+      expect(within(dialog).getByRole('button', { name: 'Share' })).toBeDisabled();
+      act(() => reply?.({ data: JSON.stringify({ id: message.id, ok: true }) }));
+      await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Share' })).toBeEnabled());
+    }
+    expect(saveFile).not.toHaveBeenCalled();
+  });
+
+  it('says so when the app could not get the file', async () => {
+    vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(`${APP} UniHubBridge/2`);
+    show([files.invoice.attachment]);
+    openRow('invoice-4711.pdf');
+    const dialog = await screen.findByRole('dialog', { name: 'invoice-4711.pdf' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Share' }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+    act(() => reply?.({ data: JSON.stringify({ id: posted[0].id, ok: false, error: 'This download link has expired or was already used. Try again from UniHub.' }) }));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ description: 'This download link has expired or was already used. Try again from UniHub.', variant: 'destructive' })));
+  });
+
+  it('keeps Download in an app from before 0.25, whose bridge has no file actions', async () => {
+    vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (Linux; Android 16; wv) UniHubAndroid/0.24.3 (24003)');
+    show([files.invoice.attachment]);
+    openRow('invoice-4711.pdf');
+    const dialog = await screen.findByRole('dialog', { name: 'invoice-4711.pdf' });
+    expect(within(dialog).getAllByRole('button', { name: 'Download' }).length).toBeGreaterThan(0);
+    expect(within(dialog).queryByRole('button', { name: 'Share' })).not.toBeInTheDocument();
   });
 });
