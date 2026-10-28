@@ -10,7 +10,7 @@ function fixture(t: import('node:test').TestContext, settings: FixtureValue = {}
   const modulesPath = require.resolve('../dist/src/services/module-settings');
   const savedService = require.cache[servicePath], savedLifecycle = require.cache[lifecyclePath], savedModules = require.cache[modulesPath];
   const calls: FixtureValue[] = [], cancellations: FixtureValue[] = [];
-  const state = { owned: true, active: false, unresolved: 0, recovered: 0, calendars: 0, calendarEnabled: true, restoring: [], unresolvedAfterDisconnect: 0, ...settings };
+  const state = { owned: true, active: false, unresolved: 0, recovered: 0, calendars: 0, calendarEnabled: true, restoring: [], unresolvedAfterDisconnect: 0, audit: [] as string[], ...settings };
   const execute = async (sql: string, params: FixtureValue[] = []) => {
     calls.push({ sql, params });
     if (sql.includes('FROM backup_restore_jobs')) return [state.restoring.length ? [{ requested_sections: JSON.stringify(state.restoring) }] : []];
@@ -29,6 +29,8 @@ function fixture(t: import('node:test').TestContext, settings: FixtureValue = {}
     if (sql.startsWith('SELECT id FROM calendar_calendars')) return [state.calendars ? [{ id: 'calendar' }] : []];
     if (/^DELETE FROM calendar_(events|calendars|accounts)/.test(sql)) return [{ affectedRows: 1 }];
     if (sql.startsWith('UPDATE mail_accounts')) { state.active = false; state.unresolved += state.unresolvedAfterDisconnect; return [{ affectedRows: 1 }]; }
+    // The activity log entry, written in the transaction of the change.
+    if (sql.startsWith('INSERT INTO audit_log')) { state.audit.push(params[1]); return [{ affectedRows: 1 }]; }
     if (sql.startsWith('UPDATE mail_server_messages') || sql.startsWith('DELETE FROM mail_accounts') || sql.startsWith('DELETE FROM mail_engine_quarantine')) return [{ affectedRows: 1 }];
     throw new Error(`Unexpected fixture SQL: ${sql}`);
   };
