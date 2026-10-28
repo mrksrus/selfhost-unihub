@@ -13,7 +13,7 @@ const auth = require('../dist/src/auth') as typeof import('../src/auth');
 const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
 const { handleRequest } = require('../dist/src/request-handler') as typeof import('../src/request-handler');
 const { MODULE_CATALOG } = require('../dist/src/services/module-catalog') as typeof import('../src/services/module-catalog');
-const { defineRoutes, mergeRouteTables, assertRouteTable } = require('../dist/src/http/route') as typeof import('../src/http/route');
+const { defineRoutes, mergeRouteTables, assertRouteTable, destructivePolicies } = require('../dist/src/http/route') as typeof import('../src/http/route');
 
 const csrf = 'c'.repeat(64);
 const samplePath = (pattern: string) => pattern.replace(/:(\w+)/g, (_, name) => `sample-${name}`);
@@ -128,6 +128,23 @@ test('CSRF: sign-in and sign-up need no token, exactly the service-worker routes
   const header = Object.keys(routes).filter(key => routes[key].csrf === 'background-header').sort();
   assert.deepEqual(header, ['DELETE /api/recordings/uploads/:id', 'POST /api/mail/sync/background', 'POST /api/recordings/uploads/:id/chunk',
     'POST /api/recordings/uploads/:id/complete', 'POST /api/recordings/uploads/start']);
+});
+
+// F13: a destructive action names its data-safety policies; 0.28 refuses it
+// at the boundary when a policy forbids it. Removing a mail account and
+// deleting UniHub's copy of its mail are separate policies of one route.
+test('destructive actions name their policies: removing a mail account, and purging its mail only when asked', () => {
+  const destructive = Object.keys(routes).filter(key => routes[key].destructive).sort();
+  assert.deepEqual(destructive, ['DELETE /api/mail/accounts/:id']);
+  const remove = routes['DELETE /api/mail/accounts/:id'];
+  assert.deepEqual(destructivePolicies(remove, new URLSearchParams()), ['accounts.mail.remove'], 'disconnect');
+  assert.deepEqual(destructivePolicies(remove, new URLSearchParams('purge=true&confirm_purge=x')), ['accounts.mail.remove', 'accounts.mail.purge'], 'purge a disconnected account');
+  assert.deepEqual(destructivePolicies(remove, new URLSearchParams('purge=true&disconnect=true')), ['accounts.mail.remove', 'accounts.mail.purge'], 'disconnect and purge');
+  assert.deepEqual(destructivePolicies(remove, new URLSearchParams('purge=false')), ['accounts.mail.remove']);
+  const handler = async () => ({});
+  assert.throws(() => defineRoutes({ 'GET /api/things': { auth: 'user', destructive: ['accounts.mail.remove'], handler } }), /only a mutating route/);
+  assert.throws(() => defineRoutes({ 'DELETE /api/things': { auth: 'user', destructive: ['things.remove'], handler } } as FixtureValue), /unknown destructive policy/);
+  assert.throws(() => defineRoutes({ 'DELETE /api/things': { auth: 'user', destructive: [{ policy: 'accounts.mail.purge', query: {} }], handler } }), /names its query values/);
 });
 
 // Limits declared by converted route files; the derived ones are pinned by route-spec.test.cts.

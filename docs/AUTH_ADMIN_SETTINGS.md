@@ -325,9 +325,12 @@ boundary checks it before the handler runs.
 
 `audit_log` (upgrade step 19) records sign-ins and failed sign-ins, password,
 2FA and recovery-code changes, signing out another device, account deletion,
-and every admin action on a user or on sign-up. Each entry names the actor, the
-account concerned, the address and the request id; details hold only a role or
-mode, never a password, code or token. Entries about an account that later
+every admin action on a user or on sign-up, and the removal of a person's mail
+data: disconnecting a mail account (`mail.account_disconnected`) and deleting
+it with UniHub's copy of its mail (`mail.account_purged`). Each entry names
+the actor, the account concerned, the address and the request id; details hold
+only a role or mode, or for mail the account's id and the numbers of messages
+and calendar events removed, never a password, code, token or mail address. Entries about an account that later
 got deleted stay, without its address. An entry written for a change that runs
 in a transaction commits or rolls back with it. Entries older than 365 days are
 deleted by the hourly session cleanup. The log is server-local: backups and
@@ -530,5 +533,4 @@ Behavior:
 
 - Rate limits are in-memory and reset on restart.
 - There is no email verification workflow.
-- There is no audit log of admin actions.
 - 2FA uses TOTP/recovery codes only; WebAuthn/passkeys are not implemented.

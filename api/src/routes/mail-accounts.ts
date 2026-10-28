@@ -664,10 +664,10 @@ export = {
       const query = new URL(req.url, 'http://localhost').searchParams;
       if (query.get('purge') === 'true') {
         return query.get('disconnect') === 'true'
-          ? await mailAccountLifecycle.disconnectAndPurgeAccount(userId, id, query.get('confirm_purge'))
-          : await mailAccountLifecycle.purgeAccount(userId, id, query.get('confirm_purge'));
+          ? await mailAccountLifecycle.disconnectAndPurgeAccount(userId, id, query.get('confirm_purge'), { req })
+          : await mailAccountLifecycle.purgeAccount(userId, id, query.get('confirm_purge'), { req });
       }
-      return await mailAccountLifecycle.disconnectAccount(userId, id);
+      return await mailAccountLifecycle.disconnectAccount(userId, id, { req });
     } catch (error) {
       return routeError(error, 'Could not change mail account connection');
     }

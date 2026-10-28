@@ -6,6 +6,16 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.25.0 (unreleased)
+
+### Changed
+
+- **Removing a mail account is recorded.** Disconnecting a mail account and
+  deleting it with UniHub's copy of its mail each add an entry to the
+  activity log (Settings > Server settings > Activity), with the account's
+  id and how many messages and events were removed, never its address. The
+  provider's mail is not touched.
+
 ## 0.24.3
 
 Follow-up fixes for 0.24: PDFs, attachments, links from tasks, signatures,

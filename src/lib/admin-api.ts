@@ -128,6 +128,8 @@ const ACTIONS: Record<string, string> = {
   'admin.user_deactivated': 'Deactivated the account',
   'admin.user_deleted': 'Deleted the account',
   'admin.signup_mode_changed': 'Changed sign-up',
+  'mail.account_disconnected': 'Disconnected a mail account',
+  'mail.account_purged': 'Removed a mail account and its mail from UniHub',
 };
 
 /** What happened, in words; the person acting and the account it concerns are shown beside it. */

@@ -87,6 +87,8 @@ Switching modes stops workers, disables automatic deletion and records cancellat
 
 **Purge** (**Delete local data** in the app) is an explicitly confirmed permanent local removal of the account, its messages, attachments and raw copies, and its linked calendar account with its calendars and events. The preview lists these counts; confirming needs the typed account address. A disconnected account is purged on its own. The disconnect dialog also offers **delete local data…** for a connected account: the preview then ignores the connection, and confirming disconnects and purges in one step. Purge is blocked while provider outcomes are unresolved, while this account supplies retained mail filed elsewhere, or while a linked calendar would be removed and Calendar is turned off or being restored; the account and its linked calendar are deleted in one database transaction; a blocked one-step delete changes nothing, and a purge refused after the disconnect (an outcome became unresolved meanwhile) leaves the account disconnected with its mail kept. It is not a provider-mail or provider-calendar deletion action.
 
+Disconnecting and purging each write an entry to the activity log (Settings > Server settings > Activity) in the same transaction, with the account's id and, for a purge, the numbers of messages and calendar events removed; a refused or rolled-back purge writes none. The route declares its data-safety policies (F13): `accounts.mail.remove`, and `accounts.mail.purge` when it purges. Until the 0.28 policies they are declarations only.
+
 Disabling the mail module stops its work. Disabling background activity pauses automatic work while preserving accepted intentions.
 
 ## Recovery and privacy

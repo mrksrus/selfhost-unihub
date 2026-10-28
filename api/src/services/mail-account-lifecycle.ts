@@ -1,5 +1,5 @@
 import type { RowDataPacket } from 'mysql2/promise';
-import type { SqlExecutor, StoredFlag } from '../types';
+import type { AuthRequest, SqlExecutor, StoredFlag } from '../types';
 import fs from 'node:fs/promises';
 import { ownedMailPath, realOwnedMailPath } from './mail-storage';
 import { db } from '../state';
@@ -10,12 +10,16 @@ import { publishCalendarChanged } from './realtime';
 import { addressConfirmed } from './mail-account-mode';
 import { UNRESOLVED, sqlStates } from './mail-engine/operation-states';
 import { sqlList } from './mail-engine/job-kinds';
+import { recordAudit } from './audit';
 
 type IdRow = RowDataPacket & { id: string };
 interface CalendarCounts { calendar_accounts: number | string; calendar_events: number | string }
 
 const fail = (message: string | null, status = 409) => Object.assign(new Error(message || ''), { status });
 const enabled = (value: unknown) => value === true || value === 1 || value === '1';
+// The request that asked, for the activity log's client address.
+interface Requested { req?: AuthRequest | null }
+
 const unresolved = `(state IN (${sqlList(UNRESOLVED)})
   OR (dispatched = TRUE AND status <> 'done' AND state NOT IN (${sqlStates('confirmed', 'rejected')})))`;
 
@@ -59,7 +63,7 @@ async function purgePreview(userId: string, accountId: string, executor: SqlExec
     blocked: Boolean(reason), reason };
 }
 
-async function disconnectAccount(userId: string, accountId: string) {
+async function disconnectAccount(userId: string, accountId: string, { req = null }: Requested = {}) {
   if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore is in progress');
   const [[owned]] = await db.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
   if (!owned) throw fail('Account not found', 404);
@@ -68,9 +72,13 @@ async function disconnectAccount(userId: string, accountId: string) {
     const connection = await db.getConnection();
     try {
       await connection.beginTransaction();
-      const [[account]] = await connection.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
+      const [[account]] = await connection.execute<RowDataPacket[]>('SELECT id, disconnected_at FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
       if (!account) throw fail('Account not found', 404);
       if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore is in progress');
+      // Recorded with the change; disconnecting again changes nothing worth a record.
+      if (!account.disconnected_at) {
+        await recordAudit({ action: 'mail.account_disconnected', actorId: userId, targetUserId: userId, req, details: { mail_account: accountId } }, connection);
+      }
       await connection.execute(`UPDATE mail_accounts SET is_active = FALSE, encrypted_password = NULL,
         disconnected_at = UTC_TIMESTAMP(), sync_status = 'cancelled', delete_emails_on_server = FALSE,
         server_delete_enabled_at = NULL, server_delete_grace_until = NULL
@@ -121,7 +129,7 @@ async function assertPurgeConfirmed(userId: string, accountId: string, confirmat
   if (!addressConfirmed(owned, confirmation)) throw fail('Type the account email address to confirm permanent deletion.', 400);
 }
 
-async function purgeAccount(userId: string, accountId: string, confirmation: unknown) {
+async function purgeAccount(userId: string, accountId: string, confirmation: unknown, { req = null }: Requested = {}) {
   await assertPurgeConfirmed(userId, accountId, confirmation);
   if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore is in progress');
   const initialPreview = await purgePreview(userId, accountId);
@@ -162,6 +170,8 @@ async function purgeAccount(userId: string, accountId: string, confirmation: unk
         await connection.execute('DELETE FROM calendar_accounts WHERE mail_account_id = ? AND user_id = ?', [accountId, userId]);
       }
       await connection.execute('DELETE FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
+      await recordAudit({ action: 'mail.account_purged', actorId: userId, targetUserId: userId, req,
+        details: { mail_account: accountId, messages: preview.email_count, calendar_events: preview.calendar_events } }, connection);
       await connection.commit();
     } catch (error) { await connection.rollback(); throw error; }
     finally { connection.release(); }
@@ -182,13 +192,13 @@ async function purgeAccount(userId: string, accountId: string, confirmation: unk
 // One step for "Disconnect and delete": nothing changes when the purge is
 // already blocked; a purge refused after the disconnect (an operation became
 // unresolved meanwhile) leaves the account disconnected with its mail kept.
-async function disconnectAndPurgeAccount(userId: string, accountId: string, confirmation: unknown) {
+async function disconnectAndPurgeAccount(userId: string, accountId: string, confirmation: unknown, requested: Requested = {}) {
   await assertPurgeConfirmed(userId, accountId, confirmation);
   if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore is in progress');
   const preview = await purgePreview(userId, accountId, db, { disconnecting: true });
   if (preview.blocked) throw fail(preview.reason);
-  await disconnectAccount(userId, accountId);
-  try { return await purgeAccount(userId, accountId, confirmation); }
+  await disconnectAccount(userId, accountId, requested);
+  try { return await purgeAccount(userId, accountId, confirmation, requested); }
   catch (error) {
     throw Object.assign(error as Error, { message: `The account was disconnected and its local mail kept: ${(error as Error).message}`, disconnected: true });
   }
