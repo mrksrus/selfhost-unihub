@@ -68,8 +68,10 @@ is level 2. The page offers a feature only to apps whose level has it, so a
 development build needs no version number of its own.
 
 Links to other sites, `mailto:` and `tel:` open in the matching phone app. File
-inputs open Android's file picker. Recordings ask for the microphone through
-Android's permission prompt.
+inputs open Android's file picker; from 0.25.0 the app gives the page its own
+copy of each picked file (WebView 133 on Android 16 reads the picker's
+addresses as empty files), kept and deleted like the copies for other apps
+below. Recordings ask for the microphone through Android's permission prompt.
 
 ### Files for other apps
 
