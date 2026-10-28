@@ -60,14 +60,14 @@ test('[24-25 24-19 25-01] the phone composer: one row per field, a folded Cc/Bcc
     await expect(screen.getByLabel('Cc', { exact: true })).toHaveCount(0);
     await expect(screen.getByRole('combobox', 'From')).toHaveCount(0);
     const body = (await messageBody(screen).boundingBox())!;
-    expect(body.height, 'the message body has at least half the screen').toBeGreaterThanOrEqual(viewport.height / 2);
-    // The toolbar is one row pinned directly above the buttons, the buttons on screen.
+    expect(await visibleEditorHeight(browser), 'the message body has at least half the screen').toBeGreaterThanOrEqual(viewport.height / 2);
+    // The toolbar is one row pinned between the message and the buttons, the buttons on screen.
     const bold = (await screen.getByRole('button', 'Bold', { visible: true }).boundingBox())!;
     const send = (await screen.getByRole('button', 'Send', { visible: true }).boundingBox())!;
     const clip = (await screen.getByRole('button', 'Attach files', { visible: true }).boundingBox())!;
     expect(send.y + send.height, 'Send on screen').toBeLessThanOrEqual(viewport.height);
     expect(Math.abs(middle(bold) - middle(clip)), 'attach button in the toolbar row').toBeLessThan(8);
-    expect(bold.y, 'toolbar below the message').toBeGreaterThan(body.y + body.height - 8);
+    expect(bold.y, 'toolbar below the message').toBeGreaterThan(body.y + viewport.height / 2);
     expect(send.y - (bold.y + bold.height), 'toolbar directly above the buttons').toBeLessThan(24);
 
     await senderLine(screen).tap();

@@ -24,9 +24,16 @@ async function connectedAccount(app: App, screen: Screen, browser: unknown, what
   return { mailbox, subject, account };
 }
 
-/** The account's remove control in the Accounts list: the panel is a sheet on narrow screens. */
+/** Shows the Accounts list: on narrow screens the panel is a sheet, which stays open behind a dialog. */
+async function showAccounts(screen: Screen, browser: unknown) {
+  if (!(await isNarrow(browser))) return;
+  if (await screen.getByRole('region', 'Mail accounts').isVisible()) return;
+  await screen.getByRole('button', 'All accounts', { visible: true }).first().tap();
+}
+
+/** The account's remove control in the Accounts list. */
 async function openDisconnect(screen: Screen, browser: unknown, mailbox: string) {
-  if (await isNarrow(browser)) await screen.getByRole('button', 'All accounts', { visible: true }).first().tap();
+  await showAccounts(screen, browser);
   await screen.getByRole('button', `Disconnect ${mailbox}`, { visible: true }).tap();
   await expect(screen.getByRole('alertdialog')).toContainText('Disconnect mail account?');
 }
@@ -53,7 +60,7 @@ test('[25-03 D27] removing an account with its mail deletes UniHub\'s copy only'
   await expect.poll(async () => (await mailAccounts(browser)).some((a) => a.id === account.id), { timeout: 30_000 }).toBe(false);
   expect(await emailsWithSubject(browser, 'inbox', subject), 'no local copy left').toEqual([]);
   await expect(screen.getByText(subject, { exact: true })).toHaveCount(0);
-  if (await isNarrow(browser)) await screen.getByRole('button', 'All accounts', { visible: true }).first().tap();
+  await showAccounts(screen, browser);
   await expect(screen.getByRole('button', `Disconnect ${mailbox}`)).toHaveCount(0);
   expect((await deliveredWithSubject(mailbox, subject)).length, 'the provider keeps the message').toBe(1);
 });
@@ -69,7 +76,7 @@ test('[25-03 D27] disconnecting keeps the mail in UniHub', { session: 'alex', ti
   await expect(dialog).toBeHidden({ timeout: 30_000 });
   await expect.poll(async () => (await mailAccounts(browser)).find((a) => a.id === account.id)?.disconnected_at ?? null, { timeout: 30_000 }).not.toBeNull();
   expect((await emailsWithSubject(browser, 'inbox', subject)).length, 'the local copy stays').toBe(1);
-  if (await isNarrow(browser)) await screen.getByRole('button', 'All accounts', { visible: true }).first().tap();
+  await showAccounts(screen, browser);
   await expect(screen.getByRole('button', `Delete local data of ${mailbox}`)).toBeVisible();
   expect((await deliveredWithSubject(mailbox, subject)).length).toBe(1);
 });
