@@ -37,16 +37,17 @@ class FileActions(private val activity: Activity, private val origin: String) {
 
     /** Runs one action; `done` gets null when Android took it over, or the text to show. */
     fun run(action: String, url: String, name: String, mime: String, done: (String?) -> Unit) {
+        val token = session.current()
         if (action !in ACTIONS || !ServerAddress.sameOrigin(origin, url) || !SharedFiles.isTicket(origin, url)) {
             done(activity.getString(R.string.files_refused))
             return
         }
         val fileName = WebBridge.safeFileName(name)
         try {
+            pruneLater(activity)
             worker.execute {
                 val error = try {
-                    prune(activity)
-                    if (action == "save") save(url, fileName, mime) else share(action, url, fileName, mime)
+                    if (action == "save") save(url, fileName, mime) else share(action, url, fileName, mime, token)
                     null
                 } catch (problem: Problem) {
                     problem.message
@@ -105,7 +106,8 @@ class FileActions(private val activity: Activity, private val origin: String) {
         }
     }
 
-    private fun share(action: String, url: String, name: String, mime: String) {
+    private fun share(action: String, url: String, name: String, mime: String, token: Long) {
+        if (!session.isCurrent(token)) throw Problem(activity.getString(R.string.files_failed))
         val folder = File(sharedDir(activity), UUID.randomUUID().toString())
         if (!folder.mkdirs()) throw IOException("No cache folder")
         val file = File(folder, name)
@@ -113,6 +115,9 @@ class FileActions(private val activity: Activity, private val origin: String) {
             fetch(url, name, mime) { download ->
                 download.body.use { input -> file.outputStream().use { copy(input, it) } }
                 download.type
+            }.also {
+                // Signed out while fetching: the copy must not outlive the session.
+                if (!session.isCurrent(token)) throw Problem(activity.getString(R.string.files_failed))
             }
         } catch (error: Exception) {
             folder.deleteRecursively()
@@ -174,41 +179,114 @@ class FileActions(private val activity: Activity, private val origin: String) {
         private fun sharedDir(context: Context) = File(context.cacheDir, "shared")
         private fun pickedDir(context: Context) = File(context.cacheDir, "picked")
 
+        // The session the copies belong to (PickedFiles.Generation), and one
+        // worker for copying picked files and for every cleanup, so a cleanup
+        // never runs while a copy is being written and nothing is written
+        // after it.
+        private val session = PickedFiles.Generation()
+        private val copier = Executors.newSingleThreadExecutor()
+
+        /** The current session, for a copy to check before it hands anything over. */
+        fun currentSession(): Long = session.current()
+        fun isCurrent(token: Long) = session.isCurrent(token)
+
+        class PickedCopy(val uri: Uri, internal val folder: File)
+
         /**
-         * A copy of a file picked for the page's file input, as the app's own
-         * content:// address with the picked file's name. The page may read it
-         * for a while (a recording uploads in pieces), so it is kept like the
-         * shared copies. Null when the file cannot be read.
+         * Copies files picked for the page's file input into the app's cache,
+         * as content:// addresses with the picked files' names (WebView 133 on
+         * Android 16 reads a picker's own address as an empty file). The page
+         * may read them for a while (a recording uploads in pieces), so they
+         * are kept like the shared copies. Bounded per file, per pick and by
+         * the phone's free space (PickedFiles); a file over a bound or
+         * unreadable is listed in the outcome's `refused`. `done` runs on the
+         * worker, with null when the session ended meanwhile (nothing kept).
          */
-        fun copyPicked(context: Context, source: Uri): Uri? = try {
-            val resolver = context.contentResolver
-            val name = resolver.query(source, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getString(0) else null
-            } ?: source.lastPathSegment ?: "file"
-            val folder = File(pickedDir(context), UUID.randomUUID().toString())
-            if (!folder.mkdirs()) throw IOException("No cache folder")
-            val file = File(folder, WebBridge.safeFileName(name))
-            try {
-                (resolver.openInputStream(source) ?: throw IOException("Unreadable")).use { input -> file.outputStream().use { input.copyTo(it, 64 * 1024) } }
-            } catch (error: Exception) {
-                folder.deleteRecursively()
-                throw error
+        fun copyPicked(context: Context, sources: List<Uri>, token: Long, done: (PickedFiles.Outcome<PickedCopy>?) -> Unit) {
+            val app = context.applicationContext
+            copier.execute {
+                done(PickedFiles.copyAll(sources, { displayName(app, it) }, { session.isCurrent(token) },
+                    { source, limit -> copyOnePicked(app, source, limit, token) }, { it.folder.deleteRecursively() }))
             }
-            FileProvider.getUriForFile(context, authority(context), file)
+        }
+
+        /** Deletes copies the page did not get (the session ended before they were handed over). */
+        fun discard(copies: List<PickedCopy>) {
+            if (copies.isNotEmpty()) copier.execute { copies.forEach { it.folder.deleteRecursively() } }
+        }
+
+        private fun displayName(context: Context, source: Uri): String = try {
+            context.contentResolver.query(source, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getString(0) else null
+            }
+        } catch (_: Exception) {
+            null
+        } ?: source.lastPathSegment ?: "file"
+
+        private fun declaredSize(context: Context, source: Uri): Long? = try {
+            context.contentResolver.query(source, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0).takeIf { it >= 0 } else null
+            }
         } catch (_: Exception) {
             null
         }
 
-        /** Deletes copies made longer ago than SharedFiles.MAX_AGE_MS. */
-        fun prune(context: Context) {
+        private fun copyOnePicked(context: Context, source: Uri, limit: Long, token: Long): Pair<PickedCopy, Long> {
+            val free = { context.cacheDir.usableSpace }
+            // A size the provider states is refused before reading anything.
+            declaredSize(context, source)?.let { size ->
+                if (size > limit) throw PickedFiles.Refused(PickedFiles.Refusal.TOO_LARGE)
+                if (free() - size < PickedFiles.RESERVE_BYTES) throw PickedFiles.Refused(PickedFiles.Refusal.NO_SPACE)
+            }
+            if (!session.isCurrent(token)) throw PickedFiles.Cancelled()
+            val folder = File(pickedDir(context), UUID.randomUUID().toString())
+            if (!folder.mkdirs()) throw IOException("No cache folder")
+            val file = File(folder, WebBridge.safeFileName(displayName(context, source)))
+            try {
+                val size = (context.contentResolver.openInputStream(source) ?: throw IOException("Unreadable")).use { input ->
+                    file.outputStream().use { PickedFiles.copy(input, it, limit, free) { session.isCurrent(token) } }
+                }
+                return PickedCopy(FileProvider.getUriForFile(context, authority(context), file), folder) to size
+            } catch (error: Exception) {
+                folder.deleteRecursively()
+                throw error
+            }
+        }
+
+        /** Deletes copies made longer ago than SharedFiles.MAX_AGE_MS, on the worker. */
+        fun pruneLater(context: Context) {
+            val app = context.applicationContext
+            copier.execute { prune(app) }
+        }
+
+        private fun prune(context: Context) {
             val now = System.currentTimeMillis()
             for (dir in listOf(sharedDir(context), pickedDir(context))) {
                 dir.listFiles()?.filter { SharedFiles.stale(it.lastModified(), now) }?.forEach { it.deleteRecursively() }
             }
         }
 
-        /** Deletes every copy: the person signed out or left the server. */
-        fun clear(context: Context) {
+        /**
+         * The person signed out or left the server: copies still being made
+         * stop and hand nothing over, and every copy is deleted after them.
+         */
+        fun endSession(context: Context) {
+            session.next()
+            val app = context.applicationContext
+            copier.execute { clear(app) }
+        }
+
+        /** The cached copy a content:// address of this app names, or null outside the copies' folders. */
+        fun cachedFile(context: Context, uri: Uri): File? {
+            val segments = uri.pathSegments
+            if (segments.size != 3 || segments[0] !in setOf("shared", "picked")) return null
+            val root = File(context.cacheDir, segments[0]).canonicalFile
+            val file = File(root, "${segments[1]}/${segments[2]}").canonicalFile
+            return file.takeIf { it.parentFile?.parentFile == root }
+        }
+
+        /** Deletes every copy, on the calling thread (endSession runs it on the worker). */
+        private fun clear(context: Context) {
             sharedDir(context).deleteRecursively()
             pickedDir(context).deleteRecursively()
         }

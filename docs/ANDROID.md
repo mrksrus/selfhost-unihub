@@ -71,7 +71,12 @@ Links to other sites, `mailto:` and `tel:` open in the matching phone app. File
 inputs open Android's file picker; from 0.25.0 the app gives the page its own
 copy of each picked file (WebView 133 on Android 16 reads the picker's
 addresses as empty files), kept and deleted like the copies for other apps
-below. Recordings ask for the microphone through Android's permission prompt.
+below. A pick is copied up to 3.9 GB in all (the largest upload the server
+accepts, a backup import) and only while the phone keeps 256 MB free; a file
+over that, or one that cannot be read, is left out, and the app names it and
+the reason in a dialog. Copies still being made when the session ends stop
+and are deleted, and the page gets none of them. Recordings ask for the
+microphone through Android's permission prompt.
 
 ### Files for other apps
 
@@ -90,9 +95,10 @@ app, which:
 - for Save, writes it to Downloads (MediaStore), like a saved export.
 
 Copies for other apps are deleted six hours after they were made (an app
-may read a shared file some time later, a mail app when it sends) and all at
-once whenever the page shows the sign-in page (signing out, a session ended
-elsewhere) or the app leaves the server. A ticket works once, so a download
+may read a shared file some time later, a mail app when it sends; the app
+cleans up whenever it is opened or comes back to the front, and refuses an
+older copy at once) and all at once whenever the page shows the sign-in page
+(signing out, a session ended elsewhere) or the app leaves the server. A ticket works once, so a download
 that breaks off is started again from the page.
 
 ### Keyboard

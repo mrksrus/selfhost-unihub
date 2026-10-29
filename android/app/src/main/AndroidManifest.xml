@@ -51,7 +51,7 @@
         <!-- "Open with…" and "Share" (FileActions): the chosen app may read
              the copy it was given, nothing else. -->
         <provider
-            android:name="androidx.core.content.FileProvider"
+            android:name=".FilesProvider"
             android:authorities="${applicationId}.files"
             android:exported="false"
             android:grantUriPermissions="true">

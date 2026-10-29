@@ -78,7 +78,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         drawEdgeToEdge()
-        Thread { FileActions.prune(this) }.start()
+        FileActions.pruneLater(this)
         val saved = ServerAddress.saved(this)
         if (saved != null) PageTheme.saved(this)?.let { (dark, background) -> applyTheme(dark, background) }
         val opened = notificationPath(intent, saved)?.takeIf { savedInstanceState == null }
@@ -198,7 +198,7 @@ class MainActivity : Activity() {
     private fun changeServer() {
         val current = origin
         ServerAddress.clear(this)
-        Thread { FileActions.clear(this) }.start()
+        FileActions.endSession(this)
         NotificationService.stop(this)
         showConnect(prefill = current)
     }
@@ -260,7 +260,7 @@ class MainActivity : Activity() {
             override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
                 ContactsSync.pageShown(this@MainActivity, url)
                 // Signed out (here, elsewhere or expired): the files handed to other apps go.
-                if (isSignInPage(url)) Thread { FileActions.clear(this@MainActivity) }.start()
+                if (isSignInPage(url)) FileActions.endSession(this@MainActivity)
                 offerContacts(server)
                 offerNotifications(server)
                 resumeNotifications()
@@ -697,10 +697,20 @@ class MainActivity : Activity() {
             }
             // WebView 133 (Android 16) reads a picker's document URI as an
             // empty file; it reads the app's own copy correctly everywhere.
-            Thread {
-                val copies = picked.mapNotNull { FileActions.copyPicked(this, it) }
-                runOnUiThread { callback.onReceiveValue(copies.ifEmpty { null }?.toTypedArray()) }
-            }.start()
+            // Copies finished after signing out (checked here, on the thread
+            // that ends sessions) are deleted, and the page gets nothing.
+            val session = FileActions.currentSession()
+            FileActions.copyPicked(this, picked, session) { outcome ->
+                runOnUiThread {
+                    if (outcome == null || !FileActions.isCurrent(session) || isFinishing || isDestroyed) {
+                        outcome?.let { FileActions.discard(it.copies) }
+                        callback.onReceiveValue(null)
+                        return@runOnUiThread
+                    }
+                    callback.onReceiveValue(outcome.copies.map { it.uri }.ifEmpty { null }?.toTypedArray())
+                    if (outcome.refused.isNotEmpty()) showRefusedFiles(outcome.refused)
+                }
+            }
             return
         }
         if (requestCode == REQUEST_BACKGROUND) {
@@ -710,6 +720,22 @@ class MainActivity : Activity() {
         }
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
+    }
+
+    // The page gets only the files that were copied; the others are named here.
+    private fun showRefusedFiles(refused: List<Pair<String, PickedFiles.Refusal>>) {
+        val lines = refused.joinToString("\n") { (name, reason) ->
+            getString(R.string.files_not_added_line, WebBridge.safeFileName(name), getString(when (reason) {
+                PickedFiles.Refusal.TOO_LARGE -> R.string.files_not_added_too_large
+                PickedFiles.Refusal.NO_SPACE -> R.string.files_not_added_no_space
+                PickedFiles.Refusal.UNREADABLE -> R.string.files_not_added_unreadable
+            }))
+        }
+        AlertDialog.Builder(this)
+            .setTitle(resources.getQuantityString(R.plurals.files_not_added_title, refused.size, refused.size))
+            .setMessage(lines)
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -773,6 +799,8 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         webView?.onResume()
+        // Copies for other apps expire after six hours even while the app stays open.
+        FileActions.pruneLater(this)
         ContactsSync.renewSession(this)
         if (origin != null) NotificationService.startIfWanted(this)
     }

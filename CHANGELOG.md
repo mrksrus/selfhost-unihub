@@ -63,7 +63,9 @@ upgrade; install the new Android app (see
   chosen in Android's picker reached the page as 0 bytes on Android 16, so a
   recording upload was refused and an attachment was empty. The app now
   passes the picked files so that the WebView can read them. Apps up to
-  0.24.3 have this problem; install the new app from the server.
+  0.24.3 have this problem; install the new app from the server. The app
+  copies up to 3.9 GB per pick while the phone keeps 256 MB free, and names
+  any file it left out and why.
 - **The keyboard in the Android app.** The app now makes room for the
   keyboard itself on every Android version (before only from Android 15),
   so the page ends at the keyboard on Android 10 to 16.

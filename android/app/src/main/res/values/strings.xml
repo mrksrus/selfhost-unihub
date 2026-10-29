@@ -28,6 +28,14 @@
     <string name="files_failed">Could not get the file. Try again.</string>
     <string name="files_too_large">This file is too large for the app</string>
     <string name="files_refused">The app cannot fetch this file</string>
+    <plurals name="files_not_added_title">
+        <item quantity="one">%1$d file was not added</item>
+        <item quantity="other">%1$d files were not added</item>
+    </plurals>
+    <string name="files_not_added_line">%1$s: %2$s</string>
+    <string name="files_not_added_too_large">larger than 3.9 GB, the most the app passes on at once</string>
+    <string name="files_not_added_no_space">not enough free space on this phone to prepare it</string>
+    <string name="files_not_added_unreadable">it could not be read</string>
     <string name="no_app_for_link">No app can open this link</string>
     <string name="contacts_title">Show UniHub contacts on this phone?</string>
     <string name="contacts_body">Phone, WhatsApp and other apps can then show their names. They stay in step both ways: contacts you add, change or delete in the phone\'s UniHub account change in UniHub too. To stop, remove the UniHub account in the phone\'s settings under Accounts.</string>
