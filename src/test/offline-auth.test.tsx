@@ -1,7 +1,8 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
-import { useQuery } from '@tanstack/react-query';
+import { onlineManager, useQuery } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '@/contexts/AuthContext';
+import ModuleGuard from '@/components/modules/ModuleGuard';
 import { useAuth } from '@/contexts/useAuth';
 import { SessionQueryProvider } from '@/components/SessionQueryProvider';
 import { clearOfflineData, loadOfflineSession, saveOfflineSnapshot, setOfflineAccount, setOfflineMode, type OfflineSnapshot } from '@/lib/offline';
@@ -66,6 +67,21 @@ describe('offline cold-start and authentication boundaries', () => {
     await screen.findByText('Signed out');
     expect(screen.queryByText('Alice saved contact')).not.toBeInTheDocument();
     await waitFor(async () => expect(await loadOfflineSession()).toBeNull());
+  });
+  it('opens a page from the saved copy when the browser went offline before the first module lookup', async () => {
+    // React Query pauses an ordinary query while the browser is offline; the
+    // module lookup must still reach the saved copy, not hold the start screen
+    // over the offline notice and the navigation.
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+    onlineManager.setOnline(false);
+    try {
+      render(<AuthProvider><SessionQueryProvider><ModuleGuard id="contacts"><p>Contacts page</p></ModuleGuard></SessionQueryProvider></AuthProvider>);
+      await screen.findByText('Contacts page');
+      expect(screen.queryByText('Opening UniHub…')).not.toBeInTheDocument();
+    } finally {
+      onlineManager.setOnline(true);
+    }
   });
   it('does not sign into a cached identity on an HTTP server error', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({ error: 'Unavailable' }), { status: 500, headers: { 'Content-Type': 'application/json' } })));

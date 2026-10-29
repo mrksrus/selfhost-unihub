@@ -15,7 +15,11 @@ function storePages(client: QueryClient, data: ModulesResponse) {
 export function useModules() {
   const { user } = useAuth();
   const client = useQueryClient();
-  const query = useQuery({ queryKey: ['modules'], enabled: !!user, retry: false,
+  // networkMode 'always': offline, the lookup still runs and api.get answers it
+  // from the saved copy (transport failures only). A query paused for the
+  // offline browser would never settle and hold the start screen that pages
+  // show until it does (ModuleGuard, StartRedirect).
+  const query = useQuery({ queryKey: ['modules'], enabled: !!user, retry: false, networkMode: 'always',
     queryFn: async ({ signal }) => {
       const response = await api.get<ModulesResponse>('/modules', { signal });
       if (response.error || !response.data?.modules) throw new Error(response.error || 'Module preferences unavailable.');
