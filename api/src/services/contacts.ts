@@ -473,19 +473,23 @@ async function writeValues(cx: SqlExecutor, userId: string, contactId: string, k
       ...ADDRESS_PARTS.map(part => draft[part] ?? null), params == null ? null : JSON.stringify(params),
       draft.vcard_group !== undefined ? draft.vcard_group : keep?.vcard_group ?? null];
   });
-  if (rows.length) {
-    await cx.query(`INSERT INTO contact_values (id, contact_id, user_id, kind, position, is_preferred, label, custom_label, value, value_key,
-      ${ADDRESS_PARTS.join(', ')}, params, vcard_group) VALUES ?`, [rows]);
+  await insertRows(cx, `contact_values (id, contact_id, user_id, kind, position, is_preferred, label, custom_label, value, value_key, ${ADDRESS_PARTS.join(', ')}, params, vcard_group)`, rows);
+}
+
+// Multi-row INSERTs through execute(), in slices that keep the placeholder count bounded.
+async function insertRows(cx: SqlExecutor, target: string, rows: readonly unknown[][]) {
+  for (let start = 0; start < rows.length; start += 100) {
+    const slice = rows.slice(start, start + 100);
+    await cx.execute(`INSERT INTO ${target} VALUES ${slice.map(row => `(${placeholders(row)})`).join(', ')}`, slice.flat() as (string | number | null)[]);
   }
 }
 
 async function writeKeptProperties(cx: SqlExecutor, userId: string, contactId: string, properties: readonly KeptPropertyDraft[]) {
   if (properties.length > KEPT_PROPERTIES_MAX) throw invalid(`At most ${KEPT_PROPERTIES_MAX} kept properties per contact`);
   if (properties.reduce((sum, property) => sum + Buffer.byteLength(property.value, 'utf8'), 0) > KEPT_PROPERTIES_MAX_BYTES) throw invalid('The kept properties of a contact exceed 256 KB');
-  if (!properties.length) return;
-  await cx.query('INSERT INTO contact_properties (id, contact_id, user_id, position, vcard_group, name, params, value, source_version) VALUES ?', [properties.map((property, position) => [
+  await insertRows(cx, 'contact_properties (id, contact_id, user_id, position, vcard_group, name, params, value, source_version)', properties.map((property, position) => [
     crypto.randomUUID(), contactId, userId, position, property.group ?? null, property.name, property.params == null ? null : JSON.stringify(property.params), property.value, property.source_version ?? null,
-  ])]);
+  ]));
 }
 
 const CONTENT_COLUMNS = ['display_name', 'first_name', 'last_name', 'middle_name', 'name_prefix', 'name_suffix', 'company', 'department', 'job_title', 'birthday', 'anniversary', 'notes'] as const;

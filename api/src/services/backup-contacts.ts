@@ -83,7 +83,8 @@ async function findExistingContactForRestore(connection: SqlExecutor, row: Row, 
   };
   const [byId] = await connection.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM contacts WHERE id = ? AND user_id = ?', [text(row.id), userId]);
   if (byId.length && !claimedIds.has(byId[0].id)) return byId[0].id;
-  const uid = text(row.uid).trim();
+  // An archive from before 0.26 has no uid; its contacts were given urn:uuid:<id>, as upgrade 22 does.
+  const uid = text(row.uid).trim() || (text(row.id) ? newUid(text(row.id)) : '');
   if (uid) {
     const hash = uidHash(uid);
     const [byUid] = await connection.execute<(RowDataPacket & { id: string })[]>(`SELECT id FROM contacts WHERE user_id = ? AND uid_hash = ?
@@ -123,6 +124,15 @@ interface RestoreContext {
 async function restoreContactsSection(connection: SqlExecutor, userId: string, data: Record<string, unknown>, { conflictMode, warnings, checkCancelled }: RestoreContext) {
   const valuesBy = groupBy(data.contact_values, 'contact_id');
   const propertiesBy = groupBy(data.contact_properties, 'contact_id');
+  // A child row is restored only with its contact from the same archive; one
+  // naming any other contact is refused, never attached to an existing row.
+  const archived = new Set((Array.isArray(data.contacts) ? data.contacts as Row[] : []).map(row => text(row.id)));
+  for (const [table, columns] of [['contact_values', ['contact_id']], ['contact_properties', ['contact_id']], ['contact_photos', ['contact_id']],
+    ['contact_uid_aliases', ['contact_id']], ['contact_duplicate_dismissals', ['contact_a', 'contact_b']]] as const) {
+    for (const row of (Array.isArray(data[table]) ? data[table] : []) as Row[]) {
+      if (columns.some(column => !archived.has(text(row?.[column])))) throw new Error('Backup references an unavailable contacts record');
+    }
+  }
   const idMap = new Map<string, string>();
   const claimed = new Set<string>();
   for (const contact of (Array.isArray(data.contacts) ? data.contacts : []) as Row[]) {

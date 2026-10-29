@@ -211,6 +211,8 @@ async function addContactModel(connection: SqlExecutor) {
 // gives every contact its uid and name key, in one transaction: an
 // interrupted copy leaves nothing behind and the next start does it again.
 async function copyLegacyContactValues(connection: PoolConnection) {
+  // Replayed after step 23 dropped the fixed fields: their copy is complete.
+  if (!await hasColumn(connection, 'contacts', 'email')) return;
   await connection.beginTransaction();
   try {
     let after = '';
@@ -246,7 +248,8 @@ async function copyLegacyContactValues(connection: PoolConnection) {
 async function verifyLegacyContactCopy(connection: SqlExecutor) {
   let after = '';
   let checked = 0;
-  for (;;) {
+  const legacy = await hasColumn(connection, 'contacts', 'email');
+  while (legacy) {
     const [rows] = await connection.execute<LegacyRow[]>(`SELECT id, user_id, first_name, last_name, email, email2, email3, phone, phone2, phone3
       FROM contacts WHERE id > ? ORDER BY id LIMIT ${BATCH}`, [after]);
     if (!rows.length) break;

@@ -101,6 +101,21 @@ test('MySQL restores colliding backup IDs without changing another user in every
   await connection.execute('ALTER TABLE mail_accounts ADD COLUMN sync_window_days INT NULL, ADD COLUMN trash_window_days INT NULL DEFAULT 30, ADD COLUMN sync_policy_confirmed_at DATETIME NULL');
   await connection.execute('ALTER TABLE emails ADD COLUMN remote_folder VARCHAR(255) NULL, ADD COLUMN remote_uid BIGINT NULL, ADD COLUMN remote_uidvalidity BIGINT NULL, ADD COLUMN remote_missing BOOLEAN NOT NULL DEFAULT FALSE');
   await connection.execute("ALTER TABLE emails ADD COLUMN observation_revision BIGINT NOT NULL DEFAULT 0, ADD COLUMN observed_modseq VARCHAR(32) NULL, ADD COLUMN raw_format VARCHAR(24) NOT NULL DEFAULT 'legacy_normalized', ADD COLUMN raw_bytes BIGINT NULL, ADD COLUMN raw_verified BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN content_state VARCHAR(24) NOT NULL DEFAULT 'legacy'");
+  // 0.26 (upgrade 22): the contact model the restore writes.
+  await connection.execute(`ALTER TABLE contacts ADD COLUMN uid VARCHAR(255) NULL, ADD COLUMN uid_hash CHAR(64) NULL, ADD COLUMN version INT UNSIGNED NOT NULL DEFAULT 1,
+    ADD COLUMN display_name VARCHAR(255) NULL, ADD COLUMN middle_name VARCHAR(255) NULL, ADD COLUMN name_prefix VARCHAR(255) NULL, ADD COLUMN name_suffix VARCHAR(255) NULL,
+    ADD COLUMN department VARCHAR(255) NULL, ADD COLUMN birthday VARCHAR(32) NULL, ADD COLUMN anniversary VARCHAR(32) NULL, ADD COLUMN name_key VARCHAR(255) NOT NULL DEFAULT '',
+    ADD UNIQUE KEY uq_contacts_uid (user_id, uid_hash)`);
+  await connection.execute(`CREATE TEMPORARY TABLE contact_values (
+    id CHAR(36) PRIMARY KEY, contact_id CHAR(36) NOT NULL, user_id CHAR(36) NOT NULL, kind VARCHAR(16) NOT NULL, position SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    is_preferred TINYINT(1) NOT NULL DEFAULT 0, label VARCHAR(32) NOT NULL DEFAULT '', custom_label VARCHAR(100) NULL, value VARCHAR(2048) NOT NULL,
+    value_key VARCHAR(255) NOT NULL DEFAULT '', po_box VARCHAR(255) NULL, extended VARCHAR(255) NULL, street TEXT NULL, locality VARCHAR(255) NULL,
+    region VARCHAR(255) NULL, postal_code VARCHAR(255) NULL, country VARCHAR(255) NULL, params JSON NULL, vcard_group VARCHAR(64) NULL) ENGINE=InnoDB`);
+  await connection.execute(`CREATE TEMPORARY TABLE contact_properties (
+    id CHAR(36) PRIMARY KEY, contact_id CHAR(36) NOT NULL, user_id CHAR(36) NOT NULL, position SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    vcard_group VARCHAR(64) NULL, name VARCHAR(64) NOT NULL, params JSON NULL, value MEDIUMTEXT NOT NULL, source_version VARCHAR(8) NULL) ENGINE=InnoDB`);
+  await connection.execute('CREATE TEMPORARY TABLE contact_uid_aliases (user_id CHAR(36) NOT NULL, uid_hash CHAR(64) NOT NULL, uid VARCHAR(255) NOT NULL, contact_id CHAR(36) NOT NULL, merge_id CHAR(36) NULL, PRIMARY KEY (user_id, uid_hash)) ENGINE=InnoDB');
+  await connection.execute('CREATE TEMPORARY TABLE contact_duplicate_dismissals (contact_a CHAR(36) NOT NULL, contact_b CHAR(36) NOT NULL, user_id CHAR(36) NOT NULL, PRIMARY KEY (contact_a, contact_b)) ENGINE=InnoDB');
   // A restored draft loses its schedule (0.24); the restore clears it on this connection.
   await connection.execute(`CREATE TEMPORARY TABLE mail_scheduled_sends (
     id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, email_id CHAR(36) NOT NULL,

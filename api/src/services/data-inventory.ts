@@ -184,6 +184,10 @@ function assertInventoryCoverage(rows: readonly ColumnRow[], { requireAll = true
   }
   if (requireAll) for (const [key, policy] of fields) {
     if (policy.introducedIn > throughMigration || removed(policy)) continue;
+    // A field a later step removes may already be gone when an earlier step
+    // is verified again after an interrupted upgrade (step 23 drops the
+    // fixed contact fields that steps 12 to 22 still list).
+    if (Number.isFinite(policy.removedIn) && !actual.has(key)) continue;
     if (!actual.has(key)) failures.push(`Missing declared field ${key}`);
   }
   if (failures.length) throw new Error(`Database recovery inventory failed:\n${failures.join('\n')}`);

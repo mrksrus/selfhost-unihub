@@ -146,7 +146,7 @@ test('MySQL offline queries match application schema, include every contact and 
 
   // Bulk contact changes touch only the caller's contacts and only the allowed fields.
   const contactRoutes = require('../dist/src/routes/contacts') as typeof import('../src/routes/contacts');
-  const bulk = (contact: FixtureValue) => contactRoutes['POST /api/contacts/bulk-update']({} as FixtureValue, userId, { ids: [contactIds[1], contactIds[2], otherContact], contact });
+  const bulk = (contact: FixtureValue) => contactRoutes['POST /api/contacts/bulk-update'].handler({} as FixtureValue, userId, { ids: [contactIds[1], contactIds[2], otherContact], contact });
   assert.equal((await bulk({ company: ' Example Ltd ', job_title: null })).updated, 2);
   assert.equal((await bulk({ notes: 'Not allowed' })).status, 400);
   const [companies] = await connection.execute<RowDataPacket[]>('SELECT id, company, notes FROM contacts WHERE id IN (?, ?, ?)', [contactIds[1], contactIds[2], otherContact]);

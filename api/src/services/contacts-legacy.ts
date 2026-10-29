@@ -7,7 +7,7 @@ import type { ContactRecord } from '../contracts/contacts';
 import type { ContactDraft, ValueDraft } from './contacts';
 import { db } from '../state';
 import { withTransaction } from './transactions';
-import { insertContact, loadContacts, replaceContact, VALUE_LIMITS, VALUES_PER_KIND } from './contacts';
+import { insertContact, loadContacts, replaceContact, uidHash, VALUE_LIMITS, VALUES_PER_KIND } from './contacts';
 import { valueKey } from './contact-keys';
 import type { RowDataPacket } from 'mysql2/promise';
 
@@ -57,12 +57,12 @@ function cut(text: string, max: number) {
 }
 
 /** The cards of a vCard file as contact drafts; a card with an over-long field keeps the card and loses the tail of that field. */
-function parseVCards(vcfData: string): ContactDraft[] {
+function parseVCards(vcfData: string): (ContactDraft & { uid: string | null })[] {
   const unfolded = vcfData.replace(/\r\n[ \t]/g, '').replace(/\n[ \t]/g, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  const drafts: ContactDraft[] = [];
+  const drafts: (ContactDraft & { uid: string | null })[] = [];
   for (const block of unfolded.split(/(?=BEGIN:VCARD)/i)) {
     if (!/^BEGIN:VCARD/i.test(block.trim()) || !/END:VCARD/i.test(block)) continue;
-    const draft: ContactDraft = { display_name: null, first_name: '', last_name: null, middle_name: null, name_prefix: null, name_suffix: null,
+    const draft: ContactDraft & { uid: string | null } = { uid: null, display_name: null, first_name: '', last_name: null, middle_name: null, name_prefix: null, name_suffix: null,
       company: null, department: null, job_title: null, birthday: null, anniversary: null, notes: null, values: [] };
     let formatted: string | null = null;
     for (const line of block.split('\n')) {
@@ -86,6 +86,7 @@ function parseVCards(vcfData: string): ContactDraft[] {
         case 'ORG': { const [company, department] = splitComponents(raw).map(part => part.trim() || null); draft.company = company; draft.department = department ?? null; break; }
         case 'TITLE': draft.job_title = value || null; break;
         case 'NOTE': draft.notes = value || null; break;
+        case 'UID': draft.uid = value ? cut(value, TEXT_MAX) : null; break;
       }
     }
     if (!draft.first_name && !draft.last_name && formatted) draft.display_name = formatted;
@@ -125,16 +126,22 @@ async function importVCards(userId: string, vcfData: string) {
   const [existing] = await db.execute<(RowDataPacket & { kind: 'email' | 'phone'; value: string })[]>(
     "SELECT kind, value FROM contact_values WHERE user_id = ? AND kind IN ('email', 'phone')", [userId]);
   const known = new Set(identityKeys(existing));
+  const [uids] = await db.execute<(RowDataPacket & { uid_hash: string })[]>(
+    'SELECT uid_hash FROM contacts WHERE user_id = ? UNION SELECT uid_hash FROM contact_uid_aliases WHERE user_id = ?', [userId, userId]);
+  const knownUids = new Set(uids.map(row => row.uid_hash));
   let imported = 0;
   const errors: string[] = [];
   let skipped = 0;
-  for (const draft of parsed) {
+  for (const { uid, ...draft } of parsed) {
     const keys = identityKeys(draft.values);
-    if (keys.some(key => known.has(key))) { skipped++; continue; }
+    // A card keeps its own UID; one already here (or merged into a contact) is the same contact.
+    const hash = uid ? uidHash(uid) : null;
+    if (keys.some(key => known.has(key)) || (hash && knownUids.has(hash))) { skipped++; continue; }
     try {
-      await withTransaction(cx => insertContact(cx, userId, draft));
+      await withTransaction(cx => insertContact(cx, userId, draft, uid ? { uid } : {}));
       imported++;
       keys.forEach(key => known.add(key));
+      if (hash) knownUids.add(hash);
     } catch {
       errors.push(`Failed to import "${[draft.first_name, draft.last_name].filter(Boolean).join(' ') || draft.display_name || 'a card'}"`);
     }

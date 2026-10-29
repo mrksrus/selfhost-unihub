@@ -54,10 +54,11 @@ async function startTestApi(t: TestContext) {
   function client() {
     const cookies = new Map<string, string>();
     let csrfToken: string | null = null;
-    async function request(method: string, path: string, body?: unknown): Promise<ApiReply> {
+    async function request(method: string, path: string, body?: unknown, extraHeaders: Record<string, string> = {}): Promise<ApiReply> {
       const response = await fetch(`${origin}${path}`, {
         method,
         headers: {
+          ...extraHeaders,
           ...(body === undefined ? {} : { 'content-type': 'application/json' }),
           ...(cookies.size ? { cookie: [...cookies].map(([name, value]) => `${name}=${value}`).join('; ') } : {}),
           ...(csrfToken && method !== 'GET' ? { 'x-csrf-token': csrfToken } : {}),

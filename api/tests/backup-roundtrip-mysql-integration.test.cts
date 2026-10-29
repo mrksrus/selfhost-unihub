@@ -10,7 +10,7 @@ const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts')
 
 const uuid = () => crypto.randomUUID();
 const sha256 = (bytes: FixtureValue) => crypto.createHash('sha256').update(bytes).digest('hex');
-const TABLES = ['user_settings', 'contacts', 'mail_folders', 'mail_accounts', 'mail_folder_remote_boxes', 'mail_sender_rules', 'emails', 'email_attachments', 'mail_email_scores', 'calendar_accounts', 'calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'calendar_event_external_refs', 'recordings', 'recording_tags', 'recording_tag_links', 'recording_transcription_jobs', 'mail_folder_reconciliations', 'mail_folder_recovery_items', 'mail_folder_rule_overrides', 'mail_account_settings', 'mail_templates', 'calendar_settings'];
+const TABLES = ['user_settings', 'contacts', 'contact_values', 'mail_folders', 'mail_accounts', 'mail_folder_remote_boxes', 'mail_sender_rules', 'emails', 'email_attachments', 'mail_email_scores', 'calendar_accounts', 'calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'calendar_event_external_refs', 'recordings', 'recording_tags', 'recording_tag_links', 'recording_transcription_jobs', 'mail_folder_reconciliations', 'mail_folder_recovery_items', 'mail_folder_rule_overrides', 'mail_account_settings', 'mail_templates', 'calendar_settings'];
 
 function wav() {
   const bytes = Buffer.alloc(76);
@@ -83,6 +83,15 @@ test('production export and restore jobs round-trip every section through encryp
     const columns = Object.keys(row);
     await pool.execute<ResultSetHeader>(`INSERT INTO ${table} (${columns.map(name => '`' + name + '`').join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`, Object.values(row));
   }
+  // A contact as the store writes it (uid and child values).
+  const { valueKey } = require('../dist/src/services/contact-keys') as typeof import('../src/services/contact-keys');
+  async function insertContact(row: FixtureValue, values: [string, string][] = []) {
+    const id = row.id || uuid();
+    await insert('contacts', { ...row, id, uid: `urn:uuid:${id}`, uid_hash: crypto.createHash('sha256').update(`urn:uuid:${id}`).digest('hex') });
+    for (const [index, [kind, value]] of values.entries()) {
+      await insert('contact_values', { id: uuid(), contact_id: id, user_id: row.user_id, kind, position: values.slice(0, index).filter(([other]) => other === kind).length, value, value_key: valueKey(kind, value) });
+    }
+  }
   async function newUser(label: string) {
     const id = uuid();
     await insert('users', { id, email: label + '@example.test', password_hash: 'synthetic-hash', full_name: label, role: 'user' });
@@ -101,13 +110,14 @@ test('production export and restore jobs round-trip every section through encryp
   }
   const sourceUser = await newUser('roundtrip-source');
   const unrelatedUser = await newUser('roundtrip-unrelated');
-  await insert('contacts', { id: uuid(), user_id: unrelatedUser, first_name: 'Do not export or change', notes: 'Unrelated private data' });
+  await insertContact({ user_id: unrelatedUser, first_name: 'Do not export or change', notes: 'Unrelated private data' }, [['email', 'unrelated@example.test']]);
   await pool.execute<ResultSetHeader>('UPDATE users SET full_name = ?, timezone = ? WHERE id = ?', ['Grüße Roundtrip', 'Europe/Vienna', sourceUser]);
   await insert('user_settings', { user_id: sourceUser, setting_key: 'calendar_preferences', setting_value: JSON.stringify({ firstDay: 1, custom: 'Grüße\nTwo lines' }) });
   // Choices and an order saved by older releases still name removed modules.
   await insert('user_settings', { user_id: sourceUser, setting_key: 'module_preferences', setting_value: JSON.stringify({ notes: { visible: false, enabled: false, background: false }, games: { visible: false }, recordings: { visible: false } }) });
   await insert('user_settings', { user_id: sourceUser, setting_key: 'module_order', setting_value: JSON.stringify(['notes', 'recordings', 'mail', 'calendar', 'contacts']) });
-  await insert('contacts', { id: uuid(), user_id: sourceUser, first_name: 'Zoë', last_name: 'Example', email: 'zoe@example.test', email2: 'second@example.test', phone: '+43 12345', notes: 'Unicode: Grüße\nSecond line', is_favorite: 1 });
+  await insertContact({ user_id: sourceUser, first_name: 'Zoë', last_name: 'Example', notes: 'Unicode: Grüße\nSecond line', is_favorite: 1 },
+    [['email', 'zoe@example.test'], ['email', 'second@example.test'], ['email', 'third@example.test'], ['email', 'fourth@example.test'], ['phone', '+43 12345']]);
   const folderIds = { research: uuid(), copies: uuid() };
   await insert('mail_folders', { id: folderIds.research, user_id: sourceUser, slug: 'research', display_name: 'Research & Notes', position: 7, is_system: 0 });
   await insert('mail_folders', { id: folderIds.copies, user_id: sourceUser, slug: 'copies', display_name: 'Archived Copies', position: 8, is_system: 0 });
@@ -310,7 +320,8 @@ test('production export and restore jobs round-trip every section through encryp
       const order = (rows: FixtureValue) => rows.map(select).sort((a: FixtureValue, b: FixtureValue) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
       assert.deepEqual(order(restored[table]), order(original[table]), `${table}: preserve content`);
     };
-    compare('contacts', ['first_name', 'last_name', 'email', 'email2', 'phone', 'notes', 'is_favorite']);
+    compare('contacts', ['first_name', 'last_name', 'notes', 'is_favorite']);
+    compare('contact_values', ['kind', 'position', 'label', 'value', 'value_key']);
     const plainSettings = (rows: FixtureValue[]) => rows.filter(row => row.setting_key !== 'default_mail_account_id')
       .map(row => ({ setting_key: row.setting_key, setting_value: row.setting_value })).sort((a, b) => a.setting_key.localeCompare(b.setting_key));
     assert.deepEqual(plainSettings(restored.user_settings), plainSettings(original.user_settings), 'user_settings: preserve content');
@@ -628,6 +639,15 @@ test('production export and restore jobs round-trip every section through encryp
         }
         return value;
       }
+      // The archive's fixed 3+3 contact fields are values now (upgrade 22):
+      // compare them as the first three emails and phones by position.
+      for (const contact of restored.contacts) {
+        for (const kind of ['email', 'phone']) {
+          const values = restored.contact_values.filter((value: FixtureValue) => value.contact_id === contact.id && value.kind === kind)
+            .sort((a: FixtureValue, b: FixtureValue) => a.position - b.position).map((value: FixtureValue) => value.value);
+          [contact[kind], contact[`${kind}2`], contact[`${kind}3`]] = [values[0], values[1], values[2]];
+        }
+      }
       for (const [table, oldRows] of Object.entries(expected.data)) {
         if (!Array.isArray(oldRows) || !oldRows.length) continue;
         const fields = Object.keys(oldRows[0]).filter(field => !ignored.has(field));
@@ -724,7 +744,7 @@ test('production export and restore jobs round-trip every section through encryp
     const duplicateSource = await newUser('duplicate-source');
     for (const label of ['first', 'second']) {
       const eventId = uuid();
-      await insert('contacts', { id: uuid(), user_id: duplicateSource, first_name: 'Shared', last_name: 'Identity', email: 'shared@example.test', notes: label });
+      await insertContact({ user_id: duplicateSource, first_name: 'Shared', last_name: 'Identity', notes: label }, [['email', 'shared@example.test']]);
       await insert('calendar_events', { id: eventId, user_id: duplicateSource, title: 'Equal shape', description: label,
         start_time: '2026-09-19 10:00:00', end_time: '2026-09-19 11:00:00' });
       await insert('calendar_event_subtasks', { id: uuid(), event_id: eventId, user_id: duplicateSource, title: 'Same child', position: 0, is_done: label === 'first' });
