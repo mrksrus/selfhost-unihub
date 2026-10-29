@@ -123,7 +123,7 @@ test('deleting a user removes their rows and files under every root, nothing of 
       rows: [await count('mail_accounts', who.user), await count('emails', who.user), await count('email_attachments', who.user), await count('recordings', who.user), await count('data_export_jobs', who.user)],
       files: present(who.files).length,
     });
-    const intact = { user: true, rows: [1, 2, 2, 1, 1], files: 8 };
+    const intact = { user: true, rows: [1, 2, 2, 1, 1], files: 9 };
     assert.deepEqual(await everythingOf(a), intact);
     assert.deepEqual(await everythingOf(b), intact);
 
