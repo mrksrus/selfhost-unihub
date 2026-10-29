@@ -62,7 +62,8 @@ object AppUpdate {
 
     fun downloading(context: Context, id: Long) {
         prefs(context).edit().putLong(KEY_DOWNLOADING, id).remove(KEY_READY).apply()
-        worker.execute { updateDir(context).deleteRecursively() }
+        val app = context.applicationContext
+        worker.execute { updateDir(app).deleteRecursively() }
     }
 
     private val worker = Executors.newSingleThreadExecutor()
