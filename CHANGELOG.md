@@ -6,6 +6,17 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.25.1 (unreleased)
+
+### Fixed
+
+- **Each mail account's notification settings are one visible group.** In
+  Settings → Notifications the account's address looked like just another
+  row, so it was hard to see where one account's settings ended and the next
+  began, worst in the OLED look. The address now stands at the left with
+  more space above it, and the account's rows are indented beneath it, so the
+  only lines across the whole list are the account boundaries, in every look.
+
 ## 0.25.0
 
 Mail on the phone: the composer and attachments. One automatic database
