@@ -73,7 +73,8 @@ test('[23-15] "Send again" after a may-have-been-sent answer sends the open mess
   expect((await deliveredWithSubject(outside.sam, subject)).length).toBe(1);
 });
 
-const greenmailPid = () => readFileSync(`${stack.state}/run/greenmail.pid`, 'utf8').trim();
+// The stack's pid files hold "pid start-time".
+const greenmailPid = () => readFileSync(`${stack.state}/run/greenmail.pid`, 'utf8').trim().split(/\s+/)[0];
 const resumeMail = () => { try { execFileSync('kill', ['-CONT', greenmailPid()]); } catch { /* not paused */ } };
 afterEach(async () => { resumeMail(); });
 
