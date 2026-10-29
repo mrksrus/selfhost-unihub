@@ -117,6 +117,7 @@ app_env() {
   export MAIL_ATTACHMENT_UPLOAD_ROOT=$STATE/uploads/attachments MAIL_RAW_STORAGE_ROOT=$STATE/uploads/mail-raw
   export RECORDINGS_ROOT=$STATE/uploads/recordings BACKUP_ARCHIVES_ROOT=$STATE/uploads/backups
   export UPLOAD_SPOOL_ROOT=$STATE/uploads/spool
+  export CONTACT_IMPORTS_ROOT=$STATE/uploads/contacts/imports
 }
 
 nginx_config() {
