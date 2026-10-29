@@ -78,7 +78,8 @@ test('an account settings backup restores accounts as fresh sign-ins without con
 
   const sourceUser = await newUser('accounts-source');
   await insert('user_settings', { user_id: sourceUser, setting_key: 'calendar_preferences', setting_value: JSON.stringify({ firstDay: 1 }) });
-  await insert('contacts', { id: uuid(), user_id: sourceUser, first_name: 'Not exported' });
+  const contactId = uuid();
+  await insert('contacts', { id: contactId, user_id: sourceUser, uid: `urn:uuid:${contactId}`, uid_hash: require('node:crypto').createHash('sha256').update(`urn:uuid:${contactId}`).digest('hex'), first_name: 'Not exported' });
   const mailAccountId = uuid();
   // Paused by an earlier restore: account settings still sign in again.
   await insert('mail_accounts', { id: mailAccountId, user_id: sourceUser, email_address: 'synced@example.test', provider: 'custom',
