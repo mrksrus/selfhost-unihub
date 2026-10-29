@@ -93,9 +93,9 @@ test('contacts API: vCard model, input contract, 3+3 compatibility, versions, ow
   assert.equal(afterApp.addresses.length, 1);
   assert.equal(afterApp.version, 2);
   assert.deepEqual([afterApp.email, afterApp.email2, afterApp.email3, afterApp.phone, afterApp.phone2, afterApp.phone3],
-    ['bea@example.test', 'bea.new@example.test', 'b3@example.test', '+43 1 111', '+43 1 333', '+43 1 444'], 'the projection the app sees next');
-  // Sending the same body again changes nothing but the version.
-  const again = (await call(owner, 'PUT', `/api/contacts/${bea.id}`, { ...appBody, phone3: '+43 1 444' })).contact;
+    ['bea@example.test', 'bea.new@example.test', 'b3@example.test', '+43 1 111', '+43 1 333', null], 'the fourth number stays out of the app\'s three places');
+  // Sending the same body again (a retry after a lost answer) changes nothing but the version.
+  const again = (await call(owner, 'PUT', `/api/contacts/${bea.id}`, appBody)).contact;
   assert.deepEqual({ ...again, version: 0, updated_at: '' }, { ...afterApp, version: 0, updated_at: '' });
   // A renamed contact through the app sets the name parts it knows.
   const renamed = (await call(owner, 'PUT', `/api/contacts/${ann.id}`, { first_name: 'Anna', last_name: 'Example', email: 'ann@example.test', email2: 'ann.work@example.test',
@@ -155,7 +155,6 @@ test('contacts API: vCard model, input contract, 3+3 compatibility, versions, ow
   assert.deepEqual(await list(stranger), []);
   assert.deepEqual(await list(stranger, '?q=Ann'), []);
   assert.equal((await call(stranger, 'GET', '/api/search?q=Anna')).results.length, 0);
-  await call(stranger, 'GET', '/api/contacts/export', undefined, 404);
   assert.deepEqual((await call(owner, 'GET', `/api/contacts/${ann.id}`)).contact, ownerBefore);
 
   // ── Search: names, accents, digits, categories, literal wildcards ──
@@ -211,31 +210,11 @@ test('contacts API: vCard model, input contract, 3+3 compatibility, versions, ow
   assert.deepEqual(withMerged.merged.map((item: FixtureValue) => [item.id, item.into]), [['gone-1', ann.id], ['gone-2', ann.id]]);
   assert.equal((await call(owner, 'GET', '/api/contacts')).merged, undefined);
 
-  // ── The 0.25 import, export and merge keep every value ──
-  const card = (uid: string, emails: string[], extra = '') => ['BEGIN:VCARD', 'VERSION:2.1', 'N;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:M=C3=BCller;J=C3=BCrgen;;;',
-    ...emails.map(email => `EMAIL;INTERNET:${email}`), `UID:${uid}`, extra, 'END:VCARD'].filter(Boolean).join('\r\n');
-  const vcf = card('one', ['i1@example.test', 'i2@example.test', 'i3@example.test', 'i4@example.test', 'i5@example.test'],
-    `ORG:${'O'.repeat(300)}\r\nNOTE:${'n'.repeat(70000)}`);
-  const imported = await call(owner, 'POST', '/api/contacts/import', { vcf_data: vcf });
-  assert.equal(imported.imported, 1);
-  const importedContact = (await list(owner, '?q=i5%40example.test'))[0];
-  assert.equal(importedContact.emails.length, 5);
-  assert.deepEqual([importedContact.name.given, importedContact.name.family, Array.from(importedContact.organization.name).length], ['Jürgen', 'Müller', 255]);
-  assert.ok(Buffer.byteLength(importedContact.notes) <= 65535);
-  assert.equal((await call(owner, 'POST', '/api/contacts/import', { vcf_data: vcf })).skipped, 1, 'the same card again is skipped');
-  // The export route streams vCard text; its content comes from the same service.
-  const exported = await (require('../dist/src/services/contacts-legacy') as typeof import('../src/services/contacts-legacy')).exportVCards(users.owner);
-  for (const email of ['i1', 'i2', 'i3', 'i4', 'i5']) assert.match(exported, new RegExp(`EMAIL;TYPE=INTERNET:${email}@example\\.test`));
-  assert.match(exported, /^UID:one$/m, 'an imported card keeps its UID');
-  const preview = await call(owner, 'POST', '/api/contacts/merge-duplicates/preview', {});
-  const duplicateGroups = preview.groups;
-  await call(owner, 'POST', '/api/contacts', { first_name: 'Jürgen', last_name: 'Müller', email: 'i5@example.test', email2: 'i6@example.test', email3: 'i7@example.test' });
-  assert.equal((await call(owner, 'POST', '/api/contacts/merge-duplicates/preview', {})).groups, duplicateGroups + 1);
-  const merged = await call(owner, 'POST', '/api/contacts/merge-duplicates', {});
-  assert.ok(merged.removed >= 1);
-  const survivors = await list(owner, '?q=i5%40example.test');
-  assert.equal(survivors.length, 1);
-  assert.deepEqual(survivors[0].emails.map((email: FixtureValue) => email.value).sort(), ['i1', 'i2', 'i3', 'i4', 'i5', 'i6', 'i7'].map(name => `${name}@example.test`));
+  // ── The 0.25 automatic merge, import and export are gone (they lost data) ──
+  for (const [method, path] of [['POST', '/api/contacts/merge-duplicates'], ['POST', '/api/contacts/merge-duplicates/preview'], ['POST', '/api/contacts/import']]) {
+    assert.equal((await owner.request(method, path, { vcf_data: 'BEGIN:VCARD\r\nEND:VCARD' })).status, 404, `${method} ${path}`);
+  }
+  assert.equal((await call(owner, 'GET', '/api/contacts/export', undefined, 404)).code, 'CONTACT_NOT_FOUND', 'export is no route of its own any more');
 
   // ── Paging past 2,000 contacts with equal names: nothing lost or repeated ──
   const pager = await signIn('pager');
@@ -258,4 +237,104 @@ test('contacts API: vCard model, input contract, 3+3 compatibility, versions, ow
   await call(owner, 'GET', `/api/contacts/${ann.id}`, undefined, 404);
   const [[after]] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM contact_values WHERE contact_id = ?', [ann.id]);
   assert.equal(Number(after.n), 0);
+});
+
+// The bridge for the 0.24.3 to 0.25.1 apps (P-21), with the exact bodies they
+// send: ContactsSync.save() over ContactCard.forServer(), which cuts names to
+// 100 UTF-16 units and company and title to 255, drops a number over 50, and
+// leaves out every empty field. Their writes must change only what the person
+// changed on the phone, and the same write sent twice must not remove more.
+test('3+3 bridge: old-app limits, partial bodies, If-Match and replays never lose values', {
+  skip: !process.env.MYSQL_TEST_HOST, timeout: 300000,
+}, async t => {
+  const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
+  t.after(captureLog(() => {}));
+  const pool = await withTestDatabase(t);
+  const api = await startTestApi(t);
+  const password = 'synthetic-bridge-password';
+  await pool.execute('INSERT INTO users (id, email, password_hash, full_name) VALUES (?, ?, ?, ?)',
+    [crypto.randomUUID(), 'bridge@example.test', await (require('bcryptjs') as typeof import('bcryptjs')).hash(password, 4), 'Bridge']);
+  const owner = api.client();
+  assert.equal((await owner.request('POST', '/api/auth/signin', { email: 'bridge@example.test', password })).status, 200);
+  async function call(method: string, path: string, body?: unknown, status = 200, headers: Record<string, string> = {}): Promise<FixtureValue> {
+    const reply = await owner.request(method, path, body, headers);
+    assert.equal(reply.status, status, `${method} ${path}: ${JSON.stringify(reply.body).slice(0, 400)}`);
+    return reply.body;
+  }
+  const get = async (id: string) => (await call('GET', `/api/contacts/${id}`)).contact;
+  const listed = async (id: string) => ((await call('GET', '/api/contacts')).contacts as FixtureValue[]).find(contact => contact.id === id);
+  // ContactCard.cut(): UTF-16 units, never half a surrogate pair, trimmed.
+  const cut = (value: string, max: number) => {
+    const text = value.trim();
+    if (text.length <= max) return text;
+    return text.slice(0, /[\uD800-\uDBFF]/.test(text[max - 1]) ? max - 1 : max).trim();
+  };
+  // What a 0.25 app PUTs for the listed contact when nothing changed on the phone.
+  function appBody(contact: FixtureValue, phoneEdit: (phones: string[]) => string[] = phones => phones) {
+    const text = (value: unknown) => typeof value === 'string' ? value.trim() : '';
+    const phones = phoneEdit([contact.phone, contact.phone2, contact.phone3].map(text).filter(Boolean).filter(value => value.length <= 50));
+    const emails = [contact.email, contact.email2, contact.email3].map(text).filter(Boolean).filter(value => value.length <= 255);
+    const body: Record<string, string> = { first_name: cut(text(contact.first_name), 100) };
+    const optional: [string, string][] = [['last_name', cut(text(contact.last_name), 100)], ['company', cut(text(contact.company), 255)], ['job_title', cut(text(contact.job_title), 255)],
+      ...phones.map((value, index): [string, string] => [['phone', 'phone2', 'phone3'][index], value]), ...emails.map((value, index): [string, string] => [['email', 'email2', 'email3'][index], value])];
+    for (const [key, value] of optional) if (value) body[key] = value;
+    if (contact.notes != null) body.notes = contact.notes;
+    return body;
+  }
+  const values = (contact: FixtureValue, kind: 'emails' | 'phones') => contact[kind].map((item: FixtureValue) => item.value);
+
+  // ── An old app round-trips a contact it cannot hold whole ──
+  const longName = 'Maximiliane-' + 'x'.repeat(108);
+  const longPhone = '+43 ' + '1'.repeat(56);
+  const wideCompany = '😀'.repeat(200);
+  const created = (await call('POST', '/api/contacts', { name: { given: longName, family: 'Example' }, organization: { name: wideCompany }, job_title: 'Engineer',
+    phones: [{ value: '+43 1 100', label: 'mobile' }, { value: longPhone, label: 'work' }, { value: '+43 1 300', label: 'home' }], emails: ['long@example.test'] })).contact;
+  assert.deepEqual([longName.length, longPhone.length, wideCompany.length], [120, 60, 400], 'UTF-16 lengths, as the app counts');
+  const seen = await listed(created.id);
+  assert.deepEqual([seen.first_name, seen.phone, seen.phone2, seen.phone3], [longName, '+43 1 100', '+43 1 300', null], 'a number the app would drop is not shown to it');
+  const roundTrip = (await call('PUT', `/api/contacts/${created.id}`, appBody(seen))).contact;
+  assert.deepEqual([roundTrip.name.given, roundTrip.name.family, roundTrip.organization.name, roundTrip.job_title, roundTrip.display_name],
+    [longName, 'Example', wideCompany, 'Engineer', `${longName} Example`], 'cut names come back as unchanged');
+  assert.deepEqual(values(roundTrip, 'phones').sort(), ['+43 1 100', '+43 1 300', longPhone].sort(), 'the 60-character number survives');
+  assert.deepEqual(roundTrip.phones.find((phone: FixtureValue) => phone.value === longPhone).label, 'work');
+  const replayed = (await call('PUT', `/api/contacts/${created.id}`, appBody(seen))).contact;
+  assert.deepEqual({ ...replayed, version: 0, updated_at: '' }, { ...roundTrip, version: 0, updated_at: '' }, 'the same write again changes nothing');
+  // A real change on the phone still arrives, and the hidden number stays.
+  const edited = (await call('PUT', `/api/contacts/${created.id}`, appBody(await listed(created.id), phones => phones.map(phone => phone === '+43 1 300' ? '+43 1 333' : phone)))).contact;
+  assert.deepEqual(values(edited, 'phones').sort(), ['+43 1 100', '+43 1 333', longPhone].sort());
+  assert.equal(edited.name.given, longName);
+  // A name really renamed on the phone is taken as sent.
+  const renamed = (await call('PUT', `/api/contacts/${created.id}`, { ...appBody(await listed(created.id)), first_name: 'Maxi' })).contact;
+  assert.deepEqual([renamed.name.given, renamed.organization.name], ['Maxi', wideCompany]);
+
+  // ── The review probe: a body of shared fields only, with a stale If-Match ──
+  const probe = (await call('POST', '/api/contacts', { first_name: 'Probe', last_name: 'Person', email: 'p1@example.test', email2: 'p2@example.test', email3: 'p3@example.test', phone: '+1 555 0100' })).contact;
+  for (let index = 0; index < 6; index++) await call('PUT', `/api/contacts/${probe.id}/favorite`, { is_favorite: index % 2 === 0 });
+  assert.equal((await get(probe.id)).version, 7);
+  const stale = await call('PUT', `/api/contacts/${probe.id}`, { notes: 'changed' }, 409, { 'If-Match': '"1"' });
+  assert.deepEqual([stale.code, stale.contact.version], ['VERSION_CONFLICT', 7]);
+  assert.equal((await call('PUT', `/api/contacts/${probe.id}`, { ...appBody(await listed(probe.id)), notes: 'changed' }, 409, { 'If-Match': '"6"' })).code, 'VERSION_CONFLICT', 'a stale whole flat body too');
+  const unchangedProbe = await get(probe.id);
+  assert.deepEqual([unchangedProbe.version, unchangedProbe.notes], [7, null], 'a refused write changes nothing');
+  const notesOnly = (await call('PUT', `/api/contacts/${probe.id}`, { notes: 'changed' }, 200, { 'If-Match': '"7"' })).contact;
+  assert.equal(notesOnly.version, 8);
+  assert.deepEqual([notesOnly.name.given, notesOnly.name.family, values(notesOnly, 'emails'), values(notesOnly, 'phones'), notesOnly.notes],
+    ['Probe', 'Person', ['p1@example.test', 'p2@example.test', 'p3@example.test'], ['+1 555 0100'], 'changed'], 'a partial body changes only what it carries');
+  const titleOnly = (await call('PUT', `/api/contacts/${probe.id}`, { job_title: 'Boss', is_favorite: true })).contact;
+  assert.deepEqual([titleOnly.job_title, titleOnly.is_favorite, titleOnly.notes, titleOnly.name.given, values(titleOnly, 'emails').length], ['Boss', true, 'changed', 'Probe', 3]);
+
+  // ── The review probe: replaying a write that keeps one of five emails ──
+  const five = (await call('POST', '/api/contacts', { name: { given: 'Five' }, emails: ['a@example.test', 'b@example.test', 'c@example.test', { value: 'd@example.test', label: 'work' }, 'e@example.test'] })).contact;
+  const keepOne = { first_name: 'Five', email: 'a@example.test' };
+  const first = (await call('PUT', `/api/contacts/${five.id}`, keepOne)).contact;
+  assert.deepEqual(values(first, 'emails'), ['a@example.test', 'd@example.test', 'e@example.test'], 'only the values the app saw can go');
+  assert.deepEqual([first.email, first.email2, first.email3], ['a@example.test', null, null], 'the others are not moved into its places');
+  const second = (await call('PUT', `/api/contacts/${five.id}`, keepOne)).contact;
+  assert.deepEqual({ ...second, version: 0, updated_at: '' }, { ...first, version: 0, updated_at: '' }, 'the same PUT twice gives the same contact');
+  assert.equal(second.emails[1].label, 'work');
+  // The page (a full write) shows every value again in its order; the app then sees the first three.
+  const reordered = (await call('PUT', `/api/contacts/${five.id}`, { name: { given: 'Five' }, emails: second.emails, version: second.version })).contact;
+  assert.deepEqual([reordered.email, reordered.email2, reordered.email3], ['a@example.test', 'd@example.test', 'e@example.test']);
+  const [[stored]] = await pool.query<RowDataPacket[]>("SELECT COUNT(*) AS n FROM contact_values WHERE contact_id = ? AND kind = 'email'", [five.id]);
+  assert.equal(Number(stored.n), 3);
 });
