@@ -361,9 +361,10 @@ the default send-from account chosen in Settings, else the first connected
 account. A reply or forward always comes from the account that received the
 message. Choosing another account in the composer never changes what the Mail
 page shows. Picking a contact from the suggestion list inserts it and closes the
-list until more is typed, so one recipient needs no extra dismissal. Cc and Bcc
-sit behind small buttons at the right end of To; a message needs at least one
-recipient in any of the three.
+list until more is typed, so one recipient needs no extra dismissal. In a wide
+window Cc and Bcc sit behind small buttons at the right end of To; on phones
+(from 0.25.0) they fold with From into one line, "Cc/Bcc, From: <account>"
+(see P-26). A message needs at least one recipient in any of the three.
 
 Evidence: `src/hooks/use-mail-compose.ts` (`fromAccountId`,
 `replaceActiveRecipient`), `src/components/mail/MailCompose.tsx`,
@@ -401,7 +402,8 @@ Accepted, in source since 0.24.0 (`MailCompose.tsx`: `SendButton`,
 `FEATURES_IN_TOOLBAR`; `src/test/compose-essentials.test.tsx`). Decided
 2026-10-20 (for 0.24.0 and the 0.25.0 phone composer); layout chosen 2026-10-23;
 phone composer made full screen and compact 2026-10-24 (0.24.1); its
-attachments moved into the toolbar row 2026-10-24 (0.24.2).
+attachments moved into the toolbar row 2026-10-24 (0.24.2); recipient chips
+and the folded Cc/Bcc, From line in 0.25.0 (D29, under P-29).
 
 Optional compose features (templates, scheduled send, the compose format
 switch and later ones) are off until the person switches them on in Settings;
@@ -431,9 +433,9 @@ line of message above the Android keyboard ("The entire UI needs to be pushed
 to the very top of the screen and compressed a bit… `To: *to field*`"): on
 phones the composer fills the screen from the very top, its header is compact,
 and From, To, Cc, Bcc and Subject each take one row with the label beside the
-field. Typing in the message scrolls the field rows away so the message keeps
-the space above the keyboard. The wide dialog and the desktop inline reply are
-unchanged.
+field (folded further in 0.25.0, below). Typing in the message scrolls the
+field rows away so the message keeps the space above the keyboard. The wide
+dialog and the desktop inline reply are unchanged.
 
 Phone attachments, decided 2026-10-24 by the maintainer after 0.24.1 left the
 Attachments section below the screen: on phones (the composer and the peek's
@@ -441,6 +443,19 @@ reply) the attach button follows Image URL in the message's toolbar, and each
 file is a small square in that row showing its type (".pdf", ".jpg") and a
 mark for whether the draft holds it (saving, saved, failed). There is no
 attachments section below the message on phones; wide windows keep theirs.
+
+Phone composer modelled on Apple Mail, 0.25.0 (decision D29, designed under
+P-29): To holds the recipients as chips (a typed address becomes a chip on a
+comma, on Enter or when the field is left; a tap shows the full address and
+removes it; Backspace in the empty field edits the last one). Cc, Bcc and
+From fold into one line, "Cc/Bcc, From: <account>", that opens into three
+rows on tap, and is open from the start when a draft or reply already has a
+Cc or Bcc. Subject is one row. The formatting toolbar is one row that scrolls
+sideways, pinned above the action buttons so it sits above the keyboard. The
+chips are a view of the one comma-separated recipient string that drafts and
+sending use. Wide windows keep the previous composer. Evidence:
+`src/components/mail/MailCompose.tsx`, `src/lib/recipient-chips.ts`,
+pinned pictures `composer-phone-dark` and `composer-phone-light`.
 
 ### Product reliability
 
