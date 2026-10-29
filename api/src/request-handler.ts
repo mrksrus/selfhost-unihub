@@ -49,6 +49,12 @@ function buildContentDisposition(dispositionType: unknown, filename: unknown) {
   return `${safeDispositionType}; filename="${safeFilename}"; filename*=UTF-8''${encodedFilename}`;
 }
 
+// If-None-Match compares weakly (RFC 9110): W/"x" matches "x", and * matches any.
+function etagMatches(header: string | undefined, etag: string) {
+  if (!header) return false;
+  return header.split(',').some(tag => { const value = tag.trim(); return value === '*' || value.replace(/^W\//, '') === etag; });
+}
+
 function requestUrl(req: RouteRequest) {
   const host = req.headers.host;
   try {
@@ -250,10 +256,19 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
       const dispositionType = result.__disposition === 'inline' ? 'inline' : 'attachment';
       const contentDisposition = buildContentDisposition(dispositionType, filename);
 
+      const headers: OutgoingHttpHeaders = { 'Cache-Control': 'no-cache', ...result.__headers };
+      if (result.__etag) {
+        headers.ETag = `"${result.__etag}"`;
+        if (etagMatches(req.headers['if-none-match'], headers.ETag)) {
+          res.writeHead(304, headers);
+          res.end();
+          return;
+        }
+      }
       res.writeHead(200, {
         'Content-Type': result.__contentType || 'application/octet-stream',
         'Content-Disposition': contentDisposition,
-        'Cache-Control': 'no-cache',
+        ...headers,
       });
       res.end(result.__raw);
       return;

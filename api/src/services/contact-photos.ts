@@ -267,11 +267,13 @@ function classify(error: unknown) {
  * JPEG and thumbnail. Throws a 400 ApiError for anything that is not a
  * readable picture within the limits; never keeps the input.
  */
-async function convertContactPhoto(input: Buffer): Promise<ConvertedPhoto> {
-  if (input.length > MAX_INPUT_BYTES) throw new ApiError(413, 'PHOTO_TOO_LARGE', `This picture is larger than ${MAX_INPUT_BYTES / 1024 / 1024} MB.`);
-  const kind = sniff(input);
-  if (!kind) throw unreadable();
+async function convertContactPhoto(source: Buffer | { path: string }): Promise<ConvertedPhoto> {
+  // A file is read only once its turn comes, so waiting uploads hold no memory.
   return withConversionSlot(async () => {
+    const input = Buffer.isBuffer(source) ? source : await readUpload(source.path);
+    if (input.length > MAX_INPUT_BYTES) throw tooLarge();
+    const kind = sniff(input);
+    if (!kind) throw unreadable();
     if (kind === 'sharp') return encodeSquare(input);
     let decoded: Buffer;
     try {
@@ -286,9 +288,11 @@ async function convertContactPhoto(input: Buffer): Promise<ConvertedPhoto> {
   });
 }
 
+const tooLarge = () => new ApiError(413, 'PHOTO_TOO_LARGE', `This picture is larger than ${MAX_INPUT_BYTES / 1024 / 1024} MB.`);
+
 async function readUpload(filePath: string) {
   const stat = await fs.promises.stat(filePath);
-  if (stat.size > MAX_INPUT_BYTES) throw new ApiError(413, 'PHOTO_TOO_LARGE', `This picture is larger than ${MAX_INPUT_BYTES / 1024 / 1024} MB.`);
+  if (stat.size > MAX_INPUT_BYTES) throw tooLarge();
   return fs.promises.readFile(filePath);
 }
 
@@ -388,7 +392,7 @@ async function setContactPhoto(userId: string, contactId: string, input: Buffer 
   // Refuse a stranger's or a missing contact before spending a conversion on it.
   const [[owned]] = await db.execute<RowDataPacket[]>('SELECT id FROM contacts WHERE id = ? AND user_id = ?', [contactId, userId]);
   if (!owned) throw notFound('CONTACT_NOT_FOUND', 'Contact not found');
-  const photo = await convertContactPhoto(Buffer.isBuffer(input) ? input : await readUpload(input.path));
+  const photo = await convertContactPhoto(input);
   return withContactPhotoLock(userId, async () => {
     await writePhotoFiles(userId, photo);
     let previous: string[];

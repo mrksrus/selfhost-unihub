@@ -1,4 +1,3 @@
-import type { ServerResponse } from 'node:http';
 import type { RouteRequest } from '../types';
 import type { UploadBody } from '../http/route';
 import type { ContactResponse } from '../contracts/contacts';
@@ -25,35 +24,23 @@ function failed(error: unknown, fallback: string) {
 // browser keeps it (private) but asks every time (no-cache), and the ETag
 // (the file's sha256) turns an unchanged photo into a 304. The URL's v=
 // parameter only makes a new picture a new address for the page.
-async function sendPhoto(req: Request, res: ServerResponse, file: { path: string; etag: string; bytes: number }) {
-  const etag = `"${file.etag}"`;
-  const headers = {
-    ETag: etag,
-    'Cache-Control': 'private, no-cache',
-    'X-Content-Type-Options': 'nosniff',
-    Vary: 'Cookie, Authorization',
-  };
-  const ifNoneMatch = String(req.headers['if-none-match'] || '');
-  if (ifNoneMatch && ifNoneMatch.split(',').some(tag => tag.trim().replace(/^W\//, '') === etag)) {
-    res.writeHead(304, headers);
-    res.end();
-    return;
-  }
-  const bytes = await fs.promises.readFile(file.path);
-  res.writeHead(200, { ...headers, 'Content-Type': 'image/jpeg', 'Content-Length': String(bytes.length), 'Content-Disposition': 'inline; filename="photo.jpg"' });
-  res.end(bytes);
-}
+const PHOTO_HEADERS = { 'Cache-Control': 'private, no-cache', 'X-Content-Type-Options': 'nosniff' };
 
 const readRoute = { auth: 'user' as const, module: 'contacts' };
 const writeRoute = { ...readRoute, restoreSection: 'contacts' };
 
 export = defineRoutes({
-  'GET /api/contacts/:id/photo': { ...readRoute, response: 'stream', handler: async (req: Request, userId: string, _body: unknown, res: ServerResponse) => {
+  'GET /api/contacts/:id/photo': { ...readRoute, handler: async (req: Request, userId: string) => {
     try {
       const size = new URL(req.url, 'http://unihub.invalid').searchParams.get('size') || 'full';
       if (size !== 'full' && size !== 'thumb') return { error: 'size must be full or thumb', status: 400, code: 'INVALID_INPUT' };
-      await sendPhoto(req, res, await contactPhotoFile(userId, req.params.id, size));
-      return undefined;
+      const file = await contactPhotoFile(userId, req.params.id, size);
+      // The boundary answers a matching If-None-Match with 304 instead.
+      return {
+        __raw: await fs.promises.readFile(file.path),
+        __contentType: 'image/jpeg', __disposition: 'inline', __filename: 'photo.jpg',
+        __etag: file.etag, __headers: PHOTO_HEADERS,
+      };
     } catch (error) { return failed(error, 'Failed to load contact photo'); }
   } },
 

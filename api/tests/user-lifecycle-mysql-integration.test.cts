@@ -20,11 +20,13 @@ const ROOTS = {
   raw: path.join(storage, 'mail-raw'),
   recordings: path.join(storage, 'recordings'),
   backups: path.join(storage, 'backups'),
+  photos: path.join(storage, 'contact-photos'),
 };
 process.env.MAIL_ATTACHMENT_UPLOAD_ROOT = ROOTS.attachments;
 process.env.MAIL_RAW_STORAGE_ROOT = ROOTS.raw;
 process.env.RECORDINGS_ROOT = ROOTS.recordings;
 process.env.BACKUP_ARCHIVES_ROOT = ROOTS.backups;
+process.env.CONTACT_PHOTOS_ROOT = ROOTS.photos;
 
 const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
 const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
@@ -106,7 +108,8 @@ test('deleting a user removes their rows and files under every root, nothing of 
       await connection.execute<ResultSetHeader>(`INSERT INTO data_export_jobs (id, user_id, scope, status, phase, progress, file_path)
         VALUES (?, ?, 'full', 'completed', 'completed', 100, ?)`, [crypto.randomUUID(), user, archive]);
       const stray = write(path.join(ROOTS.attachments, user, 'unreferenced.bin'));
-      files.push(recording, converted, archive, stray);
+      const photo = write(path.join(ROOTS.photos, user, `${'a'.repeat(64)}.jpg`));
+      files.push(recording, converted, archive, stray, photo);
       return { user, mail, files };
     };
     const a = await seed('a');

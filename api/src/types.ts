@@ -98,6 +98,9 @@ export interface RouteResponse extends Record<string, unknown> {
   // Stream responses: false refuses byte ranges (a single-use download); extra headers override the defaults.
   __ranges?: boolean;
   __headers?: Record<string, string>;
+  // Raw responses: a strong validator (sent quoted as ETag); a matching
+  // If-None-Match is answered with 304 and no body.
+  __etag?: string;
 }
 
 export interface BackupRow extends Record<string, unknown> { id?: string; email_address?: string }
