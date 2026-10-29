@@ -13,7 +13,8 @@
 # UNIHUB_E2E_EMULATOR_LIBS (a folder with libX11-xcb.so.1 for hosts without it),
 # JAVA_HOME, UNIHUB_E2E_INSTANCE, UNIHUB_E2E_EMULATOR_READONLY=1 (boot the AVD read-only, so
 # another emulator may run the same AVD at the same time; nothing it installs is kept),
-# UNIHUB_E2E_EMULATOR_CORES (2). The app builds without a Gradle daemon, on two workers.
+# UNIHUB_E2E_EMULATOR_CORES (2), ANDROID_TMP (the emulator's temporary files; $TMPDIR/android-emulator).
+# The app builds without a Gradle daemon, on two workers.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -68,6 +69,11 @@ up() {
   if ! booted; then
     local e=$SDK/emulator
     export LD_LIBRARY_PATH="$e/lib64/vulkan:$e/lib64/gles_swiftshader:$e/lib64${UNIHUB_E2E_EMULATOR_LIBS:+:$UNIHUB_E2E_EMULATOR_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    # The emulator's temporary files (about 1 GB of disk overlays with -read-only)
+    # go to ANDROID_TMP, by default /tmp/android-$USER: keep them beside TMPDIR,
+    # since a small /tmp fills up.
+    export ANDROID_TMP=${ANDROID_TMP:-${TMPDIR:-/tmp}/android-emulator}
+    mkdir -p "$ANDROID_TMP"
     echo "e2e-android: booting $AVD on $SERIAL (several minutes on a slow host)"
     setsid "$e/emulator" -avd "$AVD" -port "$EMU_PORT" ${UNIHUB_E2E_EMULATOR_READONLY:+-read-only} -cores "${UNIHUB_E2E_EMULATOR_CORES:-2}" -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim \
       -no-snapshot -no-metrics -memory 2048 -prop ro.hw_timeout_multiplier=3 >"$LOG" 2>&1 < /dev/null &

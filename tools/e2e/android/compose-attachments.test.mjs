@@ -36,10 +36,20 @@ test('a PDF and a photo picked in Android\'s picker are sent from the phone comp
     await page.getByRole('button', { name: 'Compose' }).filter({ visible: true }).first().click();
     await page.getByRole('dialog').waitFor();
     // The seeded GreenMail account; the dev seed's other accounts have no reachable server.
-    const from = page.getByRole('combobox', { name: 'From' }).filter({ visible: true }).first();
-    if (!(await from.textContent())?.includes('admin@mail.test')) {
-      await from.click();
-      await page.getByRole('option', { name: /admin@mail\.test/ }).first().click();
+    // On a phone the account is on the folded "Cc/Bcc, From" line until it is opened (0.25.0).
+    const line = page.getByRole('button', { name: /^Cc\/Bcc, From:/ }).filter({ visible: true }).first();
+    const folded = await line.count() > 0;
+    if (!folded || !(await line.textContent())?.includes('admin@mail.test')) {
+      if (folded) await line.click();
+      const from = page.getByRole('combobox', { name: 'From' }).filter({ visible: true }).first();
+      if (!(await from.textContent())?.includes('admin@mail.test')) {
+        // A synthetic click does not open the picker in the WebView (a finger does); the keyboard does.
+        await from.focus();
+        await page.keyboard.press('Enter');
+        await page.getByRole('option', { name: /admin@mail\.test/ }).first().click();
+        await page.waitForFunction(() => document.querySelector('[role="combobox"][aria-expanded="false"]'));
+      }
+      assert.match(await from.textContent() ?? '', /admin@mail\.test/);
     }
     await page.locator('input').and(page.getByLabel('To')).filter({ visible: true }).first().fill('sam@example.org');
     await page.locator('input').and(page.getByLabel('Subject')).filter({ visible: true }).first().fill(subject);
