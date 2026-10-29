@@ -16,8 +16,8 @@ function handlerHarness(t: import('node:test').TestContext, { userId = 'u1', rou
   const { legacyTable } = require('./helpers/route-table.cts') as { legacyTable: (handlers: Record<string, FixtureValue>) => FixtureValue };
   const { mergeRouteTables } = require('../dist/src/http/route') as typeof import('../src/http/route');
   // Contacts declare their own specs (routes/contacts*.ts); the test's handler replaces theirs.
-  const declared = { ...require('../dist/src/routes/contacts'), ...require('../dist/src/routes/contacts-transfer') } as Record<string, FixtureValue>;
-  const contacts = Object.fromEntries(['POST /api/contacts', 'PUT /api/contacts/:id', 'GET /api/contacts/export'].filter(() => typeof route === 'function').map(key => [key, { ...declared[key], handler: route }]));
+  const declared = require('../dist/src/routes/contacts') as Record<string, FixtureValue>;
+  const contacts = Object.fromEntries(['POST /api/contacts', 'PUT /api/contacts/:id', 'GET /api/contacts/:id'].filter(() => typeof route === 'function').map(key => [key, { ...declared[key], handler: route }]));
   stub(paths[2], mergeRouteTables({ 'GET /api/version': { auth: 'public', handler: async () => ({ app: 'unihub' }) } }, contacts, legacyTable({ 'GET /api/mail/attachments/:id': route, 'PUT /api/mail/emails/:id': route, 'POST /api/mail/writebacks/:id/retry': route,
     'POST /api/mail/writebacks/:id/accept-server-state': route,
     'POST /api/admin/users/:id/2fa/reset': route,
@@ -104,7 +104,7 @@ test('admin 2FA reset reaches its parameterized route with the body', async (t) 
 test('disabled module reads, attachments and writes are rejected before reaching a handler', async (t) => {
   let calls = 0;
   const run = handlerHarness(t, ({ moduleEnabled: false, route: async () => { calls++; return { ok: true }; } }));
-  for (const [method, path] of [['GET', '/api/mail/attachments/file'], ['PUT', '/api/mail/emails/email'], ['GET', '/api/contacts/export']] as const) {
+  for (const [method, path] of [['GET', '/api/mail/attachments/file'], ['PUT', '/api/mail/emails/email'], ['GET', '/api/contacts/c1']] as const) {
     const result = await run(method, path, method === 'PUT' ? '{}' : '');
     assert.equal(result.status, 403);
     assert.equal(result.body.code, 'MODULE_DISABLED');
