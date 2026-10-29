@@ -770,8 +770,11 @@ if (localServer) {
   for (const item of earlier) pairings.push({ app: current.version, apk: candidateApk, server: item.version, image: `${repository}:${item.version}` });
   for (const item of earlier) {
     const apk = path.join(windowDir, item.version, 'unihub.apk');
-    if (item.shell === 'supported' && fs.existsSync(apk)) pairings.push({ app: item.version, apk, server: current.version, image: candidateImage });
-    else rows.push({ app: item.version, server: current.version, steps: [], error: `not run: ${item.shell === 'supported' ? 'app not collected' : `app ${item.shell}`}` });
+    // Only the window's own record (broken or unavailable, with its reason) excuses an app;
+    // a supported app missing from --window fails the check.
+    if (item.shell !== 'supported') rows.push({ app: item.version, server: current.version, steps: [], error: `not run: app ${item.shell} in android/support-window.json` });
+    else if (fs.existsSync(apk)) pairings.push({ app: item.version, apk, server: current.version, image: candidateImage });
+    else rows.push({ app: item.version, server: current.version, steps: [], error: `supported app not collected: ${apk} is missing` });
   }
   for (const pairing of pairings) {
     const name = `unihub-android-${process.env.GITHUB_RUN_ID || 'local'}-${pairing.app}-${pairing.server}`.replace(/\./g, '-');

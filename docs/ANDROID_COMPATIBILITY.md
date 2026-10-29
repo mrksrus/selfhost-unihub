@@ -72,7 +72,8 @@ recording, hands a mailed file to Android's Open with and Share sheets and
 saves it to Downloads (an app and a server from 0.25.0) and signs out, each
 confirmed on the server ([what it
 proves](RELEASE_CONTRACT.md#what-the-android-server-check-proves)). An app
-recorded as broken or unavailable is listed as not run. On this emulator a
+recorded as broken or unavailable is listed as not run; a supported app that
+was not collected fails the check. On this emulator a
 file picked in the 0.24.x apps reaches the page empty (WebView 133); that
 upload step is recorded as a known failure, shown as such in the table. The Android 10
 emulator is left out: its system WebView (74) cannot run the web app, which
