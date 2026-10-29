@@ -278,5 +278,5 @@ function writeVCards(contacts: readonly ExportContact[], version: WriteVersion) 
   return contacts.map(contact => `${writeVCard(contact, version)}\r\n`).join('');
 }
 
-export { writeVCard, writeVCards, fold, escapeText, labelTypes, storedDate as partialDateText };
+export { writeVCard, writeVCards, stillAgrees, fold, escapeText, labelTypes, storedDate as partialDateText };
 export type { ExportContact, WriteVersion };

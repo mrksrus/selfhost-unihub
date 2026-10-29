@@ -31,9 +31,9 @@ import {
 } from './contacts';
 import { valueKey } from './contact-keys';
 import { readVCards, looksLikeVCard, IMPORT_LIMITS } from './contacts-vcard-read';
-import { mapVCard, fitNotes, ADDRESS_PARTS } from './contacts-vcard-map';
+import { mapVCard, fitNotes, ADDRESS_PARTS, FIELD_SOURCE } from './contacts-vcard-map';
 import { readContactsCsv, looksLikeCsv } from './contacts-csv';
-import { escapeText, partialDateText } from './contacts-vcard-write';
+import { escapeText, partialDateText, stillAgrees } from './contacts-vcard-write';
 
 const EXPIRY_HOURS = 24;
 const CHUNK_CARDS = 200;
@@ -141,8 +141,14 @@ async function loadIndex(executor: SqlExecutor, userId: string): Promise<Contact
 const cardKeys = (draft: ContactDraft) => draft.values.filter(value => value.kind === 'email' || value.kind === 'phone')
   .map(value => ({ key: `${value.kind}:${valueKey(value.kind, value.value)}`, kind: value.kind as 'email' | 'phone', value: value.value }))
   .filter(item => !item.key.endsWith(':'));
-// Names are compatible when either is unknown or both give the same key.
-const compatible = (a: string, b: string) => !a || !b || a === b;
+// Names are compatible when either is unknown or one's words are all in the
+// other ("jurgen muller" and "jurgen karl muller"); keys are sorted word sets.
+function compatible(a: string, b: string) {
+  if (!a || !b || a === b) return true;
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  const words = new Set(long.split(' '));
+  return short.split(' ').every(word => words.has(word));
+}
 
 /** One card against the existing contacts. */
 function matchCard(card: ImportedCard, index: ContactIndex): CardMatch {
@@ -248,13 +254,18 @@ function mergeCard(base: ContactDraft, kept: KeptPropertyDraft[], card: Imported
   }
   if (incoming.notes && !(base.notes || '').includes(incoming.notes.trim())) base.notes = fitNotes(base.notes ? `${base.notes}\n\n${incoming.notes}` : incoming.notes).text;
   if (incoming.is_favorite) base.is_favorite = true;
-  // Rename the card's groups that the contact already uses (item1 → item1-2).
+  // Rename the card's groups that the contact already uses (item1 → item1-2),
+  // unless everything in the card's group is already in the contact's (the same card again).
   const used = new Set([...base.values.map(value => value.vcard_group), ...kept.map(property => property.group)].filter(Boolean).map(group => group!.toLowerCase()));
+  const valueKeyIn = (value: ValueDraft) => `${value.kind}\u0000${valueKey(value.kind, value.value) || value.value.trim().toLowerCase()}\u0000${(value.vcard_group || '').toLowerCase()}`;
+  const present = new Set([...base.values.map(valueKeyIn), ...kept.map(keptKey)]);
+  const sameGroup = (key: string) => incoming.values.filter(value => value.vcard_group?.toLowerCase() === key).every(value => present.has(valueKeyIn(value)))
+    && card.properties.filter(property => property.group?.toLowerCase() === key).every(property => present.has(keptKey(property)));
   const renamed = new Map<string, string>();
   const groupOf = (group: string | null | undefined) => {
     if (!group) return group ?? null;
     const key = group.toLowerCase();
-    if (!used.has(key)) return group;
+    if (!used.has(key) || sameGroup(key)) return group;
     if (!renamed.has(key)) { let n = 2; while (used.has(`${key}-${n}`)) n++; renamed.set(key, `${group}-${n}`); used.add(`${key}-${n}`); }
     return renamed.get(key)!;
   };
@@ -322,6 +333,13 @@ async function existingKept(executor: SqlExecutor, userId: string, contactId: st
     value: row.value, source_version: row.source_version }));
 }
 
+// The kept properties an export of the contact writes: a field's old copy that no longer agrees is not one.
+async function writtenKeptCount(userId: string, contact: ContactRecord) {
+  if (!contact.kept_properties) return 0;
+  const kept = await existingKept(db, userId, contact.id);
+  return kept.filter(property => property.source_version !== FIELD_SOURCE || stillAgrees(property, contact)).length;
+}
+
 /** Matches the cards and builds the groups the person decides on. */
 async function matchCards(userId: string, cards: readonly ImportedCard[]) {
   const index = await loadIndex(db, userId);
@@ -347,7 +365,7 @@ async function matchCards(userId: string, cards: readonly ImportedCard[]) {
       const found = new Set<ContactSingleField>();
       for (const at of target ? members : members.slice(1)) for (const field of mergeCard(base, kept, cards[at])) found.add(field);
       conflicts = [...found];
-      if (target && members.length === 1 && signature(cards[members[0]].draft, cards[members[0]].properties.length) === signature(recordDraft(target), target.kept_properties)) {
+      if (target && members.length === 1 && signature(cards[members[0]].draft, cards[members[0]].properties.length) === signature(recordDraft(target), await writtenKeptCount(userId, target))) {
         match = 'identical';
         confidence = 'high';
       }
