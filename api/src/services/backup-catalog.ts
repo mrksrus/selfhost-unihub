@@ -22,7 +22,7 @@ interface TablePolicy {
 }
 const SECTION_POLICIES: Readonly<Record<string, SectionPolicy>> = Object.freeze({
   settings: { tables: ["user", "user_settings"], fileKinds: [] },
-  contacts: { tables: ["contacts"], fileKinds: [] },
+  contacts: { tables: ["contacts", "contact_values", "contact_properties", "contact_photos", "contact_uid_aliases", "contact_duplicate_dismissals"], fileKinds: [] },
   calendar: { tables: ["calendar_accounts", "calendar_calendars", "calendar_settings", "calendar_events", "calendar_event_subtasks", "calendar_event_attendees", "calendar_event_external_refs"], fileKinds: [] },
   mail: { tables: ["mail_accounts", "mail_account_settings", "mail_templates", "mail_folders", "mail_folder_remote_boxes", "mail_sender_rules", "emails", "email_attachments", "mail_email_scores", "mail_folder_reconciliations", "mail_folder_recovery_items", "mail_folder_rule_overrides", ...Object.keys(ARCHIVE_COLUMNS)], fileKinds: ["email_attachment", "raw_email"] },
   recordings: { tables: ["recordings", "recording_tags", "recording_tag_links", "recording_transcription_jobs"], fileKinds: ["recording"] },
@@ -43,7 +43,21 @@ const since = (id: number, columns: string) => Object.fromEntries(columns.split(
 const BASE_TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Object.freeze({
   user: table('settings', 'id email full_name avatar_url role is_active email_verified timezone created_at updated_at', ["id"], {"email": "destination_identity", "role": "destination_identity", "is_active": "destination_identity", "email_verified": "destination_identity"}),
   user_settings: table('settings', 'user_id setting_key setting_value updated_at', ["user_id", "setting_key"], {}),
-  contacts: table('contacts', 'id user_id first_name last_name email email2 email3 phone phone2 phone3 company job_title notes avatar_url is_favorite created_at updated_at', ["id"], {}),
+  // Upgrade step 22 (0.26.0, F12): the vCard model. Keys and the version are
+  // computed again by the restore, never taken from the archive.
+  contacts: table('contacts', 'id user_id first_name last_name company job_title notes is_favorite created_at updated_at uid uid_hash version display_name middle_name name_prefix name_suffix department birthday anniversary name_key', ["id"],
+    { uid_hash: 'rebuild', version: 'rebuild', name_key: 'rebuild' }, since(22, 'uid uid_hash version display_name middle_name name_prefix name_suffix department birthday anniversary name_key')),
+  contact_values: table('contacts', 'id contact_id user_id kind position is_preferred label custom_label value value_key po_box extended street locality region postal_code country params vcard_group created_at updated_at', ['id'],
+    { value_key: 'rebuild' }, since(22, 'id contact_id user_id kind position is_preferred label custom_label value value_key po_box extended street locality region postal_code country params vcard_group created_at updated_at')),
+  contact_properties: table('contacts', 'id contact_id user_id position vcard_group name params value source_version created_at', ['id'], {},
+    since(22, 'id contact_id user_id position vcard_group name params value source_version created_at')),
+  contact_photos: table('contacts', 'contact_id user_id sha256 width height bytes thumb_sha256 source created_at', ['contact_id'], {},
+    since(22, 'contact_id user_id sha256 width height bytes thumb_sha256 source created_at')),
+  // merge_id names a merge record, which is not archived (see data-inventory.ts).
+  contact_uid_aliases: table('contacts', 'user_id uid_hash uid contact_id merge_id created_at', ['user_id', 'uid_hash'], { uid_hash: 'rebuild', merge_id: 'reset' },
+    since(22, 'user_id uid_hash uid contact_id merge_id created_at')),
+  contact_duplicate_dismissals: table('contacts', 'contact_a contact_b user_id created_at', ['contact_a', 'contact_b'], { contact_a: 'remap', contact_b: 'remap' },
+    since(22, 'contact_a contact_b user_id created_at')),
   calendar_accounts: table('calendar', 'id user_id provider account_email display_name username encrypted_password discovery_url base_url encrypted_access_token encrypted_refresh_token token_expires_at provider_config capabilities is_active sync_status sync_error last_synced_at created_at updated_at', ["id"], {}),
   calendar_calendars: table('calendar', 'id user_id account_id name external_id color is_visible auto_todo_enabled read_only is_primary sync_token created_at updated_at', ["id"], {}),
   calendar_settings: table('calendar', 'calendar_id user_id setting_key setting_value updated_at', ['calendar_id', 'setting_key'], {}, since(20, 'calendar_id user_id setting_key setting_value updated_at')),
@@ -92,6 +106,11 @@ const TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Object.f
 // References describe archive IDs, including logical links without SQL FKs.
 // user_id is always rebound to the authenticated destination, never copied.
 const REFERENCES: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze({
+  contact_values: { contact_id: 'contacts' },
+  contact_properties: { contact_id: 'contacts' },
+  contact_photos: { contact_id: 'contacts' },
+  contact_uid_aliases: { contact_id: 'contacts' },
+  contact_duplicate_dismissals: { contact_a: 'contacts', contact_b: 'contacts' },
   calendar_calendars: { account_id: 'calendar_accounts' },
   calendar_settings: { calendar_id: 'calendar_calendars' },
   // calendar_events.source_email_id is a link across sections (to emails),
@@ -128,10 +147,21 @@ const FILE_POLICIES: Readonly<Record<string, { table: string; column: string }>>
   recording: { table: 'recordings', column: 'storage_path' },
 });
 const BACKGROUND_WRITERS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  settings: [], contacts: [], recordings: [],
+  settings: [], recordings: [],
+  // The bin purge, the photo sweep and the expiry of staged imports (0.26.0);
+  // each skips a user whose contacts restore is running.
+  contacts: ['contacts.purgeBin', 'contacts.sweepPhotos', 'contacts.expireImports'],
   mail: ['mail.runDurableMailJob', 'mail.syncMailAccount', 'mail.runMailServerDeletionPass', 'notifications.deliverPending'],
   calendar: ['calendarSync.runCalendarSyncPass', 'notifications.reconcileReminders', 'notifications.enqueueDueReminders', 'notifications.deliverPending'],
 });
+// Fields older archives carry that the current schema no longer has. A
+// reader converts them (the 3+3 contact fields become contact_values,
+// backup-import.ts); validation accepts them only up to the archive version
+// that still wrote them.
+const RETIRED_ARCHIVE_FIELDS: Readonly<Record<string, { columns: readonly string[]; throughVersion: number }>> = Object.freeze({
+  contacts: Object.freeze({ columns: Object.freeze(['email', 'email2', 'email3', 'phone', 'phone2', 'phone3', 'avatar_url']), throughVersion: 4 }),
+});
+
 // Which routes are read-only while a section is restored is declared on the
 // route specs (routes/*.ts, checked by http/route.ts assertRouteTable).
 function assertRecoveryCatalog({ sections = SECTION_POLICIES, tables = TABLE_POLICIES, references = REFERENCES, files = FILE_POLICIES, backgroundWriters = BACKGROUND_WRITERS } = {}) {
@@ -225,6 +255,7 @@ export {
   RETIRED_SECTIONS,
   RETIRED_TABLES,
   RETIRED_FILE_KINDS,
+  RETIRED_ARCHIVE_FIELDS,
   SECTION_POLICIES,
   TABLE_POLICIES,
   REFERENCES,

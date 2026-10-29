@@ -3,7 +3,7 @@
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
--- Through migration 21.
+-- Through migration 23.
 
 CREATE TABLE `audit_log` (
   `id` char(36) NOT NULL DEFAULT uuid(),
@@ -73,6 +73,28 @@ CREATE TABLE `backup_restore_jobs` (
   KEY `idx_backup_restore_jobs_backup_uuid` (`backup_uuid`),
   KEY `idx_backup_restore_jobs_user_backup` (`user_id`,`backup_uuid`),
   CONSTRAINT `backup_restore_jobs_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `bin_items` (
+  `id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `module` varchar(32) NOT NULL,
+  `item_type` varchar(32) NOT NULL,
+  `item_id` char(36) NOT NULL,
+  `title` varchar(255) NOT NULL DEFAULT '',
+  `reason` varchar(32) NOT NULL,
+  `group_id` char(36) DEFAULT NULL,
+  `payload` longtext NOT NULL,
+  `payload_version` tinyint(3) unsigned NOT NULL DEFAULT 1,
+  `file_refs` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`file_refs`)),
+  `deleted_at` timestamp NULL DEFAULT current_timestamp(),
+  `purge_after` datetime DEFAULT NULL,
+  `restored_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_bin_items_purge` (`user_id`,`purge_after`),
+  KEY `idx_bin_items_item` (`user_id`,`item_type`,`item_id`),
+  KEY `idx_bin_items_group` (`group_id`),
+  CONSTRAINT `bin_items_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `calendar_accounts` (
@@ -259,30 +281,158 @@ CREATE TABLE `calendar_settings` (
   CONSTRAINT `calendar_settings_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE `contacts` (
-  `id` char(36) NOT NULL DEFAULT uuid(),
+CREATE TABLE `contact_duplicate_dismissals` (
+  `contact_a` char(36) NOT NULL,
+  `contact_b` char(36) NOT NULL,
   `user_id` char(36) NOT NULL,
-  `first_name` varchar(100) NOT NULL,
-  `last_name` varchar(100) DEFAULT NULL,
-  `email` varchar(255) DEFAULT NULL,
-  `email2` varchar(255) DEFAULT NULL,
-  `email3` varchar(255) DEFAULT NULL,
-  `phone` varchar(50) DEFAULT NULL,
-  `phone2` varchar(50) DEFAULT NULL,
-  `phone3` varchar(50) DEFAULT NULL,
-  `company` varchar(255) DEFAULT NULL,
-  `job_title` varchar(255) DEFAULT NULL,
-  `notes` text DEFAULT NULL,
-  `avatar_url` text DEFAULT NULL,
-  `is_favorite` tinyint(1) DEFAULT 0,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`contact_a`,`contact_b`),
+  KEY `idx_contact_dismissals_user` (`user_id`),
+  KEY `idx_contact_dismissals_b` (`contact_b`),
+  CONSTRAINT `contact_duplicate_dismissals_ibfk_1` FOREIGN KEY (`contact_a`) REFERENCES `contacts` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `contact_duplicate_dismissals_ibfk_2` FOREIGN KEY (`contact_b`) REFERENCES `contacts` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `contact_duplicate_dismissals_ibfk_3` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `contact_imports` (
+  `id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `status` varchar(16) NOT NULL DEFAULT 'staged',
+  `format` varchar(16) DEFAULT NULL,
+  `file_path` text DEFAULT NULL,
+  `summary` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`summary`)),
+  `result` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`result`)),
+  `progress` tinyint(3) unsigned NOT NULL DEFAULT 0,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `expires_at` datetime NOT NULL,
+  `committed_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_contact_imports_user` (`user_id`),
+  KEY `idx_contact_imports_expires` (`expires_at`),
+  CONSTRAINT `contact_imports_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `contact_merges` (
+  `id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `survivor_id` char(36) NOT NULL,
+  `merged_ids` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`merged_ids`)),
+  `survivor_before` longtext NOT NULL,
+  `survivor_version_after` int(10) unsigned NOT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `purge_after` datetime NOT NULL,
+  `undone_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_contact_merges_user` (`user_id`,`created_at`),
+  KEY `idx_contact_merges_purge` (`purge_after`),
+  CONSTRAINT `contact_merges_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `contact_photos` (
+  `contact_id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `sha256` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `width` smallint(5) unsigned NOT NULL,
+  `height` smallint(5) unsigned NOT NULL,
+  `bytes` int(10) unsigned NOT NULL,
+  `thumb_sha256` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `source` varchar(16) NOT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`contact_id`),
+  KEY `idx_contact_photos_sha` (`user_id`,`sha256`),
+  CONSTRAINT `contact_photos_ibfk_1` FOREIGN KEY (`contact_id`) REFERENCES `contacts` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `contact_photos_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `contact_properties` (
+  `id` char(36) NOT NULL,
+  `contact_id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `position` smallint(5) unsigned NOT NULL DEFAULT 0,
+  `vcard_group` varchar(64) DEFAULT NULL,
+  `name` varchar(64) NOT NULL,
+  `params` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`params`)),
+  `value` mediumtext NOT NULL,
+  `source_version` varchar(8) DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_contact_properties_contact` (`contact_id`,`position`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `contact_properties_ibfk_1` FOREIGN KEY (`contact_id`) REFERENCES `contacts` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `contact_properties_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `contact_uid_aliases` (
+  `user_id` char(36) NOT NULL,
+  `uid_hash` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `uid` varchar(255) NOT NULL,
+  `contact_id` char(36) NOT NULL,
+  `merge_id` char(36) DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`user_id`,`uid_hash`),
+  KEY `idx_contact_uid_aliases_contact` (`contact_id`),
+  CONSTRAINT `contact_uid_aliases_ibfk_1` FOREIGN KEY (`contact_id`) REFERENCES `contacts` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `contact_uid_aliases_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `contact_values` (
+  `id` char(36) NOT NULL,
+  `contact_id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `kind` enum('email','phone','address','url','impp','related','nickname','category') NOT NULL,
+  `position` smallint(5) unsigned NOT NULL DEFAULT 0,
+  `is_preferred` tinyint(1) NOT NULL DEFAULT 0,
+  `label` varchar(32) NOT NULL DEFAULT '',
+  `custom_label` varchar(100) DEFAULT NULL,
+  `value` varchar(2048) NOT NULL,
+  `value_key` varchar(255) NOT NULL DEFAULT '',
+  `po_box` varchar(255) DEFAULT NULL,
+  `extended` varchar(255) DEFAULT NULL,
+  `street` text DEFAULT NULL,
+  `locality` varchar(255) DEFAULT NULL,
+  `region` varchar(255) DEFAULT NULL,
+  `postal_code` varchar(255) DEFAULT NULL,
+  `country` varchar(255) DEFAULT NULL,
+  `params` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`params`)),
+  `vcard_group` varchar(64) DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   PRIMARY KEY (`id`),
+  KEY `idx_contact_values_contact` (`contact_id`,`kind`,`position`),
+  KEY `idx_contact_values_key` (`user_id`,`kind`,`value_key`),
+  CONSTRAINT `contact_values_ibfk_1` FOREIGN KEY (`contact_id`) REFERENCES `contacts` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `contact_values_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `contacts` (
+  `id` char(36) NOT NULL DEFAULT uuid(),
+  `user_id` char(36) NOT NULL,
+  `first_name` varchar(255) NOT NULL DEFAULT '',
+  `last_name` varchar(255) DEFAULT NULL,
+  `company` varchar(255) DEFAULT NULL,
+  `job_title` varchar(255) DEFAULT NULL,
+  `notes` text DEFAULT NULL,
+  `is_favorite` tinyint(1) DEFAULT 0,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `uid` varchar(255) NOT NULL,
+  `uid_hash` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `version` int(10) unsigned NOT NULL DEFAULT 1,
+  `display_name` varchar(255) DEFAULT NULL,
+  `middle_name` varchar(255) DEFAULT NULL,
+  `name_prefix` varchar(255) DEFAULT NULL,
+  `name_suffix` varchar(255) DEFAULT NULL,
+  `department` varchar(255) DEFAULT NULL,
+  `birthday` varchar(32) DEFAULT NULL,
+  `anniversary` varchar(32) DEFAULT NULL,
+  `name_key` varchar(255) NOT NULL DEFAULT '',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_contacts_uid` (`user_id`,`uid_hash`),
   KEY `idx_contacts_user` (`user_id`),
   KEY `idx_contacts_name` (`first_name`,`last_name`),
-  KEY `idx_contacts_email` (`email`),
   KEY `idx_contacts_favorite` (`user_id`,`is_favorite`),
   KEY `idx_contacts_user_fav_name` (`user_id`,`is_favorite`,`first_name`,`last_name`),
+  KEY `idx_contacts_name_key` (`user_id`,`name_key`),
   CONSTRAINT `contacts_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

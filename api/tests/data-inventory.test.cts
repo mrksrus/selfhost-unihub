@@ -15,6 +15,8 @@ function sourceColumns(source: FixtureValue) {
     for (const column of match[2].matchAll(/(?:^|\n|,)\s*`?([a-z][a-z_0-9]*)`?\s+(?:CHAR|VARCHAR|TEXT|LONGTEXT|MEDIUMTEXT|INT|TINYINT|BIGINT|SMALLINT|BOOLEAN|BOOL|DATETIME|TIMESTAMP|DATE|JSON|ENUM|DECIMAL|DOUBLE|FLOAT)\b/gi)) add(match[1], column[1]);
   }
   for (const match of source.matchAll(/ALTER TABLE (\w+) ADD COLUMN (?:IF NOT EXISTS )?(\w+)/g)) add(match[1], match[2]);
+  // Columns a later step drops (step 23: the fixed contact fields).
+  for (const match of source.matchAll(/ALTER TABLE (\w+) DROP COLUMN (\w+)/g)) rows.delete(`${match[1]}.${match[2]}`);
   // Grouped additive migration declarations are independently read from real
   // schema source too, never synthesized from the recovery policy under test.
   for (const match of source.matchAll(/await addColumns\(db, '(\w+)', \[([\s\S]*?)\n {2}\]\);/g)) {
@@ -24,7 +26,7 @@ function sourceColumns(source: FixtureValue) {
 }
 const serviceSource = (name: FixtureValue) => fs.readFileSync(path.join(__dirname, '../src/services', `${name}.ts`), 'utf8');
 function productionColumns() {
-  return sourceColumns(['database-baseline', 'database', 'database-migrations'].map(serviceSource).join('\n'));
+  return sourceColumns(['database-baseline', 'database', 'database-migrations', 'contacts-migration'].map(serviceSource).join('\n'));
 }
 
 test('every runtime schema table and field has an explicit recovery policy', () => {

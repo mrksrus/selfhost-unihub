@@ -85,6 +85,21 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
   file_tickets: Object.freeze({ ...excluded('security_only', 'Download tickets are single-use credentials of a live session; a restore must not bring them back.',
     'id token_hash user_id session_id kind resource_id expires_at created_at'),
   introducedIn: Object.freeze(Object.fromEntries('id token_hash user_id session_id kind resource_id expires_at created_at'.split(' ').map(column => [column, 21]))) }),
+  // The fixed 3+3 fields: copied into contact_values by upgrade step 22 and
+  // dropped by step 23. Archives up to version 4 still carry them
+  // (RETIRED_ARCHIVE_FIELDS); avatar_url was never filled.
+  contacts: Object.freeze({ ...excluded('converted', 'Upgrade 22 copies the fixed email and phone fields into contact_values; upgrade 23 drops them.',
+    'email email2 email3 phone phone2 phone3 avatar_url'), removedIn: 23 }),
+  // Upgrade step 22 (0.26.0).
+  ...Object.fromEntries([
+    ['contact_merges', 'deliberately_excluded', 'Merge records are a 30-day undo on this installation; a restore brings back contacts, not their undo (0.28 decides the bin with D13).',
+      'id user_id survivor_id merged_ids survivor_before survivor_version_after created_at purge_after undone_at'],
+    ['bin_items', 'deliberately_excluded', 'The bin keeps merged-away contacts for 30 days on this installation; 0.28 decides how the bin is backed up (D13).',
+      'id user_id module item_type item_id title reason group_id payload payload_version file_refs deleted_at purge_after restored_at'],
+    ['contact_imports', 'temporary', 'A staged import file expires after 24 hours and belongs to this installation.',
+      'id user_id status format file_path summary result progress created_at expires_at committed_at'],
+  ].map(([name, treatment, reason, columns]) => [name, Object.freeze({ ...excluded(treatment, reason, columns),
+    introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 22])) })])),
 });
 
 // From upgrade step 20 on, a new table states who owns a row, whether it can
@@ -106,6 +121,16 @@ const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.fr
   mail_scheduled_sends: { owner: 'user', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: the draft comes back unscheduled.' },
   // Each ticket's kind names the module that gates it (services/file-tickets.ts).
   file_tickets: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: a ticket is a single-use credential of a live session.' },
+  // Upgrade step 22 (0.26.0): the vCard model of contacts (F12).
+  contact_values: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored with its contact, which it replaces wholesale; ids remapped.' },
+  contact_properties: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored with its contact, which it replaces wholesale; ids remapped.' },
+  contact_photos: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored with its contact and its photo files.' },
+  contact_uid_aliases: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored with the contact it points to.' },
+  contact_duplicate_dismissals: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored when both contacts are; ids remapped.' },
+  contact_merges: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Not archived in 0.26: a restore brings back contacts, not a 30-day undo.' },
+  // Each item's module column names the module that gates it.
+  bin_items: { owner: 'user', shareable: false, dataClass: 'local', module: null, restore: 'Not archived in 0.26; 0.28 decides the bin with D13.' },
+  contact_imports: { owner: 'user', shareable: false, dataClass: 'installation', module: 'contacts', restore: 'Never restored: a staged import expires after 24 hours.' },
 });
 
 function assertTableDeclarations(fields: ReadonlyMap<string, InventoryField>) {

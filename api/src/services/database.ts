@@ -11,6 +11,7 @@ import type { Migration } from './database-migrations';
 import { BASELINE } from './database-baseline';
 import { verifyDatabaseInventory } from './data-inventory';
 import { withTransaction } from './transactions';
+import { addContactModel, copyLegacyContactValues, verifyLegacyContactCopy, dropLegacyContactColumns, verifyLegacyColumnsDropped } from './contacts-migration';
 import { log } from '../log';
 
 type FieldRow = RowDataPacket & { Field: string };
@@ -332,6 +333,32 @@ const MIGRATIONS: readonly Migration[] = [
     up: createFileTickets,
     verify: async (connection: PoolConnection) => {
       await verifyDatabaseInventory(connection, { throughMigration: 21 });
+    },
+  },
+  {
+    // 0.26.0: contacts hold the vCard 4.0 model (F12): any number of
+    // labelled values, the remaining name parts, dates, kept properties,
+    // photos, merges with undo (the first bin items) and staged imports. The
+    // fixed 3+3 email and phone columns are copied into contact_values here
+    // and dropped by step 23 (services/contacts-migration.ts).
+    id: 22,
+    name: 'contacts-vcard-model',
+    up: async (connection: PoolConnection) => {
+      await addContactModel(connection);
+      await copyLegacyContactValues(connection);
+    },
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 22 });
+      await verifyLegacyContactCopy(connection);
+    },
+  },
+  {
+    id: 23,
+    name: 'contacts-drop-legacy-columns',
+    up: dropLegacyContactColumns,
+    verify: async (connection: PoolConnection) => {
+      await verifyLegacyColumnsDropped(connection);
+      await verifyDatabaseInventory(connection, { throughMigration: 23 });
     },
   },
 ];
