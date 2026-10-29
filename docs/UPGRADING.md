@@ -5,6 +5,22 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.25.1 Follow-up fixes
+
+No database upgrade and no configuration change. Going back to 0.25.0 is
+possible.
+
+- **Android app.** Install 0.25.1's app. From this app on, the app opens
+  Android's installer for a downloaded update itself (Android asks once to
+  allow UniHub to install apps). The 0.25.0 app and older cannot do that yet,
+  so this one update is installed by hand: tap the update offer in the app,
+  then open the downloaded `unihub.apk` from the Files app (Downloads). The
+  splash screen follows UniHub's light or dark theme with this app (Android
+  13 and later). The window is 0.25.1, 0.25.0, 0.24.3 and 0.24.2.
+- **The other fixes** (interrupted sends, the start screen, the phone
+  composer, notification settings) come with the server's pages. Reload an
+  open page or reopen the app after updating.
+
 ## 0.25.0 Mail on the phone: composer and attachments
 
 One automatic database upgrade (step 21) adds the table of download links

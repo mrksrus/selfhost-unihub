@@ -6,7 +6,12 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
-## 0.25.1 (unreleased)
+## 0.25.1
+
+Follow-up fixes for 0.25: interrupted sends, the start screen, the phone
+composer, notification settings and app updates in the Android app. No
+database upgrade; install the new Android app once from Files (see
+[Upgrading](docs/UPGRADING.md#0251-follow-up-fixes)).
 
 ### Fixed
 
@@ -36,19 +41,18 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   Enter) or the new line went below the screen, the composer scrolled back to
   the start of the message. It now moves only as far as the line you are
   writing needs.
-
-### Development
-
-- `scripts/local-db.sh` keeps its socket under `TMPDIR` when
-  `XDG_RUNTIME_DIR` is unset, and the database tests write their temporary
-  files to the caller's `TMPDIR` instead of replacing it.
-
 - **Each mail account's notification settings are one visible group.** In
   Settings → Notifications the account's address looked like just another
   row, so it was hard to see where one account's settings ended and the next
   began, worst in the OLED look. The address now stands at the left with
   more space above it, and the account's rows are indented beneath it, so the
   only lines across the whole list are the account boundaries, in every look.
+
+### Development
+
+- `scripts/local-db.sh` keeps its socket under `TMPDIR` when
+  `XDG_RUNTIME_DIR` is unset, and the database tests write their temporary
+  files to the caller's `TMPDIR` instead of replacing it.
 
 ## 0.25.0
 

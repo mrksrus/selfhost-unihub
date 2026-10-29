@@ -1,7 +1,7 @@
 {
   "name": "selfhost-unihub",
   "private": true,
-  "version": "0.25.0",
+  "version": "0.25.1",
   "type": "module",
   "scripts": {
     "dev": "npm run build:workers && vite",
