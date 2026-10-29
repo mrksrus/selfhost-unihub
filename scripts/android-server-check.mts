@@ -209,7 +209,10 @@ function webViewMajor() {
 // ---------------------------------------------------------------- server API
 
 class Session {
-  cookie = '';
+  // Kept per name, as a browser does: a response that sets one cookie (GET
+  // /api/auth/me sets only the CSRF cookie) leaves the session cookie alone.
+  cookies = new Map<string, string>();
+  get cookie() { return [...this.cookies].map(([name, value]) => `${name}=${value}`).join('; '); }
   csrf = '';
   base: string;
   constructor(base: string) { this.base = base; }
@@ -217,8 +220,11 @@ class Session {
     const response = await fetch(this.base + url, { method, signal: AbortSignal.timeout(60_000), headers: {
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(this.cookie ? { Cookie: this.cookie } : {}),
       ...(this.csrf && method !== 'GET' ? { 'X-CSRF-Token': this.csrf } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
-    const cookies = response.headers.getSetCookie().map(cookie => cookie.split(';')[0]).filter(pair => !pair.endsWith('='));
-    if (cookies.length) this.cookie = cookies.join('; ');
+    for (const pair of response.headers.getSetCookie().map(cookie => cookie.split(';')[0])) {
+      const index = pair.indexOf('=');
+      const [name, value] = [pair.slice(0, index).trim(), pair.slice(index + 1)];
+      if (value) this.cookies.set(name, value); else this.cookies.delete(name);
+    }
     if (!expected.includes(response.status)) throw new Error(`${method} ${url}: ${response.status} ${(await response.text()).slice(0, 200)}`);
     return response;
   }
@@ -616,7 +622,9 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
         shell(`am force-stop ${PACKAGE}`);
         shell(`am start -n ${PACKAGE}/.MainActivity`);
         await navigateTo('Mail');
-        await tapOn(`the message "${subject}"`, new RegExp(escapeRegExp(subject)));
+        // The row's open button (its text runs sender, subject and preview together), not its
+        // selection or star control, which also name the message: a tap there selects it.
+        await tapOn(`the message "${subject}"`, new RegExp(`^(?!(Select|Star|Unstar) )[\\s\\S]*${escapeRegExp(subject)}`));
         await tapOn(`the attachment ${name}`, new RegExp(`^${escapeRegExp(name)}`), { cls: /Button/ });
         await waitFor('the attachment viewer\'s actions', find(/^Share$/, /Button/), 60_000);
       };
@@ -646,6 +654,10 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
         if (file !== photo.name) throw new Error(`saved as ${file}, not under its own name ${photo.name}`);
         return `${photo.name} saved to Downloads under its name, byte-identical to the server's copy (sha256 ${expected.slice(0, 12)})`;
       });
+      // The viewer covers the navigation bar: start afresh, still signed in, for signing out.
+      shell(`am force-stop ${PACKAGE}`);
+      shell(`am start -n ${PACKAGE}/.MainActivity`);
+      await waitFor('the signed-in app after the file steps', signedIn, 120_000).catch(() => {});
     }
     await step('sign out', async () => {
       await navigateTo('More');
