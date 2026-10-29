@@ -298,6 +298,30 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     expectOnlyKnown(await touchViolations(page), [KNOWN_DEFECTS.recordingTagTargets]);
   });
 
+  test('Contacts list and detail', async ({ page, open }) => {
+    await open('/contacts');
+    expectOnlyKnown(await touchViolations(page), []);
+    await open('/contacts?contact=c-1');
+    expectOnlyKnown(await touchViolations(page), []);
+  });
+
+  test('Contact editor', async ({ page, open, settle }) => {
+    await open('/contacts?contact=c-1');
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Edit contact' })).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
+  });
+
+  test('Merge review', async ({ page, open, settle }) => {
+    await open('/contacts?view=duplicates');
+    expectOnlyKnown(await touchViolations(page), []);
+    await page.getByRole('region', { name: /Group of 2, high confidence/ }).first().getByRole('button', { name: 'Review and merge' }).click();
+    await expect(page.getByRole('dialog', { name: 'Merge 2 contacts into one' })).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
+  });
+
   test('Settings, Mail', async ({ page, open }) => {
     await open('/settings?section=mail');
     await expect(page.getByRole('heading', { name: 'Signatures' })).toBeVisible();

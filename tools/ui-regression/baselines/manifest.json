@@ -30,6 +30,38 @@
       "sha256": "bc68f5b760c1d09b89dd460a616bce63748164e29b1abf28bfa8e861b84086b9",
       "bytes": 24198
     },
+    "contact-detail-phone-dark.png": {
+      "sha256": "e290aed0b3ed348cf091c9552fe2d60c6444037f942ada838098368240a9aa16",
+      "bytes": 58709
+    },
+    "contact-detail-phone-light.png": {
+      "sha256": "7b851362fb1d5d712f543903e76e3cb4a9b1850a0a7e713829fabd6b0d3d0a19",
+      "bytes": 60691
+    },
+    "contact-detail-wide-dark.png": {
+      "sha256": "6263815ad3f2ac97495b674981b79e6a84a90ca86a57dc74f2394231c4a0fe65",
+      "bytes": 127190
+    },
+    "contact-detail-wide-light.png": {
+      "sha256": "738187706097ade5c5a89a73e67f33685f895d8af1f69df32d6623ad6fac1cec",
+      "bytes": 127854
+    },
+    "contact-editor-phone-dark.png": {
+      "sha256": "b8d1ce4a58c223f85572c90f781f16be22bce578399b2ed6b2d0162312001df4",
+      "bytes": 48750
+    },
+    "contact-editor-phone-light.png": {
+      "sha256": "8611aad31d1b847e317256c21297c7a9715b4b912a638eac06ae474b5c12457b",
+      "bytes": 52910
+    },
+    "contact-editor-wide-dark.png": {
+      "sha256": "822d8aef7e8bc98d8e645c62e78b8959c49e8651d06d5226430285011decf0c0",
+      "bytes": 117831
+    },
+    "contact-editor-wide-light.png": {
+      "sha256": "e761bf04dcbf51f9ab74cc7c490b5d2347f8acea23d2a24cba0cc1aababb40ef",
+      "bytes": 121940
+    },
     "mail-reader-wide-dark.png": {
       "sha256": "1f24aa99d3b156f46fb8ad11480d4b3f98cd1b3166db3340ae7d2b671f7e4de4",
       "bytes": 211562
@@ -37,6 +69,22 @@
     "mail-reader-wide-light.png": {
       "sha256": "5a388bfa04851728abc23763837a8f96be5711bc84eed46e535be82fff2dd208",
       "bytes": 220321
+    },
+    "merge-review-phone-dark.png": {
+      "sha256": "e46797cddb1dffe3856048a38fbeb5606505ed877f26d3abb28a47b090ae826f",
+      "bytes": 62400
+    },
+    "merge-review-phone-light.png": {
+      "sha256": "3beba3002c6c020ff99f547a091b91cbfeedd1440338070f3c9097b02415f5df",
+      "bytes": 66815
+    },
+    "merge-review-wide-dark.png": {
+      "sha256": "278cc6f5b70b5b095c0b5d0407849a6dfec679c64ba950e5b7ff94ac602755ff",
+      "bytes": 91892
+    },
+    "merge-review-wide-light.png": {
+      "sha256": "69d0404de2df34a8db8e7b64845f6bd63cf11a9ea6937178934b9f99551eca17",
+      "bytes": 95506
     },
     "recordings-phone-dark.png": {
       "sha256": "30b8530f865fd11b7e05379b33d2bb208fef68a34c36933b94d1f77df017952b",
@@ -326,6 +374,56 @@
         "composer-phone-dark.png",
         "composer-phone-light.png"
       ],
+      "removed": []
+    },
+    {
+      "date": "2026-10-29T18:57:17.245Z",
+      "reason": "0.26.0 contacts (P-29/D29): new reference screens contact detail, contact editor and merge review at Wide and Phone in Dark and Light; existing pictures unchanged",
+      "source": {
+        "commit": "3a9c8cefb103c959be31fef4ab1c01f64e2bd2fa",
+        "branch": "wip/0.26.0-contacts-ui",
+        "dirty": true,
+        "digest": "1241b15ec350fbeb7e9e5d07cfcde146acdca6f2cbf49aedd41e366826760269"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [
+        "contact-detail-phone-dark.png",
+        "contact-detail-phone-light.png",
+        "contact-detail-wide-dark.png",
+        "contact-detail-wide-light.png",
+        "contact-editor-phone-dark.png",
+        "contact-editor-phone-light.png",
+        "contact-editor-wide-dark.png",
+        "contact-editor-wide-light.png",
+        "merge-review-phone-dark.png",
+        "merge-review-phone-light.png",
+        "merge-review-wide-dark.png",
+        "merge-review-wide-light.png"
+      ],
+      "changed": [],
       "removed": []
     }
   ]

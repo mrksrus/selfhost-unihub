@@ -4,6 +4,7 @@ import type { ExportFormat } from '@/lib/contacts-api';
 import type { ContactActions } from '@/hooks/use-contact-actions';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { RadioRow } from '@/components/ui/radio';
 
 const FORMATS: { id: ExportFormat; label: string; note: string }[] = [
   { id: 'vcard4', label: 'vCard 4.0', note: 'Recommended. Keeps every field, the photo and the details kept from imports.' },
@@ -31,13 +32,8 @@ export function ContactExportDialog({ target, onClose, actions }: {
         <fieldset className="space-y-1">
           <legend className="sr-only">Format</legend>
           {FORMATS.map(entry => (
-            <label key={entry.id} htmlFor={`export-${entry.id}`} className="flex min-h-11 cursor-pointer items-start gap-3 rounded-md px-2 py-2 hover:bg-muted/50">
-              <input id={`export-${entry.id}`} type="radio" name="export-format" className="mt-1 h-4 w-4 shrink-0 accent-accent" checked={format === entry.id} onChange={() => setFormat(entry.id)} />
-              <span className="min-w-0">
-                <span className="block text-sm font-medium">{entry.label}</span>
-                <span className="block text-xs text-muted-foreground">{entry.note}</span>
-              </span>
-            </label>
+            <RadioRow key={entry.id} id={`export-${entry.id}`} name="export-format" checked={format === entry.id} onChange={() => setFormat(entry.id)}
+              label={<span className="font-medium">{entry.label}</span>} description={entry.note} />
           ))}
         </fieldset>
         <DialogFooter className="gap-2 sm:gap-0">

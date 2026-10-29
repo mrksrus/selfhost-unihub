@@ -158,16 +158,59 @@ export const RECORDINGS = [
   recording('rec-3', { title: 'Reminder: renew passport', category: 'reminder', recorded_at: at('06-08T12:00:00.000Z'), duration_seconds: 21 }),
 ];
 
-const contact = <T extends object>(id: string, first: string, last: string | null, fields: T) => row({
-  id, first_name: first, last_name: last, email: null, email2: null, email3: null, phone: null, phone2: null, phone3: null,
-  company: null, job_title: null, notes: null, avatar_url: null, is_favorite: false,
-}, fields);
+// Contacts in the vCard model of api/src/contracts/contacts.ts, plus the 3+3
+// projection old apps read. Grace holds every kind of field for the detail
+// and editor pictures; Alan and Jane have a duplicate each.
+type Value = { id: string; value: string; label: string; custom_label: string | null; preferred: boolean };
+const value = (id: string, text: string, label = '', preferred = false, custom_label: string | null = null): Value => ({ id, value: text, label, custom_label, preferred });
+const emptyName = { display: null, given: null, family: null, middle: null, prefix: null, suffix: null };
+const contact = <T extends object>(id: string, given: string, family: string | null, fields: T & { emails?: Value[]; phones?: Value[]; organization?: { name: string | null; department: string | null } }) => {
+  const emails = fields.emails ?? [];
+  const phones = fields.phones ?? [];
+  const organization = fields.organization ?? { name: null, department: null };
+  return row({
+    id, uid: `urn:uuid:${id}`, version: 1, display_name: [given, family].filter(Boolean).join(' '),
+    name: { ...emptyName, given, family }, organization, job_title: null, birthday: null, anniversary: null, notes: null, is_favorite: false,
+    emails, phones, addresses: [], urls: [], impp: [], related: [], nicknames: [], categories: [], photo: null, kept_properties: 0,
+    created_at: STAMP, updated_at: STAMP,
+    first_name: given, last_name: family, company: organization.name,
+    email: emails[0]?.value ?? null, email2: emails[1]?.value ?? null, email3: emails[2]?.value ?? null,
+    phone: phones[0]?.value ?? null, phone2: phones[1]?.value ?? null, phone3: phones[2]?.value ?? null,
+  }, fields);
+};
 export const CONTACTS = [
-  contact('c-1', 'Grace', 'Hopper', { email: 'grace@example.com', company: 'Example Labs', job_title: 'Engineer', is_favorite: true }),
-  contact('c-2', 'Alan', 'Turing', { email: 'alan@example.net', phone: '+1 555 0100' }),
-  contact('c-3', 'Katherine', 'Johnson', { email: 'katherine@example.org' }),
-  contact('c-4', 'Margaret', 'Hamilton', { email: 'margaret@example.org', company: 'Example Labs' }),
-  contact('c-5', 'Jane', 'Doe', { email: 'jane@example.com', email2: 'jane.doe@example.net' }),
+  contact('c-1', 'Grace', 'Hopper', {
+    name: { ...emptyName, given: 'Grace', family: 'Hopper', prefix: 'Dr.', middle: 'Brewster' }, display_name: 'Grace Brewster Hopper',
+    organization: { name: 'Example Labs', department: 'Research' }, job_title: 'Engineer', is_favorite: true,
+    emails: [value('e-1', 'grace@example.com', 'work', true), value('e-2', 'grace.hopper@example.net', 'home')],
+    phones: [value('p-1', '+1 555 0100', 'mobile', true), value('p-2', '+1 555 0101', 'work'), value('p-3', '+1 555 0102', 'custom', false, 'Ship')],
+    addresses: [{ ...value('a-1', '', 'work'), po_box: null, extended: 'Building 4', street: '1 Example Street', locality: 'Exampleton', region: 'Example State', postal_code: '12345', country: 'Examplia' }],
+    urls: [value('u-1', 'https://example.com/grace', 'homepage')], impp: [value('i-1', 'xmpp:grace@example.com', 'work')],
+    related: [value('r-1', 'Alan Turing', 'colleague')], nicknames: [value('n-1', 'Amazing Grace', 'short_name')],
+    birthday: { year: 1906, month: 12, day: 9 }, anniversary: { year: null, month: 6, day: 1 }, categories: ['Computing', 'Navy'],
+    notes: 'Met at the Example Labs open day. Prefers email in the morning.', kept_properties: 2,
+  }),
+  contact('c-2', 'Alan', 'Turing', { organization: { name: 'Example University', department: null }, emails: [value('e-3', 'alan@example.net')], phones: [value('p-4', '+1 555 0103', 'mobile')] }),
+  contact('c-3', 'Katherine', 'Johnson', { emails: [value('e-4', 'katherine@example.org', 'work')] }),
+  contact('c-4', 'Margaret', 'Hamilton', { organization: { name: 'Example Labs', department: null }, emails: [value('e-5', 'margaret@example.org', 'work')] }),
+  contact('c-5', 'Jane', 'Doe', { emails: [value('e-6', 'jane@example.com', 'home'), value('e-7', 'jane.doe@example.net', 'work')] }),
+  contact('c-6', 'Alan', 'M. Turing', { display_name: 'Alan M. Turing', organization: { name: 'Example Institute', department: null }, emails: [value('e-8', 'ALAN@example.net', 'work')], phones: [value('p-5', '+1 555 0104', 'work')] }),
+  contact('c-7', 'Jane', 'Doe', { phones: [value('p-6', '+1 555 0105', 'mobile')], emails: [value('e-9', 'jane@example.com')] }),
+];
+const member = (id: string) => {
+  const found = CONTACTS.find(entry => entry.id === id)!;
+  return { id, version: found.version, display_name: found.display_name, organization: found.organization?.name ?? null,
+    emails: (found.emails ?? []).map(entry => entry.value), phones: (found.phones ?? []).map(entry => entry.value), photo: null };
+};
+export const DUPLICATE_GROUPS = [
+  { id: 'dup-turing', confidence: 'high', large: false, members: [member('c-2'), member('c-6')],
+    reasons: [{ kind: 'email', detail: 'alan@example.net', a: 'c-2', b: 'c-6' }, { kind: 'name_subset', detail: 'Alan Turing', a: 'c-2', b: 'c-6' }], conflicts: ['organization'] },
+  { id: 'dup-doe', confidence: 'high', large: false, members: [member('c-5'), member('c-7')],
+    reasons: [{ kind: 'email', detail: 'jane@example.com', a: 'c-5', b: 'c-7' }, { kind: 'name', detail: 'Jane Doe', a: 'c-5', b: 'c-7' }], conflicts: [] },
+];
+const KEPT_PROPERTIES = [
+  { name: 'X-ABShowAs', group: null, params: null, value: 'PERSON' },
+  { name: 'ROLE', group: null, params: null, value: 'Rear admiral' },
 ];
 
 export interface ApiReply { status?: number; body: unknown }
@@ -261,6 +304,12 @@ function defaultRoutes(emails: typeof EMAILS): Route[] {
     ['GET', /^\/contacts$/, url => {
       const offset = Number(url.searchParams.get('offset') || 0);
       return ok({ contacts: CONTACTS.slice(offset), has_more: false, offset });
+    }],
+    ['GET', /^\/contacts\/duplicates$/, () => ok({ groups: DUPLICATE_GROUPS })],
+    ['GET', /^\/contacts\/merges$/, () => ok({ merges: [] })],
+    ['GET', /^\/contacts\/[^/]+$/, url => {
+      const found = CONTACTS.find(entry => `/contacts/${entry.id}` === url.pathname.replace(/^\/api/, ''));
+      return found ? ok({ contact: { ...found, properties: found.kept_properties ? KEPT_PROPERTIES : [] } }) : { status: 404, body: { error: 'Not found' } };
     }],
   ];
 }

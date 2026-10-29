@@ -58,8 +58,8 @@ export function DuplicatesView({ contacts, activeId, selectedIds, actions, onOpe
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <ChipGroup label="Confidence" className="flex-1">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <ChipGroup label="Confidence" className="sm:flex-1">
           {(['all', 'high', 'medium', 'low'] as Filter[]).map(value => (
             <Chip key={value} selected={filter === value} onSelect={() => setFilter(value)} count={counts[value]} countLabel="groups">
               {value === 'all' ? 'All' : CONFIDENCE_TEXT[value].replace(' confidence', '')}
@@ -67,7 +67,7 @@ export function DuplicatesView({ contacts, activeId, selectedIds, actions, onOpe
           ))}
         </ChipGroup>
         {mergeable.length > 0 && (
-          <Button variant="outline" size="sm" onClick={() => onMergeAll(mergeable)} disabled={actions.mergeAll.isPending}>
+          <Button variant="outline" size="sm" className="self-start" onClick={() => onMergeAll(mergeable)} disabled={actions.mergeAll.isPending}>
             Merge all high-confidence ({mergeable.length})
           </Button>
         )}

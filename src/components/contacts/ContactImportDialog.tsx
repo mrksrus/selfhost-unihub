@@ -108,19 +108,19 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
           )}
           {decided.length > 0 && (
             <section aria-label="Decisions" className="space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <h3 className="mr-auto font-medium">What to do with matches</h3>
-                <span className="text-xs text-muted-foreground">For all:</span>
+              <h3 className="font-medium">What to do with matches</h3>
+              <div className="flex flex-wrap items-center gap-x-1 gap-y-2">
+                <span className="mr-1 text-xs text-muted-foreground">For all:</span>
                 {(['merge', 'add', 'skip'] as ImportDecisionKind[]).map(decision => (
                   <Button key={decision} type="button" variant="ghost" size="sm" onClick={() => setAll(decision, decided)}>{DECISION_TEXT[decision].split(' ')[0]}</Button>
                 ))}
-                {conflicting.length > 0 && <Button type="button" variant="outline" size="sm" onClick={() => setShowConflicts(value => !value)}>{showConflicts ? 'Hide conflicts' : `Review conflicts (${conflicting.length})`}</Button>}
+                {conflicting.length > 0 && <Button type="button" variant="outline" size="sm" className="ml-auto" onClick={() => setShowConflicts(value => !value)}>{showConflicts ? 'Hide conflicts' : `Review conflicts (${conflicting.length})`}</Button>}
               </div>
               <ul className="divide-y divide-border">
                 {decided.map(group => (
                   <li key={group.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
                     <span className="min-w-0 flex-1">
-                      <span className="block">{MATCH_TEXT[group.match]}{group.confidence ? ` (${group.confidence})` : ''}: contact{group.cards.length > 1 ? 's' : ''} {group.cards.join(', ')}</span>
+                      <span className="block">Contact{group.cards.length > 1 ? 's' : ''} {group.cards.join(', ')}: {MATCH_TEXT[group.match].toLowerCase()}{group.match === 'duplicate' && group.confidence ? `, ${group.confidence} confidence` : ''}</span>
                       <span className="block text-xs text-muted-foreground">{[...new Set(group.reasons.map(reasonText))].join(' · ')}</span>
                       {showConflicts && group.conflicts.length > 0 && (
                         <span className="block text-xs text-warning">Differs in {group.conflicts.map(field => SINGLE_FIELD_TEXT[field].toLowerCase()).join(', ')}: UniHub's value is kept when merging.</span>

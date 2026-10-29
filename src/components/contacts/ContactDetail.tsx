@@ -212,7 +212,7 @@ export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onTo
       )}
 
       {contact.notes?.trim() && (
-        <section aria-label="Notes" className="mb-5">
+        <section aria-label="Notes" className="mb-5 px-2">
           <h3 className="mb-1 text-xs font-medium text-muted-foreground">Notes</h3>
           <p className="whitespace-pre-wrap break-words text-sm">{contact.notes}</p>
         </section>

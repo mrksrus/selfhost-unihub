@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Chip, ChipGroup } from '@/components/ui/chips';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { RadioRow } from '@/components/ui/radio';
 import { ContactAvatar } from '@/components/contacts/ContactAvatar';
 
 const SINGLE_FIELDS: ContactSingleField[] = ['photo', 'name', 'organization', 'department', 'job_title', 'birthday', 'anniversary'];
@@ -140,7 +141,7 @@ export function MergeReviewDialog({ group, contacts, onClose, actions, onMerged 
   const sideBySide = (
     <div role="table" aria-label="Contacts side by side" className="text-sm">
       <div role="row" className="grid items-end gap-x-3 border-b border-border pb-2" style={{ gridTemplateColumns: columns }}>
-        <span role="columnheader" className="sr-only">Field</span>
+        <span role="columnheader"><span className="sr-only">Field</span></span>
         {members.map(member => (
           <span key={member.id} role="columnheader" className="flex min-w-0 items-center gap-2">
             <ContactAvatar contact={member} />
@@ -160,11 +161,8 @@ export function MergeReviewDialog({ group, contacts, onClose, actions, onMerged 
               return (
                 <span key={member.id} role="cell" className="min-w-0">
                   {conflict && value ? (
-                    <label htmlFor={id} className="flex min-h-11 cursor-pointer items-center gap-2">
-                      <input id={id} type="radio" name={`merge-${field}`} className="h-4 w-4 shrink-0 accent-accent" checked={choices[field] === member.id}
-                        onChange={() => setChoices(prev => ({ ...prev, [field]: member.id }))} />
-                      <span className="break-words">{value}</span>
-                    </label>
+                    <RadioRow id={id} name={`merge-${field}`} checked={choices[field] === member.id} onChange={() => setChoices(prev => ({ ...prev, [field]: member.id }))}
+                      label={<span className="break-words">{value}</span>} rowClassName="-mx-2 min-h-0 py-1" />
                   ) : <span className={cn('block break-words py-1', !value && 'text-muted-foreground')}>{value || '—'}</span>}
                 </span>
               );
