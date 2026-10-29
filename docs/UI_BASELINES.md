@@ -34,7 +34,7 @@ names, kernels and paths are not recorded.
 config and runs these checks against it in Chromium.
 
 **Reference screens.** Each screen is captured in Dark Default and Light Default,
-twelve pictures in all, compared with zero tolerance:
+twenty-four pictures in all, compared with zero tolerance:
 
 | Picture | Viewport | Steps |
 | --- | --- | --- |
@@ -43,6 +43,9 @@ twelve pictures in all, compared with zero tolerance:
 | `recordings-phone-*` | Phone | Recordings library. |
 | `settings-appearance-wide-*` | Wide | Settings → Appearance. |
 | `composer-phone-*` | Phone | Mail, Compose (full screen: title bar; To, the folded "Cc/Bcc, From" line and Subject one row each; the message filling the rest; the formatting toolbar pinned above the buttons). |
+| `contact-detail-wide-*`, `contact-detail-phone-*` | Wide, Phone | Contacts, the fixture contact that holds every kind of field (name parts, nickname, organisation, labelled numbers and addresses, dates, web, messaging, related people, categories, notes, kept import details). Since 0.26.0 (P-29, D29). |
+| `contact-editor-wide-*`, `contact-editor-phone-*` | Wide, Phone | The same contact's editor: a dialog on Wide, the whole screen on Phone. |
+| `merge-review-wide-*`, `merge-review-phone-*` | Wide, Phone | Possible duplicates, "Review and merge" on the group that needs a choice: side by side with the result column on Wide, stacked with chips on Phone. |
 
 **Behaviour checks.** These run against the same build and the same data.
 
@@ -53,7 +56,7 @@ twelve pictures in all, compared with zero tolerance:
 | P-08, N-03, N-04 (partial) | Wide Mail: "Hide panel" removes the column, moves focus to the scope button and stores `unihub:panel:mail`. The fold survives a reload and a visit to Contacts. Contacts keeps its own panel. The scope button opens the sheet and Escape returns focus to it. "Keep panel open" restores the column and focuses its fold button. |
 | P-12, N-05 | Wide Mail: 45 Tab presses cover the rail, then the panel, then the page, in that order. Every stop shows a focus ring (outline or ring shadow) and is on screen. Ctrl+K opens search with its input focused, Escape closes it, and Tab continues afterwards. |
 | P-02, A-01 | With the app script held back, the first paint is already black (default) or the stored Light colour, even when the OS prefers the other mode. After start-up, `theme-color` equals the page colour. Settings switches Light (kept after reload), System (follows a live OS change both ways) and Dark (kept after reload against a light OS). |
-| P-11, M-10, T-02 | Phone, coarse pointer (asserted). On ToDo, the Mail list, the composer and Recordings: every control in view has a tap area of at least 40 px, counting its `tap-area` pseudo-element. No two neighbouring tap areas overlap; edges that touch along one CSS pixel or less count as touching. Every control is reachable by hit-testing once scrolled into view, so nothing stays under the bottom bar. |
+| P-11, M-10, T-02 | Phone, coarse pointer (asserted). On ToDo, the Mail list, the composer, Recordings, the Contacts list and detail, the contact editor and the merge review: every control in view has a tap area of at least 40 px, counting its `tap-area` pseudo-element. No two neighbouring tap areas overlap; edges that touch along one CSS pixel or less count as touching, and the part of a tap area under the fixed bottom bar does not count (the person sees and taps the bar there). Every control is reachable by hit-testing once scrolled into view, so nothing stays under the bottom bar. |
 | P-15, P-26, B-11 | 412 × 560 and 450 × 600, as with the keyboard open in the Android app: the composer fills the screen from the very top, and after typing one line in a new message at least 240 px of the message editor is on screen, counting every clipping box around it and the toolbar pinned above the button bar, with the typed line in view. The header rows scroll away above the message when it gets focus; at full height the layout is the approved picture. |
 
 Every test also fails on an uncaught page error, on an `/api` request that has
@@ -115,8 +118,8 @@ That is not a visible flash, so the check holds the mode, not the exact value.
   origin are refused and fail the test.
 - The data is synthetic: two mail accounts, six messages including one over-long
   subject with an attachment, four tasks including one with a description,
-  source email and subtasks, three recordings with tags and chords, and five
-  contacts. Names are made up and addresses use `example.com`, `.net` and `.org`.
+  source email and subtasks, three recordings with tags and chords, and seven
+  contacts (one with every kind of field, two duplicate groups). Names are made up and addresses use `example.com`, `.net` and `.org`.
   Each test gets a fresh copy, so a message read in one test is unread in the
   next.
 

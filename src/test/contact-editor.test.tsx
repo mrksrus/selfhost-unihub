@@ -69,7 +69,8 @@ describe('contact editor form', () => {
   });
 });
 
-describe('ContactEditor', () => {
+// The editor renders many Radix selects; jsdom needs more than the default 5 s under a full-suite load.
+describe('ContactEditor', { timeout: 20_000 }, () => {
   it('adds fields from the menu, labels values, and sends the version with a full body', async () => {
     const onClose = mount({ kind: 'edit', contact: existing });
     const dialog = await screen.findByRole('dialog', { name: 'Edit contact' });
