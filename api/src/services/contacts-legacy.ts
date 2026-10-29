@@ -1,13 +1,12 @@
-// The 0.25 vCard import and export and the automatic duplicate merge, kept
-// working on the new model until their replacements land (stream B: the
-// vCard pipeline with preview; stream D: duplicates, merge review and undo),
-// which then delete this file and its routes. Unlike 0.25 they keep every
-// email and phone: nothing is capped at three.
+// The 0.25 vCard import and export, kept working on the new model until the
+// vCard pipeline with preview (stream B) replaces them and deletes this file.
+// Unlike 0.25 they keep every email and phone: nothing is capped at three.
+// The 0.25 automatic merge is gone: services/contact-merge.ts replaces it.
 import type { ContactRecord } from '../contracts/contacts';
 import type { ContactDraft, ValueDraft } from './contacts';
 import { db } from '../state';
 import { withTransaction } from './transactions';
-import { insertContact, loadContacts, replaceContact, uidHash, VALUE_LIMITS, VALUES_PER_KIND } from './contacts';
+import { insertContact, loadContacts, uidHash, VALUE_LIMITS, VALUES_PER_KIND } from './contacts';
 import { valueKey } from './contact-keys';
 import type { RowDataPacket } from 'mysql2/promise';
 
@@ -177,94 +176,4 @@ async function exportVCards(userId: string) {
 
 // ── The automatic merge of 0.25 ─────────────────────────────────────────
 
-function completeness(contact: ContactRecord) {
-  return [contact.name.given, contact.name.family, contact.organization.name, contact.job_title, contact.notes].filter(Boolean).length
-    + 2 * (contact.emails.length + contact.phones.length) + (contact.is_favorite ? 2 : 0);
-}
-
-function groupDuplicates(contacts: readonly ContactRecord[]) {
-  const parent = new Map(contacts.map(contact => [contact.id, contact.id]));
-  const find = (id: string): string => { const up = parent.get(id)!; if (up === id) return id; const root = find(up); parent.set(id, root); return root; };
-  const owner = new Map<string, string>();
-  for (const contact of contacts) {
-    for (const key of identityKeys([...contact.emails.map(item => ({ kind: 'email' as const, value: item.value })), ...contact.phones.map(item => ({ kind: 'phone' as const, value: item.value }))])) {
-      const first = owner.get(key);
-      if (first) { const [a, b] = [find(first), find(contact.id)]; if (a !== b) parent.set(b, a); } else owner.set(key, contact.id);
-    }
-  }
-  const groups = new Map<string, ContactRecord[]>();
-  for (const contact of contacts) { const root = find(contact.id); groups.set(root, [...(groups.get(root) || []), contact]); }
-  return [...groups.values()].filter(group => group.length > 1)
-    .map(group => [...group].sort((a, b) => completeness(b) - completeness(a) || Date.parse(a.created_at) - Date.parse(b.created_at)));
-}
-
-async function userContacts(userId: string) {
-  const [rows] = await db.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM contacts WHERE user_id = ?', [userId]);
-  return loadContacts(db, userId, rows.map(row => row.id));
-}
-
-const summary = (contact: ContactRecord) => ({ id: contact.id, name: contact.display_name || 'No name', email: contact.emails[0]?.value ?? null, phone: contact.phones[0]?.value ?? null });
-
-async function previewMerge(userId: string) {
-  const groups = groupDuplicates(await userContacts(userId));
-  const preview = groups.map(([keep, ...remove]) => ({ key: `${keep.emails[0] ? 'e:' + keep.emails[0].value.toLowerCase() : keep.id}`, size: remove.length + 1, keep: summary(keep), remove: remove.map(summary) }))
-    .sort((a, b) => b.size - a.size || a.key.localeCompare(b.key));
-  return { groups: groups.length, to_remove: groups.reduce((sum, group) => sum + group.length - 1, 0), merge_target_count: groups.length, preview };
-}
-
-const firstOf = <T>(...values: (T | null | undefined)[]) => values.find(value => value != null && String(value).trim() !== '') ?? null;
-
-// Each group in its own transaction, as in 0.25, but the survivor keeps the
-// union of every member's values; the others are deleted.
-async function mergeDuplicates(userId: string) {
-  const groups = groupDuplicates(await userContacts(userId));
-  let merged = 0; let removed = 0;
-  for (const [primary, ...others] of groups) {
-    const members = [primary, ...others];
-    const seen = new Set<string>();
-    const values: ValueDraft[] = [];
-    for (const member of members) {
-      const lists: [ValueDraft['kind'], { id?: string; value: string; label: string; custom_label?: string | null; preferred: boolean }[]][] = [
-        ['email', member.emails], ['phone', member.phones], ['address', member.addresses], ['url', member.urls], ['impp', member.impp],
-        ['related', member.related], ['nickname', member.nicknames], ['category', member.categories.map(value => ({ value, label: '', preferred: false }))]];
-      for (const [kind, list] of lists) for (const item of list) {
-        const key = `${kind}:${valueKey(kind, item.value)}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        values.push({ ...(item as object), id: member === primary ? item.id : null, kind, label: item.label, custom_label: item.custom_label ?? null, value: item.value, preferred: item.preferred });
-      }
-    }
-    const notes = [...new Set(members.map(member => member.notes?.trim()).filter((note): note is string => !!note))].join('\n\n');
-    const draft: ContactDraft = {
-      display_name: firstOf(primary.name.display, ...others.map(other => other.name.display)),
-      first_name: firstOf(primary.name.given, ...others.map(other => other.name.given)) || '',
-      last_name: firstOf(primary.name.family, ...others.map(other => other.name.family)),
-      middle_name: firstOf(primary.name.middle, ...others.map(other => other.name.middle)),
-      name_prefix: primary.name.prefix, name_suffix: primary.name.suffix,
-      company: firstOf(primary.organization.name, ...others.map(other => other.organization.name)),
-      department: firstOf(primary.organization.department, ...others.map(other => other.organization.department)),
-      job_title: firstOf(primary.job_title, ...others.map(other => other.job_title)),
-      birthday: null, anniversary: null,
-      notes: notes ? Buffer.from(notes, 'utf8').subarray(0, 65535).toString('utf8').replace(/\uFFFD$/, '') : null,
-      is_favorite: members.some(member => member.is_favorite),
-      values,
-    };
-    const toDate = (date: ContactRecord['birthday']) => date ? (date.year ? `${String(date.year).padStart(4, '0')}` : '-') + `-${String(date.month).padStart(2, '0')}-${String(date.day).padStart(2, '0')}` : null;
-    draft.birthday = firstOf(toDate(primary.birthday), ...others.map(other => toDate(other.birthday)));
-    draft.anniversary = firstOf(toDate(primary.anniversary), ...others.map(other => toDate(other.anniversary)));
-    const outcome = await withTransaction(async cx => {
-      // A survivor changed or deleted since the listing leaves its group as it is.
-      const [[current]] = await cx.execute<(RowDataPacket & { version: number })[]>('SELECT version FROM contacts WHERE id = ? AND user_id = ? FOR UPDATE', [primary.id, userId]);
-      if (!current || Number(current.version) !== primary.version) return null;
-      await replaceContact(cx, userId, primary.id, draft, { expectedVersion: null });
-      const ids = others.map(other => other.id);
-      const [deleted] = await cx.execute<import('mysql2/promise').ResultSetHeader>(`DELETE FROM contacts WHERE user_id = ? AND id IN (${ids.map(() => '?').join(', ')})`, [userId, ...ids]);
-      return deleted.affectedRows || 0;
-    });
-    if (outcome === null) continue;
-    merged++; removed += outcome;
-  }
-  return { merged, removed, groups: groups.length };
-}
-
-export { parseVCards, importVCards, exportVCards, contactToVCard, decodeQuotedPrintable, previewMerge, mergeDuplicates };
+export { parseVCards, importVCards, exportVCards, contactToVCard, decodeQuotedPrintable };

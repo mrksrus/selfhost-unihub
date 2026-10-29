@@ -211,7 +211,7 @@ test('contacts API: vCard model, input contract, 3+3 compatibility, versions, ow
   assert.deepEqual(withMerged.merged.map((item: FixtureValue) => [item.id, item.into]), [['gone-1', ann.id], ['gone-2', ann.id]]);
   assert.equal((await call(owner, 'GET', '/api/contacts')).merged, undefined);
 
-  // ── The 0.25 import, export and merge keep every value ──
+  // ── The 0.25 import and export keep every value ──
   const card = (uid: string, emails: string[], extra = '') => ['BEGIN:VCARD', 'VERSION:2.1', 'N;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:M=C3=BCller;J=C3=BCrgen;;;',
     ...emails.map(email => `EMAIL;INTERNET:${email}`), `UID:${uid}`, extra, 'END:VCARD'].filter(Boolean).join('\r\n');
   const vcf = card('one', ['i1@example.test', 'i2@example.test', 'i3@example.test', 'i4@example.test', 'i5@example.test'],
@@ -227,15 +227,7 @@ test('contacts API: vCard model, input contract, 3+3 compatibility, versions, ow
   const exported = await (require('../dist/src/services/contacts-legacy') as typeof import('../src/services/contacts-legacy')).exportVCards(users.owner);
   for (const email of ['i1', 'i2', 'i3', 'i4', 'i5']) assert.match(exported, new RegExp(`EMAIL;TYPE=INTERNET:${email}@example\\.test`));
   assert.match(exported, /^UID:one$/m, 'an imported card keeps its UID');
-  const preview = await call(owner, 'POST', '/api/contacts/merge-duplicates/preview', {});
-  const duplicateGroups = preview.groups;
-  await call(owner, 'POST', '/api/contacts', { first_name: 'Jürgen', last_name: 'Müller', email: 'i5@example.test', email2: 'i6@example.test', email3: 'i7@example.test' });
-  assert.equal((await call(owner, 'POST', '/api/contacts/merge-duplicates/preview', {})).groups, duplicateGroups + 1);
-  const merged = await call(owner, 'POST', '/api/contacts/merge-duplicates', {});
-  assert.ok(merged.removed >= 1);
-  const survivors = await list(owner, '?q=i5%40example.test');
-  assert.equal(survivors.length, 1);
-  assert.deepEqual(survivors[0].emails.map((email: FixtureValue) => email.value).sort(), ['i1', 'i2', 'i3', 'i4', 'i5', 'i6', 'i7'].map(name => `${name}@example.test`));
+  // Duplicates and merges: contacts-merge-mysql-integration.test.cts.
 
   // ── Paging past 2,000 contacts with equal names: nothing lost or repeated ──
   const pager = await signIn('pager');

@@ -62,14 +62,20 @@ interface NameParts {
 // "jurgen muller" and "Dr. Jürgen Müller" share one key. The name parts
 // count; the display name only when there are none. Prefix and suffix fields
 // are ignored.
-function nameTokens({ given, middle, family, display }: NameParts) {
+function nameTokens(parts: NameParts) {
+  return [...new Set(orderedNameTokens(parts))].sort();
+}
+
+// The same tokens in written order, so the duplicate engine can tell
+// "Anna Smith" from "Smith Anna" without folding the name twice.
+function orderedNameTokens({ given, middle, family, display }: NameParts) {
   const source = [given, middle, family].filter(part => part && part.trim()).join(' ') || display || '';
-  return [...new Set(foldName(source).split(' ').filter(token => token && !HONORIFICS.has(token)))].sort();
+  return foldName(source).split(' ').filter(token => token && !HONORIFICS.has(token));
 }
 
 function nameKey(parts: NameParts) {
   return bounded(nameTokens(parts).join(' '));
 }
 
-export { valueKey, phoneKey, emailKey, urlKey, nameKey, nameTokens, foldName, KEY_MAX };
+export { valueKey, phoneKey, emailKey, urlKey, nameKey, nameTokens, orderedNameTokens, foldName, KEY_MAX };
 export type { NameParts };

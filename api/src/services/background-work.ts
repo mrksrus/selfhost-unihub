@@ -16,10 +16,11 @@ import { pruneAuditLog } from './audit';
 import { runMailThreadBackfill } from './mail-thread-backfill';
 import { runDueScheduledSends } from './mail-scheduled-send';
 import { returnDueSnoozes } from './mail-snooze';
+import { purgeExpiredMerges } from './contact-merge';
 import { isWorkerOwner } from './worker-owner';
 import { log } from '../log';
 
-// The periodic work of this API process: the twelve timers listed in
+// The periodic work of this API process: the thirteen timers listed in
 // docs/ARCHITECTURE.md "Scheduled Jobs", the startup resets they rely on and
 // the mail IDLE supervisor they start. app.ts starts it once after the server
 // listens and stops it on shutdown. UniHub runs one API process; everything
@@ -53,6 +54,7 @@ interface BackgroundWorkDeps {
   runMailThreadBackfill: () => Promise<unknown>;
   runDueScheduledSends: () => Promise<unknown>;
   returnDueSnoozes: () => Promise<unknown>;
+  purgeContactBin: (active: () => boolean) => Promise<{ items: number; merges: number }>;
   isWorkerOwner: () => boolean;
 }
 interface BackgroundWorkHandle {
@@ -78,6 +80,7 @@ function defaultDeps(): BackgroundWorkDeps {
     runMailThreadBackfill: () => runMailThreadBackfill(),
     runDueScheduledSends: () => runDueScheduledSends(),
     returnDueSnoozes: () => returnDueSnoozes(),
+    purgeContactBin: active => purgeExpiredMerges({ active }),
     isWorkerOwner,
     stopCalendarWork: () => (require('./calendar-sync') as typeof import('./calendar-sync')).stopAllCalendarWork(),
     runCalendarSyncPass: (...args) => (require('./calendar-sync') as typeof import('./calendar-sync')).runCalendarSyncPass(...args),
@@ -213,6 +216,14 @@ async function runStartup(deps: BackgroundWorkDeps, state: { stopped: boolean },
   every('CLEANUP', 60 * 60 * 1000, async () => {
     const deleted = await deps.cleanupExpiredRecordingUploads();
     if (deleted > 0) log.info('CLEANUP', 'Deleted expired recording uploads', { deleted });
+  });
+
+  // Contacts merged away more than 30 days ago and their merge records
+  // (contacts.purgeBin): the end of the undo window. People whose contacts
+  // are being restored, or whose Contacts module is off, wait for a later hour.
+  every('CLEANUP', 60 * 60 * 1000, async () => {
+    const { items, merges } = await deps.purgeContactBin(active);
+    if (items > 0 || merges > 0) log.info('CLEANUP', 'Deleted merged contacts past their undo window', { items, merges });
   });
 
   // Pool counts every 15 minutes, and every minute while work is queueing for
