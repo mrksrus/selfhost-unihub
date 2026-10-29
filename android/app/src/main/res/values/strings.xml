@@ -60,6 +60,10 @@
     <string name="channel_app_update">App updates</string>
     <string name="update_ready_title">UniHub update downloaded</string>
     <string name="update_ready_text">Tap to install it.</string>
+    <string name="update_refused_title">UniHub update not installed</string>
+    <string name="update_refused_not_unihub">The server\'s download is not this UniHub app, or it is signed with another key. It was deleted and nothing was installed.</string>
+    <string name="update_refused_older">The server offers an older UniHub app than this one. Nothing was installed.</string>
+    <string name="update_refused_unreadable">The downloaded update could not be read. Nothing was installed.</string>
     <string name="channel_connection_description">Shown while UniHub keeps its connection for notifications. You can hide it.</string>
     <string name="connection_title">Connected to %1$s</string>
     <string name="connection_text">For notifications</string>

@@ -27,8 +27,10 @@ database upgrade; install the new Android app once from Files (see
   was in the background, its "UniHub update downloaded" notification does).
   The first time, Android asks to allow UniHub to install apps. Before, the
   download manager's notification led to "isn't allowed to install unknown
-  apps from this source". Needs the new app; this update itself still has to
-  be opened from Files once.
+  apps from this source". The app installs only itself, signed with the same
+  key: any other file at the update's address is deleted and the app says
+  that nothing was installed. Needs the new app; this update itself still has
+  to be opened from Files once.
 - **Opening UniHub shows one start screen.** A cold start went through
   "Loading UniHub…", "Loading…", "Opening UniHub…" over a half-built bottom
   bar, a blank page and a false "No mail account yet" before the mail

@@ -281,7 +281,7 @@ class FileActions(private val activity: Activity, private val origin: String) {
         /** The cached copy a content:// address of this app names, or null outside the copies' folders. */
         fun cachedFile(context: Context, uri: Uri): File? {
             val segments = uri.pathSegments
-            if (segments.size != 3 || segments[0] !in setOf("shared", "picked")) return null
+            if (segments.size != 3 || segments[0] !in setOf("shared", "picked", "update")) return null
             val root = File(context.cacheDir, segments[0]).canonicalFile
             val file = File(root, "${segments[1]}/${segments[2]}").canonicalFile
             return file.takeIf { it.parentFile?.parentFile == root }

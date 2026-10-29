@@ -7,7 +7,7 @@ import java.io.FileNotFoundException
 
 /**
  * Serves the copies FileActions makes (for other apps and for the page's file
- * input) and refuses one older than SharedFiles.MAX_AGE_MS, even before the
+ * input) and AppUpdate's checked update, and refuses one older than SharedFiles.MAX_AGE_MS, even before the
  * next cleanup deletes it.
  */
 class FilesProvider : FileProvider() {
