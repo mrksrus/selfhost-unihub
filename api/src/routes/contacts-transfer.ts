@@ -1,7 +1,74 @@
+import type { RouteRequest } from '../types';
+import type { UploadBody } from '../http/route';
+import type { ImportStatus, ImportSummary } from '../contracts/contacts';
+import { clientError } from '../http/errors';
 import { defineRoutes } from '../http/route';
+import { log } from '../log';
+import { stageImport, commitImport, importStatus } from '../services/contacts-import';
+import { buildExport, exportFormat } from '../services/contacts-export';
+import { IMPORT_LIMITS } from '../services/contacts-vcard-read';
 
-// Contact import and export (vCard 4.0/3.0/2.1 and CSV, two-step import with
-// preview). The 0.25 routes are gone: their import and export dropped every
-// field beyond names, emails, phones, organisation, title and notes. The
-// table is registered once in routes/index.ts.
-export = defineRoutes({});
+// Contact import and export (D6): vCard 4.0/3.0/2.1, Google and Outlook CSV.
+// Import is two steps: POST the raw file for a preview (nothing is written),
+// then commit per-group decisions and poll the status. Export is vCard 4.0 by
+// default, or vCard 3.0, Google CSV or Outlook CSV, for all contacts (GET) or
+// a selection (POST). The table is registered once in routes/index.ts.
+type Request = RouteRequest & { url: string; params: Record<string, string> };
+
+const readRoute = { auth: 'user' as const, module: 'contacts' };
+const contactRoute = { ...readRoute, restoreSection: 'contacts' };
+// One id per contact; at most the cards one import may hold.
+const EXPORT_MAX_IDS = IMPORT_LIMITS.cards;
+const COMMIT_BODY_LIMIT = 4 * 1024 * 1024;
+const EXPORT_BODY_LIMIT = 1024 * 1024;
+
+function failed(error: unknown, fallback: string) {
+  const answer = clientError(error, fallback);
+  if (answer.status >= 500) log.error('contacts', fallback, error);
+  return answer;
+}
+
+async function exportAnswer(userId: string, format: unknown, ids: string[] | null) {
+  const file = await buildExport(userId, exportFormat(format), ids);
+  return { __raw: file.body, __contentType: file.contentType, __filename: file.filename };
+}
+
+export = defineRoutes({
+  'POST /api/contacts/imports': { ...contactRoute, body: { kind: 'upload', limit: IMPORT_LIMITS.fileBytes }, handler: async (_req: Request, userId: string, body: unknown) => {
+    try {
+      const answer: ImportSummary = await stageImport(userId, body as UploadBody);
+      return { ...answer };
+    } catch (error) { return failed(error, 'Failed to read the import file'); }
+  } },
+
+  'GET /api/contacts/imports/:id': { ...readRoute, handler: async (req: Request, userId: string) => {
+    try {
+      const answer: ImportStatus = await importStatus(userId, req.params.id);
+      return { ...answer };
+    } catch (error) { return failed(error, 'Failed to get the import'); }
+  } },
+
+  'POST /api/contacts/imports/:id/commit': { ...contactRoute, body: { limit: COMMIT_BODY_LIMIT }, handler: async (req: Request, userId: string, body: unknown) => {
+    try {
+      const answer: ImportStatus = await commitImport(userId, req.params.id, body);
+      return { ...answer };
+    } catch (error) { return failed(error, 'Failed to import contacts'); }
+  } },
+
+  'GET /api/contacts/export': { ...readRoute, handler: async (req: Request, userId: string) => {
+    try {
+      return await exportAnswer(userId, new URL(req.url, 'http://localhost').searchParams.get('format'), null);
+    } catch (error) { return failed(error, 'Failed to export contacts'); }
+  } },
+
+  // Reads only; POST because a selection does not fit a URL.
+  'POST /api/contacts/export': { ...readRoute, restoreSection: null, body: { limit: EXPORT_BODY_LIMIT }, handler: async (_req: Request, userId: string, body: unknown) => {
+    const { ids, format } = (body || {}) as { ids?: unknown; format?: unknown };
+    if (!Array.isArray(ids) || !ids.length) return { error: 'ids array is required', status: 400 };
+    if (ids.length > EXPORT_MAX_IDS) return { error: `At most ${EXPORT_MAX_IDS} contacts at a time`, status: 400 };
+    if (!ids.every(id => typeof id === 'string' && id.length > 0 && id.length <= 64)) return { error: 'ids must be contact IDs', status: 400 };
+    try {
+      return await exportAnswer(userId, format, ids as string[]);
+    } catch (error) { return failed(error, 'Failed to export contacts'); }
+  } },
+});

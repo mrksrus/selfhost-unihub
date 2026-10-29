@@ -1,0 +1,49 @@
+BEGIN:VCARD
+VERSION:4.0
+KIND:individual
+UID:urn:uuid:6f1d2a3c-0000-4000-8000-000000000001
+FN;LANGUAGE=de:Dr. Jürgen Müller
+N;SORT-AS="Mueller,Juergen":Müller;Jürgen;Karl,Otto;Dr.;Jr.
+NICKNAME;TYPE=x-maiden-name:Jüm,Jay
+GENDER:M
+LANG;PREF=1:de
+LANG;PREF=2:en
+PHOTO:data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=
+BDAY:--0315
+ANNIVERSARY:20100615
+ADR;TYPE=home;PREF=1;LABEL="Hauptstraße 1^n10115 Berlin":;;Hauptstraße 1;Berlin;;10115;Germany
+ADR;TYPE=work;GEO="geo:52.5,13.4":PO 7;Building B;Werkweg 2\, Hof;Hamburg;HH;20095;Germany
+TEL;VALUE=uri;TYPE="cell,voice";PREF=1:tel:+49-171-5550001
+TEL;TYPE=work,fax:+49 40 5550002
+TEL;TYPE=x-company-main:+49 40 5550003
+item1.TEL:+49 171 5550004
+item1.X-ABLabel:Kids phone
+EMAIL;TYPE=work;PREF=2;PID=1.1:juergen@example.com
+EMAIL;TYPE=home:j.mueller@example.org
+IMPP;TYPE=work:xmpp:juergen@example.com
+ORG:Example GmbH;Research;Lab 3
+TITLE:Chemist
+ROLE:Team lead
+RELATED;TYPE=spouse;VALUE=text:Anna Müller
+RELATED;TYPE=x-mother;VALUE=text:Erika Müller
+RELATED;TYPE=colleague:urn:uuid:6f1d2a3c-0000-4000-8000-000000000002
+CATEGORIES:Family,Climbing\, indoor
+NOTE:First line\nSecond\, with comma; and semicolon
+URL;TYPE=work:https://example.com/juergen
+URL;TYPE=x-blog:https://blog.example.org/
+GEO:geo:52.52,13.40
+TZ;VALUE=utc-offset:+0100
+KEY:data:application/pgp-keys;base64,c3ludGhldGljIGtleQ==
+X-FOO;X-BAR="a,b";X-BAZ=c:value\, kept
+item2.X-ABDATE:2001-02-03
+item2.X-ABLabel:Met at
+CLIENTPIDMAP:1;urn:uuid:6f1d2a3c-0000-4000-8000-0000000000aa
+REV:20260101T000000Z
+PRODID:-//Example//Synthetic//EN
+END:VCARD
+BEGIN:VCARD
+VERSION:4.0
+FN:Example Organisation
+ORG:Example Organisation
+EMAIL:info@example.net
+END:VCARD
