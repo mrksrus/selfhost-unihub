@@ -1,13 +1,14 @@
 // 25-07 / 25-08 / 25-01 (0.25.0): in the app, a mailed PDF and photo open in
 // another app, are shared and saved to Downloads through Android's own sheets,
 // fetched with a download ticket (F9) rather than the session; signing out
-// deletes the copies handed to other apps; and the composer's message stays
-// above the on-screen keyboard.
+// deletes the copies handed to other apps, as does accepting another server
+// from a connect link; and the composer's message stays above the on-screen
+// keyboard.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { PACKAGE, adb, answerSlowDialogs, deviceScreenshot, navigate, openApp, sleep } from '../support/android.mjs';
+import { PACKAGE, adb, answerSlowDialogs, deviceScreenshot, navigate, openApp, sleep, tapNative } from '../support/android.mjs';
 import { sendMail } from '../tests/support/mail.ts';
 
 const fixture = name => fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url));
@@ -47,7 +48,20 @@ async function closeChooser() {
 
 const cacheCopies = () => adb('shell', 'run-as', PACKAGE, 'sh', '-c', '"ls cache/shared 2>/dev/null | wc -l"').trim();
 
-test('[25-07 25-08 25-01] open with, share and save a mailed PDF and photo; sign-out clears the copies; the message stays above the keyboard', { timeout: 1_200_000 }, async () => {
+async function copiesGone() {
+  let left = cacheCopies();
+  for (let attempt = 0; attempt < 20 && left !== '0'; attempt++) { await sleep(1000); left = cacheCopies(); }
+  return left === '0';
+}
+
+/** An "Open in app" link to a server, accepted in the app's question. */
+async function connectLink(server) {
+  // adb joins the arguments into one shell line on the device: quote the link.
+  adb('shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', `'unihub://connect?server=${server}'`, PACKAGE);
+  await tapNative(/^connect$/i);
+}
+
+test('[25-07 25-08 25-01] open with, share and save a mailed PDF and photo; sign-out and another server clear the copies; the message stays above the keyboard', { timeout: 1_200_000 }, async () => {
   const subject = `Files for other apps ${run}`;
   await sendMail({ from: 'Sam Sender <sam@example.org>', to: ['admin@mail.test'], subject, text: 'Two files attached.', attachments: [
     { filename: pdfName, content: readFileSync(fixture('synthetic-report.pdf')), contentType: 'application/pdf' },
@@ -136,14 +150,22 @@ test('[25-07 25-08 25-01] open with, share and save a mailed PDF and photo; sign
     adb('shell', 'input', 'keyevent', 'KEYCODE_BACK');
 
     // Signing out removes the copies handed to other apps.
+    const home = new URL(page.url()).origin;
     await page.evaluate(async () => {
       const { csrfToken } = await (await fetch('/api/auth/me')).json();
       await fetch('/api/auth/signout', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, body: '{}' });
       window.location.assign('/auth');
     }).catch(() => {});
-    let left = cacheCopies();
-    for (let attempt = 0; attempt < 20 && left !== '0'; attempt++) { await sleep(1000); left = cacheCopies(); }
-    assert.equal(left, '0', 'no copy for other apps is left after signing out');
+    assert.ok(await copiesGone(), 'no copy for other apps is left after signing out');
+
+    // So does accepting another server from a connect link, where no sign-in
+    // page need follow (that server's login may still be valid).
+    adb('shell', 'run-as', PACKAGE, 'sh', '-c', '"mkdir -p cache/shared/e2e-left && echo copy > cache/shared/e2e-left/left.txt"');
+    assert.equal(cacheCopies(), '1');
+    await connectLink('https://other-server.example.invalid');
+    assert.ok(await copiesGone(), 'no copy for other apps is left after switching to another server');
+    // Back to the stack's server for the next test.
+    await connectLink(home);
   } finally {
     await device.close();
   }
