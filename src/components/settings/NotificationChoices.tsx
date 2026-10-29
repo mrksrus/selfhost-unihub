@@ -59,7 +59,13 @@ function MailNotificationChoices() {
   );
 }
 
-/** One account's rows under its address; a group, so the same labels can repeat per account. */
+/**
+ * One account's rows under its address; a group, so the same labels can repeat
+ * per account. The address sits flush left with more air above it than between
+ * rows, and the rows are indented with their own hairlines, so the only lines
+ * across the whole list are the account boundaries: the grouping is geometry,
+ * which every look and accent renders alike (B-23).
+ */
 function AccountNotifications({ account, settings, unavailable, change }: {
   account: MailAccount; settings: MailAccountSettings; unavailable: boolean; change: (patch: Partial<MailAccountSettingValues>) => void;
 }) {
@@ -68,39 +74,41 @@ function AccountNotifications({ account, settings, unavailable, change }: {
   const disabled = (key: keyof MailAccountSettingValues) => unavailable || settings[key].locked;
   const lock = (key: keyof MailAccountSettingValues) => settings[key].locked ? ADMIN_REASON : undefined;
   return (
-    <div role="group" aria-labelledby={id('title')} className="pt-4">
+    <div role="group" aria-labelledby={id('title')} className="pt-7">
       <h3 id={id('title')} className="text-sm font-semibold">{account.email_address}</h3>
       {account.display_name && <p className="mt-0.5 text-sm text-muted-foreground">{account.display_name}</p>}
-      <div className="divide-y divide-border">
-        <SettingsRow label="Notifications" description="New mail in this account." htmlFor={id('enabled')} lock={lock('notify_enabled')}>
-          <Switch id={id('enabled')} checked={values.notify_enabled} disabled={disabled('notify_enabled')} onCheckedChange={checked => change({ notify_enabled: checked })} />
-        </SettingsRow>
-        {/* Off hides the details, except those an administrator fixed: their reason stays in view. */}
-        {(values.notify_enabled || [settings.notify_folder_mode, settings.notify_folders, settings.notify_detail].some(setting => policyReason<unknown>(setting))) && (
-          <>
-            <SettingsRow label="Folders" description="Which folders announce new mail." htmlFor={id('mode')} lock={lock('notify_folder_mode')}>
-              <Select value={values.notify_folder_mode} disabled={disabled('notify_folder_mode')} onValueChange={value => change({ notify_folder_mode: value as MailAccountSettingValues['notify_folder_mode'] })}>
-                <SelectTrigger id={id('mode')} className="w-full sm:w-56"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="except">All folders except</SelectItem>
-                  <SelectItem value="only">Only these folders</SelectItem>
-                </SelectContent>
-              </Select>
-            </SettingsRow>
-            <FolderPicker account={account} mode={values.notify_folder_mode} refs={values.notify_folders} disabled={disabled('notify_folders')} lock={lock('notify_folders')}
-              onChange={notify_folders => change({ notify_folders })} />
-            <SettingsRow label="What it shows" description="The sender and subject, the sender, or only that mail arrived." htmlFor={id('detail')} lock={policyReason(settings.notify_detail)}>
-              <Select value={values.notify_detail} disabled={disabled('notify_detail')} onValueChange={value => change({ notify_detail: value as MailAccountSettingValues['notify_detail'] })}>
-                <SelectTrigger id={id('detail')} className="w-full sm:w-64"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {MAIL_DETAIL.map(option => (
-                    <SelectItem key={option.value} value={option.value} disabled={!allowedByFloor(settings.notify_detail, MAIL_DETAIL_ORDER, option.value)}>{option.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </SettingsRow>
-          </>
-        )}
+      <div className="mt-1 pl-4 sm:pl-6">
+        <div className="divide-y divide-border">
+          <SettingsRow label="Notifications" description="New mail in this account." htmlFor={id('enabled')} lock={lock('notify_enabled')}>
+            <Switch id={id('enabled')} checked={values.notify_enabled} disabled={disabled('notify_enabled')} onCheckedChange={checked => change({ notify_enabled: checked })} />
+          </SettingsRow>
+          {/* Off hides the details, except those an administrator fixed: their reason stays in view. */}
+          {(values.notify_enabled || [settings.notify_folder_mode, settings.notify_folders, settings.notify_detail].some(setting => policyReason<unknown>(setting))) && (
+            <>
+              <SettingsRow label="Folders" description="Which folders announce new mail." htmlFor={id('mode')} lock={lock('notify_folder_mode')}>
+                <Select value={values.notify_folder_mode} disabled={disabled('notify_folder_mode')} onValueChange={value => change({ notify_folder_mode: value as MailAccountSettingValues['notify_folder_mode'] })}>
+                  <SelectTrigger id={id('mode')} className="w-full sm:w-56"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="except">All folders except</SelectItem>
+                    <SelectItem value="only">Only these folders</SelectItem>
+                  </SelectContent>
+                </Select>
+              </SettingsRow>
+              <FolderPicker account={account} mode={values.notify_folder_mode} refs={values.notify_folders} disabled={disabled('notify_folders')} lock={lock('notify_folders')}
+                onChange={notify_folders => change({ notify_folders })} />
+              <SettingsRow label="What it shows" description="The sender and subject, the sender, or only that mail arrived." htmlFor={id('detail')} lock={policyReason(settings.notify_detail)}>
+                <Select value={values.notify_detail} disabled={disabled('notify_detail')} onValueChange={value => change({ notify_detail: value as MailAccountSettingValues['notify_detail'] })}>
+                  <SelectTrigger id={id('detail')} className="w-full sm:w-64"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {MAIL_DETAIL.map(option => (
+                      <SelectItem key={option.value} value={option.value} disabled={!allowedByFloor(settings.notify_detail, MAIL_DETAIL_ORDER, option.value)}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </SettingsRow>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
