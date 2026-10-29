@@ -182,6 +182,7 @@ export function deviceScreenshot(path) {
  * synthetic click. Page pixels become screen pixels from the WebView's place.
  */
 export async function touch(page, locator) {
+  await answerSlowDialogs();
   await locator.scrollIntoViewIfNeeded();
   // The page may still be moving (the on-screen keyboard opening): wait until the element stays put.
   let box = await locator.boundingBox();
