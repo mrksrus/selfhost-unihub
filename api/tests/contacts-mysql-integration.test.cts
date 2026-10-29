@@ -338,3 +338,86 @@ test('3+3 bridge: old-app limits, partial bodies, If-Match and replays never los
   const [[stored]] = await pool.query<RowDataPacket[]>("SELECT COUNT(*) AS n FROM contact_values WHERE contact_id = ? AND kind = 'email'", [five.id]);
   assert.equal(Number(stored.n), 3);
 });
+
+// Review round 2: a partial flat body changes only the slots it names; an
+// old app's addition beside hidden values never passes the per-kind limit,
+// and a restore keeps all it stored or refuses loudly; the values an old app
+// sees follow its own key rules (ContactCard.phoneKey, UTF-16 chars).
+test('3+3 bridge: partial slots, the per-kind limit with lossless restore, and the apps\' own keys', {
+  skip: !process.env.MYSQL_TEST_HOST, timeout: 300000,
+}, async t => {
+  const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
+  t.after(captureLog(() => {}));
+  const pool = await withTestDatabase(t);
+  const api = await startTestApi(t);
+  const password = 'synthetic-bridge-two-password';
+  const userId = crypto.randomUUID();
+  await pool.execute('INSERT INTO users (id, email, password_hash, full_name) VALUES (?, ?, ?, ?)',
+    [userId, 'bridge-two@example.test', await (require('bcryptjs') as typeof import('bcryptjs')).hash(password, 4), 'Bridge two']);
+  const owner = api.client();
+  assert.equal((await owner.request('POST', '/api/auth/signin', { email: 'bridge-two@example.test', password })).status, 200);
+  async function call(method: string, path: string, body?: unknown, status = 200): Promise<FixtureValue> {
+    const reply = await owner.request(method, path, body);
+    assert.equal(reply.status, status, `${method} ${path}: ${JSON.stringify(reply.body).slice(0, 400)}`);
+    return reply.body;
+  }
+  const phones = (contact: FixtureValue) => contact.phones.map((item: FixtureValue) => item.value);
+  const listed = async (id: string) => ((await call('GET', '/api/contacts')).contacts as FixtureValue[]).find(contact => contact.id === id);
+
+  // ── A partial body names one slot: the others stay ──
+  const threePhones = { first_name: 'Slots', email: 'slots@example.test', phone: '111', phone2: '222', phone3: '333' };
+  const cleared = (await call('POST', '/api/contacts', threePhones)).contact;
+  const afterClear = (await call('PUT', `/api/contacts/${cleared.id}`, { phone2: '' })).contact;
+  assert.deepEqual(phones(afterClear), ['111', '333'], 'only the second number goes');
+  assert.deepEqual([afterClear.name.given, afterClear.email], ['Slots', 'slots@example.test']);
+  const replaced = (await call('POST', '/api/contacts', threePhones)).contact;
+  const afterReplace = (await call('PUT', `/api/contacts/${replaced.id}`, { phone2: '444' })).contact;
+  assert.deepEqual(phones(afterReplace), ['111', '444', '333'], 'only the second number changes');
+  assert.deepEqual([afterReplace.phone, afterReplace.phone2, afterReplace.phone3], ['111', '444', '333']);
+  const afterThird = (await call('PUT', `/api/contacts/${replaced.id}`, { phone3: null, email2: 'second@example.test' })).contact;
+  assert.deepEqual([phones(afterThird), afterThird.emails.map((item: FixtureValue) => item.value)], [['111', '444'], ['slots@example.test', 'second@example.test']]);
+
+  // ── 100 numbers with a hidden long one: an old app's third number is refused, nothing is lost ──
+  const longPhone = '+43 ' + '9'.repeat(56);
+  const hundred = ['+43 1 0', longPhone, ...Array.from({ length: 98 }, (_, index) => `+43 1 ${index + 1}`)];
+  const full = (await call('POST', '/api/contacts', { name: { given: 'Hundred' }, phones: hundred })).contact;
+  const seen = await listed(full.id);
+  assert.deepEqual([seen.phone, seen.phone2, seen.phone3], ['+43 1 0', '+43 1 1', null], 'the app sees two numbers');
+  const refused = await call('PUT', `/api/contacts/${full.id}`, { first_name: 'Hundred', phone: '+43 1 0', phone2: '+43 1 1', phone3: '+43 1 999' }, 400);
+  assert.equal(refused.code, 'TOO_MANY_VALUES');
+  assert.match(refused.error, /already has 100 phone numbers/);
+  const kept = (await call('GET', `/api/contacts/${full.id}`)).contact;
+  assert.deepEqual([phones(kept).length, phones(kept).includes(longPhone), kept.version], [100, true, 1], 'the refused write changed nothing');
+  // An edit that stays within the limit still arrives, and the hidden number stays.
+  const swapped = (await call('PUT', `/api/contacts/${full.id}`, { first_name: 'Hundred', phone: '+43 1 0', phone2: '+43 1 777' })).contact;
+  assert.deepEqual([phones(swapped).length, phones(swapped).includes(longPhone), phones(swapped).includes('+43 1 777')], [100, true, true]);
+
+  // A restore keeps every value it was given up to the limit, and refuses more instead of dropping any.
+  const { importBackupForUser } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
+  const archive = (count: number) => {
+    const id = crypto.randomUUID();
+    return { app: 'unihub', version: 4, files: [], data: { contacts: [{ id, first_name: `Restored ${count}` }],
+      contact_values: Array.from({ length: count }, (_, index) => ({ id: crypto.randomUUID(), contact_id: id, kind: 'phone', position: index === 1 ? count - 1 : index === count - 1 ? 1 : index,
+        value: index === 1 ? longPhone : `+44 20 ${index}`, label: '' })) } };
+  };
+  await importBackupForUser(userId, archive(100) as FixtureValue, { mode: 'apply', conflict_mode: 'keep_both' });
+  const restored = ((await call('GET', '/api/contacts?q=Restored')).contacts as FixtureValue[]);
+  assert.equal(restored.length, 1);
+  assert.deepEqual([restored[0].phones.length, phones(restored[0]).includes(longPhone)], [100, true], 'all 100, the long number included');
+  const [[before]] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM contacts WHERE user_id = ?', [userId]);
+  await assert.rejects(importBackupForUser(userId, archive(101) as FixtureValue, { mode: 'apply', conflict_mode: 'keep_both' }), /more than 100 values of one kind \(phone\)/);
+  const [[after]] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM contacts WHERE user_id = ?', [userId]);
+  assert.equal(after.n, before.n, 'a refused restore writes nothing');
+
+  // ── The apps' keys: digits outside the BMP count for nothing, one value per key ──
+  const keyed = (await call('POST', '/api/contacts', { name: { given: 'Keys' }, phones: ['𝟙', '𝟚', '+43 1 5'] })).contact;
+  const keyedSeen = await listed(keyed.id);
+  assert.deepEqual([keyedSeen.phone, keyedSeen.phone2, keyedSeen.phone3], ['+43 1 5', null, null], 'numbers with an empty app key are not shown');
+  const keyedAfter = (await call('PUT', `/api/contacts/${keyed.id}`, { first_name: 'Keys', phone: '+43 1 5' })).contact;
+  assert.deepEqual(phones(keyedAfter).sort(), ['+43 1 5', '𝟙', '𝟚'].sort(), 'both survive the app\'s write');
+  const twins = (await call('POST', '/api/contacts', { name: { given: 'Twins' }, phones: ['+1 555 0100', '+15550100', '٣٣٣', '333'] })).contact;
+  const twinsSeen = await listed(twins.id);
+  assert.deepEqual([twinsSeen.phone, twinsSeen.phone2, twinsSeen.phone3], ['+1 555 0100', '٣٣٣', null], 'one value per app key; a BMP digit is a digit');
+  const twinsAfter = (await call('PUT', `/api/contacts/${twins.id}`, { first_name: 'Twins', phone: '+1 555 0100', phone2: '٣٣٣' })).contact;
+  assert.deepEqual(phones(twinsAfter).sort(), ['+1 555 0100', '+15550100', '٣٣٣', '333'].sort(), 'the hidden twin survives');
+});

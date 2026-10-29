@@ -318,13 +318,32 @@ const OLD_APP_VALUE: Readonly<Record<'email' | 'phone', number>> = { email: 255,
 // The three places of each kind an old app sees; values from position 3 on are the phone's "more".
 const LEGACY_SLOT_COUNT = 3;
 
+// The apps' Kotlin string rules, char by char in UTF-16 units as the JVM
+// sees them. String.trim() removes Char.isWhitespace() (Unicode space
+// separators plus the ASCII and information separator controls); a
+// surrogate is never a digit, so a digit outside the BMP ("𝟙") adds nothing
+// to a phone key (ContactCard.phoneKey: isDigit() or '+').
+// eslint-disable-next-line no-control-regex -- Kotlin's whitespace includes these ASCII controls.
+const KOTLIN_WHITESPACE = /^[\p{Zs}\p{Zl}\p{Zp}\t\n\u000B\f\r\u001C-\u001F]$/u;
+const KOTLIN_DIGIT = /^\p{Nd}$/u;
+function kotlinTrim(value: string) {
+  let start = 0; let end = value.length;
+  while (start < end && KOTLIN_WHITESPACE.test(value[start])) start++;
+  while (end > start && KOTLIN_WHITESPACE.test(value[end - 1])) end--;
+  return value.slice(start, end);
+}
 function oldAppCut(value: string, max: number) {
-  const text = value.trim();
+  const text = kotlinTrim(value);
   if (text.length <= max) return text;
   const end = /[\uD800-\uDBFF]/.test(text[max - 1]) ? max - 1 : max;
-  return text.slice(0, end).trim();
+  return kotlinTrim(text.slice(0, end));
 }
-const oldAppKey = (kind: 'email' | 'phone', value: string) => kind === 'phone' ? value.replace(/[^\p{Nd}+]/gu, '') : value.trim().toLowerCase();
+function oldAppKey(kind: 'email' | 'phone', value: string) {
+  if (kind === 'email') return kotlinTrim(value).toLowerCase();
+  let key = '';
+  for (let index = 0; index < value.length; index++) if (value[index] === '+' || KOTLIN_DIGIT.test(value[index])) key += value[index];
+  return key;
+}
 
 // A sent value equals the current one as an old app would send it back.
 function sameForOldApp(sent: string | null, current: string | null, max: number) {
@@ -332,15 +351,16 @@ function sameForOldApp(sent: string | null, current: string | null, max: number)
 }
 
 // The values an old app sees: those in the three places it can hold, in
-// position order. The others (from position 3 on, too long, or a second
-// value with the same app key) stay out of its sight, so its writes cannot
-// remove them.
+// position order. The others (from position 3 on, too long, an empty app key
+// or a second value with the same app key) stay out of its sight, so its
+// writes cannot remove them.
 function projectedValues(kind: 'email' | 'phone', values: readonly ValueRow[]) {
   const seen = new Set<string>();
   return values.filter(value => value.kind === kind && value.position < LEGACY_SLOT_COUNT).filter(value => {
-    const text = value.value.trim();
-    const key = oldAppKey(kind, value.value);
-    if (!text || text.length > OLD_APP_VALUE[kind] || seen.has(key)) return false;
+    // ServerContact.from() trims what it reads; forServer() measures that.
+    const text = kotlinTrim(value.value);
+    const key = oldAppKey(kind, text);
+    if (!text || !key || text.length > OLD_APP_VALUE[kind] || seen.has(key)) return false;
     seen.add(key);
     return true;
   });
@@ -616,6 +636,15 @@ function asDraft(row: ValueRow): ValueDraft {
 
 const legacyValues = (fields: LegacyFields, kind: 'email' | 'phone') => LEGACY_SLOTS[kind].map(slot => fields[slot]).filter((value): value is string => !!value);
 
+// The values a flat body leaves in a kind's places. A whole body names them
+// all (an absent slot is empty); a partial body changes only the slots it
+// names, and the others keep what the app was shown there.
+function sentValues(kind: 'email' | 'phone', fields: LegacyFields, present: ReadonlySet<string>, whole: boolean, stored: readonly ValueRow[]) {
+  if (whole) return legacyValues(fields, kind);
+  const shown = projectedValues(kind, stored).map(row => row.value);
+  return LEGACY_SLOTS[kind].map((slot, index) => present.has(slot) ? fields[slot] : shown[index] ?? null).filter((value): value is string => !!value);
+}
+
 interface LegacyUpdate { whole: boolean; present: ReadonlySet<string>; favorite: boolean | null; expectedVersion: number | null }
 
 // A flat 3+3 body applied as a diff (P-21). A field the body does not carry
@@ -644,7 +673,16 @@ async function applyLegacyUpdate(cx: SqlExecutor, userId: string, id: string, fi
     WHERE id = ? AND user_id = ?`,
   [names.first_name, names.last_name, names.display_name, company, jobTitle, notes, (favorite ?? !!row.is_favorite) ? 1 : 0,
     draftNameKey({ ...names, middle_name: row.middle_name }), id, userId]);
-  if (kinds.length) await writeValues(cx, userId, id, kinds, kinds.flatMap(kind => legacyList(kind, stored, legacyValues(fields, kind))));
+  const lists = kinds.map(kind => {
+    const list = legacyList(kind, stored, sentValues(kind, fields, present, whole, stored));
+    // An addition beside values the app cannot see may not pass the limit a
+    // full write and a restore hold to; nothing is dropped to make room.
+    if (list.length > VALUES_PER_KIND) {
+      throw badRequest('TOO_MANY_VALUES', `This contact already has ${VALUES_PER_KIND} ${kind === 'email' ? 'email addresses' : 'phone numbers'}; remove one in UniHub before adding another`);
+    }
+    return list;
+  });
+  if (kinds.length) await writeValues(cx, userId, id, kinds, lists.flat());
 }
 
 function legacyDraft(fields: LegacyFields): ContactDraft {

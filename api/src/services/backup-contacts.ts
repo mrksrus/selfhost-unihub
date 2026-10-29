@@ -16,8 +16,15 @@ interface ArchivedValue { kind: ContactValueKind; value: string }
 
 const LEGACY_SLOTS = { email: ['email', 'email2', 'email3'], phone: ['phone', 'phone2', 'phone3'] } as const;
 const text = (value: unknown) => typeof value === 'string' ? value : typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
-const cut = (value: string, max: number) => Array.from(value).slice(0, max).join('');
-const nullable = (value: unknown, max = 255) => { const result = text(value).trim(); return result ? cut(result, max) : null; };
+// The reader holds an archive to the limits the store writes with
+// (services/contacts.ts): anything beyond them did not come from UniHub, and
+// the restore stops with this error instead of cutting or dropping it.
+const beyondLimits = (what: string) => Object.assign(new Error(`A contact in this backup has ${what} beyond what UniHub stores; nothing was restored.`), { status: 400 });
+function bounded(value: string, max: number, what: string) {
+  if (Array.from(value).length > max) throw beyondLimits(`a ${what} longer than ${max} characters`);
+  return value;
+}
+const nullable = (value: unknown, what: string, max = 255) => { const result = text(value).trim(); return result ? bounded(result, max, what) : null; };
 
 function groupBy(rows: unknown, key: string) {
   const grouped = new Map<string, Row[]>();
@@ -30,7 +37,9 @@ function groupBy(rows: unknown, key: string) {
 
 // The values of one archived contact, as drafts for the store: the child
 // rows of a newer archive, else the fixed fields of an older one (verbatim,
-// as upgrade 22 copies them). Unknown kinds are dropped, unknown labels cleared.
+// as upgrade 22 copies them). Unknown labels are cleared; an unknown kind,
+// more values of a kind than a contact holds or a value beyond its limit
+// stops the restore.
 function archivedValues(contact: Row, children: readonly Row[] | undefined): ValueDraft[] {
   if (children?.length) {
     const sorted = [...children].sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
@@ -39,12 +48,13 @@ function archivedValues(contact: Row, children: readonly Row[] | undefined): Val
     return sorted.flatMap((row): ValueDraft[] => {
       const kind = text(row.kind) as ContactValueKind;
       const value = text(row.value);
-      if (!VALUE_KINDS.includes(kind) || !value.trim()) return [];
+      if (!VALUE_KINDS.includes(kind)) throw beyondLimits('a value of an unknown kind');
+      if (!value.trim()) return [];
       const count = (counts.get(kind) || 0) + 1;
       counts.set(kind, count);
-      if (count > VALUES_PER_KIND) return [];
+      if (count > VALUES_PER_KIND) throw beyondLimits(`more than ${VALUES_PER_KIND} values of one kind (${kind})`);
       const label = LABELS[kind].has(text(row.label)) ? text(row.label) : '';
-      const customLabel = label === 'custom' ? nullable(row.custom_label, 100) : null;
+      const customLabel = label === 'custom' ? nullable(row.custom_label, 'custom label', 100) : null;
       let params = row.params;
       if (typeof params === 'string') { try { params = JSON.parse(params); } catch { params = null; } }
       // The archived place is kept (the three places an old app sees, and the
@@ -53,24 +63,25 @@ function archivedValues(contact: Row, children: readonly Row[] | undefined): Val
       const position = Number.isInteger(archivedPosition) && archivedPosition >= 0 && archivedPosition <= 65535 && !taken.has(`${kind}:${archivedPosition}`) ? archivedPosition : undefined;
       if (position !== undefined) taken.add(`${kind}:${position}`);
       return [{
-        position, kind, value: cut(value, VALUE_LIMITS[kind]), label: label === 'custom' && !customLabel ? '' : label, custom_label: customLabel, preferred: !!row.is_preferred,
-        po_box: nullable(row.po_box), extended: nullable(row.extended), street: nullable(row.street, 1000), locality: nullable(row.locality),
-        region: nullable(row.region), postal_code: nullable(row.postal_code), country: nullable(row.country),
-        params: params && typeof params === 'object' ? params : null, vcard_group: nullable(row.vcard_group, 64),
+        position, kind, value: bounded(value, VALUE_LIMITS[kind], kind), label: label === 'custom' && !customLabel ? '' : label, custom_label: customLabel, preferred: !!row.is_preferred,
+        po_box: nullable(row.po_box, 'address part'), extended: nullable(row.extended, 'address part'), street: nullable(row.street, 'street', 1000), locality: nullable(row.locality, 'address part'),
+        region: nullable(row.region, 'address part'), postal_code: nullable(row.postal_code, 'address part'), country: nullable(row.country, 'address part'),
+        params: params && typeof params === 'object' ? params : null, vcard_group: nullable(row.vcard_group, 'vCard group', 64),
       }];
     });
   }
   return (['email', 'phone'] as const).flatMap(kind => LEGACY_SLOTS[kind].map(slot => text(contact[slot])).filter(value => value.trim())
-    .map((value): ValueDraft => ({ kind, value: cut(value, VALUE_LIMITS[kind]), label: '', custom_label: null, preferred: false })));
+    .map((value): ValueDraft => ({ kind, value: bounded(value, VALUE_LIMITS[kind], kind), label: '', custom_label: null, preferred: false })));
 }
 
 function archivedProperties(rows: readonly Row[] | undefined): KeptPropertyDraft[] {
-  return [...(rows || [])].sort((a, b) => Number(a.position || 0) - Number(b.position || 0)).slice(0, KEPT_PROPERTIES_MAX).flatMap(row => {
-    const name = nullable(row.name, 64);
+  if ((rows || []).length > KEPT_PROPERTIES_MAX) throw beyondLimits(`more than ${KEPT_PROPERTIES_MAX} kept properties`);
+  return [...(rows || [])].sort((a, b) => Number(a.position || 0) - Number(b.position || 0)).flatMap(row => {
+    const name = nullable(row.name, 'kept property name', 64);
     if (!name) return [];
     let params = row.params;
     if (typeof params === 'string') { try { params = JSON.parse(params); } catch { params = null; } }
-    return [{ name, group: nullable(row.vcard_group, 64), params: params && typeof params === 'object' ? params as KeptPropertyDraft['params'] : null, value: text(row.value), source_version: nullable(row.source_version, 8) }];
+    return [{ name, group: nullable(row.vcard_group, 'vCard group', 64), params: params && typeof params === 'object' ? params as KeptPropertyDraft['params'] : null, value: text(row.value), source_version: nullable(row.source_version, 'vCard version', 8) }];
   });
 }
 
@@ -152,16 +163,16 @@ async function restoreContactsSection(connection: SqlExecutor, userId: string, d
     // keep_existing leaves a matched contact as it is.
     if (existingId && existingId === targetId && conflictMode !== 'replace') continue;
     // A UID already used by another of this user's contacts (Keep both) gets a new one.
-    let uid = text(contact.uid).trim() ? cut(text(contact.uid).trim(), 255) : newUid(sourceId);
+    let uid = text(contact.uid).trim() ? bounded(text(contact.uid).trim(), 255, 'UID') : newUid(sourceId);
     const [[holder]] = await connection.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM contacts WHERE user_id = ? AND uid_hash = ?', [userId, uidHash(uid)]);
     if (holder && holder.id !== targetId) uid = newUid(targetId);
     const draft = {
-      display_name: nullable(contact.display_name), first_name: nullable(contact.first_name) || '', last_name: nullable(contact.last_name),
-      middle_name: nullable(contact.middle_name), name_prefix: nullable(contact.name_prefix), name_suffix: nullable(contact.name_suffix),
-      company: nullable(contact.company), department: nullable(contact.department), job_title: nullable(contact.job_title),
+      display_name: nullable(contact.display_name, 'display name'), first_name: nullable(contact.first_name, 'first name') || '', last_name: nullable(contact.last_name, 'last name'),
+      middle_name: nullable(contact.middle_name, 'middle name'), name_prefix: nullable(contact.name_prefix, 'name prefix'), name_suffix: nullable(contact.name_suffix, 'name suffix'),
+      company: nullable(contact.company, 'organisation'), department: nullable(contact.department, 'department'), job_title: nullable(contact.job_title, 'job title'),
       birthday: /^(\d{4}|-)-\d{2}-\d{2}$/.test(text(contact.birthday)) ? text(contact.birthday) : null,
       anniversary: /^(\d{4}|-)-\d{2}-\d{2}$/.test(text(contact.anniversary)) ? text(contact.anniversary) : null,
-      notes: text(contact.notes) ? Buffer.from(text(contact.notes), 'utf8').subarray(0, 65535).toString('utf8') : null,
+      notes: !text(contact.notes) ? null : Buffer.byteLength(text(contact.notes), 'utf8') > 65535 ? (() => { throw beyondLimits('notes longer than 65535 bytes'); })() : text(contact.notes),
     };
     const columns = ['id', 'user_id', 'uid', 'uid_hash', ...Object.keys(draft), 'is_favorite', 'name_key'];
     await writeOwnedRow(connection, userId, 'contacts', columns,
@@ -177,7 +188,7 @@ async function restoreContactsSection(connection: SqlExecutor, userId: string, d
     const uid = text(alias.uid).trim();
     if (!contactId || !uid) continue;
     await connection.execute('INSERT INTO contact_uid_aliases (user_id, uid_hash, uid, contact_id) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE uid = uid',
-      [userId, uidHash(uid), cut(uid, 255), contactId]);
+      [userId, uidHash(uid), bounded(uid, 255, 'UID'), contactId]);
   }
   for (const pair of (Array.isArray(data.contact_duplicate_dismissals) ? data.contact_duplicate_dismissals : []) as Row[]) {
     const [a, b] = [idMap.get(text(pair.contact_a)), idMap.get(text(pair.contact_b))];
