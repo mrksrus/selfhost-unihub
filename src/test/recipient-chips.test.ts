@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { joinRecipients, looksLikeAddress, recipientChipLabel, splitRecipients } from '@/lib/recipient-chips';
+import { joinRecipients, looksLikeAddress, recipientAddress, recipientChipLabel, splitRecipients } from '@/lib/recipient-chips';
 
 // The phone composer's chips are a view of the one comma-separated recipient
 // string; a wrong split would send to a different address than the chips show.
@@ -24,6 +24,23 @@ describe('recipient chips', () => {
     const value = '"Doe, Jane" <jane2@example.com>, b@example.com, c';
     const { entries, draft } = splitRecipients(value);
     expect(joinRecipients(entries, draft)).toBe(value);
+  });
+
+  it('an escaped quote inside a quoted name does not end it: removing one chip keeps the other', () => {
+    const value = '"Doe \\", Jane" <jane@example.com>, bob@example.org, ';
+    const { entries, draft } = splitRecipients(value);
+    expect(entries).toEqual(['"Doe \\", Jane" <jane@example.com>', 'bob@example.org']);
+    expect(draft).toBe('');
+    expect(recipientChipLabel(entries[0])).toBe('Doe ", Jane');
+    expect(recipientAddress(entries[0])).toBe('jane@example.com');
+    // The chip for Jane is removed; the draft's string keeps Bob alone, and reads back the same.
+    const saved = joinRecipients(entries.filter(entry => entry !== entries[0]), draft);
+    expect(saved).toBe('bob@example.org, ');
+    expect(splitRecipients(saved).entries).toEqual(['bob@example.org']);
+    // And the other way round: Jane stays whole.
+    const kept = joinRecipients([entries[0]], '');
+    expect(splitRecipients(kept).entries).toEqual([entries[0]]);
+    expect(splitRecipients('"a\\\\", b@example.org').entries).toEqual(['"a\\\\"']);
   });
 
   it('shows the name of a named entry and marks what cannot be an address', () => {

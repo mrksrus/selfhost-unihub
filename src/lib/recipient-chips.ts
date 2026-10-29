@@ -12,15 +12,24 @@ export interface RecipientParts {
 
 /**
  * Splits on commas that are not inside a quoted name or an angle-bracket
- * address, so `"Doe, Jane" <jane@example.com>` stays one entry.
+ * address, so `"Doe, Jane" <jane@example.com>` stays one entry. Inside a
+ * quoted name a backslash escapes the next character (RFC 5322), as the
+ * server's parser reads it: `"Doe \", Jane"` is still one name.
  */
 export function splitRecipients(value: string): RecipientParts {
   const pieces: string[] = [];
   let current = '';
   let quoted = false;
+  let escaped = false;
   let bracketed = false;
   for (const char of value) {
-    if (char === '"' && !bracketed) quoted = !quoted;
+    if (escaped) {
+      escaped = false;
+      current += char;
+      continue;
+    }
+    if (char === '\\' && quoted) escaped = true;
+    else if (char === '"' && !bracketed) quoted = !quoted;
     else if (char === '<' && !quoted) bracketed = true;
     else if (char === '>' && !quoted) bracketed = false;
     if (char === ',' && !quoted && !bracketed) {
@@ -43,14 +52,15 @@ export function joinRecipients(entries: string[], draft: string): string {
 
 /** What a chip shows: the display name of `Name <address>`, else the address. */
 export function recipientChipLabel(entry: string): string {
-  const named = /^\s*"?([^"<]*?)"?\s*<[^>]*>\s*$/.exec(entry);
-  const name = named?.[1]?.trim();
+  const quoted = /^\s*"((?:[^"\\]|\\.)*)"\s*<[^<>]*>\s*$/.exec(entry);
+  const named = quoted ? quoted[1].replace(/\\(.)/g, '$1') : /^\s*([^"<]*?)\s*<[^>]*>\s*$/.exec(entry)?.[1];
+  const name = named?.trim();
   return name || entry.replace(/^<|>$/g, '').trim();
 }
 
-/** The address part of an entry, for the chip's details. */
+/** The address part of an entry (the last bracketed part; a quoted name may hold brackets), for the chip's details. */
 export function recipientAddress(entry: string): string {
-  const bracketed = /<([^>]*)>/.exec(entry);
+  const bracketed = /<([^<>]*)>\s*$/.exec(entry);
   return (bracketed ? bracketed[1] : entry).trim();
 }
 
