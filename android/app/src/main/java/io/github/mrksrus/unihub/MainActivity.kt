@@ -52,7 +52,8 @@ class MainActivity : Activity() {
     private var webView: WebView? = null
     private var errorView: View? = null
     private var bridge: WebBridge? = null
-    private var fileCallback: ValueCallback<Array<Uri>>? = null
+    // The page's file input while Android's picker is open, bound to the session.
+    private val filePick = PickedFiles.Pick<Array<Uri>>(FileActions.session)
     private var pendingPermission: PermissionRequest? = null
     // Each connect check and screen change gets a new number; an older check's
     // answer is ignored.
@@ -189,7 +190,12 @@ class MainActivity : Activity() {
     // Contacts on the phone belong to one server; another server's are removed.
     // Notifications stay set up per server and come back with it.
     private fun useServer(server: String) {
-        if (ServerAddress.saved(this) != server) NotificationService.stop(this)
+        // Also from a connect link, where the next server's sign-in may still
+        // be valid: no sign-in page would end the file session then.
+        if (ServerAddress.saved(this) != server) {
+            NotificationService.stop(this)
+            endFileSession()
+        }
         ServerAddress.save(this, server)
         if (ContactsSync.account(this)?.let { ContactsSync.origin(this, it) } != server) ContactsSync.turnOff(this)
         NotificationService.startIfWanted(this)
@@ -198,9 +204,15 @@ class MainActivity : Activity() {
     private fun changeServer() {
         val current = origin
         ServerAddress.clear(this)
-        FileActions.endSession(this)
+        endFileSession()
         NotificationService.stop(this)
         showConnect(prefill = current)
+    }
+
+    // Copies for other apps and picked files go, and a picker still open hands the page nothing.
+    private fun endFileSession() {
+        FileActions.endSession(this)
+        filePick.cancel()
     }
 
     // ── The server's pages ─────────────────────────────────────────────
@@ -254,13 +266,14 @@ class MainActivity : Activity() {
                 ContactsSync.pageShown(this@MainActivity, url)
                 hideError()
                 pageBridge.cancelFiles()
+                filePick.cancel()
             }
 
             // Also after signing in, which changes the page without loading one.
             override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
                 ContactsSync.pageShown(this@MainActivity, url)
                 // Signed out (here, elsewhere or expired): the files handed to other apps go.
-                if (isSignInPage(url)) FileActions.endSession(this@MainActivity)
+                if (isSignInPage(url)) endFileSession()
                 offerContacts(server)
                 offerNotifications(server)
                 resumeNotifications()
@@ -282,13 +295,12 @@ class MainActivity : Activity() {
 
         web.webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
-                fileCallback?.onReceiveValue(null)
-                fileCallback = callback
+                filePick.cancel()
                 return try {
                     startActivityForResult(params.createIntent(), REQUEST_FILE)
+                    filePick.open(callback::onReceiveValue)
                     true
                 } catch (_: Exception) {
-                    fileCallback = null
                     false
                 }
             }
@@ -320,6 +332,7 @@ class MainActivity : Activity() {
         screenGeneration++
         contactsRecheck.removeCallbacksAndMessages(null)
         contactsOfferPending = false
+        filePick.cancel()
         webView?.let {
             (it.parent as? ViewGroup)?.removeView(it)
             it.destroy()
@@ -686,28 +699,27 @@ class MainActivity : Activity() {
     @Deprecated("Activity result API needs AndroidX; the framework call is enough here.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         if (requestCode == REQUEST_FILE) {
+            // Nothing is copied for a pick whose session ended while the picker was open.
+            val pick = filePick.finish() ?: return
             val clip = data?.clipData
             val picked = PickedFiles.collect(resultCode == RESULT_OK, data?.data,
                 if (clip == null) emptyList() else List(clip.itemCount) { clip.getItemAt(it).uri })
-            val callback = fileCallback ?: return
-            fileCallback = null
             if (picked == null) {
-                callback.onReceiveValue(null)
+                pick.deliver(null)
                 return
             }
             // WebView 133 (Android 16) reads a picker's document URI as an
             // empty file; it reads the app's own copy correctly everywhere.
             // Copies finished after signing out (checked here, on the thread
             // that ends sessions) are deleted, and the page gets nothing.
-            val session = FileActions.currentSession()
-            FileActions.copyPicked(this, picked, session) { outcome ->
+            FileActions.copyPicked(this, picked, pick.session) { outcome ->
                 runOnUiThread {
-                    if (outcome == null || !FileActions.isCurrent(session) || isFinishing || isDestroyed) {
+                    if (outcome == null || !FileActions.session.isCurrent(pick.session) || isFinishing || isDestroyed) {
                         outcome?.let { FileActions.discard(it.copies) }
-                        callback.onReceiveValue(null)
+                        pick.deliver(null)
                         return@runOnUiThread
                     }
-                    callback.onReceiveValue(outcome.copies.map { it.uri }.ifEmpty { null }?.toTypedArray())
+                    pick.deliver(outcome.copies.map { it.uri }.ifEmpty { null }?.toTypedArray())
                     if (outcome.refused.isNotEmpty()) showRefusedFiles(outcome.refused)
                 }
             }

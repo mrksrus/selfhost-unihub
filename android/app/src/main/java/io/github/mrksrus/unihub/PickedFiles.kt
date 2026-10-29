@@ -54,6 +54,43 @@ object PickedFiles {
     }
 
     /**
+     * The page's file input while Android's picker is open, with the session
+     * it was opened in. Ending the session or losing the page cancels it (the
+     * page gets nothing), and a picker that answers for a session that has
+     * ended is not copied: the page gets nothing then either. Main thread only.
+     */
+    class Pick<R>(private val session: Generation) {
+        class Waiting<R>(val session: Long, val deliver: (R?) -> Unit)
+
+        private var waiting: Waiting<R>? = null
+
+        /** A picker was opened; one still waiting gets nothing. */
+        fun open(deliver: (R?) -> Unit) {
+            cancel()
+            waiting = Waiting(session.current(), deliver)
+        }
+
+        /** The page gets nothing: the session ended, or the page went away. */
+        fun cancel() {
+            val pending = waiting ?: return
+            waiting = null
+            pending.deliver(null)
+        }
+
+        /**
+         * The picker answered: what waits for its files, or null when nothing
+         * does or the session it was opened in has ended (and was handed null).
+         */
+        fun finish(): Waiting<R>? {
+            val pending = waiting ?: return null
+            waiting = null
+            if (session.isCurrent(pending.session)) return pending
+            pending.deliver(null)
+            return null
+        }
+    }
+
+    /**
      * Streams one file, refused past `limit` bytes or when the free space
      * (`freeBytes`, read every few MB) would fall below RESERVE_BYTES, and
      * stopped when `alive` turns false. Returns the bytes copied.

@@ -183,12 +183,8 @@ class FileActions(private val activity: Activity, private val origin: String) {
         // worker for copying picked files and for every cleanup, so a cleanup
         // never runs while a copy is being written and nothing is written
         // after it.
-        private val session = PickedFiles.Generation()
+        val session = PickedFiles.Generation()
         private val copier = Executors.newSingleThreadExecutor()
-
-        /** The current session, for a copy to check before it hands anything over. */
-        fun currentSession(): Long = session.current()
-        fun isCurrent(token: Long) = session.isCurrent(token)
 
         class PickedCopy(val uri: Uri, internal val folder: File)
 
@@ -268,11 +264,16 @@ class FileActions(private val activity: Activity, private val origin: String) {
 
         /**
          * The person signed out or left the server: copies still being made
-         * stop and hand nothing over, and every copy is deleted after them.
+         * stop and hand nothing over, other apps lose their access to every
+         * copy at once, and every copy is deleted after them.
          */
         fun endSession(context: Context) {
             session.next()
             val app = context.applicationContext
+            // By path prefix: every address under the folder, whichever app was given it.
+            for (folder in listOf("shared", "picked")) {
+                app.revokeUriPermission(Uri.parse("content://${authority(app)}/$folder"), Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
             copier.execute { clear(app) }
         }
 

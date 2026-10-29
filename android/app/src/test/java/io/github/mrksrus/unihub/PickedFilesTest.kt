@@ -136,4 +136,56 @@ class PickedFilesTest {
         assertNull(again)
         assertTrue(discarded.contains("again-a"))
     }
+
+    // ── The file input while Android's picker is open ─────────────────
+
+    @Test
+    fun aPickerAnsweringInItsOwnSessionHandsTheFilesOver() {
+        val generation = PickedFiles.Generation()
+        val pick = PickedFiles.Pick<List<String>>(generation)
+        val delivered = mutableListOf<List<String>?>()
+        pick.open { delivered += it }
+        val waiting = pick.finish()!!
+        assertEquals(generation.current(), waiting.session)
+        waiting.deliver(listOf("copy"))
+        assertEquals(listOf<List<String>?>(listOf("copy")), delivered)
+        assertNull(pick.finish())
+    }
+
+    @Test
+    fun aPickerAnsweringAfterTheSessionEndedCopiesNothingAndHandsNothingOver() {
+        val generation = PickedFiles.Generation()
+        val pick = PickedFiles.Pick<List<String>>(generation)
+        val delivered = mutableListOf<List<String>?>()
+        pick.open { delivered += it }
+        // Signed out while the picker was open; its answer arrives afterwards.
+        generation.next()
+        val written = mutableListOf<String>()
+        pick.finish()?.let { waiting ->
+            PickedFiles.copyAll(listOf("a"), { it }, { generation.isCurrent(waiting.session) }, { name, _ ->
+                written += name
+                name to 1L
+            }, {})
+        }
+        assertEquals(emptyList<String>(), written)
+        assertEquals(listOf<List<String>?>(null), delivered)
+    }
+
+    @Test
+    fun endingTheSessionOrANewPickerCancelsTheOneWaiting() {
+        val generation = PickedFiles.Generation()
+        val pick = PickedFiles.Pick<List<String>>(generation)
+        val first = mutableListOf<List<String>?>()
+        pick.open { first += it }
+        val second = mutableListOf<List<String>?>()
+        pick.open { second += it }
+        assertEquals(listOf<List<String>?>(null), first)
+        // MainActivity.endFileSession: the next session, and the page gets nothing at once.
+        generation.next()
+        pick.cancel()
+        assertEquals(listOf<List<String>?>(null), second)
+        assertNull(pick.finish())
+        pick.cancel()
+        assertEquals(1, second.size)
+    }
 }
