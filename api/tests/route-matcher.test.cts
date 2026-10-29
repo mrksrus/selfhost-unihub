@@ -32,7 +32,8 @@ test('exact keys win over parameters, and the most literal pattern wins among pa
   assert.equal(resolve('POST', '/api/mail/emails/bulk-delete'), 'POST /api/mail/emails/bulk-delete');
   assert.equal(resolve('POST', '/api/mail/sender-rules/backfill'), 'POST /api/mail/sender-rules/backfill');
   assert.equal(resolve('POST', '/api/recordings/uploads/start'), 'POST /api/recordings/uploads/start');
-  assert.equal(resolve('POST', '/api/contacts/merge-duplicates/preview'), 'POST /api/contacts/merge-duplicates/preview');
+  assert.equal(resolve('POST', '/api/contacts/bulk-update'), 'POST /api/contacts/bulk-update');
+  assert.deepEqual(match('PUT', '/api/contacts/c1/favorite'), { key: 'PUT /api/contacts/:id/favorite', params: { id: 'c1' } });
   assert.deepEqual(match('POST', '/api/calendar/events/e1/subtasks/reorder'), { key: 'POST /api/calendar/events/:id/subtasks/reorder', params: { id: 'e1' } });
   assert.deepEqual(match('PUT', '/api/calendar/events/e1/subtasks/s1'), { key: 'PUT /api/calendar/events/:id/subtasks/:subtaskId', params: { id: 'e1', subtaskId: 's1' } });
   // Two patterns with equally many literals: the literal segment nearest the

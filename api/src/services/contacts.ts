@@ -67,6 +67,8 @@ interface ValueDraft extends Partial<Record<AddressPart, string | null>> {
   preferred: boolean;
   params?: unknown;
   vcard_group?: string | null;
+  // Where the value goes among its kind; by default the list order.
+  position?: number;
 }
 /** A contact's content as it is written (the stored columns plus its values). */
 interface ContactDraft {
@@ -94,9 +96,12 @@ interface KeptPropertyDraft {
   source_version?: string | null;
 }
 type LegacyFields = Record<keyof LegacyContactFields | 'job_title' | 'notes', string | null>;
+// A flat body is `whole` when it names first_name, as every 3+3 app and the
+// 0.25 page send it (an absent field is empty, as in 0.25); without
+// first_name it changes only the fields it carries.
 type ParsedBody =
   | { shape: 'full'; draft: ContactDraft; version: number | null; clearKept: boolean }
-  | { shape: 'legacy'; fields: LegacyFields };
+  | { shape: 'legacy'; fields: LegacyFields; whole: boolean; present: ReadonlySet<string>; favorite: boolean | null };
 
 const invalid = (message: string) => badRequest('INVALID_CONTACT', message);
 // A lone UTF-16 surrogate cannot be stored as utf8mb4 (MariaDB would answer 500).
@@ -243,7 +248,8 @@ function parseContactBody(body: unknown, { create }: { create: boolean }): Parse
     const fields = legacyFields(input);
     // Unchanged for hand-written 0.23 clients (D17).
     if (create && !fields.first_name) throw invalid('First name is required');
-    return { shape: 'legacy', fields };
+    return { shape: 'legacy', fields, whole: keys.includes('first_name'), present: new Set(keys),
+      favorite: typeof input.is_favorite === 'boolean' ? input.is_favorite : null };
   }
   const draft = fullDraft(input);
   if (create && !draft.display_name && !draft.first_name && !draft.last_name && !draft.middle_name && !draft.company
@@ -300,10 +306,49 @@ function displayName(row: Pick<ContactRow, 'display_name' | 'first_name' | 'midd
     || '';
 }
 
-// The first three values by position, for the 3+3 apps; a contact known
-// only by its display name shows it as the first name.
+// What the 0.24.3 to 0.25.1 Android apps hold of a contact
+// (ContactCard.forServer): names cut to 100 UTF-16 units and company and job
+// title to 255, then trimmed; a phone number over 50 or an email over 255
+// units is dropped, and one value per app key is kept. Their next PUT sends
+// that back, so the bridge reads it as unchanged and never shows them a value
+// they would drop.
+const OLD_APP_NAME = 100;
+const OLD_APP_TEXT = 255;
+const OLD_APP_VALUE: Readonly<Record<'email' | 'phone', number>> = { email: 255, phone: 50 };
+// The three places of each kind an old app sees; values from position 3 on are the phone's "more".
+const LEGACY_SLOT_COUNT = 3;
+
+function oldAppCut(value: string, max: number) {
+  const text = value.trim();
+  if (text.length <= max) return text;
+  const end = /[\uD800-\uDBFF]/.test(text[max - 1]) ? max - 1 : max;
+  return text.slice(0, end).trim();
+}
+const oldAppKey = (kind: 'email' | 'phone', value: string) => kind === 'phone' ? value.replace(/[^\p{Nd}+]/gu, '') : value.trim().toLowerCase();
+
+// A sent value equals the current one as an old app would send it back.
+function sameForOldApp(sent: string | null, current: string | null, max: number) {
+  return (sent || '') === (current || '') || (sent || '') === oldAppCut(current || '', max);
+}
+
+// The values an old app sees: those in the three places it can hold, in
+// position order. The others (from position 3 on, too long, or a second
+// value with the same app key) stay out of its sight, so its writes cannot
+// remove them.
+function projectedValues(kind: 'email' | 'phone', values: readonly ValueRow[]) {
+  const seen = new Set<string>();
+  return values.filter(value => value.kind === kind && value.position < LEGACY_SLOT_COUNT).filter(value => {
+    const text = value.value.trim();
+    const key = oldAppKey(kind, value.value);
+    if (!text || text.length > OLD_APP_VALUE[kind] || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+// The 3+3 projection; a contact known only by its display name shows it as the first name.
 function legacyProjection(row: ContactRow, values: readonly ValueRow[]): LegacyContactFields {
-  const first = (kind: 'email' | 'phone') => values.filter(value => value.kind === kind).slice(0, 3).map(value => value.value);
+  const first = (kind: 'email' | 'phone') => projectedValues(kind, values).map(value => value.value);
   const [emails, phones] = [first('email'), first('phone')];
   return {
     first_name: row.first_name || (!row.last_name && row.display_name) || '',
@@ -466,7 +511,7 @@ async function writeValues(cx: SqlExecutor, userId: string, contactId: string, k
     const keep = stored && stored.kind === draft.kind && !used.has(stored.id) ? stored : undefined;
     const id = keep ? keep.id : crypto.randomUUID();
     used.add(id);
-    const position = positions.get(draft.kind) || 0;
+    const position = draft.position ?? positions.get(draft.kind) ?? 0;
     positions.set(draft.kind, position + 1);
     const params = draft.params !== undefined ? draft.params : parseJson(keep?.params);
     return [id, contactId, userId, draft.kind, position, draft.preferred ? 1 : 0, draft.label, draft.custom_label, draft.value, valueKey(draft.kind, draft.value),
@@ -537,25 +582,31 @@ async function replaceContact(cx: SqlExecutor, userId: string, id: string, draft
   }
 }
 
-// Fits one kind's first three values to what an old app sent: values it kept
-// keep their rows (and labels), new ones take the places of the removed ones,
-// and every value from the fourth on stays where it was.
+// Fits one kind's projected values to what an old app sent (P-21). Sent
+// values take places 0, 1, 2 in the order sent, reusing the rows they match
+// (exact text first, then the normalised value; a projected row before a
+// hidden one), so labels and import details stay. Only projected rows the
+// app left out are removed. Every other value is kept, outside the three
+// places, so the same PUT sent again changes nothing more.
 function legacyList(kind: 'email' | 'phone', stored: readonly ValueRow[], sent: readonly string[]): ValueDraft[] {
-  const projected = stored.slice(0, 3);
-  const rest = stored.slice(3);
-  const unused = [...projected];
-  const take = (match: (row: ValueRow) => boolean) => {
-    const index = unused.findIndex(match);
-    return index < 0 ? undefined : unused.splice(index, 1)[0];
+  const ofKind = stored.filter(row => row.kind === kind);
+  const projected = projectedValues(kind, ofKind);
+  const visible = [...projected];
+  const hidden = ofKind.filter(row => !projected.includes(row));
+  const take = (rows: ValueRow[], match: (row: ValueRow) => boolean) => {
+    const index = rows.findIndex(match);
+    return index < 0 ? undefined : rows.splice(index, 1)[0];
   };
-  // Exact text first, so a value sent twice reuses both rows; then the same
-  // normalised value written differently ("Anna@Example.com").
-  const exact = sent.map(value => take(candidate => candidate.value === value));
+  const exact = sent.map(value => take(visible, row => row.value === value));
   const head = sent.map((value, index): ValueDraft => {
-    const row = exact[index] || take(candidate => candidate.value_key === valueKey(kind, value));
-    return row ? { ...asDraft(row), value } : { kind, label: '', custom_label: null, value, preferred: false };
+    const key = valueKey(kind, value);
+    const row = exact[index] || take(visible, candidate => candidate.value_key === key)
+      || take(hidden, candidate => candidate.value === value) || take(hidden, candidate => candidate.value_key === key);
+    return { ...(row ? asDraft(row) : { kind, label: '', custom_label: null, preferred: false }), value, position: index };
   });
-  return [...head, ...rest.map(asDraft)];
+  let next = Math.max(LEGACY_SLOT_COUNT - 1, ...hidden.map(row => row.position)) + 1;
+  const rest = hidden.map(row => ({ ...asDraft(row), position: row.position >= LEGACY_SLOT_COUNT ? row.position : next++ }));
+  return [...head, ...rest];
 }
 
 function asDraft(row: ValueRow): ValueDraft {
@@ -565,23 +616,35 @@ function asDraft(row: ValueRow): ValueDraft {
 
 const legacyValues = (fields: LegacyFields, kind: 'email' | 'phone') => LEGACY_SLOTS[kind].map(slot => fields[slot]).filter((value): value is string => !!value);
 
-// A flat 3+3 body applied as a diff (P-21): names, company, title and notes
-// as given, the emails and phones fitted into the first three places.
-async function applyLegacyUpdate(cx: SqlExecutor, userId: string, id: string, fields: LegacyFields) {
+interface LegacyUpdate { whole: boolean; present: ReadonlySet<string>; favorite: boolean | null; expectedVersion: number | null }
+
+// A flat 3+3 body applied as a diff (P-21). A field the body does not carry
+// (in a body without first_name) stays; a value sent back as the app shows
+// it, or as an old app cuts it, leaves the stored value as it is; emails and
+// phones are fitted into the projected places (legacyList).
+async function applyLegacyUpdate(cx: SqlExecutor, userId: string, id: string, fields: LegacyFields, { whole, present, favorite, expectedVersion }: LegacyUpdate) {
   const row = await lockContact(cx, userId, id);
+  if (expectedVersion !== null && Number(row.version) !== expectedVersion) throw await versionConflict(cx, userId, id);
   const [stored] = await cx.execute<ValueRow[]>(`SELECT ${VALUE_COLUMNS} FROM contact_values WHERE user_id = ? AND contact_id = ? AND kind IN ('email', 'phone')
     ORDER BY kind, position, id`, [userId, id]);
   const projection = legacyProjection(row, stored);
-  // A name the app sends back as listed leaves the name parts as they are.
-  const renamed = (fields.first_name || '') !== projection.first_name || (fields.last_name || null) !== (projection.last_name || null);
-  const names = renamed ? { first_name: fields.first_name || '', last_name: fields.last_name, display_name: null } : { first_name: row.first_name, last_name: row.last_name, display_name: row.display_name };
-  const company = (fields.company || null) === (projection.company || null) ? row.company : fields.company;
-  const values = (['email', 'phone'] as const).flatMap(kind => legacyList(kind, stored.filter(value => value.kind === kind), legacyValues(fields, kind)));
-  await cx.execute(`UPDATE contacts SET first_name = ?, last_name = ?, display_name = ?, company = ?, job_title = ?, notes = ?, name_key = ?, version = version + 1
+  const carries = (field: string) => whole || present.has(field);
+  const changed = (field: keyof LegacyFields, current: string | null, max: number) => carries(field) && !sameForOldApp(fields[field], current, max);
+  const renamed = changed('first_name', projection.first_name, OLD_APP_NAME) || changed('last_name', projection.last_name, OLD_APP_NAME);
+  const names = renamed ? {
+    first_name: changed('first_name', projection.first_name, OLD_APP_NAME) ? fields.first_name || '' : projection.first_name,
+    last_name: changed('last_name', projection.last_name, OLD_APP_NAME) ? fields.last_name : row.last_name,
+    display_name: null,
+  } : { first_name: row.first_name, last_name: row.last_name, display_name: row.display_name };
+  const company = changed('company', projection.company, OLD_APP_TEXT) ? fields.company : row.company;
+  const jobTitle = changed('job_title', row.job_title, OLD_APP_TEXT) ? fields.job_title : row.job_title;
+  const notes = carries('notes') ? fields.notes : row.notes;
+  const kinds = (['email', 'phone'] as const).filter(kind => whole || LEGACY_SLOTS[kind].some(slot => present.has(slot)));
+  await cx.execute(`UPDATE contacts SET first_name = ?, last_name = ?, display_name = ?, company = ?, job_title = ?, notes = ?, is_favorite = ?, name_key = ?, version = version + 1
     WHERE id = ? AND user_id = ?`,
-  [names.first_name, names.last_name, names.display_name, company, fields.job_title, fields.notes,
+  [names.first_name, names.last_name, names.display_name, company, jobTitle, notes, (favorite ?? !!row.is_favorite) ? 1 : 0,
     draftNameKey({ ...names, middle_name: row.middle_name }), id, userId]);
-  await writeValues(cx, userId, id, ['email', 'phone'], values);
+  if (kinds.length) await writeValues(cx, userId, id, kinds, kinds.flatMap(kind => legacyList(kind, stored, legacyValues(fields, kind))));
 }
 
 function legacyDraft(fields: LegacyFields): ContactDraft {
@@ -608,7 +671,9 @@ async function updateContact(userId: string, id: string, body: unknown, ifMatch:
     if (expectedVersion === null) throw badRequest('VERSION_REQUIRED', 'Send the contact version (version or If-Match) with a full update');
     await withTransaction(cx => replaceContact(cx, userId, id, parsed.draft, { expectedVersion, clearKept: parsed.clearKept }));
   } else {
-    await withTransaction(cx => applyLegacyUpdate(cx, userId, id, parsed.fields));
+    // If-Match binds a flat body too: a stale one is refused before anything changes.
+    const expectedVersion = versionFromHeader(ifMatch);
+    await withTransaction(cx => applyLegacyUpdate(cx, userId, id, parsed.fields, { ...parsed, expectedVersion }));
   }
   const [contact] = await loadContacts(db, userId, [id]);
   if (!contact) throw notFound('CONTACT_NOT_FOUND', 'Contact not found');

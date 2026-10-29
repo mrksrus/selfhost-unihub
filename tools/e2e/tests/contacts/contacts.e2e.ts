@@ -12,10 +12,9 @@ async function contactsWithEmail(browser: unknown, email: string) {
   return contacts.filter((contact) => [contact.email, contact.email2, contact.email3].includes(email));
 }
 
-// 23-09: a contact note of 15,000+ characters saves and reloads exactly; two entries for
-// the same email merge into one that keeps both phone numbers, both notes and the extra
-// email. Until 0.26 (26-04) a merge keeps one company: the best-filled entry's.
-test('[23-09] a long contact note saves whole, and merging duplicates keeps phones, emails and notes', { session: 'alex', timeout: 240_000 }, async ({ app, screen, browser }) => {
+// 23-09: a contact note of 15,000+ characters saves and reloads exactly, also
+// beside a second entry for the same email.
+test('[23-09] a long contact note saves whole', { session: 'alex', timeout: 240_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop');
   const id = runId();
   const name = `Merge${id}`;
@@ -55,16 +54,6 @@ test('[23-09] a long contact note saves whole, and merging duplicates keeps phon
   await expect(screen.getByRole('dialog').getByRole('textbox', 'Notes', { exact: true })).toHaveValue(longNote);
   await screen.getByRole('button', 'Cancel', { exact: true }).tap();
 
-  await app.open('/contacts?view=duplicates');
-  await screen.getByRole('button', 'Preview merge', { exact: true }).tap();
-  await screen.getByRole('button', 'Merge duplicates', { exact: true }).tap();
-  await screen.getByRole('alertdialog').getByRole('button', 'Merge', { exact: true }).tap();
-  await expect(screen.getByRole('alertdialog')).toBeHidden();
-  await expect.poll(async () => (await contactsWithEmail(browser, email)).length, { timeout: 30_000 }).toBe(1);
-  const [merged] = await contactsWithEmail(browser, email);
-  expect(merged.notes).toContain(longNote);
-  expect(merged.notes).toContain(shortNote);
-  expect([merged.phone, merged.phone2, merged.phone3]).toEqual(expect.arrayContaining([phoneA, phoneB]));
-  expect([merged.email, merged.email2, merged.email3]).toContain(extra);
-  expect(entries.map((entry) => entry.company), 'one of the two companies (26-04 will keep both)').toContain(merged.company);
+  // The 0.25 automatic merge is gone in 0.26 (it deleted for good, without
+  // undo); merge review, undo and Merge all are proved by merge.e2e.ts.
 });

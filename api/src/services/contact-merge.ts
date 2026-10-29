@@ -147,9 +147,19 @@ function valueIdentity(row: Pick<ValueRow, 'kind' | 'value' | 'value_key'>) {
   return `${row.kind}\u0000${row.value_key || `raw:${row.value.trim().toLowerCase()}`}`;
 }
 
+// The places old apps see are positions 0 to 2 of each kind (P-21). The
+// survivor's values keep their positions; the other members' values follow
+// in member order, and one an old app could not see on its own contact
+// (position 3 or later) stays out of those places on the survivor too.
+const LEGACY_SLOTS = 3;
+
 function unionValues(members: readonly ContactSnapshot[], survivorId: string): ValueDraft[] {
   const drafts = new Map<string, ValueDraft>();
-  for (const member of members) {
+  const next = new Map<string, number>();
+  const survivor = members.find(member => member.contact.id === survivorId)!;
+  for (const row of survivor.values) next.set(row.kind, Math.max(next.get(row.kind) ?? 0, Number(row.position) + 1));
+  for (const member of [survivor, ...members.filter(item => item !== survivor)]) {
+    const own = member === survivor;
     for (const row of member.values) {
       const identity = valueIdentity(row);
       const seen = drafts.get(identity);
@@ -158,9 +168,14 @@ function unionValues(members: readonly ContactSnapshot[], survivorId: string): V
         seen.preferred = seen.preferred || !!row.is_preferred;
         continue;
       }
+      let position = Number(row.position);
+      if (!own) {
+        position = Math.max(next.get(row.kind) ?? 0, position >= LEGACY_SLOTS ? LEGACY_SLOTS : 0);
+        next.set(row.kind, position + 1);
+      }
       drafts.set(identity, {
         // The survivor's own rows keep their ids; the others become new rows.
-        id: member.contact.id === survivorId ? row.id : null,
+        id: own ? row.id : null, position,
         kind: row.kind, label: row.label, custom_label: row.custom_label ?? null, value: row.value, preferred: !!row.is_preferred,
         ...Object.fromEntries(ADDRESS_PARTS.map(part => [part, (row[part] as string | null) ?? null])),
         params: parseJson(row.params), vcard_group: row.vcard_group ?? null,

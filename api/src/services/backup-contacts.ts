@@ -35,6 +35,7 @@ function archivedValues(contact: Row, children: readonly Row[] | undefined): Val
   if (children?.length) {
     const sorted = [...children].sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
     const counts = new Map<string, number>();
+    const taken = new Set<string>();
     return sorted.flatMap((row): ValueDraft[] => {
       const kind = text(row.kind) as ContactValueKind;
       const value = text(row.value);
@@ -46,8 +47,13 @@ function archivedValues(contact: Row, children: readonly Row[] | undefined): Val
       const customLabel = label === 'custom' ? nullable(row.custom_label, 100) : null;
       let params = row.params;
       if (typeof params === 'string') { try { params = JSON.parse(params); } catch { params = null; } }
+      // The archived place is kept (the three places an old app sees, and the
+      // values it does not); a missing or repeated one falls back to the list order.
+      const archivedPosition = Number(row.position);
+      const position = Number.isInteger(archivedPosition) && archivedPosition >= 0 && archivedPosition <= 65535 && !taken.has(`${kind}:${archivedPosition}`) ? archivedPosition : undefined;
+      if (position !== undefined) taken.add(`${kind}:${position}`);
       return [{
-        kind, value: cut(value, VALUE_LIMITS[kind]), label: label === 'custom' && !customLabel ? '' : label, custom_label: customLabel, preferred: !!row.is_preferred,
+        position, kind, value: cut(value, VALUE_LIMITS[kind]), label: label === 'custom' && !customLabel ? '' : label, custom_label: customLabel, preferred: !!row.is_preferred,
         po_box: nullable(row.po_box), extended: nullable(row.extended), street: nullable(row.street, 1000), locality: nullable(row.locality),
         region: nullable(row.region), postal_code: nullable(row.postal_code), country: nullable(row.country),
         params: params && typeof params === 'object' ? params : null, vcard_group: nullable(row.vcard_group, 64),
