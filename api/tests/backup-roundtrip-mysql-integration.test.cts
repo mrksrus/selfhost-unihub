@@ -85,7 +85,7 @@ test('production export and restore jobs round-trip every section through encryp
   }
   // A contact as the store writes it (uid and child values).
   const { valueKey } = require('../dist/src/services/contact-keys') as typeof import('../src/services/contact-keys');
-  async function insertContact(row: FixtureValue, values: [string, string][] = []) {
+  async function insertContact(row: FixtureValue, values: [import('../src/contracts/contacts').ContactValueKind, string][] = []) {
     const id = row.id || uuid();
     await insert('contacts', { ...row, id, uid: `urn:uuid:${id}`, uid_hash: crypto.createHash('sha256').update(`urn:uuid:${id}`).digest('hex') });
     for (const [index, [kind, value]] of values.entries()) {
