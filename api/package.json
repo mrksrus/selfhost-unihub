@@ -20,6 +20,7 @@
     "mailparser": "3.9.46",
     "mysql2": "3.23.1",
     "nodemailer": "^10.1.7",
+    "sharp": "0.35.5",
     "web-push": "^3.6.7"
   },
   "overrides": {

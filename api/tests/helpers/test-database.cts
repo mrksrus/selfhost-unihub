@@ -40,10 +40,12 @@ async function withTestDatabase(t: TestContext, { migrate = true } = {}): Promis
   return pool;
 }
 
-interface ApiReply { status: number; body: Record<string, unknown> & { error?: string }; headers: import('node:http').IncomingHttpHeaders }
+interface ApiReply { status: number; body: Record<string, unknown> & { error?: string }; headers: import('node:http').IncomingHttpHeaders; bytes: Buffer }
 
 // The real request handler on a loopback port, as the browser reaches it:
 // each client keeps its own cookies and sends the CSRF token it was given.
+// A Buffer body is sent raw (an upload; pass its content-type header); any
+// other body as JSON. A JSON reply is parsed into body; bytes holds any reply.
 async function startTestApi(t: TestContext) {
   const { handleRequest } = require('../../dist/src/request-handler') as typeof import('../../src/request-handler');
   const server = http.createServer((req, res) => { handleRequest(req, res).catch(() => res.destroy()); });
@@ -58,22 +60,24 @@ async function startTestApi(t: TestContext) {
       const response = await fetch(`${origin}${path}`, {
         method,
         headers: {
+          ...(body === undefined || Buffer.isBuffer(body) ? {} : { 'content-type': 'application/json' }),
           ...extraHeaders,
-          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
           ...(cookies.size ? { cookie: [...cookies].map(([name, value]) => `${name}=${value}`).join('; ') } : {}),
           ...(csrfToken && method !== 'GET' ? { 'x-csrf-token': csrfToken } : {}),
         },
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: body === undefined ? undefined : Buffer.isBuffer(body) ? new Uint8Array(body) : JSON.stringify(body),
       });
       for (const line of response.headers.getSetCookie()) {
         const [pair] = line.split(';');
         const [name, value] = [pair.slice(0, pair.indexOf('=')), pair.slice(pair.indexOf('=') + 1)];
         if (value && !/Expires=Thu, 01 Jan 1970/.test(line)) cookies.set(name, value); else cookies.delete(name);
       }
-      const text = await response.text();
+      const bytes = Buffer.from(await response.arrayBuffer());
+      const binary = /^(image|audio|video)\//.test(response.headers.get('content-type') || '');
+      const text = binary ? '' : bytes.toString('utf8');
       const parsed = text ? JSON.parse(text) : {};
       if (typeof parsed?.csrfToken === 'string') csrfToken = parsed.csrfToken;
-      return { status: response.status, body: parsed, headers: Object.fromEntries(response.headers) };
+      return { status: response.status, body: parsed, headers: Object.fromEntries(response.headers), bytes };
     }
     return { request, get signedIn() { return cookies.has('auth-token'); } };
   }
