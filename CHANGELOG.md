@@ -6,6 +6,21 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.25.1 (unreleased)
+
+### Fixed
+
+- **A send interrupted by a server restart no longer blocks its draft for ten
+  minutes.** After about two minutes the draft can be edited, deleted or sent
+  again: pressing Send then says the message may have been sent, and Send
+  again sends it once. Nothing is sent twice.
+
+### Development
+
+- `scripts/local-db.sh` keeps its socket under `TMPDIR` when
+  `XDG_RUNTIME_DIR` is unset, and the database tests write their temporary
+  files to the caller's `TMPDIR` instead of replacing it.
+
 ## 0.25.0
 
 Mail on the phone: the composer and attachments. One automatic database

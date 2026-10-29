@@ -333,5 +333,6 @@ export {
   draftThreading,
   sendEmail,
   sendOnce,
+  STALE_PENDING_SECONDS,
 };
 export type { ReplyThreading };

@@ -748,7 +748,7 @@ sends it twice. The statuses are:
 | Status | Meaning |
 | --- | --- |
 | `scheduled` | Waiting; the draft can be edited, rescheduled, cancelled or sent by hand (which cancels the schedule) |
-| `sending` | Claimed; editing, deleting or cancelling the draft answers `409 SCHEDULED_SEND_IN_PROGRESS`. A claim with no outcome after 10 minutes is settled from its receipt |
+| `sending` | Claimed; editing, deleting or cancelling the draft answers `409 SCHEDULED_SEND_IN_PROGRESS`. A claim with no outcome after 10 minutes is settled from its receipt; a send by hand that is not running is settled after 2 minutes (as its receipt turns unknown), when the scheduler or the person next touches the draft |
 | `sent` | Sent, but the draft could not be removed (normally the sent draft takes its schedule with it) |
 | `failed` | Refused before the message left; `last_error` holds a text written for the person, never the SMTP reply. Rescheduling uses a new key |
 | `unknown` | The connection ended after the message was handed over; never retried. The person checks Sent |

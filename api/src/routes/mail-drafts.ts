@@ -13,7 +13,7 @@ import { adoptReplies, resolveThreadKey, storedReferences } from '../services/ma
 import type { ReplyThreading } from '../services/mail-send';
 import type { PoolConnection } from 'mysql2/promise';
 import { deleteDraftUnlessSending, loadDraftEmail, loadMailAccountForDraft, saveDraftMutation } from '../services/mail-drafts';
-import { assertDraftEditable, sendDraftNow } from '../services/mail-scheduled-send';
+import { assertDraftEditable, releaseStoppedSend, sendDraftNow } from '../services/mail-scheduled-send';
 import { normalizeRecipients } from '../services/mail-recipients';
 import { extractMailRouteId, routeError, idempotencyKey } from './mail-route-helpers';
 
@@ -231,7 +231,9 @@ export = {
 
     try {
       // Refused while the draft is being sent (by hand or scheduled).
-      return await deleteDraftUnlessSending(userId, extractMailRouteId(req)!);
+      const draftId = extractMailRouteId(req)!;
+      await releaseStoppedSend(userId, draftId);
+      return await deleteDraftUnlessSending(userId, draftId);
     } catch (error) {
       console.error('Delete draft error:', error);
       return routeError(error, 'Failed to delete draft');

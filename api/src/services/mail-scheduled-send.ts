@@ -12,6 +12,7 @@ import { withTransaction } from './transactions';
 import { isDraftSendRunning, loadDraftEmail, lockDraftForSend, sendStoredDraft, trackDraftSend } from './mail-drafts';
 // Through the facade, as the draft routes did, so their tests can stub sending.
 import { sendOnce } from './mail';
+import { STALE_PENDING_SECONDS } from './mail-send';
 import { getReceipt } from './mail-engine/repository';
 
 // Scheduled send (0.24): a stored draft sends itself at a chosen time, once.
@@ -32,7 +33,10 @@ const MIN_LEAD_MS = 60 * 1000;
 const MAX_LEAD_MS = 366 * 24 * 60 * 60 * 1000;
 // A send claimed this long ago without an outcome belongs to a process that
 // stopped; its key decides what happened (sendOnce answers from the receipt).
+// A send by hand holds its draft no longer than its key reports it in progress
+// (STALE_PENDING_SECONDS): it is only settled from its key, never sent again.
 const STALE_SENDING_SECONDS = 600;
+const staleSql = "s.status = 'sending' AND s.updated_at < UTC_TIMESTAMP() - INTERVAL IF(s.origin = 'send_now', ?, ?) SECOND";
 const BATCH = 20;
 const UNKNOWN_TEXT = 'The connection to the mail server was lost after the message was handed over. Check Sent before sending it again.';
 
@@ -61,6 +65,7 @@ async function scheduleDraft(userId: string, draftId: string, input: unknown): P
   const sendAt = parseSendAt((input as { send_at?: unknown } | null)?.send_at);
   const draft = await loadDraftEmail(userId, draftId);
   if (!draft) throw notFound('DRAFT_NOT_FOUND', 'Draft not found');
+  await releaseStoppedSend(userId, draftId);
   if (![draft.to_addresses, draft.cc_addresses, draft.bcc_addresses].some(list => list.length)) {
     throw badRequest('DRAFT_RECIPIENTS_MISSING', 'Add at least one recipient before scheduling the message');
   }
@@ -90,6 +95,7 @@ async function scheduleOf(userId: string, draftId: string, executor: SqlExecutor
 
 /** Cancels the schedule of one of the user's drafts; the draft stays. Refused while it is being sent. */
 async function cancelSchedule(userId: string, draftId: string) {
+  await releaseStoppedSend(userId, draftId);
   const [result] = await db.execute<ResultSetHeader>("DELETE FROM mail_scheduled_sends WHERE email_id = ? AND user_id = ? AND status <> 'sending'", [draftId, userId]);
   if (!result.affectedRows) {
     if ((await scheduleOf(userId, draftId))?.status === 'sending') throw inProgress();
@@ -100,6 +106,7 @@ async function cancelSchedule(userId: string, draftId: string) {
 
 /** A draft can be edited or deleted unless it is being sent. The save itself checks again under the lock. */
 async function assertDraftEditable(userId: string, draftId: string) {
+  await releaseStoppedSend(userId, draftId);
   if ((await scheduleOf(userId, draftId))?.status === 'sending') throw inProgress();
 }
 
@@ -111,6 +118,8 @@ async function assertDraftEditable(userId: string, draftId: string) {
  */
 async function sendDraftNow(userId: string, draftId: string, clientKey: string | undefined, replyTo: unknown,
   send: typeof sendStoredDraft = sendStoredDraft): Promise<Record<string, unknown>> {
+  // Before this send registers itself, so an earlier one that stopped is not taken for it.
+  await releaseStoppedSend(userId, draftId);
   return trackDraftSend(async () => {
     if (await isSectionRestoreActive(userId, 'mail')) throw restoring();
     const reservationKey = clientKey ?? `send-now-${crypto.randomUUID()}`;
@@ -167,13 +176,27 @@ async function settle(row: ScheduleRow, status: 'failed' | 'unknown' | 'sent', l
 
 // A send by hand whose process stopped (a live one in this process is skipped
 // above): never sent again from here, the person decides. Its receipt says whether it went out; without one (no key,
-// or refused) the draft is simply free again.
+// or refused) the draft is simply free again. Only the reservation of that send is settled.
 async function settleStoppedSendNow(row: ScheduleRow) {
   const receipt = await getReceipt({ userId: row.user_id, clientKey: row.client_key }).catch(() => null);
   const response = receipt ? (typeof receipt.response_json === 'string' ? JSON.parse(receipt.response_json) : receipt.response_json) as Record<string, unknown> | null : null;
-  if (!response) await db.execute("DELETE FROM mail_scheduled_sends WHERE id = ? AND user_id = ? AND status = 'sending'", [row.id, row.user_id]);
-  else if (response.send_pending || response.send_unknown) await db.execute("UPDATE mail_scheduled_sends SET status = 'unknown', last_error = ? WHERE id = ? AND user_id = ?", [UNKNOWN_TEXT, row.id, row.user_id]);
-  else await db.execute("UPDATE mail_scheduled_sends SET status = 'sent', last_error = NULL WHERE id = ? AND user_id = ?", [row.id, row.user_id]);
+  const reservation = "id = ? AND user_id = ? AND status = 'sending' AND client_key = ?";
+  const ids = [row.id, row.user_id, row.client_key];
+  if (!response) await db.execute(`DELETE FROM mail_scheduled_sends WHERE ${reservation}`, ids);
+  else if (response.send_pending || response.send_unknown) await db.execute(`UPDATE mail_scheduled_sends SET status = 'unknown', last_error = ? WHERE ${reservation}`, [UNKNOWN_TEXT, ...ids]);
+  else await db.execute(`UPDATE mail_scheduled_sends SET status = 'sent', last_error = NULL WHERE ${reservation}`, ids);
+}
+
+// B-29: a draft whose send by hand stopped (an API restart) is released as
+// soon as that send's key no longer reports it in progress, when the person
+// edits, deletes, schedules or sends it, instead of at the scheduler's next
+// stale pass. A send still running in this process is left alone.
+async function releaseStoppedSend(userId: string, draftId: string) {
+  if (isDraftSendRunning(userId, draftId)) return;
+  const [rows] = await db.execute<ScheduleRow[]>(`SELECT s.* FROM mail_scheduled_sends s
+    WHERE s.email_id = ? AND s.user_id = ? AND s.origin = 'send_now' AND ${staleSql}`,
+  [draftId, userId, STALE_PENDING_SECONDS, STALE_SENDING_SECONDS]);
+  if (rows[0]) await settleStoppedSendNow(rows[0]);
 }
 
 /** Sends the scheduled drafts that are due, each at most once. `send` is the draft sender (tests replace it). */
@@ -182,9 +205,9 @@ async function runDueScheduledSends(now = new Date(), send: typeof sendStoredDra
   // the schedule waits, and does not hold up anyone else's.
   const blocked = [...await blockedBackgroundModulesByUser(db)].filter(([, modules]) => modules.has('mail')).map(([userId]) => userId);
   const [due] = await db.execute<ScheduleRow[]>(`SELECT s.* FROM mail_scheduled_sends s JOIN users u ON u.id = s.user_id AND u.is_active = TRUE
-    WHERE ((s.status = 'scheduled' AND s.send_at <= ?) OR (s.status = 'sending' AND s.updated_at < UTC_TIMESTAMP() - INTERVAL ? SECOND))
+    WHERE ((s.status = 'scheduled' AND s.send_at <= ?) OR (${staleSql}))
     ${blocked.length ? `AND s.user_id NOT IN (${blocked.map(() => '?').join(', ')})` : ''}
-    ORDER BY s.send_at LIMIT ${BATCH}`, [now, STALE_SENDING_SECONDS, ...blocked]);
+    ORDER BY s.send_at LIMIT ${BATCH}`, [now, STALE_PENDING_SECONDS, STALE_SENDING_SECONDS, ...blocked]);
   let sent = 0;
   for (const row of due) {
     // A claim older than the stale window whose send still runs here (a slow
@@ -193,9 +216,9 @@ async function runDueScheduledSends(now = new Date(), send: typeof sendStoredDra
     // Registered before the check: a restore that starts later waits for this send.
     await trackDraftSend(async () => {
       if (!await canRunModule(row.user_id, 'mail', { background: true })) return;
-      const [claim] = await db.execute<ResultSetHeader>(`UPDATE mail_scheduled_sends SET status = 'sending', attempts = attempts + 1, updated_at = UTC_TIMESTAMP()
-        WHERE id = ? AND user_id = ? AND ((status = 'scheduled' AND send_at <= ?) OR (status = 'sending' AND updated_at < UTC_TIMESTAMP() - INTERVAL ? SECOND))`,
-      [row.id, row.user_id, now, STALE_SENDING_SECONDS]);
+      const [claim] = await db.execute<ResultSetHeader>(`UPDATE mail_scheduled_sends s SET s.status = 'sending', s.attempts = s.attempts + 1, s.updated_at = UTC_TIMESTAMP()
+        WHERE s.id = ? AND s.user_id = ? AND ((s.status = 'scheduled' AND s.send_at <= ?) OR (${staleSql}))`,
+      [row.id, row.user_id, now, STALE_PENDING_SECONDS, STALE_SENDING_SECONDS]);
       if (!claim.affectedRows) return;
       if (row.origin === 'send_now') { await settleStoppedSendNow(row); return; }
       let result: Record<string, unknown>;
@@ -219,4 +242,4 @@ async function runDueScheduledSends(now = new Date(), send: typeof sendStoredDra
   return { sent };
 }
 
-export { scheduleDraft, cancelSchedule, sendDraftNow, assertDraftEditable, runDueScheduledSends, STALE_SENDING_SECONDS };
+export { scheduleDraft, cancelSchedule, sendDraftNow, assertDraftEditable, releaseStoppedSend, runDueScheduledSends, STALE_SENDING_SECONDS };

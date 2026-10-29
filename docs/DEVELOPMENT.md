@@ -188,6 +188,14 @@ scripts/local-db.sh migrate-check d.sql  # run the startup upgrades on a dump, c
 scripts/local-db.sh schema-dump          # regenerate docker/mariadb/schema.sql
 ```
 
+The server's socket and pid file go to `unihub-mariadb-<uid>-<port>` under
+`XDG_RUNTIME_DIR`, else `TMPDIR`, else `/tmp`; `UNIHUB_DB_RUN` chooses another
+parent directory. A unix socket path holds about 100 bytes, so the script
+refuses a deeper one. The database tests write their temporary files to
+`unihub-db-tests-<uid>-<port>` in your `TMPDIR` when it is set, otherwise
+inside the run directory, so a small `/tmp` stays untouched when `TMPDIR`
+points elsewhere.
+
 A new database test starts with `withTestDatabase(t)` from
 `api/tests/helpers/test-database.cts`: it refuses a database that is not an
 empty `*_test` one, makes it the app's database, migrates it like a fresh

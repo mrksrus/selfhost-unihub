@@ -338,6 +338,37 @@ test('a scheduled draft sends once at its time, waits while Mail is off, recover
   assert.ok(!handedOver.includes(stopped));
   assert.equal(await status(stopped), undefined);
 
+  // B-29: a send by hand stopped inside the hand-over (an API restart) left its
+  // reservation and a pending key. The draft is held only while that key still
+  // reports the send in progress, not for the scheduler's stale window; then the
+  // person's next edit releases it as "may have been sent", the same key answers
+  // that and sends nothing, and only a new key (Send again) sends it, once.
+  const restarted = await email({ subject: 'Interrupted by a restart', draft: true, folder: 'drafts', to: ['team@example.test'] });
+  const restartedKey = 'send-now-restarted';
+  await pool.execute(`INSERT INTO mail_scheduled_sends (id, user_id, email_id, mail_account_id, send_at, status, origin, client_key, updated_at)
+    SELECT UUID(), user_id, id, mail_account_id, UTC_TIMESTAMP(), 'sending', 'send_now', ?, UTC_TIMESTAMP() - INTERVAL 30 SECOND FROM emails WHERE id = ?`, [restartedKey, restarted]);
+  const requestHash = crypto.createHash('sha256').update(JSON.stringify({ kind: 'send', request: { draftId: restarted, replyTo: null } })).digest('hex');
+  await pool.execute(`INSERT INTO mail_command_receipts (user_id, client_key, request_hash, response_json, updated_at)
+    VALUES (?, ?, ?, '{"send_pending":true}', UTC_TIMESTAMP() - INTERVAL 30 SECOND)`, [ownerId, restartedKey, requestHash]);
+  assert.equal((await owner.request('PUT', `/api/mail/drafts/${restarted}`, { subject: 'Interrupted by a restart' })).body.code, 'SCHEDULED_SEND_IN_PROGRESS',
+    'held while its key still reports the send in progress');
+  await pool.execute('UPDATE mail_scheduled_sends SET updated_at = UTC_TIMESTAMP() - INTERVAL 150 SECOND WHERE email_id = ?', [restarted]);
+  await pool.execute('UPDATE mail_command_receipts SET updated_at = UTC_TIMESTAMP() - INTERVAL 150 SECOND WHERE client_key = ?', [restartedKey]);
+  assert.equal((await owner.request('PUT', `/api/mail/drafts/${restarted}`, { subject: 'Interrupted by a restart' })).status, 200,
+    'released once its key no longer reports it in progress, well before the stale window');
+  assert.equal((await status(restarted)).status, 'unknown');
+  await assert.rejects(scheduled.sendDraftNow(ownerId, restarted, restartedKey, null, deliver), { status: 409, code: 'SEND_OUTCOME_UNKNOWN' });
+  assert.ok(!handedOver.includes(restarted), 'the same key never sends it again');
+  assert.equal((await scheduled.sendDraftNow(ownerId, restarted, 'send-now-again', null, deliver)).success, true);
+  assert.deepEqual(handedOver.filter(id => id === restarted), [restarted], 'sent again under a new key, once');
+  // Without a receipt (stopped before the hand-over began) the draft is free:
+  // it can be deleted once the reservation is older than the key's window.
+  const unclaimed = await email({ subject: 'Stopped before the hand-over', draft: true, folder: 'drafts', to: ['team@example.test'] });
+  await pool.execute(`INSERT INTO mail_scheduled_sends (id, user_id, email_id, mail_account_id, send_at, status, origin, client_key, updated_at)
+    SELECT UUID(), user_id, id, mail_account_id, UTC_TIMESTAMP(), 'sending', 'send_now', 'send-now-unclaimed', UTC_TIMESTAMP() - INTERVAL 150 SECOND FROM emails WHERE id = ?`, [unclaimed]);
+  assert.equal((await owner.request('DELETE', `/api/mail/drafts/${unclaimed}`)).status, 200);
+  assert.equal(await status(unclaimed), undefined);
+
   // A deactivated person's scheduled mail does not go out.
   const inactive = await email({ subject: 'After leaving', draft: true, folder: 'drafts', to: ['team@example.test'] });
   await schedule(owner, inactive, 5);

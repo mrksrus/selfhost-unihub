@@ -13,7 +13,8 @@
 #
 # Overrides: UNIHUB_DB_HOME (default ~/.local/opt/mariadb-11.8),
 # UNIHUB_DB_DATA (~/.local/share/unihub-mariadb), UNIHUB_DB_PORT (3307),
-# UNIHUB_DB_ENV_FILE (.private/local-db.env; a second instance needs its own).
+# UNIHUB_DB_ENV_FILE (.private/local-db.env; a second instance needs its own),
+# UNIHUB_DB_RUN (where the socket and pid directory go; default below).
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -21,12 +22,19 @@ DB_HOME=${UNIHUB_DB_HOME:-$HOME/.local/opt/mariadb-11.8}
 DATA=${UNIHUB_DB_DATA:-$HOME/.local/share/unihub-mariadb}
 PORT=${UNIHUB_DB_PORT:-3307}
 # Per port, so separate instances (e.g. parallel test runs) never share a socket.
-RUN=${XDG_RUNTIME_DIR:-/tmp}/unihub-mariadb-$(id -u)-$PORT
+# Under XDG_RUNTIME_DIR, else TMPDIR, and only then /tmp.
+RUN=${UNIHUB_DB_RUN:-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}}
+RUN=${RUN%/}/unihub-mariadb-$(id -u)-$PORT
 CNF=$DATA.cnf
 ENV_FILE=${UNIHUB_DB_ENV_FILE:-$REPO/.private/local-db.env}
 SOCKET=$RUN/mariadbd.sock
+# The database tests' temporary files: in the caller's TMPDIR when it is set.
+TEST_TMP=${TMPDIR:+${TMPDIR%/}/unihub-db-tests-$(id -u)-$PORT}
+TEST_TMP=${TEST_TMP:-$RUN/tmp}
 
 die() { echo "local-db: $*" >&2; exit 1; }
+# A unix socket path holds at most 107 bytes; refuse a deeper one before the server does.
+[ ${#SOCKET} -le 100 ] || die "socket path too long: $SOCKET (set UNIHUB_DB_RUN or XDG_RUNTIME_DIR to a shorter directory)"
 [ -x "$DB_HOME/bin/mariadbd" ] || die "MariaDB not found at $DB_HOME (see docs/DEVELOPMENT.md)"
 
 write_config() {
@@ -137,9 +145,9 @@ run_tests() {
   local env=(MYSQL_TEST_HOST=127.0.0.1 MYSQL_TEST_PORT="$PORT" MYSQL_TEST_DATABASE=unihub_test
     MYSQL_TEST_USER=unihub MYSQL_TEST_PASSWORD="$APP_PW" MYSQL_TEST_SCHEMA_SMOKE=1
     ENCRYPTION_KEY=ci-test-encryption-key BACKUP_MASTER_KEY=ci-test-backup-master-key)
-  mkdir -p "$RUN/tmp"
-  if [ $# -gt 0 ]; then (cd "$REPO/api" && env "${env[@]}" TMPDIR="$RUN/tmp" node --test --test-concurrency=1 "${@#api/}")
-  else (cd "$REPO/api" && env "${env[@]}" TMPDIR="$RUN/tmp" npm run --silent test:ci); fi
+  mkdir -p "$TEST_TMP"
+  if [ $# -gt 0 ]; then (cd "$REPO/api" && env "${env[@]}" TMPDIR="$TEST_TMP" node --test --test-concurrency=1 "${@#api/}")
+  else (cd "$REPO/api" && env "${env[@]}" TMPDIR="$TEST_TMP" npm run --silent test:ci); fi
 }
 migrate() {
   npm --prefix "$REPO/api" run --silent build

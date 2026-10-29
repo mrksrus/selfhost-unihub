@@ -454,7 +454,7 @@ previous run is still going (`services/timers.ts`). These twelve run:
 | --- | --- |
 | 1 second | Re-enqueue due mail writebacks (per-operation backoff) and nudge the durable mail scheduler |
 | 15 seconds | Thread mail stored before 0.24 (`mail-thread-backfill.ts`): up to 600 messages or 5 seconds a tick; pauses 5 minutes once nothing is left |
-| 15 seconds | Send the scheduled drafts that are due, each at most once (`mail-scheduled-send.ts`); a send claimed 10 minutes ago without an outcome is settled from its send-once receipt |
+| 15 seconds | Send the scheduled drafts that are due, each at most once (`mail-scheduled-send.ts`); a send claimed 10 minutes ago (2 for a send by hand) without an outcome is settled from its send-once receipt |
 | 30 seconds | Bring back snoozed messages whose time has come, each with its notification (`mail-snooze.ts`) |
 | 30 seconds | Reconcile due reminders and process durable notification deliveries |
 | 30 seconds | Mail INBOX follow-up per active account (every 5 minutes while its IMAP IDLE session is healthy); folder discovery at most every 5 minutes |
