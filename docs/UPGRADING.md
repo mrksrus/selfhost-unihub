@@ -5,6 +5,26 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.25.0 Mail on the phone: composer and attachments
+
+One automatic database upgrade (step 21) adds the table of download links
+(`file_tickets`), which the Android app uses for Open with, Save to Downloads
+and Share. It holds only short-lived links and is not part of backups. Make a
+database backup first; to go back to 0.24.3, restore it.
+
+No configuration change is needed. Worth knowing:
+
+- **Android app.** Install 0.25.0's app (the update offer appears in the
+  app). On Android 16 the earlier apps hand a picked file to the page empty,
+  so attachments and recording imports fail there; 0.25.0's app fixes that,
+  makes room for the keyboard on every Android version and adds Open with,
+  Save to Downloads and Share to the attachment viewer. Older apps keep
+  working otherwise and keep Download. The window is 0.25.0, 0.24.3, 0.24.2
+  and 0.24.1.
+- **The phone composer and snooze** come with the server's pages. Reload an
+  open page or reopen the app after updating. Snoozed messages stay hidden
+  until due unless Settings > Mail > Snooze says otherwise.
+
 ## 0.24.3 Follow-up fixes
 
 No database upgrade and no configuration change. Going back to 0.24.2 is

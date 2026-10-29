@@ -6,7 +6,11 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
-## 0.25.0 (unreleased)
+## 0.25.0
+
+Mail on the phone: the composer and attachments. One automatic database
+upgrade; install the new Android app (see
+[Upgrading](docs/UPGRADING.md#0250-mail-on-the-phone-composer-and-attachments)).
 
 ### Added
 
@@ -31,7 +35,6 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   The second continues in the existing preview with its counts and the typed
   address confirmation. Only UniHub's copy is deleted; the provider keeps its
   mail.
-
 - **Snoozed messages can stay in their folder.** Settings > Mail > Snooze has
   a new choice, **Snoozed messages**: *Hide until due* (as before, the
   default) or *Keep in the folder*. Kept, a snoozed message stays in its
@@ -39,7 +42,6 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   unread, and it still comes back with a notification at its time. The
   Snoozed view lists it either way. Changing the choice applies at once to
   messages already snoozed.
-
 - **Open with, Save to Downloads and Share in the Android app.** The
   attachment viewer in the app offers Android's own "Open with" and "Share"
   sheets and saves to Downloads. The app fetches the file with a download
@@ -80,7 +82,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   Each run connects, signs in with and without a two-factor code, stays
   signed in after the app is ended, uploads a file picked in Android's
   document picker, records with the microphone after Android asks for
-  permission, downloads the recording unchanged, and signs out. The results
+  permission, downloads the recording unchanged, and signs out; with an app
+  and a server from 0.25.0 it also opens a mailed PDF with "Open with…",
+  shares a photo and saves it to Downloads unchanged. The results
   appear as a table in the run (see the
   [release contract](docs/RELEASE_CONTRACT.md)).
 

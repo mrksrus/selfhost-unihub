@@ -68,7 +68,9 @@ against the published image of every earlier release in the window, and every
 earlier app in the window against the image being built. Each pairing
 connects, signs in with and without a two-factor code, reopens, uploads a file
 from Android's document picker, records with the microphone, downloads the
-recording and signs out, each confirmed on the server ([what it
+recording, hands a mailed file to Android's Open with and Share sheets and
+saves it to Downloads (an app and a server from 0.25.0) and signs out, each
+confirmed on the server ([what it
 proves](RELEASE_CONTRACT.md#what-the-android-server-check-proves)). An app
 recorded as broken or unavailable is listed as not run. On this emulator a
 file picked in the 0.24.x apps reaches the page empty (WebView 133); that
@@ -78,15 +80,15 @@ needs a current WebView; phones update theirs through the Play Store.
 
 ## Current window
 
-As recorded in `android/support-window.json` for 0.24.3. The CI table is the
+As recorded in `android/support-window.json` for 0.25.0. The CI table is the
 evidence; this table is what it is checked against.
 
 | App | Android 10 | Android 16 | Android 17 |
 | --- | --- | --- | --- |
+| 0.25.0 | starts and connects | starts and connects | starts and connects |
 | 0.24.3 | starts and connects | starts and connects | starts and connects |
 | 0.24.2 | starts and connects | starts and connects | starts and connects |
 | 0.24.1 | starts and connects | starts and connects | starts and connects |
-| 0.24.0 | starts and connects | starts and connects | starts and connects |
 
 All four apps put contacts on the phone and sync them both ways.
 From 0.23.0 the app also reads the handshake `protocol` and `minApp` when
