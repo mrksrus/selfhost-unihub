@@ -49,6 +49,8 @@ async function installerShown(shot) {
 
 test('[B-24] the downloaded app update opens Android\'s installer with UniHub as its source', { timeout: 900_000 }, async () => {
   adb('shell', 'pm', 'grant', PACKAGE, 'android.permission.POST_NOTIFICATIONS');
+  // As on a phone that never allowed UniHub as a source, also after an earlier run.
+  adb('shell', 'appops', 'set', PACKAGE, 'REQUEST_INSTALL_PACKAGES', 'default');
   adb('logcat', '-c');
   const { device, page } = await openApp();
   try {
