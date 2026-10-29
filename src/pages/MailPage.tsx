@@ -170,7 +170,9 @@ const MailPage = () => {
   const folderLabel = selectedFolder === ALL_MAIL ? 'All mail' : selectedFolder === SNOOZED ? 'Snoozed' : selectedFolderData?.label || selectedFolder;
   const accountLabel = selectedAccount === LEGACY_ACCOUNT ? 'Legacy — needs review' : selectedAccount === ALL_ACCOUNTS
     ? 'All accounts'
-    : selectedAccountData?.display_name || selectedAccountData?.email_address || 'No account selected';
+    : selectedAccountData?.display_name || selectedAccountData?.email_address
+      // Until the accounts are known and the remembered one is chosen (B-21).
+      || (!selectedAccount && (accountsLoading || accounts.length > 0) ? 'Loading…' : 'No account selected');
   const movableFolders = folders.filter(folder => movableFolderIds.includes(folder.id));
   const senderAlreadyInContacts = selectedEmail
     ? compose.contactEmailSuggestions.some((suggestion) => suggestion.email.toLowerCase() === selectedEmail.from_address.toLowerCase())
@@ -224,7 +226,7 @@ const MailPage = () => {
             onRecover={(accountId, folder) => bulk.move(selectedIds, folder, accountId)} />
         )}
 
-        <MailMessageList account={selectedAccount} folder={selectedFolder} folderLabel={folderLabel} accountLabel={accountLabel}
+        <MailMessageList account={selectedAccount} accountsLoading={accountsLoading} folder={selectedFolder} folderLabel={folderLabel} accountLabel={accountLabel}
           list={list} selection={selection} accounts={accounts} flagRequests={flagRequests} requestFlag={requestFlag}
           onOpen={loadEmailForReader} onContextMenu={(email, x, y) => setContextMenuEmail({ email, x, y })}
           onAddAccount={accountEditor.openAdd} snooze={snooze} schedule={schedule} readOnly={readOnly} />

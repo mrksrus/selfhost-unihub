@@ -24,6 +24,13 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   download manager's notification led to "isn't allowed to install unknown
   apps from this source". Needs the new app; this update itself still has to
   be opened from Files once.
+- **Opening UniHub shows one start screen.** A cold start went through
+  "Loading UniHub…", "Loading…", "Opening UniHub…" over a half-built bottom
+  bar, a blank page and a false "No mail account yet" before the mail
+  appeared. Now one "Opening UniHub…" screen stays until the start page shows,
+  and Mail says "Loading mail…" until its accounts are known. In the Android
+  app (Android 13 and later, with the new app) the splash screen also follows
+  UniHub's light or dark theme instead of the phone's, from the second start.
 
 ### Development
 

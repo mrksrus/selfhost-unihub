@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The splash screen at start in UniHub's own light or dark theme rather
+         than the phone's (MainActivity.startInPageTheme, Android 13+). The
+         colours are those of res/values(-night)/colors.xml "background". -->
+    <style name="Theme.UniHub.StartDark" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/start_dark</item>
+        <item name="android:windowSplashScreenBackground">@color/start_dark</item>
+    </style>
+    <style name="Theme.UniHub.StartLight" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/start_light</item>
+        <item name="android:windowSplashScreenBackground">@color/start_light</item>
+    </style>
+</resources>

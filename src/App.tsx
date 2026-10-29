@@ -10,7 +10,9 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import AppLayout from "@/components/layout/AppLayout";
 import InstallPrompt from "@/components/pwa/InstallPrompt";
-import { LoadingState } from "@/components/ui/page-states";
+import { StartingScreen } from "@/components/ui/page-states";
+// Not split off: it is the first page of every start.
+import StartRedirect from "./pages/StartRedirect";
 const Auth = lazy(() => import("./pages/Auth"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Contacts = lazy(() => import("./pages/Contacts"));
@@ -24,7 +26,6 @@ const Recordings = lazy(() => import("./pages/Recordings"));
 const Music = lazy(() => import("./pages/Music"));
 const More = lazy(() => import("./pages/More"));
 const AdminSettings = lazy(() => import("./pages/AdminSettings"));
-const StartRedirect = lazy(() => import("./pages/StartRedirect"));
 
 const AuthenticatedApp = () => {
   const { user, session, isOffline } = useAuth();
@@ -33,7 +34,9 @@ const AuthenticatedApp = () => {
       <TooltipProvider>
         <Toaster />
         <BrowserRouter>
-          <Suspense fallback={<LoadingState className="min-h-[40vh]" />}>
+          {/* Later pages load in a transition, which keeps the current page meanwhile:
+              this shows only while the first page loads. */}
+          <Suspense fallback={<StartingScreen />}>
           <Routes>
             <Route path="/auth" element={<Auth />} />
             <Route element={<AppLayout />}>

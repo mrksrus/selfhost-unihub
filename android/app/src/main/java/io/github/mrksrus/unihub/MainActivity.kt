@@ -247,6 +247,7 @@ class MainActivity : Activity() {
 
         PageTheme.saved(this)?.let { (_, background) -> web.setBackgroundColor(background) }
         val pageBridge = WebBridge(this, server, onChangeServer = ::changeServer, onTheme = { dark, background ->
+            if (PageTheme.splashChanges(this, dark)) startInPageTheme(dark)
             PageTheme.save(this, dark, background)
             applyTheme(dark, background)
         }, onNotifications = { action, answer -> notifications(server, action, answer) })
@@ -631,6 +632,17 @@ class MainActivity : Activity() {
     // UniHub has its own light/dark setting, so the bars follow the page (its
     // ThemeProvider reports it) rather than the phone. Until the first page has
     // loaded, the last theme it reported is used.
+    // B-21: Android draws the splash screen before the app runs, in the
+    // phone's light or dark theme, so UniHub set to the other one started with
+    // a flash of the wrong colour. From Android 13 the app chooses the splash
+    // theme of its next starts.
+    private fun startInPageTheme(dark: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        try {
+            splashScreen.setSplashScreenTheme(if (dark) R.style.Theme_UniHub_StartDark else R.style.Theme_UniHub_StartLight)
+        } catch (_: Exception) { }
+    }
+
     private fun applyTheme(dark: Boolean, background: Int) {
         window.setBackgroundDrawable(ColorDrawable(background))
         webView?.setBackgroundColor(background)

@@ -29,6 +29,20 @@ export function LoadingState({ label = 'Loading…', compact = false, className 
   );
 }
 
+/**
+ * The one screen shown while UniHub starts: the stored session is checked, the
+ * start page is chosen and its code loaded. Every step shows it in the same
+ * place with the same words, over the navigation, so a cold start reads as one
+ * screen rather than several (B-21).
+ */
+export function StartingScreen() {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
+      <LoadingState label="Opening UniHub…" />
+    </div>
+  );
+}
+
 type EmptyStateProps = {
   icon?: IconType;
   title: string;

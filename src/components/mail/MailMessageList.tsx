@@ -20,6 +20,8 @@ const PREVIEW_CLAMP = ['', 'truncate', 'line-clamp-2', 'line-clamp-3', 'line-cla
 
 interface ListProps {
   account: string | null;
+  /** The accounts are still loading: no account is chosen yet, which does not mean there is none. */
+  accountsLoading?: boolean;
   folder: string;
   folderLabel: string;
   accountLabel: string;
@@ -90,7 +92,7 @@ function ScheduledSendState({ email, schedule, readOnly }: { email: Email; sched
 }
 
 /** Message rows with loading/empty states, the filter summary and pagination. */
-export function MailMessageList({ account, folder, folderLabel, accountLabel, list, selection, accounts, flagRequests, requestFlag,
+export function MailMessageList({ account, accountsLoading = false, folder, folderLabel, accountLabel, list, selection, accounts, flagRequests, requestFlag,
   onOpen, onContextMenu, onAddAccount, snooze, schedule, readOnly = false }: ListProps) {
   const { emails, threads } = list;
   const previewLines = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('mail_preview_lines') }).data ?? 1;
@@ -98,7 +100,9 @@ export function MailMessageList({ account, folder, folderLabel, accountLabel, li
   const byLatest = new Map((threads ?? []).map(thread => [thread.latest.id, thread]));
   return (
     <div className="min-h-0 flex-1 overflow-auto pb-mobile-nav md:pb-0">
-      {!account ? (
+      {!account && (accountsLoading || accounts.length > 0) ? (
+        <LoadingState label="Loading mail…" />
+      ) : !account ? (
         <EmptyState icon={Mail} title="No mail account yet" description="Add the account you want to read here. UniHub keeps a copy and syncs with your provider."
           action={<Button onClick={onAddAccount}><Plus aria-hidden="true" />Add mail account</Button>} />
       ) : list.isLoading ? (

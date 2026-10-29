@@ -13,7 +13,7 @@ import GlobalCommandPalette from '@/components/GlobalCommandPalette';
 import { MailPeek } from '@/components/mail/MailPeek';
 import { PreferenceAccent } from '@/components/theme/PreferenceAccent';
 import { Button } from '@/components/ui/button';
-import { EmptyState, LoadingState } from '@/components/ui/page-states';
+import { EmptyState, StartingScreen } from '@/components/ui/page-states';
 
 const SERVER_RETRY_MS = 10_000;
 
@@ -48,13 +48,7 @@ const AppLayout = () => {
     return <ServerUnavailable onRetry={retrySession} retrying={loading} />;
   }
 
-  if (loading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-background">
-        <LoadingState label="Loading UniHub…" />
-      </div>
-    );
-  }
+  if (loading) return <StartingScreen />;
 
   if (!user) {
     return <Navigate to="/auth" replace />;

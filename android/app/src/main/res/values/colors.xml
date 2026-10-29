@@ -6,4 +6,7 @@
     <color name="muted">#5B6475</color>
     <color name="accent">#2563EB</color>
     <color name="destructive">#DC2626</color>
+    <!-- The start screen in either theme, whatever the phone's (res/values-v31/start_themes.xml). -->
+    <color name="start_dark">#000000</color>
+    <color name="start_light">#F6F7F9</color>
 </resources>

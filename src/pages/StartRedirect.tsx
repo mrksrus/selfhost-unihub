@@ -2,7 +2,7 @@ import { useModules } from '@/hooks/use-modules';
 import { Navigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { selectUserSetting, userSettingsQueryOptions } from '@/lib/settings-api';
-import { LoadingState } from '@/components/ui/page-states';
+import { StartingScreen } from '@/components/ui/page-states';
 
 import { navigationPages } from '@/lib/navigation';
 
@@ -22,13 +22,14 @@ const StartRedirect = () => {
 
 
   if (isLoading || modules.isPending) {
-    return <LoadingState className="min-h-full" label="Opening UniHub…" />;
+    return <StartingScreen />;
   }
 
   const desired = startPagePaths[startPage || 'mail'] || '/mail';
   // A hidden start page still opens; only a disabled module falls back to navigation.
   const target = modules.canAccess(desired) ? desired : navigationPages(modules.pages, modules.canNavigate)[0]?.href || '/dashboard';
-  return <Navigate to={target} replace />;
+  // The start screen stays while the start page's code loads (a transition keeps this page meanwhile).
+  return <><StartingScreen /><Navigate to={target} replace /></>;
 };
 
 export default StartRedirect;
