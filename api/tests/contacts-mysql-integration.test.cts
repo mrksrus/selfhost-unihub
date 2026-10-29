@@ -210,11 +210,11 @@ test('contacts API: vCard model, input contract, 3+3 compatibility, versions, ow
   assert.deepEqual(withMerged.merged.map((item: FixtureValue) => [item.id, item.into]), [['gone-1', ann.id], ['gone-2', ann.id]]);
   assert.equal((await call(owner, 'GET', '/api/contacts')).merged, undefined);
 
-  // ── The 0.25 automatic merge, import and export are gone (they lost data) ──
+  // ── The 0.25 automatic merge and JSON import are gone (they lost data) ──
   for (const [method, path] of [['POST', '/api/contacts/merge-duplicates'], ['POST', '/api/contacts/merge-duplicates/preview'], ['POST', '/api/contacts/import']]) {
     assert.equal((await owner.request(method, path, { vcf_data: 'BEGIN:VCARD\r\nEND:VCARD' })).status, 404, `${method} ${path}`);
   }
-  assert.equal((await call(owner, 'GET', '/api/contacts/export', undefined, 404)).code, 'CONTACT_NOT_FOUND', 'export is no route of its own any more');
+  // Their replacements (preview import, vCard 4.0/3.0 and CSV export) are tested in contacts-transfer-mysql-integration.test.cts.
 
   // ── Paging past 2,000 contacts with equal names: nothing lost or repeated ──
   const pager = await signIn('pager');
