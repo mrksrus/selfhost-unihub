@@ -175,3 +175,28 @@ export function deviceScreenshot(path) {
   adb('shell', 'screencap', '-p', '/data/local/tmp/unihub-screen.png');
   adb('pull', '/data/local/tmp/unihub-screen.png', path);
 }
+
+/**
+ * Touches a page element with a real tap on the screen, as a finger would:
+ * some controls (Radix pickers in the WebView) do not open on Playwright's
+ * synthetic click. Page pixels become screen pixels from the WebView's place.
+ */
+export async function touch(page, locator) {
+  await locator.scrollIntoViewIfNeeded();
+  // The page may still be moving (the on-screen keyboard opening): wait until the element stays put.
+  let box = await locator.boundingBox();
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await sleep(400);
+    const next = await locator.boundingBox();
+    if (box && next && Math.abs(next.x - box.x) < 1 && Math.abs(next.y - box.y) < 1) break;
+    box = next;
+  }
+  if (!box) throw new Error('the element is not on screen');
+  const ratio = await page.evaluate(() => window.devicePixelRatio);
+  adb('shell', 'uiautomator', 'dump', '/data/local/tmp/unihub-ui.xml');
+  const xml = adb('shell', 'cat', '/data/local/tmp/unihub-ui.xml');
+  const node = [...xml.matchAll(/<node [^>]*>/g)].map(match => match[0]).find(tag => tag.includes('class="android.webkit.WebView"'));
+  const web = node && /bounds="\[(\d+),(\d+)\]/.exec(node);
+  if (!web) throw new Error('the WebView is not on screen');
+  adb('shell', 'input', 'tap', `${Math.round(+web[1] + (box.x + box.width / 2) * ratio)}`, `${Math.round(+web[2] + (box.y + box.height / 2) * ratio)}`);
+}

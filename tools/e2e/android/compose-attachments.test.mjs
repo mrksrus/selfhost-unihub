@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { deviceScreenshot, navigate, openApp, pickFromDownloads, pushToDownloads, sleep } from '../support/android.mjs';
+import { deviceScreenshot, navigate, openApp, pickFromDownloads, pushToDownloads, sleep, touch } from '../support/android.mjs';
 
 const fixture = name => fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url));
 const evidence = process.env.UNIHUB_E2E_EVIDENCE ?? `${process.env.TMPDIR ?? '/tmp'}`;
@@ -43,12 +43,16 @@ test('a PDF and a photo picked in Android\'s picker are sent from the phone comp
       if (folded) await line.click();
       const from = page.getByRole('combobox', { name: 'From' }).filter({ visible: true }).first();
       if (!(await from.textContent())?.includes('admin@mail.test')) {
-        // A synthetic click does not open the picker in the WebView (a finger does); the keyboard does.
-        await from.focus();
-        await page.keyboard.press('Enter');
-        await page.getByRole('option', { name: /admin@mail\.test/ }).first().click();
-        await page.waitForFunction(() => document.querySelector('[role="combobox"][aria-expanded="false"]'));
+        // A synthetic click does not open the picker in the WebView; a finger does.
+        const option = page.getByRole('option', { name: /admin@mail\.test/ }).first();
+        for (let attempt = 0; attempt < 3 && !(await option.isVisible()); attempt++) {
+          await touch(page, from);
+          await option.waitFor({ timeout: 10_000 }).catch(() => {});
+        }
+        if (!(await option.isVisible())) deviceScreenshot(`${evidence}/android-compose-from-picker.png`);
+        await touch(page, option);
       }
+      for (let attempt = 0; attempt < 20 && !(await from.textContent())?.includes('admin@mail.test'); attempt++) await sleep(500);
       assert.match(await from.textContent() ?? '', /admin@mail\.test/);
     }
     await page.locator('input').and(page.getByLabel('To')).filter({ visible: true }).first().fill('sam@example.org');
