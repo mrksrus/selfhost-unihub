@@ -266,7 +266,12 @@ function mergeCard(base: ContactDraft, kept: KeptPropertyDraft[], card: Imported
     if (!group) return group ?? null;
     const key = group.toLowerCase();
     if (!used.has(key) || sameGroup(key)) return group;
-    if (!renamed.has(key)) { let n = 2; while (used.has(`${key}-${n}`)) n++; renamed.set(key, `${group}-${n}`); used.add(`${key}-${n}`); }
+    if (!renamed.has(key)) {
+      // vcard_group holds 64 characters.
+      const stem = group.slice(0, 56);
+      let n = 2; while (used.has(`${stem.toLowerCase()}-${n}`)) n++;
+      renamed.set(key, `${stem}-${n}`); used.add(`${stem.toLowerCase()}-${n}`);
+    }
     return renamed.get(key)!;
   };
   const seen = new Set(base.values.map(value => `${value.kind}\u0000${valueKey(value.kind, value.value) || value.value.trim().toLowerCase()}`));
@@ -333,11 +338,24 @@ async function existingKept(executor: SqlExecutor, userId: string, contactId: st
     value: row.value, source_version: row.source_version }));
 }
 
-// The kept properties an export of the contact writes: a field's old copy that no longer agrees is not one.
-async function writtenKeptCount(userId: string, contact: ContactRecord) {
-  if (!contact.kept_properties) return 0;
-  const kept = await existingKept(db, userId, contact.id);
-  return kept.filter(property => property.source_version !== FIELD_SOURCE || stillAgrees(property, contact)).length;
+// How many kept properties an export of each contact writes: a field's old
+// copy that no longer agrees is not one. One query per thousand contacts.
+async function writtenKeptCounts(userId: string, contacts: readonly ContactRecord[]) {
+  const counts = new Map<string, number>();
+  const withKept = contacts.filter(contact => contact.kept_properties > 0);
+  for (let start = 0; start < withKept.length; start += 1000) {
+    const slice = withKept.slice(start, start + 1000);
+    const byId = new Map(slice.map(contact => [contact.id, contact]));
+    const [rows] = await db.execute<(RowDataPacket & { contact_id: string; name: string; vcard_group: string | null; params: unknown; value: string; source_version: string | null })[]>(
+      `SELECT contact_id, name, vcard_group, params, value, source_version FROM contact_properties WHERE user_id = ? AND contact_id IN (${slice.map(() => '?').join(', ')})`,
+      [userId, ...slice.map(contact => contact.id)]);
+    for (const row of rows) {
+      const property: KeptPropertyDraft = { name: row.name, group: row.vcard_group, params: typeof row.params === 'string' ? JSON.parse(row.params) : (row.params as KeptPropertyDraft['params']) ?? null,
+        value: row.value, source_version: row.source_version };
+      if (property.source_version !== FIELD_SOURCE || stillAgrees(property, byId.get(row.contact_id)!)) counts.set(row.contact_id, (counts.get(row.contact_id) || 0) + 1);
+    }
+  }
+  return counts;
 }
 
 /** Matches the cards and builds the groups the person decides on. */
@@ -345,7 +363,9 @@ async function matchCards(userId: string, cards: readonly ImportedCard[]) {
   const index = await loadIndex(db, userId);
   const matches = cards.map(card => matchCard(card, index));
   const targets = [...new Set(matches.flatMap(match => match.existing.slice(0, 1)))];
-  const existing = new Map((await loadContacts(db, userId, targets)).map(contact => [contact.id, contact]));
+  const loaded = await loadContacts(db, userId, targets);
+  const existing = new Map(loaded.map(contact => [contact.id, contact]));
+  const writtenKept = await writtenKeptCounts(userId, loaded);
   const groups: (ImportGroup & { cardIndexes: number[] })[] = [];
   for (const members of fileGroups(cards)) {
     const memberMatches = members.map(at => matches[at]);
@@ -365,7 +385,7 @@ async function matchCards(userId: string, cards: readonly ImportedCard[]) {
       const found = new Set<ContactSingleField>();
       for (const at of target ? members : members.slice(1)) for (const field of mergeCard(base, kept, cards[at])) found.add(field);
       conflicts = [...found];
-      if (target && members.length === 1 && signature(cards[members[0]].draft, cards[members[0]].properties.length) === signature(recordDraft(target), await writtenKeptCount(userId, target))) {
+      if (target && members.length === 1 && signature(cards[members[0]].draft, cards[members[0]].properties.length) === signature(recordDraft(target), writtenKept.get(target.id) || 0)) {
         match = 'identical';
         confidence = 'high';
       }
