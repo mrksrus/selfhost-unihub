@@ -34,7 +34,8 @@ TEST_TMP=${TEST_TMP:-$RUN/tmp}
 
 die() { echo "local-db: $*" >&2; exit 1; }
 # A unix socket path holds at most 107 bytes; refuse a deeper one before the server does.
-[ ${#SOCKET} -le 100 ] || die "socket path too long: $SOCKET (set UNIHUB_DB_RUN or XDG_RUNTIME_DIR to a shorter directory)"
+# Bytes, not characters: in a UTF-8 locale ${#SOCKET} counts "ä" as one.
+[ "$(printf %s "$SOCKET" | wc -c)" -le 100 ] || die "socket path too long: $SOCKET (set UNIHUB_DB_RUN or XDG_RUNTIME_DIR to a shorter directory)"
 [ -x "$DB_HOME/bin/mariadbd" ] || die "MariaDB not found at $DB_HOME (see docs/DEVELOPMENT.md)"
 
 write_config() {
