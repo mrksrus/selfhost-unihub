@@ -4,6 +4,7 @@ import { db } from '../state';
 import { getUserModules } from '../services/module-settings';
 import { escapeLike } from '../services/sql';
 import { defineRoutes } from '../http/route';
+import { contactSearchCondition, displayName } from '../services/contacts';
 
 function isoDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : (value || null);
@@ -25,17 +26,16 @@ export = defineRoutes({
       const modules = new Map((await getUserModules(userId)).map(module => [module.id, module.enabled]));
       const queryModule = (id: string, sql: string, params: string[]): Promise<[RowDataPacket[], unknown?]> => modules.get(id) ? db.execute<RowDataPacket[]>(sql, params) : Promise.resolve([[]]);
       const like = `%${escapeLike(q)}%`;
+      const contactSearch = contactSearchCondition(q);
       const [contacts] = await queryModule('contacts',
-        `SELECT id, first_name, last_name, email, email2, email3, company
-         FROM contacts
-         WHERE user_id = ?
-           AND (
-             first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR email2 LIKE ? OR email3 LIKE ? OR
-             phone LIKE ? OR phone2 LIKE ? OR phone3 LIKE ? OR company LIKE ?
-           )
-         ORDER BY is_favorite DESC, first_name ASC, last_name ASC
+        `SELECT c.id, c.first_name, c.middle_name, c.last_name, c.display_name, c.company,
+           (SELECT v.value FROM contact_values v WHERE v.contact_id = c.id AND v.kind = 'email' ORDER BY v.position LIMIT 1) AS email,
+           (SELECT v.value FROM contact_values v WHERE v.contact_id = c.id AND v.kind = 'phone' ORDER BY v.position LIMIT 1) AS phone
+         FROM contacts c
+         WHERE c.user_id = ? AND ${contactSearch.sql}
+         ORDER BY c.is_favorite DESC, c.first_name ASC, c.last_name ASC
          LIMIT ${perTypeLimit}`,
-        [userId, like, like, like, like, like, like, like, like, like]
+        [userId, ...contactSearch.params]
       );
 
       const [emails] = await queryModule('mail',
@@ -77,12 +77,12 @@ export = defineRoutes({
 
       const results = [
         ...contacts.map((contact) => {
-          const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || contact.email || 'Contact';
+          const values = [{ kind: 'email', value: contact.email || '' }, { kind: 'phone', value: contact.phone || '' }].filter(value => value.value);
           return {
             id: `contact:${contact.id}`,
             type: 'contact',
-            title: name,
-            subtitle: contact.email || contact.email2 || contact.email3 || contact.company || '',
+            title: displayName(contact as Parameters<typeof displayName>[0], values) || 'Contact',
+            subtitle: contact.email || contact.company || contact.phone || '',
             href: `/contacts?search=${encodeURIComponent(q)}`,
             entity_id: contact.id,
           };

@@ -45,11 +45,13 @@ test('contacts-only schema 3 export never reads mail, credentials or recording t
     ? [[{ id: 'contact', user_id: 'owner', first_name: 'Local' }]] : [[]]));
   const backup = await buildBackupForUser('owner', { sections: 'contacts', includeFileData: false });
   assert.equal(backup.version, BACKUP_VERSION);
-  assert.deepEqual(Object.keys(backup.data), ['contacts']);
+  const tables = ['contacts', 'contact_values', 'contact_properties', 'contact_photos', 'contact_uid_aliases', 'contact_duplicate_dismissals'];
+  assert.deepEqual(Object.keys(backup.data), tables);
   const selects = calls.filter(call => call.sql.startsWith('SELECT'));
-  assert.equal(selects.length, 1);
+  assert.equal(selects.length, tables.length);
+  selects.forEach((select, index) => assert.match(select.sql, new RegExp(`FROM ${tables[index]} b WHERE b.user_id = \\?`)));
   assert.match(selects[0].sql, /SELECT b.`id`, b.`user_id`/);
-  assert.doesNotMatch(selects[0].sql, /SELECT \*/);
+  for (const select of selects) assert.doesNotMatch(select.sql, /SELECT \*/);
   assert.ok(calls.findIndex(call => call.sql.startsWith('START TRANSACTION')) < calls.indexOf(selects[0]));
   assert.equal(calls.at(-1).sql, 'COMMIT');
 });

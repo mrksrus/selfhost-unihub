@@ -21,13 +21,6 @@ const PUBLIC_ROUTE_KEYS: ReadonlySet<string> = new Set([
 // Request body limits in bytes for the routes that carry files, archives,
 // imports, bulk selections, or text columns sized well beyond the default.
 const BODY_LIMIT_BY_ROUTE: Readonly<Record<string, number>> = {
-  // Contact notes are a TEXT column
-  'POST /api/contacts': 65536,
-  'PUT /api/contacts/:id': 65536,
-  'POST /api/contacts/import': 500000, // vCard import can be large
-  // A contact selection: up to 5000 IDs of ~39 bytes each
-  'POST /api/contacts/bulk-delete': 250000,
-  'POST /api/contacts/bulk-update': 250000,
   'POST /api/recordings/uploads/:id/chunk': 1200 * 1024, // Recording chunks are base64 encoded JSON.
   // Chord sheets (metadata.chords, 10000 characters), a TEXT description and tags
   'PUT /api/recordings/:id': 262144,
@@ -60,7 +53,6 @@ function bodyLimitFor(routeKey: string) {
 // prefix: a write under a module's prefix is read-only while that module's
 // section is being restored. Backup routes run the restore themselves.
 const RESTORE_SECTION_BY_PATH_PREFIX: readonly [string, string][] = [
-  ['/api/contacts', 'contacts'],
   ['/api/calendar', 'calendar'],
   ['/api/mail', 'mail'],
   ['/api/recordings', 'recordings'],

@@ -15,12 +15,15 @@ function handlerHarness(t: import('node:test').TestContext, { userId = 'u1', rou
   stub(paths[4], { getActiveRestoreSections: async () => new Set<FixtureValue>(restoring) });
   const { legacyTable } = require('./helpers/route-table.cts') as { legacyTable: (handlers: Record<string, FixtureValue>) => FixtureValue };
   const { mergeRouteTables } = require('../dist/src/http/route') as typeof import('../src/http/route');
-  stub(paths[2], mergeRouteTables({ 'GET /api/version': { auth: 'public', handler: async () => ({ app: 'unihub' }) } }, legacyTable({ 'GET /api/mail/attachments/:id': route, 'PUT /api/mail/emails/:id': route, 'POST /api/mail/writebacks/:id/retry': route,
+  // Contacts declare their own specs (routes/contacts*.ts); the test's handler replaces theirs.
+  const declared = { ...require('../dist/src/routes/contacts'), ...require('../dist/src/routes/contacts-transfer') } as Record<string, FixtureValue>;
+  const contacts = Object.fromEntries(['POST /api/contacts', 'PUT /api/contacts/:id', 'GET /api/contacts/export'].filter(() => typeof route === 'function').map(key => [key, { ...declared[key], handler: route }]));
+  stub(paths[2], mergeRouteTables({ 'GET /api/version': { auth: 'public', handler: async () => ({ app: 'unihub' }) } }, contacts, legacyTable({ 'GET /api/mail/attachments/:id': route, 'PUT /api/mail/emails/:id': route, 'POST /api/mail/writebacks/:id/retry': route,
     'POST /api/mail/writebacks/:id/accept-server-state': route,
     'POST /api/admin/users/:id/2fa/reset': route,
-    'PUT /api/recordings/:id': route, 'POST /api/contacts': route, 'PUT /api/contacts/:id': route,
+    'PUT /api/recordings/:id': route,
     'POST /api/auth/signin': route, 'POST /api/auth/signup': route, 'PUT /api/auth/password': route, 'PUT /api/admin/users/:id/password': route,
-    'GET /api/modules': route, 'GET /api/contacts/export': route, 'GET /api/offline/snapshot': route || (async (_req: FixtureValue, user: FixtureValue) => ({ snapshot: { userId: user } })),
+    'GET /api/modules': route, 'GET /api/offline/snapshot': route || (async (_req: FixtureValue, user: FixtureValue) => ({ snapshot: { userId: user } })),
     'POST /api/parse-test': route || (async () => ({ success: true })) })));
   const { handleRequest } = require(paths[0]) as typeof import('../src/request-handler');
   return async function run(method: string, url: string, body = '', overrides = {}) {
@@ -143,8 +146,8 @@ test('a long chord sheet and long contact notes reach their handlers; each expli
   assert.equal(called, 2);
   for (const [method, path, limit] of [
     ['PUT', '/api/recordings/r1', 262144],
-    ['POST', '/api/contacts', 65536],
-    ['PUT', '/api/contacts/c1', 65536],
+    ['POST', '/api/contacts', 524288],
+    ['PUT', '/api/contacts/c1', 524288],
   ] as const) {
     const result = await run(method, path, '{}', { 'content-length': String(limit + 1) });
     assert.equal(result.status, 413, `${method} ${path}`);

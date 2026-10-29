@@ -6,13 +6,12 @@
 // Route files that still run SQL through `db` from ../state instead of a
 // service. The ceiling is the count when the rule was introduced.
 export const ROUTES_USING_DB = {
-  ceiling: 15,
+  ceiling: 14,
   files: [
     "api/src/routes/admin.ts",
     "api/src/routes/auth.ts",
     "api/src/routes/backup.ts",
     "api/src/routes/calendar.ts",
-    "api/src/routes/contacts.ts",
     "api/src/routes/mail-accounts.ts",
     "api/src/routes/mail-drafts.ts",
     "api/src/routes/mail-folders.ts",
@@ -62,14 +61,13 @@ export const VIEWS_USING_API_CLIENT = {
 // (database-readiness, service-supervisor, drop-privileges) run as their own
 // processes before the API; converting them is optional.
 export const API_FILES_USING_CONSOLE = {
-  ceiling: 36,
+  ceiling: 35,
   files: [
     "api/src/database-readiness.ts",
     "api/src/routes/admin.ts",
     "api/src/routes/auth.ts",
     "api/src/routes/backup.ts",
     "api/src/routes/calendar.ts",
-    "api/src/routes/contacts.ts",
     "api/src/routes/mail-accounts.ts",
     "api/src/routes/mail-drafts.ts",
     "api/src/routes/mail-folders.ts",

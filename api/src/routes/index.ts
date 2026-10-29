@@ -2,6 +2,9 @@ import systemRoutes = require('./system');
 import modulesRoutes = require('./modules');
 import authRoutes = require('./auth');
 import contactsRoutes = require('./contacts');
+import contactsTransferRoutes = require('./contacts-transfer');
+import contactsPhotosRoutes = require('./contacts-photos');
+import contactsMergeRoutes = require('./contacts-merge');
 import settingsRoutes = require('./settings');
 import backupRoutes = require('./backup');
 import searchRoutes = require('./search');
@@ -26,7 +29,10 @@ const routes = mergeRouteTables(
   systemRoutes,
   modulesRoutes,
   authRoutes,
-  legacyRoutes(contactsRoutes),
+  contactsRoutes,
+  contactsTransferRoutes,
+  contactsPhotosRoutes,
+  contactsMergeRoutes,
   settingsRoutes,
   legacyRoutes(backupRoutes),
   searchRoutes,

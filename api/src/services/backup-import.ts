@@ -36,7 +36,6 @@ import {
   overwriteUserId,
   checkRestoredAccountPolicy,
   shouldWriteExisting,
-  findExistingContactForRestore,
   findExistingCalendarAccountForRestore,
   findExistingCalendarForRestore,
   findExistingCalendarEventForRestore,
@@ -48,6 +47,7 @@ import {
   writeRestoredFile,
 } from './backup-restore-mapping';
 import { backupFromZipBuffer, backupFromZipFile } from './backup-zip-reader';
+import { restoreContactsSection } from './backup-contacts';
 
 const accountLabel = (row: BackupRow) => row.email_address || row.account_email || row.display_name || row.id;
 
@@ -211,7 +211,6 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
     // Email links of restored events, remapped once the mail section is in.
     const eventsWithSourceEmail = new Map<string, string>();
     const claimedCalendarEventIds = new Set<string>();
-    const claimedContactIds = new Set<string>();
     const mailAccountIdMap = new Map();
     const mailFolderIdMap = new Map();
     const mailRuleIdMap = new Map();
@@ -272,19 +271,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
     }
 
     await reportRestoreProgress('contacts', 50);
-    for (const contact of data.contacts || []) {
-      await checkRestoreCancelled();
-      const row = overwriteUserId(contact, userId);
-      const existingContactId = await findExistingContactForRestore(connection, row, userId, claimedContactIds);
-      const targetContactId = chooseTargetId(row.id, existingContactId, conflictMode);
-      claimedContactIds.add(targetContactId);
-      if (!shouldWriteExisting(existingContactId, targetContactId, conflictMode)) continue;
-      await writeOwnedRow(connection, userId, 'contacts',
-        ['id', 'user_id', 'first_name', 'last_name', 'email', 'email2', 'email3', 'phone', 'phone2', 'phone3', 'company', 'job_title', 'notes', 'avatar_url', 'is_favorite'],
-        [targetContactId, row.user_id, row.first_name || '', row.last_name || null, row.email || null, row.email2 || null, row.email3 || null, row.phone || null, row.phone2 || null, row.phone3 || null, row.company || null, row.job_title || null, row.notes || null, row.avatar_url || null, row.is_favorite ? 1 : 0],
-        ['first_name', 'last_name', 'email', 'email2', 'email3', 'phone', 'phone2', 'phone3', 'company', 'job_title', 'notes', 'avatar_url', 'is_favorite']
-      );
-    }
+    await restoreContactsSection(connection, userId, data, { conflictMode, warnings: validation.warnings, checkCancelled: checkRestoreCancelled });
 
     await reportRestoreProgress('calendar', 55);
     for (const account of data.calendar_accounts || []) {

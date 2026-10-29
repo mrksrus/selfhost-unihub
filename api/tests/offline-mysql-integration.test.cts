@@ -53,11 +53,17 @@ test('MySQL offline queries match application schema, include every contact and 
   const contactIds = Array.from({ length: 2105 }, () => crypto.randomUUID());
   for (let index = 0; index < contactIds.length; index += 200) {
     const ids = contactIds.slice(index, index + 200);
-    await connection.execute<ResultSetHeader>(`INSERT INTO contacts (id, user_id, first_name, notes) VALUES ${ids.map(() => '(?, ?, ?, ?)').join(',')}`,
-      ids.flatMap((id, row) => [id, userId, `Contact ${index + row}`, 'Complete notes']));
+    await connection.execute<ResultSetHeader>(`INSERT INTO contacts (id, user_id, uid, uid_hash, first_name, notes) VALUES ${ids.map(() => '(?, ?, ?, SHA2(?, 256), ?, ?)').join(',')}`,
+      ids.flatMap((id, row) => [id, userId, `urn:uuid:${id}`, `urn:uuid:${id}`, `Contact ${index + row}`, 'Complete notes']));
   }
+  // Values beyond the 3+3 of older releases travel with the contact.
+  await connection.execute<ResultSetHeader>(`INSERT INTO contact_values (id, contact_id, user_id, kind, position, label, value, value_key) VALUES
+    (UUID(), ?, ?, 'email', 0, 'work', 'first@example.test', 'first@example.test'), (UUID(), ?, ?, 'email', 1, '', 'second@example.test', 'second@example.test'),
+    (UUID(), ?, ?, 'email', 2, '', 'third@example.test', 'third@example.test'), (UUID(), ?, ?, 'email', 3, 'home', 'fourth@example.test', 'fourth@example.test')`,
+  Array(4).fill([contactIds[0], userId]).flat());
   const otherContact = crypto.randomUUID();
-  await connection.execute<ResultSetHeader>('INSERT INTO contacts (id, user_id, first_name) VALUES (?, ?, ?)', [otherContact, otherUser, 'Other user']);
+  await connection.execute<ResultSetHeader>('INSERT INTO contacts (id, user_id, uid, uid_hash, first_name) VALUES (?, ?, ?, SHA2(?, 256), ?)', [otherContact, otherUser, `urn:uuid:${otherContact}`, `urn:uuid:${otherContact}`, 'Other user']);
+  await connection.execute<ResultSetHeader>("INSERT INTO contact_values (id, contact_id, user_id, kind, position, value, value_key) VALUES (UUID(), ?, ?, 'email', 0, 'other@example.test', 'other@example.test')", [otherContact, otherUser]);
   const calendarAccount = crypto.randomUUID(), calendarId = crypto.randomUUID(), eventId = crypto.randomUUID();
   await connection.execute<ResultSetHeader>('INSERT INTO calendar_accounts (id, user_id, provider, display_name, encrypted_password) VALUES (?, ?, ?, ?, ?)', [calendarAccount, userId, 'caldav', 'Private calendar', 'secret-calendar']);
   await connection.execute<ResultSetHeader>('INSERT INTO calendar_calendars (id, user_id, account_id, name) VALUES (?, ?, ?, ?)', [calendarId, userId, calendarAccount, 'Calendar']);
@@ -85,6 +91,11 @@ test('MySQL offline queries match application schema, include every contact and 
   setDb({ execute: connection.execute.bind(connection), async getConnection() { return borrowed; } } as FixtureValue);
   const snapshot = await createOfflineSnapshot(userId);
   assert.equal(snapshot.contacts.length, 2105);
+  const withValues = snapshot.contacts.find((row: FixtureValue) => row.id === contactIds[0]) as FixtureValue;
+  assert.deepEqual(withValues.emails.map((email: FixtureValue) => [email.value, email.label]), [['first@example.test', 'work'], ['second@example.test', ''], ['third@example.test', ''], ['fourth@example.test', 'home']]);
+  assert.deepEqual([withValues.email, withValues.email2, withValues.email3], ['first@example.test', 'second@example.test', 'third@example.test'], 'the 3+3 projection for the offline search');
+  assert.equal(withValues.photo, null);
+  assert.doesNotMatch(JSON.stringify(snapshot.contacts), /other@example\.test|Other user/);
   assert.equal(snapshot.events.length, 1);
   assert.equal(snapshot.events[0].subtasks.length, 1);
   assert.equal(snapshot.events[0].attendees.length, 1);

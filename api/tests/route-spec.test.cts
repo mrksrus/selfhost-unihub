@@ -11,12 +11,13 @@ const { getModuleForPath } = require('../dist/src/services/module-catalog') as t
 // The restore mapping the backup catalog's WRITE_PATHS gave the derived files.
 function oldRestoreSection(pathname: string) {
   if (pathname.startsWith('/api/backup/')) return null;
-  for (const [section, prefix] of [['contacts', '/api/contacts'], ['calendar', '/api/calendar'], ['mail', '/api/mail'], ['recordings', '/api/recordings']]) {
+  for (const [section, prefix] of [['calendar', '/api/calendar'], ['mail', '/api/mail'], ['recordings', '/api/recordings']]) {
     if (pathname === prefix || pathname.startsWith(prefix + '/')) return section;
   }
   return null;
 }
-const NATIVE_ROUTE_FILES = ['notifications', 'admin', 'auth', 'settings', 'modules', 'system', 'offline', 'search', 'events', 'mail-essentials', 'mail-threads', 'files'];
+const NATIVE_ROUTE_FILES = ['notifications', 'admin', 'auth', 'settings', 'modules', 'system', 'offline', 'search', 'events', 'mail-essentials', 'mail-threads', 'files',
+  'contacts', 'contacts-transfer', 'contacts-photos', 'contacts-merge'];
 const nativeKeys = new Set(NATIVE_ROUTE_FILES.flatMap(name => Object.keys(require(`../dist/src/routes/${name}`))));
 
 test('every derived route spec equals the policy the boundary looked up before specs existed', () => {

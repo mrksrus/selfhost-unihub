@@ -35,6 +35,17 @@ function fixture({ oversizeTable, failTable, modules = {} }: FixtureValue = {}) 
       assert.match(sql, /JSON_CONTAINS/);
       return [[{ slug: 'connected', mail_account_id: 'mail-account-2' }]];
     }
+    // The contact store reads the page's contacts by id; their child tables are empty here.
+    if (/\bFROM contact_(values|properties|photos)\b/.test(sql)) {
+      assert.equal(params[0], 'user-1');
+      return sql.includes('AS estimated_bytes') ? [[{ estimated_bytes: 0 }]] : [[]];
+    }
+    if (/FROM contacts c WHERE c\.user_id = \? AND c\.id IN/.test(sql)) {
+      assert.equal(params[0], 'user-1');
+      const ids = new Set(params.slice(1));
+      return [(transactionData || data).contacts.filter((row: FixtureValue) => row.user_id === params[0] && ids.has(row.id))
+        .map((row: FixtureValue) => ({ uid: `urn:uuid:${row.id}`, version: 1, created_at: new Date(0), updated_at: new Date(0), ...row }))];
+    }
     const table = (sql.match as FixtureValue)(/\bFROM (contacts|calendar_events|calendar_event_subtasks|calendar_event_attendees|calendar_calendars|calendar_accounts|mail_accounts|mail_folders|emails|email_attachments)\b/)[1];
     assert.match(sql, /WHERE user_id = \?/);
     assert.equal(params[0], 'user-1');

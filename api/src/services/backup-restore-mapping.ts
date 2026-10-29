@@ -168,45 +168,6 @@ function chooseUnclaimedRestoreMatch(rows: (RowDataPacket & { id: string })[], c
   return (exact || available[0])?.id || null;
 }
 
-async function findExistingContactForRestore(connection: SqlExecutor, row: RestoreRow, userId: string, claimedIds = new Set<string>()) {
-  const [existingById] = await connection.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM contacts WHERE id = ? AND user_id = ? LIMIT 1', [row.id, userId]);
-  if (existingById.length && !claimedIds.has(existingById[0].id)) return existingById[0].id;
-
-  const identityFields = ['first_name', 'last_name', 'email', 'email2', 'email3', 'phone', 'phone2', 'phone3', 'company', 'job_title', 'notes', 'avatar_url'];
-  const selection = ['id', ...identityFields].join(', ');
-  const emails = [row.email, row.email2, row.email3].map(normalizeIdentifier).filter(Boolean);
-  for (const email of emails) {
-    const [existingByEmail] = await connection.execute<(RowDataPacket & { id: string })[]>(
-      `SELECT ${selection} FROM contacts
-       WHERE user_id = ?
-         AND (LOWER(email) = ? OR LOWER(email2) = ? OR LOWER(email3) = ?)
-       ORDER BY created_at ASC, id ASC`,
-      [userId, email, email, email]
-    );
-    const matchedId = chooseUnclaimedRestoreMatch(existingByEmail, claimedIds, row, identityFields);
-    if (matchedId) return matchedId;
-  }
-
-  const firstName = normalizeIdentifier(row.first_name);
-  const lastName = normalizeIdentifier(row.last_name);
-  const phone = normalizeIdentifier(row.phone || row.phone2 || row.phone3);
-  if (firstName || lastName || phone) {
-    const [existingByName] = await connection.execute<(RowDataPacket & { id: string })[]>(
-      `SELECT ${selection} FROM contacts
-       WHERE user_id = ?
-         AND LOWER(first_name) = ?
-         AND COALESCE(LOWER(last_name), '') = ?
-         AND (? = '' OR phone = ? OR phone2 = ? OR phone3 = ?)
-       ORDER BY created_at ASC, id ASC`,
-      [userId, firstName, lastName, phone, phone, phone, phone]
-    );
-    const matchedId = chooseUnclaimedRestoreMatch(existingByName, claimedIds, row, identityFields);
-    if (matchedId) return matchedId;
-  }
-
-  return null;
-}
-
 async function findExistingCalendarAccountForRestore(connection: SqlExecutor, row: RestoreRow, userId: string) {
   const [existingById] = await connection.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [row.id, userId]);
   if (existingById.length) return existingById[0].id;
@@ -535,7 +496,6 @@ export {
   overwriteUserId,
   checkRestoredAccountPolicy,
   shouldWriteExisting,
-  findExistingContactForRestore,
   findExistingCalendarAccountForRestore,
   findExistingCalendarForRestore,
   findExistingCalendarEventForRestore,

@@ -7,6 +7,7 @@ import { getOrderedUserModules, getUserPages } from './module-settings';
 import { presentMailFiling } from './mail-filing';
 import { folderConnections } from './mail-folder-reconciliation';
 import { keepsSnoozedInLists } from './mail-snooze';
+import { loadContacts } from './contacts';
 import {
   serializeCalendarEvent,
   serializeCalendarAccount,
@@ -27,6 +28,7 @@ interface OfflineMail extends Record<string, unknown> {
 interface OfflineFolder extends Record<string, unknown> { slug: string }
 interface OfflineData {
   contacts: Record<string, unknown>[];
+  contactValues: Record<string, unknown>[];
   events: CalendarEvent[];
   subtasks: CalendarSubtask[];
   attendees: CalendarAttendee[];
@@ -42,7 +44,10 @@ const OFFLINE_MAX_BYTES = 32 * 1024 * 1024;
 // Explicit projections keep provider credentials, sync tokens, raw paths and
 // future backend-only columns out of the device snapshot.
 const SECTIONS = {
-  contacts: { table: 'contacts', columns: 'id user_id first_name last_name email email2 email3 phone phone2 phone3 company job_title notes avatar_url is_favorite', order: 'is_favorite DESC, first_name, last_name, id' },
+  // Sized here; the rows themselves are read through the contact store with
+  // their values (no photos: the snapshot shows initials).
+  contacts: { table: 'contacts', columns: 'id user_id uid version display_name first_name last_name middle_name name_prefix name_suffix company department job_title birthday anniversary notes is_favorite', order: 'is_favorite DESC, first_name, last_name, id' },
+  contactValues: { table: 'contact_values', columns: 'id contact_id kind position is_preferred label custom_label value po_box extended street locality region postal_code country', order: 'contact_id, kind, position' },
   events: { table: 'calendar_events', columns: 'id user_id calendar_id title description start_time end_time all_day location color recurrence reminder_minutes reminders todo_status is_todo_only done_at created_at updated_at source_email_id source_email_json', order: 'start_time, id' },
   subtasks: { table: 'calendar_event_subtasks', columns: 'id event_id user_id title is_done position created_at updated_at', order: 'position, created_at, id' },
   attendees: { table: 'calendar_event_attendees', columns: 'id user_id event_id email display_name response_status is_organizer optional_attendee comment created_at updated_at', order: 'created_at, id' },
@@ -82,7 +87,7 @@ async function collectOfflineSnapshot(connection: SqlExecutor, userId: string) {
   if (!userId) throw Object.assign(new Error('Unauthorized'), { status: 401 });
   const moduleStates = await getOrderedUserModules(userId, connection);
   const modules = new Map(moduleStates.map(module => [module.id, module.enabled]));
-  const sectionModule = (key: string) => key === 'contacts' ? 'contacts' : ['emails', 'mailAccounts', 'folders'].includes(key) ? 'mail' : 'calendar';
+  const sectionModule = (key: string) => key === 'contacts' || key === 'contactValues' ? 'contacts' : ['emails', 'mailAccounts', 'folders'].includes(key) ? 'mail' : 'calendar';
   const selected = Object.entries(SECTIONS).filter(([key]) => modules.get(sectionModule(key)));
   let estimatedBytes = 0;
   // Size-check every selected section before transferring potentially large
@@ -93,6 +98,7 @@ async function collectOfflineSnapshot(connection: SqlExecutor, userId: string) {
   }
   const data = Object.fromEntries(Object.keys(SECTIONS).map(key => [key, []])) as unknown as OfflineData;
   for (const [key, section] of selected) {
+    if (key === 'contactValues') continue;
     const [rows] = await connection.execute<RowDataPacket[]>(selectSql(section), [userId]);
     (data as Record<keyof OfflineData, Record<string, unknown>[]>)[key as keyof OfflineData] = projectRows(rows, section);
   }
@@ -126,7 +132,7 @@ async function collectOfflineSnapshot(connection: SqlExecutor, userId: string) {
     attachments: attachmentsByEmail.get(row.id) || [] }));
   const snapshot = { version: 1, userId, savedAt: new Date().toISOString(), modules: moduleStates,
     pages: await getUserPages(userId, connection),
-    contacts: data.contacts.map(row => ({ ...row, is_favorite: !!row.is_favorite })), events,
+    contacts: (await loadContacts(connection, userId, data.contacts.map(row => String(row.id)))).map(contact => ({ ...contact, photo: null })), events,
     calendars: projectRows(data.calendars.map(serializeCalendarCalendar), SECTIONS.calendars),
     calendarAccounts: projectRows(data.calendarAccounts.map(serializeCalendarAccount), SECTIONS.calendarAccounts),
     mailAccounts: data.mailAccounts.map(row => ({ ...row, is_active: !!row.is_active })),

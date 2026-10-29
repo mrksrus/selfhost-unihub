@@ -6,8 +6,10 @@ import { modulesFromValue } from './module-settings';
 import { validateRestoreRows } from './backup-ownership';
 import { AUDIO_HEADER_BYTES, identifyRecordingAudio } from './recording-audio';
 import { validateBackupVersionFields } from './backup-format';
+import { countContactConflicts } from './backup-contacts';
 import {
   ACCOUNT_ONLY_TABLES,
+  RETIRED_ARCHIVE_FIELDS,
   RETIRED_FILE_KINDS,
   RETIRED_TABLES,
   SECTION_POLICIES,
@@ -50,6 +52,12 @@ function validateAccountOnlySections(backup: ArchiveEnvelope) {
   return errors;
 }
 
+// A field an older archive version wrote that its reader converts.
+function retiredField(table: string, column: string, version: number) {
+  const retired = RETIRED_ARCHIVE_FIELDS[table];
+  return !!retired && version <= retired.throughVersion && retired.columns.includes(column);
+}
+
 function validateBackupPayload(backup: ArchiveEnvelope | null | undefined, {
   fileBuffersByPath = null,
   skipFileHashValidation = false,
@@ -75,7 +83,7 @@ function validateBackupPayload(backup: ArchiveEnvelope | null | undefined, {
     if (backup.version >= 3) {
       for (const row of table === 'user' ? [rows] : Array.isArray(rows) ? rows : []) {
         for (const column of Object.keys(row || {})) {
-          if (!policy.columns.includes(column)) errors.push(`Unsupported backup field: ${table}.${column}`);
+          if (!policy.columns.includes(column) && !retiredField(table, column, backup.version)) errors.push(`Unsupported backup field: ${table}.${column}`);
         }
       }
     }
@@ -195,22 +203,7 @@ async function countRestoreConflicts(userId: string, backup: ArchiveEnvelope) {
   const data = backup?.data || {};
   const conflicts: Record<string, number> = {};
 
-  const contacts = data.contacts || [];
-  let contactConflicts = 0;
-  for (const contact of contacts) {
-    const emails = [contact.email, contact.email2, contact.email3].map(normalizeIdentifier).filter(Boolean);
-    if (contact.id) {
-      const [rows] = await db.execute<RowDataPacket[]>('SELECT id FROM contacts WHERE id = ? AND user_id = ? LIMIT 1', [contact.id!, userId]);
-      if (rows.length) { contactConflicts++; continue; }
-    }
-    for (const email of emails) {
-      const [rows] = await db.execute<RowDataPacket[]>(
-        `SELECT id FROM contacts WHERE user_id = ? AND (LOWER(email) = ? OR LOWER(email2) = ? OR LOWER(email3) = ?) LIMIT 1`,
-        [userId, email, email, email]
-      );
-      if (rows.length) { contactConflicts++; break; }
-    }
-  }
+  const contactConflicts = await countContactConflicts(db, userId, data);
   if (contactConflicts) conflicts.contacts = contactConflicts;
 
   const mailAccounts = data.mail_accounts || [];

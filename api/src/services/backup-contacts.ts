@@ -1,0 +1,190 @@
+// Restoring the contacts section into the vCard model (0.26.0). An archive of
+// version 4 or older carries the fixed 3+3 fields on each contact row; they
+// become values here. A newer archive carries contact_values and the other
+// child tables. A contact that is written replaces its values and kept
+// properties wholesale, so restoring the same archive twice adds nothing.
+import type { RowDataPacket } from 'mysql2/promise';
+import type { SqlExecutor, BackupRow } from '../types';
+import type { ContactValueKind } from '../contracts/contacts';
+import type { ValueDraft, KeptPropertyDraft } from './contacts';
+import { LABELS, VALUE_KINDS, VALUE_LIMITS, VALUES_PER_KIND, KEPT_PROPERTIES_MAX, draftNameKey, newUid, uidHash, writeKeptProperties, writeValues } from './contacts';
+import { valueKey } from './contact-keys';
+import { chooseTargetId, writeOwnedRow } from './backup-ownership';
+
+type Row = BackupRow & Record<string, unknown>;
+interface ArchivedValue { kind: ContactValueKind; value: string }
+
+const LEGACY_SLOTS = { email: ['email', 'email2', 'email3'], phone: ['phone', 'phone2', 'phone3'] } as const;
+const text = (value: unknown) => typeof value === 'string' ? value : typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
+const cut = (value: string, max: number) => Array.from(value).slice(0, max).join('');
+const nullable = (value: unknown, max = 255) => { const result = text(value).trim(); return result ? cut(result, max) : null; };
+
+function groupBy(rows: unknown, key: string) {
+  const grouped = new Map<string, Row[]>();
+  for (const row of Array.isArray(rows) ? rows as Row[] : []) {
+    const id = text(row?.[key]);
+    if (id) grouped.set(id, [...(grouped.get(id) || []), row]);
+  }
+  return grouped;
+}
+
+// The values of one archived contact, as drafts for the store: the child
+// rows of a newer archive, else the fixed fields of an older one (verbatim,
+// as upgrade 22 copies them). Unknown kinds are dropped, unknown labels cleared.
+function archivedValues(contact: Row, children: readonly Row[] | undefined): ValueDraft[] {
+  if (children?.length) {
+    const sorted = [...children].sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
+    const counts = new Map<string, number>();
+    return sorted.flatMap((row): ValueDraft[] => {
+      const kind = text(row.kind) as ContactValueKind;
+      const value = text(row.value);
+      if (!VALUE_KINDS.includes(kind) || !value.trim()) return [];
+      const count = (counts.get(kind) || 0) + 1;
+      counts.set(kind, count);
+      if (count > VALUES_PER_KIND) return [];
+      const label = LABELS[kind].has(text(row.label)) ? text(row.label) : '';
+      const customLabel = label === 'custom' ? nullable(row.custom_label, 100) : null;
+      let params = row.params;
+      if (typeof params === 'string') { try { params = JSON.parse(params); } catch { params = null; } }
+      return [{
+        kind, value: cut(value, VALUE_LIMITS[kind]), label: label === 'custom' && !customLabel ? '' : label, custom_label: customLabel, preferred: !!row.is_preferred,
+        po_box: nullable(row.po_box), extended: nullable(row.extended), street: nullable(row.street, 1000), locality: nullable(row.locality),
+        region: nullable(row.region), postal_code: nullable(row.postal_code), country: nullable(row.country),
+        params: params && typeof params === 'object' ? params : null, vcard_group: nullable(row.vcard_group, 64),
+      }];
+    });
+  }
+  return (['email', 'phone'] as const).flatMap(kind => LEGACY_SLOTS[kind].map(slot => text(contact[slot])).filter(value => value.trim())
+    .map((value): ValueDraft => ({ kind, value: cut(value, VALUE_LIMITS[kind]), label: '', custom_label: null, preferred: false })));
+}
+
+function archivedProperties(rows: readonly Row[] | undefined): KeptPropertyDraft[] {
+  return [...(rows || [])].sort((a, b) => Number(a.position || 0) - Number(b.position || 0)).slice(0, KEPT_PROPERTIES_MAX).flatMap(row => {
+    const name = nullable(row.name, 64);
+    if (!name) return [];
+    let params = row.params;
+    if (typeof params === 'string') { try { params = JSON.parse(params); } catch { params = null; } }
+    return [{ name, group: nullable(row.vcard_group, 64), params: params && typeof params === 'object' ? params as KeptPropertyDraft['params'] : null, value: text(row.value), source_version: nullable(row.source_version, 8) }];
+  });
+}
+
+const sameName = (a: unknown, b: unknown) => text(a).trim().toLowerCase() === text(b).trim().toLowerCase();
+
+/**
+ * The existing contact an archived one is restored onto: the same id, the
+ * same UID (or a UID merged into a contact), an email in common, or the same
+ * name with a phone in common. A contact already claimed by this restore is
+ * not taken twice.
+ */
+async function findExistingContactForRestore(connection: SqlExecutor, row: Row, values: readonly ArchivedValue[], userId: string, claimedIds = new Set<string>()) {
+  const unclaimed = (rows: readonly (RowDataPacket & { id: string; first_name?: string; last_name?: string | null })[]) => {
+    const available = rows.filter(candidate => !claimedIds.has(candidate.id));
+    return (available.find(candidate => sameName(candidate.first_name, row.first_name) && sameName(candidate.last_name, row.last_name)) || available[0])?.id || null;
+  };
+  const [byId] = await connection.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM contacts WHERE id = ? AND user_id = ?', [text(row.id), userId]);
+  if (byId.length && !claimedIds.has(byId[0].id)) return byId[0].id;
+  const uid = text(row.uid).trim();
+  if (uid) {
+    const hash = uidHash(uid);
+    const [byUid] = await connection.execute<(RowDataPacket & { id: string })[]>(`SELECT id FROM contacts WHERE user_id = ? AND uid_hash = ?
+      UNION SELECT contact_id AS id FROM contact_uid_aliases WHERE user_id = ? AND uid_hash = ?`, [userId, hash, userId, hash]);
+    const match = unclaimed(byUid);
+    if (match) return match;
+  }
+  for (const value of values.filter(item => item.kind === 'email')) {
+    const key = valueKey('email', value.value);
+    if (!key) continue;
+    const [byEmail] = await connection.execute<(RowDataPacket & { id: string; first_name: string; last_name: string | null })[]>(`SELECT c.id, c.first_name, c.last_name FROM contacts c
+      WHERE c.user_id = ? AND EXISTS (SELECT 1 FROM contact_values v WHERE v.contact_id = c.id AND v.user_id = ? AND v.kind = 'email' AND v.value_key = ?)
+      ORDER BY c.created_at, c.id`, [userId, userId, key]);
+    const match = unclaimed(byEmail);
+    if (match) return match;
+  }
+  const first = text(row.first_name).trim().toLowerCase();
+  const last = text(row.last_name).trim().toLowerCase();
+  if (first || last) {
+    const phones = values.filter(item => item.kind === 'phone').map(item => valueKey('phone', item.value)).filter(Boolean);
+    const [byName] = await connection.execute<(RowDataPacket & { id: string; first_name: string; last_name: string | null })[]>(`SELECT c.id, c.first_name, c.last_name FROM contacts c
+      WHERE c.user_id = ? AND LOWER(c.first_name) = ? AND COALESCE(LOWER(c.last_name), '') = ?
+        ${phones.length ? `AND EXISTS (SELECT 1 FROM contact_values v WHERE v.contact_id = c.id AND v.user_id = c.user_id AND v.kind = 'phone' AND v.value_key IN (${phones.map(() => '?').join(', ')}))` : ''}
+      ORDER BY c.created_at, c.id`, [userId, first, last, ...phones]);
+    const match = unclaimed(byName);
+    if (match) return match;
+  }
+  return null;
+}
+
+interface RestoreContext {
+  conflictMode: string;
+  warnings: string[];
+  checkCancelled: () => Promise<void>;
+}
+
+async function restoreContactsSection(connection: SqlExecutor, userId: string, data: Record<string, unknown>, { conflictMode, warnings, checkCancelled }: RestoreContext) {
+  const valuesBy = groupBy(data.contact_values, 'contact_id');
+  const propertiesBy = groupBy(data.contact_properties, 'contact_id');
+  const idMap = new Map<string, string>();
+  const claimed = new Set<string>();
+  for (const contact of (Array.isArray(data.contacts) ? data.contacts : []) as Row[]) {
+    await checkCancelled();
+    const sourceId = text(contact.id);
+    const values = archivedValues(contact, valuesBy.get(sourceId));
+    const existingId = await findExistingContactForRestore(connection, contact, values, userId, claimed);
+    const targetId = chooseTargetId(sourceId, existingId, conflictMode);
+    claimed.add(targetId);
+    idMap.set(sourceId, targetId);
+    // keep_existing leaves a matched contact as it is.
+    if (existingId && existingId === targetId && conflictMode !== 'replace') continue;
+    // A UID already used by another of this user's contacts (Keep both) gets a new one.
+    let uid = text(contact.uid).trim() ? cut(text(contact.uid).trim(), 255) : newUid(sourceId);
+    const [[holder]] = await connection.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM contacts WHERE user_id = ? AND uid_hash = ?', [userId, uidHash(uid)]);
+    if (holder && holder.id !== targetId) uid = newUid(targetId);
+    const draft = {
+      display_name: nullable(contact.display_name), first_name: nullable(contact.first_name) || '', last_name: nullable(contact.last_name),
+      middle_name: nullable(contact.middle_name), name_prefix: nullable(contact.name_prefix), name_suffix: nullable(contact.name_suffix),
+      company: nullable(contact.company), department: nullable(contact.department), job_title: nullable(contact.job_title),
+      birthday: /^(\d{4}|-)-\d{2}-\d{2}$/.test(text(contact.birthday)) ? text(contact.birthday) : null,
+      anniversary: /^(\d{4}|-)-\d{2}-\d{2}$/.test(text(contact.anniversary)) ? text(contact.anniversary) : null,
+      notes: text(contact.notes) ? Buffer.from(text(contact.notes), 'utf8').subarray(0, 65535).toString('utf8') : null,
+    };
+    const columns = ['id', 'user_id', 'uid', 'uid_hash', ...Object.keys(draft), 'is_favorite', 'name_key'];
+    await writeOwnedRow(connection, userId, 'contacts', columns,
+      [targetId, userId, uid, uidHash(uid), ...Object.values(draft), contact.is_favorite ? 1 : 0, draftNameKey(draft)],
+      columns.filter(column => column !== 'id' && column !== 'user_id'));
+    if (existingId === targetId) await connection.execute('UPDATE contacts SET version = version + 1 WHERE id = ? AND user_id = ?', [targetId, userId]);
+    await writeValues(connection, userId, targetId, VALUE_KINDS, values);
+    await connection.execute('DELETE FROM contact_properties WHERE user_id = ? AND contact_id = ?', [userId, targetId]);
+    await writeKeptProperties(connection, userId, targetId, archivedProperties(propertiesBy.get(sourceId)));
+  }
+  for (const alias of (Array.isArray(data.contact_uid_aliases) ? data.contact_uid_aliases : []) as Row[]) {
+    const contactId = idMap.get(text(alias.contact_id));
+    const uid = text(alias.uid).trim();
+    if (!contactId || !uid) continue;
+    await connection.execute('INSERT INTO contact_uid_aliases (user_id, uid_hash, uid, contact_id) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE uid = uid',
+      [userId, uidHash(uid), cut(uid, 255), contactId]);
+  }
+  for (const pair of (Array.isArray(data.contact_duplicate_dismissals) ? data.contact_duplicate_dismissals : []) as Row[]) {
+    const [a, b] = [idMap.get(text(pair.contact_a)), idMap.get(text(pair.contact_b))];
+    if (!a || !b || a === b) continue;
+    await connection.execute('INSERT INTO contact_duplicate_dismissals (contact_a, contact_b, user_id) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE user_id = user_id',
+      [a < b ? a : b, a < b ? b : a, userId]);
+  }
+  // Photo files come with the photo pipeline's file kind; until then a
+  // photo row has nothing to show.
+  if (Array.isArray(data.contact_photos) && data.contact_photos.length) warnings.push('Contact photos in this backup were not restored.');
+  return idMap;
+}
+
+// How many archived contacts already exist here (same id, UID or an email in common).
+async function countContactConflicts(connection: SqlExecutor, userId: string, data: Record<string, unknown>) {
+  const valuesBy = groupBy(data.contact_values, 'contact_id');
+  let conflicts = 0;
+  for (const contact of (Array.isArray(data.contacts) ? data.contacts : []) as Row[]) {
+    const values = archivedValues(contact, valuesBy.get(text(contact.id))).filter(value => value.kind === 'email');
+    const probe = { id: contact.id, uid: contact.uid } as Row;
+    if (await findExistingContactForRestore(connection, probe, values, userId)) conflicts++;
+  }
+  return conflicts;
+}
+
+export { restoreContactsSection, countContactConflicts, findExistingContactForRestore, archivedValues };
