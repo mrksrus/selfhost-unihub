@@ -64,8 +64,8 @@ test('[23-15] "Send again" after a may-have-been-sent answer sends the open mess
   await compose(app, screen, subject);
   await screen.getByRole('button', 'Send', { visible: true }).tap();
   await expect(screen.getByText('The email may have been sent').first()).toBeVisible();
-  // The notice sits outside the modal composer, so it is not in the accessibility tree.
-  await browser.locator('[role=region] button:has-text("Send again")').tap();
+  // B-31: the notice sits outside the modal composer and stays in the accessibility tree.
+  await screen.getByRole('button', 'Send again').tap();
   await receive(outside.sam, subject, 30_000);
   expect(keys).toHaveLength(2);
   expect(keys[1], 'under a new key').not.toBe(keys[0]);
@@ -77,29 +77,38 @@ const greenmailPid = () => readFileSync(`${stack.state}/run/greenmail.pid`, 'utf
 const resumeMail = () => { try { execFileSync('kill', ['-CONT', greenmailPid()]); } catch { /* not paused */ } };
 afterEach(async () => { resumeMail(); });
 
-// 23-15 (B-02/B-03): the API restarts (as docker stop) while it is inside the SMTP
-// session (GreenMail paused, so the hand-over hangs). Nothing is delivered twice, the
-// composer stays open, and pressing Send again within a couple of minutes either sends
-// it or says it may have been sent, with Send again. B-29: later sends are refused with
-// "This message is being sent now." for about 10 minutes; skipped until fixed.
-test('[23-15 B-29] a send interrupted by an API restart can be sent again soon, once', { session: 'admin', tags: ['slow'], timeout: 420_000,
-  skip: 'B-29: a send interrupted by an API restart blocks that draft for about 10 minutes' }, async ({ app, screen, browser }) => {
+// 23-15 (B-02/B-03) and B-29: the API restarts (as docker stop) while it is inside the
+// SMTP session of a saved draft (GreenMail paused, so the hand-over hangs). Nothing is
+// delivered twice and the composer stays open. Send is refused as "Still sending" only
+// while the interrupted send's key reports it in progress (about 2 minutes, not the 10
+// of B-29); then it says the message may have been sent, and Send again sends it once.
+test('[23-15 B-29] a send interrupted by an API restart can be sent again soon, once', { session: 'admin', tags: ['slow'], timeout: 420_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop');
   const subject = `Restart send ${runId()}`;
   await compose(app, screen, subject);
+  await screen.getByRole('button', 'Save draft', { visible: true }).tap();
+  await expect(screen.getByText(/^Draft saved/).first()).toBeVisible();
   execFileSync('kill', ['-STOP', greenmailPid()]);
   await screen.getByRole('button', 'Send', { visible: true }).tap();
   await expect(screen.getByRole('button', 'Sending...', { visible: true })).toBeVisible();
   restartApi();
   resumeMail();
+  const interrupted = Date.now();
   await expect(composeDialog(screen)).toBeVisible();
   expect((await deliveredWithSubject(outside.sam, subject)).length, 'nothing delivered by the interrupted send').toBe(0);
 
-  await screen.getByRole('button', 'Send', { visible: true }).tap({ timeout: 60_000 });
-  const again = browser.locator('[role=region] button:has-text("Send again")');
-  await expect(composeDialog(screen).or(again).first()).toBeVisible();
-  if (await again.isVisible()) await again.tap();
-  await receive(outside.sam, subject, 120_000);
+  const mayHaveBeenSent = screen.getByText('The email may have been sent').first();
+  await expect.poll(async () => {
+    if (await mayHaveBeenSent.isVisible()) return true;
+    await screen.getByRole('button', 'Send', { visible: true }).tap({ timeout: 30_000 });
+    await expect(mayHaveBeenSent.or(screen.getByText('Still sending').first())).toBeVisible({ timeout: 30_000 });
+    return mayHaveBeenSent.isVisible();
+  }, { timeout: 200_000, intervals: [15_000] }).toBe(true);
+  expect(Date.now() - interrupted, 'released within the key\'s window, not the 10-minute stale limit').toBeLessThan(240_000);
+  expect((await deliveredWithSubject(outside.sam, subject)).length, 'the same key sent nothing').toBe(0);
+  await screen.getByRole('button', 'Send again').tap();
+  await receive(outside.sam, subject, 60_000);
+  await expect(composeDialog(screen)).toBeHidden();
   await waitForDelivery(outside.sam, subject, { count: 2, timeout: 10_000 });
   expect((await deliveredWithSubject(outside.sam, subject)).length, 'delivered exactly once').toBe(1);
   expect(await emailsWithSubject(browser, 'sent', subject), 'one copy in Sent').toHaveLength(1);

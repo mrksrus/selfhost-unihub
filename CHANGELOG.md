@@ -14,6 +14,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   minutes.** After about two minutes the draft can be edited, deleted or sent
   again: pressing Send then says the message may have been sent, and Send
   again sends it once. Nothing is sent twice.
+- **Screen readers reach notices while a dialog is open.** The "Send again"
+  action after a send with an unknown outcome, and every other notice shown
+  over the composer or another dialog, stays in the accessibility tree.
 
 ### Development
 

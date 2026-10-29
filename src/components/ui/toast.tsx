@@ -13,6 +13,11 @@ const ToastViewport = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <ToastPrimitives.Viewport
     ref={ref}
+    // A modal dialog hides everything else from assistive technology except
+    // elements carrying aria-live, so this keeps the notices (and actions such
+    // as "Send again" over the composer) reachable. "off": the toasts are
+    // already announced once by their own live region.
+    aria-live="off"
     className={cn(
       "fixed top-0 z-[100] flex max-h-screen w-full flex-col-reverse p-4 sm:bottom-0 sm:right-0 sm:top-auto sm:flex-col md:max-w-[420px]",
       className,
