@@ -316,8 +316,8 @@ function decodeQuotedPrintable(bytes: Buffer): Buffer {
 }
 
 function decodeBase64(text: string) {
-  let compact = '';
-  for (const char of text) if (char !== ' ' && char !== '\t' && char !== '\r' && char !== '\n') compact += char;
+  // One character class, no backtracking: linear.
+  const compact = text.replace(/[ \t\r\n]+/g, '');
   return { compact, bytes: Buffer.from(compact, 'base64') };
 }
 
