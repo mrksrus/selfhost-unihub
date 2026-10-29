@@ -705,21 +705,23 @@ class MainActivity : Activity() {
             val picked = PickedFiles.collect(resultCode == RESULT_OK, data?.data,
                 if (clip == null) emptyList() else List(clip.itemCount) { clip.getItemAt(it).uri })
             if (picked == null) {
-                pick.deliver(null)
+                filePick.complete(pick, null)
                 return
             }
             // WebView 133 (Android 16) reads a picker's document URI as an
             // empty file; it reads the app's own copy correctly everywhere.
-            // Copies finished after signing out (checked here, on the thread
-            // that ends sessions) are deleted, and the page gets nothing.
-            FileActions.copyPicked(this, picked, pick.session) { outcome ->
+            // The copy stops when the session ends or the page stops waiting
+            // (reloaded, gone); copies finished after that (checked here, on
+            // the thread that cancels picks) are deleted and nothing is shown.
+            val session = FileActions.session
+            FileActions.copyPicked(this, picked, { session.isCurrent(pick.session) && pick.wanted }) { outcome ->
                 runOnUiThread {
-                    if (outcome == null || !FileActions.session.isCurrent(pick.session) || isFinishing || isDestroyed) {
+                    val files = outcome?.copies?.map { it.uri }?.ifEmpty { null }?.toTypedArray()
+                    if (outcome == null || isFinishing || isDestroyed || !filePick.complete(pick, files)) {
                         outcome?.let { FileActions.discard(it.copies) }
-                        pick.deliver(null)
+                        filePick.complete(pick, null)
                         return@runOnUiThread
                     }
-                    pick.deliver(outcome.copies.map { it.uri }.ifEmpty { null }?.toTypedArray())
                     if (outcome.refused.isNotEmpty()) showRefusedFiles(outcome.refused)
                 }
             }

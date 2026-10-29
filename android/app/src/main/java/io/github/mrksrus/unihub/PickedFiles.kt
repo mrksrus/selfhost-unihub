@@ -54,13 +54,28 @@ object PickedFiles {
     }
 
     /**
-     * The page's file input while Android's picker is open, with the session
-     * it was opened in. Ending the session or losing the page cancels it (the
-     * page gets nothing), and a picker that answers for a session that has
-     * ended is not copied: the page gets nothing then either. Main thread only.
+     * The page's file input from the moment Android's picker opens until the
+     * page has its copies, with the session it was opened in. The input gets
+     * exactly one answer. Ending the session or losing the page cancels it
+     * (the page gets nothing at once, a copy under way stops and deletes what
+     * it wrote), and a picker that answers for a session that has ended is
+     * not copied: the page gets nothing then either. Main thread only, except
+     * `Waiting.wanted`, which the copy reads.
      */
     class Pick<R>(private val session: Generation) {
-        class Waiting<R>(val session: Long, val deliver: (R?) -> Unit)
+        class Waiting<R>(val session: Long, private val deliver: (R?) -> Unit) {
+            internal var answered = false
+            @Volatile private var settled = false
+
+            /** The page still waits for these files: not cancelled, not handed over. */
+            val wanted: Boolean get() = !settled
+
+            internal fun settle(value: R?) {
+                if (settled) return
+                settled = true
+                deliver(value)
+            }
+        }
 
         private var waiting: Waiting<R>? = null
 
@@ -74,19 +89,35 @@ object PickedFiles {
         fun cancel() {
             val pending = waiting ?: return
             waiting = null
-            pending.deliver(null)
+            pending.settle(null)
         }
 
         /**
          * The picker answered: what waits for its files, or null when nothing
          * does or the session it was opened in has ended (and was handed null).
+         * It keeps waiting, and can be cancelled, until `complete`.
          */
         fun finish(): Waiting<R>? {
-            val pending = waiting ?: return null
-            waiting = null
+            val pending = waiting?.takeIf { !it.answered } ?: return null
+            pending.answered = true
             if (session.isCurrent(pending.session)) return pending
-            pending.deliver(null)
+            cancel()
             return null
+        }
+
+        /**
+         * Hands the files over; false when the pick was cancelled meanwhile
+         * (or its session ended), and then the caller deletes them.
+         */
+        fun complete(pending: Waiting<R>, value: R?): Boolean {
+            if (pending !== waiting) return false
+            if (!session.isCurrent(pending.session)) {
+                cancel()
+                return false
+            }
+            waiting = null
+            pending.settle(value)
+            return true
         }
     }
 

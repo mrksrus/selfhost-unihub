@@ -196,13 +196,14 @@ class FileActions(private val activity: Activity, private val origin: String) {
          * are kept like the shared copies. Bounded per file, per pick and by
          * the phone's free space (PickedFiles); a file over a bound or
          * unreadable is listed in the outcome's `refused`. `done` runs on the
-         * worker, with null when the session ended meanwhile (nothing kept).
+         * worker, with null when `alive` turned false meanwhile (the session
+         * ended or the page stopped waiting; nothing kept).
          */
-        fun copyPicked(context: Context, sources: List<Uri>, token: Long, done: (PickedFiles.Outcome<PickedCopy>?) -> Unit) {
+        fun copyPicked(context: Context, sources: List<Uri>, alive: () -> Boolean, done: (PickedFiles.Outcome<PickedCopy>?) -> Unit) {
             val app = context.applicationContext
             copier.execute {
-                done(PickedFiles.copyAll(sources, { displayName(app, it) }, { session.isCurrent(token) },
-                    { source, limit -> copyOnePicked(app, source, limit, token) }, { it.folder.deleteRecursively() }))
+                done(PickedFiles.copyAll(sources, { displayName(app, it) }, alive,
+                    { source, limit -> copyOnePicked(app, source, limit, alive) }, { it.folder.deleteRecursively() }))
             }
         }
 
@@ -227,20 +228,20 @@ class FileActions(private val activity: Activity, private val origin: String) {
             null
         }
 
-        private fun copyOnePicked(context: Context, source: Uri, limit: Long, token: Long): Pair<PickedCopy, Long> {
+        private fun copyOnePicked(context: Context, source: Uri, limit: Long, alive: () -> Boolean): Pair<PickedCopy, Long> {
             val free = { context.cacheDir.usableSpace }
             // A size the provider states is refused before reading anything.
             declaredSize(context, source)?.let { size ->
                 if (size > limit) throw PickedFiles.Refused(PickedFiles.Refusal.TOO_LARGE)
                 if (free() - size < PickedFiles.RESERVE_BYTES) throw PickedFiles.Refused(PickedFiles.Refusal.NO_SPACE)
             }
-            if (!session.isCurrent(token)) throw PickedFiles.Cancelled()
+            if (!alive()) throw PickedFiles.Cancelled()
             val folder = File(pickedDir(context), UUID.randomUUID().toString())
             if (!folder.mkdirs()) throw IOException("No cache folder")
             val file = File(folder, WebBridge.safeFileName(displayName(context, source)))
             try {
                 val size = (context.contentResolver.openInputStream(source) ?: throw IOException("Unreadable")).use { input ->
-                    file.outputStream().use { PickedFiles.copy(input, it, limit, free) { session.isCurrent(token) } }
+                    file.outputStream().use { PickedFiles.copy(input, it, limit, free, alive) }
                 }
                 return PickedCopy(FileProvider.getUriForFile(context, authority(context), file), folder) to size
             } catch (error: Exception) {

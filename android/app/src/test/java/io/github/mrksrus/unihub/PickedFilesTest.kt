@@ -147,9 +147,46 @@ class PickedFilesTest {
         pick.open { delivered += it }
         val waiting = pick.finish()!!
         assertEquals(generation.current(), waiting.session)
-        waiting.deliver(listOf("copy"))
+        assertTrue(waiting.wanted)
+        assertTrue(pick.complete(waiting, listOf("copy")))
         assertEquals(listOf<List<String>?>(listOf("copy")), delivered)
+        assertFalse(waiting.wanted)
+        // Exactly one answer: nothing after it reaches the input.
+        pick.cancel()
+        assertFalse(pick.complete(waiting, listOf("again")))
         assertNull(pick.finish())
+        assertEquals(1, delivered.size)
+    }
+
+    @Test
+    fun aPageThatGoesAwayWhileCopyingGetsNothingMoreAndTheCopiesAreDeleted() {
+        val generation = PickedFiles.Generation()
+        val pick = PickedFiles.Pick<List<String>>(generation)
+        val delivered = mutableListOf<List<String>?>()
+        pick.open { delivered += it }
+        val waiting = pick.finish()!!
+        // The page reloads after the copy finished but before it was handed over.
+        pick.cancel()
+        assertEquals(listOf<List<String>?>(null), delivered)
+        assertFalse(waiting.wanted)
+        assertFalse(pick.complete(waiting, listOf("a")))
+        assertEquals(listOf<List<String>?>(null), delivered)
+
+        // The page reloads while the second file is being copied: the copy
+        // stops, the first copy is deleted, and the page hears nothing more.
+        val next = mutableListOf<List<String>?>()
+        pick.open { next += it }
+        val copying = pick.finish()!!
+        val kept = mutableListOf<String>()
+        val outcome = PickedFiles.copyAll(listOf("a", "b", "c"), { it }, { generation.isCurrent(copying.session) && copying.wanted }, { name, _ ->
+            if (name == "b") pick.cancel()
+            kept += name
+            name to 1L
+        }, { kept -= it })
+        assertNull(outcome)
+        assertEquals(emptyList<String>(), kept)
+        assertFalse(pick.complete(copying, null))
+        assertEquals(listOf<List<String>?>(null), next)
     }
 
     @Test
@@ -169,6 +206,14 @@ class PickedFilesTest {
         }
         assertEquals(emptyList<String>(), written)
         assertEquals(listOf<List<String>?>(null), delivered)
+
+        // A session that ends while copying: the copy is not handed over.
+        val later = mutableListOf<List<String>?>()
+        pick.open { later += it }
+        val waiting = pick.finish()!!
+        generation.next()
+        assertFalse(pick.complete(waiting, listOf("a")))
+        assertEquals(listOf<List<String>?>(null), later)
     }
 
     @Test
