@@ -120,7 +120,7 @@ function csvCell(value: string | null | undefined, delimiter: string) {
 
 /** CSV text with a UTF-8 BOM (spreadsheet programs need it to read UTF-8), CRLF rows. */
 function writeCsv(rows: readonly (readonly (string | null | undefined)[])[], delimiter = ',') {
-  return `﻿${rows.map(row => row.map(cell => csvCell(cell, delimiter)).join(delimiter)).join('\r\n')}\r\n`;
+  return `\uFEFF${rows.map(row => row.map(cell => csvCell(cell, delimiter)).join(delimiter)).join('\r\n')}\r\n`;
 }
 
 // ── Layouts ────────────────────────────────────────────────────────────

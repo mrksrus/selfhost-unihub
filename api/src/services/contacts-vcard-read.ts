@@ -444,7 +444,7 @@ function readVCards(input: Buffer): VCardReadResult {
 /** True when the bytes look like a vCard file (its first line, after a BOM and blank lines, is BEGIN:VCARD). */
 function looksLikeVCard(input: Buffer) {
   const { bytes } = fileText(input.subarray(0, 4096));
-  const text = bytes.toString('latin1').replace(/^[\s\u0000]+/, '');
+  const text = bytes.toString('latin1').trimStart();
   return /^BEGIN\s*:\s*VCARD/i.test(text);
 }
 
