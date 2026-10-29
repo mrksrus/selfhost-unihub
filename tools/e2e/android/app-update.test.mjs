@@ -86,7 +86,8 @@ test('[B-24] the downloaded app update opens Android\'s installer with UniHub as
     if (!/packageinstaller/i.test(topActivity())) adb('shell', 'input', 'keyevent', 'KEYCODE_BACK');
     texts = await installerShown('android-app-update-offered');
     assert.ok(texts.some(text => /update this app/i.test(text)), 'the update is offered');
-    assert.equal(adb('logcat', '-d').split('\n').find(line => line.includes('needs to declare permission android.permission.REQUEST_INSTALL_PACKAGES')), undefined);
+    // Filtered on the device: the whole log of a long run exceeds execFileSync's buffer.
+    assert.equal(adb('shell', 'logcat -d | grep -F "needs to declare permission android.permission.REQUEST_INSTALL_PACKAGES" || true').trim(), '');
     await tapNative(/^Cancel$/);
   } finally {
     adb('shell', 'cmd', 'statusbar', 'collapse');
