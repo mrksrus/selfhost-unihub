@@ -116,6 +116,7 @@ app_env() {
   export TRUST_PROXY_HEADERS=true TRUSTED_MAIL_HOSTS=$PROVIDER_HOST${real_hosts:+,$real_hosts} NODE_EXTRA_CA_CERTS=$CA_DIR/ca.pem
   export MAIL_ATTACHMENT_UPLOAD_ROOT=$STATE/uploads/attachments MAIL_RAW_STORAGE_ROOT=$STATE/uploads/mail-raw
   export RECORDINGS_ROOT=$STATE/uploads/recordings BACKUP_ARCHIVES_ROOT=$STATE/uploads/backups
+  export UPLOAD_SPOOL_ROOT=$STATE/uploads/spool
 }
 
 nginx_config() {
