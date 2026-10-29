@@ -961,6 +961,30 @@ export function MailInlineCompose({ compose, onAddTask, fill = false }: { compos
 }
 
 const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+// Room kept below (or above) the line being written when the composer follows it.
+const CARET_MARGIN = 8;
+/**
+ * The caret's box. Right after Enter the caret sits between two nodes of the
+ * editor and has no box of its own (0×0): the node beside it, the new line's
+ * placeholder <br> or the text, has.
+ */
+function caretBox(range: Range): DOMRect | null {
+  const box = range.getBoundingClientRect();
+  if (box.height) return box;
+  const node = range.startContainer;
+  const beside = node instanceof Element ? node.childNodes[range.startOffset] ?? node.childNodes[range.startOffset - 1] : node;
+  if (beside instanceof Element) {
+    const rect = beside.getBoundingClientRect();
+    return rect.height ? rect : null;
+  }
+  if (beside instanceof Text && beside.length) {
+    const text = document.createRange();
+    text.selectNodeContents(beside);
+    const rects = text.getClientRects();
+    return rects.length ? rects[rects.length - 1] : null;
+  }
+  return null;
+}
 const isMessageField = (target: EventTarget | null) =>
   target instanceof HTMLElement && (target.isContentEditable || target instanceof HTMLTextAreaElement);
 
@@ -979,28 +1003,35 @@ export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
   // message gets focus, the scroller moves so the message starts at its top:
   // the header rows scroll away and the message keeps the whole room between
   // the title bar and the toolbar above the keyboard. Later the person's own
-  // scrolling is left alone, unless the caret would be hidden.
-  const scrollerRef = useRef<HTMLDivElement>(null);
+  // scrolling is left alone, unless the caret would be hidden; then the
+  // scroller moves only as far as the line being written needs. B-22: it used
+  // to go back to the top of the message, also whenever the keyboard changed
+  // its height while typing (its suggestion strip after Enter).
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
   const messageRef = useRef<HTMLDivElement>(null);
   const giveMessageTheRoom = useCallback(() => {
     const scroller = scrollerRef.current;
     const message = messageRef.current;
     if (!scroller || !message) return;
     const top = message.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
-    scroller.scrollTo({ top, behavior: reducedMotion() ? 'auto' : 'smooth' });
+    // Only forward: the header rows go away, a person further down stays there.
+    if (scroller.scrollTop < top - 1) scroller.scrollTo({ top, behavior: reducedMotion() ? 'auto' : 'smooth' });
   }, []);
-  const caretHidden = () => {
+  const keepCaretInView = useCallback(() => {
     const scroller = scrollerRef.current;
     const selection = window.getSelection();
     const active = document.activeElement;
-    if (!scroller || !selection?.rangeCount || !(active instanceof HTMLElement && active.isContentEditable)) return false;
-    const caret = selection.getRangeAt(0).getBoundingClientRect();
+    if (!scroller || !selection?.rangeCount || !(active instanceof HTMLElement && active.isContentEditable)) return;
+    const caret = caretBox(selection.getRangeAt(0));
+    if (!caret) return;
     const room = scroller.getBoundingClientRect();
-    return caret.height > 0 && (caret.top < room.top || caret.bottom > room.bottom);
-  };
+    if (caret.bottom > room.bottom) scroller.scrollTop += caret.bottom - room.bottom + CARET_MARGIN;
+    else if (caret.top < room.top) scroller.scrollTop -= room.top - caret.top + CARET_MARGIN;
+  }, []);
   useEffect(() => {
     if (!isMobile || !compose.isComposeOpen) return;
-    // The keyboard opens after the focus: the visible area shrinks, so align again.
+    // The keyboard opens after the focus: the visible area shrinks, so align
+    // again. It also changes height while typing: the caret stays in view.
     const onResize = () => {
       if (messageRef.current?.contains(document.activeElement) && visibleHeight() < 704) giveMessageTheRoom();
     };
@@ -1011,6 +1042,18 @@ export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
       window.visualViewport?.removeEventListener('resize', onResize);
     };
   }, [isMobile, compose.isComposeOpen, giveMessageTheRoom]);
+  // The scroller takes its new height (--visible-height) only after those
+  // events, and the dialog's content mounts a render after it opens: the
+  // scroller itself is watched, from the moment it exists.
+  const scrollerResize = useRef<ResizeObserver | null>(null);
+  const attachScroller = useCallback((element: HTMLDivElement | null) => {
+    scrollerRef.current = element;
+    scrollerResize.current?.disconnect();
+    scrollerResize.current = element && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => {
+      if (messageRef.current?.contains(document.activeElement)) keepCaretInView();
+    }) : null;
+    if (element) scrollerResize.current?.observe(element);
+  }, [keepCaretInView]);
 
   const subject = (id: string, className?: string) => (
     <Input
@@ -1058,7 +1101,7 @@ export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
   const phone = isMobile ? phoneComposeParts({
     compose, editorRef: compose.dialogComposeEditorRef, messageRef,
     onFocusMessage: (target) => { if (isMessageField(target)) giveMessageTheRoom(); },
-    onInputMessage: () => { if (caretHidden()) giveMessageTheRoom(); },
+    onInputMessage: keepCaretInView,
   }) : null;
 
   return (
@@ -1087,7 +1130,7 @@ export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
           </DialogHeader>
           <form onSubmit={compose.handleSendEmail} className="flex min-h-0 flex-1 flex-col overflow-hidden">
             {/* The scroller is a size container, so the message can be as tall as it (100cqh). */}
-            <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain [container-type:size]">
+            <div ref={attachScroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain [container-type:size]">
               <PhoneComposeHeader compose={compose} from={from(INLINE_SELECT)}
                 fromAddress={senders.find(account => account.id === compose.fromAccountId)?.email_address ?? ''} />
               {phone?.message}

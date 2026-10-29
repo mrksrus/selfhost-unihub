@@ -31,6 +31,11 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   and Mail says "Loading mail…" until its accounts are known. In the Android
   app (Android 13 and later, with the new app) the splash screen also follows
   UniHub's light or dark theme instead of the phone's, from the second start.
+- **The phone composer no longer jumps to the top of a long message while you
+  type.** When the keyboard changed its height (its suggestion strip after
+  Enter) or the new line went below the screen, the composer scrolled back to
+  the start of the message. It now moves only as far as the line you are
+  writing needs.
 
 ### Development
 
