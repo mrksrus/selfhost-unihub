@@ -9,6 +9,9 @@ import { LookContext, type LookContextValue } from '@/components/theme/use-look'
 function ThemeChrome({ accent, looks }: { accent: AccentId; looks: Record<ThemeMode, string> }) {
   const { resolvedTheme } = useTheme();
   useEffect(() => {
+    // next-themes reports "system" until it has read the device's setting;
+    // meanwhile the page keeps the colour public/theme-init.js gave it.
+    if (resolvedTheme !== 'light' && resolvedTheme !== 'dark') return;
     const mode: ThemeMode = resolvedTheme === 'light' ? 'light' : 'dark';
     const dark = mode === 'dark';
     const theme = themeById(mode, looks[mode]);

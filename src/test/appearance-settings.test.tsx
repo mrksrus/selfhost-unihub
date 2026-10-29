@@ -119,6 +119,21 @@ describe('looks', () => {
     expect(document.documentElement.style.backgroundColor).toBe('rgb(255, 255, 255)');
   });
 
+  it('System on a light device never paints the page black while the theme resolves', async () => {
+    // The start screen is fixed over a body of no height, so the page's own
+    // background is what shows behind it until the first page renders.
+    localStorage.setItem('theme', 'system');
+    const painted: string[] = [];
+    const observer = new MutationObserver(records => { for (const record of records) painted.push(record.oldValue ?? ''); });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['style'], attributeOldValue: true });
+    show();
+    await waitFor(() => expect(document.documentElement).toHaveClass('light'));
+    await waitFor(() => expect(document.documentElement.style.backgroundColor).not.toBe(''));
+    painted.push(...observer.takeRecords().map(record => record.oldValue ?? ''), document.documentElement.getAttribute('style') ?? '');
+    observer.disconnect();
+    expect(painted.filter(style => /background-color:\s*rgb\(0, 0, 0\)/.test(style))).toEqual([]);
+  });
+
   it('a stored look is applied on load, together with the accent it needs', async () => {
     localStorage.setItem('unihub:theme:dark', 'contrast');
     localStorage.setItem('unihub:accent', 'indigo');
