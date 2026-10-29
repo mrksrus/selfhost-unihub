@@ -68,10 +68,11 @@ test('[25-D28] kept in the folder, a snoozed message stays in the inbox with its
     expect(Date.now(), 'not before the chosen time').toBeGreaterThanOrEqual(until.getTime() - 1000);
     await expect(row).toHaveCount(1);
     expect(await emailsWithSubject(browser, 'snoozed', subject), 'no longer snoozed').toHaveLength(0);
-    const [stored] = await dbRead<{ snoozed_until: Date | null; snooze_returned_at: Date | null }>(
-      'SELECT e.snoozed_until, e.snooze_returned_at FROM emails e JOIN users u ON u.id = e.user_id WHERE u.email = ? AND e.subject = ?', [people.alex.email, subject]);
-    expect(stored.snoozed_until, 'cleared by the worker').toBeNull();
-    expect(stored.snooze_returned_at, 'returned by the worker, as when hidden').toBeTruthy();
+    // The page drops the mark by the clock; the worker (every 30 seconds) clears the row after.
+    const stored = async () => (await dbRead<{ snoozed_until: Date | null; snooze_returned_at: Date | null }>(
+      'SELECT e.snoozed_until, e.snooze_returned_at FROM emails e JOIN users u ON u.id = e.user_id WHERE u.email = ? AND e.subject = ?', [people.alex.email, subject]))[0];
+    await expect.poll(async () => (await stored()).snoozed_until, { message: 'cleared by the worker', timeout: 90_000, interval: 2_000 }).toBeNull();
+    expect((await stored()).snooze_returned_at, 'returned by the worker, as when hidden').toBeTruthy();
   } finally {
     await setSettings(browser, { snoozed_messages: 'hide' });
   }
