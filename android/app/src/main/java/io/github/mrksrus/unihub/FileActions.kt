@@ -126,8 +126,10 @@ class FileActions(private val activity: Activity, private val origin: String) {
                 .also { it.clipData = ClipData.newRawUri(name, uri) }
         }
         target.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        // For the emulator tests (tools/e2e/android/file-actions.test.mjs): the type Android's sheet gets.
-        if (BuildConfig.DEBUG) Log.i(TAG, "chooser $action $type")
+        // The type Android's sheet gets, never the file's name: the emulator
+        // checks read it (tools/e2e/android/file-actions.test.mjs and, with
+        // the release build, scripts/android-server-check.mts).
+        Log.i(TAG, "chooser $action $type")
         val title = activity.getString(if (action == "open") R.string.files_open_with else R.string.files_share)
         activity.runOnUiThread {
             if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread

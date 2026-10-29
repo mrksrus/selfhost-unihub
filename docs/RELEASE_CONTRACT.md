@@ -50,7 +50,7 @@ shown before publishing and how.
 | The Android apps of the support window behave as recorded on Android 10, 16 and 17 (17 on a real phone while its emulator image is broken, see [Android compatibility](ANDROID_COMPATIBILITY.md)), and updating keeps the saved server | `scripts/android-support-window.mts`, then `android/scripts/window-test.sh` on each emulator | an emulator and `adb` ([Android compatibility](ANDROID_COMPATIBILITY.md)) |
 | The candidate app's contacts sync both ways with the server (added, edited, joined and deleted on either side, many deletions held for an answer), survive the update from the previous release's app, and follow a session end and a server change | `android/scripts/contacts-test.sh` on each emulator | an emulator and `adb` ([Android](ANDROID.md#contacts-on-the-phone)) |
 | The candidate app receives, shows, acknowledges and opens notifications over its own connection, survives an app update and stops on sign-out | `android/scripts/notifications-test.sh` on each emulator | an emulator and `adb` ([Android](ANDROID.md#notifications)) |
-| The Android apps work against real servers: the candidate app against this image and each earlier server release in the window, and each earlier app against this image. Connecting, signing in with and without a two-factor code, staying signed in after the app is ended, an upload through Android's document picker, a byte-identical download, the microphone permission and a recording, and signing out, each confirmed on the server (Android 16) | `scripts/android-server-check.mts` on the Android 16 emulator (its table is in the step log and the run summary) | an emulator and `adb`; `--local <url> --apk <apk>` against `tools/e2e/stack.sh` ([below](#what-the-android-server-check-proves)) |
+| The Android apps work against real servers: the candidate app against this image and each earlier server release in the window, and each earlier app against this image. Connecting, signing in with and without a two-factor code, staying signed in after the app is ended, an upload through Android's document picker, a byte-identical download, the microphone permission and a recording, Open with, Share and Save to Downloads for a mailed file (app and server from 0.25.0), and signing out, each confirmed on the server (Android 16) | `scripts/android-server-check.mts` on the Android 16 emulator (its table is in the step log and the run summary) | an emulator and `adb`; `--local <url> --apk <apk>` against `tools/e2e/stack.sh` ([below](#what-the-android-server-check-proves)) |
 | A published image carries the release-signed Android app | Check and keep the Android app | — |
 | Every user flow covered by the end-to-end suite works through the image's nginx configuration, the API, the database and synthetic mail and CalDAV providers, on desktop, phone and Android-app targets | not in CI yet: run locally on the candidate and attach the result to the pull request | `tools/e2e/stack.sh up`, then `npm test` in `tools/e2e` ([e2e](../tools/e2e/README.md)) |
 | The candidate Android app's debug build passes the flows under `tools/e2e/android/` against the candidate server (attachments in the phone composer) | not in CI yet: run locally on the candidate | `tools/e2e/android.sh up`, then `npm run android` in `tools/e2e` |
@@ -196,9 +196,16 @@ confirmed on the server, not on the screen alone:
    granted; the recording reaches the server with content.
 6. **Download:** that recording's Download saves the server's bytes in
    Downloads.
-7. **Sign out:** the app shows the sign-in page, and the server no longer
+7. **Files for other apps** (an app and a server from 0.25.0; otherwise shown
+   as `·`, not offered): a message with a synthetic PDF and photo is planted
+   on the server (CI has no mail provider), as `fresh-install-seed.cts` plants
+   mail. In the attachment viewer, **Open with…** on the PDF and **Share** on
+   the photo bring Android's sheet over the app, handed `application/pdf` and
+   `image/jpeg` (the app logs the type, never the name); **Save to
+   Downloads** saves the photo under its name with the server's bytes.
+8. **Sign out:** the app shows the sign-in page, and the server no longer
    lists the app's session.
-8. **Two-factor sign-in:** password, then a current authentication code; the
+9. **Two-factor sign-in:** password, then a current authentication code; the
    server lists the app's session.
 
 Connecting, signing in and signing out end a pairing when they fail; after
@@ -245,11 +252,12 @@ any of these.
 These are not covered yet; do not report them as passing.
 
 - **Android with a real server.** On the Android 16 emulator (WebView 133) a
-  file picked in the app reaches the page empty, from Downloads and from the
-  device's storage alike, so the upload step of the 0.24.x apps is recorded
-  as a known failure there (it works on Android 15 with WebView 124); whether
-  phones with a current WebView are affected is checked on a real Android 16
-  phone. The real-server check runs on Android 16
+  file picked in the 0.24.x apps reaches the page empty, from Downloads and
+  from the device's storage alike, so their upload step is recorded as a
+  known failure there (it works on Android 15 with WebView 124); 0.25.0's app
+  copies the picked file first and must upload it. Whether phones with a
+  current WebView were affected is checked on a real Android 16 phone. The
+  real-server check runs on Android 16
   only: the Android 10 emulator image's WebView (74) cannot run the web app,
   which needs a current WebView, as on any phone that updates it, and the
   Android 17 image does not boot. Android 10 and 17 with a real server rely on

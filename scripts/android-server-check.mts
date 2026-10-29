@@ -16,7 +16,10 @@
 // - each earlier app in the window against the candidate server.
 // The second form runs the candidate pairing against a server that is
 // already running (tools/e2e/stack.sh), for development; its admin account
-// comes from UNIHUB_ANDROID_ADMIN (email:password).
+// comes from UNIHUB_ANDROID_ADMIN (email:password). Its file steps plant a
+// mailed file through that server's database and attachment folder: set
+// MYSQL_HOST (loopback), MYSQL_PORT, MYSQL_DATABASE, MYSQL_USER,
+// MYSQL_PASSWORD and MAIL_ATTACHMENT_UPLOAD_ROOT to the stack's values.
 //
 // The app reaches the server as http://127.0.0.1:<port> through adb reverse:
 // the app allows plain HTTP only for development hosts, and 127.0.0.1 is a
@@ -356,8 +359,89 @@ async function pickFromDownloads(name: string) {
 
 const deviceSha = (file: string) => shell(`sha256sum '${file}' 2>/dev/null | cut -d' ' -f1; true`).trim();
 
-interface Step { name: string; ok: boolean; detail: string; known?: string }
-interface Pairing { app: string; apk: string; server: string; origin: string; base: string; admin: { email: string; password: string } }
+interface Step { name: string; ok: boolean; detail: string; known?: string; notOffered?: boolean }
+interface Pairing {
+  app: string; apk: string; server: string; origin: string; base: string; admin: { email: string; password: string };
+  /** Runs a CommonJS script as the server's API user, with its database and upload settings; returns its output. */
+  exec: (script: string, env: Record<string, string>) => string;
+}
+
+// ---------------------------------------------------------------- files for other apps
+
+// Open with…, Share and Save to Downloads in the attachment viewer (F9): an
+// app with bridge level 2 and a server with download tickets, both from 0.25.0.
+const FILE_ACTIONS_FROM = '0.25.0';
+const FILE_STEPS = ['open with', 'share', 'save to Downloads'];
+const atLeast = (version: string, minimum: string) => {
+  const [a, b] = [version, minimum].map(value => value.split('-')[0].split('.').map(Number));
+  for (let index = 0; index < Math.max(a.length, b.length); index++) {
+    if ((a[index] ?? 0) !== (b[index] ?? 0)) return (a[index] ?? 0) > (b[index] ?? 0);
+  }
+  return true;
+};
+const installedAppVersion = () => /versionName=(\S+)/.exec(shell(`dumpsys package ${PACKAGE}`))?.[1] ?? 'unknown';
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Plants a message with files on the server, as api/tests/helpers/
+ * fresh-install-seed.cts plants mail: the CI has no mail provider. The
+ * account is disconnected (its mail kept, as "Disconnect" leaves it), so no
+ * sync ever runs for it. Prints the message's and the files' ids.
+ */
+const attachmentSeed = (files: { name: string; type: string; bytes: Buffer }[]) => `
+const crypto = require('node:crypto'), fs = require('node:fs'), path = require('node:path');
+const mysql = require(require.resolve('mysql2/promise', { paths: [process.env.UNIHUB_API_ROOT] }));
+const files = ${JSON.stringify(files.map(file => ({ name: file.name, type: file.type, base64: file.bytes.toString('base64') })))};
+const userId = process.env.SEED_USER_ID, address = process.env.SEED_ADDRESS, subject = process.env.SEED_SUBJECT;
+(async () => {
+  if (!/^[0-9a-f-]{36}$/.test(userId)) throw new Error('SEED_USER_ID is required');
+  const db = await mysql.createConnection({ host: process.env.MYSQL_HOST, port: Number(process.env.MYSQL_PORT), database: process.env.MYSQL_DATABASE,
+    user: process.env.MYSQL_USER, password: process.env.MYSQL_PASSWORD, timezone: '+00:00' });
+  try {
+    const root = process.env.MAIL_ATTACHMENT_UPLOAD_ROOT || '/app/uploads/attachments';
+    const accountId = crypto.randomUUID(), emailId = crypto.randomUUID();
+    await db.execute(\`INSERT INTO mail_accounts (id, user_id, email_address, display_name, provider, username, imap_host, smtp_host, encrypted_password,
+      is_active, sync_mode, sync_status, disconnected_at) VALUES (?, ?, ?, 'Android files', 'custom', ?, 'mail.example.test', 'mail.example.test', NULL,
+      FALSE, 'download', 'cancelled', UTC_TIMESTAMP())\`, [accountId, userId, address, address]);
+    await db.execute(\`INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, body_text, folder,
+      received_at, has_attachments, import_complete) VALUES (?, ?, ?, ?, ?, 'sender@example.test', 'Synthetic Sender', ?, 'Files for other apps.', 'inbox',
+      UTC_TIMESTAMP(), TRUE, TRUE)\`, [emailId, userId, accountId, '<' + emailId + '@example.test>', subject, JSON.stringify([address])]);
+    const attachments = [];
+    for (const file of files) {
+      const id = crypto.randomUUID(), bytes = Buffer.from(file.base64, 'base64');
+      const stored = path.join(root, userId, id + path.extname(file.name));
+      fs.mkdirSync(path.dirname(stored), { recursive: true });
+      fs.writeFileSync(stored, bytes);
+      await db.execute('INSERT INTO email_attachments (id, user_id, email_id, filename, content_type, size_bytes, storage_path) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [id, userId, emailId, file.name, file.type, bytes.length, stored]);
+      attachments.push({ id, name: file.name });
+    }
+    console.log(JSON.stringify({ emailId, attachments }));
+  } finally { await db.end(); }
+})().catch(error => { console.error(error.message); process.exit(1); });
+`;
+
+/** The activity Android shows on top, as "package/.Activity". */
+const topActivity = () => {
+  const line = shell('dumpsys activity activities').split('\n').find(entry => entry.includes('topResumedActivity')) ?? '';
+  return line.includes('ActivityRecord') ? /\s([\w.]+\/[\w.$]+)/.exec(line)?.[1] ?? '' : '';
+};
+
+/**
+ * Waits for Android's sheet (or the only app for the type, which Android
+ * starts at once) over the app and closes it with Back. The app logs the type
+ * it handed the sheet (FileActions.kt), never the file's name.
+ */
+async function sheetOver(action: 'open' | 'share', shot: string) {
+  const activity = await until('Android\'s sheet over the app', async () => { const top = topActivity(); return top && !top.startsWith(PACKAGE) && top; }, 60_000);
+  const type = await until(`the type the app handed the ${action} sheet`, async () =>
+    adb('logcat', '-d', '-s', 'UniHubFiles:I').split('\n').reverse().find(line => line.includes(`chooser ${action} `))?.trim().split(' ').pop(), 30_000);
+  await sleep(2000);
+  try { shell('screencap -p /data/local/tmp/unihub-screen.png'); adb('pull', '/data/local/tmp/unihub-screen.png', shot); } catch { /* best effort */ }
+  shell('input keyevent 4');
+  await until('the app back on top', async () => topActivity().startsWith(PACKAGE), 30_000);
+  return { activity, type };
+}
 
 /**
  * Failures that are known and recorded, as android/support-window.json records
@@ -506,9 +590,63 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
       shell(`rm -f '/sdcard/Download/${file}'`);
       return `the recording saved to Downloads as ${file}, byte-identical to the server's copy`;
     });
-    // 0.25.0 adds Open with…, Save to Downloads and Share for files
-    // (feat/0.25.0-android-files): their steps join here, for apps and
-    // servers from 0.25.0, and their names join STEP_NAMES below.
+    // A mailed PDF and photo go to other apps through Android's own sheets,
+    // fetched by the app with a download ticket (F9). Each step starts the app
+    // afresh and opens the message's file in the viewer.
+    const appVersion = installedAppVersion();
+    const serverVersion = (await (await fetch(`${pairing.base}/api/version`)).json() as { server: string }).server;
+    if (!atLeast(appVersion, FILE_ACTIONS_FROM) || !atLeast(serverVersion, FILE_ACTIONS_FROM)) {
+      const detail = `not offered: app ${appVersion} with server ${serverVersion} (both need ${FILE_ACTIONS_FROM}; the viewer offers Download)`;
+      for (const name of FILE_STEPS) steps.push({ name, ok: true, notOffered: true, detail });
+      log(`  -    ${FILE_STEPS.join(', ')}: ${detail}`);
+    } else {
+      const fixture = (name: string) => fs.readFileSync(path.join(repo, 'tools/e2e/fixtures', name));
+      const pdf = { name: `report-${run}.pdf`, type: 'application/pdf', bytes: fixture('synthetic-report.pdf') };
+      const photo = { name: `photo-${run}.jpg`, type: 'image/jpeg', bytes: fixture('synthetic-photo.jpg') };
+      const subject = `Files for other apps ${run}`;
+      type Planted = { emailId: string; attachments: { id: string; name: string }[] };
+      let planted: Promise<Planted> | undefined;
+      const plant = () => planted ??= (async (): Promise<Planted> => {
+        const { user } = await plainApi.json<{ user: { id: string } }>('GET', '/api/auth/me');
+        const output = pairing.exec(attachmentSeed([pdf, photo]), { SEED_USER_ID: user.id, SEED_ADDRESS: `android-files-${run}@example.test`, SEED_SUBJECT: subject });
+        return JSON.parse(output.trim().split('\n').pop()!);
+      })();
+      const openFile = async (name: string) => {
+        await plant();
+        shell(`am force-stop ${PACKAGE}`);
+        shell(`am start -n ${PACKAGE}/.MainActivity`);
+        await navigateTo('Mail');
+        await tapOn(`the message "${subject}"`, new RegExp(escapeRegExp(subject)));
+        await tapOn(`the attachment ${name}`, new RegExp(`^${escapeRegExp(name)}`), { cls: /Button/ });
+        await waitFor('the attachment viewer\'s actions', find(/^Share$/, /Button/), 60_000);
+      };
+      const sheetStep = (action: 'open' | 'share', file: typeof pdf, button: RegExp) => async () => {
+        await openFile(file.name);
+        adb('logcat', '-c');
+        await tapOn(`${action === 'open' ? 'Open with…' : 'Share'} for ${file.name}`, button, { cls: /Button/, fixed: true });
+        const shot = path.join(evidence, `${pairing.app}-app-${pairing.server}-server-${action}-sheet.png`);
+        const sheet = await sheetOver(action, shot);
+        if (sheet.type !== file.type) throw new Error(`Android's ${action} sheet got the type ${sheet.type}, not ${file.type}`);
+        return `${file.name}: ${sheet.activity} over the app, handed ${sheet.type}`;
+      };
+      await step('open with', sheetStep('open', pdf, /^Open with…$/));
+      await step('share', sheetStep('share', photo, /^Share$/));
+      await step('save to Downloads', async () => {
+        await openFile(photo.name);
+        const { attachments } = await plant();
+        const expected = sha(await plainApi.bytes(`/api/mail/attachments/${attachments.find(item => item.name === photo.name)!.id}`));
+        if (expected !== sha(photo.bytes)) throw new Error('the server\'s copy differs from the planted photo');
+        const existing = new Set(shell('ls /sdcard/Download/ 2>/dev/null; true').split(/\r?\n/).map(name => name.trim()));
+        await tapOn(`Save to Downloads for ${photo.name}`, /^Save to Downloads$/, { cls: /Button/, fixed: true });
+        const file = await until('the saved file in Downloads', async () => {
+          const added = shell('ls /sdcard/Download/ 2>/dev/null; true').split(/\r?\n/).map(name => name.trim()).filter(name => name && !existing.has(name) && !name.startsWith('.pending'));
+          return added.find(name => deviceSha(`/sdcard/Download/${name}`) === expected);
+        }, 90_000);
+        shell(`rm -f '/sdcard/Download/${file}'`);
+        if (file !== photo.name) throw new Error(`saved as ${file}, not under its own name ${photo.name}`);
+        return `${photo.name} saved to Downloads under its name, byte-identical to the server's copy (sha256 ${expected.slice(0, 12)})`;
+      });
+    }
     await step('sign out', async () => {
       await navigateTo('More');
       await tapOn('Sign out', /^Sign out$/);
@@ -609,7 +747,15 @@ if (localServer) {
   log(`Pairing: ${name} app with the server at ${base}`);
   try {
     // The stack allows only its own address (ALLOWED_ORIGINS), so the device uses the same port.
-    rows.push({ app: name, server: 'local', steps: await runPairing({ app: name, apk, server: 'local', origin: `http://127.0.0.1:${new URL(base).port || 80}`, base, admin: { email, password: rest.join(':') } }, run) });
+    // The file steps plant their message as the stack's API would store it.
+    const exec = (script: string, env: Record<string, string>) => {
+      if (!['127.0.0.1', 'localhost'].includes(process.env.MYSQL_HOST ?? '') || !process.env.MAIL_ATTACHMENT_UPLOAD_ROOT) {
+        throw new Error('the file steps need the stack\'s MYSQL_* (loopback) and MAIL_ATTACHMENT_UPLOAD_ROOT');
+      }
+      return execFileSync(process.execPath, ['--input-type=commonjs'], { input: script, encoding: 'utf8', timeout: 60_000,
+        env: { ...process.env, UNIHUB_API_ROOT: path.join(repo, 'api'), ...env } });
+    };
+    rows.push({ app: name, server: 'local', steps: await runPairing({ app: name, apk, server: 'local', origin: `http://127.0.0.1:${new URL(base).port || 80}`, base, admin: { email, password: rest.join(':') }, exec }, run) });
   } catch (error) {
     rows.push({ app: name, server: 'local', steps: [], error: (error as Error).message.split('\n')[0] });
     log(`  FAIL ${(error as Error).message}`);
@@ -633,7 +779,10 @@ if (localServer) {
     try {
       const reported = await startServer(pairing.image, name);
       if (reported !== pairing.server && pairing.image !== candidateImage) throw new Error(`${pairing.image} reports server ${reported}`);
-      rows.push({ app: pairing.app, server: pairing.server, steps: await runPairing({ ...pairing, origin: `http://127.0.0.1:${DEVICE_PORT}`, base: 'http://127.0.0.1', admin: ADMIN }, run) });
+      // As the image's API user, with the container's database settings and /app/uploads.
+      const exec = (script: string, env: Record<string, string>) => execFileSync('docker', ['exec', '-i', '-u', '10001:10001', '-e', 'UNIHUB_API_ROOT=/app/api',
+        ...Object.entries(env).flatMap(([key, value]) => ['-e', `${key}=${value}`]), name, 'node', '--input-type=commonjs'], { input: script, encoding: 'utf8', timeout: 120_000 });
+      rows.push({ app: pairing.app, server: pairing.server, steps: await runPairing({ ...pairing, origin: `http://127.0.0.1:${DEVICE_PORT}`, base: 'http://127.0.0.1', admin: ADMIN, exec }, run) });
     } catch (error) {
       rows.push({ app: pairing.app, server: pairing.server, steps: [], error: (error as Error).message.split('\n')[0] });
       log(`  FAIL ${(error as Error).message}`);
@@ -644,10 +793,10 @@ if (localServer) {
 }
 try { shell(`am force-stop ${PACKAGE}`); adb('reverse', '--remove-all'); } catch { /* already gone */ }
 
-const STEP_NAMES = ['install and connect', 'sign in', 'reopen', 'upload (file picker)', 'microphone', 'download', 'sign out', 'sign in with two-factor code'];
+const STEP_NAMES = ['install and connect', 'sign in', 'reopen', 'upload (file picker)', 'microphone', 'download', ...FILE_STEPS, 'sign out', 'sign in with two-factor code'];
 let failed = false;
-const mark = (step?: Step) => !step ? '-' : step.ok ? '✓' : step.known ? 'k' : '✗';
-/** ok: every step passed; known: the only failures are recorded ones; not-run; FAILED. */
+const mark = (step?: Step) => !step ? '-' : step.notOffered ? '·' : step.ok ? '✓' : step.known ? 'k' : '✗';
+/** ok: every step passed or is not offered by this app or server; known: the only failures are recorded ones; not-run; FAILED. */
 const result = (row: typeof rows[number]) => row.error ? (row.error.startsWith('not run') ? 'not-run' : 'FAILED')
   : row.steps.length !== STEP_NAMES.length || row.steps.some(item => !item.ok && !item.known) ? 'FAILED'
   : row.steps.some(item => item.known) ? 'known' : 'ok';
@@ -662,11 +811,13 @@ for (const row of rows) {
 console.log(`Flows: ${STEP_NAMES.map((name, index) => `${index + 1} ${name}`).join(', ')}.`);
 const notes = [...new Set(rows.flatMap(row => row.steps.map(item => item.known).filter(Boolean)))];
 for (const note of notes) console.log(`k = known failure, recorded in KNOWN: ${note}`);
+if (rows.some(row => row.steps.some(item => item.notOffered))) console.log(`· = not offered: the file steps need an app and a server from ${FILE_ACTIONS_FROM}.`);
 fs.writeFileSync(path.join(evidence, `android-${sdkLevel}.json`), JSON.stringify({ android: release, api: sdkLevel, webView: webView.version, rows }, null, 2));
 if (process.env.GITHUB_STEP_SUMMARY) {
   fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, [`### Android ${release} (API ${sdkLevel}, WebView ${webView.version}) against real servers`, '',
     `| App | Server | Result | ${STEP_NAMES.join(' | ')} |`, `| --- | --- | --- | ${STEP_NAMES.map(() => '---').join(' | ')} |`,
     ...rows.map(row => `| ${row.app} | ${row.server} | ${result(row)} | ${STEP_NAMES.map(name => mark(row.steps.find(entry => entry.name === name))).join(' | ')} |`),
-    '', ...notes.map(note => `k = known failure: ${note}`), ''].join('\n') + '\n');
+    '', ...notes.map(note => `k = known failure: ${note}`),
+    ...(rows.some(row => row.steps.some(item => item.notOffered)) ? [`· = not offered: the file steps need an app and a server from ${FILE_ACTIONS_FROM}.`] : []), ''].join('\n') + '\n');
 }
 process.exitCode = failed ? 1 : 0;
