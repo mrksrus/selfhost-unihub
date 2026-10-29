@@ -17,6 +17,13 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - **Screen readers reach notices while a dialog is open.** The "Send again"
   action after a send with an unknown outcome, and every other notice shown
   over the composer or another dialog, stays in the accessibility tree.
+- **The Android app installs its update without the Files app.** When the
+  update has downloaded, the app opens Android's installer itself (or, if it
+  was in the background, its "UniHub update downloaded" notification does).
+  The first time, Android asks to allow UniHub to install apps. Before, the
+  download manager's notification led to "isn't allowed to install unknown
+  apps from this source". Needs the new app; this update itself still has to
+  be opened from Files once.
 
 ### Development
 

@@ -812,6 +812,8 @@ class MainActivity : Activity() {
     // person signed out: the phone's copy follows.
     override fun onResume() {
         super.onResume()
+        AppUpdate.inFront = true
+        AppUpdate.offerReady(this)
         webView?.onResume()
         // Copies for other apps expire after six hours even while the app stays open.
         FileActions.pruneLater(this)
@@ -821,6 +823,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        AppUpdate.inFront = false
         // Pauses the page's media, animations and plugins while it is not shown;
         // notifications come from NotificationService, not from the page.
         webView?.onPause()

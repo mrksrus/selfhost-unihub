@@ -19,6 +19,9 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- App updates (AppUpdate): the app opens Android's installer for the
+         update it downloaded; Android asks the person once to allow it. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:allowBackup="false"
@@ -101,6 +104,15 @@
             android:name=".NotificationService$Watchdog"
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
+        <!-- Only the download manager may send this (its signature permission). -->
+        <receiver
+            android:name=".AppUpdate$Downloaded"
+            android:exported="true"
+            android:permission="android.permission.SEND_DOWNLOAD_COMPLETED_INTENTS">
+            <intent-filter>
+                <action android:name="android.intent.action.DOWNLOAD_COMPLETE" />
+            </intent-filter>
+        </receiver>
         <receiver
             android:name=".NotificationService$Restart"
             android:exported="false">

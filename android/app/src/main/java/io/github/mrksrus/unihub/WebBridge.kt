@@ -204,14 +204,18 @@ class WebBridge(
     fun download(url: String, name: String, userAgent: String) {
         if (!ServerAddress.sameOrigin(origin, url)) return
         val fileName = safeFileName(name)
+        // The app update shows no "complete" notification: opened from there,
+        // Android refuses to install it; the app opens the installer (AppUpdate).
+        val update = AppUpdate.isUpdate(url)
         val request = DownloadManager.Request(Uri.parse(url))
             .setTitle(fileName)
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setNotificationVisibility(if (update) DownloadManager.Request.VISIBILITY_VISIBLE else DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
             .addRequestHeader("User-Agent", userAgent)
         CookieManager.getInstance().getCookie(url)?.let { request.addRequestHeader("Cookie", it) }
         try {
-            activity.getSystemService(DownloadManager::class.java).enqueue(request)
+            val id = activity.getSystemService(DownloadManager::class.java).enqueue(request)
+            if (update) AppUpdate.downloading(activity, id)
             Toast.makeText(activity, activity.getString(R.string.download_started, fileName), Toast.LENGTH_SHORT).show()
         } catch (_: Exception) {
             Toast.makeText(activity, R.string.download_failed, Toast.LENGTH_SHORT).show()
