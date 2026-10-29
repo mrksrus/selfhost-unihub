@@ -204,8 +204,10 @@ export const initialAccountForm: AccountFormState = {
   caldav_url: '',
 };
 
-export const getContactDisplayName = (contact: MailContact) =>
-  [contact.first_name, contact.last_name].filter(Boolean).join(' ').trim();
+export const getContactDisplayName = (contact: MailContact) => {
+  const name = (contact.display_name || '').trim();
+  return name.includes('@') ? '' : name;
+};
 
 export const formatRecipient = (suggestion: ContactEmailSuggestion) =>
   suggestion.name ? `${suggestion.name} <${suggestion.email}>` : suggestion.email;
@@ -222,8 +224,8 @@ export const deriveContactNameFromEmail = (email: Email) => {
   const parts = source.split(/\s+/).filter(Boolean);
 
   return {
-    first_name: parts[0] || email.from_address,
-    last_name: parts.slice(1).join(' ') || '',
+    given: parts[0] || email.from_address,
+    family: parts.slice(1).join(' ') || null,
   };
 };
 

@@ -217,12 +217,24 @@ class ApiClient {
   }
 
   async getBlob(endpoint: string, options: Pick<RequestInit, 'signal'> = {}): Promise<BlobResponse> {
+    return this.requestBlob(endpoint, { ...options, method: 'GET' });
+  }
+
+  /** A file built from a JSON body (an export of selected items). Rejects like getBlob. */
+  async postBlob(endpoint: string, body: unknown): Promise<BlobResponse> {
+    return this.requestBlob(endpoint, { method: 'POST', body: JSON.stringify(body) });
+  }
+
+  private async requestBlob(endpoint: string, options: Pick<RequestInit, 'signal' | 'body'> & { method: 'GET' | 'POST' }): Promise<BlobResponse> {
     const url = this.resolveUrl(endpoint);
-    const headers: HeadersInit = {};
+    const headers: Record<string, string> = {};
+    if (options.method === 'POST') {
+      headers['Content-Type'] = 'application/json';
+      if (this.csrfToken) headers['X-CSRF-Token'] = this.csrfToken;
+    }
 
     const response = await fetch(url, {
       ...options,
-      method: 'GET',
       headers,
       credentials: 'include',
     });
@@ -271,7 +283,7 @@ class ApiClient {
     };
   }
 
-  async uploadBlob<T>(endpoint: string, blob: Blob, contentType = 'application/octet-stream'): Promise<ApiResponse<T>> {
+  async uploadBlob<T>(endpoint: string, blob: Blob, contentType = 'application/octet-stream', method: 'POST' | 'PUT' = 'POST'): Promise<ApiResponse<T>> {
     if (isOfflineMode() || isBrowserOffline()) {
       this.probeConnection();
       return { error: 'Offline mode is read-only. Reconnect and sign in before uploading.' };
@@ -292,7 +304,7 @@ class ApiClient {
 
     try {
       const response = await fetch(url, {
-        method: 'POST',
+        method,
         headers,
         body: blob,
         credentials: 'include',

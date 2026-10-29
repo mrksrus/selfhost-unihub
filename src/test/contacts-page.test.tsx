@@ -4,32 +4,32 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Contacts from '@/pages/Contacts';
 import { api } from '@/lib/api';
-import type { Contact } from '@/lib/contacts-api';
+import { contact, duplicateGroup } from './contact-fixtures';
 import { userSettingsAnswer } from './settings-fixtures';
 import type { UserSettingValues } from '@/lib/settings-api';
 
 const state = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }) }));
-vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn(), getBlob: vi.fn() } }));
+vi.mock('@/lib/platform', async (importOriginal) => ({ ...(await importOriginal<typeof import('@/lib/platform')>()), saveFile: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn(), getBlob: vi.fn(), postBlob: vi.fn(), uploadBlob: vi.fn(), getDownloadUrl: (path: string) => `/api${path}` } }));
 
-const contact = (id: string, patch: Partial<Contact>): Contact => ({
-  id, first_name: '', last_name: null, email: null, email2: null, email3: null, phone: null, phone2: null, phone3: null,
-  company: null, job_title: null, notes: null, avatar_url: null, is_favorite: false, ...patch,
-});
 const contacts = [
-  contact('ada', { first_name: 'Ada', last_name: 'Example', email: 'ada@example.com', company: 'Test Kitchen Co.' }),
-  contact('ada-2', { first_name: 'Ada', last_name: 'Sample', email: 'ADA@example.com' }),
-  contact('ben', { first_name: 'Ben', last_name: 'Sample', phone: '+1 555 0100', is_favorite: true }),
-  contact('nameless', { email: 'someone@example.org' }),
+  contact('ada', { name: { given: 'Ada', family: 'Example' }, emails: ['ada@example.com'], organization: { name: 'Test Kitchen Co.' } }),
+  contact('ada-2', { name: { given: 'Ada', family: 'Sample' }, emails: ['ADA@example.com'] }),
+  contact('ben', { name: { given: 'Ben', family: 'Sample' }, phones: [{ value: '+1 555 0100', label: 'mobile', preferred: true }, '+1 555 0199'], is_favorite: true }),
+  contact('nameless', { emails: ['someone@example.org'] }),
 ];
+const groups = [duplicateGroup('g1', [contacts[0], contacts[1]], { reasons: [{ kind: 'email', detail: 'ada@example.com', a: 'ada', b: 'ada-2' }] })];
 
 function Location() {
   const location = useLocation();
   return <output data-testid="location">{location.pathname}{location.search}</output>;
 }
 
-function mount(path = '/contacts', preferences: Partial<UserSettingValues> = { email_link_behavior: 'mailto' }) {
+function mount(path = '/contacts', preferences: Partial<UserSettingValues> = { email_link_behavior: 'mailto' }, duplicates: { data?: unknown; error?: string; status?: number } = { data: { groups } }) {
   vi.mocked(api.get).mockImplementation(async (url: string) => {
+    if (url.startsWith('/contacts/duplicates')) return duplicates;
+    if (url === '/contacts/merges') return { data: { merges: [] } };
     if (url.startsWith('/contacts')) return { data: { contacts, has_more: false } };
     if (url === '/settings/values') return userSettingsAnswer(preferences);
     return { data: {} };
@@ -54,11 +54,12 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe('Contacts', () => {
-  it('lists contacts by name and offers only the views that have contacts', async () => {
+  it('lists contacts by name, shows the preferred number, and offers only the views that have contacts', async () => {
     mount();
     expect(await screen.findByRole('button', { name: /^Ada Example/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Ben Sample/ })).toHaveTextContent('+1 555 0100');
     expect(screen.getByRole('button', { name: /^Favorites, 1 contacts/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Possible duplicates, 2 contacts/ })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /^Possible duplicates, 1 groups/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Name only/ })).not.toBeInTheDocument();
     // A contact with only an address is listed under that address.
     expect(screen.getByRole('button', { name: /^someone@example.org/ })).toBeInTheDocument();
@@ -122,16 +123,66 @@ describe('Contacts', () => {
     await waitFor(() => expect(screen.queryByText('2 selected')).not.toBeInTheDocument());
   });
 
-  it('prefills a new contact from a link and saves extra addresses in order', async () => {
-    mount('/contacts?action=new&name=Robin&email=robin@example.com');
+  it('exports the selection in the chosen format and all contacts from the panel', async () => {
+    mount();
+    vi.mocked(api.postBlob).mockResolvedValue({ blob: new Blob(['BEGIN:VCARD']), filename: 'contacts.vcf' });
+    vi.mocked(api.getBlob).mockResolvedValue({ blob: new Blob(['Name']), filename: 'contacts.csv' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Select Ada Example' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Export selected' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Export 1 selected contact' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Export' }));
+    await waitFor(() => expect(api.postBlob).toHaveBeenCalledWith('/contacts/export', { ids: ['ada'], format: 'vcard4' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export all contacts' }));
+    const all = await screen.findByRole('dialog', { name: 'Export all contacts' });
+    fireEvent.click(within(all).getByRole('radio', { name: /Google CSV/ }));
+    fireEvent.click(within(all).getByRole('button', { name: 'Export' }));
+    await waitFor(() => expect(api.getBlob).toHaveBeenCalledWith('/contacts/export?format=google-csv'));
+  });
+
+  it('prefills a new contact from a link and saves the full body with labelled emails', async () => {
+    mount('/contacts?action=new&name=Robin%20Example&email=robin@example.com');
     const dialog = await screen.findByRole('dialog', { name: 'New contact' });
     expect(within(dialog).getByLabelText('First name')).toHaveValue('Robin');
+    expect(within(dialog).getByLabelText('Last name')).toHaveValue('Example');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add another email' }));
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'Email 2' }), { target: { value: 'robin@work.example' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Preferred email 2' }));
+    vi.mocked(api.post).mockResolvedValueOnce({ data: { contact: contact('new', { name: { given: 'Robin' } }) } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add contact' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/contacts', expect.objectContaining({
-      first_name: 'Robin', email: 'robin@example.com', email2: 'robin@work.example', email3: '',
+      name: expect.objectContaining({ given: 'Robin', family: 'Example' }),
+      emails: [
+        expect.objectContaining({ value: 'robin@example.com', label: '', preferred: false }),
+        expect.objectContaining({ value: 'robin@work.example', label: 'home', preferred: true }),
+      ],
     })));
     expect(screen.getByTestId('location').textContent).toBe('/contacts');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('shows the duplicate groups with their reasons and reviews a group before merging', async () => {
+    mount('/contacts?view=duplicates');
+    const group = await screen.findByRole('region', { name: /Group of 2, high confidence/ });
+    expect(group).toHaveTextContent('Same email ada@example.com');
+    fireEvent.click(within(group).getByRole('button', { name: 'Review and merge' }));
+    const review = await screen.findByRole('dialog', { name: 'Merge 2 contacts into one' });
+    // Both names differ: the merge waits for a choice.
+    expect(within(review).getByRole('button', { name: 'Merge' })).toBeDisabled();
+    fireEvent.click(within(review).getByRole('radio', { name: 'Ada Sample' }));
+    vi.mocked(api.post).mockResolvedValueOnce({ data: { merge_id: 'm1', contact: contacts[1], merged_ids: ['ada'] } });
+    fireEvent.click(within(review).getByRole('button', { name: 'Merge' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/contacts/merges', {
+      contact_ids: ['ada', 'ada-2'], survivor_id: 'ada-2', choices: { name: 'ada-2' }, versions: { ada: 1, 'ada-2': 1 },
+    }));
+    expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Merged into Ada Sample' }));
+  });
+
+  it('shows a retryable error instead of a crash when the duplicates route is missing', async () => {
+    mount('/contacts?view=duplicates', { email_link_behavior: 'mailto' }, { error: 'The requested API endpoint was not found.', status: 404 });
+    expect(await screen.findByText('Could not check for duplicates')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^All contacts/ })).toBeInTheDocument();
   });
 });

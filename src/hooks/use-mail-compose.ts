@@ -209,8 +209,10 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   const contactEmailSuggestions = useMemo<ContactEmailSuggestion[]>(() => {
     return contactsForCompose.flatMap((contact) => {
       const name = getContactDisplayName(contact);
-      return [contact.email, contact.email2, contact.email3]
-        .filter((email): email is string => Boolean(email?.trim()))
+      // The preferred address first, then the others in their order.
+      const emails = contact.emails.map(entry => entry.value.trim()).filter(Boolean);
+      const preferred = contact.emails.find(entry => entry.preferred)?.value.trim();
+      return (preferred ? [preferred, ...emails.filter(email => email !== preferred)] : emails)
         .map((email, index) => ({
           key: `${contact.id}-${index}-${email}`,
           name,
