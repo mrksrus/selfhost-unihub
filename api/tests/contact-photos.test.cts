@@ -7,7 +7,7 @@ const { execFileSync } = require('node:child_process') as typeof import('node:ch
 const fs = require('node:fs') as typeof import('node:fs');
 const path = require('node:path') as typeof import('node:path');
 const zlib = require('node:zlib') as typeof import('node:zlib');
-const sharp = require('sharp') as typeof import('sharp');
+const sharp = require('sharp') as typeof import('sharp').default;
 const { convertContactPhoto, decodeWithFfmpeg, sniffPhoto } = require('../dist/src/services/contact-photos') as typeof import('../src/services/contact-photos');
 
 // The photo conversion (D6) on synthetic pictures: whatever comes in, what is

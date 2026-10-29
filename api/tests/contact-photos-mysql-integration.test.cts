@@ -7,7 +7,7 @@ const crypto = require('node:crypto') as typeof import('node:crypto');
 const fs = require('node:fs') as typeof import('node:fs');
 const os = require('node:os') as typeof import('node:os');
 const path = require('node:path') as typeof import('node:path');
-const sharp = require('sharp') as typeof import('sharp');
+const sharp = require('sharp') as typeof import('sharp').default;
 const { withTestDatabase, startTestApi } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 
 // Contact photos (D6) through the real request handler and MariaDB: the raw
@@ -45,7 +45,7 @@ test('contact photos: upload, formats, refusals, ETag, replace, delete, owner sc
     return client;
   }
   type Client = Awaited<ReturnType<typeof signIn>>;
-  async function call(client: Client, method: string, url: string, body?: unknown, status = 200, headers: Record<string, string> = {}) {
+  async function call(client: Client, method: string, url: string, body?: unknown, status = 200, headers: Record<string, string> = {}): Promise<{ body: FixtureValue; headers: import('node:http').IncomingHttpHeaders; bytes: Buffer }> {
     const reply = await client.request(method, url, body, headers);
     assert.equal(reply.status, status, `${method} ${url}: ${JSON.stringify(reply.body).slice(0, 400)}`);
     return reply;

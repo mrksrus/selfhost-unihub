@@ -15,12 +15,11 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import type { ContactPhoto } from '../contracts/contacts';
-import type { Metadata, OutputInfo } from 'sharp';
+import type { Metadata, OutputInfo, Sharp, SharpOptions } from 'sharp';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import sharp from 'sharp';
 import { db } from '../state';
 import { ApiError, badRequest, notFound } from '../http/errors';
 import { log } from '../log';
@@ -50,8 +49,26 @@ const UNREADABLE = 'This picture could not be read. JPEG, PNG, WebP, HEIC, AVIF 
 const SHA_PATTERN = /^[0-9a-f]{64}$/;
 const USER_ID_PATTERN = /^[0-9A-Za-z-]{1,64}$/;
 
-sharp.concurrency(1);
-sharp.cache(false);
+// sharp is a native module. It loads on the first conversion, not at
+// startup: if its binary cannot load on a platform, photos answer 503 and
+// everything else keeps working.
+// The CommonJS export is the function itself (the types describe it as the ES default).
+type SharpModule = typeof import('sharp').default;
+let sharpModule: SharpModule | null = null;
+function loadSharp(): SharpModule {
+  if (sharpModule) return sharpModule;
+  try {
+    const loaded = require('sharp') as SharpModule;
+    loaded.concurrency(1);
+    loaded.cache(false);
+    sharpModule = loaded;
+    return loaded;
+  } catch (error) {
+    log.error('contacts', 'Photo conversion is unavailable: sharp did not load', error);
+    throw new ApiError(503, 'PHOTO_CONVERSION_UNAVAILABLE', 'Photo conversion is unavailable on this server.');
+  }
+}
+const sharp = (input?: Buffer, options?: SharpOptions): Sharp => loadSharp()(input, options);
 
 type PhotoSize = 'full' | 'thumb';
 type PhotoSource = 'upload' | 'import' | 'android' | 'merge' | 'restore';
@@ -209,7 +226,7 @@ async function encodeSquare(input: Buffer): Promise<ConvertedPhoto> {
   try {
     square = await sharp(input, options)
       .rotate()
-      .resize(side, side, { fit: 'cover', position: sharp.strategy.attention })
+      .resize(side, side, { fit: 'cover', position: loadSharp().strategy.attention })
       .flatten({ background: '#ffffff' })
       .toColourspace('srgb')
       .removeAlpha()

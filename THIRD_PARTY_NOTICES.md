@@ -19,6 +19,34 @@ versions and source tarballs. In particular, `web-push` is MPL-2.0; its source a
 license remain available in that directory, with a license copy in
 `licenses/third-party/web-push-MPL-2.0.txt`.
 
+### Contact photos: sharp and libvips
+
+Contact photos are converted with [sharp](https://github.com/lovell/sharp)
+0.35.5 (Apache-2.0, license in `licenses/third-party/sharp-Apache-2.0.txt`).
+npm installs its prebuilt native part for the image's platform:
+`@img/sharp-linuxmusl-x64` or `-arm64` (Apache-2.0) and
+`@img/sharp-libvips-linuxmusl-x64` or `-arm64` 1.3.4, which contains
+[libvips](https://github.com/libvips/libvips) 8.18.7 and the libraries it
+uses, under LGPL-3.0-or-later. The bundled libraries are listed with their
+licenses in `licenses/third-party/sharp-libvips-libraries.md`: LGPLv3
+(libvips, glib, libheif, libexif, librsvg, pango, fribidi, proxy-libintl)
+and permissive licenses (BSD, MIT, zlib, libpng, libtiff, IJG, fontconfig,
+FreeType); cairo is used under MPL-1.1 (it is also offered under LGPL-2.1).
+aom comes with the [Alliance for Open Media Patent License
+1.0](https://aomedia.org/license/patent-license/). None of them is GPL or AGPL.
+
+These libraries form one shared object (`libvips-cpp.so`) that sharp loads
+at run time, unmodified, in
+`/app/api/node_modules/@img/sharp-libvips-linuxmusl-*/lib`. Under the LGPL
+you may replace it with your own build of the same interface. Source and
+build instructions:
+
+- [sharp 0.35.5 source](https://github.com/lovell/sharp/tree/51a990faa26ade5586a4934ac9673c98d8893326).
+- [sharp-libvips 1.3.4 build scripts](https://github.com/lovell/sharp-libvips/tree/ebb95f8add54eee8bed840e3fb587e4cbec857d7): `versions.properties` names each library's version, and the build scripts download, patch and compile them.
+- [libvips 8.18.7 source](https://github.com/libvips/libvips/releases/tag/v8.18.7).
+
+The LGPL-3.0 and GPL-3.0 texts are in `licenses/third-party`.
+
 ## Container programs
 
 The image includes Node.js, Nginx, MySQL/MariaDB client tools, FFmpeg and other
@@ -29,7 +57,7 @@ and FFmpeg's own license report in `/app/licenses/ffmpeg-license.txt`.
 The 0.10 release build uses Alpine 3.24 and FFmpeg 8.1.2-r0. That FFmpeg binary is
 built with `--enable-gpl` and `--enable-version3`, including x264/x265 support;
 its GPL terms apply independently of UniHub's license. UniHub invokes FFmpeg as
-a separate process for recording conversion. GPL and LGPL texts are preserved
+a separate process for recording conversion and to decode HEIC/HEIF contact photos. GPL and LGPL texts are preserved
 under `licenses/third-party` and copied into the image.
 
 Source and build information for those binaries is available separately:
