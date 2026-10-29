@@ -109,18 +109,21 @@ async function seedUsers(db: Pool) {
 
 // ── Contacts, calendar, todos ──────────────────────────────
 async function seedContacts(db: SqlExecutor, userId: string, n: number) {
+  const contacts = require('../dist/src/services/contacts') as typeof import('../src/services/contacts');
   const people: Person[] = [];
   for (let i = 0; i < n; i++) {
     const first = FIRST[i % FIRST.length], last = pick(LAST);
     const email = `${first}.${last}`.toLowerCase() + '@' + pick(DOMAINS);
     people.push({ name: `${first} ${last}`, email });
-    await insert(db, 'contacts', {
-      id: uuid(), user_id: userId, first_name: first, last_name: last, email,
-      email2: chance(0.2) ? `${first.toLowerCase()}@example.org` : null,
-      phone: chance(0.8) ? `+1 555 01${String(int(0, 99)).padStart(2, '0')}` : null,
+    // Through the contact store, which writes the values and the uid.
+    const draft = contacts.legacyDraft({
+      first_name: first, last_name: last, email,
+      email2: chance(0.2) ? `${first.toLowerCase()}@example.org` : null, email3: null,
+      phone: chance(0.8) ? `+1 555 01${String(int(0, 99)).padStart(2, '0')}` : null, phone2: null, phone3: null,
       company: pick(COMPANIES), job_title: chance(0.5) ? pick(['Engineer', 'Designer', 'Manager', 'Accountant', 'Teacher']) : null,
-      notes: chance(0.2) ? 'Synthetic contact created by seed-dev.' : null, is_favorite: chance(0.15),
+      notes: chance(0.2) ? 'Synthetic contact created by seed-dev.' : null,
     });
+    await contacts.insertContact(db, userId, { ...draft, is_favorite: chance(0.15) });
   }
   counts.contacts = (counts.contacts || 0) + n;
   return people;
