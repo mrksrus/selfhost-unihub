@@ -8,6 +8,7 @@ import { getActiveRestoreSections } from './restore-locks';
 import { attachmentsRoot, rawRoot, mailPathUnderRoot, ownedMailPath } from './mail-storage';
 import { RECORDINGS_ROOT, deleteRecordingFiles } from './recordings';
 import { BACKUPS_ROOT, isBackupPathUnderRoot } from './export-jobs';
+import { photosRoot } from './contact-photos';
 import { realtime } from './realtime';
 import { log } from '../log';
 import { recordAudit } from './audit';
@@ -94,7 +95,7 @@ async function removeUserFiles(userId: string, files: Set<string>, recordingPath
   // Each root keeps one directory per person (<root>/<userId>/...), so what no
   // row named any more (staged uploads, a file whose row was lost) goes with it.
   if (UUID.test(userId)) {
-    const roots = [attachmentsRoot(), rawRoot(), RECORDINGS_ROOT, path.join(RECORDINGS_ROOT, '.tmp'), BACKUPS_ROOT];
+    const roots = [attachmentsRoot(), rawRoot(), RECORDINGS_ROOT, path.join(RECORDINGS_ROOT, '.tmp'), BACKUPS_ROOT, photosRoot()];
     for (const directory of roots.map(root => path.join(root, userId))) {
       try {
         await fs.rm(directory, { recursive: true, force: true });

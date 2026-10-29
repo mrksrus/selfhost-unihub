@@ -1,6 +1,6 @@
 import type { OutgoingHttpHeaders, ServerResponse } from 'node:http';
 import type { RouteRequest } from './types';
-import type { RouteTable } from './http/route';
+import type { RouteTable, UploadBody } from './http/route';
 
 import { BACKUP_DISABLED_MESSAGE, DISABLED_BACKUP_ROUTES } from './services/backup-availability';
 import crypto from 'crypto';
@@ -11,6 +11,8 @@ import { verifyToken, validateCsrfToken, refreshSessionCookies, hasPermission } 
 import {
   parseBody,
   parseRawBodyToFile,
+  uploadSpoolRoot,
+  sweepStaleSpoolOnce,
   getAllowedOriginForRequest,
   isRequestBodyTooLarge,
 } from './http/request';
@@ -45,6 +47,12 @@ function buildContentDisposition(dispositionType: unknown, filename: unknown) {
   const safeFilename = sanitizeHeaderFilename(rawFilename);
   const encodedFilename = encodeURIComponent(rawFilename);
   return `${safeDispositionType}; filename="${safeFilename}"; filename*=UTF-8''${encodedFilename}`;
+}
+
+// If-None-Match compares weakly (RFC 9110): W/"x" matches "x", and * matches any.
+function etagMatches(header: string | undefined, etag: string) {
+  if (!header) return false;
+  return header.split(',').some(tag => { const value = tag.trim(); return value === '*' || value.replace(/^W\//, '') === etag; });
 }
 
 function requestUrl(req: RouteRequest) {
@@ -195,6 +203,20 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
     } else if (expectsBackupUpload) {
       temporaryUploadPath = path.join(BACKUP_UPLOAD_ROOT, `${crypto.randomUUID()}.zip`);
       body = await parseRawBodyToFile(req, temporaryUploadPath, maxBodySize);
+    } else if (spec.body?.kind === 'upload') {
+      const root = uploadSpoolRoot();
+      await sweepStaleSpoolOnce(root);
+      temporaryUploadPath = path.join(root, `${crypto.randomUUID()}.upload`);
+      const spooled = await parseRawBodyToFile(req, temporaryUploadPath, maxBodySize);
+      if (spooled && spooled.size === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'The upload is empty.', code: 'UPLOAD_EMPTY', status: 400 }));
+        return;
+      }
+      const rawType = req.headers['content-type'];
+      const contentType = typeof rawType === 'string' ? rawType.trim() : '';
+      body = spooled && ({ path: spooled.filePath, size: spooled.size, contentType,
+        mediaType: contentType.split(';')[0].trim().toLowerCase() } satisfies UploadBody);
     } else {
       body = await parseBody(req, maxBodySize);
     }
@@ -234,10 +256,19 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
       const dispositionType = result.__disposition === 'inline' ? 'inline' : 'attachment';
       const contentDisposition = buildContentDisposition(dispositionType, filename);
 
+      const headers: OutgoingHttpHeaders = { 'Cache-Control': 'no-cache', ...result.__headers };
+      if (result.__etag) {
+        headers.ETag = `"${result.__etag}"`;
+        if (etagMatches(req.headers['if-none-match'], headers.ETag)) {
+          res.writeHead(304, headers);
+          res.end();
+          return;
+        }
+      }
       res.writeHead(200, {
         'Content-Type': result.__contentType || 'application/octet-stream',
         'Content-Disposition': contentDisposition,
-        'Cache-Control': 'no-cache',
+        ...headers,
       });
       res.end(result.__raw);
       return;

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import http from 'node:http';
 
 interface SmokeUser { id: string; email: string; role: string }
@@ -157,6 +158,35 @@ try {
   assert(!(await other.request<{ recordings: SmokeItem[] }>('GET', '/api/recordings')).data.recordings.some(item => item.id === recordingId));
   await other.request('GET', `/api/recordings/${recordingId}/file`, undefined, { expected: 404 });
   await other.request('DELETE', `/api/recordings/${recordingId}`, undefined, { expected: 404 });
+
+  // A contact photo through nginx and the raw upload body: a HEIC becomes a
+  // converted JPEG owned by the API user, revalidates with its ETag, stays
+  // private to its owner and leaves no file behind once removed.
+  const photoContact = await primary.request<{ contact: SmokeItem }>('POST', '/api/contacts', { name: { given: 'CI photo' }, emails: [`ci-photo-${crypto.randomUUID()}@example.test`] });
+  contactId = photoContact.data.contact.id;
+  const heic = fs.readFileSync(new URL('../api/tests/fixtures/contacts/photos/rotated-irot.heic', import.meta.url));
+  const withPhoto = await primary.request<{ contact: SmokeItem & { photo: { etag: string; width: number; height: number } | null } }>('PUT', `/api/contacts/${contactId}/photo`, heic, {
+    rawBody: true, headers: { 'Content-Type': 'image/heic' },
+  });
+  const photo = withPhoto.data.contact.photo;
+  assert(photo && photo.width === 64 && photo.height === 64, `HEIC upload: ${JSON.stringify(photo)}`);
+  const served = await primary.request('GET', `/api/contacts/${contactId}/photo?size=thumb&v=${photo.etag}`, undefined, { binary: true });
+  assert.equal(served.response.headers.get('content-type'), 'image/jpeg');
+  assert.equal(served.response.headers.get('cache-control'), 'private, no-cache');
+  const full = await primary.request('GET', `/api/contacts/${contactId}/photo`, undefined, { binary: true });
+  assert.equal(full.response.headers.get('etag'), `"${photo.etag}"`);
+  assert.equal(crypto.createHash('sha256').update(full.bytes).digest('hex'), photo.etag);
+  await primary.request('GET', `/api/contacts/${contactId}/photo`, undefined, { binary: true, expected: 304, headers: { 'If-None-Match': `"${photo.etag}"` } });
+  await other.request('GET', `/api/contacts/${contactId}/photo`, undefined, { expected: 404 });
+  await other.request('PUT', `/api/contacts/${contactId}/photo`, heic, { expected: 404, rawBody: true, headers: { 'Content-Type': 'image/heic' } });
+  dockerNode(`const fs=require('fs'),path=require('path');const dir=path.join('/app/uploads/contact-photos',process.env.SMOKE_USER_ID);
+    const file=path.join(dir,process.env.SMOKE_SHA+'.jpg');const stat=fs.lstatSync(file);
+    if(!stat.isFile()||stat.uid!==10001||(stat.mode&0o777)!==0o600)throw new Error('Contact photo must be a private file of the API user');
+    if(fs.readdirSync('/app/uploads/spool').length)throw new Error('The upload spool must be empty');`, { SMOKE_USER_ID: userId, SMOKE_SHA: photo.etag });
+  const withoutPhoto = await primary.request<{ contact: SmokeItem & { photo: unknown } }>('DELETE', `/api/contacts/${contactId}/photo`);
+  assert.equal(withoutPhoto.data.contact.photo, null);
+  dockerNode(`const fs=require('fs');if(fs.readdirSync(require('path').join('/app/uploads/contact-photos',process.env.SMOKE_USER_ID)).length)throw new Error('Contact photo files remain after removal');`, { SMOKE_USER_ID: userId });
+  await primary.request('DELETE', `/api/contacts/${contactId}`); contactId = null;
 
   // Exercise the browser's backup workflow through nginx, auth/CSRF, the raw
   // upload parser and actual job workers. The second synthetic user has no
