@@ -143,7 +143,7 @@ describe('ContactImportDialog', () => {
     expect(within(dialog).getByText(/A restore of contacts is running/)).toBeInTheDocument();
     expect(within(dialog).getByText('So far: 1 added, 0 merged, 0 skipped.')).toBeInTheDocument();
     fireEvent.click(within(dialog).getByText('1 warning'));
-    expect(within(dialog).getByText('Contact 3: The photo is larger than 20 MB and was not imported')).toBeInTheDocument();
+    expect(within(dialog).getByText('Contact 3 (PHOTO): The photo is larger than 20 MB and was not imported')).toBeInTheDocument();
     vi.mocked(api.post).mockResolvedValueOnce({ data: { ...failed, state: 'committed', progress: 1, error: null, result: { ...failed.result, added: 2 } } });
     fireEvent.click(within(dialog).getByRole('button', { name: /try again/i }));
     expect(await within(dialog).findByText('Added')).toBeInTheDocument();

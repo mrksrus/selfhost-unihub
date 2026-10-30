@@ -15,8 +15,11 @@ const MATCH_TEXT: Record<ImportGroup['match'], string> = { new: 'New', uid: 'Sam
 const ACCEPT = '.vcf,.vcard,.csv,text/vcard,text/x-vcard,text/csv';
 const FINISHED: ImportStatus['state'][] = ['committed', 'failed', 'expired'];
 
-/** A warning names the card and the property, never a value (the server words it). */
-const warningText = (warning: ImportWarning) => `${warning.card !== null ? `Contact ${warning.card}: ` : ''}${warning.message}`;
+/** A warning names the card and the property or CSV column, never a value (the server words it). */
+const warningText = (warning: ImportWarning) => {
+  const where = [warning.card !== null ? `Contact ${warning.card}` : '', warning.property ? `(${warning.property})` : ''].filter(Boolean).join(' ');
+  return where ? `${where}: ${warning.message}` : warning.message;
+};
 
 // The preview is kept for 24 hours, so the day matters as much as the time.
 const timeOf = (iso: string) => {

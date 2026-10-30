@@ -230,3 +230,29 @@ test('[26-11 D6] import decisions: merge into an existing contact, skip another,
   await expect(entry).toBeVisible();
   await expect(entry.getByRole('button', `Undo the merge into Dora Decide ${run}`)).toBeEnabled();
 });
+
+// D17 for CSV: a name, organisation or title longer than its field is cut for
+// the field and kept whole as an other detail; the preview names the card and
+// the column, never the value.
+test('[26-11 D17] a CSV value longer than its field is cut, kept whole and reported by card and column', { session: 'alex', timeout: 240_000 }, async ({ app, screen, browser }) => {
+  await onlyOn(browser, 'desktop');
+  await app.open('/contacts');
+  const run = runId();
+  const organisation = `Org ${run} ${'L'.repeat(300)}`;
+  const csv = `First Name,Last Name,Organization Name,E-mail 1 - Label,E-mail 1 - Value\r\nCut,Longorg ${run},${organisation},* Work,cut.${run}@example.com\r\n`;
+  const dialog = await openImport(app, screen, browser);
+  await chooseFile(browser, writeUpload('long.csv', csv));
+  await expect(dialog.getByText('Google CSV', { exact: true })).toBeVisible({ timeout: 60_000 });
+  await dialog.getByText('1 warning', { exact: true }).tap();
+  const warning = dialog.getByText(/^Contact 1 \(Organization Name\): A value longer than its field was cut/);
+  await expect(warning).toBeVisible();
+  await expect(warning).not.toContainText('LLLL');
+  await dialog.getByRole('button', 'Import 1 contact').tap();
+  await expect(dialog.getByText('Added', { exact: true })).toBeVisible({ timeout: 120_000 });
+  await dialog.getByRole('button', 'Done', { exact: true }).tap();
+  const stored = (await listContacts(browser)).find((contact) => contact.name.family === `Longorg ${run}`)!;
+  expect(stored, 'the row is imported').toBeTruthy();
+  expect(stored.organization.name).toBe(organisation.slice(0, 255));
+  const detail = await getContact(browser, stored.id);
+  expect(detail.properties.some((property) => property.name === 'X-CSV-FIELD' && property.value === organisation), 'the whole value is kept').toBe(true);
+});
