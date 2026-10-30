@@ -2,6 +2,8 @@ package io.github.mrksrus.unihub
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -177,5 +179,68 @@ class ContactPlanTest {
         assertEquals(ContactPlan.SurvivorPhoto.UniHubKeeps, removed.photo)
         assertTrue(ContactPlan.copyMayGo(removed.photo, sent = false))
     }
-}
 
+    /** UniHub and the copy's sync columns as intoSurvivor leaves them; [photoFails] makes the upload time out. */
+    private class Sides(var survivor: ContactCard, var states: Pair<ContactState, ContactState>, var photoFails: Boolean) : ContactPlan.SurvivorSides {
+        var saves = 0
+        var photos = 0
+        override fun save(card: ContactCard): Boolean { survivor = card; saves++; return true }
+        override fun checkpoint(states: Pair<ContactState, ContactState>): Boolean { this.states = states; return true }
+        override fun sendPhoto(): Boolean {
+            if (photoFails) throw java.io.IOException("timeout")
+            photos++
+            return true
+        }
+        fun sync(phone: ContactCard, photo: String, survivorPhoto: String, budget: ContactPlan.PhotoBudget) =
+            ContactPlan.intoSurvivor(ContactPlan.survivorStep(phone, photo, states, survivor, survivorPhoto), this, budget)
+    }
+
+    /**
+     * The checkpoint is stored right after the card, before the picture: an
+     * upload that times out (the sync fails) does not lose it, so the retry
+     * after UniHub's newer edits sends only the picture.
+     */
+    @Test
+    fun aPhotoUploadThatFailsAfterTheCardWasSavedDoesNotReplayTheCard() {
+        val copyInUniHub = ContactCard(given = "Ada", family = "Example", title = "Engineer", phones = listOf(Value("+15550100", id = "v-1")))
+        val sides = Sides(copyInUniHub, ContactState(copyInUniHub.forPhone(), "f7") to ContactState(copyInUniHub, "e-old", 3), photoFails = true)
+        val phone = sides.states.first.card.copy(title = "Director", phones = sides.states.first.card.phones + Value("+15550101", "work"))
+
+        // Sync 1: the card is saved, then the upload times out and the sync fails.
+        assertThrows(java.io.IOException::class.java) { sides.sync(phone, "f12", "e-old", ContactPlan.PhotoBudget(metered = false, 200)) }
+        assertEquals("Director", sides.survivor.title)
+        assertTrue("the delivered card is recorded", ContactPhone.same(phone, sides.states.first.card))
+        assertEquals("f7", sides.states.first.photo)
+
+        // In UniHub meanwhile: another title, the phone's number removed.
+        sides.survivor = sides.survivor.copy(title = "CTO", phones = listOf(Value("+15550100", id = "v-1")))
+        val edited = sides.survivor
+
+        // Sync 2, metered: nothing written, the copy kept for its picture.
+        assertEquals(ContactPlan.SurvivorOutcome.Kept, sides.sync(phone, "f12", "e-old", ContactPlan.PhotoBudget(metered = true, 200)))
+        // Sync 3: the picture goes, the copy too; UniHub's edits stay.
+        sides.photoFails = false
+        assertEquals(ContactPlan.SurvivorOutcome.CopyGoes, sides.sync(phone, "f12", "e-old", ContactPlan.PhotoBudget(metered = false, 200)))
+        assertEquals(1, sides.saves)
+        assertEquals(1, sides.photos)
+        assertSame(edited, sides.survivor)
+    }
+
+    @Test
+    fun aRefusedCardSaveOrAnEditOnThePhoneStopsBeforeThePicture() {
+        val card = ContactCard(given = "Ada", title = "Engineer")
+        val bases = ContactState(card.forPhone(), "f7") to ContactState(card, "e-old", 3)
+        val step = ContactPlan.survivorStep(card.forPhone().copy(title = "Director"), "f12", bases, card, "e-old")
+        val calls = mutableListOf<String>()
+        fun sides(saves: Boolean, unchanged: Boolean) = object : ContactPlan.SurvivorSides {
+            override fun save(card: ContactCard) = saves.also { calls += "save" }
+            override fun checkpoint(states: Pair<ContactState, ContactState>) = unchanged.also { calls += "checkpoint" }
+            override fun sendPhoto() = true.also { calls += "photo" }
+        }
+        assertEquals(ContactPlan.SurvivorOutcome.Refused, ContactPlan.intoSurvivor(step, sides(saves = false, unchanged = true), ContactPlan.PhotoBudget(false, 200)))
+        assertEquals(listOf("save"), calls)
+        calls.clear()
+        assertEquals(ContactPlan.SurvivorOutcome.ChangedOnPhone, ContactPlan.intoSurvivor(step, sides(saves = true, unchanged = false), ContactPlan.PhotoBudget(false, 200)))
+        assertEquals(listOf("save", "checkpoint"), calls)
+    }
+}

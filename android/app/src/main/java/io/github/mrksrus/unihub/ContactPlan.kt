@@ -123,9 +123,9 @@ object ContactPlan {
      * [survivor] is what UniHub should now hold (null: nothing to write),
      * [photo] what happens to the copy's picture, and [checkpoint] the copy's
      * states once [survivor] is saved: the phone's card counts as delivered,
-     * its photo still as the last sync's. A copy kept for its unsent picture
-     * keeps these, so the next sync sends only the picture and never replays
-     * card changes over newer edits of the survivor.
+     * its photo still as the last sync's. Stored as soon as the card is
+     * saved, so a copy kept for its unsent picture sends only the picture
+     * next time and never replays card changes over newer edits of the survivor.
      */
     class SurvivorStep(val survivor: ContactCard?, val photo: SurvivorPhoto, val checkpoint: Pair<ContactState, ContactState>)
 
@@ -144,6 +144,30 @@ object ContactPlan {
      * failed upload); it stays and the step runs again at the next sync.
      */
     fun copyMayGo(photo: SurvivorPhoto, sent: Boolean): Boolean = photo != SurvivorPhoto.Upload || sent
+
+    /** What intoSurvivor does on each side, in this order (ContactsSync, or a test). */
+    interface SurvivorSides {
+        /** Saves the survivor's card in UniHub; false if UniHub refused it. */
+        fun save(card: ContactCard): Boolean
+        /** Records the copy's states on the phone at once; false if the phone changed the copy meanwhile. */
+        fun checkpoint(states: Pair<ContactState, ContactState>): Boolean
+        /** Sends the copy's picture to the survivor; false if it was not taken. May throw (a timeout). */
+        fun sendPhoto(): Boolean
+    }
+
+    enum class SurvivorOutcome { Refused, ChangedOnPhone, Kept, CopyGoes }
+
+    /**
+     * Runs [step]: the card first, then its checkpoint, stored before the
+     * picture so a failed or interrupted upload, or a later failure of the
+     * sync, never sends the delivered card again over newer edits in UniHub.
+     */
+    fun intoSurvivor(step: SurvivorStep, sides: SurvivorSides, budget: PhotoBudget): SurvivorOutcome {
+        if (step.survivor != null && !sides.save(step.survivor)) return SurvivorOutcome.Refused
+        if (!sides.checkpoint(step.checkpoint)) return SurvivorOutcome.ChangedOnPhone
+        val sent = step.photo == SurvivorPhoto.Upload && budget.take() && sides.sendPhoto()
+        return if (copyMayGo(step.photo, sent)) SurvivorOutcome.CopyGoes else SurvivorOutcome.Kept
+    }
 
     /** Photo transfers of one sync: at most [limit], none on a metered network. Shared by intoSurvivor and the photo pass. */
     class PhotoBudget(val metered: Boolean, private var left: Int) {

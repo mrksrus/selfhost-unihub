@@ -257,15 +257,19 @@ test('[26-10] a photo set on the phone for a contact UniHub merged away reaches 
   const keep = await create(body('+15550600'));
   const away = await create(body('+15550601'));
   await until(() => rawsFor(keep.id).length === 1 && rawsFor(away.id).length === 1, 'both copies on the phone');
-  // Merged in UniHub, and before the phone hears of it a picture is set on the merged-away copy.
-  const versions = { [keep.id]: (await contact(keep.id)).version, [away.id]: (await contact(away.id)).version };
   // With mobile data the deferral is checked too: without Wi-Fi it is the active, metered network.
   const mobileData = adb('shell', 'dumpsys', 'connectivity').includes('CELLULAR');
   if (mobileData) adb('shell', 'svc', 'wifi', 'disable');
   try {
-    await api('POST', '/api/contacts/merges', { contact_ids: [keep.id, away.id], survivor_id: keep.id, versions });
+    // A picture set on the copy and held on the phone before the merge, so no
+    // sync the merge sets off can find the copy unchanged and remove it; on a
+    // metered network it is not sent to the contact being merged away.
+    const copy = rawsFor(away.id)[0]._id;
+    adb('shell', 'am', 'broadcast', '-n', `${PACKAGE}/.TestContactPhoto`, '--el', 'raw', copy, '--es', 'jpeg', PHOTO);
+    await until(() => of(dataOf(copy), 'photo').length === 1, 'the picture on the copy');
+    const versions = { [keep.id]: (await contact(keep.id)).version, [away.id]: (await contact(away.id)).version };
     adb('logcat', '-c');
-    adb('shell', 'am', 'broadcast', '-n', `${PACKAGE}/.TestContactPhoto`, '--el', 'raw', rawsFor(away.id)[0]._id, '--es', 'jpeg', PHOTO);
+    await api('POST', '/api/contacts/merges', { contact_ids: [keep.id, away.id], survivor_id: keep.id, versions });
     if (mobileData) {
       await until(() => adb('shell', 'logcat -d -s UniHubContacts').includes('stays on the phone until its new photo is sent'), 'the copy waiting for its photo');
       assert.equal(rawsFor(away.id).length, 1, 'the copy stays while its photo cannot be sent');

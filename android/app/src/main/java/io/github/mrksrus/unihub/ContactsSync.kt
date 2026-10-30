@@ -945,39 +945,52 @@ object ContactsSync {
          * are applied to the survivor, a new picture included, then the copy
          * leaves the phone (the survivor's own copy brings the result). While
          * the picture cannot be sent yet (a metered network, the per-sync
-         * limit, a refusal) the copy stays with its card recorded as
-         * delivered, and the next sync sends only the picture.
+         * limit, a refusal, a timeout) the copy stays with its card recorded
+         * as delivered, and the next sync sends only the picture.
          */
         private fun intoSurvivor(row: Row, survivor: ServerContact) {
             val phone = row.full
             val step = ContactPlan.survivorStep(phone.card, phone.photo, row.fullBases(null), survivor.card, survivor.photo)
             var now = survivor
-            if (step.survivor != null) {
-                now = server.saveFull(survivor, step.survivor) ?: run { result.stats.numSkippedEntries++; return }
-                remote[now.id] = now
-                updated++
-            }
-            var sent = false
-            if (step.photo == ContactPlan.SurvivorPhoto.Upload && budget.take()) {
-                val saved = phonePicture(provider, account, row.id)?.let { server.setPhoto(now, it) }
-                if (saved != null) {
+            val outcome = ContactPlan.intoSurvivor(step, object : ContactPlan.SurvivorSides {
+                override fun save(card: ContactCard): Boolean {
+                    now = server.saveFull(survivor, card) ?: return false
+                    remote[now.id] = now
+                    updated++
+                    return true
+                }
+
+                // Its own transaction, not the batch: no later failure of this sync may lose it.
+                override fun checkpoint(states: Pair<ContactState, ContactState>): Boolean {
+                    val record = updateRow(account, row.id) {
+                        put(RawContacts.SYNC1, FORMAT_FULL)
+                        put(RawContacts.SYNC2, states.first.encode())
+                        put(RawContacts.SYNC3, states.second.encode())
+                    }
+                    if (batch.applyAlone(listOf(assertUnchanged(account, row), record))) return true
+                    // Edited on the phone meanwhile: the card read is still what was
+                    // delivered, and the next sync takes the edit from there.
+                    batch.applyAlone(listOf(record))
+                    return false
+                }
+
+                override fun sendPhoto(): Boolean {
+                    val saved = phonePicture(provider, account, row.id)?.let { server.setPhoto(now, it) } ?: return false
                     remote[saved.id] = saved
-                    sent = true
+                    return true
+                }
+            }, budget)
+            when (outcome) {
+                ContactPlan.SurvivorOutcome.Refused, ContactPlan.SurvivorOutcome.ChangedOnPhone -> result.stats.numSkippedEntries++
+                ContactPlan.SurvivorOutcome.Kept -> {
+                    Log.i(TAG, "A contact merged in UniHub stays on the phone until its new photo is sent")
+                    result.stats.numSkippedEntries++
+                }
+                ContactPlan.SurvivorOutcome.CopyGoes -> {
+                    batch.checked(listOf(assertUnchanged(account, row), deleteRow(account, row.id)))
+                    result.stats.numDeletes++
                 }
             }
-            if (!ContactPlan.copyMayGo(step.photo, sent)) {
-                // The card is delivered: the copy keeps only its picture to send.
-                batch += updateRow(account, row.id) {
-                    put(RawContacts.SYNC1, FORMAT_FULL)
-                    put(RawContacts.SYNC2, step.checkpoint.first.encode())
-                    put(RawContacts.SYNC3, step.checkpoint.second.encode())
-                }
-                Log.i(TAG, "A contact merged in UniHub stays on the phone until its new photo is sent")
-                result.stats.numSkippedEntries++
-                return
-            }
-            batch.checked(listOf(assertUnchanged(account, row), deleteRow(account, row.id)))
-            result.stats.numDeletes++
         }
 
         /** Undoes a deletion on the phone, with UniHub's changes since. */
