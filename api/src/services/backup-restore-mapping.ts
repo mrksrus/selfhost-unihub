@@ -13,6 +13,7 @@ import { safeJsonParse, MAIL_DISCONNECTED_MESSAGE } from './calendar';
 import { resolveCalDavUrl } from '../security/caldav-transport';
 import { RECORDINGS_ROOT } from './recordings';
 import { resolveOwnedReference } from './backup-ownership';
+import { writeRestoredPhotoFile } from './contact-photos';
 import {
   ATTACHMENTS_ROOT,
   sha256Buffer,
@@ -490,6 +491,23 @@ async function writeRestoredFile(userId: string, file: BackupFile, {
   return targetPath;
 }
 
+// A contact photo file goes to its content-addressed place, verified against
+// its name. Answers whether it is new (null when the archive has no bytes).
+async function writeRestoredContactPhoto(userId: string, file: BackupFile, {
+  fileBuffersByPath = null,
+  fileSourcesByPath = fileBuffersByPath,
+  checkCancelled = null,
+}: ImportOptions = {}) {
+  if (file.missing) return null;
+  const source = file.archive_path && fileSourcesByPath
+    ? fileSourcesByPath.get(file.archive_path)
+    : file.data_base64 ? Buffer.from(String(file.data_base64), 'base64') : null;
+  if (!source) return null;
+  const sha = String(file.id);
+  if (!/^[0-9a-f]{64}$/.test(sha) || file.sha256 !== sha) throw new Error('A contact photo in this backup does not match its name.');
+  return writeRestoredPhotoFile(userId, sha, temporary => writeFileSource(temporary, source, sha, { checkCancelled }));
+}
+
 export {
   prepareCredentialsForRestore,
   restoredCalendarLacksLogin,
@@ -505,4 +523,5 @@ export {
   findExistingAttachmentForRestore,
   findExistingRecordingForRestore,
   writeRestoredFile,
+  writeRestoredContactPhoto,
 };

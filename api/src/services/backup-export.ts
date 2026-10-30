@@ -14,6 +14,7 @@ import {
   SECTION_POLICIES,
   TABLE_POLICIES,
   FILE_POLICIES,
+  CONTENT_FILE_POLICIES,
   ACCOUNT_ONLY_TABLES,
   normalizeBackupRequest,
 } from './backup-catalog';
@@ -28,6 +29,7 @@ import {
   assertBackupMetadataSize,
 } from './backup-common';
 import { scopeBackupForImport } from './backup-validate';
+import { photoPath, photosRoot } from './contact-photos';
 
 type CheckCancelled = (() => Promise<unknown>) | null;
 interface SnapshotRow extends BackupRow {
@@ -104,6 +106,49 @@ async function readBackupFileEntry({
       data_base64: null,
     };
   }
+}
+
+// Where a content-addressed file kind keeps the user's files.
+const CONTENT_FILE_STORES: Readonly<Record<string, { root: () => string; path: (userId: string, sha: string) => string }>> = Object.freeze({
+  contact_photo: { root: photosRoot, path: photoPath },
+});
+
+// Content-addressed files of the snapshot's rows, each archived once. A row
+// whose files are missing or no longer match their names is left out of the
+// archive with a warning: the picture is already lost, and the rest of the
+// section stays restorable.
+async function readContentFileEntries(userId: string, data: SnapshotData, includeData: boolean, checkCancelled: CheckCancelled) {
+  const entries: ExportFile[] = [];
+  const warnings: string[] = [];
+  for (const [kind, policy] of Object.entries(CONTENT_FILE_POLICIES)) {
+    const rows = (data[policy.table] as SnapshotRow[] | undefined) || [];
+    if (!rows.length) continue;
+    const store = CONTENT_FILE_STORES[kind];
+    if (!store) throw new Error(`Unsupported backup file root: ${kind}`);
+    const read = new Map<string, ExportFile | null>();
+    const kept: SnapshotRow[] = [];
+    for (const row of rows) {
+      const files: (ExportFile | null)[] = [];
+      for (const column of policy.columns) {
+        const sha = String(row[column]);
+        if (!read.has(sha)) {
+          if (checkCancelled) await checkCancelled();
+          let storagePath: string | null = null;
+          try { storagePath = store.path(userId, sha); } catch { storagePath = null; }
+          const entry = await readBackupFileEntry({ kind, id: sha, storagePath, rootPath: store.root(), includeData, checkCancelled });
+          read.set(sha, entry && !entry.missing && entry.sha256 === sha ? entry : null);
+        }
+        files.push(read.get(sha)!);
+      }
+      if (files.every(Boolean)) kept.push(row);
+    }
+    const lost = rows.length - kept.length;
+    data[policy.table] = kept;
+    const named = new Set(kept.flatMap(row => policy.columns.map(column => String(row[column]))));
+    for (const [sha, entry] of read) if (entry && named.has(sha)) entries.push({ ...entry, filename: `${sha}.jpg` });
+    if (lost) warnings.push(`${lost} contact photo${lost === 1 ? ' is' : 's are'} not in this backup because the stored picture is missing or damaged.`);
+  }
+  return { entries, warnings };
 }
 
 async function writeBackupJsonFile(value: Record<string, unknown>, targetPath: string) {
@@ -330,6 +375,8 @@ async function buildBackupForUser(userId: string, {
       if (entry) fileEntries.push(entry);
     }
   }
+  const content = await readContentFileEntries(userId, data, includeFileData, checkCancelled);
+  fileEntries.push(...content.entries);
 
   let portableCredentials = null;
   if (portableCredentialKey) {
@@ -373,6 +420,7 @@ async function buildBackupForUser(userId: string, {
       portableCredentialKey
         ? 'Account credentials are protected by this backup and can be re-encrypted by another UniHub server.'
         : 'Encrypted account credentials only restore on deployments using the same ENCRYPTION_KEY.',
+      ...content.warnings,
     ],
     data,
     files: fileEntries,

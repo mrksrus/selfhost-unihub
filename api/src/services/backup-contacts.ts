@@ -1,20 +1,25 @@
-// Restoring the contacts section into the vCard model (0.26.0). An archive of
-// version 4 or older carries the fixed 3+3 fields on each contact row; they
-// become values here. A newer archive carries contact_values and the other
-// child tables. A contact that is written replaces its values and kept
-// properties wholesale, so restoring the same archive twice adds nothing.
+// Restoring the contacts section into the vCard model (0.26.0). The reader
+// (backup-formats/v5.ts) has already turned the fixed 3+3 fields of an
+// archive up to version 4 into contact_values rows. A contact that is written
+// replaces its values, kept properties and photo wholesale, so restoring the
+// same archive twice adds nothing. Replacing a contact from an archive older
+// than version 5 is applied as an old app's whole 3+3 update (P-21): it
+// changes what that format carried, and the values beyond the three places,
+// labels, other fields, kept properties and the photo stay. Photo files are
+// written before the transaction (backup-import.ts); here a photo row may
+// only name a file that was written.
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, BackupRow } from '../types';
 import type { ContactValueKind } from '../contracts/contacts';
-import type { ValueDraft, KeptPropertyDraft } from './contacts';
-import { LABELS, VALUE_KINDS, VALUE_LIMITS, VALUES_PER_KIND, KEPT_PROPERTIES_MAX, draftNameKey, newUid, uidHash, writeKeptProperties, writeValues } from './contacts';
+import type { ValueDraft, KeptPropertyDraft, LegacyFields } from './contacts';
+import { LABELS, VALUE_KINDS, VALUE_LIMITS, VALUES_PER_KIND, KEPT_PROPERTIES_MAX, applyLegacyUpdate, draftNameKey, newUid, uidHash, writeKeptProperties, writeValues } from './contacts';
 import { valueKey } from './contact-keys';
 import { chooseTargetId, writeOwnedRow } from './backup-ownership';
 
 type Row = BackupRow & Record<string, unknown>;
 interface ArchivedValue { kind: ContactValueKind; value: string }
 
-const LEGACY_SLOTS = { email: ['email', 'email2', 'email3'], phone: ['phone', 'phone2', 'phone3'] } as const;
+const SHA_PATTERN = /^[0-9a-f]{64}$/;
 const text = (value: unknown) => typeof value === 'string' ? value : typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
 // The reader holds an archive to the limits the store writes with
 // (services/contacts.ts): anything beyond them did not come from UniHub, and
@@ -35,51 +40,61 @@ function groupBy(rows: unknown, key: string) {
   return grouped;
 }
 
-// The values of one archived contact, as drafts for the store: the child
-// rows of a newer archive, else the fixed fields of an older one (verbatim,
-// as upgrade 22 copies them, each in its old apps' place). Unknown labels
-// are cleared; an unknown kind, more values of a kind than a contact holds, a
-// value beyond its limit or an impossible place for old apps stops the
-// restore. A row without legacy_slot leaves the place to the store.
-function archivedValues(contact: Row, children: readonly Row[] | undefined): ValueDraft[] {
-  if (children?.length) {
-    const sorted = [...children].sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
-    const counts = new Map<string, number>();
-    const taken = new Set<string>();
-    return sorted.flatMap((row): ValueDraft[] => {
-      const kind = text(row.kind) as ContactValueKind;
-      const value = text(row.value);
-      if (!VALUE_KINDS.includes(kind)) throw beyondLimits('a value of an unknown kind');
-      if (!value.trim()) return [];
-      const count = (counts.get(kind) || 0) + 1;
-      counts.set(kind, count);
-      if (count > VALUES_PER_KIND) throw beyondLimits(`more than ${VALUES_PER_KIND} values of one kind (${kind})`);
-      const label = LABELS[kind].has(text(row.label)) ? text(row.label) : '';
-      const customLabel = label === 'custom' ? nullable(row.custom_label, 'custom label', 100) : null;
-      let params = row.params;
-      if (typeof params === 'string') { try { params = JSON.parse(params); } catch { params = null; } }
-      // The archived place is kept (the three places an old app sees, and the
-      // values it does not); a missing or repeated one falls back to the list order.
-      const archivedPosition = Number(row.position);
-      const position = Number.isInteger(archivedPosition) && archivedPosition >= 0 && archivedPosition <= 65535 && !taken.has(`${kind}:${archivedPosition}`) ? archivedPosition : undefined;
-      if (position !== undefined) taken.add(`${kind}:${position}`);
-      let legacySlot: number | null | undefined;
-      if (Object.prototype.hasOwnProperty.call(row, 'legacy_slot') && row.legacy_slot != null) {
-        legacySlot = Number(row.legacy_slot);
-        if ((kind !== 'email' && kind !== 'phone') || ![1, 2, 3].includes(legacySlot) || taken.has(`${kind}:slot${legacySlot}`)) throw beyondLimits('an impossible place for older apps');
-        taken.add(`${kind}:slot${legacySlot}`);
-      } else if (Object.prototype.hasOwnProperty.call(row, 'legacy_slot')) legacySlot = null;
-      return [{
-        legacy_slot: legacySlot,
-        position, kind, value: bounded(value, VALUE_LIMITS[kind], kind), label: label === 'custom' && !customLabel ? '' : label, custom_label: customLabel, preferred: !!row.is_preferred,
-        po_box: nullable(row.po_box, 'address part'), extended: nullable(row.extended, 'address part'), street: nullable(row.street, 'street', 1000), locality: nullable(row.locality, 'address part'),
-        region: nullable(row.region, 'address part'), postal_code: nullable(row.postal_code, 'address part'), country: nullable(row.country, 'address part'),
-        params: params && typeof params === 'object' ? params : null, vcard_group: nullable(row.vcard_group, 'vCard group', 64),
-      }];
-    });
-  }
-  return (['email', 'phone'] as const).flatMap(kind => LEGACY_SLOTS[kind].map(slot => text(contact[slot])).filter(value => value.trim())
-    .map((value, index): ValueDraft => ({ kind, value: bounded(value, VALUE_LIMITS[kind], kind), label: '', custom_label: null, preferred: false, legacy_slot: index + 1 })));
+// The values of one archived contact, as drafts for the store, each in its
+// old apps' place (legacy_slot; the reader gives converted 3+3 values theirs).
+// Unknown labels are cleared; an unknown kind, more values of a kind than a
+// contact holds, a value beyond its limit or an impossible place for old apps
+// stops the restore. A row without legacy_slot leaves the place to the store.
+// The archived id is offered to the store, which keeps it only for a row this
+// contact already has.
+function archivedValues(children: readonly Row[] | undefined): ValueDraft[] {
+  const sorted = [...(children || [])].sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
+  const counts = new Map<string, number>();
+  const taken = new Set<string>();
+  return sorted.flatMap((row): ValueDraft[] => {
+    const kind = text(row.kind) as ContactValueKind;
+    const value = text(row.value);
+    if (!VALUE_KINDS.includes(kind)) throw beyondLimits('a value of an unknown kind');
+    if (!value.trim()) return [];
+    const count = (counts.get(kind) || 0) + 1;
+    counts.set(kind, count);
+    if (count > VALUES_PER_KIND) throw beyondLimits(`more than ${VALUES_PER_KIND} values of one kind (${kind})`);
+    const label = LABELS[kind].has(text(row.label)) ? text(row.label) : '';
+    const customLabel = label === 'custom' ? nullable(row.custom_label, 'custom label', 100) : null;
+    let params = row.params;
+    if (typeof params === 'string') { try { params = JSON.parse(params); } catch { params = null; } }
+    // The archived place is kept (the three places an old app sees, and the
+    // values it does not); a missing or repeated one falls back to the list order.
+    const archivedPosition = Number(row.position);
+    const position = Number.isInteger(archivedPosition) && archivedPosition >= 0 && archivedPosition <= 65535 && !taken.has(`${kind}:${archivedPosition}`) ? archivedPosition : undefined;
+    if (position !== undefined) taken.add(`${kind}:${position}`);
+    let legacySlot: number | null | undefined;
+    if (Object.hasOwn(row, 'legacy_slot') && row.legacy_slot != null) {
+      legacySlot = Number(row.legacy_slot);
+      if ((kind !== 'email' && kind !== 'phone') || ![1, 2, 3].includes(legacySlot) || taken.has(`${kind}:slot${legacySlot}`)) throw beyondLimits('an impossible place for older apps');
+      taken.add(`${kind}:slot${legacySlot}`);
+    } else if (Object.hasOwn(row, 'legacy_slot')) legacySlot = null;
+    return [{
+      id: text(row.id) || null, legacy_slot: legacySlot, position, kind, value: bounded(value, VALUE_LIMITS[kind], kind), label: label === 'custom' && !customLabel ? '' : label, custom_label: customLabel, preferred: !!row.is_preferred,
+      po_box: nullable(row.po_box, 'address part'), extended: nullable(row.extended, 'address part'), street: nullable(row.street, 'street', 1000), locality: nullable(row.locality, 'address part'),
+      region: nullable(row.region, 'address part'), postal_code: nullable(row.postal_code, 'address part'), country: nullable(row.country, 'address part'),
+      params: params && typeof params === 'object' ? params : null, vcard_group: nullable(row.vcard_group, 'vCard group', 64),
+    }];
+  });
+}
+
+interface ArchivedPhoto { sha256: string; thumb_sha256: string; width: number; height: number; bytes: number }
+
+// An archived photo row, held to what the store writes.
+function archivedPhoto(row: Row): ArchivedPhoto {
+  const size = (value: unknown, max: number) => {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number < 1 || number > max) throw beyondLimits('a photo with an invalid size');
+    return number;
+  };
+  const sha256 = text(row.sha256), thumb = text(row.thumb_sha256);
+  if (!SHA_PATTERN.test(sha256) || !SHA_PATTERN.test(thumb)) throw beyondLimits('a photo with an invalid file name');
+  return { sha256, thumb_sha256: thumb, width: size(row.width, 65535), height: size(row.height, 65535), bytes: size(row.bytes, 0xffffffff) };
 }
 
 function archivedProperties(rows: readonly Row[] | undefined): KeptPropertyDraft[] {
@@ -144,11 +159,25 @@ interface RestoreContext {
   conflictMode: string;
   warnings: string[];
   checkCancelled: () => Promise<void>;
+  // SHA-256 names of the photo files written for this restore.
+  photoFiles?: ReadonlySet<string>;
+  // The archive's own data schema (the reader converted older ones).
+  sourceVersion?: number;
 }
 
-async function restoreContactsSection(connection: SqlExecutor, userId: string, data: Record<string, unknown>, { conflictMode, warnings, checkCancelled }: RestoreContext) {
+/**
+ * Restores the contacts section on `connection` (the restore's transaction).
+ * Returns the id of each archived contact here, and the photo files the
+ * written contacts no longer use, to release after the commit.
+ */
+async function restoreContactsSection(connection: SqlExecutor, userId: string, data: Record<string, unknown>,
+  { conflictMode, warnings, checkCancelled, photoFiles = new Set(), sourceVersion = 5 }: RestoreContext) {
   const valuesBy = groupBy(data.contact_values, 'contact_id');
   const propertiesBy = groupBy(data.contact_properties, 'contact_id');
+  const photoBy = new Map(Array.from(groupBy(data.contact_photos, 'contact_id'), ([id, rows]) => [id, archivedPhoto(rows[0])]));
+  const oldArchive = sourceVersion < 5;
+  const releasedPhotos: string[] = [];
+  let missingPhotos = 0;
   // A child row is restored only with its contact from the same archive; one
   // naming any other contact is refused, never attached to an existing row.
   const archived = new Set((Array.isArray(data.contacts) ? data.contacts as Row[] : []).map(row => text(row.id)));
@@ -163,15 +192,28 @@ async function restoreContactsSection(connection: SqlExecutor, userId: string, d
   for (const contact of (Array.isArray(data.contacts) ? data.contacts : []) as Row[]) {
     await checkCancelled();
     const sourceId = text(contact.id);
-    const values = archivedValues(contact, valuesBy.get(sourceId));
+    const values = archivedValues(valuesBy.get(sourceId));
     const existingId = await findExistingContactForRestore(connection, contact, values, userId, claimed);
     const targetId = chooseTargetId(sourceId, existingId, conflictMode);
     claimed.add(targetId);
     idMap.set(sourceId, targetId);
     // keep_existing leaves a matched contact as it is.
     if (existingId && existingId === targetId && conflictMode !== 'replace') continue;
-    // A UID already used by another of this user's contacts (Keep both) gets a new one.
+    const replacing = existingId === targetId;
+    if (replacing && oldArchive) {
+      // The reader gave each converted value its place; the matched contact keeps its uid.
+      const slots = (kind: 'email' | 'phone') => [1, 2, 3].map(slot => values.find(value => value.kind === kind && value.legacy_slot === slot)?.value);
+      const [emails, phones] = [slots('email'), slots('phone')];
+      const fields: LegacyFields = {
+        first_name: text(contact.first_name), last_name: text(contact.last_name) || null, company: text(contact.company) || null,
+        job_title: text(contact.job_title) || null, notes: text(contact.notes) || null,
+        email: emails[0] ?? null, email2: emails[1] ?? null, email3: emails[2] ?? null, phone: phones[0] ?? null, phone2: phones[1] ?? null, phone3: phones[2] ?? null,
+      };
+      await applyLegacyUpdate(connection, userId, targetId, fields, { whole: true, present: new Set(), favorite: !!contact.is_favorite, expectedVersion: null });
+      continue;
+    }
     let uid = text(contact.uid).trim() ? bounded(text(contact.uid).trim(), 255, 'UID') : newUid(sourceId);
+    // A UID already used by another of this user's contacts (Keep both) gets a new one.
     const [[holder]] = await connection.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM contacts WHERE user_id = ? AND uid_hash = ?', [userId, uidHash(uid)]);
     if (holder && holder.id !== targetId) uid = newUid(targetId);
     const draft = {
@@ -186,11 +228,28 @@ async function restoreContactsSection(connection: SqlExecutor, userId: string, d
     await writeOwnedRow(connection, userId, 'contacts', columns,
       [targetId, userId, uid, uidHash(uid), ...Object.values(draft), contact.is_favorite ? 1 : 0, draftNameKey(draft)],
       columns.filter(column => column !== 'id' && column !== 'user_id'));
-    if (existingId === targetId) await connection.execute('UPDATE contacts SET version = version + 1 WHERE id = ? AND user_id = ?', [targetId, userId]);
+    if (replacing) await connection.execute('UPDATE contacts SET version = version + 1 WHERE id = ? AND user_id = ?', [targetId, userId]);
     await writeValues(connection, userId, targetId, VALUE_KINDS, values);
     await connection.execute('DELETE FROM contact_properties WHERE user_id = ? AND contact_id = ?', [userId, targetId]);
     await writeKeptProperties(connection, userId, targetId, archivedProperties(propertiesBy.get(sourceId)));
+    // The archived photo, or none when the archive's contact had none. A photo
+    // whose files the archive lacks leaves the stored one as it is.
+    const [[previous]] = await connection.execute<(RowDataPacket & { sha256: string; thumb_sha256: string })[]>(
+      'SELECT sha256, thumb_sha256 FROM contact_photos WHERE contact_id = ? AND user_id = ? FOR UPDATE', [targetId, userId]);
+    const photo = photoBy.get(sourceId);
+    const available = !!photo && photoFiles.has(photo.sha256) && photoFiles.has(photo.thumb_sha256);
+    if (photo && !available) { missingPhotos++; continue; }
+    if (previous) releasedPhotos.push(previous.sha256, previous.thumb_sha256);
+    if (photo) {
+      await connection.execute(`INSERT INTO contact_photos (contact_id, user_id, sha256, width, height, bytes, thumb_sha256, source) VALUES (?, ?, ?, ?, ?, ?, ?, 'restore')
+        ON DUPLICATE KEY UPDATE sha256 = VALUES(sha256), width = VALUES(width), height = VALUES(height), bytes = VALUES(bytes),
+          thumb_sha256 = VALUES(thumb_sha256), source = VALUES(source), created_at = CURRENT_TIMESTAMP`,
+      [targetId, userId, photo.sha256, photo.width, photo.height, photo.bytes, photo.thumb_sha256]);
+    } else if (previous) {
+      await connection.execute('DELETE FROM contact_photos WHERE contact_id = ? AND user_id = ?', [targetId, userId]);
+    }
   }
+  if (missingPhotos) warnings.push(`${missingPhotos} contact photo${missingPhotos === 1 ? ' was' : 's were'} not restored because the backup lacks the picture.`);
   for (const alias of (Array.isArray(data.contact_uid_aliases) ? data.contact_uid_aliases : []) as Row[]) {
     const contactId = idMap.get(text(alias.contact_id));
     const uid = text(alias.uid).trim();
@@ -204,22 +263,19 @@ async function restoreContactsSection(connection: SqlExecutor, userId: string, d
     await connection.execute('INSERT INTO contact_duplicate_dismissals (contact_a, contact_b, user_id) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE user_id = user_id',
       [a < b ? a : b, a < b ? b : a, userId]);
   }
-  // Photo files come with the photo pipeline's file kind; until then a
-  // photo row has nothing to show.
-  if (Array.isArray(data.contact_photos) && data.contact_photos.length) warnings.push('Contact photos in this backup were not restored.');
-  return idMap;
+  return { idMap, releasedPhotos };
 }
 
-// How many archived contacts already exist here (same id, UID or an email in common).
+// How many archived contacts the restore would match with an existing one
+// (the same rules as the restore, each existing contact counted once).
 async function countContactConflicts(connection: SqlExecutor, userId: string, data: Record<string, unknown>) {
   const valuesBy = groupBy(data.contact_values, 'contact_id');
-  let conflicts = 0;
+  const claimed = new Set<string>();
   for (const contact of (Array.isArray(data.contacts) ? data.contacts : []) as Row[]) {
-    const values = archivedValues(contact, valuesBy.get(text(contact.id))).filter(value => value.kind === 'email');
-    const probe = { id: contact.id, uid: contact.uid } as Row;
-    if (await findExistingContactForRestore(connection, probe, values, userId)) conflicts++;
+    const match = await findExistingContactForRestore(connection, contact, archivedValues(valuesBy.get(text(contact.id))), userId, claimed);
+    if (match) claimed.add(match);
   }
-  return conflicts;
+  return claimed.size;
 }
 
 export { restoreContactsSection, countContactConflicts, findExistingContactForRestore, archivedValues };

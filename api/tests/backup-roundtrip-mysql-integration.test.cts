@@ -10,7 +10,7 @@ const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts')
 
 const uuid = () => crypto.randomUUID();
 const sha256 = (bytes: FixtureValue) => crypto.createHash('sha256').update(bytes).digest('hex');
-const TABLES = ['user_settings', 'contacts', 'contact_values', 'mail_folders', 'mail_accounts', 'mail_folder_remote_boxes', 'mail_sender_rules', 'emails', 'email_attachments', 'mail_email_scores', 'calendar_accounts', 'calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'calendar_event_external_refs', 'recordings', 'recording_tags', 'recording_tag_links', 'recording_transcription_jobs', 'mail_folder_reconciliations', 'mail_folder_recovery_items', 'mail_folder_rule_overrides', 'mail_account_settings', 'mail_templates', 'calendar_settings'];
+const TABLES = ['user_settings', 'contacts', 'contact_values', 'contact_properties', 'contact_photos', 'contact_uid_aliases', 'contact_duplicate_dismissals', 'mail_folders', 'mail_accounts', 'mail_folder_remote_boxes', 'mail_sender_rules', 'emails', 'email_attachments', 'mail_email_scores', 'calendar_accounts', 'calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'calendar_event_external_refs', 'recordings', 'recording_tags', 'recording_tag_links', 'recording_transcription_jobs', 'mail_folder_reconciliations', 'mail_folder_recovery_items', 'mail_folder_rule_overrides', 'mail_account_settings', 'mail_templates', 'calendar_settings'];
 
 function wav() {
   const bytes = Buffer.alloc(76);
@@ -91,6 +91,7 @@ test('production export and restore jobs round-trip every section through encryp
     for (const [index, [kind, value]] of values.entries()) {
       await insert('contact_values', { id: uuid(), contact_id: id, user_id: row.user_id, kind, position: values.slice(0, index).filter(([other]) => other === kind).length, value, value_key: valueKey(kind, value) });
     }
+    return id;
   }
   async function newUser(label: string) {
     const id = uuid();
@@ -116,8 +117,23 @@ test('production export and restore jobs round-trip every section through encryp
   // Choices and an order saved by older releases still name removed modules.
   await insert('user_settings', { user_id: sourceUser, setting_key: 'module_preferences', setting_value: JSON.stringify({ notes: { visible: false, enabled: false, background: false }, games: { visible: false }, recordings: { visible: false } }) });
   await insert('user_settings', { user_id: sourceUser, setting_key: 'module_order', setting_value: JSON.stringify(['notes', 'recordings', 'mail', 'calendar', 'contacts']) });
-  await insertContact({ user_id: sourceUser, first_name: 'Zoë', last_name: 'Example', notes: 'Unicode: Grüße\nSecond line', is_favorite: 1 },
-    [['email', 'zoe@example.test'], ['email', 'second@example.test'], ['email', 'third@example.test'], ['email', 'fourth@example.test'], ['phone', '+43 12345']]);
+  const zoeId = await insertContact({ user_id: sourceUser, first_name: 'Zoë', last_name: 'Example', notes: 'Unicode: Grüße\nSecond line', is_favorite: 1 },
+    [['email', 'zoe@example.test'], ['email', 'second@example.test'], ['email', 'third@example.test'], ['email', 'fourth@example.test'], ['phone', '+43 12345'],
+      ['address', 'Beispielgasse 1, 1010 Wien']]);
+  const anaId = await insertContact({ user_id: sourceUser, first_name: 'Ana', last_name: 'Example' }, [['email', 'ana@example.test']]);
+  // The rest of the vCard model (0.26): a kept property, a photo with its two
+  // content-addressed files, a merged-away UID and a "Not the same person" pair.
+  await insert('contact_properties', { id: uuid(), contact_id: zoeId, user_id: sourceUser, position: 0, name: 'X-SYNTHETIC', params: JSON.stringify({ type: ['work'] }), value: 'kept ✓', source_version: '4.0' });
+  const photoBytes = { full: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), crypto.randomBytes(300)]), thumb: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), crypto.randomBytes(40)]) };
+  const sourcePhotos = source('services/contact-photos');
+  for (const bytes of Object.values(photoBytes)) {
+    const file = sourcePhotos.photoPath(sourceUser, sha256(bytes));
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, bytes);
+  }
+  await insert('contact_photos', { contact_id: zoeId, user_id: sourceUser, sha256: sha256(photoBytes.full), width: 512, height: 512, bytes: photoBytes.full.length, thumb_sha256: sha256(photoBytes.thumb), source: 'upload' });
+  await insert('contact_uid_aliases', { user_id: sourceUser, uid_hash: sha256('urn:uuid:merged-away-example'), uid: 'urn:uuid:merged-away-example', contact_id: zoeId });
+  await insert('contact_duplicate_dismissals', { contact_a: zoeId < anaId ? zoeId : anaId, contact_b: zoeId < anaId ? anaId : zoeId, user_id: sourceUser });
   const folderIds = { research: uuid(), copies: uuid() };
   await insert('mail_folders', { id: folderIds.research, user_id: sourceUser, slug: 'research', display_name: 'Research & Notes', position: 7, is_system: 0 });
   await insert('mail_folders', { id: folderIds.copies, user_id: sourceUser, slug: 'copies', display_name: 'Archived Copies', position: 8, is_system: 0 });
@@ -233,9 +249,10 @@ test('production export and restore jobs round-trip every section through encryp
   const encrypted = await exportArchive(true);
   const legacy = await exportArchive(false);
   const legacyParsed = await source('services/backup').backupFromZipFile(legacy.file_path);
-  assert.equal(legacyParsed.manifest.file_count, 11);
+  // Mail and recording files, and the two files of one contact photo.
+  assert.equal(legacyParsed.manifest.file_count, 13);
   assert.deepEqual(legacyParsed.manifest.missing_files, []);
-  assert.equal(legacyParsed.backup.data.contacts.length, 1, 'Other users must not appear in an export');
+  assert.equal(legacyParsed.backup.data.contacts.length, 2, 'Other users must not appear in an export');
   assert.deepEqual(await snapshot(sourceUser), original, 'Export must not mutate source rows');
 
   await t.test('export never advertises an archive larger than this deployment can upload for restore', async () => {
@@ -321,7 +338,20 @@ test('production export and restore jobs round-trip every section through encryp
       assert.deepEqual(order(restored[table]), order(original[table]), `${table}: preserve content`);
     };
     compare('contacts', ['first_name', 'last_name', 'notes', 'is_favorite']);
-    compare('contact_values', ['kind', 'position', 'label', 'value', 'value_key']);
+    compare('contact_values', ['kind', 'position', 'label', 'value', 'value_key', 'legacy_slot']);
+    compare('contact_properties', ['position', 'name', 'params', 'value', 'source_version']);
+    compare('contact_photos', ['sha256', 'thumb_sha256', 'width', 'height', 'bytes']);
+    compare('contact_uid_aliases', ['uid_hash', 'uid']);
+    assert.ok(restored.contact_photos.every((row: FixtureValue) => row.source === 'restore'));
+    // Children follow their restored contact; the photo files are in this deployment's own root.
+    const restoredIds = new Set(restored.contacts.map((row: FixtureValue) => row.id));
+    for (const table of ['contact_values', 'contact_properties', 'contact_photos', 'contact_uid_aliases']) assert.ok(restored[table].every((row: FixtureValue) => restoredIds.has(row.contact_id)), table);
+    assert.ok(restored.contact_duplicate_dismissals.every((row: FixtureValue) => restoredIds.has(row.contact_a) && restoredIds.has(row.contact_b) && row.contact_a < row.contact_b));
+    const photos = runtime('services/contact-photos');
+    for (const bytes of Object.values(photoBytes)) {
+      const file = photos.photoPath(userId, sha256(bytes));
+      assert.deepEqual(await fs.readFile(file), bytes);
+    }
     const plainSettings = (rows: FixtureValue[]) => rows.filter(row => row.setting_key !== 'default_mail_account_id')
       .map(row => ({ setting_key: row.setting_key, setting_value: row.setting_value })).sort((a, b) => a.setting_key.localeCompare(b.setting_key));
     assert.deepEqual(plainSettings(restored.user_settings), plainSettings(original.user_settings), 'user_settings: preserve content');
@@ -526,7 +556,16 @@ test('production export and restore jobs round-trip every section through encryp
     await assertRestored(destination, encryptedUser);
     await uploadAndRestore(destination, encryptedUser, encrypted, 'keep_both');
     const doubled = await snapshot(encryptedUser);
-    assert.equal(doubled.contacts.length, 2); assert.equal(doubled.emails.length, original.emails.length * 2); assert.equal(doubled.recordings.length, original.recordings.length * 2);
+    // Keep both: each contact again under a new id and uid, with its own
+    // children; both photo rows share the one pair of files; a merged-away
+    // UID keeps pointing at the contact that had it first.
+    assert.equal(doubled.contacts.length, original.contacts.length * 2);
+    assert.equal(new Set(doubled.contacts.map((row: FixtureValue) => row.uid)).size, doubled.contacts.length);
+    for (const table of ['contact_values', 'contact_properties', 'contact_photos', 'contact_duplicate_dismissals']) assert.equal(doubled[table].length, original[table].length * 2, table);
+    assert.equal(new Set(doubled.contact_values.map((row: FixtureValue) => row.id)).size, doubled.contact_values.length);
+    assert.equal(new Set(doubled.contact_photos.map((row: FixtureValue) => row.sha256)).size, 1);
+    assert.deepEqual(doubled.contact_uid_aliases.map((row: FixtureValue) => row.uid), ['urn:uuid:merged-away-example']);
+    assert.equal(doubled.emails.length, original.emails.length * 2); assert.equal(doubled.recordings.length, original.recordings.length * 2);
     assert.equal(doubled.email_attachments.length, original.email_attachments.length * 2); assert.equal(doubled.recording_tag_links.length, original.recording_tag_links.length * 2);
     for (const email of doubled.emails) assert.ok(doubled.email_attachments.some((row: FixtureValue) => row.email_id === email.id));
     for (const recording of doubled.recordings) {

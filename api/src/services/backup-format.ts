@@ -5,9 +5,10 @@ import { readV1 } from './backup-formats/v1';
 import { readV2 } from './backup-formats/v2';
 import { readV3 } from './backup-formats/v3';
 import { readV4 } from './backup-formats/v4';
+import { readV5 } from './backup-formats/v5';
 import { RETIRED_TABLES, RETIRED_FILE_KINDS } from './backup-catalog';
 
-const BACKUP_VERSION = 4;
+const BACKUP_VERSION = 5;
 const ZIP_BACKUP_FORMAT = 'unihub-restorable-backup';
 const ZIP_BACKUP_FORMAT_VERSION = 1;
 const BACKUP_METADATA_LIMITS = Object.freeze({
@@ -15,7 +16,14 @@ const BACKUP_METADATA_LIMITS = Object.freeze({
   'checksums.json': 64 * 1024 * 1024,
   'data/backup.json': 512 * 1024 * 1024,
 });
-const READERS = new Map<number, (backup: ArchiveEnvelope) => ArchiveEnvelope>([[1, readV1], [2, readV2], [3, readV3], [4, readV4]]);
+const READERS = new Map<number, (backup: ArchiveEnvelope) => ArchiveEnvelope>([[1, readV1], [2, readV2], [3, readV3], [4, readV4], [5, readV5]]);
+// The first upgrade step whose fields a data schema carries: an archive older
+// than the schema may not carry them (validation refuses them as unknown).
+const ARCHIVE_FIRST_STEPS: Readonly<Record<number, number>> = Object.freeze({ 5: 22 });
+
+function archiveCarriesStep(version: number, step: number) {
+  return Object.entries(ARCHIVE_FIRST_STEPS).every(([schema, first]) => step < first || version >= Number(schema));
+}
 
 function getBackupProducer() {
   return { name: 'UniHub', version: appVersion };
@@ -32,7 +40,8 @@ function validateBackupVersionFields(backup: Partial<ArchiveEnvelope> | null | u
   const errors: string[] = [];
   const warnings: string[] = [];
   if (!READERS.has(backup?.version as number)) {
-    errors.push(`Unsupported backup data version: ${String(backup?.version)}. This UniHub version reads versions 1, 2, 3 and 4; a newer backup may need a newer UniHub release.`);
+    const known = Array.from(READERS.keys());
+    errors.push(`Unsupported backup data version: ${String(backup?.version)}. This UniHub version reads versions ${known.slice(0, -1).join(', ')} and ${known.at(-1)}; a newer backup may need a newer UniHub release.`);
   }
   // Inline legacy JSON has no ZIP-format fields. If either field is supplied,
   // require the complete known pair; never guess how an unknown archive works.
@@ -84,6 +93,7 @@ function normalizeBackupPayload(backup: ArchiveEnvelope): ArchiveEnvelope {
   let result = READERS.get(backup.version)!(normalized);
   if (backup.version < 3) result = readV3(result, { legacyDefaults: true });
   if (backup.version < 4) result = readV4(result);
+  if (backup.version < 5) result = readV5(result);
   result.source_backup_version = backup.version;
   result.version = BACKUP_VERSION;
   // The original checksum was verified before migration. It describes the
@@ -97,6 +107,7 @@ export {
   ZIP_BACKUP_FORMAT,
   ZIP_BACKUP_FORMAT_VERSION,
   BACKUP_METADATA_LIMITS,
+  archiveCarriesStep,
   getBackupProducer,
   validateBackupVersionFields,
   validateArchiveVersionFields,

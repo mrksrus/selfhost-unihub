@@ -169,6 +169,8 @@ function getBackupArchivePath(file: { id?: unknown; filename?: unknown; kind?: u
   if (file.kind === 'raw_email') return `files/mail-raw/${safeId}-${safeName}`;
   if (file.kind === 'email_attachment') return `files/mail-attachments/${safeId}-${safeName}`;
   if (file.kind === 'recording') return `files/recordings/${safeId}-${safeName}`;
+  // Named by its SHA-256, which is also the entry's id.
+  if (file.kind === 'contact_photo') return `files/contact-photos/${safeId}.jpg`;
   return `files/other/${safeId}-${safeName}`;
 }
 

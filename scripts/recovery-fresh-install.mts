@@ -21,6 +21,7 @@ import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
+import zlib from 'node:zlib';
 import { createPeerCertificates, freePort, installationFactory, PEER_HOST, repo, Session, type Installation } from './fresh-installations.mts';
 
 const factory = installationFactory();
@@ -69,6 +70,20 @@ function wav(seconds: number, frequency: number) {
   return bytes;
 }
 
+// A small RGB PNG for the contact photo upload; the server converts it.
+function png(width: number, height: number, [r, g, b]: number[]) {
+  const chunk = (type: string, data: Buffer) => {
+    const head = Buffer.alloc(4); head.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(zlib.crc32(body));
+    return Buffer.concat([head, body, crc]);
+  };
+  const header = Buffer.alloc(13); header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = 2;
+  const rows = Buffer.concat(Array.from({ length: height }, (_, y) => Buffer.concat([Buffer.from([0]),
+    ...Array.from({ length: width }, (_, x) => Buffer.from([(r + x * 3) & 255, (g + y * 3) & 255, b]))])));
+  return Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), chunk('IHDR', header), chunk('IDAT', zlib.deflateSync(rows)), chunk('IEND', Buffer.alloc(0))]);
+}
+
 /** What a user sees through the API, with installation-specific IDs replaced by what they name. */
 async function publicView(session: Session) {
   const me = (await session.json<{ user: Row }>('GET', '/api/auth/me')).user;
@@ -95,6 +110,15 @@ async function publicView(session: Session) {
   const events = (await session.json<{ events: Row[] }>('GET', '/api/calendar/events?include_todos=true&include_done=true&range_start=2000-01-01T00:00:00Z&range_end=2100-01-01T00:00:00Z')).events;
   const calendars = (await session.json<{ calendars: Row[] }>('GET', '/api/calendar/calendars')).calendars;
   const recordings = (await session.json<{ recordings: Row[] }>('GET', '/api/recordings')).recordings;
+  // Every contact in full (0.26): names, labelled values, dates, kept
+  // properties, uid and the photo with its bytes. Installation ids are dropped.
+  const withoutIds = (value: unknown): unknown => JSON.parse(JSON.stringify(value, (key, item) => ['id', 'version', 'created_at', 'updated_at'].includes(key) ? undefined : item));
+  const contactDetails: unknown[] = [];
+  for (const listed of (await session.json<{ contacts: Row[] }>('GET', '/api/contacts')).contacts) {
+    const { contact } = await session.json<{ contact: Row & { photo: Row | null } }>('GET', `/api/contacts/${listed.id}`);
+    const photo = contact.photo ? { full: sha256(await session.bytes(`/api/contacts/${listed.id}/photo?size=full`)), thumb: sha256(await session.bytes(`/api/contacts/${listed.id}/photo?size=thumb`)) } : null;
+    contactDetails.push({ ...withoutIds(contact) as Row, photo_bytes: photo });
+  }
   const recordingBytes: { title: unknown; sha256: string }[] = [];
   for (const recording of recordings) recordingBytes.push({ title: recording.title, sha256: sha256(await session.bytes(`/api/recordings/${recording.id}/file?download=1`)) });
   const preferences = (await session.json<{ preferences: Row }>('GET', '/api/settings/preferences')).preferences;
@@ -107,8 +131,7 @@ async function publicView(session: Session) {
     profile: { full_name: me.full_name, timezone: me.timezone },
     preferences: { ...preferences, default_mail_account_id: accountEmail(preferences.default_mail_account_id || null) },
     modules: (await session.json<{ modules: Row[] }>('GET', '/api/modules')).modules.map(module => ({ id: module.id, visible: module.visible, enabled: module.enabled })),
-    contacts: sort((await session.json<{ contacts: Row[] }>('GET', '/api/contacts')).contacts.map(contact => ({ first_name: contact.first_name, last_name: contact.last_name,
-      email: contact.email, email2: contact.email2, phone: contact.phone, company: contact.company, notes: contact.notes, favorite: Boolean(contact.is_favorite) }))),
+    contacts: sort(contactDetails),
     mailAccounts: sort(accounts.map(account => ({ email_address: account.email_address, display_name: account.display_name, provider: account.provider, username: account.username,
       imap: `${account.imap_host}:${account.imap_port}`, sync_mode: account.sync_mode, has_saved_password: account.has_saved_password,
       signature_html: account.signature_html, signature_text: account.signature_text }))),
@@ -233,6 +256,13 @@ try {
     const { contact: created } = await owner.json<{ contact: Row }>('POST', '/api/contacts', contact);
     if (contact.first_name === 'Zoë') await owner.json('PUT', `/api/contacts/${created.id}/favorite`, { is_favorite: true });
   }
+  // A contact in the vCard model (0.26), with a photo the server converts.
+  const { contact: mia } = await owner.json<{ contact: Row }>('POST', '/api/contacts', { name: { given: 'Mia', family: 'Ørsted', prefix: 'Dr.' },
+    organization: { name: 'Example GmbH', department: 'Forschung' }, birthday: '--02-29', notes: 'Grüße',
+    emails: [{ value: 'mia@example.test', label: 'work', preferred: true }, { value: 'mia.home@example.test', label: 'custom', custom_label: 'Lake house' }, 'three@example.test', 'four@example.test'],
+    phones: [{ value: '+43 660 1234567', label: 'mobile' }], addresses: [{ street: 'Hauptplatz 2', postal_code: '8010', locality: 'Graz', country: 'Austria', label: 'work' }],
+    urls: ['https://example.test/mia'], nicknames: ['Mimi'], categories: ['Friends'] });
+  await owner.json('PUT', `/api/contacts/${mia.id}/photo`, png(40, 30, [200, 40, 90]), { raw: true, headers: { 'Content-Type': 'image/png' } });
   const audio = wav(0.5, 440);
   const started = await owner.json<{ upload: { id: string } }>('POST', '/api/recordings/uploads/start', { title: 'Uploaded tone', original_filename: 'tone-upload.wav',
     content_type: 'audio/wav', total_bytes: audio.length, duration_seconds: 0.5, source: 'imported' });

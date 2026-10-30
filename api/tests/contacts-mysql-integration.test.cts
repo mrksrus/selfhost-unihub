@@ -398,7 +398,7 @@ test('3+3 bridge: partial slots, the per-kind limit with lossless restore, and t
   const { importBackupForUser } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
   const archive = (count: number) => {
     const id = crypto.randomUUID();
-    return { app: 'unihub', version: 4, files: [], data: { contacts: [{ id, first_name: `Restored ${count}` }],
+    return { app: 'unihub', version: 5, files: [], data: { contacts: [{ id, first_name: `Restored ${count}` }],
       contact_values: Array.from({ length: count }, (_, index) => ({ id: crypto.randomUUID(), contact_id: id, kind: 'phone', position: index === 1 ? count - 1 : index === count - 1 ? 1 : index,
         value: index === 1 ? longPhone : `+44 20 ${index}`, label: '' })) } };
   };
@@ -501,7 +501,7 @@ test('3+3 bridge: stored places for old apps keep hidden values, labels and repl
   const { importBackupForUser } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
   const archived = (given: string, values: FixtureValue[]) => {
     const id = crypto.randomUUID();
-    return { app: 'unihub', version: 4, files: [], data: { contacts: [{ id, first_name: given }],
+    return { app: 'unihub', version: 5, files: [], data: { contacts: [{ id, first_name: given }],
       contact_values: values.map((value, position) => ({ id: crypto.randomUUID(), contact_id: id, kind: 'phone', position, label: '', ...value })) } };
   };
   await importBackupForUser(userId, archived('Placed', [{ value: '+44 20 1', legacy_slot: null }, { value: '+44 20 2', legacy_slot: 3 }, { value: '+44 20 3', legacy_slot: 2 }]) as FixtureValue,

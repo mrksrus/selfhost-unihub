@@ -5,10 +5,11 @@ import { db } from '../state';
 import { modulesFromValue } from './module-settings';
 import { validateRestoreRows } from './backup-ownership';
 import { AUDIO_HEADER_BYTES, identifyRecordingAudio } from './recording-audio';
-import { validateBackupVersionFields } from './backup-format';
+import { archiveCarriesStep, validateBackupVersionFields } from './backup-format';
 import { countContactConflicts } from './backup-contacts';
 import {
   ACCOUNT_ONLY_TABLES,
+  CONTENT_FILE_POLICIES,
   RETIRED_ARCHIVE_FIELDS,
   RETIRED_FILE_KINDS,
   RETIRED_TABLES,
@@ -58,6 +59,17 @@ function retiredField(table: string, column: string, version: number) {
   return !!retired && version <= retired.throughVersion && retired.columns.includes(column);
 }
 
+// Whether an archive of this data schema can carry the field: a field of a
+// later upgrade step than the schema knows did not come from UniHub.
+function carriedField(table: string, column: string, version: number) {
+  return archiveCarriesStep(version, TABLE_POLICIES[table].introducedIn[column] ?? 1);
+}
+
+// Contact photos are JPEG files the server wrote; anything larger did not come from it.
+const CONTACT_PHOTO_MAX_BYTES = 2 * 1024 * 1024;
+const SHA256_NAME = /^[0-9a-f]{64}$/;
+const isJpeg = (header: Buffer) => header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
+
 function validateBackupPayload(backup: ArchiveEnvelope | null | undefined, {
   fileBuffersByPath = null,
   skipFileHashValidation = false,
@@ -80,10 +92,12 @@ function validateBackupPayload(backup: ArchiveEnvelope | null | undefined, {
       continue;
     }
     if (!policy) { errors.push(`Unsupported backup table: ${table}`); continue; }
+    // A table every field of which is newer than the archive's schema.
+    if (!policy.columns.some(column => carriedField(table, column, backup.version))) { errors.push(`Unsupported backup table: ${table}`); continue; }
     if (backup.version >= 3) {
       for (const row of table === 'user' ? [rows] : Array.isArray(rows) ? rows : []) {
         for (const column of Object.keys(row || {})) {
-          if (!policy.columns.includes(column) && !retiredField(table, column, backup.version)) errors.push(`Unsupported backup field: ${table}.${column}`);
+          if (!(policy.columns.includes(column) && carriedField(table, column, backup.version)) && !retiredField(table, column, backup.version)) errors.push(`Unsupported backup field: ${table}.${column}`);
         }
       }
     }
@@ -91,6 +105,12 @@ function validateBackupPayload(backup: ArchiveEnvelope | null | undefined, {
   for (const file of Array.isArray(backup.files) ? backup.files : []) {
     if (RETIRED_FILE_KINDS.includes((file?.kind as string))) continue;
     if (!Object.values(SECTION_POLICIES).some(policy => policy.fileKinds.includes((file?.kind as string)))) errors.push(`Unsupported backup file kind: ${file?.kind}`);
+    // Content-addressed: the id is the SHA-256 of the bytes (checked below).
+    else if (Object.hasOwn(CONTENT_FILE_POLICIES, file?.kind as string)) {
+      if (backup.version < 5) errors.push(`Unsupported backup file kind: ${file?.kind}`);
+      else if (!SHA256_NAME.test(String(file?.id)) || (!file?.missing && file?.sha256 !== file?.id)) errors.push(`Backup file ${file?.kind}:${file?.id} does not match its name`);
+      else if (Number(file?.size_bytes) > CONTACT_PHOTO_MAX_BYTES) errors.push(`Backup file ${file?.kind}:${file?.id} is larger than a contact photo`);
+    }
   }
   errors.push(...validateRestoreRows(backup.data));
   errors.push(...validateAccountOnlySections(backup));
@@ -123,6 +143,7 @@ function validateBackupPayload(backup: ArchiveEnvelope | null | undefined, {
       if (file.kind === 'recording' && !identifyRecordingAudio(buffer.subarray(0, AUDIO_HEADER_BYTES))) {
         errors.push(`Recording ${file.id} is not supported audio`);
       }
+      if (file.kind === 'contact_photo' && (!isJpeg(buffer) || buffer.length > CONTACT_PHOTO_MAX_BYTES)) errors.push(`Contact photo ${file.id} is not a stored contact photo`);
       const actualHash = sha256Buffer(buffer);
       if (actualHash !== file.sha256) {
         errors.push(`Checksum mismatch for file ${file.kind}:${file.id}`);
@@ -143,6 +164,7 @@ function validateBackupPayload(backup: ArchiveEnvelope | null | undefined, {
       ...rows('email_attachments').map(row => `email_attachment:${row.id}`),
       ...rows('recordings').map(row => `recording:${row.id}`),
       ...rows('emails').filter(row => row.raw_storage_path || row.import_complete === true || row.import_complete === 1).map(row => `raw_email:${row.id}`),
+      ...Object.entries(CONTENT_FILE_POLICIES).flatMap(([kind, policy]) => rows(policy.table).flatMap(row => policy.columns.map(column => `${kind}:${row[column]}`))),
     ];
     for (const key of required) if (!files.has(key)) errors.push(`Schema 3 backup has no referenced file: ${key}`);
   }
@@ -155,6 +177,16 @@ function validateBackupPayload(backup: ArchiveEnvelope | null | undefined, {
   }
 
   return { valid: errors.length === 0, errors, warnings };
+}
+
+async function readHeader(source: BackupFileSource, length: number) {
+  if (Buffer.isBuffer(source)) return source.subarray(0, length);
+  const handle = await fs.promises.open(source.filePath, 'r');
+  try {
+    const header = Buffer.alloc(Math.min(source.size, length));
+    const { bytesRead } = await handle.read(header, 0, header.length, source.start);
+    return header.subarray(0, bytesRead);
+  } finally { await handle.close(); }
 }
 
 async function validateBackupPayloadFromFileSources(backup: ArchiveEnvelope, fileSourcesByPath: ReadonlyMap<string, BackupFileSource> | null | undefined) {
@@ -171,6 +203,10 @@ async function validateBackupPayloadFromFileSources(backup: ArchiveEnvelope, fil
     const actualHash = await sha256FileSource(source);
     if (actualHash !== file.sha256) {
       validation.errors.push(`Checksum mismatch for file ${file.kind}:${file.id}`);
+    }
+    if (file.kind === 'contact_photo') {
+      const header = await readHeader(source, 3);
+      if (!isJpeg(header) || (Buffer.isBuffer(source) ? source.length : source.size) > CONTACT_PHOTO_MAX_BYTES) validation.errors.push(`Contact photo ${file.id} is not a stored contact photo`);
     }
     if (file.kind === 'recording') {
       let header;
