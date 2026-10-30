@@ -16,6 +16,7 @@ import { pauseMailRestore, restoreMailEngineEvidence } from './backup-mail-engin
 import { isModuleEnabled } from './module-settings';
 import { SETTINGS, referenceKeys, restorableValue } from './settings';
 import { normalizeSignature } from './mail-signature';
+import { itemKey } from './task-order';
 import {
   isFileRangeSource,
   normalizeMysqlDateTime,
@@ -516,6 +517,29 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
           ['id', 'user_id', 'event_id', 'calendar_id', 'account_id', 'provider', 'external_event_id', 'external_etag', 'external_updated_at', 'last_synced_at'],
           [targetRefId, row.user_id, targetEventId, targetCalendarId, targetAccountId, row.provider, row.external_event_id, row.external_etag || null, normalizeMysqlDateTime(row.external_updated_at), normalizeMysqlDateTime(row.last_synced_at)],
           ['event_id', 'calendar_id', 'provider', 'external_etag', 'external_updated_at', 'last_synced_at']
+        );
+      }
+
+      // The hand order (0.27): a local task's row follows its restored event,
+      // a synced one its calendar; the key is computed again from them. A
+      // synced task's order matches its UID once the next sync links it.
+      for (const order of data.task_order || []) {
+        await checkRestoreCancelled();
+        const row = overwriteUserId(order, userId);
+        const synced = typeof row.remote_uid === 'string' && row.remote_uid !== '';
+        const target = synced
+          ? { calendar_id: await resolveOwnedReference(connection, userId, 'calendar_calendars', row.calendar_id, calendarIdMap), event_id: null, remote_uid: row.remote_uid, recurrence_id: String(row.recurrence_id ?? '') }
+          : { calendar_id: null, event_id: await resolveOwnedReference(connection, userId, 'calendar_events', row.event_id, calendarEventIdMap), remote_uid: null, recurrence_id: '' };
+        const key = itemKey(target);
+        if (conflictMode !== 'replace') {
+          // An existing order wins; a copy kept beside it has its own key.
+          const [existingOrder] = await connection.execute<RowDataPacket[]>('SELECT item_key FROM task_order WHERE user_id = ? AND item_key = ?', [userId, key]);
+          if (existingOrder.length) continue;
+        }
+        await writeOwnedRow(connection, userId, 'task_order',
+          ['user_id', 'item_key', 'calendar_id', 'event_id', 'remote_uid', 'recurrence_id', 'sort_rank'],
+          [userId, key, target.calendar_id, target.event_id, target.remote_uid, target.recurrence_id, Number(row.sort_rank)],
+          ['calendar_id', 'event_id', 'remote_uid', 'recurrence_id', 'sort_rank']
         );
       }
 

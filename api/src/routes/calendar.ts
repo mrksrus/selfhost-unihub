@@ -77,7 +77,11 @@ const {
   getCalendarSubtaskIdFromReq,
   serializeCalendarSubtask,
   MAIL_CONNECTED_SQL,
+  resolveCalendarDefaults,
+  calendarWriteBlock,
+  takesUndatedTasks,
 } = require('../services/calendar') as typeof import('../services/calendar');
+const taskOrder = require('../services/task-order') as typeof import('../services/task-order');
 const calendarSync = require('../services/calendar-sync') as typeof import('../services/calendar-sync');
 const calendarAccounts = require('../services/calendar-accounts') as typeof import('../services/calendar-accounts');
 
@@ -334,12 +338,23 @@ export = {
          ORDER BY a.created_at ASC, c.created_at ASC`,
         [userId, userId]
       );
-      const calendars = rows.map((row) => ({
-        ...serializeCalendarCalendar(row),
-        account_provider: row.provider,
-        account_display_name: row.account_display_name || null,
-        account_email: row.account_email || null,
-      }));
+      // Where new items go and what each calendar can take, from the
+      // server's rules (contracts/tasks.ts CalendarChoiceFields).
+      const defaults = await resolveCalendarDefaults(userId);
+      const choices = new Map(defaults.choices.map(choice => [choice.id, choice]));
+      const calendars = rows.map((row) => {
+        const choice = choices.get(row.id);
+        return {
+          ...serializeCalendarCalendar(row),
+          account_provider: row.provider,
+          account_display_name: row.account_display_name || null,
+          account_email: row.account_email || null,
+          default_for_tasks: row.id === defaults.taskListId,
+          default_for_events: row.id === defaults.calendarId,
+          write_block: choice ? calendarWriteBlock(choice) : 'read_only',
+          takes_undated_tasks: choice ? takesUndatedTasks(choice) : false,
+        };
+      });
       return { calendars };
     } catch (error) {
       console.error('Get calendars error:', error);
@@ -550,11 +565,11 @@ export = {
       const eventIds = rows.map((row) => row.id);
       const subtasksByEventId = await getCalendarSubtasksForEvents(userId, eventIds);
       const attendeesByEventId = await getCalendarAttendeesForEvents(userId, eventIds);
-      const events = rows.map((row) => serializeCalendarEvent(
+      const events = await taskOrder.attachRanks(userId, rows.map((row) => serializeCalendarEvent(
         row,
         subtasksByEventId.get(row.id) || [],
         attendeesByEventId.get(row.id) || []
-      ));
+      )));
       return { events };
     } catch (error) {
       console.error('Get events error:', error);
@@ -598,8 +613,9 @@ export = {
         else if (remoteTarget.provider === 'ics' || remoteTarget.read_only) return { error: 'This calendar is read-only.', status: 403, code: 'CALENDAR_READ_ONLY' };
         else if (!remoteTarget.is_active) return { error: 'Sync is paused for this calendar account, so events cannot be added to it.', status: 409, code: 'CALENDAR_SYNC_PAUSED' };
       } else {
-        const ensured = await ensureDefaultLocalCalendarForUser(userId);
-        calendarId = ensured.calendarId;
+        // Without a calendar (older apps, the new task dialog before 0.27):
+        // the person's default task list, which takes tasks without a date.
+        calendarId = (await resolveCalendarDefaults(userId)).taskListId;
       }
 
       const eventId = crypto.randomUUID();
@@ -778,6 +794,13 @@ export = {
         }
       }
 
+      // A date or time changed here returns the task to its date's place
+      // (D31); one arriving from the server keeps its hand rank. The identity
+      // is read first: a synced series' time change replaces the rows.
+      const dateChanged = (startProvided && resolvedStart !== toMysqlDatetime(currentEvent.start_time))
+        || (has(body, 'is_todo_only') && !!body.is_todo_only !== !!currentEvent.is_todo_only);
+      const orderIdentity = dateChanged ? await taskOrder.identityOf(db, userId, id) : null;
+
       const writeback = await pushEventChanges(userId, currentEvent, body, {
         title: body.title?.trim(),
         description: body.description || null,
@@ -792,7 +815,11 @@ export = {
 
       // Changing the time of a whole series replaces its occurrences, and
       // with them the edited id: then there is no local row left to update.
-      const updatedEvent = await applyLocalEventUpdate(userId, id, { sets: updates, params }, body.attendees);
+      let updatedEvent = await applyLocalEventUpdate(userId, id, { sets: updates, params }, body.attendees);
+      if (dateChanged) {
+        await taskOrder.clearRank(db, userId, id, orderIdentity);
+        if (updatedEvent) updatedEvent = await getCalendarEventWithSubtasks(userId, id);
+      }
       return { event: updatedEvent, ...(updatedEvent ? {} : { replaced: true }), ...(writeback.scope ? { scope: writeback.scope } : {}) };
     } catch (error) {
       console.error('Update event error:', error);
@@ -858,9 +885,12 @@ export = {
 
         if (movedStart && movedEnd) {
           const [[current]] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
+          const orderIdentity = await taskOrder.identityOf(db, userId, id);
           const writeback = await pushEventChanges(userId, current, { start_time: movedStart, end_time: movedEnd },
             { start_time: movedStart, end_time: movedEnd });
           if (writeback.error) return writeback;
+          // "Move to another time" returns the task to its new date's place (D31).
+          if (movedStart !== toMysqlDatetime(current.start_time)) await taskOrder.clearRank(db, userId, id, orderIdentity);
           updates.push('start_time = ?', 'end_time = ?');
           params.push(movedStart, movedEnd);
         }

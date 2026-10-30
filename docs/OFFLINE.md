@@ -2,7 +2,7 @@
 
 ## Save this device for offline use
 
-Open **Settings → General → Offline reading → Enable offline reading** while signed in and connected. Wait for the saved timestamp and counts before relying on the snapshot. This stores the latest **100 non-draft emails across all accounts**, including full text/HTML bodies, plus **all contacts and calendar entries** (including to-dos, attendees and subtasks).
+Open **Settings → General → Offline reading → Enable offline reading** while signed in and connected. Wait for the saved timestamp and counts before relying on the snapshot. This stores the latest **100 non-draft emails across all accounts**, including full text/HTML bodies, plus **all contacts and calendar entries** (including to-dos, attendees and subtasks, and each task's place in your order).
 
 Contacts are saved with every email, number, address and other value, so offline search finds a contact by any of them (numbers also by their digits). Contact photos are not saved: offline, contacts show their initials. Photos stay outside the 32 MiB budget on purpose, so a large address book with photos still fits.
 

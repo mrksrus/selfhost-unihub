@@ -169,7 +169,7 @@ test('the schema 5 reader turns fixed contact fields into values as upgrade 22 d
 
 test('task order arrives with schema 6: an older schema may not carry it, and an older archive restores in date order', () => {
   const row = { user_id: 'u', item_key: 'a'.repeat(64), calendar_id: null, event_id: 'e1', remote_uid: null, recurrence_id: '', sort_rank: 5, updated_at: '2026-10-30 10:00:00' };
-  const archive = (version: number) => ({ app: 'unihub', version, files: [], data: { task_order: [row] } }) as FixtureValue;
+  const archive = (version: number) => ({ app: 'unihub', version, files: [], data: { calendar_events: [{ id: 'e1' }], task_order: [row] } }) as FixtureValue;
   assert.deepEqual(validateBackupPayload(archive(6)).errors, []);
   assert.deepEqual(validateBackupPayload(archive(5)).errors, ['Unsupported backup table: task_order']);
   // A schema 5 archive is read unchanged: no order, so every task keeps its date's place.

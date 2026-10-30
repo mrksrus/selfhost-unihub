@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { db } from '../state';
 import { getCalendarEventIdFromPath, getCalendarSubtaskIdFromPath } from '../../calendar-route-utils';
 import { sourceEmailPresentSql, presentSourceEmail } from './email-tasks';
+import { attachRanks } from './task-order';
 
 const CALENDAR_PROVIDER_DEFAULT_CAPABILITIES = {
   local: {
@@ -291,11 +292,12 @@ async function getCalendarEventWithSubtasks(userId: string, eventId: string) {
     'SELECT * FROM calendar_event_attendees WHERE event_id = ? AND user_id = ? ORDER BY created_at ASC',
     [eventId, userId]
   );
-  return serializeCalendarEvent(
+  const [ranked] = await attachRanks(userId, [serializeCalendarEvent(
     events[0],
     subtasks.map(serializeCalendarSubtask),
     attendees.map(serializeCalendarAttendee)
-  );
+  )]);
+  return ranked;
 }
 
 function normalizeResponseStatus(value: unknown) {

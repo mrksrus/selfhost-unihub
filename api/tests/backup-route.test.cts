@@ -114,7 +114,7 @@ test('backup capabilities expose the shared recoverable sections without authori
   assert.equal((await handler({} as FixtureValue, null)).status, 401);
   const capabilities = await handler({} as FixtureValue, 'owner');
   assert.equal(capabilities.enabled, true);
-  assert.equal(capabilities.version, 5);
+  assert.equal(capabilities.version, 6);
   assert.deepEqual(capabilities.sections.map((section) => section.id), Object.keys((require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog')).SECTION_POLICIES));
   assert.ok(capabilities.exclusions.some((value) => /Other users/.test(value)));
 });
