@@ -39,7 +39,8 @@ const DESTRUCTIVE_POLICIES = [
   'accounts.mail.remove',
   // Deleting UniHub's copy of an account's mail; the provider keeps its mail.
   'accounts.mail.purge',
-  // Deleting contacts for good. 0.28 resolves it: a delete becomes a bin move.
+  // Deleting contacts, or a contact's photo, for good. 0.28 resolves it: a
+  // delete becomes a bin move.
   'contacts.delete',
 ] as const;
 type DestructivePolicy = typeof DESTRUCTIVE_POLICIES[number];

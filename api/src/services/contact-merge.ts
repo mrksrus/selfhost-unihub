@@ -21,8 +21,10 @@ import { badRequest, conflict, notFound } from '../http/errors';
 import { withTransaction } from './transactions';
 import { displayName, loadContacts, newUid, replaceContact, uidHash, KEPT_PROPERTIES_MAX, KEPT_PROPERTIES_MAX_BYTES, VALUES_PER_KIND } from './contacts';
 import { contactIdList, findDuplicates, singleFieldConflicts, singleFieldValue } from './contact-duplicates';
+import { valueIdentity as sameValueIdentity } from './contact-keys';
 import { getActiveRestoreSectionsByUser } from './restore-locks';
 import { isModuleEnabled } from './module-settings';
+import { withContactPhotoLock } from './contact-photos';
 
 const UNDO_DAYS = 30;
 const MERGE_MAX = 50;
@@ -143,8 +145,9 @@ const filled = (value: string | null | undefined) => typeof value === 'string' &
 
 // A value seen twice (same kind and normalised key) is kept once, in the
 // first member's place; an empty label takes the other's label.
-function valueIdentity(row: Pick<ValueRow, 'kind' | 'value' | 'value_key'>) {
-  return `${row.kind}\u0000${row.value_key || `raw:${row.value.trim().toLowerCase()}`}`;
+// The stored value_key is cut for its index; the whole normalised value decides.
+function valueIdentity(row: Pick<ValueRow, 'kind' | 'value'>) {
+  return sameValueIdentity(row.kind, row.value);
 }
 
 type GroupNames = Map<ContactSnapshot, Map<string, string>>;
@@ -650,8 +653,11 @@ async function undoLocked(cx: SqlExecutor, userId: string, mergeId: string): Pro
   };
 }
 
+// The undo puts photo references back (contact_photos rows from the bin and
+// the survivor's snapshot); under the user's photo lock no orphan sweep or
+// file release can judge those files between its reads and its commit.
 async function undoMerge(userId: string, mergeId: string): Promise<UndoMergeResult> {
-  return withTransaction(cx => undoLocked(cx, userId, mergeId));
+  return withContactPhotoLock(userId, () => withTransaction(cx => undoLocked(cx, userId, mergeId)));
 }
 
 // ── Purge (worker owner) ───────────────────────────────────────────────
@@ -680,22 +686,26 @@ async function purgeExpiredMerges({ now = new Date(), executor = db, moduleEnabl
   for (const { user_id: userId } of due) {
     if (!active()) break;
     if (restoring.get(userId)?.has('contacts') || !await moduleEnabled(userId)) continue;
-    for (;;) {
-      const [expired] = await executor.execute<(RowDataPacket & { id: string })[]>(
-        `SELECT id FROM contact_merges WHERE user_id = ? AND purge_after <= ? ORDER BY purge_after, id LIMIT ${PURGE_BATCH}`, [userId, now]);
-      if (!expired.length) break;
-      const ids = expired.map(row => row.id);
-      await executor.execute(`UPDATE contact_uid_aliases SET merge_id = NULL WHERE user_id = ? AND merge_id IN (${placeholders(ids)})`, [userId, ...ids]);
-      const [removed] = await executor.execute<ResultSetHeader>(`DELETE FROM contact_merges WHERE user_id = ? AND id IN (${placeholders(ids)})`, [userId, ...ids]);
-      merges += removed.affectedRows || 0;
-      if (expired.length < PURGE_BATCH) break;
-    }
-    for (;;) {
-      const [removed] = await executor.execute<ResultSetHeader>(`DELETE FROM bin_items WHERE user_id = ? AND module = 'contacts' AND purge_after IS NOT NULL AND purge_after <= ?
-        ORDER BY purge_after, id LIMIT ${PURGE_BATCH}`, [userId, now]);
-      items += removed.affectedRows || 0;
-      if ((removed.affectedRows || 0) < PURGE_BATCH) break;
-    }
+    // Purging drops photo references (bin file_refs); like an undo it runs
+    // under the user's photo lock, never between a cleanup's reads.
+    await withContactPhotoLock(userId, async () => {
+      for (;;) {
+        const [expired] = await executor.execute<(RowDataPacket & { id: string })[]>(
+          `SELECT id FROM contact_merges WHERE user_id = ? AND purge_after <= ? ORDER BY purge_after, id LIMIT ${PURGE_BATCH}`, [userId, now]);
+        if (!expired.length) break;
+        const ids = expired.map(row => row.id);
+        await executor.execute(`UPDATE contact_uid_aliases SET merge_id = NULL WHERE user_id = ? AND merge_id IN (${placeholders(ids)})`, [userId, ...ids]);
+        const [removed] = await executor.execute<ResultSetHeader>(`DELETE FROM contact_merges WHERE user_id = ? AND id IN (${placeholders(ids)})`, [userId, ...ids]);
+        merges += removed.affectedRows || 0;
+        if (expired.length < PURGE_BATCH) break;
+      }
+      for (;;) {
+        const [removed] = await executor.execute<ResultSetHeader>(`DELETE FROM bin_items WHERE user_id = ? AND module = 'contacts' AND purge_after IS NOT NULL AND purge_after <= ?
+          ORDER BY purge_after, id LIMIT ${PURGE_BATCH}`, [userId, now]);
+        items += removed.affectedRows || 0;
+        if ((removed.affectedRows || 0) < PURGE_BATCH) break;
+      }
+    });
   }
   return { items, merges };
 }

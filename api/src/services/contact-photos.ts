@@ -357,18 +357,20 @@ async function writeRestoredPhotoFile(userId: string, sha: string, write: (tempo
 
 // Whether any row of the user still names the file: a contact photo, a bin
 // item (merged-away contacts keep their photo until purged) or a merge's
-// snapshot of its survivor (what an undo puts back). file_refs and the
-// snapshot are matched as text so their JSON shape may grow.
+// snapshot of its survivor (what an undo puts back). One statement, so the
+// three are read from one consistent view: a change that moves a reference
+// from one table to another (a merge, an undo) is seen before or after, never
+// half. file_refs and the snapshot are matched as text so their JSON shape
+// may grow. The callers also hold the user's photo lock, which merge undo and
+// the bin purge take too.
 async function isReferenced(executor: SqlExecutor, userId: string, sha: string) {
-  const [[photo]] = await executor.execute<RowDataPacket[]>(
-    'SELECT 1 FROM contact_photos WHERE user_id = ? AND (sha256 = ? OR thumb_sha256 = ?) LIMIT 1', [userId, sha, sha]);
-  if (photo) return true;
-  const [[binned]] = await executor.execute<RowDataPacket[]>(
-    'SELECT 1 FROM bin_items WHERE user_id = ? AND file_refs IS NOT NULL AND CAST(file_refs AS CHAR) LIKE ? LIMIT 1', [userId, `%${sha}%`]);
-  if (binned) return true;
-  const [[merged]] = await executor.execute<RowDataPacket[]>(
-    'SELECT 1 FROM contact_merges WHERE user_id = ? AND undone_at IS NULL AND survivor_before LIKE ? LIMIT 1', [userId, `%${sha}%`]);
-  return !!merged;
+  const pattern = `%${sha}%`;
+  const [[row]] = await executor.execute<(RowDataPacket & { referenced: number })[]>(`SELECT
+      EXISTS (SELECT 1 FROM contact_photos WHERE user_id = ? AND (sha256 = ? OR thumb_sha256 = ?))
+      OR EXISTS (SELECT 1 FROM bin_items WHERE user_id = ? AND file_refs IS NOT NULL AND CAST(file_refs AS CHAR) LIKE ?)
+      OR EXISTS (SELECT 1 FROM contact_merges WHERE user_id = ? AND undone_at IS NULL AND survivor_before LIKE ?) AS referenced`,
+  [userId, sha, sha, userId, pattern, userId, pattern]);
+  return !!Number(row?.referenced);
 }
 
 /**

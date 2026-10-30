@@ -424,3 +424,152 @@ test('contacts import, photos and merges: inline photos stored and exported, imp
   assert.equal(await count(), before + 1);
   assert.equal((await owner.call('GET', `/api/contacts/${full.id}`)).contact.emails.length, 100, 'the full contact is unchanged');
 });
+
+// Review of 0.26.0's backend (Sol): long values are compared whole, photo
+// cleanup never races an undo or a purge, an identical re-import is proven
+// by content and photo bytes, a CSV cell is never cut silently, a commit
+// rechecks its gates after converting and waiting, and a few hundred copies
+// of one person are grouped well within a second.
+test('contacts review probes: long values, undo and purge under the photo lock, identity by content, CSV cuts, gates after waiting, dense duplicates', {
+  skip: !process.env.MYSQL_TEST_HOST, timeout: 300000,
+}, async t => {
+  const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
+  t.after(captureLog(() => {}));
+  const sharp = require('sharp') as typeof import('sharp').default;
+  const scratch = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'unihub-contact-review-'));
+  const previous = { imports: process.env.CONTACT_IMPORTS_ROOT, photos: process.env.CONTACT_PHOTOS_ROOT, spool: process.env.UPLOAD_SPOOL_ROOT };
+  process.env.CONTACT_IMPORTS_ROOT = path.join(scratch, 'imports');
+  process.env.CONTACT_PHOTOS_ROOT = path.join(scratch, 'photos');
+  process.env.UPLOAD_SPOOL_ROOT = path.join(scratch, 'spool');
+  t.after(() => {
+    for (const [key, value] of [['CONTACT_IMPORTS_ROOT', previous.imports], ['CONTACT_PHOTOS_ROOT', previous.photos], ['UPLOAD_SPOOL_ROOT', previous.spool]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+  const pool = await withTestDatabase(t);
+  const api = await startTestApi(t);
+  const { withContactPhotoLock } = require('../dist/src/services/contact-photos') as typeof import('../src/services/contact-photos');
+  const { purgeExpiredMerges } = require('../dist/src/services/contact-merge') as typeof import('../src/services/contact-merge');
+  const password = 'synthetic-review-password';
+  const userId = crypto.randomUUID();
+  await pool.execute('INSERT INTO users (id, email, password_hash, full_name) VALUES (?, ?, ?, ?)',
+    [userId, 'review@example.test', await (require('bcryptjs') as typeof import('bcryptjs')).hash(password, 4), 'Review']);
+  const owner = await rawSession(api.origin, 'review@example.test', password);
+  const waitFor = async (id: string) => {
+    for (let attempt = 0; attempt < 600; attempt++) {
+      const [[row]] = await pool.query<RowDataPacket[]>('SELECT status FROM contact_imports WHERE id = ?', [id]);
+      if (['committed', 'failed'].includes(row.status)) return owner.call('GET', `/api/contacts/imports/${id}`);
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error('import did not finish');
+  };
+  const stage = (text: string | Buffer, type = 'text/vcard') => owner.call('POST', '/api/contacts/imports', Buffer.isBuffer(text) ? text : Buffer.from(text), 200, type);
+  const commit = async (summary: FixtureValue) => { await owner.call('POST', `/api/contacts/imports/${summary.id}/commit`, {}); return waitFor(summary.id); };
+  const count = async () => Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM contacts WHERE user_id = ?', [userId]))[0][0].n);
+  const byName = async (q: string) => (await owner.call('GET', `/api/contacts?q=${encodeURIComponent(q)}`)).contacts as FixtureValue[];
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  // ── 1. Two web addresses alike for their first 255 characters stay two (import and merge) ──
+  const prefix = `https://example.org/${'a'.repeat(250)}`;
+  const [urlA, urlB] = [`${prefix}/first-page-of-the-site`, `${prefix}/second-page-of-the-site`];
+  assert.ok(urlA.length > 255 && urlA.length < 300);
+  const urls = await commit(await stage(`BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Lena Long\r\nN:Long;Lena;;;\r\nURL:${urlA}\r\nURL:${urlB}\r\nEND:VCARD\r\n`));
+  assert.deepEqual([urls.result.added, urls.result.warnings], [1, []]);
+  const [lena] = await byName('Lena');
+  assert.deepEqual(lena.urls.map((url: FixtureValue) => url.value), [urlA, urlB], 'both addresses, no warning');
+  const left = (await owner.call('POST', '/api/contacts', { name: { given: 'Max', family: 'Merge' }, emails: ['max@example.test'], urls: [urlA] })).contact;
+  const right = (await owner.call('POST', '/api/contacts', { name: { given: 'Max', family: 'Merge' }, emails: ['max@example.test'], urls: [urlB] })).contact;
+  const mergedUrls = await owner.call('POST', '/api/contacts/merges', { contact_ids: [left.id, right.id], versions: { [left.id]: left.version, [right.id]: right.version } });
+  assert.deepEqual(mergedUrls.contact.urls.map((url: FixtureValue) => url.value), [urlA, urlB], 'a merge keeps both');
+
+  // ── 2. Undo and the bin purge wait for the photo lock, so no cleanup judges their files half-way ──
+  const jpeg = await sharp({ create: { width: 300, height: 300, channels: 3, background: '#2050c0' } }).jpeg().toBuffer();
+  const plain = (await owner.call('POST', '/api/contacts', { name: { given: 'Una', family: 'Undo' }, emails: ['una@example.test'] })).contact;
+  const pictured = (await owner.call('POST', '/api/contacts', { name: { given: 'Una', family: 'Undo' }, emails: ['una@example.test'] })).contact;
+  const photo = (await owner.call('PUT', `/api/contacts/${pictured.id}/photo`, jpeg, 200, 'image/jpeg')).contact;
+  const merge = await owner.call('POST', '/api/contacts/merges', { contact_ids: [plain.id, pictured.id], versions: { [plain.id]: plain.version, [pictured.id]: photo.version } });
+  const undoneAt = async () => (await pool.query<RowDataPacket[]>('SELECT undone_at FROM contact_merges WHERE id = ?', [merge.merge_id]))[0][0].undone_at;
+  let undo!: Promise<FixtureValue>;
+  await withContactPhotoLock(userId, async () => {
+    undo = owner.send('POST', `/api/contacts/merges/${merge.merge_id}/undo`, {});
+    await sleep(500);
+    assert.equal(await undoneAt(), null, 'the undo waits while a photo cleanup holds the lock');
+  });
+  assert.equal((await undo).status, 200);
+  assert.notEqual(await undoneAt(), null);
+  assert.equal((await owner.send('GET', `/api/contacts/${pictured.id}/photo`)).status, 200, 'the restored contact\'s photo is served');
+  const second = await owner.call('POST', '/api/contacts/merges', { contact_ids: [plain.id, pictured.id],
+    versions: Object.fromEntries((await byName('Una')).map((contact: FixtureValue) => [contact.id, contact.version])) });
+  const binned = async () => Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM bin_items WHERE group_id = ?', [second.merge_id]))[0][0].n);
+  let purge!: Promise<{ items: number; merges: number }>;
+  await withContactPhotoLock(userId, async () => {
+    purge = purgeExpiredMerges({ now: new Date(Date.now() + 40 * 24 * 3600 * 1000) });
+    await sleep(500);
+    assert.equal(await binned(), 1, 'the purge waits for the lock too');
+  });
+  assert.ok((await purge).items >= 1);
+  assert.equal(await binned(), 0);
+
+  // ── 3. Identical means the same kept details and the same photo bytes ──
+  const png = await sharp({ create: { width: 200, height: 260, channels: 3, background: '#c08020' } }).png().toBuffer();
+  const otherPng = await sharp({ create: { width: 200, height: 260, channels: 3, background: '#20c080' } }).png().toBuffer();
+  const card = (foo: string, picture: Buffer) => `BEGIN:VCARD\r\nVERSION:4.0\r\nUID:urn:uuid:7a1d2a3c-0000-4000-8000-0000000000aa\r\nFN:Ida Identity\r\nN:Identity;Ida;;;\r\n`
+    + `EMAIL:ida@example.test\r\nX-FOO:${foo}\r\nPHOTO:data:image/png;base64,${picture.toString('base64')}\r\nEND:VCARD\r\n`;
+  assert.equal((await commit(await stage(card('one', png)))).result.added, 1);
+  const decision = async (text: string | Buffer) => { const summary = await stage(text); return [summary.groups[0].match, summary.groups[0].default_decision]; };
+  assert.deepEqual(await decision(card('one', png)), ['identical', 'skip'], 'the same file again: its picture converts to the stored photo');
+  assert.deepEqual(await decision(card('two', png)), ['uid', 'merge'], 'a changed kept detail is not identical');
+  assert.deepEqual(await decision(card('one', otherPng)), ['uid', 'merge'], 'a different picture is not identical');
+  const exported = (await owner.send('POST', '/api/contacts/export', { ids: (await byName('Ida')).map((contact: FixtureValue) => contact.id), format: 'vcard4' })).bytes;
+  assert.deepEqual(await decision(exported), ['identical', 'skip'], 'UniHub\'s own export carries the stored bytes');
+
+  // ── 4. A CSV cell longer than its field is kept whole and reported ──
+  const longName = 'Bartholomew'.repeat(28);
+  const longNote = 'n'.repeat(66000);
+  const google = await stage(`First Name,Last Name,Notes,E-mail 1 - Value\r\n${longName},Cut,${longNote},cut@example.test\r\n`, 'text/csv');
+  assert.equal(google.format, 'google-csv');
+  assert.deepEqual(google.warnings.map((warning: FixtureValue) => [warning.card, warning.property, warning.code]), [[1, 'First Name', 'VALUE_CUT'], [1, 'Notes', 'NOTE_CUT']]);
+  assert.doesNotMatch(JSON.stringify(google.warnings), /Bartholomew|nnnn/, 'warnings never carry the value');
+  await commit(google);
+  const [cut] = await byName('cut@example.test');
+  const cutDetail = (await owner.call('GET', `/api/contacts/${cut.id}`)).contact;
+  assert.equal(cutDetail.name.given.length, 255);
+  assert.ok(Buffer.byteLength(cutDetail.notes) <= 65535);
+  const keptValues = cutDetail.properties.map((property: FixtureValue) => property.value);
+  assert.ok(keptValues.includes(longName) && keptValues.includes(longNote), 'the whole cells are kept as other details');
+  const outlook = await stage(`First Name,Last Name,Company,E-mail Address\r\nOtto,Outlook,${'Company '.repeat(40)},otto@example.test\r\n`, 'text/csv');
+  assert.deepEqual([outlook.format, outlook.warnings.map((warning: FixtureValue) => [warning.card, warning.property, warning.code])], ['outlook-csv', [[1, 'Company', 'VALUE_CUT']]]);
+
+  // ── 5. A commit that waited for its photos rechecks the module switch before writing ──
+  const before = await count();
+  const waiting = await stage(`BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Wanda Wait\r\nN:Wait;Wanda;;;\r\nPHOTO:data:image/png;base64,${png.toString('base64')}\r\nEND:VCARD\r\n`);
+  await withContactPhotoLock(userId, async () => {
+    await owner.call('POST', `/api/contacts/imports/${waiting.id}/commit`, {});
+    await sleep(500);
+    await owner.call('PUT', '/api/modules', { modules: { contacts: { enabled: false } } });
+  });
+  for (let attempt = 0; attempt < 100 && (await pool.query<RowDataPacket[]>('SELECT status FROM contact_imports WHERE id = ?', [waiting.id]))[0][0].status === 'committing'; attempt++) await sleep(50);
+  const [[failed]] = await pool.query<RowDataPacket[]>('SELECT status, result FROM contact_imports WHERE id = ?', [waiting.id]);
+  const failedState = typeof failed.result === 'string' ? JSON.parse(failed.result) : failed.result;
+  assert.deepEqual([failed.status, failedState.error.code, failedState.added], ['failed', 'MODULE_DISABLED', 0]);
+  assert.equal(await count(), before, 'nothing was written');
+  await owner.call('PUT', '/api/modules', { modules: { contacts: { enabled: true } } });
+  const resumed = await commit(waiting);
+  assert.deepEqual([resumed.state, resumed.result.added], ['committed', 1], 'committing again resumes');
+
+  // ── 6. Three hundred copies of one person: one large group, well within a second ──
+  const ids = Array.from({ length: 300 }, () => crypto.randomUUID());
+  await pool.query('INSERT INTO contacts (id, user_id, uid, uid_hash, version, first_name, last_name, name_key) VALUES ?',
+    [ids.map(id => [id, userId, `urn:uuid:${id}`, crypto.createHash('sha256').update(`urn:uuid:${id}`).digest('hex'), 1, 'Dora', 'Dense', 'dense dora'])]);
+  await pool.query('INSERT INTO contact_values (id, contact_id, user_id, kind, position, label, value, value_key) VALUES ?',
+    [ids.flatMap(id => [[crypto.randomUUID(), id, userId, 'email', 0, '', 'dora@example.test', 'dora@example.test'], [crypto.randomUUID(), id, userId, 'phone', 0, '', '+49 171 5550123', '+491715550123']])]);
+  const started = Date.now();
+  const { groups } = await owner.call('GET', '/api/contacts/duplicates?min=low');
+  const elapsed = Date.now() - started;
+  const dense = groups.find((group: FixtureValue) => group.members.length === 300);
+  assert.ok(dense, 'one group of all three hundred');
+  assert.deepEqual([dense.confidence, dense.large, dense.auto_merge], ['high', true, false]);
+  assert.ok(dense.reasons.length <= 50);
+  assert.ok(elapsed < 1000, `answered in ${elapsed} ms`);
+});

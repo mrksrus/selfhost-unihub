@@ -11,7 +11,7 @@ import type {
 import crypto from 'node:crypto';
 import { db } from '../state';
 import { badRequest, notFound } from '../http/errors';
-import { foldName, orderedNameTokens } from './contact-keys';
+import { foldName, fullValueKey, orderedNameTokens } from './contact-keys';
 import { displayName } from './contacts';
 
 const CONFIDENCE_RANK: Readonly<Record<DuplicateConfidence, number>> = { low: 1, medium: 2, high: 3 };
@@ -23,6 +23,10 @@ const LARGE_GROUP = 10;
 const BLOCK_ALL_EDGES = 50;
 const BLOCK_MAX = 500;
 const REASONS_PER_GROUP = 50;
+// Pairs of different names in large email or number blocks compared per
+// request (a shared info@ under hundreds of names); past it such a block
+// proposes only its same-name pairs.
+const PAIR_BUDGET = 50_000;
 const DISMISS_MAX = 50;
 
 /** One contact as the engine compares it: its single values, keys and the shown summary. */
@@ -100,6 +104,9 @@ interface Prepared {
   contact: CandidateContact;
   tokens: string[];
   ordered: string[];
+  /** tokens and ordered joined, compared as text. */
+  tokensKey: string;
+  orderedKey: string;
   emails: Map<string, string>;
   phones: Map<string, string>;
   organization: string;
@@ -109,7 +116,7 @@ function prepare(contact: CandidateContact): Prepared {
   // The token set is contact-keys' nameTokens (the stored name_key), folded once.
   const ordered = [...new Set(orderedNameTokens(nameSource(contact)))];
   return {
-    contact, tokens: [...ordered].sort(), ordered,
+    contact, tokens: [...ordered].sort(), ordered, tokensKey: [...ordered].sort().join(' '), orderedKey: ordered.join(' '),
     emails: new Map(contact.emails.filter(email => email.key).map(email => [email.key, email.value])),
     phones: new Map(contact.phones.map(phone => [phoneMatchKey(phone.key), phone.value] as const).filter(([key]) => key.length >= 3)),
     organization: contact.company ? foldName(contact.company) : '',
@@ -132,7 +139,7 @@ function compare(a: Prepared, b: Prepared, aliases: ReadonlyMap<string, string>)
     reasons.push({ kind: 'uid', detail: '' });
     raise('high');
   }
-  const relation = nameRelation(a.tokens, b.tokens);
+  const relation = a.tokens.length && a.tokensKey === b.tokensKey ? 'equal' : nameRelation(a.tokens, b.tokens);
   const compatible = relation === 'empty' || relation === 'equal' || relation === 'subset';
   const sharedEmails = [...a.emails.keys()].filter(key => b.emails.has(key));
   const sharedPhones = [...a.phones.keys()].filter(key => b.phones.has(key));
@@ -141,7 +148,7 @@ function compare(a: Prepared, b: Prepared, aliases: ReadonlyMap<string, string>)
   if (sharedEmails.length || sharedPhones.length) raise(compatible ? 'high' : 'medium');
   const fullName = relation === 'equal' && a.tokens.length >= 2;
   if (relation === 'equal') {
-    const swapped = a.ordered.join(' ') !== b.ordered.join(' ');
+    const swapped = a.orderedKey !== b.orderedKey;
     reasons.push({ kind: swapped ? 'name_order' : 'name', detail: shownName(a) });
   }
   if (fullName) {
@@ -250,6 +257,41 @@ function member(contact: CandidateContact, conflicts: readonly ContactSingleFiel
  * never join a group: a low match is shown as a pair). A group's confidence
  * is its bottleneck: high only when high edges alone connect it.
  */
+// The pairs worth comparing in a block over BLOCK_ALL_EDGES, where only
+// high matches count. A high match needs compatible names and a shared
+// email, number or (for full names) organisation, so instead of every pair:
+// - in an email or number block, the members of each name chain to its first
+//   one (they share the block's value under the same name), and the first
+//   ones of different names are paired (budgeted);
+// - in a name block, the members sharing an organisation, email or number
+//   chain to the first of them.
+// Every proposed pair is still compared; a few hundred copies of one person
+// cost a few hundred comparisons instead of tens of thousands.
+function largeBlockPairs(key: string, ids: readonly string[], prepared: ReadonlyMap<string, Prepared>, budget: { left: number }) {
+  const pairs: [string, string][] = [];
+  const chain = (members: readonly string[]) => { for (const id of members.slice(1)) pairs.push([members[0], id]); };
+  const by = (keysOf: (item: Prepared) => Iterable<string>) => {
+    const map = new Map<string, string[]>();
+    for (const id of ids) for (const k of keysOf(prepared.get(id)!)) { const list = map.get(k); if (list) list.push(id); else map.set(k, [id]); }
+    return map;
+  };
+  if (key.startsWith('n:')) {
+    const tokens = prepared.get(ids[0])!.tokens.length;
+    for (const members of by(item => [...[...item.emails.keys()].map(k => `e:${k}`), ...[...item.phones.keys()].map(k => `p:${k}`),
+      ...(item.organization && tokens >= 2 ? [`o:${item.organization}`] : [])]).values()) chain(members);
+    return pairs;
+  }
+  const names = [...by(item => [item.tokensKey]).values()];
+  for (const members of names) chain(members);
+  const firsts = names.map(members => members[0]);
+  const cross = (firsts.length * (firsts.length - 1)) / 2;
+  if (cross <= budget.left) {
+    budget.left -= cross;
+    for (let i = 0; i < firsts.length; i++) for (let j = i + 1; j < firsts.length; j++) pairs.push([firsts[i], firsts[j]]);
+  }
+  return pairs;
+}
+
 function detectDuplicates({ contacts, dismissed, aliases, min }: DetectionInput): DuplicateGroup[] {
   const prepared = new Map(contacts.map(contact => [contact.id, prepare(contact)]));
   const minRank = CONFIDENCE_RANK[min];
@@ -262,19 +304,23 @@ function detectDuplicates({ contacts, dismissed, aliases, min }: DetectionInput)
     const { id } = item.contact;
     for (const key of item.emails.keys()) add(`e:${key}`, id);
     for (const key of item.phones.keys()) add(`p:${key}`, id);
-    if (item.tokens.length) add(`n:${item.tokens.join(' ')}`, id);
+    if (item.tokens.length) add(`n:${item.tokensKey}`, id);
     if (min === 'low') for (const token of item.tokens) if (token.length > 1) add(`t:${token}`, id);
     const holder = aliases.get(item.contact.uid_hash);
     if (holder && holder !== id && prepared.has(holder)) candidates.set(pairKey(id, holder), true);
   }
+  const budget = { left: PAIR_BUDGET };
   for (const [key, ids] of blocks) {
     if (ids.length < 2 || ids.length > BLOCK_MAX) continue;
-    const all = ids.length <= BLOCK_ALL_EDGES;
+    if (ids.length <= BLOCK_ALL_EDGES) {
+      for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) candidates.set(pairKey(ids[i], ids[j]), true);
+      continue;
+    }
     // A name-token block only proposes low matches, which a large block never yields.
-    if (!all && key.startsWith('t:')) continue;
-    for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
-      const pair = pairKey(ids[i], ids[j]);
-      if (all || !candidates.has(pair)) candidates.set(pair, all || candidates.get(pair) === true);
+    if (key.startsWith('t:')) continue;
+    for (const [a, b] of largeBlockPairs(key, ids, prepared, budget)) {
+      const pair = pairKey(a, b);
+      if (!candidates.has(pair)) candidates.set(pair, false);
     }
   }
   const edges: Edge[] = [];
@@ -294,24 +340,31 @@ function detectDuplicates({ contacts, dismissed, aliases, min }: DetectionInput)
     groupsOf.union(edge.a, edge.b);
     if (edge.confidence === 'high') highOf.union(edge.a, edge.b);
   }
-  const membersOf = new Map<string, string[]>();
-  for (const edge of joining) for (const id of [edge.a, edge.b]) {
-    const root = groupsOf.find(id);
-    const list = membersOf.get(root) || [];
-    if (!list.includes(id)) list.push(id);
-    membersOf.set(root, list);
-  }
+  // Linear in the edges; a group shows at most REASONS_PER_GROUP reasons and
+  // every edge has one, so it keeps no more edges than that.
+  const membersOf = new Map<string, Set<string>>();
   const edgesOf = new Map<string, Edge[]>();
-  for (const edge of joining) { const root = groupsOf.find(edge.a); edgesOf.set(root, [...(edgesOf.get(root) || []), edge]); }
+  for (const edge of joining) {
+    const root = groupsOf.find(edge.a);
+    let members = membersOf.get(root);
+    if (!members) { members = new Set(); membersOf.set(root, members); }
+    members.add(edge.a).add(edge.b);
+    let kept = edgesOf.get(root);
+    if (!kept) { kept = []; edgesOf.set(root, kept); }
+    if (kept.length < REASONS_PER_GROUP) kept.push(edge);
+  }
+  const partners = new Map<string, Set<string>>();
+  for (const pair of dismissed) {
+    const [a, b] = pair.split('\u0000');
+    for (const [self, other] of [[a, b], [b, a]]) { const set = partners.get(self) || new Set<string>(); set.add(other); partners.set(self, set); }
+  }
 
   const build = (ids: readonly string[], groupEdges: readonly Edge[], confidence: DuplicateConfidence): DuplicateGroup => {
     const people = ids.map(id => prepared.get(id)!.contact).sort(survivorOrder);
     const conflicts = singleFieldConflicts(people);
     const large = people.length > LARGE_GROUP;
-    let containsDismissed = false;
-    for (let i = 0; i < people.length && !containsDismissed; i++) for (let j = i + 1; j < people.length; j++) {
-      if (dismissed.has(pairKey(people[i].id, people[j].id))) { containsDismissed = true; break; }
-    }
+    const inGroup = new Set(ids);
+    const containsDismissed = ids.some(id => [...(partners.get(id) || [])].some(other => inGroup.has(other)));
     return {
       id: groupId(people), confidence, large,
       members: people.map(person => member(person, conflicts)),
@@ -324,7 +377,8 @@ function detectDuplicates({ contacts, dismissed, aliases, min }: DetectionInput)
   };
 
   const groups: DuplicateGroup[] = [];
-  for (const [root, ids] of membersOf) {
+  for (const [root, members] of membersOf) {
+    const ids = [...members];
     const highRoot = highOf.find(ids[0]);
     const confidence: DuplicateConfidence = ids.every(id => highOf.find(id) === highRoot) ? 'high' : 'medium';
     groups.push(build(ids, edgesOf.get(root) || [], confidence));
@@ -352,8 +406,8 @@ async function loadCandidates(executor: SqlExecutor, userId: string, ids?: reado
   const filter = ids ? ` AND contact_id IN (${list})` : '';
   const params = ids ? [userId, ...ids] : [userId];
   const [rows] = await executor.execute<CandidateRow[]>(`SELECT ${CANDIDATE_COLUMNS} FROM contacts WHERE user_id = ?${ids ? ` AND id IN (${list})` : ''}`, params);
-  const [values] = await executor.execute<(RowDataPacket & { contact_id: string; kind: 'email' | 'phone'; value: string; value_key: string })[]>(
-    `SELECT contact_id, kind, value, value_key FROM contact_values WHERE user_id = ? AND kind IN ('email', 'phone')${filter} ORDER BY contact_id, kind, position, id`, params);
+  const [values] = await executor.execute<(RowDataPacket & { contact_id: string; kind: 'email' | 'phone'; value: string })[]>(
+    `SELECT contact_id, kind, value FROM contact_values WHERE user_id = ? AND kind IN ('email', 'phone')${filter} ORDER BY contact_id, kind, position, id`, params);
   const [photos] = await executor.execute<(RowDataPacket & { contact_id: string; sha256: string; width: number; height: number })[]>(
     `SELECT contact_id, sha256, width, height FROM contact_photos WHERE user_id = ?${filter}`, params);
   const valuesBy = new Map<string, typeof values>();
@@ -368,8 +422,9 @@ async function loadCandidates(executor: SqlExecutor, userId: string, ids?: reado
       name_prefix: row.name_prefix, name_suffix: row.name_suffix, company: row.company, department: row.department, job_title: row.job_title,
       birthday: row.birthday, anniversary: row.anniversary, is_favorite: !!row.is_favorite,
       photo: photo ? { sha256: photo.sha256, width: Number(photo.width), height: Number(photo.height) } : null,
-      emails: own.filter(value => value.kind === 'email').map(value => ({ value: value.value, key: value.value_key })),
-      phones: own.filter(value => value.kind === 'phone').map(value => ({ value: value.value, key: value.value_key })),
+      // The whole normalised value, not the stored key that is cut for its index.
+      emails: own.filter(value => value.kind === 'email').map(value => ({ value: value.value, key: fullValueKey('email', value.value) })),
+      phones: own.filter(value => value.kind === 'phone').map(value => ({ value: value.value, key: fullValueKey('phone', value.value) })),
     };
   });
 }
