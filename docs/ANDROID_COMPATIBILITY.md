@@ -86,15 +86,15 @@ needs a current WebView; phones update theirs through the Play Store.
 
 ## Current window
 
-As recorded in `android/support-window.json` for 0.25.1. The CI table is the
+As recorded in `android/support-window.json` for 0.26.0. The CI table is the
 evidence; this table is what it is checked against.
 
 | App | Android 10 | Android 16 | Android 17 |
 | --- | --- | --- | --- |
+| 0.26.0 | starts and connects | starts and connects | starts and connects |
 | 0.25.1 | starts and connects | starts and connects | starts and connects |
 | 0.25.0 | starts and connects | starts and connects | starts and connects |
 | 0.24.3 | starts and connects | starts and connects | starts and connects |
-| 0.24.2 | starts and connects | starts and connects | starts and connects |
 
 All four apps put contacts on the phone and sync them both ways.
 From 0.23.0 the app also reads the handshake `protocol` and `minApp` when
