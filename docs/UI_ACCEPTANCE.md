@@ -101,6 +101,8 @@ is the expected outcome, the "Mark" column the current state.
 | T-03 | Wide, Phone | Open Music, both views. | Every song shows its chords in monospace; a song without chords shows the editor at once; only one song plays at a time. | Source (`music.test.tsx`) |
 | T-04 | Wide, Phone | Open Recordings with device drafts and library items. | Rows show title, meta, player for the playing one, description, chords and tags inline; device rows show status and progress; nothing folds. | Source (`RecordingRows.tsx`), Open at runtime |
 | T-05 | All | Empty, loading and failed list on each of the three pages. | Loading label, an empty state that says what to do next, an error state with Retry; all from the shared components. | Source (`page-states.tsx`), Open at runtime |
+| T-06 | Wide, Phone | Drag a task by its ≡ handle within a section (mouse after 4 px; on Phone a 250 ms hold, then drag); Tab to a handle, press Space, ArrowDown, Space; open a row menu; reload. | The handle shows on row hover and focus with a mouse and always on Phone, at least 24 px from the screen edges, with a 44 px tap area that does not overlap the done circle or the menu; the row keeps its description, email and subtasks while it moves; a swipe on the handle without the hold scrolls; the keyboard path is announced in plain words and focus stays on the handle; Move up and Move down are in the menu, disabled at the ends; the order survives a reload and reaches another device; Done shows no handles. Subtasks drag the same way. | Source (`task-order.test.tsx`, `sortable-list.tsx`), Browser (pictures `todo-drag-*`), e2e (`tools/e2e/tests/tasks/order*.e2e.ts`) |
+| T-07 | Wide, Phone | New task: open the List chooser with and without a time; Move to another list from the row menu; New event: the Calendar chooser. | Lists are grouped by account ("On this UniHub", then each server account); the server-marked default is preselected; a list that cannot take the item is greyed out with its reason ("Tasks without a date stay in UniHub", "Read-only", "Sync is paused"); a list not shown in ToDo says so; taking the time away from a task in a server calendar returns it to the default list; a move the server has not confirmed says "Moving…" and closes with Close. | Source (`task-order.test.tsx`), Browser (pictures `new-task-*`), e2e (`tools/e2e/tests/tasks/lists.e2e.ts`) |
 
 ### Appearance (P-01, P-02, P-03, P-13)
 
@@ -128,6 +130,7 @@ asserts that header and the absence of inline scripts in the built image, and
 | C-03 | Wide, Phone | Open a contact with every kind of field; Edit; add a field from "Add field"; save with a stale version. | Labelled rows call, write, open or copy; categories are plain chips; kept import details are collapsed and read-only. The editor is a dialog on Wide and the whole screen on Phone, keeps one empty phone and email row, labels values with a preferred star, lets a date leave its year empty, and shows a contact changed elsewhere with "Load their version" or "Save mine anyway". | Source (`contact-editor.test.tsx`, `contacts-page.test.tsx`), Browser (pictures `contact-detail-*`, `contact-editor-*`) |
 | C-04 | Wide, Phone | Open Possible duplicates; review a group that needs a choice; merge; undo under Recently merged. | Groups show confidence, reasons and "Needs your choice"; the review lists every number and email as kept with no untick and waits for each choice; the merge notice offers Undo; Recently merged shows the expiry and Undo per entry. | Source (`contact-merge-import.test.tsx`, `contacts-page.test.tsx`), Browser (pictures `merge-review-*`) |
 | C-02 | Wide, Phone | Open Settings → Appearance, General, Mail and Notifications. | Device settings say "Saved on this device"; account settings say they follow the account; the two are not mixed in one row. A setting an administrator fixed is greyed out with "Set by your administrator", never hidden. | Source (`AppearanceSettings.tsx`, `settings-pages.test.tsx`), Open at runtime |
+| C-05 | Wide, Phone | Settings → Pages and modules: drag Contacts above Mail by its handle; use a row's menu; reload. | Every page row has a ≡ handle and a menu with Move up and Move down (disabled at the ends); the rail (Wide) and the bottom bar (Phone) follow at once; a refused save puts the rows back and says why; the order survives a reload. Settings → General shows "New tasks go to" and "New events go to" beside the reminder, only with the Calendar module on; a choice that is gone reads "Let UniHub choose" with the list in effect named. | Source (`modules-navigation.test.tsx`, `task-order.test.tsx`), Browser (pictures `settings-pages-*`), e2e (`tools/e2e/tests/settings/pages-order.e2e.ts`) |
 
 ## Baselines and approval
 
@@ -138,10 +141,12 @@ the behavioral scenarios.
 
 **Reference screens.** Mail with a message open (Wide), ToDo open view (Wide
 and Phone), Recordings library (Phone), Settings → Appearance (Wide), the
-composer (Phone), and since 0.26.0 the contact detail, the contact editor and
-the merge review (Wide and Phone; P-29, D29), each in Dark Default and Light
-Default. Twenty-four pictures in total; add a screen only when a decision
-depends on it.
+composer (Phone), since 0.26.0 the contact detail, the contact editor and
+the merge review (Wide and Phone; P-29, D29), and since 0.27.0 a ToDo row
+picked up by its handle and the new-task dialog with its list chooser open
+(Wide and Phone) and Settings → Pages and modules (Wide; P-29, D29, D31),
+each in Dark Default and Light Default. Thirty-four pictures in total; add a
+screen only when a decision depends on it.
 
 **Approval policy.**
 

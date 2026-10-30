@@ -98,12 +98,26 @@ const CALENDAR_ACCOUNT = {
   token_expires_at: null, provider_config: {}, capabilities: {}, is_active: true, sync_status: 'ok', sync_error: null,
   last_synced_at: null, next_sync_at: null, mail_account_id: null, created_at: STAMP, updated_at: STAMP,
 };
-const calendar = (id: string, name: string, color: string, primary = false) => ({
+// A calendar server account, so the list chooser (0.27) shows a second group
+// and a calendar that takes no task without a date.
+const CALDAV_ACCOUNT = {
+  ...CALENDAR_ACCOUNT, id: 'cal-acct-work', provider: 'caldav', account_email: 'ada@work.example.com', display_name: 'Work',
+  mail_account_id: 'acct-work', last_synced_at: at('06-15T09:20:00.000Z'),
+};
+// The choice fields of GET /calendar/calendars (api/src/contracts/tasks.ts,
+// 0.27): where new items go and what each calendar can take.
+const calendar = (id: string, name: string, color: string, primary = false, choice: Partial<{ default_for_tasks: boolean; default_for_events: boolean; write_block: string | null; takes_undated_tasks: boolean; auto_todo_enabled: boolean }> = {}) => ({
   id, user_id: USER.id, account_id: CALENDAR_ACCOUNT.id, name, external_id: null, color, is_visible: true,
   auto_todo_enabled: true, read_only: false, is_primary: primary, sync_token: null, account_provider: 'local',
   account_display_name: 'On this server', account_email: null, created_at: STAMP, updated_at: STAMP,
+  default_for_tasks: false, default_for_events: false, write_block: null, takes_undated_tasks: true, ...choice,
 });
-const CALENDARS = [calendar('cal-personal', 'Personal', '#3b82f6', true), calendar('cal-work', 'Work', '#14b8a6')];
+const CALENDARS = [
+  calendar('cal-personal', 'Personal', '#3b82f6', true, { default_for_tasks: true, default_for_events: true }),
+  calendar('cal-work', 'Work', '#14b8a6'),
+  { ...calendar('cal-team', 'Team', '#f59e0b', false, { takes_undated_tasks: false, auto_todo_enabled: false }),
+    account_id: CALDAV_ACCOUNT.id, account_provider: 'caldav', account_display_name: 'Work', account_email: 'ada@work.example.com', external_id: '/calendars/ada/team/' },
+];
 
 const subtask = (eventId: string, id: string, title: string, done: boolean, position: number) => ({
   id, event_id: eventId, user_id: USER.id, title, is_done: done, position, created_at: STAMP, updated_at: STAMP,
@@ -298,7 +312,7 @@ function defaultRoutes(emails: typeof EMAILS): Route[] {
       coverage: { recent: { complete: true, current: true }, history: { complete: true, current: true }, flags: { complete: true, current: true }, bodies: { complete: true, current: true } },
     })) })],
     ['GET', /^\/mail\/writebacks$/, () => ok({ operations: [] })],
-    ['GET', /^\/calendar\/accounts$/, () => ok({ accounts: [CALENDAR_ACCOUNT] })],
+    ['GET', /^\/calendar\/accounts$/, () => ok({ accounts: [CALENDAR_ACCOUNT, CALDAV_ACCOUNT] })],
     ['GET', /^\/calendar\/calendars$/, () => ok({ calendars: CALENDARS })],
     ['GET', /^\/calendar\/events$/, url => ok({ events: url.searchParams.get('include_todos') === 'true' ? TASKS : TASKS.filter(row => !row.is_todo_only) })],
     ['GET', /^\/recordings$/, url => {

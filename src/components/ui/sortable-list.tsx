@@ -55,6 +55,8 @@ interface Props<T> {
   /** The list element around the rows; rows are the children's own elements. */
   as?: 'ul' | 'ol' | 'div';
   className?: string;
+  /** The list's accessible name, when it is not labelled by a heading around it. */
+  'aria-label'?: string;
   children: (item: T, row: SortableRow, index: number) => ReactNode;
 }
 
@@ -67,7 +69,7 @@ const INSTRUCTIONS: ScreenReaderInstructions = {
 const verticalOnly: Modifier = ({ transform }) => ({ ...transform, x: 0 });
 
 /** A list whose rows a person reorders by handle, mouse, touch or keyboard. */
-export function SortableList<T>({ items, getId, getName, label, onReorder, disabled = false, as: Tag = 'ul', className, children }: Props<T>) {
+export function SortableList<T>({ items, getId, getName, label, onReorder, disabled = false, as: Tag = 'ul', className, 'aria-label': ariaLabel, children }: Props<T>) {
   const ids = useMemo(() => items.map(getId), [items, getId]);
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
@@ -114,7 +116,7 @@ export function SortableList<T>({ items, getId, getName, label, onReorder, disab
       accessibility={{ announcements, screenReaderInstructions: INSTRUCTIONS }}
       onDragEnd={onDragEnd}>
       <SortableContext items={ids} strategy={verticalListSortingStrategy} disabled={disabled}>
-        <Tag className={className}>
+        <Tag className={className} aria-label={ariaLabel}>
           {items.map((item, index) => (
             <SortableItem key={ids[index]} id={ids[index]} disabled={disabled} reducedMotion={reducedMotion}>
               {row => children(item, row, index)}

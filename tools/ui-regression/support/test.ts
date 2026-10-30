@@ -3,6 +3,7 @@
 // request refused and reported as a failure, a fixed clock, pinned fonts and
 // reduced motion.
 import { test as base, expect, type Page } from '@playwright/test';
+export type { Page };
 import { createApiRouter, FIXED_NOW, type ApiRouter } from './fixtures.ts';
 import { markBaselineUsed } from './used-baselines.mts';
 
