@@ -4,6 +4,8 @@
 
 Open **Settings → General → Offline reading → Enable offline reading** while signed in and connected. Wait for the saved timestamp and counts before relying on the snapshot. This stores the latest **100 non-draft emails across all accounts**, including full text/HTML bodies, plus **all contacts and calendar entries** (including to-dos, attendees and subtasks).
 
+Contacts are saved with every email, number, address and other value, so offline search finds a contact by any of them (numbers also by their digits). Contact photos are not saved: offline, contacts show their initials. Photos stay outside the 32 MiB budget on purpose, so a large address book with photos still fits.
+
 Attachments, raw email files, remote images, recordings and backup archives are not downloaded. Attachment metadata remains visible, but the files require a connection. Search and folder counts offline describe the saved messages, so an older message outside the latest 100 is unavailable. Snoozed messages are hidden from the offline lists or kept there as the account's **Snoozed messages** setting was when the snapshot was saved. Saving all contacts and events is deliberate; a snapshot that cannot fit the 32 MiB budget fails with an explanation instead of silently omitting records.
 
 The snapshot refreshes while an authenticated UniHub window is open, visible and connected, approximately every five minutes and on focus/reconnect with a minimum one-minute gap. **Refresh offline data** requests a fresh snapshot immediately. Replacement is atomic: a failed download, quota error or oversized response retains the previous complete snapshot and its timestamp. Successful refreshes reflect additions, changes and deletions.

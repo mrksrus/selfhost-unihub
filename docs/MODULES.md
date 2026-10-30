@@ -24,6 +24,9 @@ Today belongs to no module and can only be hidden.
 
 Contacts and recordings have no automatic provider worker to pause.
 Temporary-upload housekeeping continues to remove expired incomplete uploads.
+The contacts housekeeping (merged contacts past their 30-day undo, expired
+imports and unused photo files) waits while Contacts is off or a restore of
+contacts runs, and catches up when the module is on again.
 
 Core account settings and Backup and restore remain available. Full backups include
 all saved modules, including hidden or paused ones. Restoring settings also restores

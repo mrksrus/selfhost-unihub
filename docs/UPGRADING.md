@@ -5,6 +5,43 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.26.0 Contacts: complete fields and duplicate handling
+
+**Make a database backup first** (and of the uploads volume). Two automatic
+database upgrades run at the first start:
+
+- **Step 22** moves contacts to the new model: every email and phone number
+  of the three fields each is copied, unchanged and in its place, into the
+  new table of labelled values; every contact gets a vCard UID and a version.
+  The copy is then checked contact by contact; if the check fails, the start
+  stops with an error before step 23, and the old columns stay as they were.
+- **Step 23** then removes the old `email`…`email3` and `phone`…`phone3`
+  columns and the never-used `avatar_url`.
+
+Going back to 0.25.1 means restoring that backup: 0.25.1 cannot read the
+upgraded contacts. Backups made by 0.26.0 use **data schema 5** (contacts with
+their values, photos and kept details). An older UniHub cannot read them;
+0.26.0 reads every older backup.
+
+No configuration change is needed. Worth knowing:
+
+- **Contact photos** are stored as files under the uploads volume
+  (`/app/uploads/contact-photos`, about 100 KB per contact with a photo), so
+  the usual uploads backup covers them. The image converts them itself,
+  HEIC included; nothing is installed for it.
+- **Android app.** Install 0.26.0's app to sync every field (labels,
+  addresses, birthdays, more than three numbers, photos) and merges. The
+  0.25.1, 0.25.0 and 0.24.3 apps keep working as before: they show and edit
+  the first three emails and numbers, and what they cannot show (a fourth
+  number, labels) stays in UniHub when they save. The window is 0.26.0,
+  0.25.1, 0.25.0 and 0.24.3.
+- **Merging is new.** The old "Merge duplicates" button is gone; an open page
+  of 0.25.1 offers its update instead of merging. Duplicates are now
+  reviewed under Contacts → Possible duplicates, and every merge can be
+  undone for 30 days under Recently merged.
+- **Reload open pages** (or reopen the app) after updating, so the new
+  contacts screens load.
+
 ## 0.25.1 Follow-up fixes
 
 No database upgrade and no configuration change. Going back to 0.25.0 is

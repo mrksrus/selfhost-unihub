@@ -6,6 +6,116 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.26.0
+
+Contacts: complete fields and duplicate handling. Two automatic database
+upgrades; back up first, and install the new Android app (see
+[Upgrading](docs/UPGRADING.md#0260-contacts-complete-fields-and-duplicate-handling)).
+
+### Added
+
+- **Every field a contact card has.** A contact holds any number of email
+  addresses and phone numbers, each with a label (Mobile, Work, Home, Fax,
+  Pager, … or your own) and one marked as preferred; postal addresses;
+  websites, messaging addresses, related people and nicknames; categories;
+  a birthday and an anniversary, with or without the year; title, middle
+  name, suffix and the name it is shown as; and the department. Before,
+  UniHub kept three emails and three numbers without labels.
+- **Contact photos.** Choose any picture in the editor (JPEG, PNG, WebP,
+  HEIC from an iPhone, AVIF, GIF); UniHub turns it upright, makes it square
+  and small, and removes its location and other metadata. Nothing to crop.
+  Photos show in the list and the detail, and come and go with vCard files.
+  A picture that cannot be used says so in the editor; the rest of the
+  contact is still saved.
+- **A new contact detail and editor.** The detail groups numbers, emails,
+  addresses, dates, websites, messaging and related people, each with a copy
+  button; categories and notes; and, folded away, the other details an
+  import brought along. The editor has a row per value with its label, the
+  preferred star and remove, and "Add field" for the rarer fields; on a
+  phone it fills the screen.
+- **Import shows what it will do before writing anything.** Import contacts
+  reads vCard 4.0, 3.0 and 2.1 files (from iPhones, Android phones, Outlook
+  and other apps) and Google and Outlook CSV exports, in any of the usual
+  character sets. You see the format, how many contacts are new, already
+  there or likely duplicates, any warnings, and the first names of the file,
+  so garbled umlauts show before they are saved. Choose per match whether
+  to merge, add or skip (or for all at once), look at the differences under
+  "Review conflicts", then import with a progress bar. An interrupted import
+  continues where it stopped. Importing a file again does not add its
+  contacts twice; details UniHub has no field for are kept and exported
+  again.
+- **Export in the format the other app reads.** vCard 4.0 (recommended,
+  with photos and every detail), vCard 3.0 for older apps, Google CSV or
+  Outlook CSV, for all contacts or the selected ones ("Export selected").
+- **Possible duplicates, reviewed before merging.** Contacts → Possible
+  duplicates lists contacts that look like the same person, with how sure
+  UniHub is and why ("Same email anna@example.com", "Same name, order
+  swapped"). "Review and merge" shows the contacts side by side (stacked on
+  a phone): every number, email and other value is kept, and where only one
+  value can stay (the name, the company, the birthday, the photo …) you
+  choose it. "Not the same person" is remembered on every device. "Merge
+  all high-confidence" merges, after a confirmation, only the groups where
+  nothing has to be chosen.
+- **Undo a merge for 30 days.** After merging, Undo is offered right away,
+  and Contacts → Recently merged lists every merge of the last 30 days with
+  its Undo, imports that merged into a contact included. Undo brings the
+  merged contacts back as they were.
+- **Edits are not lost to a change made elsewhere.** If a contact was changed
+  on another device while you edited it, Save says so and keeps your edits:
+  load the other version, or save yours anyway.
+
+### Changed
+
+- **Merging is never automatic or permanent any more.** The old "Merge
+  duplicates" merged every match at once, kept only three emails and three
+  numbers and one company, and deleted the rest for good. It is gone; merges
+  go through the review (or "Merge all high-confidence") and can be undone.
+- **vCard export is 4.0 by default and keeps the labels.** Before, it wrote
+  vCard 3.0 and called every number a mobile number.
+- **Search and suggestions use every value.** The contacts search finds a
+  contact by any email or number (numbers also by their digits, so "0171 12"
+  finds "+49 171 12…"), nickname, category or department; the composer
+  suggests every email of a contact, the preferred one first. Offline
+  search does the same; offline, contacts show their initials instead of
+  photos.
+- **The Android apps of 0.25.1, 0.25.0 and 0.24.3 keep working.** They show
+  and edit the first three emails and numbers as before; the values they
+  cannot show (a fourth number, labels, addresses) stay in UniHub when they
+  save. The 0.26.0 app syncs every field.
+
+### Fixed
+
+- **Umlauts and other accented letters in older vCard files.** Names in
+  vCard 2.1 files from older phones (quoted-printable, or ISO-8859-1 and
+  windows-1252) were imported garbled; they now read as written.
+
+### Database upgrade
+
+- Upgrade step 22 copies every contact's emails and numbers unchanged into
+  the new table of labelled values, gives every contact a vCard UID and a
+  version, and checks the copy contact by contact; step 23 then removes the
+  old columns (`email`…`email3`, `phone`…`phone3`, `avatar_url`).
+- Backups use data schema 5, with contact values, kept details, photos and
+  "Not the same person" choices. An older UniHub cannot read them; 0.26.0
+  reads every older backup. Merges and their undo are not part of backups.
+
+### API
+
+- Contacts follow the vCard model in `api/src/contracts/contacts.ts`: a
+  full body with labelled lists, a `version` (or `If-Match`) on every full
+  update and 409 `VERSION_CONFLICT` when it is stale; the input rules are in
+  [Contacts](docs/CONTACTS.md#writing-a-contact-input-contract-d17). New
+  routes for photos, import, export, duplicates, merges and undo. The flat
+  3+3 fields stay for the older Android apps and are deprecated.
+- Removed: `POST /api/contacts/merge-duplicates`, its `/preview` and the
+  JSON `POST /api/contacts/import`.
+
+### Pinned interface pictures
+
+- `contact-detail`, `contact-editor` and `merge-review`, each wide and on a
+  phone, dark and light: the new contact screens, designed under D29 for
+  0.26.0.
+
 ## 0.25.1
 
 Follow-up fixes for 0.25: interrupted sends, the start screen, the phone
