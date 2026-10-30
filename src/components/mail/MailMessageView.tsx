@@ -52,7 +52,7 @@ export function MailMessageView({ email, loading = false, timezone, senderInCont
             </span>
             {!senderInContacts && (
               <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5" disabled={createContact.isPending}
-                onClick={() => createContact.mutate({ ...deriveContactNameFromEmail(email), email: email.from_address })}>
+                onClick={() => createContact.mutate({ name: deriveContactNameFromEmail(email), emails: [email.from_address] })}>
                 {createContact.isPending ? <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" /> : <UserPlus aria-hidden="true" className="h-3.5 w-3.5" />}
                 Add contact
               </Button>

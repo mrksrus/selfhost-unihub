@@ -125,6 +125,8 @@ asserts that header and the absence of inline scripts in the built image, and
 | ID | Where | Steps | Checks | Mark |
 | --- | --- | --- | --- | --- |
 | C-01 | Wide | Ctrl/Cmd+click two contacts, Shift+click a range, press Escape, press Delete, use "Set company…". | Selection grows without opening a contact; Escape clears; Delete asks first; the company is written to all selected. | Source (`contacts-page.test.tsx`) |
+| C-03 | Wide, Phone | Open a contact with every kind of field; Edit; add a field from "Add field"; save with a stale version. | Labelled rows call, write, open or copy; categories are plain chips; kept import details are collapsed and read-only. The editor is a dialog on Wide and the whole screen on Phone, keeps one empty phone and email row, labels values with a preferred star, lets a date leave its year empty, and shows a contact changed elsewhere with "Load their version" or "Save mine anyway". | Source (`contact-editor.test.tsx`, `contacts-page.test.tsx`), Browser (pictures `contact-detail-*`, `contact-editor-*`) |
+| C-04 | Wide, Phone | Open Possible duplicates; review a group that needs a choice; merge; undo under Recently merged. | Groups show confidence, reasons and "Needs your choice"; the review lists every number and email as kept with no untick and waits for each choice; the merge notice offers Undo; Recently merged shows the expiry and Undo per entry. | Source (`contact-merge-import.test.tsx`, `contacts-page.test.tsx`), Browser (pictures `merge-review-*`) |
 | C-02 | Wide, Phone | Open Settings → Appearance, General, Mail and Notifications. | Device settings say "Saved on this device"; account settings say they follow the account; the two are not mixed in one row. A setting an administrator fixed is greyed out with "Set by your administrator", never hidden. | Source (`AppearanceSettings.tsx`, `settings-pages.test.tsx`), Open at runtime |
 
 ## Baselines and approval
@@ -136,8 +138,10 @@ the behavioral scenarios.
 
 **Reference screens.** Mail with a message open (Wide), ToDo open view (Wide
 and Phone), Recordings library (Phone), Settings → Appearance (Wide), the
-composer (Phone), each in Dark Default and Light Default. Twelve pictures in
-total; add a screen only when a decision depends on it.
+composer (Phone), and since 0.26.0 the contact detail, the contact editor and
+the merge review (Wide and Phone; P-29, D29), each in Dark Default and Light
+Default. Twenty-four pictures in total; add a screen only when a decision
+depends on it.
 
 **Approval policy.**
 

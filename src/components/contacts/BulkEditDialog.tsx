@@ -8,20 +8,23 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 
-const FIELDS = [{ key: 'company', label: 'Company' }, { key: 'job_title', label: 'Job title' }] as const;
+const FIELDS = [{ key: 'company', label: 'Company' }, { key: 'department', label: 'Department' }, { key: 'job_title', label: 'Job title' }] as const;
 type Field = (typeof FIELDS)[number]['key'];
 type Form = Record<Field, { value: string; change: boolean }>;
+
+const read = (contact: Contact, field: Field) =>
+  field === 'company' ? contact.organization.name || '' : field === 'department' ? contact.organization.department || '' : contact.job_title || '';
 
 /** A field starts with the value all contacts share, so the current value is visible; otherwise empty. */
 function formFor(contacts: Contact[]): Form {
   const shared = (field: Field) => {
-    const first = contacts[0]?.[field] || '';
-    return contacts.every(contact => (contact[field] || '') === first) ? first : '';
+    const first = contacts[0] ? read(contacts[0], field) : '';
+    return contacts.every(contact => read(contact, field) === first) ? first : '';
   };
-  return { company: { value: shared('company'), change: false }, job_title: { value: shared('job_title'), change: false } };
+  return Object.fromEntries(FIELDS.map(field => [field.key, { value: shared(field.key), change: false }])) as Form;
 }
 
-/** Sets company and job title on every selected contact. Only ticked fields are sent; a ticked empty field clears it. */
+/** Sets company, department and job title on every selected contact. Only ticked fields are sent; a ticked empty field clears it. */
 export function BulkEditDialog({ contacts, onClose, actions, onSaved }: {
   contacts: Contact[] | null; onClose: () => void; actions: ContactActions; onSaved: () => void;
 }) {
@@ -38,7 +41,7 @@ export function BulkEditDialog({ contacts, onClose, actions, onSaved }: {
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const contact: BulkContactChange = {};
-    for (const field of changes) contact[field.key] = form[field.key].value.trim();
+    for (const field of changes) contact[field.key] = form[field.key].value.trim() || null;
     actions.updateMany.mutate({ ids: targets.map(entry => entry.id), contact }, { onSuccess: () => { onSaved(); onClose(); } });
   };
 
@@ -63,7 +66,7 @@ export function BulkEditDialog({ contacts, onClose, actions, onSaved }: {
           <DialogFooter className="gap-2 sm:gap-0">
             <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
             <Button type="submit" disabled={changes.length === 0 || actions.updateMany.isPending}>
-              {actions.updateMany.isPending && <Loader2 aria-hidden="true" className="animate-spin" />}
+              {actions.updateMany.isPending && <Loader2 aria-hidden="true" className="motion-safe:animate-spin" />}
               Update {count === 1 ? '1 contact' : `${count} contacts`}
             </Button>
           </DialogFooter>

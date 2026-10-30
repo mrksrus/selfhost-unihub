@@ -9,6 +9,8 @@ interface Target {
   box: Rect;
   /** Where a tap lands on it: the box plus a `tap-area` pseudo-element. */
   hit: Rect;
+  /** The tap area without the part a fixed bar covers (see measure). */
+  uncovered: Rect;
   /** Hit-testing the centre of the tap area finds this control. */
   reachable: boolean;
   coveredBy: string | null;
@@ -48,12 +50,28 @@ function measure(page: Page, scope: string | undefined, only?: number): Promise<
           bottom: Math.max(hit.bottom, box.bottom - offset(after.bottom)),
         };
       }
+      // A fixed bar (the phone bottom bar) covers what scrolls under it, so the
+      // part of a tap area beneath it is not where a tap lands: the person sees
+      // the bar there and taps the bar. The uncovered part decides overlaps with
+      // neighbours; the size rule keeps the whole area, so a control that has
+      // scrolled half under the bar is not reported as too small, and a control
+      // that stays covered is reported by the reachability check.
+      const uncovered = { ...hit };
+      for (const bar of document.querySelectorAll('*')) {
+        if (bar === element || bar.contains(element) || element.contains(bar)) continue;
+        const barStyle = getComputedStyle(bar);
+        if (barStyle.position !== 'fixed' || barStyle.visibility === 'hidden') continue;
+        const cover = bar.getBoundingClientRect();
+        if (cover.width < innerWidth * 0.9 || cover.height <= 0 || cover.left > hit.left || cover.right < hit.right) continue;
+        if (cover.top > hit.top && cover.top < hit.bottom && cover.bottom >= hit.bottom) uncovered.bottom = Math.min(uncovered.bottom, cover.top);
+        if (cover.bottom < hit.bottom && cover.bottom > hit.top && cover.top <= hit.top) uncovered.top = Math.max(uncovered.top, cover.bottom);
+      }
       const x = Math.min(innerWidth - 1, Math.max(0, (hit.left + hit.right) / 2));
       const y = Math.min(innerHeight - 1, Math.max(0, (hit.top + hit.bottom) / 2));
       const top = document.elementFromPoint(x, y);
       const reachable = !!top && (element === top || element.contains(top) || (top as HTMLLabelElement).control === element);
       results.push({
-        index, label: describe(element), box: { left: box.left, top: box.top, right: box.right, bottom: box.bottom }, hit, reachable,
+        index, label: describe(element), box: { left: box.left, top: box.top, right: box.right, bottom: box.bottom }, hit, uncovered, reachable,
         coveredBy: reachable || !top ? null : describe(top.closest(selector) ?? top),
       });
     }
@@ -84,8 +102,8 @@ export async function touchViolations(page: Page, scope?: string): Promise<strin
       const [a, b] = [reachable[i], reachable[j]];
       // A control inside another's box (a chip inside a row) is part of it, not a neighbour.
       if (contains(a.box, b.box) || contains(b.box, a.box)) continue;
-      const width = Math.min(a.hit.right, b.hit.right) - Math.max(a.hit.left, b.hit.left);
-      const height = Math.min(a.hit.bottom, b.hit.bottom) - Math.max(a.hit.top, b.hit.top);
+      const width = Math.min(a.uncovered.right, b.uncovered.right) - Math.max(a.uncovered.left, b.uncovered.left);
+      const height = Math.min(a.uncovered.bottom, b.uncovered.bottom) - Math.max(a.uncovered.top, b.uncovered.top);
       // Edges that touch along at most one CSS pixel are neighbours, not an overlap.
       if (width > 1 && height > 1) violations.push(`${a.label} and ${b.label}: tap areas overlap by ${px(width)}×${px(height)} px`);
     }

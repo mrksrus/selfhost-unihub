@@ -58,7 +58,7 @@ beforeEach(() => {
   vi.mocked(api.get).mockImplementation(async (path: string) => {
     if (path.startsWith('/mail/accounts')) return { data: { accounts } };
     if (path === '/settings/values') return userSettingsAnswer({ default_mail_account_id: 'acc-b' });
-    return { data: { contacts: [{ id: 'c-1', first_name: 'Sparks', last_name: '', email: 'sparks@example.test' }] } };
+    return { data: { contacts: [{ id: 'c-1', display_name: 'Sparks', emails: [{ value: 'sparks@example.test', preferred: false }] }] } };
   });
   vi.mocked(api.post).mockResolvedValue({ data: { message: 'sent' } });
 });

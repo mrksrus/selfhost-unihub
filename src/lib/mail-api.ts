@@ -186,13 +186,11 @@ export interface MailFolder {
 }
 
 
+/** What the composer needs from a contact (src/lib/contacts-api.ts holds the full record). */
 export interface MailContact {
   id: string;
-  first_name: string;
-  last_name: string | null;
-  email: string | null;
-  email2: string | null;
-  email3: string | null;
+  display_name: string;
+  emails: { value: string; preferred: boolean }[];
 }
 
 export interface MailWriteback {

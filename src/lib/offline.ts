@@ -246,6 +246,22 @@ function mailRows(snapshot: OfflineSnapshot, params: URLSearchParams) {
     return !query || [row.subject,row.from_name,row.from_address,row.body_text].some(value=>text(value).toLowerCase().includes(query));
   }).sort(newestFirst);
 }
+// A contact row of the snapshot: the vCard model since 0.26 (name parts and
+// labelled lists), or the 3+3 columns of an older snapshot.
+function contactValues(row: Row, key: 'emails' | 'phones'): string[] {
+  const list = row[key];
+  if (Array.isArray(list)) return list.map(entry => text((entry as Record<string, unknown>)?.value).trim()).filter(Boolean);
+  const legacy = key === 'emails' ? ['email', 'email2', 'email3'] : ['phone', 'phone2', 'phone3'];
+  return legacy.map(column => text(row[column]).trim()).filter(Boolean);
+}
+function contactSearchText(row: Row) {
+  const name = (row.name || {}) as Record<string, unknown>;
+  const organization = (row.organization || {}) as Record<string, unknown>;
+  const list = (value: unknown) => Array.isArray(value) ? value.map(entry => typeof entry === 'string' ? entry : text((entry as Record<string, unknown>)?.value)) : [];
+  return [row.display_name, row.first_name, row.last_name, name.given, name.family, name.middle, name.prefix, name.suffix,
+    row.company, organization.name, organization.department, row.job_title, ...list(row.nicknames), ...list(row.categories),
+    ...contactValues(row, 'emails'), ...contactValues(row, 'phones')].map(text).filter(Boolean).join(' ').toLowerCase();
+}
 export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: string): {data: unknown} | {error: string;status?:number} | null {
   const url = new URL(endpoint,'https://offline.invalid');
   const path = url.pathname.replace(/^\/api(?=\/)/,'');
@@ -260,13 +276,16 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
     const group = params.get('group');
     if (group === 'name_only' || group === 'number_or_email_only') {
       rows = rows.filter(row => {
-        const hasName = [row.first_name, row.last_name].some(value => text(value).trim());
-        const hasAddress = ['email', 'email2', 'email3', 'phone', 'phone2', 'phone3'].some(key => text(row[key]).trim());
+        const name = row.name as Record<string, unknown> | undefined;
+        const hasName = [row.first_name, row.last_name, name?.given, name?.family, name?.middle, name?.display].some(value => text(value).trim());
+        const hasAddress = ['email', 'email2', 'email3', 'phone', 'phone2', 'phone3'].some(key => text(row[key]).trim())
+          || contactValues(row, 'emails').length > 0 || contactValues(row, 'phones').length > 0;
         return group === 'name_only' ? hasName && !hasAddress : !hasName && hasAddress;
       });
     }
     const query = (params.get('q') || '').toLowerCase();
-    if(query) rows=rows.filter(row=>['first_name','last_name','email','email2','email3','phone','phone2','phone3','company'].some(key=>text(row[key]).toLowerCase().includes(query)));
+    const digits = query.replace(/\D/g, '');
+    if (query) rows = rows.filter(row => contactSearchText(row).includes(query) || (digits.length >= 3 && contactValues(row, 'phones').some(number => number.replace(/\D/g, '').includes(digits))));
     const offset=numberParam(params,'offset',0,10000000), limit=numberParam(params,'limit',2000,2000);
     return {data:{contacts:rows.slice(offset,offset+limit),has_more:offset+limit<rows.length,offset}};
   }
