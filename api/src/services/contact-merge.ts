@@ -12,14 +12,14 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import type {
-  AutoMergeResult, ContactRecord, ContactSingleField, DuplicateGroup, MergeRecord, MergeResult, UndoMergeResult,
+  AutoMergeResult, ContactRecord, ContactSingleField, ContactValueKind, DuplicateGroup, MergeRecord, MergeResult, UndoMergeResult,
 } from '../contracts/contacts';
 import type { ContactDraft, ValueDraft } from './contacts';
 import crypto from 'node:crypto';
 import { db } from '../state';
 import { badRequest, conflict, notFound } from '../http/errors';
 import { withTransaction } from './transactions';
-import { displayName, loadContacts, newUid, replaceContact, uidHash } from './contacts';
+import { displayName, loadContacts, newUid, replaceContact, uidHash, KEPT_PROPERTIES_MAX, KEPT_PROPERTIES_MAX_BYTES, VALUES_PER_KIND } from './contacts';
 import { contactIdList, findDuplicates, singleFieldConflicts, singleFieldValue } from './contact-duplicates';
 import { getActiveRestoreSectionsByUser } from './restore-locks';
 import { isModuleEnabled } from './module-settings';
@@ -147,10 +147,53 @@ function valueIdentity(row: Pick<ValueRow, 'kind' | 'value' | 'value_key'>) {
   return `${row.kind}\u0000${row.value_key || `raw:${row.value.trim().toLowerCase()}`}`;
 }
 
+type GroupNames = Map<ContactSnapshot, Map<string, string>>;
+
+// vCard groups (Apple's item1.EMAIL with item1.X-ABLabel) tie a label to its
+// value. A later member's group that an earlier member already uses gets a
+// new name (item1 → item1-2), so the merged contact never ties one member's
+// label to another member's value, unless everything in that group is
+// already there (the same card twice), which keeps its name.
+function renameGroups(ordered: readonly ContactSnapshot[]): GroupNames {
+  const names: GroupNames = new Map();
+  const used = new Set<string>();
+  const presentValues = new Set<string>();
+  const presentProperties = new Set<string>();
+  const valueInGroup = (row: ValueRow, group: string | null) => `${valueIdentity(row)}\u0000${(group || '').toLowerCase()}`;
+  const remember = (member: ContactSnapshot, rename: (group: string | null) => string | null) => {
+    for (const row of member.values) { const group = rename(row.vcard_group); if (group) used.add(group.toLowerCase()); presentValues.add(valueInGroup(row, group)); }
+    for (const row of member.properties) { const group = rename(row.vcard_group); if (group) used.add(group.toLowerCase()); presentProperties.add(propertyIdentity({ ...row, vcard_group: group })); }
+  };
+  remember(ordered[0], group => group ?? null);
+  for (const member of ordered.slice(1)) {
+    const renamed = new Map<string, string>();
+    const groups = new Map<string, string>();
+    for (const row of [...member.values, ...member.properties]) if (row.vcard_group && !groups.has(row.vcard_group.toLowerCase())) groups.set(row.vcard_group.toLowerCase(), row.vcard_group);
+    for (const [key, group] of groups) {
+      if (!used.has(key)) continue;
+      const same = member.values.filter(row => row.vcard_group?.toLowerCase() === key).every(row => presentValues.has(valueInGroup(row, row.vcard_group)))
+        && member.properties.filter(row => row.vcard_group?.toLowerCase() === key).every(row => presentProperties.has(propertyIdentity(row)));
+      if (same) continue;
+      // vcard_group holds 64 characters.
+      const stem = group.slice(0, 56);
+      let n = 2;
+      while (used.has(`${stem.toLowerCase()}-${n}`) || [...groups.keys()].includes(`${stem.toLowerCase()}-${n}`)) n++;
+      renamed.set(key, `${stem}-${n}`);
+      used.add(`${stem.toLowerCase()}-${n}`);
+    }
+    names.set(member, renamed);
+    remember(member, group => (group ? renamed.get(group.toLowerCase()) ?? group : null));
+  }
+  return names;
+}
+
+const groupOf = (names: GroupNames, member: ContactSnapshot, group: string | null | undefined) =>
+  group ? names.get(member)?.get(group.toLowerCase()) ?? group : null;
+
 // The survivor's values keep their rows, positions and places for old apps
 // (legacy_slot); the other members' values follow in member order as new
 // rows, and the store gives them a free place for old apps where one is left.
-function unionValues(members: readonly ContactSnapshot[], survivorId: string): ValueDraft[] {
+function unionValues(members: readonly ContactSnapshot[], survivorId: string, names: GroupNames = new Map()): ValueDraft[] {
   const drafts = new Map<string, ValueDraft>();
   const next = new Map<string, number>();
   const survivor = members.find(member => member.contact.id === survivorId)!;
@@ -175,7 +218,7 @@ function unionValues(members: readonly ContactSnapshot[], survivorId: string): V
         id: own ? row.id : null, position,
         kind: row.kind, label: row.label, custom_label: row.custom_label ?? null, value: row.value, preferred: !!row.is_preferred,
         ...Object.fromEntries(ADDRESS_PARTS.map(part => [part, (row[part] as string | null) ?? null])),
-        params: parseJson(row.params), vcard_group: row.vcard_group ?? null,
+        params: parseJson(row.params), vcard_group: groupOf(names, member, row.vcard_group),
       });
     }
   }
@@ -233,14 +276,16 @@ function planMerge(members: readonly ContactSnapshot[], survivor: ContactSnapsho
     if (bytes + size <= NOTES_MAX_BYTES) { kept.push(note); bytes += size; } else overflow.push(note);
   }
 
+  const names = renameGroups(ordered);
   const known = new Set(survivor.properties.map(propertyIdentity));
   const extraProperties: MergePlan['extraProperties'] = [];
   for (const member of ordered.slice(1)) {
     for (const row of member.properties) {
-      const identity = propertyIdentity(row);
+      const group = groupOf(names, member, row.vcard_group);
+      const identity = propertyIdentity({ ...row, vcard_group: group });
       if (known.has(identity)) continue;
       known.add(identity);
-      extraProperties.push({ name: row.name, vcard_group: row.vcard_group ?? null, params: parseJson(row.params), value: row.value, source_version: row.source_version ?? null });
+      extraProperties.push({ name: row.name, vcard_group: group, params: parseJson(row.params), value: row.value, source_version: row.source_version ?? null });
     }
   }
   for (const note of overflow) extraProperties.push({ name: 'NOTE', vcard_group: null, params: null, value: note, source_version: '4.0' });
@@ -255,11 +300,36 @@ function planMerge(members: readonly ContactSnapshot[], survivor: ContactSnapsho
       anniversary: single('anniversary', 'anniversary'),
       notes: kept.length ? kept.join('\n\n') : null,
       is_favorite: ordered.some(member => !!member.contact.is_favorite),
-      values: unionValues(ordered, survivor.contact.id),
+      values: unionValues(ordered, survivor.contact.id, names),
     },
     extraProperties,
     photoFrom: chosen('photo') || ordered.find(member => member.photo) || null,
   };
+}
+
+// ── Limits ─────────────────────────────────────────────────────────────
+
+const KIND_PLURALS: Readonly<Record<ContactValueKind, string>> = {
+  email: 'email addresses', phone: 'phone numbers', address: 'addresses', url: 'web addresses', impp: 'messaging addresses',
+  related: 'related people', nickname: 'nicknames', category: 'categories',
+};
+
+/**
+ * A merged contact must stay within what the store accepts and a restore
+ * reads back: at most 100 values of each kind (after de-duplication) and
+ * 500 other details in 256 KB. A merge past that is refused, never cut:
+ * the person removes values first, or keeps the contacts apart.
+ */
+function checkMergeLimits(plan: MergePlan, survivor: ContactSnapshot) {
+  const counts = new Map<ContactValueKind, number>();
+  for (const value of plan.draft.values) counts.set(value.kind, (counts.get(value.kind) || 0) + 1);
+  const kinds = [...counts].filter(([, count]) => count > VALUES_PER_KIND).map(([kind]) => kind);
+  const kept = [...survivor.properties, ...plan.extraProperties];
+  const keptOver = kept.length > KEPT_PROPERTIES_MAX || kept.reduce((sum, property) => sum + Buffer.byteLength(property.value, 'utf8'), 0) > KEPT_PROPERTIES_MAX_BYTES;
+  if (!kinds.length && !keptOver) return;
+  const what = [...kinds.map(kind => `${VALUES_PER_KIND} ${KIND_PLURALS[kind]}`), ...(keptOver ? [`${KEPT_PROPERTIES_MAX} other details (256 KB)`] : [])];
+  throw badRequest('TOO_MANY_VALUES', `Together these contacts have more than ${what.join(' or ')}, more than one contact can hold. Remove some first, or keep them apart.`,
+    { kinds, kept_properties: keptOver });
 }
 
 // ── Merge ──────────────────────────────────────────────────────────────
@@ -268,7 +338,14 @@ interface MergeInput {
   ids: string[];
   survivorId: string;
   choices: Choices;
-  versions: Record<string, number>;
+  /** null: the caller holds the contacts in its own transaction (an import). */
+  versions: Record<string, number> | null;
+  /**
+   * 'keep-survivor' (imports): a differing single value without a choice
+   * keeps the survivor's, else the first member's that has one, instead of
+   * answering CHOICE_REQUIRED.
+   */
+  resolve?: 'keep-survivor';
 }
 
 function parseMergeRequest(body: unknown): MergeInput {
@@ -310,7 +387,7 @@ async function staleMerge(cx: SqlExecutor, userId: string, ids: readonly string[
  * the bin, keeps their UIDs as aliases of the survivor and moves their
  * "Not the same person" pairs onto it. No file is touched.
  */
-async function mergeLocked(cx: SqlExecutor, userId: string, { ids, survivorId, choices, versions }: MergeInput) {
+async function mergeLocked(cx: SqlExecutor, userId: string, { ids, survivorId, choices, versions, resolve }: MergeInput) {
   const sorted = [...ids].sort();
   const [locked] = await cx.execute<(RowDataPacket & { id: string; version: number })[]>(
     `SELECT id, version FROM contacts WHERE user_id = ? AND id IN (${placeholders(sorted)}) ORDER BY id FOR UPDATE`, [userId, ...sorted]);
@@ -318,7 +395,7 @@ async function mergeLocked(cx: SqlExecutor, userId: string, { ids, survivorId, c
     if (!locked.length) throw notFound('CONTACT_NOT_FOUND', 'Contact not found');
     throw await staleMerge(cx, userId, ids);
   }
-  if (locked.some(row => Number(row.version) !== versions[row.id])) throw await staleMerge(cx, userId, ids);
+  if (versions && locked.some(row => Number(row.version) !== versions[row.id])) throw await staleMerge(cx, userId, ids);
 
   const snapshots = await snapshotContacts(cx, userId, ids);
   const members = ids.map(id => snapshots.get(id)!);
@@ -334,9 +411,16 @@ async function mergeLocked(cx: SqlExecutor, userId: string, { ids, survivorId, c
     decided[field] = id;
   }
   const missing = conflicts.filter(field => !decided[field]);
-  if (missing.length) throw badRequest('CHOICE_REQUIRED', 'Choose which contact\'s value to keep for each field that differs.', { conflicts: missing });
+  if (missing.length && resolve === 'keep-survivor') {
+    for (const field of missing) {
+      const owner = [survivor, ...members.filter(member => member !== survivor)].find(member => singleFieldValue(asFieldSource(member), field) !== null);
+      if (owner) decided[field] = owner.contact.id;
+    }
+  } else if (missing.length) throw badRequest('CHOICE_REQUIRED', 'Choose which contact\'s value to keep for each field that differs.', { conflicts: missing });
 
   const plan = planMerge(members, survivor, decided);
+  // Refused before anything is written, so a caller's transaction stays usable.
+  checkMergeLimits(plan, survivor);
   await replaceContact(cx, userId, survivorId, plan.draft, { expectedVersion: null });
   if (plan.extraProperties.length) {
     const [[{ next }]] = await cx.execute<(RowDataPacket & { next: number })[]>(
@@ -413,7 +497,7 @@ async function mergeLocked(cx: SqlExecutor, userId: string, { ids, survivorId, c
     [userId, member.contact.uid_hash, member.contact.uid, survivorId, mergeId]);
   }
   await cx.execute(`DELETE FROM contacts WHERE user_id = ? AND id IN (${placeholders(otherIds)})`, [userId, ...otherIds]);
-  return { mergeId, mergedIds: otherIds };
+  return { mergeId, mergedIds: otherIds, conflicts };
 }
 
 async function mergeContacts(userId: string, body: unknown): Promise<MergeResult> {
@@ -457,6 +541,7 @@ async function autoMerge(userId: string, body: unknown): Promise<AutoMergeResult
       const code = (error as { code?: string }).code;
       if (code === 'VERSION_CONFLICT' || code === 'CONTACT_NOT_FOUND') { results.push({ group_id: groupId, status: 'changed' }); continue; }
       if (code === 'CHOICE_REQUIRED') { results.push({ group_id: groupId, status: 'needs_choice' }); continue; }
+      if (code === 'TOO_MANY_VALUES') { results.push({ group_id: groupId, status: 'too_many_values' }); continue; }
       throw error;
     }
   }
@@ -636,6 +721,7 @@ async function photosHeldForUndo(userId: string, executor: SqlExecutor = db): Pr
 
 export {
   mergeContacts,
+  mergeLocked,
   autoMerge,
   listMerges,
   undoMerge,

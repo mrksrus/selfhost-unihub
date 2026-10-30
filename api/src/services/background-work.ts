@@ -16,11 +16,14 @@ import { pruneAuditLog } from './audit';
 import { runMailThreadBackfill } from './mail-thread-backfill';
 import { runDueScheduledSends } from './mail-scheduled-send';
 import { returnDueSnoozes } from './mail-snooze';
-import { purgeExpiredMerges } from './contact-merge';
+import { purgeExpiredMerges, photosHeldForUndo } from './contact-merge';
+import { sweepContactPhotos } from './contact-photos';
+import { sweepContactImports } from './contacts-import';
+import { isModuleEnabled } from './module-settings';
 import { isWorkerOwner } from './worker-owner';
 import { log } from '../log';
 
-// The periodic work of this API process: the thirteen timers listed in
+// The periodic work of this API process: the fifteen timers listed in
 // docs/ARCHITECTURE.md "Scheduled Jobs", the startup resets they rely on and
 // the mail IDLE supervisor they start. app.ts starts it once after the server
 // listens and stops it on shutdown. UniHub runs one API process; everything
@@ -34,6 +37,9 @@ const MAIL_SERVER_DELETE_INTERVAL_MS = 60 * 1000;
 const MAIL_THREAD_BACKFILL_INTERVAL_MS = 15 * 1000;
 const SCHEDULED_SEND_INTERVAL_MS = 15 * 1000;
 const SNOOZE_RETURN_INTERVAL_MS = 30 * 1000;
+const CONTACT_PHOTO_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+// The first photo sweep after a start, so a server restarted daily still sweeps.
+const CONTACT_PHOTO_SWEEP_DELAY_MS = 10 * 60 * 1000;
 
 type TimerApi = Pick<typeof globalThis, 'setInterval' | 'clearInterval' | 'setTimeout' | 'clearTimeout' | 'setImmediate'>;
 interface BackgroundWorkDeps {
@@ -55,6 +61,8 @@ interface BackgroundWorkDeps {
   runDueScheduledSends: () => Promise<unknown>;
   returnDueSnoozes: () => Promise<unknown>;
   purgeContactBin: (active: () => boolean) => Promise<{ items: number; merges: number }>;
+  sweepContactPhotos: (active: () => boolean) => Promise<number>;
+  sweepContactImports: () => Promise<{ expired: number; orphans: number }>;
   isWorkerOwner: () => boolean;
 }
 interface BackgroundWorkHandle {
@@ -81,6 +89,8 @@ function defaultDeps(): BackgroundWorkDeps {
     runDueScheduledSends: () => runDueScheduledSends(),
     returnDueSnoozes: () => returnDueSnoozes(),
     purgeContactBin: active => purgeExpiredMerges({ active }),
+    sweepContactPhotos: active => sweepContactPhotos({ active, moduleEnabled: userId => isModuleEnabled(userId, 'contacts'), heldForUndo: userId => photosHeldForUndo(userId) }),
+    sweepContactImports: () => sweepContactImports(),
     isWorkerOwner,
     stopCalendarWork: () => (require('./calendar-sync') as typeof import('./calendar-sync')).stopAllCalendarWork(),
     runCalendarSyncPass: (...args) => (require('./calendar-sync') as typeof import('./calendar-sync')).runCalendarSyncPass(...args),
@@ -225,6 +235,21 @@ async function runStartup(deps: BackgroundWorkDeps, state: { stopped: boolean },
     const { items, merges } = await deps.purgeContactBin(active);
     if (items > 0 || merges > 0) log.info('CLEANUP', 'Deleted merged contacts past their undo window', { items, merges });
   });
+
+  // Contact imports past their 24 hours and their staged files
+  // (contacts.expireImports), and contact photo files no row and no undo
+  // needs any more (contacts.sweepPhotos, daily and once soon after a start).
+  // Both skip people whose contacts are being restored or whose Contacts
+  // module is off.
+  every('CLEANUP', 60 * 60 * 1000, async () => {
+    const { expired, orphans } = await deps.sweepContactImports();
+    if (expired > 0 || orphans > 0) log.info('CLEANUP', 'Deleted expired contact imports', { expired, orphans });
+  });
+  const photoSweep = every('CLEANUP', CONTACT_PHOTO_SWEEP_INTERVAL_MS, async () => {
+    const removed = await deps.sweepContactPhotos(active);
+    if (removed > 0) log.info('CLEANUP', 'Deleted contact photo files nothing refers to', { removed });
+  });
+  after(CONTACT_PHOTO_SWEEP_DELAY_MS, () => { void photoSweep.run(); });
 
   // Pool counts every 15 minutes, and every minute while work is queueing for
   // a connection: a pile-up then shows in the log as it builds, not after it.

@@ -216,7 +216,9 @@ test('contact duplicates and merges: detection, merge review, Merge all, undo, p
   assert.deepEqual([slotted.email, slotted.email2, slotted.email3], ['o1@example.net', 'o2@example.net', 'more@example.net'], 'no place moved; one free place filled');
   const [slotRows] = await pool.execute<RowDataPacket[]>("SELECT value, legacy_slot FROM contact_values WHERE contact_id = ? AND kind = 'email' ORDER BY position", [slots1.id]);
   assert.deepEqual(slotRows.map(row => [row.value, row.legacy_slot]), [['o1@example.net', 1], ['o2@example.net', 2], ['more@example.net', 3], ['last@example.net', null]]);
-  const slotUndo = await call(owner, 'POST', `/api/contacts/merges/${(await call(owner, 'GET', '/api/contacts/merges')).merges[0].id}/undo`, {});
+  // Merges of the same second have no order among themselves: this one is found by its survivor.
+  const slotMerge = (await call(owner, 'GET', '/api/contacts/merges')).merges.find((merge: FixtureValue) => merge.survivor_id === slots1.id && !merge.undone_at);
+  const slotUndo = await call(owner, 'POST', `/api/contacts/merges/${slotMerge.id}/undo`, {});
   assert.equal(slotUndo.survivor_restored, true);
   const [restoredSlots] = await pool.execute<RowDataPacket[]>("SELECT contact_id, value, legacy_slot FROM contact_values WHERE contact_id IN (?, ?) AND kind = 'email' ORDER BY contact_id = ?, position",
     [slots1.id, slots2.id, slots2.id]);

@@ -23,6 +23,7 @@ import { compileRouteMatcher } from './http/route-matcher';
 import { DEFAULT_BODY_LIMIT } from './http/route';
 import { isModuleEnabled } from './services/module-settings';
 import { getActiveRestoreSections } from './services/restore-locks';
+import { buildContentDisposition } from './http/content-disposition';
 
 // Every route is a spec (http/route.ts); the boundary reads policy from it and
 // nothing else. Bodies are untrusted at dispatch; each route keeps its validation.
@@ -32,22 +33,6 @@ const BACKUP_UPLOAD_ROOT = '/app/uploads/backups/imports';
 // Compiled once from the route table: every key with a :param segment becomes a
 // segment matcher, so adding a route needs no change here.
 const matchRoute = compileRouteMatcher(Object.keys(routeTable));
-
-function sanitizeHeaderFilename(filename: unknown) {
-  const sanitized = String(filename || 'download')
-    .replace(/[\r\n"\\]/g, '_')
-    .replace(/[^\x20-\x7E]/g, '_')
-    .trim();
-  return sanitized || 'download';
-}
-
-function buildContentDisposition(dispositionType: unknown, filename: unknown) {
-  const safeDispositionType = dispositionType === 'inline' ? 'inline' : 'attachment';
-  const rawFilename = String(filename || 'download').replace(/[\r\n]/g, ' ').trim() || 'download';
-  const safeFilename = sanitizeHeaderFilename(rawFilename);
-  const encodedFilename = encodeURIComponent(rawFilename);
-  return `${safeDispositionType}; filename="${safeFilename}"; filename*=UTF-8''${encodedFilename}`;
-}
 
 // If-None-Match compares weakly (RFC 9110): W/"x" matches "x", and * matches any.
 function etagMatches(header: string | undefined, etag: string) {

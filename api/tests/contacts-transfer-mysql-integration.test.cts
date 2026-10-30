@@ -9,6 +9,42 @@ const os = require('node:os') as typeof import('node:os');
 const path = require('node:path') as typeof import('node:path');
 const { withTestDatabase, startTestApi } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 
+// A client that can send raw bodies and read raw answers (the shared one speaks JSON only).
+async function rawSession(origin: string, email: string, password: string) {
+  const cookies = new Map<string, string>();
+  let csrf = '';
+  async function send(method: string, url: string, body?: Buffer | unknown, contentType?: string) {
+    const raw = Buffer.isBuffer(body);
+    const response = await fetch(`${origin}${url}`, {
+      method,
+      headers: {
+        ...(body === undefined ? {} : { 'content-type': contentType || (raw ? 'application/octet-stream' : 'application/json') }),
+        ...(cookies.size ? { cookie: [...cookies].map(([key, value]) => `${key}=${value}`).join('; ') } : {}),
+        ...(csrf && method !== 'GET' ? { 'x-csrf-token': csrf } : {}),
+      },
+      body: body === undefined ? undefined : raw ? new Uint8Array(body as Buffer) : JSON.stringify(body),
+    });
+    for (const line of response.headers.getSetCookie()) {
+      const [pair] = line.split(';');
+      const at = pair.indexOf('=');
+      if (pair.slice(at + 1)) cookies.set(pair.slice(0, at), pair.slice(at + 1));
+    }
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const type = response.headers.get('content-type') || '';
+    const json = type.includes('application/json') && bytes.length ? JSON.parse(bytes.toString('utf8')) : null;
+    if (typeof json?.csrfToken === 'string') csrf = json.csrfToken;
+    return { status: response.status, json, bytes, headers: response.headers };
+  }
+  const reply = await send('POST', '/api/auth/signin', { email, password });
+  assert.equal(reply.status, 200);
+  async function call(method: string, url: string, body?: Buffer | unknown, status = 200, contentType?: string): Promise<FixtureValue> {
+    const answer = await send(method, url, body, contentType);
+    assert.equal(answer.status, status, `${method} ${url}: ${answer.bytes.toString('utf8').slice(0, 400)}`);
+    return answer.json;
+  }
+  return { send, call };
+}
+
 // Contact import (preview, decisions, durable commit) and export through the
 // real request handler and MariaDB, as the page reaches them: a raw file
 // upload, polling, two people, the module switch, a running restore, an
@@ -39,41 +75,7 @@ test('contacts import and export: preview before writing, decisions, idempotent 
     await pool.execute('INSERT INTO users (id, email, password_hash, full_name) VALUES (?, ?, ?, ?)', [users[name], `${name}@example.test`, passwordHash, name]);
   }
 
-  // A client that can send raw bodies and read raw answers (the shared one speaks JSON only).
-  async function signIn(name: string) {
-    const cookies = new Map<string, string>();
-    let csrf = '';
-    async function send(method: string, url: string, body?: Buffer | unknown, contentType?: string) {
-      const raw = Buffer.isBuffer(body);
-      const response = await fetch(`${api.origin}${url}`, {
-        method,
-        headers: {
-          ...(body === undefined ? {} : { 'content-type': contentType || (raw ? 'application/octet-stream' : 'application/json') }),
-          ...(cookies.size ? { cookie: [...cookies].map(([key, value]) => `${key}=${value}`).join('; ') } : {}),
-          ...(csrf && method !== 'GET' ? { 'x-csrf-token': csrf } : {}),
-        },
-        body: body === undefined ? undefined : raw ? new Uint8Array(body as Buffer) : JSON.stringify(body),
-      });
-      for (const line of response.headers.getSetCookie()) {
-        const [pair] = line.split(';');
-        const at = pair.indexOf('=');
-        if (pair.slice(at + 1)) cookies.set(pair.slice(0, at), pair.slice(at + 1));
-      }
-      const bytes = Buffer.from(await response.arrayBuffer());
-      const type = response.headers.get('content-type') || '';
-      const json = type.includes('application/json') && bytes.length ? JSON.parse(bytes.toString('utf8')) : null;
-      if (typeof json?.csrfToken === 'string') csrf = json.csrfToken;
-      return { status: response.status, json, bytes, headers: response.headers };
-    }
-    const reply = await send('POST', '/api/auth/signin', { email: `${name}@example.test`, password });
-    assert.equal(reply.status, 200);
-    async function call(method: string, url: string, body?: Buffer | unknown, status = 200, contentType?: string): Promise<FixtureValue> {
-      const answer = await send(method, url, body, contentType);
-      assert.equal(answer.status, status, `${method} ${url}: ${answer.bytes.toString('utf8').slice(0, 400)}`);
-      return answer.json;
-    }
-    return { send, call };
-  }
+  const signIn = (name: string) => rawSession(api.origin, `${name}@example.test`, password);
   const owner = await signIn('owner');
   const stranger = await signIn('stranger');
   const fixture = (name: string) => fs.readFileSync(path.join(__dirname, 'fixtures', 'contacts', name));
@@ -100,7 +102,8 @@ test('contacts import and export: preview before writing, decisions, idempotent 
   const [duplicate, fresh] = summary.groups;
   assert.deepEqual([duplicate.match, duplicate.confidence, duplicate.existing_ids, duplicate.default_decision], ['duplicate', 'high', [existing.id], 'merge']);
   assert.deepEqual(duplicate.reasons, [{ kind: 'email', detail: 'juergen@example.com' }]);
-  assert.deepEqual(duplicate.conflicts.sort(), ['job_title', 'name'], 'an empty single value is filled, a different one is a conflict');
+  // The name parts the contact lacks (prefix, middle, suffix, display name) fill in; a different title is a conflict.
+  assert.deepEqual(duplicate.conflicts, ['job_title'], 'an empty single value is filled, a different one is a conflict');
   assert.equal(duplicate.summaries[0].job_title, 'Chemist', 'the card summary for "Review conflicts"');
   assert.deepEqual([fresh.match, fresh.default_decision, fresh.summaries], ['new', 'add', undefined]);
   assert.deepEqual(summary.sample_names, ['Dr. Jürgen Müller', 'Example Organisation']);
@@ -118,13 +121,14 @@ test('contacts import and export: preview before writing, decisions, idempotent 
   assert.ok(['committing', 'committed'].includes(started.state));
   const done = await waitFor(summary.id);
   assert.deepEqual([done.state, done.progress, done.result.added, done.result.merged, done.result.skipped, done.error], ['committed', 1, 1, 1, 0, null]);
-  assert.deepEqual(done.result.kept_conflicts.map((item: FixtureValue) => item.field).sort(), ['job_title', 'name']);
+  assert.deepEqual(done.result.kept_conflicts.map((item: FixtureValue) => item.field), ['job_title']);
   assert.deepEqual(stagedFiles(), [], 'the staged file is removed after the commit');
   const again = await owner.call('POST', `/api/contacts/imports/${summary.id}/commit`, { decisions: [{ group_id: 'g1', decision: 'add' }] });
   assert.equal(again.state, 'committed');
   assert.equal(await count(users.owner), 2, 'commit twice = once');
   const merged = (await owner.call('GET', `/api/contacts/${existing.id}`)).contact;
   assert.equal(merged.job_title, 'Engineer', "UniHub's single value is kept");
+  assert.deepEqual([merged.name.given, merged.name.family, merged.name.prefix, merged.name.display], ['Jürgen', 'Müller', 'Dr.', 'Dr. Jürgen Müller'], 'missing name parts are filled');
   assert.ok(merged.emails.length === 2 && merged.phones.length === 5, 'every value of the card is added');
   assert.ok(merged.properties.some((property: FixtureValue) => property.name === 'X-FOO'), 'kept properties come along');
   const [[alias]] = await pool.query<RowDataPacket[]>('SELECT contact_id FROM contact_uid_aliases WHERE user_id = ? AND uid = ?', [users.owner, 'urn:uuid:6f1d2a3c-0000-4000-8000-000000000001']);
@@ -241,4 +245,182 @@ test('contacts import and export: preview before writing, decisions, idempotent 
   await owner.call('GET', `/api/contacts/imports/${stale.id}`, undefined, 404);
   const [[left]] = await pool.query<RowDataPacket[]>("SELECT COUNT(*) AS n FROM contact_imports WHERE status = 'staged' AND expires_at < UTC_TIMESTAMP()");
   assert.equal(Number(left.n), 0);
+});
+
+// The seams between import, photos, merges and the background sweeps: an
+// inline photo becomes the stored photo and is exported again; an import's
+// merge is a merge like any other (the card in the bin, undoable); the photo
+// sweep keeps what an undo needs and removes orphans; a merge past 100 values
+// of a kind is refused, by hand, by "Merge all" and by an import.
+test('contacts import, photos and merges: inline photos stored and exported, import merges undoable, sweeps, 100 values per kind', {
+  skip: !process.env.MYSQL_TEST_HOST, timeout: 300000,
+}, async t => {
+  const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
+  t.after(captureLog(() => {}));
+  const sharp = require('sharp') as typeof import('sharp').default;
+  const scratch = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'unihub-contact-seams-'));
+  const previous = { imports: process.env.CONTACT_IMPORTS_ROOT, photos: process.env.CONTACT_PHOTOS_ROOT, spool: process.env.UPLOAD_SPOOL_ROOT };
+  process.env.CONTACT_IMPORTS_ROOT = path.join(scratch, 'imports');
+  process.env.CONTACT_PHOTOS_ROOT = path.join(scratch, 'photos');
+  process.env.UPLOAD_SPOOL_ROOT = path.join(scratch, 'spool');
+  t.after(() => {
+    for (const [key, value] of [['CONTACT_IMPORTS_ROOT', previous.imports], ['CONTACT_PHOTOS_ROOT', previous.photos], ['UPLOAD_SPOOL_ROOT', previous.spool]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+  const pool = await withTestDatabase(t);
+  const api = await startTestApi(t);
+  const { sweepContactPhotos } = require('../dist/src/services/contact-photos') as typeof import('../src/services/contact-photos');
+  const { photosHeldForUndo } = require('../dist/src/services/contact-merge') as typeof import('../src/services/contact-merge');
+  const { isModuleEnabled } = require('../dist/src/services/module-settings') as typeof import('../src/services/module-settings');
+  const password = 'synthetic-seams-password';
+  const userId = crypto.randomUUID();
+  await pool.execute('INSERT INTO users (id, email, password_hash, full_name) VALUES (?, ?, ?, ?)',
+    [userId, 'seams@example.test', await (require('bcryptjs') as typeof import('bcryptjs')).hash(password, 4), 'Seams']);
+  const owner = await rawSession(api.origin, 'seams@example.test', password);
+  const waitFor = async (id: string) => {
+    for (let attempt = 0; attempt < 600; attempt++) {
+      const status = await owner.call('GET', `/api/contacts/imports/${id}`);
+      if (['committed', 'failed', 'expired'].includes(status.state)) return status;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error('import did not finish');
+  };
+  const importFile = async (text: string, decisions?: FixtureValue[]) => {
+    const summary = await owner.call('POST', '/api/contacts/imports', Buffer.from(text), 200, 'text/vcard');
+    await owner.call('POST', `/api/contacts/imports/${summary.id}/commit`, decisions ? { decisions } : {});
+    return { summary, done: await waitFor(summary.id) };
+  };
+  const count = async () => Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM contacts WHERE user_id = ?', [userId]))[0][0].n);
+  const photoDir = () => path.join(process.env.CONTACT_PHOTOS_ROOT!, userId);
+  const photoFiles = () => (fs.existsSync(photoDir()) ? fs.readdirSync(photoDir()).sort() : []);
+  const age = () => { const old = (Date.now() - 2 * 3600 * 1000) / 1000; for (const name of photoFiles()) fs.utimesSync(path.join(photoDir(), name), old, old); };
+  // The background job's own options (background-work.ts).
+  const sweep = () => sweepContactPhotos({ moduleEnabled: id => isModuleEnabled(id, 'contacts'), heldForUndo: id => photosHeldForUndo(id) });
+  const byName = async (q: string) => (await owner.call('GET', `/api/contacts?q=${encodeURIComponent(q)}`)).contacts as FixtureValue[];
+
+  const jpeg = await sharp({ create: { width: 900, height: 600, channels: 3, background: '#c03020' } }).jpeg().toBuffer();
+  const png = await sharp({ create: { width: 300, height: 400, channels: 4, background: { r: 20, g: 120, b: 220, alpha: 0.5 } } }).png().toBuffer();
+  const rosaJpeg = await sharp({ create: { width: 640, height: 640, channels: 3, background: '#30a050' } }).jpeg().toBuffer();
+
+  // ── An existing contact with its own photo ──
+  const rosa = (await owner.call('POST', '/api/contacts', { name: { given: 'Rosa', family: 'Example' }, emails: ['rosa@example.test'], phones: ['+1 555 0101'] })).contact;
+  const rosaPhoto = (await owner.call('PUT', `/api/contacts/${rosa.id}/photo`, rosaJpeg, 200, 'image/jpeg')).contact.photo;
+  const rosaBefore = (await owner.call('GET', `/api/contacts/${rosa.id}`)).contact;
+
+  // ── Import: a PNG in 4.0, a JPEG in 3.0 (ENCODING=b), an unreadable picture ──
+  const file = [
+    `BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Rosa Example\r\nN:Example;Rosa;;;\r\nEMAIL:rosa@example.test\r\nTEL:+1 555 0199\r\nPHOTO:data:image/png;base64,${png.toString('base64')}\r\nEND:VCARD\r\n`,
+    `BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Paul Photo\r\nN:Photo;Paul;;;\r\nEMAIL:paul@example.test\r\nPHOTO;ENCODING=b;TYPE=JPEG:${jpeg.toString('base64')}\r\nEND:VCARD\r\n`,
+    `BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Una Readable\r\nN:Readable;Una;;;\r\nEMAIL:una@example.test\r\nPHOTO:data:image/png;base64,${Buffer.from('synthetic, not a picture').toString('base64')}\r\nEND:VCARD\r\n`,
+  ].join('');
+  const { summary, done } = await importFile(file);
+  assert.deepEqual(summary.groups.map((group: FixtureValue) => [group.match, group.default_decision]), [['duplicate', 'merge'], ['new', 'add'], ['new', 'add']]);
+  assert.deepEqual(summary.groups[0].conflicts, ['photo'], 'the card\'s photo differs from the stored one');
+  assert.equal(summary.groups[0].summaries[0].has_photo, true);
+  assert.deepEqual([done.state, done.result.added, done.result.merged], ['committed', 2, 1]);
+  assert.deepEqual(done.result.warnings.map((warning: FixtureValue) => [warning.card, warning.property, warning.code]), [[3, 'PHOTO', 'PHOTO_UNREADABLE']]);
+  assert.doesNotMatch(JSON.stringify(done.result.warnings), /synthetic, not a picture|c3ludGhldGlj/, 'a warning names the card, never the value');
+  assert.deepEqual(done.result.kept_conflicts, [{ contact_id: rosa.id, field: 'photo' }]);
+
+  // The JPEG card's photo is stored and served as a square JPEG of at most 512 pixels.
+  const [paul] = await byName('Paul');
+  assert.ok(paul.photo, 'Paul has a photo');
+  const served = await owner.send('GET', `/api/contacts/${paul.id}/photo`);
+  assert.deepEqual([served.status, served.headers.get('content-type'), served.headers.get('etag')], [200, 'image/jpeg', `"${paul.photo.etag}"`]);
+  const meta = await sharp(served.bytes).metadata();
+  assert.deepEqual([meta.format, meta.width, meta.height], ['jpeg', 512, 512]);
+  // The unreadable picture: the contact is there without a photo; the PHOTO is kept as it was in the file.
+  const [una] = await byName('Una');
+  assert.equal(una.photo, null);
+  assert.deepEqual((await owner.call('GET', `/api/contacts/${una.id}`)).contact.properties.map((property: FixtureValue) => property.name), ['PHOTO']);
+  // The merge kept Rosa's own photo and added the card's number.
+  const rosaMerged = (await owner.call('GET', `/api/contacts/${rosa.id}`)).contact;
+  assert.deepEqual([rosaMerged.photo.etag, rosaMerged.phones.map((phone: FixtureValue) => phone.value)], [rosaPhoto.etag, ['+1 555 0101', '+1 555 0199']]);
+  assert.equal(await count(), 3);
+
+  // ── Export carries the stored photos ──
+  const v4 = (await owner.send('GET', '/api/contacts/export?format=vcard4')).bytes.toString('utf8');
+  const unfold = (text: string) => text.replace(/\r\n[ \t]/g, '');
+  const cardOf = (text: string, name: string) => unfold(text).split('END:VCARD').find(card => card.includes(`FN:${name}`))!;
+  for (const name of ['Paul Photo', 'Rosa Example']) assert.match(cardOf(v4, name), /\r\nPHOTO:data:image\/jpeg;base64,\/9j\//, `${name} in 4.0`);
+  assert.equal(cardOf(v4, 'Paul Photo').match(/\r\nPHOTO[:;]/g)!.length, 1);
+  assert.match(cardOf(v4, 'Una Readable'), /\r\nPHOTO.*:data:image\/png;base64,/, 'the unreadable picture goes out as it came');
+  const v3 = (await owner.send('GET', '/api/contacts/export?format=vcard3')).bytes.toString('utf8');
+  assert.match(cardOf(v3, 'Paul Photo'), /\r\nPHOTO;ENCODING=b;TYPE=JPEG:\/9j\//);
+  const exportedPhoto = Buffer.from(/\r\nPHOTO:data:image\/jpeg;base64,([^\r]+)/.exec(cardOf(v4, 'Paul Photo'))![1], 'base64');
+  assert.equal(crypto.createHash('sha256').update(exportedPhoto).digest('hex'), paul.photo.etag, 'the stored bytes, as served');
+
+  // ── The import's merge is in "Recently merged", its card in the bin with its photo ──
+  const { merges } = await owner.call('GET', '/api/contacts/merges');
+  assert.equal(merges.length, 1);
+  assert.deepEqual([merges[0].survivor_id, merges[0].merged.map((item: FixtureValue) => item.display_name)], [rosa.id, ['Rosa Example']]);
+  const [[binned]] = await pool.query<RowDataPacket[]>("SELECT file_refs FROM bin_items WHERE user_id = ? AND reason = 'merged'", [userId]);
+  const cardPhoto = (typeof binned.file_refs === 'string' ? JSON.parse(binned.file_refs) : binned.file_refs) as string[];
+  assert.equal(cardPhoto.length, 2, 'the card\'s photo and thumbnail wait in the bin');
+
+  // ── The photo sweep: keeps what rows and the undo need, removes an orphan; skips a module that is off ──
+  const orphan = path.join(photoDir(), `${'e'.repeat(64)}.jpg`);
+  fs.writeFileSync(orphan, 'synthetic');
+  age();
+  const beforeSweep = photoFiles();
+  await owner.call('PUT', '/api/modules', { modules: { contacts: { enabled: false } } });
+  assert.equal(await sweep(), 0, 'the Contacts module is off: nothing is swept');
+  await owner.call('PUT', '/api/modules', { modules: { contacts: { enabled: true } } });
+  assert.equal(await sweep(), 1);
+  assert.deepEqual(photoFiles(), beforeSweep.filter(name => name !== path.basename(orphan)), 'only the orphan went');
+  for (const sha of cardPhoto) assert.ok(photoFiles().includes(`${sha}.jpg`), 'the merged-away card\'s photo stays for the undo');
+
+  // ── Undo the import's merge: Rosa as before, the card back as its own contact with its photo ──
+  const undone = await owner.call('POST', `/api/contacts/merges/${merges[0].id}/undo`);
+  assert.equal(undone.survivor_restored, true);
+  const rosaAfter = (await owner.call('GET', `/api/contacts/${rosa.id}`)).contact;
+  assert.deepEqual([rosaAfter.phones, rosaAfter.emails, rosaAfter.photo], [rosaBefore.phones, rosaBefore.emails, rosaBefore.photo]);
+  const [card] = undone.restored_ids;
+  const restored = (await owner.call('GET', `/api/contacts/${card}`)).contact;
+  assert.deepEqual([restored.display_name, restored.phones.map((phone: FixtureValue) => phone.value), restored.photo.etag], ['Rosa Example', ['+1 555 0199'], cardPhoto[0]]);
+  assert.equal((await owner.send('GET', `/api/contacts/${card}/photo?size=thumb`)).status, 200);
+  assert.equal(await count(), 4);
+  age();
+  assert.equal(await sweep(), 0, 'every file is a contact\'s photo again');
+
+  // ── Vertical groups: a merge never ties one card's label to another card's value ──
+  const gina = await importFile([
+    'BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Gina Group\r\nN:Group;Gina;;;\r\nitem1.EMAIL:gina.club@example.test\r\nitem1.X-ABLabel:Club\r\nEND:VCARD\r\n',
+    'BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Gina Group\r\nN:Group;Gina;;;\r\nitem1.EMAIL:gina.gym@example.test\r\nitem1.X-ABLabel:Gym\r\nEND:VCARD\r\n',
+  ].join(''), []);
+  assert.equal(gina.done.result.added, 2, 'the same name alone is not merged by default');
+  const ginas = await byName('Gina');
+  await owner.call('POST', '/api/contacts/merges', { contact_ids: ginas.map((item: FixtureValue) => item.id), versions: Object.fromEntries(ginas.map((item: FixtureValue) => [item.id, item.version])) });
+  const ginaCard = unfold((await owner.send('GET', '/api/contacts/export?format=vcard3')).bytes.toString('utf8')).split('END:VCARD').find(text => text.includes('FN:Gina Group'))!;
+  const lines = ginaCard.split('\r\n').filter(line => /^item/i.test(line));
+  const groupOfLine = (pattern: RegExp) => lines.find(line => pattern.test(line))!.split('.')[0];
+  assert.equal(groupOfLine(/EMAIL.*gina\.club/), groupOfLine(/X-ABLabel:Club/));
+  assert.equal(groupOfLine(/EMAIL.*gina\.gym/), groupOfLine(/X-ABLabel:Gym/));
+  assert.notEqual(groupOfLine(/X-ABLabel:Club/), groupOfLine(/X-ABLabel:Gym/), 'two groups, one label each');
+
+  // ── 100 values of a kind: a merge past it is refused by hand, by Merge all and by an import ──
+  const emails = (prefix: string, from: number, to: number) => Array.from({ length: to - from }, (_, at) => `${prefix}${from + at}@example.test`);
+  const full = (await owner.call('POST', '/api/contacts', { name: { given: 'Mira', family: 'Many' }, emails: emails('mira', 0, 100) })).contact;
+  const more = (await owner.call('POST', '/api/contacts', { name: { given: 'Mira', family: 'Many' }, emails: ['mira0@example.test', 'mira100@example.test'] })).contact;
+  const refused = await owner.call('POST', '/api/contacts/merges', { contact_ids: [full.id, more.id], versions: { [full.id]: full.version, [more.id]: more.version } }, 400);
+  assert.deepEqual([refused.code, refused.details], ['TOO_MANY_VALUES', { kinds: ['email'], kept_properties: false }]);
+  assert.match(refused.error, /more than 100 email addresses/);
+  const group = ((await owner.call('GET', '/api/contacts/duplicates?min=high')).groups as FixtureValue[]).find(item => item.members.some((member: FixtureValue) => member.id === full.id));
+  assert.equal(group.auto_merge, true, 'same name, same email, nothing to choose');
+  assert.deepEqual((await owner.call('POST', '/api/contacts/merges/auto', { group_ids: [group.id], min: 'high' })).results, [{ group_id: group.id, status: 'too_many_values' }]);
+  assert.equal((await owner.call('GET', `/api/contacts/${more.id}`)).contact.emails.length, 2, 'both contacts stay as they were');
+  // Exactly 100 after de-duplication merges.
+  await owner.call('PUT', `/api/contacts/${full.id}`, { version: full.version, name: { given: 'Mira', family: 'Many' }, emails: emails('mira', 0, 99).map(value => ({ value })) });
+  const fullNow = (await owner.call('GET', `/api/contacts/${full.id}`)).contact;
+  const merged100 = await owner.call('POST', '/api/contacts/merges', { contact_ids: [full.id, more.id], versions: { [full.id]: fullNow.version, [more.id]: more.version } });
+  assert.equal(merged100.contact.emails.length, 100);
+  // An import card that would push it past 100: added as its own contact, with a warning.
+  const before = await count();
+  const past = await importFile('BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Mira Many\r\nN:Many;Mira;;;\r\nEMAIL:mira0@example.test\r\nEMAIL:mira-extra@example.test\r\nEND:VCARD\r\n');
+  assert.deepEqual(past.summary.groups.map((item: FixtureValue) => item.default_decision), ['merge']);
+  assert.deepEqual([past.done.result.added, past.done.result.merged, past.done.result.warnings.map((warning: FixtureValue) => [warning.card, warning.code])], [1, 0, [[1, 'TOO_MANY_VALUES']]]);
+  assert.equal(await count(), before + 1);
+  assert.equal((await owner.call('GET', `/api/contacts/${full.id}`)).contact.emails.length, 100, 'the full contact is unchanged');
 });

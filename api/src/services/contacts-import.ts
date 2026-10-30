@@ -6,17 +6,22 @@
 // or a restart writes nothing twice. A staged import expires after 24 hours.
 //
 // Matching is deliberately small and keyed on contact-keys.ts (same UID or
-// alias, then shared email or phone, then the same name). The duplicate
-// engine (contact-duplicates.ts) is the owner of confidence and reasons;
-// matchCards is the one place to call it instead once it lands.
+// alias, then shared email or phone, then the same name); the duplicate
+// engine (contact-duplicates.ts) decides which single values conflict. A merge
+// goes through the merge service (contact-merge.ts): each card becomes a
+// contact first and is then merged into the existing one, so the card is in
+// the bin and "Recently merged" undoes the merge like any other. Inline
+// photos are converted by the photo service (contact-photos.ts) before a
+// chunk's transaction and attached inside it.
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import type {
   ContactRecord, ContactSingleField, ContactValueKind, DuplicateConfidence, DuplicateReason, ImportCardSummary, ImportDecisionKind, ImportFormat,
   ImportGroup, ImportStatus, ImportSummary, ImportWarning, PartialDate,
 } from '../contracts/contacts';
-import type { ContactDraft, KeptPropertyDraft, ValueDraft } from './contacts';
-import type { ImportedCard } from './contacts-vcard-map';
+import type { ContactDraft, KeptPropertyDraft } from './contacts';
+import type { ImportedCard, ImportedPhoto } from './contacts-vcard-map';
+import type { ConvertedPhoto } from './contact-photos';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,21 +30,31 @@ import { log } from '../log';
 import { ApiError, badRequest, notFound } from '../http/errors';
 import { withTransaction } from './transactions';
 import { isModuleEnabled } from './module-settings';
-import { getActiveRestoreSections } from './restore-locks';
+import { getActiveRestoreSections, getActiveRestoreSectionsByUser } from './restore-locks';
 import {
-  displayName, draftNameKey, insertContact, loadContacts, replaceContact, uidHash, KEPT_PROPERTIES_MAX, KEPT_PROPERTIES_MAX_BYTES, VALUES_PER_KIND,
+  displayName, draftNameKey, insertContact, loadContacts, uidHash, KEPT_PROPERTIES_MAX, KEPT_PROPERTIES_MAX_BYTES,
 } from './contacts';
 import { valueKey } from './contact-keys';
+import { singleFieldConflicts } from './contact-duplicates';
+import { mergeLocked } from './contact-merge';
+import {
+  attachContactPhoto, convertContactPhoto, releasePhotoFiles, withContactPhotoLock, writePhotoFiles, CONTACT_PHOTO_MAX_BYTES,
+} from './contact-photos';
 import { readVCards, looksLikeVCard, IMPORT_LIMITS } from './contacts-vcard-read';
-import { mapVCard, fitNotes, ADDRESS_PARTS, FIELD_SOURCE } from './contacts-vcard-map';
+import { mapVCard, ADDRESS_PARTS, FIELD_SOURCE } from './contacts-vcard-map';
 import { readContactsCsv, looksLikeCsv } from './contacts-csv';
-import { escapeText, partialDateText, stillAgrees } from './contacts-vcard-write';
+import { partialDateText, stillAgrees } from './contacts-vcard-write';
 
 const EXPIRY_HOURS = 24;
 const CHUNK_CARDS = 200;
 // A group larger than this is never merged by default (a shared office number).
 const LARGE_GROUP = 10;
 const SUMMARY_VALUES = 10;
+// Photos converted at once during a commit (the photo service's own slots).
+const PHOTO_WORKERS = 2;
+// A photo that cannot be converted stays on the card as it was in the file
+// (exported again as it came) up to this size; a larger one is reported only.
+const KEEP_UNREADABLE_PHOTO_BYTES = 1024 * 1024;
 
 function importsRoot() { return path.resolve(process.env.CONTACT_IMPORTS_ROOT || '/app/uploads/contacts/imports'); }
 function stagedPath(userId: string, id: string) { return path.join(importsRoot(), userId, `${id}.json`); }
@@ -68,7 +83,7 @@ function parseContactsFile(bytes: Buffer): ParsedFile {
     const cards = read.cards.map(card => mapVCard(card, warnings)).filter((card): card is ImportedCard => !!card);
     const versions = read.cards.map(card => card.version).filter(Boolean) as string[];
     const version = versions.sort((a, b) => versions.filter(v => v === b).length - versions.filter(v => v === a).length)[0] || '3.0';
-    return { format: VCARD_FORMATS[version], cards: cards.map(keepPhotoAsProperty), warnings };
+    return { format: VCARD_FORMATS[version], cards, warnings };
   }
   if (looksLikeCsv(bytes)) {
     const read = readContactsCsv(bytes);
@@ -77,20 +92,18 @@ function parseContactsFile(bytes: Buffer): ParsedFile {
   throw badRequest('IMPORT_UNSUPPORTED', 'UniHub reads vCard files (.vcf) and Google or Outlook CSV exports. This file is neither.');
 }
 
-/**
- * Photo seam. Until the photo service (contact-photos.ts setContactPhoto)
- * is wired in here, an inline photo stays on the contact as its original
- * PHOTO property, so nothing is lost and the export writes it back. With the
- * service, the commit hands `card.photo` to it after the chunk's transaction
- * and this conversion goes.
- */
-function keepPhotoAsProperty(card: ImportedCard): ImportedCard {
-  if (!card.photo) return card;
-  const { media_type: media, data, params, group } = card.photo;
+// A kept PHOTO with inline data, which the vCard reader takes as the card's photo again.
+function isInlinePhoto(property: KeptPropertyDraft) {
+  const encoding = property.params?.ENCODING;
+  const first = (Array.isArray(encoding) ? encoding[0] : encoding) || '';
+  return property.name.toUpperCase() === 'PHOTO' && (['b', 'base64'].includes(first.toLowerCase()) || /^data:[^,]*;base64,/i.test(property.value.slice(0, 256)));
+}
+
+/** An inline photo as the PHOTO property it was in the file, for one the photo service cannot read. */
+function photoAsProperty({ media_type: media, data, params, group }: ImportedPhoto): KeptPropertyDraft {
   const subtype = media ? media.split('/')[1]?.toUpperCase() : null;
-  const property: KeptPropertyDraft = { name: 'PHOTO', group, params: { ...params, ENCODING: ['b'], ...(subtype ? { TYPE: [...(params.TYPE || []), subtype] } : {}) },
+  return { name: 'PHOTO', group, params: { ...params, ENCODING: ['b'], ...(subtype ? { TYPE: [...(params.TYPE || []), subtype] } : {}) },
     value: data, source_version: null };
-  return { ...card, properties: [property, ...card.properties], photo: null };
 }
 
 /** Kept properties within the store's bounds (count and bytes); the rest are dropped with a warning. */
@@ -218,82 +231,9 @@ function recordDraft(record: ContactRecord): ContactDraft {
   };
 }
 
-const NAME_FIELDS = ['first_name', 'middle_name', 'last_name', 'name_prefix', 'name_suffix'] as const;
-const SINGLE_FIELDS: readonly [ContactSingleField, keyof ContactDraft][] = [
-  ['display_name', 'display_name'], ['organization', 'company'], ['department', 'department'], ['job_title', 'job_title'], ['birthday', 'birthday'], ['anniversary', 'anniversary'],
-];
-const PROPERTY_FOR_KIND: Readonly<Record<ContactValueKind, string>> = {
-  email: 'EMAIL', phone: 'TEL', address: 'ADR', url: 'URL', impp: 'IMPP', related: 'RELATED', nickname: 'NICKNAME', category: 'CATEGORIES',
-};
-const keptKey = (property: KeptPropertyDraft) => JSON.stringify([property.name, (property.group || '').toLowerCase(), property.value, property.params ?? null]);
-
-/** A value that no longer fits its kind's 100, as the vCard property it would be. */
-function valueAsKept(value: ValueDraft): KeptPropertyDraft {
-  const text = value.kind === 'address' ? ADDRESS_PARTS.map(part => escapeText(value[part] || '')).join(';') : escapeText(value.value);
-  return { name: PROPERTY_FOR_KIND[value.kind], group: value.vcard_group ?? null, params: (value.params as Record<string, string[]> | null) ?? null, value: text, source_version: null };
-}
-
-/**
- * Merges a card into `base` (merge-union, F12): every value of the card that
- * the contact lacks is added (an equal value keeps the contact's label), an
- * empty single value is filled, a differing one keeps the contact's and is
- * reported, notes are joined, kept properties are added once. The card's
- * vCard groups are renamed where the contact already uses them.
- */
-function mergeCard(base: ContactDraft, kept: KeptPropertyDraft[], card: ImportedCard) {
-  const conflicts = new Set<ContactSingleField>();
-  const incoming = card.draft;
-  const baseNamed = NAME_FIELDS.some(field => base[field]);
-  const incomingNamed = NAME_FIELDS.some(field => incoming[field]);
-  if (!baseNamed && incomingNamed) for (const field of NAME_FIELDS) (base as unknown as Record<string, unknown>)[field] = incoming[field] ?? (field === 'first_name' ? '' : null);
-  else if (baseNamed && incomingNamed && NAME_FIELDS.some(field => (base[field] || '') !== (incoming[field] || ''))) conflicts.add('name');
-  for (const [field, column] of SINGLE_FIELDS) {
-    const [mine, theirs] = [base[column] as string | null, incoming[column] as string | null];
-    if (!mine && theirs) (base as unknown as Record<string, unknown>)[column] = theirs;
-    else if (mine && theirs && mine !== theirs) conflicts.add(field);
-  }
-  if (incoming.notes && !(base.notes || '').includes(incoming.notes.trim())) base.notes = fitNotes(base.notes ? `${base.notes}\n\n${incoming.notes}` : incoming.notes).text;
-  if (incoming.is_favorite) base.is_favorite = true;
-  // Rename the card's groups that the contact already uses (item1 → item1-2),
-  // unless everything in the card's group is already in the contact's (the same card again).
-  const used = new Set([...base.values.map(value => value.vcard_group), ...kept.map(property => property.group)].filter(Boolean).map(group => group!.toLowerCase()));
-  const valueKeyIn = (value: ValueDraft) => `${value.kind}\u0000${valueKey(value.kind, value.value) || value.value.trim().toLowerCase()}\u0000${(value.vcard_group || '').toLowerCase()}`;
-  const present = new Set([...base.values.map(valueKeyIn), ...kept.map(keptKey)]);
-  const sameGroup = (key: string) => incoming.values.filter(value => value.vcard_group?.toLowerCase() === key).every(value => present.has(valueKeyIn(value)))
-    && card.properties.filter(property => property.group?.toLowerCase() === key).every(property => present.has(keptKey(property)));
-  const renamed = new Map<string, string>();
-  const groupOf = (group: string | null | undefined) => {
-    if (!group) return group ?? null;
-    const key = group.toLowerCase();
-    if (!used.has(key) || sameGroup(key)) return group;
-    if (!renamed.has(key)) {
-      // vcard_group holds 64 characters.
-      const stem = group.slice(0, 56);
-      let n = 2; while (used.has(`${stem.toLowerCase()}-${n}`)) n++;
-      renamed.set(key, `${stem}-${n}`); used.add(`${stem.toLowerCase()}-${n}`);
-    }
-    return renamed.get(key)!;
-  };
-  const seen = new Set(base.values.map(value => `${value.kind}\u0000${valueKey(value.kind, value.value) || value.value.trim().toLowerCase()}`));
-  const counts = new Map<ContactValueKind, number>();
-  for (const value of base.values) counts.set(value.kind, (counts.get(value.kind) || 0) + 1);
-  const overflow: KeptPropertyDraft[] = [];
-  for (const value of incoming.values) {
-    const key = `${value.kind}\u0000${valueKey(value.kind, value.value) || value.value.trim().toLowerCase()}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const moved = { ...value, id: undefined, vcard_group: groupOf(value.vcard_group) };
-    if ((counts.get(value.kind) || 0) >= VALUES_PER_KIND) { overflow.push(valueAsKept(moved)); continue; }
-    counts.set(value.kind, (counts.get(value.kind) || 0) + 1);
-    base.values.push(moved);
-  }
-  const keys = new Set(kept.map(keptKey));
-  for (const property of [...card.properties.map(property => ({ ...property, group: groupOf(property.group) })), ...overflow]) {
-    if (keys.has(keptKey(property))) continue;
-    keys.add(keptKey(property));
-    kept.push(property);
-  }
-  return conflicts;
+/** The values the duplicate engine compares; a card's photo counts as one differing from any stored photo. */
+function fieldSource(draft: ContactDraft, photo: string | null) {
+  return { ...draft, photo: photo ? { sha256: photo } : null };
 }
 
 // ── Staging ────────────────────────────────────────────────────────────
@@ -324,24 +264,23 @@ function cardSummary(card: ImportedCard): ImportCardSummary {
   };
 }
 
-// Equal content: the shown fields, every value with its label, and as many kept properties.
-function signature(draft: ContactDraft, keptCount: number) {
+const NAME_FIELDS = ['first_name', 'middle_name', 'last_name', 'name_prefix', 'name_suffix'] as const;
+
+// Equal content: the shown fields, every value with its label, as many kept
+// properties, and a photo on both or neither (a converted photo cannot be
+// compared with the file's bytes).
+function signature(draft: ContactDraft, keptCount: number, photo: boolean) {
   const values = draft.values.map(value => [value.kind, valueKey(value.kind, value.value) || value.value, value.label, value.custom_label || '', value.preferred ? 1 : 0].join('\u0001')).sort();
   return JSON.stringify([draft.display_name || null, draft.first_name || '', ...NAME_FIELDS.slice(1).map(field => draft[field] || null), draft.company || null,
-    draft.department || null, draft.job_title || null, draft.birthday || null, draft.anniversary || null, (draft.notes || '').trim(), values, keptCount]);
-}
-
-async function existingKept(executor: SqlExecutor, userId: string, contactId: string): Promise<KeptPropertyDraft[]> {
-  const [rows] = await executor.execute<(RowDataPacket & { name: string; vcard_group: string | null; params: unknown; value: string; source_version: string | null })[]>(
-    'SELECT name, vcard_group, params, value, source_version FROM contact_properties WHERE user_id = ? AND contact_id = ? ORDER BY position, id', [userId, contactId]);
-  return rows.map(row => ({ name: row.name, group: row.vcard_group, params: typeof row.params === 'string' ? JSON.parse(row.params) : (row.params as KeptPropertyDraft['params']) ?? null,
-    value: row.value, source_version: row.source_version }));
+    draft.department || null, draft.job_title || null, draft.birthday || null, draft.anniversary || null, (draft.notes || '').trim(), values, keptCount, photo]);
 }
 
 // How many kept properties an export of each contact writes: a field's old
-// copy that no longer agrees is not one. One query per thousand contacts.
+// copy that no longer agrees is not one. An inline PHOTO kept as it came (one
+// the photo service could not read) is read back as the card's photo, so it
+// counts as the photo, not as a kept property. One query per thousand contacts.
 async function writtenKeptCounts(userId: string, contacts: readonly ContactRecord[]) {
-  const counts = new Map<string, number>();
+  const counts = new Map<string, { count: number; photo: boolean }>();
   const withKept = contacts.filter(contact => contact.kept_properties > 0);
   for (let start = 0; start < withKept.length; start += 1000) {
     const slice = withKept.slice(start, start + 1000);
@@ -352,7 +291,10 @@ async function writtenKeptCounts(userId: string, contacts: readonly ContactRecor
     for (const row of rows) {
       const property: KeptPropertyDraft = { name: row.name, group: row.vcard_group, params: typeof row.params === 'string' ? JSON.parse(row.params) : (row.params as KeptPropertyDraft['params']) ?? null,
         value: row.value, source_version: row.source_version };
-      if (property.source_version !== FIELD_SOURCE || stillAgrees(property, byId.get(row.contact_id)!)) counts.set(row.contact_id, (counts.get(row.contact_id) || 0) + 1);
+      const entry = counts.get(row.contact_id) || { count: 0, photo: false };
+      if (isInlinePhoto(property) && !entry.photo && !byId.get(row.contact_id)!.photo) entry.photo = true;
+      else if (property.source_version !== FIELD_SOURCE || stillAgrees(property, byId.get(row.contact_id)!)) entry.count++;
+      counts.set(row.contact_id, entry);
     }
   }
   return counts;
@@ -380,12 +322,13 @@ async function matchCards(userId: string, cards: readonly ImportedCard[]) {
     let conflicts: ContactSingleField[] = [];
     const target = existingIds[0] ? existing.get(existingIds[0]) : undefined;
     if (target || members.length > 1) {
-      const base = target ? recordDraft(target) : structuredClone(cards[members[0]].draft);
-      const kept: KeptPropertyDraft[] = [];
-      const found = new Set<ContactSingleField>();
-      for (const at of target ? members : members.slice(1)) for (const field of mergeCard(base, kept, cards[at])) found.add(field);
-      conflicts = [...found];
-      if (target && members.length === 1 && signature(cards[members[0]].draft, cards[members[0]].properties.length) === signature(recordDraft(target), writtenKept.get(target.id) || 0)) {
+      conflicts = singleFieldConflicts([
+        ...(target ? [fieldSource(recordDraft(target), target.photo?.etag ?? null)] : []),
+        ...members.map(at => fieldSource(cards[at].draft, cards[at].photo ? `card:${cards[at].number}` : null)),
+      ]);
+      const card = cards[members[0]];
+      if (target && members.length === 1
+        && signature(card.draft, card.properties.length, !!card.photo) === signature(recordDraft(target), writtenKept.get(target.id)?.count || 0, !!target.photo || !!writtenKept.get(target.id)?.photo)) {
         match = 'identical';
         confidence = 'high';
       }
@@ -564,30 +507,85 @@ async function commitBlocked(userId: string) {
   return null;
 }
 
+// The groups of the chunk starting at `next`: about CHUNK_CARDS cards, at least one group.
+function chunkEnd(groups: StagedImport['groups'], next: number) {
+  let end = next;
+  let size = 0;
+  while (end < groups.length && (size === 0 || size + groups[end].cards.length <= CHUNK_CARDS)) size += groups[end++].cards.length;
+  return end;
+}
+
+/** A chunk's photos, converted before its transaction; a card whose photo failed has a warning (and maybe its PHOTO kept as it was). */
+interface ChunkPhotos {
+  converted: Map<number, ConvertedPhoto>;
+  failed: Map<number, { warning: ImportWarning; kept: KeptPropertyDraft | null }>;
+}
+
+async function convertPhotos(cards: readonly ImportedCard[]): Promise<ChunkPhotos> {
+  const photos: ChunkPhotos = { converted: new Map(), failed: new Map() };
+  const queue = cards.filter(card => card.photo);
+  const convertNext = async () => {
+    for (let card = queue.shift(); card; card = queue.shift()) {
+      const photo = card.photo!;
+      // Base64 holds 3 bytes in 4 characters: a picture past the limit is not even decoded.
+      const bytes = Math.floor((photo.data.length * 3) / 4);
+      if (bytes > CONTACT_PHOTO_MAX_BYTES) {
+        photos.failed.set(card.number, { warning: warn(card.number, 'PHOTO', 'PHOTO_TOO_LARGE', `The photo is larger than ${CONTACT_PHOTO_MAX_BYTES / 1024 / 1024} MB and was not imported`), kept: null });
+        continue;
+      }
+      try {
+        photos.converted.set(card.number, await convertContactPhoto(Buffer.from(photo.data, 'base64')));
+      } catch (error) {
+        if (!(error instanceof ApiError)) log.warn('contacts', 'An imported photo could not be converted', {}, error);
+        const kept = bytes <= KEEP_UNREADABLE_PHOTO_BYTES ? photoAsProperty(photo) : null;
+        photos.failed.set(card.number, { kept, warning: warn(card.number, 'PHOTO', 'PHOTO_UNREADABLE',
+          kept ? 'The photo could not be read; it was kept as it was in the file' : 'The photo could not be read and was not imported') });
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: PHOTO_WORKERS }, convertNext));
+  return photos;
+}
+
 async function runCommit(userId: string, id: string) {
   const row = await importRow(userId, id);
   const staged = await readStaged(userId, id, row.file_path);
   const cardsByNumber = new Map(staged.cards.map(card => [card.number, card]));
+  const cardsOf = (group: StagedImport['groups'][number]) => group.cards.map(number => cardsByNumber.get(number)!).filter(Boolean);
   for (;;) {
     const blocked = await commitBlocked(userId);
     if (blocked) { await setFailed(userId, id, blocked); return; }
-    const outcome = await withTransaction(async cx => {
-      const [[locked]] = await cx.execute<ImportRow[]>('SELECT status, result FROM contact_imports WHERE id = ? AND user_id = ? FOR UPDATE', [id, userId]);
-      if (!locked || locked.status !== 'committing') return 'stop';
-      const state = parseResult(locked.result)!;
-      let end = state.next;
-      let size = 0;
-      while (end < staged.groups.length && (size === 0 || size + staged.groups[end].cards.length <= CHUNK_CARDS)) size += staged.groups[end++].cards.length;
-      for (let at = state.next; at < end; at++) {
-        const group = staged.groups[at];
-        await applyGroup(cx, userId, group, state.decisions[group.id] ?? group.default_decision, group.cards.map(number => cardsByNumber.get(number)!).filter(Boolean), state);
-      }
-      state.next = end;
-      const done = end >= staged.groups.length;
-      const progress = staged.groups.length ? Math.floor((end / staged.groups.length) * 100) : 100;
-      await cx.execute(`UPDATE contact_imports SET result = ?, progress = ?${done ? ", status = 'committed', committed_at = UTC_TIMESTAMP()" : ''} WHERE id = ? AND user_id = ?`,
-        [JSON.stringify(state), progress, id, userId]);
-      return done ? 'done' : 'more';
+    // The next chunk is read before its transaction, so its photos are
+    // converted outside it; the transaction checks that it is still next.
+    const current = await importRow(userId, id);
+    if (current.status !== 'committing') return;
+    const planned = parseResult(current.result)!;
+    const start = planned.next;
+    const end = chunkEnd(staged.groups, start);
+    const decided = (group: StagedImport['groups'][number], state: CommitState) => state.decisions[group.id] ?? group.default_decision;
+    const photos = await convertPhotos(staged.groups.slice(start, end).filter(group => decided(group, planned) !== 'skip').flatMap(cardsOf));
+    const outcome = await withContactPhotoLock(userId, async () => {
+      for (const photo of photos.converted.values()) await writePhotoFiles(userId, photo);
+      const released: string[] = [];
+      // A failed transaction leaves the new files for the photo sweep: a lost commit may still reference them.
+      const result = await withTransaction(async cx => {
+        const [[locked]] = await cx.execute<ImportRow[]>('SELECT status, result FROM contact_imports WHERE id = ? AND user_id = ? FOR UPDATE', [id, userId]);
+        if (!locked || locked.status !== 'committing') return 'stop';
+        const state = parseResult(locked.result)!;
+        if (state.next !== start) return 'again';
+        for (let at = start; at < end; at++) {
+          const group = staged.groups[at];
+          await applyGroup(cx, userId, group, decided(group, state), cardsOf(group), state, photos, released);
+        }
+        state.next = end;
+        const done = end >= staged.groups.length;
+        const progress = staged.groups.length ? Math.floor((end / staged.groups.length) * 100) : 100;
+        await cx.execute(`UPDATE contact_imports SET result = ?, progress = ?${done ? ", status = 'committed', committed_at = UTC_TIMESTAMP()" : ''} WHERE id = ? AND user_id = ?`,
+          [JSON.stringify(state), progress, id, userId]);
+        return done ? 'done' : 'more';
+      });
+      if (released.length) await releasePhotoFiles(userId, released).catch(error => log.warn('contacts', 'Old contact photo files stay until the sweep', {}, error));
+      return result;
     });
     if (outcome === 'stop') return;
     if (outcome === 'done') {
@@ -607,29 +605,33 @@ async function uidTaken(cx: SqlExecutor, userId: string, uid: string) {
   return rows.length > 0;
 }
 
-async function addCard(cx: SqlExecutor, userId: string, card: ImportedCard, state: CommitState) {
+/** A card as a new contact, with its photo; counts nothing (the caller says whether it was added or merged). */
+async function insertCard(cx: SqlExecutor, userId: string, card: ImportedCard, state: CommitState, photos: ChunkPhotos, released: string[]) {
   const uid = card.uid && !await uidTaken(cx, userId, card.uid) ? card.uid : undefined;
-  const id = await insertContact(cx, userId, card.draft, { ...(uid ? { uid } : {}), properties: boundKept(card.properties, card.number, state.warnings) });
-  state.added++;
+  const failed = photos.failed.get(card.number);
+  if (failed) state.warnings.push(failed.warning);
+  const properties = failed?.kept ? [failed.kept, ...card.properties] : card.properties;
+  const id = await insertContact(cx, userId, card.draft, { ...(uid ? { uid } : {}), properties: boundKept(properties, card.number, state.warnings) });
+  const photo = photos.converted.get(card.number);
+  if (photo) released.push(...await attachContactPhoto(cx, userId, id, photo, 'import'));
   return id;
 }
 
-// A merged card's UID finds the contact again on the next import (26-08).
-async function addAlias(cx: SqlExecutor, userId: string, uid: string | null, contactId: string) {
-  if (!uid || await uidTaken(cx, userId, uid)) return;
-  await cx.execute('INSERT IGNORE INTO contact_uid_aliases (user_id, uid_hash, uid, contact_id) VALUES (?, ?, ?, ?)', [userId, uidHash(uid), uid, contactId]);
-}
-
 /**
- * One group's decision inside the chunk's transaction. A merge into an
- * existing contact that was deleted since the preview adds instead. The
- * merged contact's previous state is not yet put in the bin: that is the
- * merge service's (contact-merge.ts) once it offers it to the import.
+ * One group's decision inside the chunk's transaction. A merge adds each
+ * card as a contact and merges it into the existing contact through the
+ * merge service (the existing contact keeps its id and, where values differ,
+ * its single values; the cards go to the bin, undoable for 30 days). A
+ * target deleted since the preview is replaced by the group's first card.
+ * A merge past a limit (100 values of a kind) leaves the cards as contacts
+ * of their own, with a warning.
  */
-async function applyGroup(cx: SqlExecutor, userId: string, group: StagedImport['groups'][number], decision: ImportDecisionKind, cards: ImportedCard[], state: CommitState) {
+async function applyGroup(cx: SqlExecutor, userId: string, group: StagedImport['groups'][number], decision: ImportDecisionKind, cards: ImportedCard[],
+  state: CommitState, photos: ChunkPhotos, released: string[]) {
   if (!cards.length) return;
   if (decision === 'skip') { state.skipped += cards.length; return; }
-  if (decision === 'add') { for (const card of cards) await addCard(cx, userId, card, state); return; }
+  const insert = (card: ImportedCard) => insertCard(cx, userId, card, state, photos, released);
+  if (decision === 'add') { for (const card of cards) { await insert(card); state.added++; } return; }
   let targetId: string | null = null;
   let rest = cards;
   if (group.existing_ids[0]) {
@@ -638,43 +640,68 @@ async function applyGroup(cx: SqlExecutor, userId: string, group: StagedImport['
     else state.warnings.push(warn(cards[0].number, null, 'MERGE_TARGET_GONE', 'The contact to merge into was deleted meanwhile; the card was added'));
   }
   if (!targetId) {
-    targetId = await addCard(cx, userId, cards[0], state);
+    targetId = await insert(cards[0]);
+    state.added++;
     rest = cards.slice(1);
     if (!rest.length) return;
   }
-  const [record] = await loadContacts(cx, userId, [targetId]);
-  const draft = recordDraft(record);
-  const kept = await existingKept(cx, userId, targetId);
-  for (const card of rest) {
-    for (const field of mergeCard(draft, kept, card)) state.kept_conflicts.push({ contact_id: targetId, field });
-    state.merged++;
+  const ids: string[] = [];
+  for (const card of rest) ids.push(await insert(card));
+  try {
+    const { conflicts } = await mergeLocked(cx, userId, { ids: [targetId, ...ids], survivorId: targetId, choices: {}, versions: null, resolve: 'keep-survivor' });
+    for (const field of conflicts) state.kept_conflicts.push({ contact_id: targetId, field });
+    state.merged += rest.length;
+  } catch (error) {
+    // Refused before the merge wrote anything: the cards stay as they were added.
+    if ((error as { code?: string }).code !== 'TOO_MANY_VALUES') throw error;
+    state.added += rest.length;
+    for (const card of rest) {
+      state.warnings.push(warn(card.number, null, 'TOO_MANY_VALUES', 'Merged, the contact would hold more values than one contact can (100 of each kind); the card was added as its own contact'));
+    }
   }
-  await replaceContact(cx, userId, targetId, draft, { expectedVersion: null, properties: boundKept(kept, rest[0].number, state.warnings) });
-  for (const card of rest) await addAlias(cx, userId, card.uid, targetId);
 }
 
 // ── Expiry ─────────────────────────────────────────────────────────────
+
+interface ImportSweepOptions {
+  executor?: SqlExecutor;
+  orphanAgeMs?: number;
+  /** Per user: false while the Contacts module is off, so its imports wait too. */
+  moduleEnabled?: (userId: string) => Promise<boolean>;
+}
 
 /**
  * Removes expired imports and their staged files, and staged files without a
  * row (a crash between writing the file and the row). An import still
  * committing is left a day past its expiry before it counts as abandoned.
- * For the worker owner's periodic sweep; staging also calls it.
+ * People whose contacts are being restored, or whose Contacts module is off,
+ * are left for a later sweep. For the worker owner's periodic sweep; staging
+ * also calls it.
  */
-async function sweepContactImports({ executor = db as SqlExecutor, orphanAgeMs = (EXPIRY_HOURS + 1) * 3600 * 1000 } = {}) {
+async function sweepContactImports({ executor = db as SqlExecutor, orphanAgeMs = (EXPIRY_HOURS + 1) * 3600 * 1000,
+  moduleEnabled = userId => isModuleEnabled(userId, 'contacts') }: ImportSweepOptions = {}) {
+  const restoring = await getActiveRestoreSectionsByUser(executor);
+  const decided = new Map<string, boolean>();
+  const skipped = async (userId: string) => {
+    if (!decided.has(userId)) decided.set(userId, !!restoring.get(userId)?.has('contacts') || !await moduleEnabled(userId).catch(() => false));
+    return decided.get(userId)!;
+  };
   const [rows] = await executor.execute<(RowDataPacket & { id: string; user_id: string; file_path: string | null })[]>(
     `SELECT id, user_id, file_path FROM contact_imports
      WHERE (expires_at < UTC_TIMESTAMP() AND status <> 'committing') OR expires_at < UTC_TIMESTAMP() - INTERVAL 1 DAY LIMIT 500`);
+  let expired = 0;
   for (const row of rows) {
+    if (await skipped(row.user_id)) continue;
     const file = ownedPath(row.file_path, row.user_id, row.id);
     if (file) await fs.promises.rm(file, { force: true }).catch(() => {});
     await executor.execute('DELETE FROM contact_imports WHERE id = ? AND user_id = ?', [row.id, row.user_id]);
+    expired++;
   }
   let orphans = 0;
   const root = importsRoot();
   const users = await fs.promises.readdir(root, { withFileTypes: true }).catch(() => []);
   for (const user of users) {
-    if (!user.isDirectory()) continue;
+    if (!user.isDirectory() || await skipped(user.name)) continue;
     const directory = path.join(root, user.name);
     for (const name of await fs.promises.readdir(directory).catch(() => [] as string[])) {
       const id = name.endsWith('.json') ? name.slice(0, -5) : null;
@@ -687,8 +714,8 @@ async function sweepContactImports({ executor = db as SqlExecutor, orphanAgeMs =
       orphans++;
     }
   }
-  return { expired: rows.length, orphans };
+  return { expired, orphans };
 }
 
-export { stageImport, commitImport, importStatus, sweepContactImports, parseContactsFile, matchCards, mergeCard, recordDraft, CHUNK_CARDS, EXPIRY_HOURS };
+export { stageImport, commitImport, importStatus, sweepContactImports, parseContactsFile, matchCards, recordDraft, CHUNK_CARDS, EXPIRY_HOURS };
 export type { StagedImport };

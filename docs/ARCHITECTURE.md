@@ -448,7 +448,7 @@ commands and file writes stay outside.
 `api/src/services/background-work.ts` holds the periodic work of the API
 process. `app.ts` starts it once after the server listens and stops it on
 shutdown, before the event streams close. Each timer skips a tick while its
-previous run is still going (`services/timers.ts`). These thirteen run:
+previous run is still going (`services/timers.ts`). These fifteen run:
 
 | Interval | Job |
 | --- | --- |
@@ -465,6 +465,8 @@ previous run is still going (`services/timers.ts`). These thirteen run:
 | 1 hour | Delete finished mail engine jobs older than 7 days |
 | 1 hour | Delete expired recording upload temp files |
 | 1 hour | Delete contacts merged away more than 30 days ago and their merge records (`contact-merge.ts`); skips people with a running contacts restore or the Contacts module off |
+| 1 hour | Delete contact imports past their 24 hours and their staged files (`contacts-import.ts`); skips people with a running contacts restore or the Contacts module off |
+| 1 day | Delete contact photo files older than an hour that no contact, bin item or merge undo refers to (`contact-photos.ts`), also 10 minutes after a start; skips the same people |
 
 It also starts the mail IDLE supervisor (`mail-idle.ts`) after the first mail
 pass; the supervisor runs its own 60-second eligibility pass that opens and

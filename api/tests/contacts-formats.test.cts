@@ -37,7 +37,9 @@ function asExport(card: ImportedCard, at: number): ExportContact {
     kept_properties: card.properties.length, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-02T00:00:00.000Z',
   } as unknown as ContactRecord;
   return { contact, extras: new Map(values.filter(value => value.params || value.vcard_group).map(value => [value.id, { params: (value.params ?? null) as Record<string, string[]> | null, group: value.vcard_group ?? null }])),
-    properties: card.properties };
+    properties: card.properties,
+    // The photo service's stored picture stands in for the card's photo (the conversion is contact-photos.ts').
+    photo: card.photo ? { data: Buffer.from(card.photo.data, 'base64'), media_type: card.photo.media_type || 'image/jpeg' } : null };
 }
 
 // What must survive: every field, every value with label, preference, parameters and group, every kept property.
@@ -49,6 +51,7 @@ function meaning(card: ImportedCard) {
       params: value.params ?? null, group: value.vcard_group?.toLowerCase() ?? null, parts: value.kind === 'address' ? [value.po_box, value.extended, value.street, value.locality, value.region, value.postal_code, value.country] : null })),
     kept: card.properties.map(property => ({ name: property.name.toUpperCase(), group: property.group?.toLowerCase() ?? null, params: property.params ?? null, value: property.value,
       field: property.source_version === 'field' })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+    photo: card.photo ? [card.photo.media_type, Buffer.from(card.photo.data, 'base64').toString('hex')] : null,
   };
 }
 
@@ -77,7 +80,8 @@ test('vCard 4.0: every field, labelled value and parameter is read, and an expor
   assert.deepEqual(card.draft.values.filter(item => item.kind === 'nickname').map(item => [item.value, item.label]), [['Jüm', 'maiden_name'], ['Jay', 'maiden_name']]);
   assert.equal(value('url', 'https://blog.example.org/').label, 'blog');
   const keptNames = card.properties.map(property => property.name);
-  for (const name of ['FN', 'N', 'ORG', 'KIND', 'GENDER', 'LANG', 'ROLE', 'GEO', 'TZ', 'KEY', 'X-FOO', 'X-ABDATE', 'X-ABLABEL', 'CLIENTPIDMAP', 'PHOTO']) assert.ok(keptNames.includes(name), `${name} is kept`);
+  for (const name of ['FN', 'N', 'ORG', 'KIND', 'GENDER', 'LANG', 'ROLE', 'GEO', 'TZ', 'KEY', 'X-FOO', 'X-ABDATE', 'X-ABLABEL', 'CLIENTPIDMAP']) assert.ok(keptNames.includes(name), `${name} is kept`);
+  assert.ok(!keptNames.includes('PHOTO') && card.photo?.media_type === 'image/jpeg', 'the inline photo goes to the photo service');
   for (const name of ['REV', 'PRODID', 'VERSION', 'UID']) assert.ok(!keptNames.includes(name), `${name} is written from the contact`);
   assert.equal(card.properties.find(property => property.name === 'ORG')!.source_version, 'field', 'the third ORG unit keeps a shadow of ORG');
   assert.equal(organisation.draft.display_name, null, 'an FN equal to what the fields give is not stored');
@@ -119,8 +123,8 @@ test('vCard 3.0 as Apple writes it: groups, X-ABLabel, year-less birthday, relat
   assert.equal(byValue['https://bea.example.com'].label, 'homepage');
   assert.equal(byValue['xmpp:bea@example.org'].kind, 'impp', 'X-JABBER is read as IMPP');
   assert.deepEqual([card.draft.birthday, card.draft.anniversary], ['--07-04', '2015-09-12'], 'X-APPLE-OMIT-YEAR and an X-ABDATE anniversary');
-  const photo = card.properties.find(property => property.name === 'PHOTO')!;
-  assert.deepEqual(photo.params, { ENCODING: ['b'], TYPE: ['JPEG'] }, 'the inline photo is kept until the photo service takes it');
+  assert.ok(!card.properties.some(property => property.name === 'PHOTO'));
+  assert.deepEqual([card.photo!.media_type, Buffer.from(card.photo!.data, 'base64').subarray(0, 2)], ['image/jpeg', Buffer.from([0xff, 0xd8])], 'the inline photo goes to the photo service');
   assert.ok(card.properties.some(property => property.name === 'X-ABADR' && property.group === 'item3'), 'a group partner stays with its group');
 
   for (const version of ['3.0', '4.0'] as const) {
@@ -149,8 +153,7 @@ test('vCard 2.1: quoted-printable UTF-8 and ISO-8859-1, soft breaks, bare types,
   const phones = android.draft.values.filter(item => item.kind === 'phone').map(item => [item.value, item.label, item.custom_label, item.preferred]);
   assert.deepEqual(phones, [['+49 171 5550200', 'mobile', null, true], ['+49 30 5550201', 'home', null, false], ['+49 30 5550202', 'custom', 'Büro', false]]);
   assert.equal(android.draft.anniversary, '2012-05-01', 'an Android anniversary event');
-  const photo = android.properties.find(property => property.name === 'PHOTO')!;
-  assert.ok(Buffer.from(photo.value, 'base64').subarray(0, 2).equals(Buffer.from([0xff, 0xd8])), 'the unindented BASE64 block is read whole');
+  assert.ok(Buffer.from(android.photo!.data, 'base64').subarray(0, 2).equals(Buffer.from([0xff, 0xd8])), 'the unindented BASE64 block is read whole');
   assert.deepEqual([latin.draft.first_name, latin.draft.last_name, latin.draft.company], ['Änne', 'Schön', 'Fürst AG'], 'CHARSET=ISO-8859-1 per property');
 });
 

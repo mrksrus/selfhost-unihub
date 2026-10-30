@@ -301,6 +301,10 @@ export interface DismissDuplicatesRequest {
  * place on phones; the others go to the bin for 30 days. Every email, phone
  * and other list value of every member is kept, as are their kept
  * properties, unique notes and categories; favourite if any member was.
+ * A merge that would give the contact more than 100 values of one kind
+ * (after de-duplication) or more than 500 kept properties (256 KB) is
+ * refused with 400 TOO_MANY_VALUES and `details: { kinds, kept_properties }`;
+ * nothing is cut. Imports follow the same rule.
  */
 export interface MergeRequest {
   contact_ids: string[];
@@ -327,6 +331,8 @@ export interface MergeConflict {
  * groups). Each listed group is merged in its own transaction when it is
  * still the same (`changed` otherwise) and `auto_merge` holds
  * (`needs_choice` otherwise: medium, large, conflicting or dismissed inside).
+ * `too_many_values`: merged, the contact would pass a limit (see
+ * MergeRequest); the group stays as it is.
  */
 export interface AutoMergeRequest {
   group_ids: string[];
@@ -334,7 +340,7 @@ export interface AutoMergeRequest {
 }
 
 export interface AutoMergeResult {
-  results: { group_id: string; status: 'merged' | 'changed' | 'needs_choice'; merge_id?: string }[];
+  results: { group_id: string; status: 'merged' | 'changed' | 'needs_choice' | 'too_many_values'; merge_id?: string }[];
 }
 
 /**

@@ -157,7 +157,8 @@ function stillAgrees(property: KeptPropertyDraft, contact: ContactRecord) {
 }
 
 const BINARY_PROPERTIES = new Set(['PHOTO', 'LOGO', 'SOUND', 'KEY']);
-const SUBTYPES: Readonly<Record<string, string>> = Object.fromEntries(Object.entries(MEDIA_TYPES).map(([subtype, media]) => [media, subtype]));
+// The first subtype of each media type is its usual name (JPEG, not JPG).
+const SUBTYPES: Readonly<Record<string, string>> = Object.fromEntries(Object.entries(MEDIA_TYPES).reverse().map(([subtype, media]) => [media, subtype]));
 
 /** A kept property in the target version's form for inline data (4.0 data: URIs, 3.0 ENCODING=b). */
 function keptLine(property: KeptPropertyDraft, version: WriteVersion) {

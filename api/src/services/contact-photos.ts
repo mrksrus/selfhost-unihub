@@ -355,16 +355,20 @@ async function writeRestoredPhotoFile(userId: string, sha: string, write: (tempo
   return !existed;
 }
 
-// Whether any row of the user still names the file: a contact photo, or a bin
-// item (merged-away contacts keep their photo until purged). file_refs is
-// matched as text so its JSON shape may grow.
+// Whether any row of the user still names the file: a contact photo, a bin
+// item (merged-away contacts keep their photo until purged) or a merge's
+// snapshot of its survivor (what an undo puts back). file_refs and the
+// snapshot are matched as text so their JSON shape may grow.
 async function isReferenced(executor: SqlExecutor, userId: string, sha: string) {
   const [[photo]] = await executor.execute<RowDataPacket[]>(
     'SELECT 1 FROM contact_photos WHERE user_id = ? AND (sha256 = ? OR thumb_sha256 = ?) LIMIT 1', [userId, sha, sha]);
   if (photo) return true;
   const [[binned]] = await executor.execute<RowDataPacket[]>(
     'SELECT 1 FROM bin_items WHERE user_id = ? AND file_refs IS NOT NULL AND CAST(file_refs AS CHAR) LIKE ? LIMIT 1', [userId, `%${sha}%`]);
-  return !!binned;
+  if (binned) return true;
+  const [[merged]] = await executor.execute<RowDataPacket[]>(
+    'SELECT 1 FROM contact_merges WHERE user_id = ? AND undone_at IS NULL AND survivor_before LIKE ? LIMIT 1', [userId, `%${sha}%`]);
+  return !!merged;
 }
 
 /**
@@ -469,21 +473,37 @@ async function contactPhotoFile(userId: string, contactId: string, size: PhotoSi
 
 // ── Orphan sweep (worker owner, daily) ─────────────────────────────────
 
+interface SweepOptions {
+  now?: number;
+  executor?: SqlExecutor;
+  /** Per user: false while the Contacts module is off, so its files wait too. */
+  moduleEnabled?: (userId: string) => Promise<boolean>;
+  /** Photo hashes the undo of a merge still needs (contact-merge.ts photosHeldForUndo). */
+  heldForUndo?: (userId: string) => Promise<Set<string>>;
+  /** Stops between users (the worker lost its lock or shuts down). */
+  active?: () => boolean;
+}
+
 /**
  * Deletes photo files that no row references and that are older than an
- * hour, for every user without a running contacts restore. Returns the
+ * hour, for every user without a running contacts restore and with the
+ * Contacts module on. Hashes a merge's undo still needs stay. Returns the
  * number of files removed. Temporary files left by a crash are removed too.
  */
-async function sweepContactPhotos({ now = Date.now(), executor = db as SqlExecutor } = {}) {
+async function sweepContactPhotos({ now = Date.now(), executor = db as SqlExecutor, moduleEnabled = async () => true, heldForUndo = async () => new Set<string>(),
+  active = () => true }: SweepOptions = {}) {
   const root = photosRoot();
   const users = await fs.promises.readdir(root, { withFileTypes: true }).catch(() => []);
   let removed = 0;
   for (const entry of users) {
+    if (!active()) break;
     if (!entry.isDirectory() || !USER_ID_PATTERN.test(entry.name)) continue;
     const userId = entry.name;
     const restoring = await getActiveRestoreSections(userId).catch(() => new Set(['*']));
     if (restoring.has('contacts') || restoring.has('*')) continue;
+    if (!await moduleEnabled(userId).catch(() => false)) continue;
     removed += await withContactPhotoLock(userId, async () => {
+      const held = await heldForUndo(userId);
       let count = 0;
       const files = await fs.promises.readdir(path.join(root, userId), { withFileTypes: true }).catch(() => []);
       for (const file of files) {
@@ -493,7 +513,7 @@ async function sweepContactPhotos({ now = Date.now(), executor = db as SqlExecut
         if (!stat || now - stat.mtimeMs < ORPHAN_MIN_AGE_MS) continue;
         if (file.name.endsWith('.tmp')) { await fs.promises.rm(target, { force: true }); count++; continue; }
         const sha = file.name.endsWith('.jpg') ? file.name.slice(0, -4) : '';
-        if (!SHA_PATTERN.test(sha) || await isReferenced(executor, userId, sha)) continue;
+        if (!SHA_PATTERN.test(sha) || held.has(sha) || await isReferenced(executor, userId, sha)) continue;
         await fs.promises.rm(target, { force: true });
         count++;
       }
