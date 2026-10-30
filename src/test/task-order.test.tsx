@@ -86,9 +86,13 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe('the order of tasks', () => {
-  it('follows the rank, then the id, and gives an answer without ranks its date order', () => {
-    const a = task('a', { sort_rank: 5 }), b = task('b', { sort_rank: 5 }), c = task('c', { sort_rank: 1 });
-    expect(orderTasks([a, b, c]).map(t => t.id)).toEqual(['c', 'a', 'b']);
+  it('follows the rank, then the server\'s sort_key (the id only without one), and gives an answer without ranks its date order', () => {
+    // Equal ranks: the sort_key decides, as a plain string comparison, not the id.
+    const a = task('a', { sort_rank: 5, sort_key: 'k-2' }), b = task('b', { sort_rank: 5, sort_key: 'k-1' }), c = task('c', { sort_rank: 1, sort_key: 'k-9' });
+    expect(orderTasks([a, b, c]).map(t => t.id)).toEqual(['c', 'b', 'a']);
+    expect(orderTasks([task('x', { sort_rank: 5, sort_key: 'B' }), task('y', { sort_rank: 5, sort_key: 'a' })]).map(t => t.id)).toEqual(['x', 'y']);
+    // An answer without sort_key (an older server or snapshot) falls back to the id; the key is never made up here.
+    expect(orderTasks([task('b', { sort_rank: 5 }), task('a', { sort_rank: 5 })]).map(t => t.id)).toEqual(['a', 'b']);
     const later = task('later', { sort_rank: undefined, start_time: iso(5 * hour) });
     const sooner = task('sooner', { sort_rank: undefined, start_time: iso(hour) });
     const madeFirst = task('made first', { sort_rank: undefined, is_todo_only: true, created_at: iso(-10 * hour) });
@@ -260,14 +264,33 @@ describe('placements that overlap', () => {
     expect(titles()).toEqual(['Pay rent', 'Call Sam', 'Plan holiday']);
   });
 
-  it('keeps the requested place while neighbours tie on rank', async () => {
-    const a = task('a', { is_todo_only: true, sort_rank: 100 }), c = task('c', { is_todo_only: true, sort_rank: 100 }), z = task('z', { is_todo_only: true, sort_rank: 100 });
+  it('keeps the requested place while neighbours tie on rank, whatever their sort_key', async () => {
+    // By sort_key the tied three read a, c, z; z is dropped between a and c.
+    const a = task('a', { is_todo_only: true, sort_rank: 100, sort_key: 'k-1' }), c = task('c', { is_todo_only: true, sort_rank: 100, sort_key: 'k-2' }), z = task('z', { is_todo_only: true, sort_rank: 100, sort_key: 'k-0' });
     const ranks = optimisticRanks([a, z, c], 'z');
     expect(orderTasks([a, c, z].map(entry => ({ ...entry, sort_rank: ranks[entry.id] ?? entry.sort_rank }))).map(entry => entry.id)).toEqual(['a', 'z', 'c']);
     // Only the moved task counts as placed by hand; a tie elsewhere is nudged, not claimed.
     expect(ranks.z).toBeGreaterThan(ranks.a ?? 100);
     expect(ranks.c).toBeGreaterThan(ranks.z);
 
+    serverEvents = [a, c, z];
+    const answer = deferred<{ data: { ranks: Record<string, number> } }>();
+    vi.mocked(api.put).mockReturnValueOnce(answer.promise as never);
+    mount(<TodoPage />);
+    const section = await screen.findByRole('region', { name: 'No date' });
+    const titles = () => within(section).getAllByRole('listitem').map(item => item.querySelector('p')!.textContent);
+    expect(titles()).toEqual(['z', 'a', 'c']);
+    // Move z below a (between a and c): the requested place shows at once although every key says otherwise.
+    fireEvent.click(within(await openMenu('z')).getByRole('menuitem', { name: 'Move down' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/calendar/events/z/position', { after: 'a', before: 'c' }));
+    expect(titles()).toEqual(['a', 'z', 'c']);
+    serverRank('z', 100); serverRank('c', 101);
+    await act(async () => { answer.resolve({ data: { ranks: { z: 100, c: 101 } } }); });
+    await waitFor(() => expect(titles()).toEqual(['a', 'z', 'c']));
+  });
+
+  it('keeps the requested place while neighbours tie on rank and have no sort_key', async () => {
+    const a = task('a', { is_todo_only: true, sort_rank: 100 }), c = task('c', { is_todo_only: true, sort_rank: 100 }), z = task('z', { is_todo_only: true, sort_rank: 100 });
     serverEvents = [a, c, z];
     const answer = deferred<{ data: { ranks: Record<string, number> } }>();
     vi.mocked(api.put).mockReturnValueOnce(answer.promise as never);
