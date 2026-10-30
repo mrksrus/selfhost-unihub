@@ -192,4 +192,18 @@ class ContactMergeTest {
         // Removed in UniHub, so removed on the phone.
         assertEquals(emptyList<Value>(), merged.phone.phones)
     }
+
+    @Test
+    fun aSecondLongWebAddressAddedOnThePhoneReachesUniHub() {
+        val start = "https://example.com/" + "a".repeat(300)
+        val first = Value("$start/one", "work")
+        val base = ada.copy(urls = listOf(first.copy(id = "u-1")))
+        val phoneBase = base.forPhone()
+        val onPhone = phoneBase.copy(urls = phoneBase.urls + Value("$start/two", "work"))
+        val merged = merge(onPhone, phoneBase, base, base)
+        assertEquals(listOf("$start/one", "$start/two"), merged.server.urls.map { it.value })
+        assertEquals("u-1", merged.server.urls[0].id)
+        settled(merged)
+    }
 }
+

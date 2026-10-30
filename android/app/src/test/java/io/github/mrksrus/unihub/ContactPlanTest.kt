@@ -99,4 +99,39 @@ class ContactPlanTest {
         assertEquals(listOf("s-1"), plan.merge.map { it.source })
         assertTrue(plan.removeFromPhone.isEmpty())
     }
+
+    /**
+     * A photo set on the phone for a contact UniHub then merged away: the
+     * picture goes to the survivor, and the copy leaves the phone only once
+     * it was sent; deferred (metered network, the per-sync limit) it stays.
+     */
+    @Test
+    fun aMergedAwayCopysNewPhotoGoesToTheSurvivorBeforeTheCopyLeaves() {
+        // Changed on the phone since the last sync; the survivor has no photo, or still the copy's.
+        assertEquals(ContactPlan.SurvivorPhoto.Upload, ContactPlan.survivorPhoto("f12", "f7", "e-old", ""))
+        assertEquals(ContactPlan.SurvivorPhoto.Upload, ContactPlan.survivorPhoto("f12", "f7", "e-old", "e-old"))
+        // A state from the 3+3 sync (no photo state): every picture is new.
+        assertEquals(ContactPlan.SurvivorPhoto.Upload, ContactPlan.survivorPhoto("t0a1b", "", "", ""))
+        assertEquals(ContactPlan.SurvivorPhoto.Upload, ContactPlan.survivorPhoto("f12", null, null, ""))
+        // UniHub gave the survivor another photo meanwhile: a photo changed on both sides keeps UniHub's.
+        assertEquals(ContactPlan.SurvivorPhoto.UniHubKeeps, ContactPlan.survivorPhoto("f12", "f7", "e-old", "e-other"))
+        // Unchanged, or removed on the phone (which would take the survivor's photo): nothing to send.
+        assertEquals(ContactPlan.SurvivorPhoto.None, ContactPlan.survivorPhoto("f7", "f7", "e-old", "e-old"))
+        assertEquals(ContactPlan.SurvivorPhoto.None, ContactPlan.survivorPhoto("", "f7", "e-old", "e-old"))
+
+        assertFalse("never removed with its picture unsent", ContactPlan.copyMayGo(ContactPlan.SurvivorPhoto.Upload, sent = false))
+        assertTrue(ContactPlan.copyMayGo(ContactPlan.SurvivorPhoto.Upload, sent = true))
+        assertTrue(ContactPlan.copyMayGo(ContactPlan.SurvivorPhoto.None, sent = false))
+        assertTrue(ContactPlan.copyMayGo(ContactPlan.SurvivorPhoto.UniHubKeeps, sent = false))
+
+        // The budget the copy and the photo pass share: none on a metered network, at most the limit.
+        assertFalse(ContactPlan.PhotoBudget(metered = true, 200).take())
+        val budget = ContactPlan.PhotoBudget(metered = false, 2)
+        assertEquals(listOf(true, true, false), List(3) { budget.take() })
+
+        // A copy kept for its photo is planned the same way at the next sync: still changed on the phone.
+        val again = ContactPlan.plan(listOf(row(1, "m-1", changed = true)), listed = setOf("s-1"), merged = mapOf("m-1" to "s-1"))
+        assertEquals(listOf(1L to "s-1"), again.intoSurvivor.map { it.first.id to it.second })
+    }
 }
+

@@ -266,4 +266,30 @@ class ContactCardTest {
         ))
         assertFalse(ContactPhone.same(ContactCard(phones = listOf(Value("+15550100", "mobile"))), ContactCard(phones = listOf(Value("+15550100", "work")))))
     }
+
+    /**
+     * Two web addresses that share their first 255 normalised characters are
+     * two values (the server's value_key is cut there for its index only).
+     */
+    @Test
+    fun longValuesThatShareTheirStartAreNotTheSameValue() {
+        val start = "https://example.com/" + "a".repeat(300)
+        val one = Value("$start/one", "work")
+        val two = Value("$start/two", "work")
+        assertTrue(ValueKind.URL.key(one.value) != ValueKind.URL.key(two.value))
+        assertFalse(ContactPhone.same(ContactCard(urls = listOf(one, two)), ContactCard(urls = listOf(one))))
+        // A phone number without digits is still a value of its own.
+        assertTrue(ValueKind.PHONE.key("ask the desk") != ValueKind.PHONE.key("ask reception"))
+        assertEquals(ValueKind.PHONE.key("Ask the desk "), ValueKind.PHONE.key("ask the desk"))
+
+        // Both on the phone, one in UniHub: the other is written, not lost.
+        val phone = ContactPhone.read(listOf(
+            row("website", "data1" to one.value, "data2" to "5"),
+            row("website", "data1" to two.value, "data2" to "5"),
+        ), false)
+        assertEquals(2, phone.card.urls.size)
+        assertEquals(emptyList<PhoneChange>(), ContactPhone.changes(phone, ContactCard(urls = listOf(one, two))))
+        assertEquals(1, ContactPhone.changes(phone, ContactCard(urls = listOf(one))).count { it is PhoneChange.Delete })
+    }
 }
+

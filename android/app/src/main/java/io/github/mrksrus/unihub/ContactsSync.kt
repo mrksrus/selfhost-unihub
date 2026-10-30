@@ -788,6 +788,8 @@ object ContactsSync {
         private var created = 0
         private var updated = 0
         private var deleted = 0
+        // Photo transfers of this sync (intoSurvivor and the photo pass).
+        private lateinit var budget: ContactPlan.PhotoBudget
 
         // Whether UniHub changed the contact since the last sync, notes included.
         private fun changedInUniHub(row: Row, contact: ServerContact): Boolean {
@@ -812,6 +814,8 @@ object ContactsSync {
                 many = MANY_DELETIONS,
             )
             fun row(planned: ContactPlan.Row) = byId.getValue(planned.id)
+            budget = ContactPlan.PhotoBudget(
+                server.context.getSystemService(ConnectivityManager::class.java)?.isActiveNetworkMetered ?: true, MAX_PHOTO_TRANSFERS)
 
             // Deleted on the phone: deleted in UniHub too, unless UniHub
             // changed the contact since (then it comes back) or another
@@ -879,7 +883,7 @@ object ContactsSync {
                 batch.flushIfFull()
             }
             batch.flush()
-            val photos = Photos(server, user, account, provider, remote).run()
+            val photos = Photos(server, user, account, provider, remote, budget).run()
             return "to UniHub $created added, $updated changed, $deleted deleted; $photos"
         }
 
@@ -938,18 +942,36 @@ object ContactsSync {
         /**
          * A phone contact whose UniHub contact was merged into [survivor]
          * after the phone changed it: the phone's changes since the last sync
-         * are applied to the survivor, then the copy leaves the phone (the
-         * survivor's own copy brings the result).
+         * are applied to the survivor, a new picture included, then the copy
+         * leaves the phone (the survivor's own copy brings the result). While
+         * the picture cannot be sent yet (a metered network, the per-sync
+         * limit, a refusal) the copy stays and this runs again next sync;
+         * the changes already sent are then no change.
          */
         private fun intoSurvivor(row: Row, survivor: ServerContact) {
-            val phone = row.full.card
-            val base = row.fullBases(null)?.first?.card
-            val merged = if (base == null) ContactMerge.merge(phone, ContactCard(), survivor.card, ContactCard())
-            else ContactMerge.merge(phone, base, survivor.card, survivor.card)
+            val phone = row.full
+            val bases = row.fullBases(null)
+            val merged = if (bases == null) ContactMerge.merge(phone.card, ContactCard(), survivor.card, ContactCard())
+            else ContactMerge.merge(phone.card, bases.first.card, survivor.card, survivor.card)
+            var now = survivor
             if (!ContactPhone.same(merged.server, survivor.card)) {
-                val saved = server.saveFull(survivor, merged.server) ?: run { result.stats.numSkippedEntries++; return }
-                remote[saved.id] = saved
+                now = server.saveFull(survivor, merged.server) ?: run { result.stats.numSkippedEntries++; return }
+                remote[now.id] = now
                 updated++
+            }
+            val photo = ContactPlan.survivorPhoto(phone.photo, bases?.first?.photo, bases?.second?.photo, now.photo)
+            var sent = false
+            if (photo == ContactPlan.SurvivorPhoto.Upload && budget.take()) {
+                val saved = phonePicture(provider, account, row.id)?.let { server.setPhoto(now, it) }
+                if (saved != null) {
+                    remote[saved.id] = saved
+                    sent = true
+                }
+            }
+            if (!ContactPlan.copyMayGo(photo, sent)) {
+                Log.i(TAG, "A contact merged in UniHub stays on the phone until its new photo is sent")
+                result.stats.numSkippedEntries++
+                return
             }
             batch.checked(listOf(assertUnchanged(account, row), deleteRow(account, row.id)))
             result.stats.numDeletes++
@@ -1029,9 +1051,9 @@ object ContactsSync {
         val account: Account,
         val provider: ContentProviderClient,
         val remote: Map<String, ServerContact>,
+        val budget: ContactPlan.PhotoBudget,
     ) {
         fun run(): String {
-            val metered = server.context.getSystemService(ConnectivityManager::class.java)?.isActiveNetworkMetered ?: true
             var moved = 0
             var waiting = 0
             for (row in readRows(account, provider)) {
@@ -1043,14 +1065,14 @@ object ContactsSync {
                 val serverChanged = contact.photo != serverState.photo
                 val phoneChanged = phone.photo != phoneState.photo
                 if (!serverChanged && !phoneChanged) continue
-                if (metered || moved >= MAX_PHOTO_TRANSFERS) { waiting++; continue }
+                if (!budget.take()) { waiting++; continue }
                 server.current.check()
                 val done = if (serverChanged) download(row, phone, contact, phoneState, serverState) else upload(row, phone, contact, phoneState, serverState)
                 if (done) moved++
             }
             return "$moved photos moved" + when {
                 waiting == 0 -> ""
-                metered -> ", $waiting wait for an unmetered network"
+                budget.metered -> ", $waiting wait for an unmetered network"
                 else -> ", $waiting follow next time"
             }
         }
@@ -1095,40 +1117,42 @@ object ContactsSync {
             return true
         }
 
-        // The phone's display photo, else the thumbnail it holds.
-        private fun picture(row: Row): ByteArray? {
-            val uri = syncUri(Uri.withAppendedPath(ContentUris.withAppendedId(RawContacts.CONTENT_URI, row.id), RawContacts.DisplayPhoto.CONTENT_DIRECTORY), account)
-            try {
-                provider.openAssetFile(uri, "r")?.use { file ->
-                    file.createInputStream().use { input ->
-                        val output = java.io.ByteArrayOutputStream()
-                        val buffer = ByteArray(64 * 1024)
-                        while (true) {
-                            val read = input.read(buffer)
-                            if (read < 0) break
-                            output.write(buffer, 0, read)
-                            if (output.size() > MAX_PHOTO_UPLOAD) return null
-                        }
-                        if (output.size() > 0) return output.toByteArray()
-                    }
-                }
-            } catch (_: FileNotFoundException) {
-                // Only a thumbnail.
-            }
-            return photoRow(row.id)?.second
-        }
+        private fun picture(row: Row): ByteArray? = phonePicture(provider, account, row.id)
 
-        private fun photoIdentity(raw: Long): String = photoRow(raw)?.let { ContactPhone.photoIdentity(it.first, it.second) }.orEmpty()
-
-        // The photo row's file id and thumbnail.
-        private fun photoRow(raw: Long): Pair<String?, ByteArray?>? = provider.query(
-            syncUri(ContactsContract.Data.CONTENT_URI, account),
-            arrayOf(Photo.PHOTO_FILE_ID, Photo.PHOTO),
-            "${ContactsContract.Data.RAW_CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?",
-            arrayOf(raw.toString(), Photo.CONTENT_ITEM_TYPE),
-            null,
-        )?.use { c -> if (c.moveToFirst()) (if (c.isNull(0)) null else c.getLong(0).toString()) to (if (c.isNull(1)) null else c.getBlob(1)) else null }
+        private fun photoIdentity(raw: Long): String = photoRowOf(provider, account, raw)?.let { ContactPhone.photoIdentity(it.first, it.second) }.orEmpty()
     }
+
+    // The phone's display photo of a raw contact, else the thumbnail it holds.
+    private fun phonePicture(provider: ContentProviderClient, account: Account, raw: Long): ByteArray? {
+        val uri = syncUri(Uri.withAppendedPath(ContentUris.withAppendedId(RawContacts.CONTENT_URI, raw), RawContacts.DisplayPhoto.CONTENT_DIRECTORY), account)
+        try {
+            provider.openAssetFile(uri, "r")?.use { file ->
+                file.createInputStream().use { input ->
+                    val output = java.io.ByteArrayOutputStream()
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                        if (output.size() > MAX_PHOTO_UPLOAD) return null
+                    }
+                    if (output.size() > 0) return output.toByteArray()
+                }
+            }
+        } catch (_: FileNotFoundException) {
+            // Only a thumbnail.
+        }
+        return photoRowOf(provider, account, raw)?.second
+    }
+
+    // The photo row's file id and thumbnail.
+    private fun photoRowOf(provider: ContentProviderClient, account: Account, raw: Long): Pair<String?, ByteArray?>? = provider.query(
+        syncUri(ContactsContract.Data.CONTENT_URI, account),
+        arrayOf(Photo.PHOTO_FILE_ID, Photo.PHOTO),
+        "${ContactsContract.Data.RAW_CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?",
+        arrayOf(raw.toString(), Photo.CONTENT_ITEM_TYPE),
+        null,
+    )?.use { c -> if (c.moveToFirst()) (if (c.isNull(0)) null else c.getLong(0).toString()) to (if (c.isNull(1)) null else c.getBlob(1)) else null }
 
     // ── The phone's side ───────────────────────────────────────────────
     // A phone contact (raw contact) of the UniHub account keeps its UniHub
