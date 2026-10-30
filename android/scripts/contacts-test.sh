@@ -23,7 +23,7 @@
 # data must reach it without duplicates; every kind and label goes both
 # ways, photos come to the phone, merges in UniHub (twelve at once) leave the
 # phone without "too many deletions", and an edit in UniHub during a sync is
-# not overwritten. CI runs it on every emulator after window-test.sh
+# not overwritten. CI runs it on every emulator
 # (.github/workflows/docker-image.yml).
 set -euo pipefail
 

@@ -16,7 +16,7 @@
 # sent again is not shown twice, one sent with the app in the background
 # arrives, an update of the app reconnects, signing out stops the connection
 # and removes what was shown, signing in again resumes it, and turning it off
-# (from the page, and with the ongoing notification's action) unregisters. CI runs it on every emulator after contacts-test.sh
+# (from the page, and with the ongoing notification's action) unregisters. CI runs it on every emulator
 # (.github/workflows/docker-image.yml).
 set -euo pipefail
 

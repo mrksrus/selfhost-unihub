@@ -3,7 +3,8 @@
 A disposable UniHub installation, made-up data and tests that drive it like a
 person would: in a browser at desktop and phone sizes, and in the real Android
 app in an emulator. Agents use it to prove a feature before the maintainer
-sees it (PROJECT-PREFERENCES P-28); CI runs it on the built image. It is
+sees it (PROJECT-PREFERENCES P-28); CI runs the web tests on the built image
+(see [In CI](#in-ci)). It is
 development tooling, never shipped. Tests use
 [e2e](https://github.com/tester-army/e2e) (Apache-2.0) for the web and
 Playwright's Android driver for the app.
@@ -91,6 +92,20 @@ the behaviour and its tracker row or bug, for example
 (what was delivered, stored or shown) rather than incidental layout, and
 creates its own uniquely named data, so tests run in any order on a used
 database. No model is configured: tests use locators, not `agent.act`.
+
+## In CI
+
+The `e2e` job of `.github/workflows/docker-image.yml` runs the web tests,
+one runner per target, against the image under test: with
+`UNIHUB_E2E_IMAGE=<image>`, `stack.sh up` runs that image (its own nginx on
+port 80 and its API on 127.0.0.1:4000, production settings and Secure
+cookies; `127.0.0.1` is a secure context for the browser) and MariaDB 11.8
+with the options of `docker-compose.yml`, both with Docker on the host
+network, in place of the local nginx, API and tarball MariaDB. GreenMail,
+Radicale, the test CA and both seeds are the same as locally; the API built
+from the checkout only seeds the database. `restart-api` restarts the image's
+container. This mode runs instance 1 only. Real-provider tests and the
+Android app tests below stay local.
 
 ## Android app tests
 

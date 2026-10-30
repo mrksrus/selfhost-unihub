@@ -10,7 +10,10 @@ A missing required check blocks release; it never counts as passed.
 
 The checks run on the pull request, before merging: a release is prepared
 there (version, changelog, support window) so that the tested content is the
-released content. The pull request's run keeps the image it tested as
+released content. A run builds the image once and pushes it under a tag of
+that run only (`candidate-run-<run>-<attempt>`); every check below that needs
+the image pulls exactly that digest, in jobs that run side by side. Only when
+every one of them passed does the `publish` job tag the digest
 `candidate-<tree>` (the git tree of the tested merge), and the push to `main`
 and the release tag publish that image unchanged under `latest`, the version
 and the commit, without building or testing again. When no tested image has
@@ -30,18 +33,33 @@ a pin (including Dependabot's). Dependabot (`.github/dependabot.yml`) proposes u
 actions, both npm packages, the interface check, the Docker base images and
 the Android build as ordinary pull requests that pass the same checks. Each
 run reports `npm audit` findings for shipped dependencies without blocking.
-`prune-candidates.yml` deletes, monthly, `candidate-*` images older than 30
-days that no release adopted; it needs the package to grant this repository
+`prune-candidates.yml` deletes, monthly, `candidate-*` images (run tags
+included) older than 30 days that no release adopted; it needs the package to grant this repository
 the Admin role, and a manual run lists without deleting by default.
 
 Feature details stay in their own documents; this page lists what must be
 shown before publishing and how.
 
+## How CI runs the checks
+
+A run uses only standard `ubuntu-latest` runners of the free plan and takes
+about 25 minutes. `api-tests`, `frontend`, `build` and `android-window` start
+together; once `build` has pushed the image, `container`, `android-10`,
+`android-16` (one job per script), `android-16-servers` (the real-server
+pairings over four emulators, `--part k/4`) and `e2e` (one job per target)
+start together. `publish` needs every one of them and re-tags the tested
+digest without building; `evidence` gathers the evidence into one artifact,
+also after a failure. Between jobs only small artifacts travel (the Android
+app and the support window's earlier apps, kept a day; the release-signed app
+is also kept 14 days for trying it on a phone); the image travels only through
+the registry. A pull request from a fork cannot push, so its test jobs build
+the same commit themselves; nothing from it is kept or published.
+
 ## Required for every release
 
 | Promise | Check (CI step) | Run it locally |
 | --- | --- | --- |
-| API, database and recovery tests pass with no skipped test | `npm --prefix api run test:ci` (Run API tests) | `npm run test:db` ([development](DEVELOPMENT.md)) |
+| API, database and recovery tests pass with no skipped test | `npm --prefix api run test:ci` (`api-tests`; this CI step is the promise, PROJECT-PREFERENCES P-34) | focused files with `scripts/local-db.sh test <file>`; the whole suite with `npm run test:db` ([development](DEVELOPMENT.md)) |
 | Frontend tests, lint and production build | Run frontend checks | `npm test -- --run && npm run lint && npm run build` |
 | Pinned interface reference pictures and browser behavior | Verify the pinned interface | `npm --prefix tools/ui-regression run verify` ([setup](UI_BASELINES.md#commands)) |
 | The image starts as in production, serves the app and the Android download, isolates users, and survives a stop and an API crash | `scripts/container-smoke.sh` | needs Docker and a disposable `_test` database |
@@ -50,9 +68,9 @@ shown before publishing and how.
 | The Android apps of the support window behave as recorded on Android 10, 16 and 17 (17 on a real phone while its emulator image is broken, see [Android compatibility](ANDROID_COMPATIBILITY.md)), and updating keeps the saved server | `scripts/android-support-window.mts`, then `android/scripts/window-test.sh` on each emulator | an emulator and `adb` ([Android compatibility](ANDROID_COMPATIBILITY.md)) |
 | The candidate app's contacts sync both ways with the server (added, edited, joined and deleted on either side, many deletions held for an answer), survive the update from the previous release's app, and follow a session end and a server change | `android/scripts/contacts-test.sh` on each emulator | an emulator and `adb` ([Android](ANDROID.md#contacts-on-the-phone)) |
 | The candidate app receives, shows, acknowledges and opens notifications over its own connection, survives an app update and stops on sign-out | `android/scripts/notifications-test.sh` on each emulator | an emulator and `adb` ([Android](ANDROID.md#notifications)) |
-| The Android apps work against real servers: the candidate app against this image and each earlier server release in the window, and each earlier app against this image. Connecting, signing in with and without a two-factor code, staying signed in after the app is ended, an upload through Android's document picker, a byte-identical download, the microphone permission and a recording, Open with, Share and Save to Downloads for a mailed file (app and server from 0.25.0), and signing out, each confirmed on the server (Android 16) | `scripts/android-server-check.mts` on the Android 16 emulator (its table is in the step log and the run summary) | an emulator and `adb`; `--local <url> --apk <apk>` against `tools/e2e/stack.sh` ([below](#what-the-android-server-check-proves)) |
+| The Android apps work against real servers: the candidate app against this image and each earlier server release in the window, and each earlier app against this image. Connecting, signing in with and without a two-factor code, staying signed in after the app is ended, an upload through Android's document picker, a byte-identical download, the microphone permission and a recording, Open with, Share and Save to Downloads for a mailed file (app and server from 0.25.0), and signing out, each confirmed on the server (Android 16) | `scripts/android-server-check.mts --part k/4` on four Android 16 emulators (`android-16-servers`; each part's table is in its log and the run summary) | an emulator and `adb`; `--local <url> --apk <apk>` against `tools/e2e/stack.sh` ([below](#what-the-android-server-check-proves)) |
 | A published image carries the release-signed Android app | Check and keep the Android app | — |
-| Every user flow covered by the end-to-end suite works through the image's nginx configuration, the API, the database and synthetic mail and CalDAV providers, on desktop, phone and Android-app targets | not in CI yet: run locally on the candidate and attach the result to the pull request | `tools/e2e/stack.sh up`, then `npm test` in `tools/e2e` ([e2e](../tools/e2e/README.md)) |
+| Every user flow covered by the end-to-end suite works through the image (its nginx and API, production settings), MariaDB and synthetic mail and CalDAV providers, on desktop, phone and Android-app targets | `e2e` job, one per target: `tools/e2e/stack.sh up` with `UNIHUB_E2E_IMAGE`, then `npx e2e run --exclude-tag providers --target <target>` | `tools/e2e/stack.sh up`, then `npm test` in `tools/e2e` ([e2e](../tools/e2e/README.md)); real providers (`npm run test:providers`) only locally |
 | The candidate Android app's debug build passes the flows under `tools/e2e/android/` against the candidate server (attachments in the phone composer) | not in CI yet: run locally on the candidate | `tools/e2e/android.sh up`, then `npm run android` in `tools/e2e` |
 
 `scripts/pwa-update-check.mts` exits with 75 when headless Chrome itself stops
@@ -165,8 +183,9 @@ finish its upload, and must save the contact.
 
 ## What the Android server check proves
 
-`scripts/android-server-check.mts` runs on the Android 16 emulator after the
-support-window, contacts and notifications tests. For each pairing it starts a
+`scripts/android-server-check.mts` runs on Android 16 emulators of its own,
+the pairings split over four jobs (`--part k/4`: every fourth pairing from
+the k-th on); together they run each pairing once. For each pairing it starts a
 server from scratch: the image on the host network as in the container smoke
 test (production settings, Secure cookies), with an empty `_test` database,
 its own uploads volume and `ALLOWED_ORIGINS` naming the app's address, as an
@@ -218,7 +237,7 @@ otherwise, fails the check until the record is updated.
 
 It prints a table (one row per pairing, one mark per step), adds it to the
 run's summary and keeps it, with a screenshot of any failed step, under
-`release-evidence/android-server/`. Any failed pairing fails the step. With
+`release-evidence/android-server/` (`android-36-part<k>of4.json` per part). Any failed pairing fails the step. With
 `--local <url> --apk <apk>` and `UNIHUB_ANDROID_ADMIN=<email>:<password>` it
 runs one app against a server that is already running, such as
 `tools/e2e/stack.sh` (sign-ups are rate-limited per address, so restart its
@@ -238,8 +257,8 @@ Report, for the exact commit and image:
 
 - the CI run and its result for each step above, the image digest and the
   `unihub-release-evidence` artifact;
-- the Android table printed by each emulator step, and the real-server
-  table of the Android 16 step;
+- the Android table printed by each emulator job, and the real-server
+  tables of the four `android-16-servers` parts;
 - anything verified outside CI (a real phone, a real mail provider), named as
   such and kept separate from CI results;
 - every check that did not run, as not run.
