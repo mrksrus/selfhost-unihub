@@ -62,7 +62,7 @@ need `X-CSRF-Token`. Another person's contact, photo, merge or import answers
 | PUT | `/api/contacts/:id/favorite` | Favourite on or off |
 | POST | `/api/contacts/bulk-delete` | Delete up to 5,000 (policy `contacts.delete`) |
 | POST | `/api/contacts/bulk-update` | Set `company`, `department` or `job_title` on many; `null` clears |
-| GET, PUT, DELETE | `/api/contacts/:id/photo` | The photo (`?size=full` or `thumb`), set it (the picture as the raw body), remove it |
+| GET, PUT, DELETE | `/api/contacts/:id/photo` | The photo (`?size=full` or `thumb`), set it (the picture as the raw body), remove it (policy `contacts.delete`) |
 | POST | `/api/contacts/imports` | Stage a file (the raw body) and answer the preview |
 | GET | `/api/contacts/imports/:id` | The import's state and result |
 | POST | `/api/contacts/imports/:id/commit` | Write it with per-group decisions |
@@ -135,7 +135,8 @@ the kept properties; the page never sends it).
   | Values of one kind | 100 |
   | Kept properties | 500, 256 KB together |
 
-  An import cuts an over-long value instead and reports it.
+  An import cuts an over-long value for its field instead, keeps the whole
+  value as an other detail and reports it.
 - **Labels.** `label` is one of the kind's labels (see the contract), `''`
   for none, or `custom` with a `custom_label`. A plain string in a list is a
   value without a label. `is_favorite` and `preferred` must be JSON booleans
@@ -194,13 +195,19 @@ the support window ([Android compatibility](ANDROID_COMPATIBILITY.md)).
 20 MiB) and answers what would happen, writing nothing:
 
 - the format, the number of cards and of new, already present (same UID, a
-  UID merged into a contact, or identical content) and likely duplicate cards
+  UID merged into a contact, or identical content) and likely duplicate cards.
+  Identical means every field, every kept detail as the export writes it and
+  the same photo; a card that changed only a kept detail or its picture is
+  merged by default instead of skipped
 - the groups: cards that belong together with the contacts they match, the
   reasons, the confidence, the single values that differ (with a summary of
   each card, for "Review conflicts") and a default decision (add, merge or
   skip)
-- warnings, naming the card number and property, never a value (for example
-  `PHOTO_UNREADABLE`, `PHOTO_TOO_LARGE`, `TOO_MANY_VALUES`)
+- warnings, naming the card number and the property or CSV column, never a
+  value (for example `PHOTO_UNREADABLE`, `PHOTO_TOO_LARGE`, `TOO_MANY_VALUES`,
+  and `VALUE_CUT` or `NOTE_CUT` for a CSV name, organisation, title or note
+  longer than its field: it is cut for the field and kept whole as an
+  `X-CSV-FIELD` detail labelled with its column, so an export carries it)
 - the first names of the file, so a wrong character set shows before
   anything is written
 
