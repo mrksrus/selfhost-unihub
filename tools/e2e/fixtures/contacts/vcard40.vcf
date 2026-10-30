@@ -1,0 +1,25 @@
+BEGIN:VCARD
+VERSION:4.0
+UID:urn:uuid:e2e-RUN-v4-1
+FN:Zoë Fourpoint RUN
+N:Fourpoint RUN;Zoë;;Dr.;
+NICKNAME:Zo
+TEL;TYPE=cell;PREF=1:+1 202 NUM1
+TEL;TYPE=work,voice:+1 202 NUM2
+EMAIL;TYPE=work:zoe.RUN@example.com
+EMAIL;TYPE=home:zoe.home.RUN@example.org
+ADR;TYPE=home:;;1 Example Road;Exampleton;;12345;Examplia
+ORG:Example Labs RUN;Research
+TITLE:Engineer
+BDAY:--0314
+CATEGORIES:Choir,Neighbours
+X-E2E-KEPT:kept from the import
+NOTE:Two lines\nof note
+END:VCARD
+BEGIN:VCARD
+VERSION:4.0
+UID:urn:uuid:e2e-RUN-v4-2
+FN:Yann Fourpoint RUN
+N:Fourpoint RUN;Yann;;;
+TEL;TYPE=cell:+1 202 NUM3
+END:VCARD

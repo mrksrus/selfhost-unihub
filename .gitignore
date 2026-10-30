@@ -47,6 +47,7 @@ dist-ssr
 
 # Synthetic test fixtures may use the extensions above; review them before adding.
 !api/tests/fixtures/**
+!tools/e2e/fixtures/**
 
 # Editor directories and files
 .vscode/*

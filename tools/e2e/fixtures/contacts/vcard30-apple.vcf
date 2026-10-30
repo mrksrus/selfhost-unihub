@@ -1,0 +1,14 @@
+BEGIN:VCARD
+VERSION:3.0
+PRODID:-//Apple Inc.//iPhone OS 18.0//EN
+N:Threepoint RUN;Bea;;;
+FN:Bea Threepoint RUN
+item1.EMAIL;type=INTERNET;type=pref:bea.RUN@example.com
+item1.X-ABLabel:_$!<Other>!$_
+TEL;type=CELL;type=VOICE;type=pref:+1 303 NUM1
+item2.TEL:+1 303 NUM2
+item2.X-ABLabel:Kids
+item3.ADR;type=HOME;type=pref:;;Ringstraße 5;Wien;;1010;Österreich
+BDAY:1990-07-04
+PHOTO;ENCODING=b;TYPE=JPEG:PHOTOB64
+END:VCARD
