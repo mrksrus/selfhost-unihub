@@ -11,9 +11,23 @@ import { isPermission } from '../security/permissions';
 // a signed-in user id; the boundary has already refused anyone else.
 type RouteMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 type RouteAuth = 'public' | 'user' | 'admin';
-type RouteBodyKind = 'json' | 'backup-upload' | 'none';
+type RouteBodyKind = 'json' | 'backup-upload' | 'upload' | 'none';
 type RouteCsrf = 'token' | 'background-header' | 'none';
 type RouteResponseMode = 'json' | 'stream';
+
+// The body a route with kind 'upload' receives: the raw request body, spooled
+// by the boundary to a private file under the uploads root and bounded by the
+// route's limit. The file exists while the handler runs and is removed when it
+// returns or throws, also after the client disconnected; a handler that keeps
+// the bytes moves or copies them first. An empty body never reaches a handler.
+interface UploadBody {
+  path: string;
+  size: number;
+  // The Content-Type header as sent ('' when absent) and its lower-case
+  // type/subtype without parameters. Neither is trusted: sniff the content.
+  contentType: string;
+  mediaType: string;
+}
 
 // F13: the data-safety policies a destructive action is subject to, named by
 // the route that removes or resets the data. 0.28 resolves them through the
@@ -41,6 +55,7 @@ interface RoutePolicy {
   // /api/backup and /api/auth; an explicit null states that the route writes
   // nothing a restore replaces.
   restoreSection?: string | null;
+  // kind 'upload' hands the handler an UploadBody instead of parsed JSON.
   body?: { limit?: number; kind?: RouteBodyKind };
   // 'token' is the cookie/header pair; 'background-header' additionally accepts
   // the service worker's X-Background-Sync header; 'none' is for the routes
@@ -73,7 +88,7 @@ const MUTATING_METHODS = new Set<string>(['POST', 'PUT', 'DELETE']);
 // their validators accept; a route carrying more declares body.limit.
 const DEFAULT_BODY_LIMIT = 16384;
 const AUTH_VALUES = new Set<string>(['public', 'user', 'admin']);
-const BODY_KINDS = new Set<string>(['json', 'backup-upload', 'none']);
+const BODY_KINDS = new Set<string>(['json', 'backup-upload', 'upload', 'none']);
 const CSRF_VALUES = new Set<string>(['token', 'background-header', 'none']);
 const RESPONSE_MODES = new Set<string>(['json', 'stream']);
 const isDestructivePolicy = (value: unknown): value is DestructivePolicy => DESTRUCTIVE_POLICIES.includes(value as DestructivePolicy);
@@ -177,4 +192,4 @@ function destructivePolicies(spec: Pick<RoutePolicy, 'destructive'>, query: URLS
 }
 
 export { defineRoutes, mergeRouteTables, assertRouteTable, destructivePolicies, DEFAULT_BODY_LIMIT, MUTATING_METHODS, DESTRUCTIVE_POLICIES };
-export type { RouteSpec, RouteTable, RoutePolicy, RouteAuth, RouteBodyKind, RouteCsrf, RouteResponseMode, PublicRouteSpec, UserRouteSpec, DestructivePolicy, DestructiveDeclaration };
+export type { UploadBody, RouteSpec, RouteTable, RoutePolicy, RouteAuth, RouteBodyKind, RouteCsrf, RouteResponseMode, PublicRouteSpec, UserRouteSpec, DestructivePolicy, DestructiveDeclaration };

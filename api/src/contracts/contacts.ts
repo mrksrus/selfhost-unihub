@@ -375,13 +375,34 @@ export type ImportDecisionKind = 'add' | 'merge' | 'skip';
 
 /** A problem with one card; names the card number and property, never a value. */
 export interface ImportWarning {
+  /** The card's number in the file, counting from 1; null for the whole file. */
   card: number | null;
   property: string | null;
   code: string;
   message: string;
 }
 
-/** Cards of the file that belong together: new, the same as existing contacts, or likely duplicates. */
+/** What a card of the file holds, for "Review conflicts" to show next to the existing contact. */
+export interface ImportCardSummary {
+  card: number;
+  display_name: string;
+  name: ContactName;
+  organization: { name: string | null; department: string | null };
+  job_title: string | null;
+  birthday: PartialDate | null;
+  anniversary: PartialDate | null;
+  emails: string[];
+  phones: string[];
+  has_photo: boolean;
+}
+
+/**
+ * Cards of the file that belong together: new, the same as existing contacts
+ * (same UID, or identical content), or likely duplicates of existing contacts
+ * or of each other. `cards` are card numbers (from 1). `existing_ids` are the
+ * contacts a merge would go into (the first one). `summaries` describe the
+ * group's cards; they are given for every group that is not 'new'.
+ */
 export interface ImportGroup {
   id: string;
   cards: number[];
@@ -389,8 +410,10 @@ export interface ImportGroup {
   confidence: DuplicateConfidence | null;
   existing_ids: string[];
   reasons: DuplicateReason[];
+  /** Single values that differ between the cards and the existing contact; a merge keeps the existing contact's. */
   conflicts: ContactSingleField[];
   default_decision: ImportDecisionKind;
+  summaries?: ImportCardSummary[];
 }
 
 /** POST /api/contacts/imports (raw file): what would happen, before anything is written. */
@@ -398,6 +421,7 @@ export interface ImportSummary {
   id: string;
   format: ImportFormat;
   expires_at: string;
+  /** cards: contacts read from the file; new, present (same UID or identical) and duplicates count cards. */
   counts: { cards: number; new: number; present: number; duplicates: number };
   groups: ImportGroup[];
   warnings: ImportWarning[];
@@ -405,16 +429,28 @@ export interface ImportSummary {
   sample_names: string[];
 }
 
-/** POST /api/contacts/imports/:id/commit */
+/**
+ * POST /api/contacts/imports/:id/commit. A group without a decision takes its
+ * default. The first commit's decisions hold: committing again (a retry after
+ * a lost answer) changes nothing and answers the status. A failed import (for
+ * example a restore started) resumes where it stopped when committed again.
+ */
 export interface ImportCommitRequest {
   decisions: { group_id: string; decision: ImportDecisionKind }[];
 }
 
-/** GET /api/contacts/imports/:id */
+/**
+ * GET /api/contacts/imports/:id (and the commit's answer). The field is
+ * `state`, not `status`: a route answer's top-level `status` is its HTTP
+ * status at the request boundary.
+ */
 export interface ImportStatus {
   id: string;
-  status: 'staged' | 'committing' | 'committed' | 'failed' | 'expired';
+  state: 'staged' | 'committing' | 'committed' | 'failed' | 'expired';
+  /** 0 to 1. */
   progress: number;
+  expires_at: string;
+  /** What was written so far; null before the commit started. */
   result: {
     added: number;
     merged: number;
@@ -423,4 +459,6 @@ export interface ImportStatus {
     kept_conflicts: { contact_id: string; field: ContactSingleField }[];
     warnings: ImportWarning[];
   } | null;
+  /** Why a failed import stopped; commit again to resume. */
+  error: { code: string; message: string } | null;
 }

@@ -130,7 +130,8 @@ test('contact duplicates and merges: detection, merge review, Merge all, undo, p
   const [[bin]] = await pool.execute<RowDataPacket[]>("SELECT module, item_type, item_id, reason, group_id, title, file_refs, purge_after > UTC_TIMESTAMP() + INTERVAL 29 DAY AS later FROM bin_items WHERE user_id = ?", [users.owner]);
   assert.deepEqual([bin.module, bin.item_type, bin.item_id, bin.reason, bin.group_id, bin.title, Number(bin.later)], ['contacts', 'contact', anna2.id, 'merged', merged.merge_id, 'Anna Müller', 1]);
   assert.ok((await photosHeldForUndo(users.owner)).has(sha('anna')), 'the survivor\'s earlier photo waits for the undo window');
-  assert.deepEqual(typeof bin.file_refs === 'string' ? JSON.parse(bin.file_refs) : bin.file_refs, [sha('anna2'), sha('anna2-96')]);
+  // Its own photo, and the survivor's photo the merge replaced, stay for the photo sweep until the undo window ends.
+  assert.deepEqual(typeof bin.file_refs === 'string' ? JSON.parse(bin.file_refs) : bin.file_refs, [sha('anna2'), sha('anna2-96'), sha('anna'), sha('anna-96')]);
   const [dismissals] = await pool.execute<RowDataPacket[]>('SELECT contact_a, contact_b FROM contact_duplicate_dismissals WHERE user_id = ? ORDER BY contact_a', [users.owner]);
   assert.ok(dismissals.some(row => [row.contact_a, row.contact_b].sort().join() === [anna.id, carl.id].sort().join()), 'Not the same person moved to the survivor');
   // The phone sees the tombstone (include=merged) and the survivor as an edit.
@@ -207,12 +208,20 @@ test('contact duplicates and merges: detection, merge review, Merge all, undo, p
   }
   assert.equal((await call(owner, 'POST', '/api/contacts/merges/auto', { group_ids: listedIds, min: 'medium' }, 400)).code, 'INVALID_MERGE');
 
-  // ── A value old apps cannot see stays out of their three places ──
+  // ── Old apps' places: the survivor's stay, a merged value takes a free one ──
   const slots1 = await create({ name: { given: 'Olga', family: 'Slot' }, emails: ['o1@example.net', 'o2@example.net'] });
-  const slots2 = await create({ name: { given: 'Olga', family: 'Slot' }, emails: ['o1@example.net', 'o2@example.net', 'O2@Example.net', 'hidden@example.net'] });
+  const slots2 = await create({ name: { given: 'Olga', family: 'Slot' }, emails: ['o2@example.net', 'O1@Example.net', 'more@example.net', 'last@example.net'] });
   const slotted = (await call(owner, 'POST', '/api/contacts/merges', { contact_ids: [slots1.id, slots2.id], versions: versions(slots1, slots2) })).contact;
-  assert.deepEqual(slotted.emails.map((email: FixtureValue) => email.value), ['o1@example.net', 'o2@example.net', 'hidden@example.net']);
-  assert.deepEqual([slotted.email, slotted.email2, slotted.email3], ['o1@example.net', 'o2@example.net', null], 'not moved into the third place');
+  assert.deepEqual(slotted.emails.map((email: FixtureValue) => email.value), ['o1@example.net', 'o2@example.net', 'more@example.net', 'last@example.net']);
+  assert.deepEqual([slotted.email, slotted.email2, slotted.email3], ['o1@example.net', 'o2@example.net', 'more@example.net'], 'no place moved; one free place filled');
+  const [slotRows] = await pool.execute<RowDataPacket[]>("SELECT value, legacy_slot FROM contact_values WHERE contact_id = ? AND kind = 'email' ORDER BY position", [slots1.id]);
+  assert.deepEqual(slotRows.map(row => [row.value, row.legacy_slot]), [['o1@example.net', 1], ['o2@example.net', 2], ['more@example.net', 3], ['last@example.net', null]]);
+  const slotUndo = await call(owner, 'POST', `/api/contacts/merges/${(await call(owner, 'GET', '/api/contacts/merges')).merges[0].id}/undo`, {});
+  assert.equal(slotUndo.survivor_restored, true);
+  const [restoredSlots] = await pool.execute<RowDataPacket[]>("SELECT contact_id, value, legacy_slot FROM contact_values WHERE contact_id IN (?, ?) AND kind = 'email' ORDER BY contact_id = ?, position",
+    [slots1.id, slots2.id, slots2.id]);
+  assert.deepEqual(restoredSlots.map(row => [row.value, row.legacy_slot]), [['o1@example.net', 1], ['o2@example.net', 2],
+    ['o2@example.net', 1], ['O1@Example.net', 2], ['more@example.net', 3], ['last@example.net', null]], 'undo puts every place back');
 
   // ── Two merges of overlapping groups at once: one wins, nothing is lost ──
   const x = await create({ name: { given: 'Xenia', family: 'Race' }, emails: ['x1@example.net'] });

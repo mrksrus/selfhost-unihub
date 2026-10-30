@@ -1,0 +1,16 @@
+BEGIN:VCARD
+VERSION:3.0
+FN:Broken One
+this line has no colon
+B@D NAME:x
+NOTE;CHARSET=x-unknown-charset:still read
+EMAIL:broken@example.com
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+X-ONLY:nothing shown
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+FN:Never closed
+TEL:+1 555 0199

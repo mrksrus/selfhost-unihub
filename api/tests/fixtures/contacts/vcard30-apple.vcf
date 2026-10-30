@@ -1,0 +1,25 @@
+BEGIN:VCARD
+VERSION:3.0
+PRODID:-//Apple Inc.//iPhone OS 18.0//EN
+N:Beispiel;Bea;;;
+FN:Bea Beispiel
+item1.EMAIL;type=INTERNET;type=pref:bea@example.com
+item1.X-ABLabel:_$!<Other>!$_
+TEL;type=CELL;type=VOICE;type=pref:+43 660 5550100
+item2.TEL:+43 1 5550101
+item2.X-ABLabel:Kids
+TEL;type=WORK;type=FAX:+43 1 5550102
+item3.ADR;type=HOME;type=pref:;;Ringstraße 5;Wien;;1010;Österreich
+item3.X-ABADR:at
+item4.X-ABRELATEDNAMES:Carla Beispiel
+item4.X-ABLabel:_$!<Mother>!$_
+item5.X-ABDATE;type=pref:2015-09-12
+item5.X-ABLabel:_$!<Anniversary>!$_
+BDAY;X-APPLE-OMIT-YEAR=1604:1604-07-04
+X-JABBER;type=HOME:bea@example.org
+item6.URL;type=pref:https://bea.example.com
+item6.X-ABLabel:_$!<HomePage>!$_
+PHOTO;ENCODING=b;TYPE=JPEG:/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=
+X-ABShowAs:PERSON
+NOTE:Synthetic\nnote
+END:VCARD

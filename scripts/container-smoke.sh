@@ -190,6 +190,11 @@ console.log(`Android app ${version.android.versionName} offered and served (${by
 NODE
 UNIHUB_SMOKE_CONTAINER="$container_name" node "$script_dir/container-smoke.mts"
 docker exec -i -u 10001:10001 -e UNIHUB_API_ROOT=/app/api "$container_name" node --input-type=commonjs-typescript < "$script_dir/../api/tests/helpers/audio-conversion-smoke.cts"
+# Contact photos: sharp's prebuilt musl libvips loads, AVIF decodes, and the
+# image's FFmpeg turns a HEIC with an irot transform into an upright picture.
+docker exec -i -u 10001:10001 -e UNIHUB_API_ROOT=/app/api \
+  -e UNIHUB_SMOKE_HEIC_BASE64="$(base64 -w0 "$script_dir/../api/tests/fixtures/contacts/photos/rotated-irot.heic")" \
+  "$container_name" node --input-type=commonjs-typescript < "$script_dir/../api/tests/helpers/photo-conversion-smoke.cts"
 # Graceful stop: with cap_drop ALL the root supervisor cannot signal the API
 # user, so shutdown goes through the IPC channel. It must finish well inside
 # Docker's grace period (no SIGKILL) and exit 0.
@@ -242,4 +247,4 @@ for (const path of ['/api/version', '/api/auth/me', '/health']) {
 console.log('With the API down, API requests answer 502 with a JSON error and the page still loads');
 NODE
 docker rm -f "${container_name}-nginx" >/dev/null
-echo 'Container smoke passed: startup, non-root API and uploads handover, health, security headers, Android app download, authentication, isolation, malformed requests, audio and encrypted backup round-trips, graceful stop, essential-service recovery, and API-down answers.'
+echo 'Container smoke passed: startup, non-root API and uploads handover, health, security headers, Android app download, authentication, isolation, malformed requests, audio, contact photo and encrypted backup round-trips, graceful stop, essential-service recovery, and API-down answers.'

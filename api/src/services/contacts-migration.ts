@@ -13,7 +13,7 @@ type LegacyRow = RowDataPacket & {
   email: string | null; email2: string | null; email3: string | null;
   phone: string | null; phone2: string | null; phone3: string | null;
 };
-type ValueRow = RowDataPacket & { contact_id: string; kind: 'email' | 'phone'; position: number; value: string; value_key: string };
+type ValueRow = RowDataPacket & { contact_id: string; kind: 'email' | 'phone'; position: number; value: string; value_key: string; legacy_slot: number | null };
 
 const LEGACY_SLOTS = { email: ['email', 'email2', 'email3'], phone: ['phone', 'phone2', 'phone3'] } as const;
 // Step 23's drops, one statement each (data-inventory.test.cts reads them).
@@ -66,6 +66,8 @@ async function addContactModel(connection: SqlExecutor) {
 
   // One row per labelled value (F12). value_key is the normalised form the
   // duplicate engine, search and restore matching compare (contact-keys.ts).
+  // legacy_slot (1 to 3, emails and phones only) is the place the value holds
+  // in the 3+3 fields of the 0.24.3 to 0.25.1 apps (services/contacts.ts).
   await connection.execute(`CREATE TABLE IF NOT EXISTS contact_values (
     id CHAR(36) NOT NULL PRIMARY KEY,
     contact_id CHAR(36) NOT NULL,
@@ -86,8 +88,10 @@ async function addContactModel(connection: SqlExecutor) {
     country VARCHAR(255) NULL,
     params JSON NULL,
     vcard_group VARCHAR(64) NULL,
+    legacy_slot TINYINT UNSIGNED NULL,
     created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_contact_values_legacy_slot (contact_id, kind, legacy_slot),
     KEY idx_contact_values_contact (contact_id, kind, position),
     KEY idx_contact_values_key (user_id, kind, value_key),
     FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE CASCADE,
@@ -223,9 +227,9 @@ async function copyLegacyContactValues(connection: PoolConnection) {
       if (!rows.length) break;
       after = rows[rows.length - 1].id;
       const values = rows.flatMap(row => (['email', 'phone'] as const).flatMap(kind => legacyValues(row, kind)
-        .map((value, position) => [crypto.randomUUID(), row.id, row.user_id, kind, position, value, valueKey(kind, value)])));
+        .map((value, position) => [crypto.randomUUID(), row.id, row.user_id, kind, position, value, valueKey(kind, value), position + 1])));
       if (values.length) {
-        await connection.query('INSERT INTO contact_values (id, contact_id, user_id, kind, position, value, value_key) VALUES ?', [values]);
+        await connection.query('INSERT INTO contact_values (id, contact_id, user_id, kind, position, value, value_key, legacy_slot) VALUES ?', [values]);
       }
       const keyed = rows.map(row => [row.id, nameKey({ given: row.first_name, family: row.last_name })]).filter(([, key]) => key);
       if (keyed.length) {
@@ -243,8 +247,8 @@ async function copyLegacyContactValues(connection: PoolConnection) {
 }
 
 // Every legacy value is present as a child row of its contact, at its
-// position, with the same text, and nothing else was added; every contact
-// has a uid.
+// position and in the old apps' place for it, with the same text, and
+// nothing else was added; every contact has a uid.
 async function verifyLegacyContactCopy(connection: SqlExecutor) {
   let after = '';
   let checked = 0;
@@ -254,7 +258,7 @@ async function verifyLegacyContactCopy(connection: SqlExecutor) {
       FROM contacts WHERE id > ? ORDER BY id LIMIT ${BATCH}`, [after]);
     if (!rows.length) break;
     after = rows[rows.length - 1].id;
-    const [stored] = await connection.execute<ValueRow[]>(`SELECT contact_id, kind, position, value, value_key FROM contact_values
+    const [stored] = await connection.execute<ValueRow[]>(`SELECT contact_id, kind, position, value, value_key, legacy_slot FROM contact_values
       WHERE contact_id IN (${rows.map(() => '?').join(', ')}) ORDER BY contact_id, kind, position`, rows.map(row => row.id));
     const byContact = new Map<string, ValueRow[]>();
     for (const value of stored) byContact.set(value.contact_id, [...(byContact.get(value.contact_id) || []), value]);
@@ -263,7 +267,7 @@ async function verifyLegacyContactCopy(connection: SqlExecutor) {
       for (const kind of ['email', 'phone'] as const) {
         const expected = legacyValues(row, kind);
         const copied = actual.filter(value => value.kind === kind);
-        if (copied.length !== expected.length || copied.some((value, index) => value.position !== index || value.value !== expected[index] || value.value_key !== valueKey(kind, expected[index]))) {
+        if (copied.length !== expected.length || copied.some((value, index) => value.position !== index || Number(value.legacy_slot) !== index + 1 || value.value !== expected[index] || value.value_key !== valueKey(kind, expected[index]))) {
           throw new Error(`Contact ${row.id}: its ${kind} values were not copied completely`);
         }
       }

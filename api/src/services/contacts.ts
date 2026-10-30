@@ -69,6 +69,9 @@ interface ValueDraft extends Partial<Record<AddressPart, string | null>> {
   vcard_group?: string | null;
   // Where the value goes among its kind; by default the list order.
   position?: number;
+  // The value's place (1 to 3) in an old app's 3+3 fields; null for none,
+  // absent to let writeValues keep or give one (legacySlots).
+  legacy_slot?: number | null;
 }
 /** A contact's content as it is written (the stored columns plus its values). */
 interface ContactDraft {
@@ -281,11 +284,11 @@ type ContactRow = RowDataPacket & {
   job_title: string | null; birthday: string | null; anniversary: string | null; notes: string | null; is_favorite: number | boolean | null;
   created_at: Date | string; updated_at: Date | string;
 };
-type ValueRow = RowDataPacket & ValueDraft & { id: string; contact_id: string; position: number; is_preferred: number; value_key: string };
+type ValueRow = RowDataPacket & ValueDraft & { id: string; contact_id: string; position: number; is_preferred: number; value_key: string; legacy_slot: number | null };
 type PhotoRow = RowDataPacket & { contact_id: string; sha256: string; width: number; height: number };
 
 const CONTACT_COLUMNS = 'c.id, c.user_id, c.uid, c.version, c.display_name, c.first_name, c.last_name, c.middle_name, c.name_prefix, c.name_suffix, c.company, c.department, c.job_title, c.birthday, c.anniversary, c.notes, c.is_favorite, c.created_at, c.updated_at';
-const VALUE_COLUMNS = 'id, contact_id, kind, position, is_preferred, label, custom_label, value, value_key, po_box, extended, street, locality, region, postal_code, country, params, vcard_group';
+const VALUE_COLUMNS = 'id, contact_id, kind, position, is_preferred, label, custom_label, value, value_key, po_box, extended, street, locality, region, postal_code, country, params, vcard_group, legacy_slot';
 
 function partialDate(stored: string | null): PartialDate | null {
   const match = stored ? /^(?:(\d{4})|-)-(\d{2})-(\d{2})$/.exec(stored) : null;
@@ -310,51 +313,78 @@ function displayName(row: Pick<ContactRow, 'display_name' | 'first_name' | 'midd
 // (ContactCard.forServer): names cut to 100 UTF-16 units and company and job
 // title to 255, then trimmed; a phone number over 50 or an email over 255
 // units is dropped, and one value per app key is kept. Their next PUT sends
-// that back, so the bridge reads it as unchanged and never shows them a value
-// they would drop.
+// that back, so the bridge reads it as unchanged. Emails and phones they see
+// are the rows holding one of their three places (legacy_slot), and only a
+// value they can hold gets a place.
 const OLD_APP_NAME = 100;
 const OLD_APP_TEXT = 255;
 const OLD_APP_VALUE: Readonly<Record<'email' | 'phone', number>> = { email: 255, phone: 50 };
-// The three places of each kind an old app sees; values from position 3 on are the phone's "more".
-const LEGACY_SLOT_COUNT = 3;
+const LEGACY_SLOT_NUMBERS = [1, 2, 3] as const;
+type OldAppKind = 'email' | 'phone';
+const isOldAppKind = (kind: ContactValueKind): kind is OldAppKind => kind === 'email' || kind === 'phone';
 
+// The apps' Kotlin string rules, char by char in UTF-16 units as the JVM
+// sees them. String.trim() removes Char.isWhitespace() (Unicode space
+// separators plus the ASCII and information separator controls); a
+// surrogate is never a digit, so a digit outside the BMP ("𝟙") adds nothing
+// to a phone key (ContactCard.phoneKey: isDigit() or '+').
+// eslint-disable-next-line no-control-regex -- Kotlin's whitespace includes these ASCII controls.
+const KOTLIN_WHITESPACE = /^[\p{Zs}\p{Zl}\p{Zp}\t\n\u000B\f\r\u001C-\u001F]$/u;
+const KOTLIN_DIGIT = /^\p{Nd}$/u;
+function kotlinTrim(value: string) {
+  let start = 0; let end = value.length;
+  while (start < end && KOTLIN_WHITESPACE.test(value[start])) start++;
+  while (end > start && KOTLIN_WHITESPACE.test(value[end - 1])) end--;
+  return value.slice(start, end);
+}
 function oldAppCut(value: string, max: number) {
-  const text = value.trim();
+  const text = kotlinTrim(value);
   if (text.length <= max) return text;
   const end = /[\uD800-\uDBFF]/.test(text[max - 1]) ? max - 1 : max;
-  return text.slice(0, end).trim();
+  return kotlinTrim(text.slice(0, end));
 }
-const oldAppKey = (kind: 'email' | 'phone', value: string) => kind === 'phone' ? value.replace(/[^\p{Nd}+]/gu, '') : value.trim().toLowerCase();
+function oldAppKey(kind: OldAppKind, value: string) {
+  if (kind === 'email') return kotlinTrim(value).toLowerCase();
+  let key = '';
+  for (let index = 0; index < value.length; index++) if (value[index] === '+' || KOTLIN_DIGIT.test(value[index])) key += value[index];
+  return key;
+}
 
 // A sent value equals the current one as an old app would send it back.
 function sameForOldApp(sent: string | null, current: string | null, max: number) {
   return (sent || '') === (current || '') || (sent || '') === oldAppCut(current || '', max);
 }
 
-// The values an old app sees: those in the three places it can hold, in
-// position order. The others (from position 3 on, too long, or a second
-// value with the same app key) stay out of its sight, so its writes cannot
-// remove them.
-function projectedValues(kind: 'email' | 'phone', values: readonly ValueRow[]) {
-  const seen = new Set<string>();
-  return values.filter(value => value.kind === kind && value.position < LEGACY_SLOT_COUNT).filter(value => {
-    const text = value.value.trim();
-    const key = oldAppKey(kind, value.value);
-    if (!text || text.length > OLD_APP_VALUE[kind] || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+// What an old app sends back for a value it was shown: ServerContact.from()
+// trims it the Kotlin way, and the body parser trims it again. Sent and
+// stored values are compared in this form.
+const oldAppEcho = (value: string) => kotlinTrim(value).trim();
+const sameEcho = (stored: string, sent: string) => oldAppEcho(stored) === oldAppEcho(sent);
+
+// The app key of a value an old app holds as it is (forServer() measures the
+// trimmed text); null when it would drop the value.
+function oldAppHoldable(kind: OldAppKind, value: string) {
+  const text = kotlinTrim(value);
+  const key = oldAppKey(kind, text);
+  return text && key && text.length <= OLD_APP_VALUE[kind] ? key : null;
 }
 
-// The 3+3 projection; a contact known only by its display name shows it as the first name.
+// The rows in an old app's three places of a kind, each at its place.
+function legacyPlaces(kind: OldAppKind, values: readonly ValueRow[]) {
+  const places: (ValueRow | undefined)[] = [undefined, undefined, undefined];
+  for (const value of values) if (value.kind === kind && value.legacy_slot) places[Number(value.legacy_slot) - 1] = value;
+  return places;
+}
+
+// The 3+3 projection: each place shows its row, so a gap stays a gap; a
+// contact known only by its display name shows it as the first name.
 function legacyProjection(row: ContactRow, values: readonly ValueRow[]): LegacyContactFields {
-  const first = (kind: 'email' | 'phone') => projectedValues(kind, values).map(value => value.value);
-  const [emails, phones] = [first('email'), first('phone')];
+  const [email, email2, email3] = legacyPlaces('email', values).map(value => value?.value ?? null);
+  const [phone, phone2, phone3] = legacyPlaces('phone', values).map(value => value?.value ?? null);
   return {
     first_name: row.first_name || (!row.last_name && row.display_name) || '',
     last_name: row.last_name, company: row.company,
-    email: emails[0] ?? null, email2: emails[1] ?? null, email3: emails[2] ?? null,
-    phone: phones[0] ?? null, phone2: phones[1] ?? null, phone3: phones[2] ?? null,
+    email, email2, email3, phone, phone2, phone3,
   };
 }
 
@@ -496,29 +526,69 @@ function draftNameKey(draft: Pick<ContactDraft, 'first_name' | 'middle_name' | '
   return nameKey({ given: draft.first_name, middle: draft.middle_name, family: draft.last_name, display: draft.display_name });
 }
 
+// The old apps' places of written values (P-21). A draft may name its place
+// (a number, or null for none). Otherwise a kept row keeps its place while an
+// old app can still hold its value beside the others, and a new email or
+// phone takes the first free place when it can be held. A place is never
+// moved or refilled from a value already stored, so what an old app was shown
+// stays where it was, and a value it was not shown stays out of its reach.
+function legacySlots(drafts: readonly ValueDraft[], kept: readonly (ValueRow | undefined)[]) {
+  const slots: (number | null)[] = drafts.map(() => null);
+  const taken = { email: new Set<number>(), phone: new Set<number>() };
+  const keys = { email: new Set<string>(), phone: new Set<string>() };
+  drafts.forEach((draft, index) => {
+    if (draft.legacy_slot == null) return;
+    const slot = draft.legacy_slot;
+    if (!isOldAppKind(draft.kind) || !LEGACY_SLOT_NUMBERS.includes(slot as 1) || taken[draft.kind].has(slot)) throw invalid(`${KIND_NAMES[draft.kind]} has an invalid place for older apps`);
+    taken[draft.kind].add(slot);
+    slots[index] = slot;
+    const key = oldAppHoldable(draft.kind, draft.value);
+    if (key) keys[draft.kind].add(key);
+  });
+  const claim = (index: number, kind: OldAppKind, slot: number | undefined) => {
+    const key = oldAppHoldable(kind, drafts[index].value);
+    if (!slot || !key || keys[kind].has(key) || taken[kind].has(slot)) return;
+    taken[kind].add(slot); keys[kind].add(key); slots[index] = slot;
+  };
+  const automatic = drafts.map((draft, index) => ({ draft, index, row: kept[index] })).filter(({ draft }) => draft.legacy_slot === undefined && isOldAppKind(draft.kind));
+  for (const { draft, index, row } of automatic.filter(({ row }) => row?.legacy_slot).sort((a, b) => Number(a.row!.legacy_slot) - Number(b.row!.legacy_slot))) {
+    claim(index, draft.kind as OldAppKind, Number(row!.legacy_slot));
+  }
+  for (const { draft, index } of automatic.filter(({ row }) => !row)) {
+    const kind = draft.kind as OldAppKind;
+    claim(index, kind, LEGACY_SLOT_NUMBERS.find(slot => !taken[kind].has(slot)));
+  }
+  return slots;
+}
+
 // Writes the values of the given kinds as listed: rows of those kinds not in
 // the list go, the rest are written again at their new positions. A draft id
-// that names one of this contact's rows of the same kind keeps that row's id
-// and its import details (params, group); any other id is replaced.
+// that names one of this contact's rows of the same kind keeps that row's id,
+// its import details (params, group) and its place for old apps; any other
+// id is replaced.
 async function writeValues(cx: SqlExecutor, userId: string, contactId: string, kinds: readonly ContactValueKind[], drafts: readonly ValueDraft[]) {
   const [existing] = await cx.execute<ValueRow[]>(`SELECT ${VALUE_COLUMNS} FROM contact_values WHERE user_id = ? AND contact_id = ?`, [userId, contactId]);
   const own = new Map(existing.map(row => [row.id, row]));
   if (kinds.length) await cx.execute(`DELETE FROM contact_values WHERE user_id = ? AND contact_id = ? AND kind IN (${placeholders(kinds)})`, [userId, contactId, ...kinds]);
-  const positions = new Map<ContactValueKind, number>();
   const used = new Set<string>();
-  const rows = drafts.map(draft => {
+  const kept = drafts.map(draft => {
     const stored = draft.id ? own.get(draft.id) : undefined;
-    const keep = stored && stored.kind === draft.kind && !used.has(stored.id) ? stored : undefined;
-    const id = keep ? keep.id : crypto.randomUUID();
-    used.add(id);
+    if (!stored || stored.kind !== draft.kind || used.has(stored.id) || !kinds.includes(stored.kind)) return undefined;
+    used.add(stored.id);
+    return stored;
+  });
+  const slots = legacySlots(drafts, kept);
+  const positions = new Map<ContactValueKind, number>();
+  const rows = drafts.map((draft, index) => {
+    const keep = kept[index];
     const position = draft.position ?? positions.get(draft.kind) ?? 0;
     positions.set(draft.kind, position + 1);
     const params = draft.params !== undefined ? draft.params : parseJson(keep?.params);
-    return [id, contactId, userId, draft.kind, position, draft.preferred ? 1 : 0, draft.label, draft.custom_label, draft.value, valueKey(draft.kind, draft.value),
+    return [keep ? keep.id : crypto.randomUUID(), contactId, userId, draft.kind, position, draft.preferred ? 1 : 0, draft.label, draft.custom_label, draft.value, valueKey(draft.kind, draft.value),
       ...ADDRESS_PARTS.map(part => draft[part] ?? null), params == null ? null : JSON.stringify(params),
-      draft.vcard_group !== undefined ? draft.vcard_group : keep?.vcard_group ?? null];
+      draft.vcard_group !== undefined ? draft.vcard_group : keep?.vcard_group ?? null, slots[index]];
   });
-  await insertRows(cx, `contact_values (id, contact_id, user_id, kind, position, is_preferred, label, custom_label, value, value_key, ${ADDRESS_PARTS.join(', ')}, params, vcard_group)`, rows);
+  await insertRows(cx, `contact_values (id, contact_id, user_id, kind, position, is_preferred, label, custom_label, value, value_key, ${ADDRESS_PARTS.join(', ')}, params, vcard_group, legacy_slot)`, rows);
 }
 
 // Multi-row INSERTs through execute(), in slices that keep the placeholder count bounded.
@@ -582,51 +652,57 @@ async function replaceContact(cx: SqlExecutor, userId: string, id: string, draft
   }
 }
 
-// Fits one kind's projected values to what an old app sent (P-21). Sent
-// values take places 0, 1, 2 in the order sent, reusing the rows they match
-// (exact text first, then the normalised value; a projected row before a
-// hidden one), so labels and import details stay. Only projected rows the
-// app left out are removed. Every other value is kept, outside the three
-// places, so the same PUT sent again changes nothing more.
-function legacyList(kind: 'email' | 'phone', stored: readonly ValueRow[], sent: readonly string[]): ValueDraft[] {
-  const ofKind = stored.filter(row => row.kind === kind);
-  const projected = projectedValues(kind, ofKind);
-  const visible = [...projected];
-  const hidden = ofKind.filter(row => !projected.includes(row));
-  const take = (rows: ValueRow[], match: (row: ValueRow) => boolean) => {
-    const index = rows.findIndex(match);
-    return index < 0 ? undefined : rows.splice(index, 1)[0];
-  };
-  const exact = sent.map(value => take(visible, row => row.value === value));
-  const head = sent.map((value, index): ValueDraft => {
-    const key = valueKey(kind, value);
-    const row = exact[index] || take(visible, candidate => candidate.value_key === key)
-      || take(hidden, candidate => candidate.value === value) || take(hidden, candidate => candidate.value_key === key);
-    return { ...(row ? asDraft(row) : { kind, label: '', custom_label: null, preferred: false }), value, position: index };
-  });
-  let next = Math.max(LEGACY_SLOT_COUNT - 1, ...hidden.map(row => row.position)) + 1;
-  const rest = hidden.map(row => ({ ...asDraft(row), position: row.position >= LEGACY_SLOT_COUNT ? row.position : next++ }));
-  return [...head, ...rest];
-}
+type PlaceWrite = { slot: number; value: string };
 
-function asDraft(row: ValueRow): ValueDraft {
-  return { id: row.id, kind: row.kind, label: row.label, custom_label: row.custom_label ?? null, value: row.value, preferred: !!row.is_preferred,
-    ...Object.fromEntries(ADDRESS_PARTS.map(part => [part, row[part] ?? null])), params: parseJson(row.params), vcard_group: row.vcard_group ?? null };
+// One kind of a flat 3+3 body applied to the rows in the old apps' places
+// (P-21); a row outside them is never matched or changed. A whole body names
+// the kind's values: a stored value it sends back as an old app shows it
+// stays as it is, a changed value takes over a row it no longer names (in
+// place order, keeping that row's label), a further value takes a free place,
+// and a row it no longer names goes. A partial body addresses places: an
+// empty field clears that place and a value is set there. Either one sent
+// again changes nothing more.
+function legacyPlan(kind: OldAppKind, places: readonly (ValueRow | undefined)[], fields: LegacyFields, present: ReadonlySet<string>, whole: boolean) {
+  const removed: ValueRow[] = []; const changed: [ValueRow, string][] = []; const added: PlaceWrite[] = [];
+  const sent = LEGACY_SLOTS[kind].map((field, index) => ({ slot: index + 1, field, value: fields[field] }));
+  if (!whole) {
+    for (const { slot, field, value } of sent) {
+      if (!present.has(field)) continue;
+      const row = places[slot - 1];
+      if (!value) { if (row) removed.push(row); } else if (!row) added.push({ slot, value }); else if (!sameEcho(row.value, value)) changed.push([row, value]);
+    }
+    return { removed, changed, added };
+  }
+  const open = places.filter((row): row is ValueRow => !!row);
+  const take = (match: (row: ValueRow) => boolean) => { const index = open.findIndex(match); return index < 0 ? undefined : open.splice(index, 1)[0]; };
+  const unmatched = sent.flatMap(({ slot, value }): PlaceWrite[] => value ? [{ slot, value }] : [])
+    .filter(item => !(take(row => Number(row.legacy_slot) === item.slot && sameEcho(row.value, item.value)) || take(row => sameEcho(row.value, item.value))));
+  const extra: PlaceWrite[] = [];
+  for (const item of unmatched) {
+    const row = open.shift();
+    if (row) changed.push([row, item.value]); else extra.push(item);
+  }
+  removed.push(...open);
+  const taken = new Set(places.filter(row => row && !removed.includes(row)).map(row => Number(row!.legacy_slot)));
+  for (const item of extra) {
+    const slot = taken.has(item.slot) ? LEGACY_SLOT_NUMBERS.find(free => !taken.has(free))! : item.slot;
+    taken.add(slot);
+    added.push({ slot, value: item.value });
+  }
+  return { removed, changed, added };
 }
-
-const legacyValues = (fields: LegacyFields, kind: 'email' | 'phone') => LEGACY_SLOTS[kind].map(slot => fields[slot]).filter((value): value is string => !!value);
 
 interface LegacyUpdate { whole: boolean; present: ReadonlySet<string>; favorite: boolean | null; expectedVersion: number | null }
 
 // A flat 3+3 body applied as a diff (P-21). A field the body does not carry
 // (in a body without first_name) stays; a value sent back as the app shows
 // it, or as an old app cuts it, leaves the stored value as it is; emails and
-// phones are fitted into the projected places (legacyList).
+// phones change only in the old apps' places (legacyPlan).
 async function applyLegacyUpdate(cx: SqlExecutor, userId: string, id: string, fields: LegacyFields, { whole, present, favorite, expectedVersion }: LegacyUpdate) {
   const row = await lockContact(cx, userId, id);
   if (expectedVersion !== null && Number(row.version) !== expectedVersion) throw await versionConflict(cx, userId, id);
   const [stored] = await cx.execute<ValueRow[]>(`SELECT ${VALUE_COLUMNS} FROM contact_values WHERE user_id = ? AND contact_id = ? AND kind IN ('email', 'phone')
-    ORDER BY kind, position, id`, [userId, id]);
+    AND legacy_slot IS NOT NULL ORDER BY kind, legacy_slot`, [userId, id]);
   const projection = legacyProjection(row, stored);
   const carries = (field: string) => whole || present.has(field);
   const changed = (field: keyof LegacyFields, current: string | null, max: number) => carries(field) && !sameForOldApp(fields[field], current, max);
@@ -639,19 +715,41 @@ async function applyLegacyUpdate(cx: SqlExecutor, userId: string, id: string, fi
   const company = changed('company', projection.company, OLD_APP_TEXT) ? fields.company : row.company;
   const jobTitle = changed('job_title', row.job_title, OLD_APP_TEXT) ? fields.job_title : row.job_title;
   const notes = carries('notes') ? fields.notes : row.notes;
-  const kinds = (['email', 'phone'] as const).filter(kind => whole || LEGACY_SLOTS[kind].some(slot => present.has(slot)));
+  const plans = (['email', 'phone'] as const).map(kind => ({ kind, ...legacyPlan(kind, legacyPlaces(kind, stored), fields, present, whole) }));
+  const [counts] = await cx.execute<(RowDataPacket & { kind: OldAppKind; n: number | string; last: number | string | null })[]>(
+    "SELECT kind, COUNT(*) AS n, MAX(position) AS last FROM contact_values WHERE user_id = ? AND contact_id = ? AND kind IN ('email', 'phone') GROUP BY kind", [userId, id]);
+  for (const { kind, removed, added } of plans) {
+    // An addition beside values the app cannot see may not pass the limit a
+    // full write and a restore hold to; nothing is dropped to make room.
+    if (Number(counts.find(count => count.kind === kind)?.n ?? 0) - removed.length + added.length > VALUES_PER_KIND) {
+      throw badRequest('TOO_MANY_VALUES', `This contact already has ${VALUES_PER_KIND} ${kind === 'email' ? 'email addresses' : 'phone numbers'}; remove one in UniHub before adding another`);
+    }
+  }
   await cx.execute(`UPDATE contacts SET first_name = ?, last_name = ?, display_name = ?, company = ?, job_title = ?, notes = ?, is_favorite = ?, name_key = ?, version = version + 1
     WHERE id = ? AND user_id = ?`,
   [names.first_name, names.last_name, names.display_name, company, jobTitle, notes, (favorite ?? !!row.is_favorite) ? 1 : 0,
     draftNameKey({ ...names, middle_name: row.middle_name }), id, userId]);
-  if (kinds.length) await writeValues(cx, userId, id, kinds, kinds.flatMap(kind => legacyList(kind, stored, legacyValues(fields, kind))));
+  const removed = plans.flatMap(plan => plan.removed.map(value => value.id));
+  if (removed.length) await cx.execute(`DELETE FROM contact_values WHERE user_id = ? AND contact_id = ? AND id IN (${placeholders(removed)})`, [userId, id, ...removed]);
+  for (const { kind, changed: edits } of plans) {
+    for (const [value, text] of edits) {
+      await cx.execute('UPDATE contact_values SET value = ?, value_key = ? WHERE id = ? AND user_id = ? AND contact_id = ?', [text, valueKey(kind, text), value.id, userId, id]);
+    }
+  }
+  const rows = plans.flatMap(({ kind, added }) => {
+    const last = counts.find(count => count.kind === kind)?.last;
+    return added.map(({ slot, value }, index) => [crypto.randomUUID(), id, userId, kind, (last == null ? -1 : Number(last)) + 1 + index, '', value, valueKey(kind, value), slot]);
+  });
+  await insertRows(cx, 'contact_values (id, contact_id, user_id, kind, position, label, value, value_key, legacy_slot)', rows);
 }
 
+// A flat create: each value keeps the place it was sent in.
 function legacyDraft(fields: LegacyFields): ContactDraft {
   return {
     display_name: null, first_name: fields.first_name || '', last_name: fields.last_name, middle_name: null, name_prefix: null, name_suffix: null,
     company: fields.company, department: null, job_title: fields.job_title, birthday: null, anniversary: null, notes: fields.notes,
-    values: (['email', 'phone'] as const).flatMap(kind => legacyValues(fields, kind).map(value => ({ kind, label: '', custom_label: null, value, preferred: false }))),
+    values: (['email', 'phone'] as const).flatMap(kind => LEGACY_SLOTS[kind].flatMap((field, index) => fields[field]
+      ? [{ kind, label: '', custom_label: null, value: fields[field]!, preferred: false, legacy_slot: index + 1 }] : [])),
   };
 }
 

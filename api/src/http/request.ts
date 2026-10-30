@@ -134,11 +134,16 @@ async function parseRawBodyToFile(req: IncomingMessage, targetPath: string, maxS
         });
       }
     });
+    let ended = false;
     req.on('end', () => {
+      ended = true;
       if (!settled) output.end();
     });
     req.on('aborted', fail);
     req.on('error', fail);
+    // A client that disconnects mid-body may produce neither 'aborted' nor
+    // 'error'; the partial file must still go and the request must settle.
+    req.on('close', () => { if (!ended) fail(); });
     output.on('error', () => {
       fail();
     });
@@ -146,6 +151,34 @@ async function parseRawBodyToFile(req: IncomingMessage, targetPath: string, maxS
       if (!failing) settle({ filePath: targetPath, size: currentSize });
     });
   });
+}
+
+// Raw uploads (route body kind 'upload') are spooled here, on the uploads
+// volume, so a handler can rename a kept file without copying it.
+function uploadSpoolRoot() {
+  return path.resolve(process.env.UPLOAD_SPOOL_ROOT || '/app/uploads/spool');
+}
+
+const STALE_SPOOL_AGE_MS = 60 * 60 * 1000;
+let spoolSwept = false;
+
+// Spool files outlive their request only when the process died while one ran.
+// The first upload of a process removes those older than an hour; no request
+// holds a spool file that long (the body limits and handler time limits are far shorter).
+async function sweepStaleSpoolOnce(root = uploadSpoolRoot()) {
+  if (spoolSwept) return;
+  spoolSwept = true;
+  await sweepStaleSpool(root, Date.now());
+}
+
+async function sweepStaleSpool(root: string, now: number) {
+  const entries = await fs.promises.readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.upload')) continue;
+    const target = path.join(root, entry.name);
+    const stat = await fs.promises.lstat(target).catch(() => null);
+    if (stat && now - stat.mtimeMs > STALE_SPOOL_AGE_MS) await fs.promises.rm(target, { force: true }).catch(() => {});
+  }
 }
 
 function getAllowedOriginForRequest(req: IncomingMessage) {
@@ -168,5 +201,8 @@ export {
   parseBody,
   parseRawBody,
   parseRawBodyToFile,
+  uploadSpoolRoot,
+  sweepStaleSpool,
+  sweepStaleSpoolOnce,
   getAllowedOriginForRequest,
 };

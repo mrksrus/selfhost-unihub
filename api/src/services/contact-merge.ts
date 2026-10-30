@@ -37,7 +37,7 @@ const CHOICE_FIELDS: readonly ContactSingleField[] = ['name', 'display_name', 'o
 const CONTACT_COLUMNS = ['id', 'user_id', 'uid', 'uid_hash', 'version', 'display_name', 'first_name', 'last_name', 'middle_name', 'name_prefix', 'name_suffix',
   'company', 'department', 'job_title', 'birthday', 'anniversary', 'notes', 'is_favorite', 'name_key', 'created_at', 'updated_at'] as const;
 const VALUE_COLUMNS = ['id', 'contact_id', 'user_id', 'kind', 'position', 'is_preferred', 'label', 'custom_label', 'value', 'value_key', 'po_box', 'extended',
-  'street', 'locality', 'region', 'postal_code', 'country', 'params', 'vcard_group', 'created_at', 'updated_at'] as const;
+  'street', 'locality', 'region', 'postal_code', 'country', 'params', 'vcard_group', 'legacy_slot', 'created_at', 'updated_at'] as const;
 const PROPERTY_COLUMNS = ['id', 'contact_id', 'user_id', 'position', 'vcard_group', 'name', 'params', 'value', 'source_version', 'created_at'] as const;
 const PHOTO_COLUMNS = ['contact_id', 'user_id', 'sha256', 'width', 'height', 'bytes', 'thumb_sha256', 'source', 'created_at'] as const;
 const TIME_COLUMNS = new Set(['created_at', 'updated_at']);
@@ -147,12 +147,9 @@ function valueIdentity(row: Pick<ValueRow, 'kind' | 'value' | 'value_key'>) {
   return `${row.kind}\u0000${row.value_key || `raw:${row.value.trim().toLowerCase()}`}`;
 }
 
-// The places old apps see are positions 0 to 2 of each kind (P-21). The
-// survivor's values keep their positions; the other members' values follow
-// in member order, and one an old app could not see on its own contact
-// (position 3 or later) stays out of those places on the survivor too.
-const LEGACY_SLOTS = 3;
-
+// The survivor's values keep their rows, positions and places for old apps
+// (legacy_slot); the other members' values follow in member order as new
+// rows, and the store gives them a free place for old apps where one is left.
 function unionValues(members: readonly ContactSnapshot[], survivorId: string): ValueDraft[] {
   const drafts = new Map<string, ValueDraft>();
   const next = new Map<string, number>();
@@ -170,7 +167,7 @@ function unionValues(members: readonly ContactSnapshot[], survivorId: string): V
       }
       let position = Number(row.position);
       if (!own) {
-        position = Math.max(next.get(row.kind) ?? 0, position >= LEGACY_SLOTS ? LEGACY_SLOTS : 0);
+        position = next.get(row.kind) ?? 0;
         next.set(row.kind, position + 1);
       }
       drafts.set(identity, {
@@ -395,17 +392,22 @@ async function mergeLocked(cx: SqlExecutor, userId: string, { ids, survivorId, c
   await cx.execute(`INSERT INTO contact_merges (id, user_id, survivor_id, merged_ids, survivor_before, survivor_version_after, created_at, purge_after)
     VALUES (?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP() + INTERVAL ${UNDO_DAYS} DAY)`,
   [mergeId, userId, survivorId, JSON.stringify(otherIds), JSON.stringify(before), Number(after.version)]);
-  for (const member of others) {
+  // A survivor photo the merge replaced must stay on disk for the undo: the
+  // photo sweep keeps what a bin item's file_refs name, so the group's first
+  // item names it too.
+  const replacedPhoto = plan.photoFrom && plan.photoFrom !== survivor && survivor.photo ? [survivor.photo.sha256, survivor.photo.thumb_sha256] : [];
+  for (const [index, member] of others.entries()) {
     const payload: BinContactPayload = {
       ...member,
       aliases: aliases.filter(alias => alias.contact_id === member.contact.id).map(alias => ({ uid_hash: alias.uid_hash, uid: alias.uid, merge_id: alias.merge_id })),
       dismissed_with: dismissedWith.get(member.contact.id) || [],
     };
-    const files = member.photo ? [member.photo.sha256, member.photo.thumb_sha256] : null;
+    const own = member.photo ? [member.photo.sha256, member.photo.thumb_sha256] : [];
+    const files = [...own, ...(index === 0 ? replacedPhoto : [])];
     await cx.execute(`INSERT INTO bin_items (id, user_id, module, item_type, item_id, title, reason, group_id, payload, payload_version, file_refs, deleted_at, purge_after)
       VALUES (?, ?, 'contacts', 'contact', ?, ?, 'merged', ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP() + INTERVAL ${UNDO_DAYS} DAY)`,
     [crypto.randomUUID(), userId, member.contact.id, Array.from(snapshotName(member)).slice(0, 255).join(''), mergeId, JSON.stringify(payload), PAYLOAD_VERSION,
-      files && JSON.stringify(files)]);
+      files.length ? JSON.stringify(files) : null]);
     await cx.execute(`INSERT INTO contact_uid_aliases (user_id, uid_hash, uid, contact_id, merge_id) VALUES (?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE contact_id = VALUES(contact_id), merge_id = VALUES(merge_id)`,
     [userId, member.contact.uid_hash, member.contact.uid, survivorId, mergeId]);
