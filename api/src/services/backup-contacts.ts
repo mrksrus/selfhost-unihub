@@ -5,8 +5,9 @@
 // same archive twice adds nothing. Replacing a contact from an archive older
 // than version 5 is applied as an old app's whole 3+3 update (P-21): it
 // changes what that format carried, and the values beyond the three places,
-// labels, other fields, kept properties and the photo stay. Photo files are written before the transaction
-// (backup-import.ts); here a photo row may only name a file that was written.
+// labels, other fields, kept properties and the photo stay. Photo files are
+// written before the transaction (backup-import.ts); here a photo row may
+// only name a file that was written.
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, BackupRow } from '../types';
 import type { ContactValueKind } from '../contracts/contacts';
@@ -231,13 +232,15 @@ async function restoreContactsSection(connection: SqlExecutor, userId: string, d
     await writeValues(connection, userId, targetId, VALUE_KINDS, values);
     await connection.execute('DELETE FROM contact_properties WHERE user_id = ? AND contact_id = ?', [userId, targetId]);
     await writeKeptProperties(connection, userId, targetId, archivedProperties(propertiesBy.get(sourceId)));
-    // The archived photo, or none when the archive's contact had none.
+    // The archived photo, or none when the archive's contact had none. A photo
+    // whose files the archive lacks leaves the stored one as it is.
     const [[previous]] = await connection.execute<(RowDataPacket & { sha256: string; thumb_sha256: string })[]>(
       'SELECT sha256, thumb_sha256 FROM contact_photos WHERE contact_id = ? AND user_id = ? FOR UPDATE', [targetId, userId]);
-    if (previous) releasedPhotos.push(previous.sha256, previous.thumb_sha256);
     const photo = photoBy.get(sourceId);
-    if (photo && !(photoFiles.has(photo.sha256) && photoFiles.has(photo.thumb_sha256))) missingPhotos++;
-    if (photo && photoFiles.has(photo.sha256) && photoFiles.has(photo.thumb_sha256)) {
+    const available = !!photo && photoFiles.has(photo.sha256) && photoFiles.has(photo.thumb_sha256);
+    if (photo && !available) { missingPhotos++; continue; }
+    if (previous) releasedPhotos.push(previous.sha256, previous.thumb_sha256);
+    if (photo) {
       await connection.execute(`INSERT INTO contact_photos (contact_id, user_id, sha256, width, height, bytes, thumb_sha256, source) VALUES (?, ?, ?, ?, ?, ?, ?, 'restore')
         ON DUPLICATE KEY UPDATE sha256 = VALUES(sha256), width = VALUES(width), height = VALUES(height), bytes = VALUES(bytes),
           thumb_sha256 = VALUES(thumb_sha256), source = VALUES(source), created_at = CURRENT_TIMESTAMP`,
