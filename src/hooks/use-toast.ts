@@ -168,6 +168,9 @@ function useToast() {
 
   React.useEffect(() => {
     listeners.push(setState);
+    // A change between this render and listening (a session that ended and
+    // cleared its notices while the next one mounted) would otherwise be missed.
+    if (memoryState !== state) setState(memoryState);
     return () => {
       const index = listeners.indexOf(setState);
       if (index > -1) {
@@ -183,4 +186,9 @@ function useToast() {
   };
 }
 
-export { useToast, toast };
+/** Removes every notice at once: a session that ends takes its notices with it (SessionQueryProvider). */
+function clearToasts() {
+  dispatch({ type: "REMOVE_TOAST", toastId: undefined });
+}
+
+export { useToast, toast, clearToasts };

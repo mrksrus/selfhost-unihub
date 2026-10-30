@@ -30,7 +30,7 @@ const AdminSettings = lazy(() => import("./pages/AdminSettings"));
 const AuthenticatedApp = () => {
   const { user, session, isOffline } = useAuth();
   return (
-    <SessionQueryProvider key={user?.id ?? "signed-out"} liveUpdates={!!user && !!session && !isOffline}>
+    <SessionQueryProvider key={user?.id ?? "signed-out"} liveUpdates={!!user && !!session && !isOffline} privateSession={!!user}>
       <TooltipProvider>
         <Toaster />
         <BrowserRouter>

@@ -9,6 +9,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { useFocusAfterAdd } from '@/hooks/use-focus-after-add';
+import { useSessionScope } from '@/lib/session-scope';
 import { AddressRows, DateField, Field, PhotoField, ValueRows } from '@/components/contacts/ContactEditorFields';
 import {
   emptyAddress, emptyForm, emptyValue, formForNew, formOf, OPTIONAL_FIELDS, toInput, validate, type ContactForm, type OptionalField,
@@ -36,6 +37,8 @@ export function ContactEditor({ target, onClose, actions, onSaved }: {
   target: ContactEditorTarget; onClose: () => void; actions: ContactActions; onSaved?: (id: string) => void;
 }) {
   const isMobile = useIsMobile();
+  // A save answered after an account switch sends no photo and touches nothing of the next session.
+  const scope = useSessionScope();
   const [form, setForm] = useState<ContactForm>(emptyForm);
   const [errors, setErrors] = useState<ReturnType<typeof validate>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -107,8 +110,11 @@ export function ContactEditor({ target, onClose, actions, onSaved }: {
       const result = editing
         ? await actions.update.mutateAsync({ id: editing.id, contact: toInput(form, version ?? editing.version) })
         : await actions.create.mutateAsync(toInput(form));
+      if (scope.ended) return;
       // The contact is saved before its picture; a failed picture leaves the editor open on the saved contact.
-      if (!(await finishPhoto(result.id, editing))) {
+      const photoSaved = await finishPhoto(result.id, editing);
+      if (scope.ended) return;
+      if (!photoSaved) {
         setSaved(result);
         setForm({ ...formOf(result), shown: [...new Set([...formOf(result).shown, ...form.shown])] });
         onSaved?.(result.id);
@@ -117,6 +123,7 @@ export function ContactEditor({ target, onClose, actions, onSaved }: {
       onSaved?.(result.id);
       onClose();
     } catch (error) {
+      if (scope.ended) return;
       if (error instanceof ContactVersionConflict) setConflict(error.current);
       else setSaveError(error instanceof Error ? error.message : 'The contact could not be saved.');
       // The hook's notice names the failure too; the inline text keeps it next to the fields after the notice is gone.
