@@ -338,7 +338,7 @@ test('production export and restore jobs round-trip every section through encryp
       assert.deepEqual(order(restored[table]), order(original[table]), `${table}: preserve content`);
     };
     compare('contacts', ['first_name', 'last_name', 'notes', 'is_favorite']);
-    compare('contact_values', ['kind', 'position', 'label', 'value', 'value_key']);
+    compare('contact_values', ['kind', 'position', 'label', 'value', 'value_key', 'legacy_slot']);
     compare('contact_properties', ['position', 'name', 'params', 'value', 'source_version']);
     compare('contact_photos', ['sha256', 'thumb_sha256', 'width', 'height', 'bytes']);
     compare('contact_uid_aliases', ['uid_hash', 'uid']);

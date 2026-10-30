@@ -110,7 +110,7 @@ test('MySQL restores colliding backup IDs without changing another user in every
     id CHAR(36) PRIMARY KEY, contact_id CHAR(36) NOT NULL, user_id CHAR(36) NOT NULL, kind VARCHAR(16) NOT NULL, position SMALLINT UNSIGNED NOT NULL DEFAULT 0,
     is_preferred TINYINT(1) NOT NULL DEFAULT 0, label VARCHAR(32) NOT NULL DEFAULT '', custom_label VARCHAR(100) NULL, value VARCHAR(2048) NOT NULL,
     value_key VARCHAR(255) NOT NULL DEFAULT '', po_box VARCHAR(255) NULL, extended VARCHAR(255) NULL, street TEXT NULL, locality VARCHAR(255) NULL,
-    region VARCHAR(255) NULL, postal_code VARCHAR(255) NULL, country VARCHAR(255) NULL, params JSON NULL, vcard_group VARCHAR(64) NULL) ENGINE=InnoDB`);
+    region VARCHAR(255) NULL, postal_code VARCHAR(255) NULL, country VARCHAR(255) NULL, params JSON NULL, vcard_group VARCHAR(64) NULL, legacy_slot TINYINT UNSIGNED NULL) ENGINE=InnoDB`);
   await connection.execute(`CREATE TEMPORARY TABLE contact_properties (
     id CHAR(36) PRIMARY KEY, contact_id CHAR(36) NOT NULL, user_id CHAR(36) NOT NULL, position SMALLINT UNSIGNED NOT NULL DEFAULT 0,
     vcard_group VARCHAR(64) NULL, name VARCHAR(64) NOT NULL, params JSON NULL, value MEDIUMTEXT NOT NULL, source_version VARCHAR(8) NULL) ENGINE=InnoDB`);

@@ -80,11 +80,12 @@ test('contacts API: vCard model, input contract, 3+3 compatibility, versions, ow
 
   // ── The 0.25 app writes back what it shows: its exact whole-contact PUT ──
   // It changed the second email and removed the second number on the phone.
-  // Values from the fourth on, every label and the fields it does not know survive.
+  // Values from the fourth on, every label and the fields it does not know
+  // survive; the changed email keeps the row (and label) of the one it replaced.
   const appBody = { first_name: 'Bea', last_name: 'Beispiel', company: 'Example AG', job_title: 'Chemist', notes: '  Private note\n\n',
     phone: '+43 1 111', phone2: '+43 1 333', phone3: null, email: 'bea@example.test', email2: 'bea.new@example.test', email3: 'b3@example.test' };
   const afterApp = (await call(owner, 'PUT', `/api/contacts/${bea.id}`, appBody)).contact;
-  assert.deepEqual(pairs(afterApp.emails), [['bea@example.test', 'home'], ['bea.new@example.test', ''], ['b3@example.test', 'other'], ['b4@example.test', 'custom'], ['b5@example.test', '']]);
+  assert.deepEqual(pairs(afterApp.emails), [['bea@example.test', 'home'], ['bea.new@example.test', 'work'], ['b3@example.test', 'other'], ['b4@example.test', 'custom'], ['b5@example.test', '']]);
   assert.deepEqual(pairs(afterApp.phones), [['+43 1 111', 'mobile'], ['+43 1 333', 'home_fax'], ['+43 1 444', 'pager']]);
   assert.equal(afterApp.emails[0].id, bea.emails[0].id, 'a kept value keeps its row');
   assert.equal(afterApp.emails[0].preferred, true);
@@ -93,7 +94,7 @@ test('contacts API: vCard model, input contract, 3+3 compatibility, versions, ow
   assert.equal(afterApp.addresses.length, 1);
   assert.equal(afterApp.version, 2);
   assert.deepEqual([afterApp.email, afterApp.email2, afterApp.email3, afterApp.phone, afterApp.phone2, afterApp.phone3],
-    ['bea@example.test', 'bea.new@example.test', 'b3@example.test', '+43 1 111', '+43 1 333', null], 'the fourth number stays out of the app\'s three places');
+    ['bea@example.test', 'bea.new@example.test', 'b3@example.test', '+43 1 111', null, '+43 1 333'], 'places do not move; the fourth number stays out of them');
   // Sending the same body again (a retry after a lost answer) changes nothing but the version.
   const again = (await call(owner, 'PUT', `/api/contacts/${bea.id}`, appBody)).contact;
   assert.deepEqual({ ...again, version: 0, updated_at: '' }, { ...afterApp, version: 0, updated_at: '' });
@@ -332,9 +333,9 @@ test('3+3 bridge: old-app limits, partial bodies, If-Match and replays never los
   const second = (await call('PUT', `/api/contacts/${five.id}`, keepOne)).contact;
   assert.deepEqual({ ...second, version: 0, updated_at: '' }, { ...first, version: 0, updated_at: '' }, 'the same PUT twice gives the same contact');
   assert.equal(second.emails[1].label, 'work');
-  // The page (a full write) shows every value again in its order; the app then sees the first three.
+  // A full write of the same values moves nothing into the freed places: the app saw neither d nor e.
   const reordered = (await call('PUT', `/api/contacts/${five.id}`, { name: { given: 'Five' }, emails: second.emails, version: second.version })).contact;
-  assert.deepEqual([reordered.email, reordered.email2, reordered.email3], ['a@example.test', 'd@example.test', 'e@example.test']);
+  assert.deepEqual([reordered.email, reordered.email2, reordered.email3], ['a@example.test', null, null]);
   const [[stored]] = await pool.query<RowDataPacket[]>("SELECT COUNT(*) AS n FROM contact_values WHERE contact_id = ? AND kind = 'email'", [five.id]);
   assert.equal(Number(stored.n), 3);
 });
@@ -377,9 +378,9 @@ test('3+3 bridge: partial slots, the per-kind limit with lossless restore, and t
   const afterThird = (await call('PUT', `/api/contacts/${replaced.id}`, { phone3: null, email2: 'second@example.test' })).contact;
   assert.deepEqual([phones(afterThird), afterThird.emails.map((item: FixtureValue) => item.value)], [['111', '444'], ['slots@example.test', 'second@example.test']]);
 
-  // ── 100 numbers with a hidden long one: an old app's third number is refused, nothing is lost ──
+  // ── 100 numbers, 98 of them too long for the app: its third number is refused, nothing is lost ──
   const longPhone = '+43 ' + '9'.repeat(56);
-  const hundred = ['+43 1 0', longPhone, ...Array.from({ length: 98 }, (_, index) => `+43 1 ${index + 1}`)];
+  const hundred = ['+43 1 0', longPhone, '+43 1 1', ...Array.from({ length: 97 }, (_, index) => `+43 ${'9'.repeat(50)} ${index}`)];
   const full = (await call('POST', '/api/contacts', { name: { given: 'Hundred' }, phones: hundred })).contact;
   const seen = await listed(full.id);
   assert.deepEqual([seen.phone, seen.phone2, seen.phone3], ['+43 1 0', '+43 1 1', null], 'the app sees two numbers');
@@ -417,7 +418,135 @@ test('3+3 bridge: partial slots, the per-kind limit with lossless restore, and t
   assert.deepEqual(phones(keyedAfter).sort(), ['+43 1 5', '𝟙', '𝟚'].sort(), 'both survive the app\'s write');
   const twins = (await call('POST', '/api/contacts', { name: { given: 'Twins' }, phones: ['+1 555 0100', '+15550100', '٣٣٣', '333'] })).contact;
   const twinsSeen = await listed(twins.id);
-  assert.deepEqual([twinsSeen.phone, twinsSeen.phone2, twinsSeen.phone3], ['+1 555 0100', '٣٣٣', null], 'one value per app key; a BMP digit is a digit');
-  const twinsAfter = (await call('PUT', `/api/contacts/${twins.id}`, { first_name: 'Twins', phone: '+1 555 0100', phone2: '٣٣٣' })).contact;
+  assert.deepEqual([twinsSeen.phone, twinsSeen.phone2, twinsSeen.phone3], ['+1 555 0100', '٣٣٣', '333'], 'one value per app key; a BMP digit is a digit');
+  const twinsAfter = (await call('PUT', `/api/contacts/${twins.id}`, { first_name: 'Twins', phone: '+1 555 0100', phone2: '٣٣٣', phone3: '333' })).contact;
   assert.deepEqual(phones(twinsAfter).sort(), ['+1 555 0100', '+15550100', '٣٣٣', '333'].sort(), 'the hidden twin survives');
+});
+
+// Review round 3: the old apps' three places of each kind are stored
+// (contact_values.legacy_slot). A flat body reaches only the rows holding a
+// place; a partial body addresses places; a full write never moves a value
+// into or out of the app's sight; every flat write sent again changes nothing.
+test('3+3 bridge: stored places for old apps keep hidden values, labels and replays safe', {
+  skip: !process.env.MYSQL_TEST_HOST, timeout: 300000,
+}, async t => {
+  const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
+  t.after(captureLog(() => {}));
+  const pool = await withTestDatabase(t);
+  const api = await startTestApi(t);
+  const password = 'synthetic-bridge-three-password';
+  const userId = crypto.randomUUID();
+  await pool.execute('INSERT INTO users (id, email, password_hash, full_name) VALUES (?, ?, ?, ?)',
+    [userId, 'bridge-three@example.test', await (require('bcryptjs') as typeof import('bcryptjs')).hash(password, 4), 'Bridge three']);
+  const owner = api.client();
+  assert.equal((await owner.request('POST', '/api/auth/signin', { email: 'bridge-three@example.test', password })).status, 200);
+  async function call(method: string, path: string, body?: unknown, status = 200): Promise<FixtureValue> {
+    const reply = await owner.request(method, path, body);
+    assert.equal(reply.status, status, `${method} ${path}: ${JSON.stringify(reply.body).slice(0, 400)}`);
+    return reply.body;
+  }
+  const put = async (id: string, body: unknown) => (await call('PUT', `/api/contacts/${id}`, body)).contact;
+  const triples = (contact: FixtureValue, kind: 'email' | 'phone') => [contact[kind], contact[`${kind}2`], contact[`${kind}3`]];
+  const rows = (contact: FixtureValue, kind: 'emails' | 'phones') => contact[kind].map((item: FixtureValue) => [item.id, item.value, item.label, item.custom_label]);
+  const sameContact = (a: FixtureValue, b: FixtureValue, message: string) => assert.deepEqual({ ...a, version: 0, updated_at: '' }, { ...b, version: 0, updated_at: '' }, message);
+
+  // ── Sol probe 1: a new number never takes over a number the app cannot see ──
+  const hidden = (await call('POST', '/api/contacts', { name: { given: 'Hidden' }, phones: [{ value: '111', label: 'mobile' }, { value: '𝟙', label: 'work' }] })).contact;
+  assert.deepEqual(triples(hidden, 'phone'), ['111', null, null], '𝟙 has no app key, so no place');
+  const added = await put(hidden.id, { first_name: 'Hidden', phone: '111', phone2: '٣٣٣' });
+  assert.deepEqual(rows(added, 'phones').slice(0, 2), rows(hidden, 'phones'), 'both stored numbers keep row, value and label');
+  assert.deepEqual([added.phones[2].value, triples(added, 'phone')], ['٣٣٣', ['111', '٣٣٣', null]]);
+  sameContact(await put(hidden.id, { first_name: 'Hidden', phone: '111', phone2: '٣٣٣' }), added, 'sent again, nothing changes');
+
+  // ── Sol probe 2: a partial clear sent again removes nothing more ──
+  const slots = (await call('POST', '/api/contacts', { first_name: 'Slots', phone: '111', phone2: '222', phone3: '333' })).contact;
+  const cleared = await put(slots.id, { phone2: '' });
+  assert.deepEqual([cleared.phones.map((item: FixtureValue) => item.value), triples(cleared, 'phone')], [['111', '333'], ['111', null, '333']]);
+  sameContact(await put(slots.id, { phone2: '' }), cleared, 'the retry finds the place empty');
+  const refilled = await put(slots.id, { phone2: '444' });
+  assert.deepEqual(triples(refilled, 'phone'), ['111', '444', '333']);
+  sameContact(await put(slots.id, { phone2: '444' }), refilled, 'setting a place twice is one change');
+
+  // ── Sol probe 3: what the app was shown stays shown, so it never deletes a phone-only label ──
+  const synced = (await call('POST', '/api/contacts', { name: { given: 'Synced' }, emails: [{ value: 'a@example.test', label: 'home' }, { value: 'b@example.test', label: 'work' }, 'c@example.test'] })).contact;
+  const shown = triples(synced, 'email');
+  // The page puts a new address first, reorders the rest and makes one address too long for the app.
+  const tooLong = `${'😀'.repeat(130)}@example.test`;
+  const [a, b, c] = synced.emails;
+  const reordered = (await call('PUT', `/api/contacts/${synced.id}`, { name: { given: 'Synced' }, version: synced.version,
+    emails: [{ value: 'new@example.test' }, c, { ...b }, a] })).contact;
+  assert.deepEqual(triples(reordered, 'email'), shown, 'a reorder or an addition moves nothing in the app\'s places');
+  const lengthened = (await call('PUT', `/api/contacts/${synced.id}`, { name: { given: 'Synced' }, version: reordered.version,
+    emails: [reordered.emails[0], { ...c, value: tooLong }, b, a] })).contact;
+  assert.deepEqual(triples(lengthened, 'email'), ['a@example.test', 'b@example.test', null], 'only the value the app can no longer hold leaves its place');
+  assert.deepEqual(triples((await call('PUT', `/api/contacts/${synced.id}`, { name: { given: 'Synced' }, version: lengthened.version,
+    emails: [...lengthened.emails, 'fresh@example.test'] })).contact, 'email'), ['a@example.test', 'b@example.test', 'fresh@example.test'], 'a new address takes the free place');
+
+  // ── An email around U+001C keeps its row and label (the app trims Kotlin whitespace) ──
+  const framed = (await call('POST', '/api/contacts', { name: { given: 'Framed' }, emails: [{ value: '\u001cmail@example.test\u001c', label: 'work' }] })).contact;
+  assert.equal(framed.email, '\u001cmail@example.test\u001c');
+  const framedAfter = await put(framed.id, { first_name: 'Framed', email: 'mail@example.test' });
+  assert.deepEqual(rows(framedAfter, 'emails'), rows(framed, 'emails'), 'the same address, as the app sends it back');
+
+  // ── The phone deletes the first email: the others keep row and label ──
+  const three = (await call('POST', '/api/contacts', { name: { given: 'Three' }, emails: [{ value: 'one@example.test', label: 'home' },
+    { value: 'two@example.test', label: 'work' }, { value: 'three@example.test', label: 'custom', custom_label: 'Club' }] })).contact;
+  const withoutFirst = await put(three.id, { first_name: 'Three', email: 'two@example.test', email2: 'three@example.test' });
+  assert.deepEqual(rows(withoutFirst, 'emails'), rows(three, 'emails').slice(1));
+  assert.deepEqual(triples(withoutFirst, 'email'), [null, 'two@example.test', 'three@example.test']);
+  sameContact(await put(three.id, { first_name: 'Three', email: 'two@example.test', email2: 'three@example.test' }), withoutFirst, 'sent again, nothing changes');
+
+  // ── Restore carries the places; an older archive gets them as upgrade 22 does ──
+  const { importBackupForUser } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
+  const archived = (given: string, values: FixtureValue[]) => {
+    const id = crypto.randomUUID();
+    return { app: 'unihub', version: 5, files: [], data: { contacts: [{ id, first_name: given }],
+      contact_values: values.map((value, position) => ({ id: crypto.randomUUID(), contact_id: id, kind: 'phone', position, label: '', ...value })) } };
+  };
+  await importBackupForUser(userId, archived('Placed', [{ value: '+44 20 1', legacy_slot: null }, { value: '+44 20 2', legacy_slot: 3 }, { value: '+44 20 3', legacy_slot: 2 }]) as FixtureValue,
+    { mode: 'apply', conflict_mode: 'keep_both' });
+  const placed = ((await call('GET', '/api/contacts?q=Placed')).contacts as FixtureValue[])[0];
+  assert.deepEqual(triples(placed, 'phone'), [null, '+44 20 3', '+44 20 2'], 'the archived places, gap included');
+  await assert.rejects(importBackupForUser(userId, archived('Doubled', [{ value: '+44 20 4', legacy_slot: 2 }, { value: '+44 20 5', legacy_slot: 2 }]) as FixtureValue,
+    { mode: 'apply', conflict_mode: 'keep_both' }), /impossible place for older apps/);
+  const legacyId = crypto.randomUUID();
+  await importBackupForUser(userId, { app: 'unihub', version: 4, files: [], data: { contacts: [{ id: legacyId, first_name: 'Flat', phone: null, phone2: '+44 20 6', phone3: '+44 20 7' }] } } as FixtureValue,
+    { mode: 'apply', conflict_mode: 'keep_both' });
+  const [flatSlots] = await pool.query<RowDataPacket[]>("SELECT value, legacy_slot FROM contact_values v JOIN contacts c ON c.id = v.contact_id WHERE c.user_id = ? AND c.first_name = 'Flat' ORDER BY v.position", [userId]);
+  assert.deepEqual(flatSlots.map(row => [row.value, row.legacy_slot]), [['+44 20 6', 1], ['+44 20 7', 2]]);
+
+  // ── Any sequence of flat writes: each one sent again changes nothing, and values outside the places are never touched ──
+  let seed = 20261030;
+  const random = (n: number) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  const pool3 = { phone: ['111', '222', '+44 20 9', '٣٣٣', '\u001c555', '(666)'], email: ['p@example.test', 'q@example.test', ' R@example.test', 's@example.test'] };
+  const subject = (await call('POST', '/api/contacts', { name: { given: 'Random' },
+    phones: [{ value: '111', label: 'mobile' }, '𝟙', { value: '+1 555 0100', label: 'work' }, { value: '+15550100', label: 'home' }, `+43 ${'9'.repeat(56)}`],
+    emails: [{ value: 'p@example.test', label: 'home' }, 'q@example.test', 'P@example.test', `${'😀'.repeat(130)}@example.test`] })).contact;
+  const unplaced = async () => (await pool.query<RowDataPacket[]>('SELECT id, kind, value, label, position FROM contact_values WHERE contact_id = ? AND legacy_slot IS NULL ORDER BY id', [subject.id]))[0];
+  const outside = await unplaced();
+  assert.ok(outside.length >= 4, 'the subject has values the app cannot see');
+  for (let step = 0; step < 60; step++) {
+    const body: Record<string, string | null> = {};
+    const whole = random(2) === 0;
+    if (whole) body.first_name = 'Random';
+    for (const kind of ['phone', 'email'] as const) {
+      for (const field of [kind, `${kind}2`, `${kind}3`]) {
+        const pick = random(whole ? 3 : 4);
+        if (pick === 0) body[field] = pool3[kind][random(pool3[kind].length)];
+        else if (pick === 1 && !whole) body[field] = '';
+      }
+    }
+    const once = await put(subject.id, body);
+    const twice = await put(subject.id, body);
+    sameContact(twice, once, `step ${step}: ${JSON.stringify(body)} sent again`);
+    assert.deepEqual(await unplaced(), outside, `step ${step}: values outside the places are untouched`);
+    // eslint-disable-next-line no-control-regex -- Kotlin's trim() also removes the information separators.
+    const echo = (value: string | null) => value == null ? null : value.replace(/^[\s\u001c-\u001f]+|[\s\u001c-\u001f]+$/g, '');
+    for (const kind of ['phone', 'email'] as const) {
+      const sent = [kind, `${kind}2`, `${kind}3`].map(field => echo(body[field] || null));
+      const placed = triples(twice, kind).map(echo);
+      if (whole) assert.deepEqual(placed.filter(Boolean).sort(), sent.filter(Boolean).sort(), `step ${step}: the ${kind} places hold what was sent`);
+      else sent.forEach((value, index) => { if ([kind, `${kind}2`, `${kind}3`][index] in body) assert.equal(placed[index], value, `step ${step}: ${kind} place ${index + 1}`); });
+    }
+  }
 });

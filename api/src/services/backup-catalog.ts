@@ -47,8 +47,8 @@ const BASE_TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Obj
   // computed again by the restore, never taken from the archive.
   contacts: table('contacts', 'id user_id first_name last_name company job_title notes is_favorite created_at updated_at uid uid_hash version display_name middle_name name_prefix name_suffix department birthday anniversary name_key', ["id"],
     { uid_hash: 'rebuild', version: 'rebuild', name_key: 'rebuild' }, since(22, 'uid uid_hash version display_name middle_name name_prefix name_suffix department birthday anniversary name_key')),
-  contact_values: table('contacts', 'id contact_id user_id kind position is_preferred label custom_label value value_key po_box extended street locality region postal_code country params vcard_group created_at updated_at', ['id'],
-    { value_key: 'rebuild' }, since(22, 'id contact_id user_id kind position is_preferred label custom_label value value_key po_box extended street locality region postal_code country params vcard_group created_at updated_at')),
+  contact_values: table('contacts', 'id contact_id user_id kind position is_preferred label custom_label value value_key po_box extended street locality region postal_code country params vcard_group legacy_slot created_at updated_at', ['id'],
+    { value_key: 'rebuild' }, since(22, 'id contact_id user_id kind position is_preferred label custom_label value value_key po_box extended street locality region postal_code country params vcard_group legacy_slot created_at updated_at')),
   contact_properties: table('contacts', 'id contact_id user_id position vcard_group name params value source_version created_at', ['id'], {},
     since(22, 'id contact_id user_id position vcard_group name params value source_version created_at')),
   // Both files are content-addressed (CONTENT_FILE_POLICIES); a restored photo

@@ -85,16 +85,15 @@ test('contacts recovery: frozen 0.25.1 archive, schema 5 round trip with photos,
         assert.deepEqual(values.map(value => value.value), slots(source, kind), `${source.first_name} ${kind}s`);
         assert.deepEqual(values.map(value => value.position), values.map((_, index) => index));
         assert.ok(values.every(value => value.label === ''));
+        assert.deepEqual(values.map(value => value.legacy_slot), values.map((_, index) => index + 1), 'each in its old apps\' place');
       }
     }
-    // Old apps see the values in the three places as an upgraded database
-    // shows them (the projection hides a repeated value).
-    const once = (kind: string, values: string[]) => values.filter((value, index) => values.findIndex(other =>
-      kind === 'email' ? other.trim().toLowerCase() === value.trim().toLowerCase() : other.replace(/[^+\d]/g, '') === value.replace(/[^+\d]/g, '')) === index);
+    // Old apps see the values in the three places an upgraded database gives them (legacy_slot).
     for (const listed of (await contacts.listContacts(userId, {})).contacts as FixtureValue[]) {
       const source = expected.contacts.find((row: FixtureValue) => `urn:uuid:${row.id}` === listed.uid);
-      assert.deepEqual([listed.email, listed.email2, listed.email3].filter(Boolean), once('email', slots(source, 'email')));
-      assert.deepEqual([listed.phone, listed.phone2, listed.phone3].filter(Boolean), once('phone', slots(source, 'phone')));
+      const padded = (kind: string) => [0, 1, 2].map(index => slots(source, kind)[index] ?? null);
+      assert.deepEqual([listed.email, listed.email2, listed.email3], padded('email'));
+      assert.deepEqual([listed.phone, listed.phone2, listed.phone3], padded('phone'));
     }
   }
   await assertV4(reader);

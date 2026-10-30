@@ -39,10 +39,13 @@ function groupBy(rows: unknown, key: string) {
   return grouped;
 }
 
-// The values of one archived contact, as drafts for the store. Unknown labels
-// are cleared; an unknown kind, more values of a kind than a contact holds or
-// a value beyond its limit stops the restore. The archived id is offered to
-// the store, which keeps it only for a row this contact already has.
+// The values of one archived contact, as drafts for the store, each in its
+// old apps' place (legacy_slot; the reader gives converted 3+3 values theirs).
+// Unknown labels are cleared; an unknown kind, more values of a kind than a
+// contact holds, a value beyond its limit or an impossible place for old apps
+// stops the restore. A row without legacy_slot leaves the place to the store.
+// The archived id is offered to the store, which keeps it only for a row this
+// contact already has.
 function archivedValues(children: readonly Row[] | undefined): ValueDraft[] {
   const sorted = [...(children || [])].sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
   const counts = new Map<string, number>();
@@ -64,8 +67,14 @@ function archivedValues(children: readonly Row[] | undefined): ValueDraft[] {
     const archivedPosition = Number(row.position);
     const position = Number.isInteger(archivedPosition) && archivedPosition >= 0 && archivedPosition <= 65535 && !taken.has(`${kind}:${archivedPosition}`) ? archivedPosition : undefined;
     if (position !== undefined) taken.add(`${kind}:${position}`);
+    let legacySlot: number | null | undefined;
+    if (Object.hasOwn(row, 'legacy_slot') && row.legacy_slot != null) {
+      legacySlot = Number(row.legacy_slot);
+      if ((kind !== 'email' && kind !== 'phone') || ![1, 2, 3].includes(legacySlot) || taken.has(`${kind}:slot${legacySlot}`)) throw beyondLimits('an impossible place for older apps');
+      taken.add(`${kind}:slot${legacySlot}`);
+    } else if (Object.hasOwn(row, 'legacy_slot')) legacySlot = null;
     return [{
-      id: text(row.id) || null, position, kind, value: bounded(value, VALUE_LIMITS[kind], kind), label: label === 'custom' && !customLabel ? '' : label, custom_label: customLabel, preferred: !!row.is_preferred,
+      id: text(row.id) || null, legacy_slot: legacySlot, position, kind, value: bounded(value, VALUE_LIMITS[kind], kind), label: label === 'custom' && !customLabel ? '' : label, custom_label: customLabel, preferred: !!row.is_preferred,
       po_box: nullable(row.po_box, 'address part'), extended: nullable(row.extended, 'address part'), street: nullable(row.street, 'street', 1000), locality: nullable(row.locality, 'address part'),
       region: nullable(row.region, 'address part'), postal_code: nullable(row.postal_code, 'address part'), country: nullable(row.country, 'address part'),
       params: params && typeof params === 'object' ? params : null, vcard_group: nullable(row.vcard_group, 'vCard group', 64),
@@ -191,8 +200,8 @@ async function restoreContactsSection(connection: SqlExecutor, userId: string, d
     if (existingId && existingId === targetId && conflictMode !== 'replace') continue;
     const replacing = existingId === targetId;
     if (replacing && oldArchive) {
-      // The values arrive converted, in slot order; the matched contact keeps its uid.
-      const slots = (kind: 'email' | 'phone') => values.filter(value => value.kind === kind).map(value => value.value);
+      // The reader gave each converted value its place; the matched contact keeps its uid.
+      const slots = (kind: 'email' | 'phone') => [1, 2, 3].map(slot => values.find(value => value.kind === kind && value.legacy_slot === slot)?.value);
       const [emails, phones] = [slots('email'), slots('phone')];
       const fields: LegacyFields = {
         first_name: text(contact.first_name), last_name: text(contact.last_name) || null, company: text(contact.company) || null,
