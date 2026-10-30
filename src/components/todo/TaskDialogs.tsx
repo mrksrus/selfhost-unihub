@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Loader2, Plus, X } from 'lucide-react';
-import { EVENT_COLOR_OPTIONS, REMINDER_OPTIONS, localDatetimeToIso, toDatetimeLocalValue, type CalendarEvent } from '@/lib/calendar-api';
+import { EVENT_COLOR_OPTIONS, REMINDER_OPTIONS, localDatetimeToIso, toDatetimeLocalValue, type CalendarCalendar, type CalendarEvent } from '@/lib/calendar-api';
+import { defaultTaskList, listRefusal } from '@/lib/tasks';
 import type { TaskActions } from '@/hooks/use-task-actions';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
@@ -10,6 +11,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
+import { ListChooser } from '@/components/todo/ListChooser';
 import { cn } from '@/lib/utils';
 
 function ColorChoice({ value, onChange }: { value: string; onChange: (color: string) => void }) {
@@ -28,14 +30,27 @@ function ColorChoice({ value, onChange }: { value: string; onChange: (color: str
   );
 }
 
-const emptyNewTask = { title: '', description: '', scheduled: false, start_time: '', end_time: '', location: '', color: '#3b82f6' };
+const emptyNewTask = { title: '', description: '', scheduled: false, start_time: '', end_time: '', location: '', color: '#3b82f6', calendar_id: '' };
 
-export function NewTaskDialog({ open, onOpenChange, actions, timezone }: {
+export function NewTaskDialog({ open, onOpenChange, actions, timezone, calendars = [] }: {
   open: boolean; onOpenChange: (open: boolean) => void; actions: TaskActions; timezone: string | null;
+  /** The person's lists and calendars, for the chooser; the server marks the default. */
+  calendars?: CalendarCalendar[];
 }) {
   const { toast } = useToast();
   const [form, setForm] = useState(emptyNewTask);
-  useEffect(() => { if (open) setForm(emptyNewTask); }, [open]);
+  const defaultList = defaultTaskList(calendars);
+  useEffect(() => { if (open) setForm({ ...emptyNewTask, calendar_id: defaultTaskList(calendars)?.id ?? '' }); }, [open, calendars]);
+  // Lists can arrive after the dialog opened.
+  if (open && !form.calendar_id && defaultList) setForm(prev => ({ ...prev, calendar_id: defaultList.id }));
+  const chosen = calendars.find(calendar => calendar.id === form.calendar_id);
+  const refusal = chosen ? listRefusal(chosen, { undated: !form.scheduled }) : null;
+  // Taking the time away from a task in a server calendar sends it back to the default list.
+  const setScheduled = (scheduled: boolean) => setForm(prev => {
+    const current = calendars.find(calendar => calendar.id === prev.calendar_id);
+    const keep = !current || !listRefusal(current, { undated: !scheduled });
+    return { ...prev, scheduled, calendar_id: keep ? prev.calendar_id : defaultList?.id ?? '' };
+  });
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!form.title.trim()) return;
@@ -43,12 +58,14 @@ export function NewTaskDialog({ open, onOpenChange, actions, timezone }: {
       toast({ title: 'Choose a start and an end', description: 'A scheduled task needs both.', variant: 'destructive' });
       return;
     }
+    if (refusal) { toast({ title: 'Choose another list', description: `${chosen?.name}: ${refusal.toLowerCase()}.`, variant: 'destructive' }); return; }
     actions.create.mutate({
       title: form.title.trim(),
       description: form.description || null,
       location: form.location || null,
       color: form.color,
       reminders: form.scheduled ? [0] : null,
+      ...(form.calendar_id ? { calendar_id: form.calendar_id } : {}),
       ...(form.scheduled
         ? { start_time: localDatetimeToIso(form.start_time, timezone), end_time: localDatetimeToIso(form.end_time, timezone), is_todo_only: false }
         : { is_todo_only: true }),
@@ -56,7 +73,7 @@ export function NewTaskDialog({ open, onOpenChange, actions, timezone }: {
   };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>New task</DialogTitle>
           <DialogDescription>Without a date it waits under No date.</DialogDescription>
@@ -67,6 +84,13 @@ export function NewTaskDialog({ open, onOpenChange, actions, timezone }: {
             <Input id="task-title" autoFocus required value={form.title} placeholder="What needs to be done?"
               onChange={event => setForm(prev => ({ ...prev, title: event.target.value }))} />
           </div>
+          {calendars.length > 0 && (
+            <div className="space-y-2">
+              <Label htmlFor="task-list">List</Label>
+              <ListChooser id="task-list" calendars={calendars} value={form.calendar_id} undated={!form.scheduled} forTask
+                onChange={calendar_id => setForm(prev => ({ ...prev, calendar_id }))} />
+            </div>
+          )}
           <div className="space-y-2">
             <Label htmlFor="task-description">Notes</Label>
             <Textarea id="task-description" rows={3} value={form.description}
@@ -74,7 +98,7 @@ export function NewTaskDialog({ open, onOpenChange, actions, timezone }: {
           </div>
           <div className="flex items-center justify-between gap-4">
             <Label htmlFor="task-scheduled" className="font-normal">Give it a time in the calendar</Label>
-            <Switch id="task-scheduled" checked={form.scheduled} onCheckedChange={checked => setForm(prev => ({ ...prev, scheduled: checked }))} />
+            <Switch id="task-scheduled" checked={form.scheduled} onCheckedChange={setScheduled} />
           </div>
           {form.scheduled && <>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -231,6 +255,71 @@ export function MoveTaskDialog({ task, onClose, actions, timezone }: {
             <Button type="submit" disabled={actions.setStatus.isPending}>Move</Button>
           </DialogFooter>
         </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Moves a task to another of the person's lists or calendars. The task keeps
+ * its subtasks, done state and email. A calendar server that has not
+ * confirmed yet leaves the dialog saying so: UniHub finishes the move in the
+ * background and the task shows in its new list once it has.
+ */
+export function MoveListDialog({ task, onClose, actions, calendars }: {
+  task: CalendarEvent | null; onClose: () => void; actions: TaskActions; calendars: CalendarCalendar[];
+}) {
+  const [calendarId, setCalendarId] = useState('');
+  const [pending, setPending] = useState<'creating' | 'removing' | null>(null);
+  const [formTask, setFormTask] = useState<CalendarEvent | null>(null);
+  if (task !== formTask) {
+    setFormTask(task);
+    setCalendarId('');
+    setPending(null);
+  }
+  const current = task?.calendar_id ? calendars.find(calendar => calendar.id === task.calendar_id) : undefined;
+  const target = calendars.find(calendar => calendar.id === calendarId);
+  const refusal = target && task ? listRefusal(target, { undated: task.is_todo_only }) : null;
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!task || !target || refusal || target.id === task.calendar_id) return;
+    actions.moveToList.mutate({ id: task.id, calendarId: target.id, list: target }, {
+      onSuccess: result => { if (result.pending) setPending(result.pending); else onClose(); },
+    });
+  };
+  return (
+    <Dialog open={!!task} onOpenChange={open => { if (!open) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Move to another list</DialogTitle>
+          <DialogDescription>{task?.title}{current ? ` · now in ${current.name}` : ''}</DialogDescription>
+        </DialogHeader>
+        {pending ? (
+          <div className="space-y-4">
+            <p className="flex items-center gap-2 text-sm" role="status">
+              <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin motion-reduce:animate-none" />
+              Moving… UniHub finishes this in the background and the task shows in {target?.name ?? 'its new list'} once the calendar server has stored it.
+            </p>
+            <DialogFooter>
+              <Button type="button" onClick={onClose}>Close</Button>
+            </DialogFooter>
+          </div>
+        ) : (
+          <form onSubmit={submit} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="move-task-list">New list</Label>
+              <ListChooser id="move-task-list" calendars={calendars} value={calendarId} onChange={setCalendarId} forTask
+                undated={!!task?.is_todo_only} unavailable={task?.calendar_id ? { [task.calendar_id]: 'Current list' } : {}} />
+              <p className="text-xs text-muted-foreground">Subtasks, the done state and the email stay with the task.</p>
+            </div>
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+              <Button type="submit" disabled={!target || !!refusal || target.id === task?.calendar_id || actions.moveToList.isPending}>
+                {actions.moveToList.isPending && <Loader2 aria-hidden="true" className="animate-spin" />}Move
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
       </DialogContent>
     </Dialog>
   );

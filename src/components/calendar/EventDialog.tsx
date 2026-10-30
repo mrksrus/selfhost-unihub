@@ -16,12 +16,13 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { SourceEmailBlock } from '@/components/todo/SourceEmail';
 import { useSourceEmailUnlink } from '@/hooks/use-source-email-unlink';
 import { selectUserSetting, userSettingsQueryOptions } from '@/lib/settings-api';
+import { defaultEventCalendar } from '@/lib/tasks';
+import { ListChooser } from '@/components/todo/ListChooser';
 
 /** What the dialog shows: a new event (optionally on a day) or an existing one. */
 export type EventDialogTarget = { kind: 'new'; date?: Date } | { kind: 'edit'; event: CalendarEvent } | null;
@@ -75,20 +76,22 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
     const calendar = calendarId ? calendarById.get(calendarId) : undefined;
     return Boolean(calendar && (calendar.read_only || accountOf(calendarId)?.provider === 'ics'));
   };
-  const writable = calendars.filter(calendar => !isReadOnly(calendar.id));
   const readOnly = Boolean(editing && isReadOnly(editing.calendar_id));
   const unlink = useSourceEmailUnlink();
   // The open event is a copy from the list; once unlinked, its block goes until the list refreshes.
   const [unlinkedId, setUnlinkedId] = useState<string | null>(null);
-  // A read-only event still shows its own calendar in the picker.
-  const options = readOnly && editing?.calendar_id && calendarById.has(editing.calendar_id) ? [calendarById.get(editing.calendar_id)!] : writable;
+  // A read-only event still shows its own calendar in the picker; otherwise
+  // every calendar is listed, the ones that take nothing new greyed out with
+  // the server's reason (contracts/tasks.ts).
+  const options = readOnly && editing?.calendar_id && calendarById.has(editing.calendar_id) ? [calendarById.get(editing.calendar_id)!] : calendars;
   const isRemote = (event: CalendarEvent) => isRemoteCalendarAccount(accountOf(event.calendar_id));
 
   // The form is filled while rendering a new target, so the dialog never shows
   // an empty form first. Later calendar refreshes do not reset what was typed.
   if (target !== formTarget) {
     setFormTarget(target);
-    if (target) setForm(formFor(target, timezone, writable[0]?.id || '', defaultReminder === undefined ? 0 : defaultReminder));
+    // A new event starts in the calendar the server marks as the default (Settings → General, else UniHub's choice).
+    if (target) setForm(formFor(target, timezone, defaultEventCalendar(calendars)?.id || '', defaultReminder === undefined ? 0 : defaultReminder));
   }
 
   const payload = (): Partial<CalendarEvent> & { title: string } => ({
@@ -172,10 +175,8 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
             </div>
             <div className="space-y-2">
               <Label htmlFor="event-calendar">Calendar</Label>
-              <Select value={form.calendar_id} onValueChange={value => setForm(prev => ({ ...prev, calendar_id: value }))}>
-                <SelectTrigger id="event-calendar"><SelectValue placeholder="Choose a calendar" /></SelectTrigger>
-                <SelectContent>{options.map(calendar => <SelectItem key={calendar.id} value={calendar.id}>{calendar.name}</SelectItem>)}</SelectContent>
-              </Select>
+              <ListChooser id="event-calendar" calendars={options} value={form.calendar_id} placeholder="Choose a calendar"
+                onChange={value => setForm(prev => ({ ...prev, calendar_id: value }))} />
             </div>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
