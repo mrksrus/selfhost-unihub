@@ -97,7 +97,8 @@ async function contactsOn() {
   adb('shell', 'am', 'start', '-n', `${PACKAGE}/.MainActivity`, '-a', `${PACKAGE}.SHOW_CONTACTS`);
   for (let attempt = 0; attempt < 60 && !hasAccount(); attempt++) {
     await answerSlowDialogs();
-    const button = screenNodes().find(node => node.text === 'Show contacts');
+    // Dialog buttons show in capitals on newer Android versions.
+    const button = screenNodes().find(node => /^show contacts$/i.test(node.text));
     if (button) adb('shell', 'input', 'tap', `${button.x}`, `${button.y}`);
     await sleep(2000);
   }

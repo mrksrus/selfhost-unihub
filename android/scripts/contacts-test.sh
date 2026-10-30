@@ -361,12 +361,24 @@ screen() {
   adb shell cat /sdcard/contacts-test.xml 2>/dev/null || true
 }
 
+# A slow emulator asks whether to wait for an app that is not responding
+# (often System UI): wait, as a person would.
+answer_not_responding() {
+  local shown bounds x1 y1 x2 y2
+  shown="$(screen)"
+  grep -q "isn't responding" <<<"$shown" || return 0
+  bounds="$(grep -o 'text="Wait"[^>]*bounds="[^"]*"' <<<"$shown" | grep -o 'bounds="[^"]*"' | head -n 1 || true)"
+  read -r x1 y1 x2 y2 <<<"$(sed 's/[^0-9]/ /g' <<<"$bounds")"
+  [[ -n "${y2:-}" ]] && adb shell input tap $(((x1 + x2) / 2)) $(((y1 + y2) / 2))
+  sleep 2
+}
+
 tap_button() { # resource id of a dialog button, waiting for the text first
-  for _ in $(seq 1 60); do screen | grep -q "$1" && break; sleep 1; done
+  for _ in $(seq 1 60); do answer_not_responding; screen | grep -q "$1" && break; sleep 1; done
   local bounds x1 y1 x2 y2
   bounds="$(screen | grep -o "resource-id=\"$2\"[^>]*bounds=\"[^\"]*\"" | grep -o 'bounds="[^"]*"' | head -n 1 || true)"
   read -r x1 y1 x2 y2 <<<"$(sed 's/[^0-9]/ /g' <<<"$bounds")"
-  [[ -n "${y2:-}" ]] || fail "no button next to \"$1\""
+  [[ -n "${y2:-}" ]] || fail "no button next to \"$1\" (the screen shows: $(screen | grep -o 'text="[^"]\+"' | tr '\n' ' '))"
   adb shell input tap $(((x1 + x2) / 2)) $(((y1 + y2) / 2))
 }
 
