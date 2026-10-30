@@ -22,6 +22,12 @@ test('the version handshake offers the Android app the image carries', (t) => {
   assert.deepEqual(info.android, { url: '/downloads/unihub.apk', versionName: '0.21.0', versionCode: 21000, size: 4, sha256: 'a'.repeat(64) });
 });
 
+test('the handshake lists what the apps look for: notifications (0.22.1 on) and the full contact model (0.26.0 on)', () => {
+  // An app syncs every contact field only while contacts-vcard is listed; the
+  // 0.22.1 to 0.25.1 apps need android-notifications for as long as they are in the window.
+  assert.deepEqual([...versionInfo().features].sort(), ['android-notifications', 'contacts-vcard']);
+});
+
 test('no Android offer when the image was built without the app or its metadata is unusable', (t) => {
   assert.equal(versionInfo(downloadsDir(t, {})).android, null);
   assert.equal(versionInfo(downloadsDir(t, { 'unihub-android.json': JSON.stringify(META) })).android, null);

@@ -125,31 +125,49 @@ object AppSession {
      * carries the CSRF token from the session's cookies, as the page does.
      */
     fun request(context: Context, origin: String, method: String, path: String, session: String, current: Current, body: JSONObject?): Response {
+        val answer = transfer(context, origin, method, path, session, current, body?.toString()?.toByteArray(Charsets.UTF_8), "application/json", MAX_BODY)
+        return Response(answer.status, String(answer.bytes, Charsets.UTF_8))
+    }
+
+    /** An answer larger than the caller takes. */
+    class TooLarge : IOException("Answer too large")
+
+    /** An answer as bytes (a contact photo). */
+    class Bytes(val status: Int, val bytes: ByteArray) {
+        fun json(): JSONObject? = try { JSONObject(String(bytes, Charsets.UTF_8)) } catch (_: org.json.JSONException) { null }
+    }
+
+    /** A request with a body of any type and an answer of at most [maxBytes] (else an IOException). */
+    fun transfer(
+        context: Context, origin: String, method: String, path: String, session: String, current: Current,
+        body: ByteArray?, contentType: String?, maxBytes: Int,
+    ): Bytes {
         val connection = open(context, origin, path, session, timeoutMs = 60_000)
         connection.requestMethod = method
         if (method != "GET") cookieValues(session)["csrf-token"]?.let { connection.setRequestProperty("X-CSRF-Token", it) }
         try {
             if (body != null) {
                 connection.doOutput = true
-                connection.setRequestProperty("Content-Type", "application/json")
-                connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                connection.setFixedLengthStreamingMode(body.size)
+                if (contentType != null) connection.setRequestProperty("Content-Type", contentType)
+                connection.outputStream.use { it.write(body) }
             }
             val status = connection.responseCode
             keepRenewals(context, origin, session, connection, current)
             val stream = (if (status >= 400) connection.errorStream else connection.inputStream)
-                ?: return Response(status, "")
-            val text = stream.use { input ->
+                ?: return Bytes(status, ByteArray(0))
+            val bytes = stream.use { input ->
                 val output = java.io.ByteArrayOutputStream()
                 val buffer = ByteArray(64 * 1024)
                 while (true) {
                     val read = input.read(buffer)
                     if (read < 0) break
                     output.write(buffer, 0, read)
-                    if (output.size() > MAX_BODY) throw IOException("Answer too large")
+                    if (output.size() > maxBytes) throw TooLarge()
                 }
-                output.toString(Charsets.UTF_8.name())
+                output.toByteArray()
             }
-            return Response(status, text)
+            return Bytes(status, bytes)
         } finally {
             connection.disconnect()
         }

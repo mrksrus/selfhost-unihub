@@ -15,7 +15,10 @@ const PROTOCOL = 1;
 const MIN_APP = '0.21.0';
 // android-notifications (0.22.1): POST /api/notifications/android/devices,
 // GET /api/notifications/android/stream and POST /api/notifications/android/ack.
-const FEATURES: string[] = ['android-notifications'];
+// contacts-vcard (0.26.0): the full contact model (api/src/contracts/contacts.ts)
+// with version-checked writes, contact photos and GET /api/contacts?include=merged.
+// The 0.26 app syncs every contact field only while this is listed, else the 3+3 fields.
+const FEATURES: string[] = ['android-notifications', 'contacts-vcard'];
 
 // Written by android/scripts/build-apk.sh next to the APK in the image.
 const DOWNLOADS_DIR = process.env.UNIHUB_DOWNLOADS_DIR || '/app/downloads';
