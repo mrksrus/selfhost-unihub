@@ -666,7 +666,8 @@ type PlaceWrite = { slot: number; value: string };
 // One kind of a flat 3+3 body applied to the rows in the old apps' places
 // (P-21). A whole body names the kind's values: a stored value it sends back
 // as an old app shows it stays as it is; a value already stored outside the
-// places takes a place instead of being added twice; a changed value takes
+// places takes a place instead of being added twice (or, when the app could
+// not hold that row, is left where it is and added neither); a changed value takes
 // over the one row the body no longer names when that pairing is the only
 // one possible (keeping its label), and is otherwise added with no label in
 // a free place. A value with the app key of a stored one (the app's own
@@ -681,11 +682,18 @@ function legacyPlan(kind: OldAppKind, rows: readonly ValueRow[], fields: LegacyF
   const removed: ValueRow[] = []; const changed: [ValueRow, string][] = []; const added: PlaceWrite[] = []; const placedLoose: [ValueRow, number][] = [];
   // A sent value UniHub already stores outside the places: the same text,
   // else the same app key (the first such row by position when several
-  // share it). That row takes the place with its own text and label.
-  const stored = (value: string) => {
-    let index = loose.findIndex(row => sameEcho(row.value, value));
-    if (index < 0) index = loose.findIndex(row => sameForOldAppKey(kind, row.value, value));
-    return index < 0 ? undefined : loose.splice(index, 1)[0];
+  // share it). That row takes the place with its own text and label, but
+  // only when the app can hold it (oldAppHoldable) beside the keys it holds
+  // already; it would otherwise drop the row on its next write and that
+  // write would delete it. A match the app cannot hold answers 'kept': the
+  // value is stored, nothing is added and the place stays empty.
+  const keyOf = (row: ValueRow) => oldAppKey(kind, kotlinTrim(row.value));
+  const stored = (value: string, held: ReadonlySet<string>): ValueRow | 'kept' | undefined => {
+    const adoptable = (row: ValueRow) => { const key = oldAppHoldable(kind, row.value); return !!key && !held.has(key); };
+    let index = loose.findIndex(row => sameEcho(row.value, value) && adoptable(row));
+    if (index < 0) index = loose.findIndex(row => sameForOldAppKey(kind, row.value, value) && adoptable(row));
+    if (index >= 0) return loose.splice(index, 1)[0];
+    return loose.some(row => sameEcho(row.value, value) || sameForOldAppKey(kind, row.value, value)) ? 'kept' : undefined;
   };
   const sent = LEGACY_SLOTS[kind].map((field, index) => ({ slot: index + 1, field, value: fields[field] }));
   if (!whole) {
@@ -694,7 +702,10 @@ function legacyPlan(kind: OldAppKind, rows: readonly ValueRow[], fields: LegacyF
       const row = places[slot - 1];
       if (!value) { if (row) removed.push(row); continue; }
       if (row && (sameEcho(row.value, value) || sameForOldAppKey(kind, row.value, value))) continue;
-      const known = stored(value);
+      const held = new Set([...places.filter((other, index) => other && index !== slot - 1 && !removed.includes(other)).map(other => keyOf(other!)),
+        ...placedLoose.map(([other]) => keyOf(other))]);
+      const known = stored(value, held);
+      if (known === 'kept') { if (row) removed.push(row); continue; }
       if (known) { if (row) removed.push(row); placedLoose.push([known, slot]); } else if (row) changed.push([row, value]); else added.push({ slot, value });
     }
     return { removed, changed, added, placedLoose };
@@ -706,7 +717,12 @@ function legacyPlan(kind: OldAppKind, rows: readonly ValueRow[], fields: LegacyF
     // A value the app sends in its own formatting (the same app key) leaves the stored text as it is.
     .filter(item => !take(row => sameForOldAppKey(kind, row.value, item.value)));
   const knownItems: [ValueRow, PlaceWrite][] = [];
-  const fresh = unmatched.filter(item => { const known = stored(item.value); if (known) knownItems.push([known, item]); return !known; });
+  const fresh = unmatched.filter(item => {
+    const held = new Set([...places.filter(row => row && !open.includes(row)).map(row => keyOf(row!)), ...knownItems.map(([row]) => keyOf(row))]);
+    const known = stored(item.value, held);
+    if (known && known !== 'kept') knownItems.push([known, item]);
+    return !known;
+  });
   if (open.length === 1 && fresh.length === 1) changed.push([open.pop()!, fresh.pop()!.value]);
   removed.push(...open);
   const taken = new Set(places.filter(row => row && !removed.includes(row)).map(row => Number(row!.legacy_slot)));

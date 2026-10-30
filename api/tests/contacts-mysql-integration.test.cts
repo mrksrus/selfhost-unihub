@@ -594,6 +594,33 @@ test('3+3 bridge: stored places for old apps keep hidden values, labels and repl
   assert.deepEqual(triples(casedPartialAfter, 'email'), ['pa2@example.test', 'pb2@example.test', 'PD2@example.test']);
   sameContact(await put(casedPartial.id, { email3: 'pd2@example.test' }), casedPartialAfter, 'sent again, nothing changes');
 
+  // ── Review round 6: a stored value the app cannot hold never takes a place ──
+  // The phone fills a free field from its own "+44209", the app twin of a
+  // stored 54-character number it could not hold (over 50 units). Adopting
+  // that row would make the app drop it on its next write and delete it: the
+  // row stays outside the places, nothing is added and the place stays empty.
+  const spaced = `+44${' '.repeat(48)}209`;
+  for (const whole of [true, false]) {
+    const given = whole ? 'Unholdable whole' : 'Unholdable partial';
+    const before = (await call('POST', '/api/contacts', { name: { given }, phones: ['111', '222', '333', { value: spaced, label: 'work' }] })).contact;
+    assert.deepEqual(triples(before, 'phone'), ['111', '222', '333']);
+    const body = whole ? { first_name: given, phone: '111', phone2: '222', phone3: '+44209' } : { phone3: '+44209' };
+    const after = await put(before.id, body);
+    assert.deepEqual(rows(after, 'phones'), [0, 1, 3].map(index => rows(before, 'phones')[index]), `${given}: 333 goes, the long number keeps row, text and label, nothing is added`);
+    assert.deepEqual(triples(after, 'phone'), ['111', '222', null], `${given}: the place stays empty`);
+    sameContact(await put(before.id, body), after, `${given}: sent again, nothing changes`);
+    const edited = await put(before.id, whole ? { ...body, phone: '112' } : { phone: '112' });
+    assert.deepEqual(rows(edited, 'phones').find((item: FixtureValue[]) => item[1] === spaced), rows(before, 'phones')[3], `${given}: a later edit keeps the long number`);
+    assert.deepEqual(triples(edited, 'phone'), ['112', '222', null]);
+  }
+  // An address longer than the app's 255 units, sent in another case, is not adopted either.
+  const wide = `W${'😀'.repeat(130)}@example.test`;
+  const wideBefore = (await call('POST', '/api/contacts', { name: { given: 'Wide' }, emails: ['wa@example.test', { value: wide, label: 'home' }] })).contact;
+  assert.deepEqual(triples(wideBefore, 'email'), ['wa@example.test', null, null]);
+  const wideAfter = await put(wideBefore.id, { first_name: 'Wide', email: 'wa@example.test', email2: wide.toLowerCase() });
+  assert.deepEqual(rows(wideAfter, 'emails'), rows(wideBefore, 'emails'), 'the wide address keeps its row and label; no copy is added');
+  assert.deepEqual(triples(wideAfter, 'email'), ['wa@example.test', null, null]);
+
   // ── Any sequence of flat writes: each one sent again changes nothing, and values outside the places are never touched ──
   let seed = 20261030;
   const random = (n: number) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
