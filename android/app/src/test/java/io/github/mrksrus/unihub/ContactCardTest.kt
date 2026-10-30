@@ -237,6 +237,14 @@ class ContactCardTest {
         assertEquals(PartialDate(1990, 1, 1), PartialDate.parse("1990-01-01T00:00:00.000Z"))
         assertNull(PartialDate.parse("next week"))
         assertEquals("--02-29", PartialDate(null, 2, 29).text())
+        // Written with ASCII digits whatever the phone's language.
+        val locale = java.util.Locale.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale.forLanguageTag("ar-EG-u-nu-arab"))
+            assertEquals("1815-12-10", PartialDate(1815, 12, 10).text())
+        } finally {
+            java.util.Locale.setDefault(locale)
+        }
         // A birthday the phone cannot date stays there and blocks nothing.
         val phone = ContactPhone.read(listOf(row("contact_event", "data1" to "next week", "data2" to "3")), false)
         assertNull(phone.card.birthday)

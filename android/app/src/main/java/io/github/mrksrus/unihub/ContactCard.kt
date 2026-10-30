@@ -2,6 +2,7 @@ package io.github.mrksrus.unihub
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Locale
 
 /**
  * A contact as servers with `contacts-vcard` (0.26.0 on) keep it, and as the
@@ -200,7 +201,7 @@ data class Name(val display: String = "", val given: String = "", val family: St
 /** A birthday or anniversary; [year] null when the year is unknown. */
 data class PartialDate(val year: Int?, val month: Int, val day: Int) {
     /** `YYYY-MM-DD` or `--MM-DD`, as the API and Android's Event rows write it. */
-    fun text(): String = (if (year == null) "--" else "%04d-".format(year)) + "%02d-%02d".format(month, day)
+    fun text(): String = (if (year == null) "--" else "%04d-".format(Locale.ROOT, year)) + "%02d-%02d".format(Locale.ROOT, month, day)
 
     companion object {
         private val DAYS = intArrayOf(31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)

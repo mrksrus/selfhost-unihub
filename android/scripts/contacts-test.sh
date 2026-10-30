@@ -414,6 +414,17 @@ expect_page_cookie() {
 
 postponed() { adb logcat -d -s UniHubContacts UniHubSession 2>/dev/null | grep -c 'Sync postponed' || true; }
 
+# Waits until no sync has finished for a while: a step whose two edits must
+# meet in one sync must not have a sync asked for earlier run between them.
+settle() {
+  local before
+  for _ in $(seq 1 20); do
+    before="$(synced)"
+    sleep 8
+    [[ "$(synced)" == "$before" ]] && return 0
+  done
+}
+
 # A sync that must not change anything: wait for it to give up.
 expect_postponed() {
   local before="$(postponed)"
@@ -664,6 +675,7 @@ expect_name +15550221 '' 'confirmed deletion'
 
 echo 'A contact deleted on the phone comes back when UniHub changed its note'
 eve_id="$(python3 -c 'import json, sys; print([c["id"] for c in json.load(open(sys.argv[1])) if c["first_name"] == "Eve"][0])' "$work/state/contacts.json")"
+settle
 server_edit "by['$eve_id']['notes'] = 'a note written meanwhile'"
 phone_delete "$(raw_for "$eve_id")"
 sync_now
