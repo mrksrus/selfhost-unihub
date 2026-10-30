@@ -59,6 +59,7 @@ test('[27-05] a new task is made in the chosen list; a server calendar takes onl
       await chooser(screen, 'List').tap();
       const option = screen.getByRole('option', new RegExp(server.name));
       await expect(option).not.toHaveAttribute('aria-disabled', 'true');
+      await browser.keyboard.press('Escape');
       await screen.getByRole('button', 'Cancel', { exact: true }).tap();
     }
   } finally {

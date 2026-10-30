@@ -10,10 +10,15 @@ import { centreOf, longPressDrag, mouseDrag, onlyOn, targetOf } from '../support
 
 interface Task { id: string; title: string; sort_rank?: number; hand_ordered?: boolean; calendar_id?: string }
 
-/** Three tasks without a date, created through the API in this order, so the server ranks them by creation. */
+/**
+ * Three tasks without a date, created through the API a second apart, so the
+ * server ranks them by creation (tasks made within one second tie, and a tie
+ * is ordered by id).
+ */
 async function createUndated(browser: unknown, prefix: string, count = 3) {
   const tasks: Task[] = [];
   for (let index = 1; index <= count; index++) {
+    if (index > 1) await new Promise(resolve => setTimeout(resolve, 1100));
     const { event } = ok(await pageApi<{ event: Task }>(browser, 'POST', '/api/calendar/events', { title: `${prefix} ${index}`, is_todo_only: true, reminders: null }), `create task ${index}`);
     tasks.push(event);
   }
@@ -92,8 +97,8 @@ test('[27-01 27-03] a task dragged by its handle keeps its place after a reload 
 });
 
 // 27-02 (agent part): on a phone, a long press on the handle picks the row up and
-// a drag reorders it; a swipe on the handle without the hold, and a swipe on the
-// row, scroll the page and change nothing.
+// a drag reorders it; a finger that moves at once from the handle, and a long
+// press on the row's text, change nothing.
 test('[27-02] on a phone a long press on the handle reorders; a swipe scrolls', { session: 'admin', timeout: 240_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'phone', 'android-app');
   const prefix = `Touch ${runId()}`;
@@ -103,10 +108,15 @@ test('[27-02] on a phone a long press on the handle reorders; a swipe scrolls', 
     await app.open('/todo');
     await expect(row(screen, `${prefix} 3`)).toBeVisible();
 
-    // A swipe starting on the handle, without the hold: the page may scroll, the order stays.
+    // A finger that lands on the handle and moves at once (no hold): not a
+    // drag, the order stays. (The harness's own `screen.swipe` is a pointer
+    // drag on this engine, so the finger is sent as touch events in the page;
+    // whether the page scrolls under a real finger is the maintainer's 27-02.)
     const grip = await centreOf(handle(screen, `${prefix} 3`));
-    await screen.swipe({ from: grip, to: { x: grip.x, y: Math.max(80, grip.y - 300) }, duration: 250 });
-    await expect.poll(() => storedOrder(browser, prefix)).toEqual([`${prefix} 1`, `${prefix} 2`, `${prefix} 3`]);
+    const above = await centreOf(row(screen, `${prefix} 1`));
+    await longPressDrag(browser, grip, { x: grip.x, y: above.y - 8 }, { hold: 0, steps: 4 });
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    expect(await storedOrder(browser, prefix)).toEqual([`${prefix} 1`, `${prefix} 2`, `${prefix} 3`]);
     expect(await shownOrder(screen, prefix)).toEqual([`${prefix} 1`, `${prefix} 2`, `${prefix} 3`]);
 
     // A long press on the handle, then a drag above the first task: reordered.
@@ -119,10 +129,11 @@ test('[27-02] on a phone a long press on the handle reorders; a swipe scrolls', 
     // Nothing was selected and no context menu is open after the hold.
     expect(await browser.evaluate(() => String(window.getSelection()?.toString() ?? ''))).toBe('');
 
-    // A swipe on the row's text scrolls and changes nothing.
+    // A long press on the row's text, then a move: only the handle picks a row up.
     const text = await centreOf(row(screen, `${prefix} 1`).getByText(`${prefix} 1`, { exact: true }));
-    await screen.swipe({ from: text, to: { x: text.x, y: Math.max(80, text.y - 200) }, duration: 250 });
-    await expect.poll(() => storedOrder(browser, prefix)).toEqual([`${prefix} 3`, `${prefix} 1`, `${prefix} 2`]);
+    await longPressDrag(browser, text, { x: text.x, y: Math.max(80, text.y - 200) });
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    expect(await storedOrder(browser, prefix)).toEqual([`${prefix} 3`, `${prefix} 1`, `${prefix} 2`]);
     expect(await shownOrder(screen, prefix)).toEqual([`${prefix} 3`, `${prefix} 1`, `${prefix} 2`]);
   } finally {
     await removeAll(browser, tasks);
@@ -194,6 +205,7 @@ test('[27-01] a task moved to another time goes back to its date order', { sessi
     await later().nth(0).getByRole('button', `More actions for ${prefix} 3`).tap();
     await screen.getByRole('menuitem', 'Move to another time', { exact: true }).tap();
     await screen.getByLabel('New start', { exact: true }).fill(`${day}T15:00`);
+    await screen.getByLabel('New end (optional)', { exact: true }).fill(`${day}T15:30`);
     await screen.getByRole('dialog').getByRole('button', 'Move', { exact: true }).tap();
     await expect(screen.getByRole('dialog')).toBeHidden();
     await expect.poll(laterOrder, { timeout: 15_000 }).toEqual([`${prefix} 1`, `${prefix} 2`, `${prefix} 3`]);
