@@ -71,7 +71,8 @@ describe('contact editor form', () => {
 
 // The editor renders many Radix selects; jsdom needs more than the default 5 s under a full-suite load.
 describe('ContactEditor', { timeout: 20_000 }, () => {
-  it('adds fields from the menu, labels values, and sends the version with a full body', async () => {
+  // Many interactions through menus and selects: slower than the default on a busy host.
+  it('adds fields from the menu, labels values, and sends the version with a full body', { timeout: 15_000 }, async () => {
     const onClose = mount({ kind: 'edit', contact: existing });
     const dialog = await screen.findByRole('dialog', { name: 'Edit contact' });
     expect(within(dialog).getByRole('textbox', { name: 'Phone 2' })).toHaveValue('+1 555 0101');

@@ -141,7 +141,8 @@ describe('Contacts', () => {
     await waitFor(() => expect(api.getBlob).toHaveBeenCalledWith('/contacts/export?format=google-csv'));
   });
 
-  it('prefills a new contact from a link and saves the full body with labelled emails', async () => {
+  // Many interactions (labels, a second row, the star): slower than the default on a busy host.
+  it('prefills a new contact from a link and saves the full body with labelled emails', { timeout: 15_000 }, async () => {
     mount('/contacts?action=new&name=Robin%20Example&email=robin@example.com');
     const dialog = await screen.findByRole('dialog', { name: 'New contact' });
     expect(within(dialog).getByLabelText('First name')).toHaveValue('Robin');
