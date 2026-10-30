@@ -68,23 +68,26 @@ function carriedField(table: string, column: string, version: number) {
 // A hand rank names its task inside the archive: a local one by its event,
 // a synced one by its calendar, UID and recurrence id (never both).
 function validateTaskOrder(data: BackupPayload['data'] | undefined) {
+  const keys = (Array.isArray(data?.calendar_events) ? data.calendar_events as Record<string, unknown>[] : [])
+    .some(event => event?.order_key != null && (typeof event.order_key !== 'string' || !event.order_key || event.order_key.length > 64));
+  const keyErrors = keys ? ['Backup has an invalid task order key'] : [];
   const rows = data?.task_order;
-  if (rows === undefined) return [];
-  if (!Array.isArray(rows)) return ['Backup task_order must be an array'];
+  if (rows === undefined) return keyErrors;
+  if (!Array.isArray(rows)) return [...keyErrors, 'Backup task_order must be an array'];
   const ids = (table: string) => new Set((Array.isArray(data?.[table]) ? data[table] as Record<string, unknown>[] : []).map(row => row?.id));
   const events = ids('calendar_events');
   const calendars = ids('calendar_calendars');
   const errors = new Set<string>();
   for (const row of rows as Record<string, unknown>[]) {
     const synced = typeof row?.remote_uid === 'string' && row.remote_uid !== '';
-    const valid = row && typeof row === 'object' && Number.isSafeInteger(row.sort_rank) && (row.auto_basis == null || Number.isSafeInteger(row.auto_basis))
+    const valid = row && typeof row === 'object' && Number.isSafeInteger(row.sort_rank)
       && (synced
         ? calendars.has(row.calendar_id) && (row.event_id == null) && (row.remote_uid as string).length <= 500
           && (row.recurrence_id == null || (typeof row.recurrence_id === 'string' && row.recurrence_id.length <= 64))
         : events.has(row.event_id) && row.calendar_id == null && row.remote_uid == null);
     if (!valid) errors.add('Backup has a task order row that names no task of this backup');
   }
-  return [...errors];
+  return [...keyErrors, ...errors];
 }
 
 // Contact photos are JPEG files the server wrote; anything larger did not come from it.

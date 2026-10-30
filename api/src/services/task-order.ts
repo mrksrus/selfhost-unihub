@@ -15,13 +15,12 @@ import { publishCalendarChanged } from './realtime';
 // never placed by hand stays at its date's place. Only placing writes, and
 // usually only the placed task: ranks are sparse.
 //
-// A date rank must not depend on anything a sync or restore renews: its
-// tiebreak offset comes from the provider identity (UID and recurrence id)
-// for a synced task, whose event row a sync may rebuild, and from the event
-// id for a local one. A restore gives local tasks new ids, so it keeps their
-// archived date ranks as "kept" rows (auto_basis set): such a row applies
-// only while the task's date is still the one it was computed from, and
-// does not count as placed by hand.
+// The order is (sort_rank, sort_key), and neither may depend on anything a
+// sync or a restore renews. A task's key is the hash of its provider identity
+// (UID and recurrence id) when synced, as a sync may rebuild its event row;
+// for a local task it is calendar_events.order_key, or the event id while
+// that is empty. A restore gives events new ids and sets order_key to the
+// archived task's key, so date-rank offsets and ties come back unchanged.
 //
 // Hand ranks are UniHub's own overlay (F2 `local`), kept in task_order and
 // never written to a calendar server (D32). A row is keyed by the item's
@@ -39,7 +38,7 @@ const SPREAD_GAP = 1024;
 const ID_PATTERN = /^[0-9a-f-]{36}$/i;
 const CHUNK = 500;
 
-interface RankedRow { id: string; start_time: unknown; created_at: unknown; is_todo_only: unknown }
+interface RankedRow { id: string; start_time: unknown; created_at: unknown; is_todo_only: unknown; order_key?: unknown }
 
 interface TaskIdentity {
   eventId: string;
@@ -71,16 +70,15 @@ function millis(value: unknown) {
   return Number.isNaN(ms) ? null : ms;
 }
 
-/** The second a task's date rank is computed from: its start, or its creation for a task without a date. */
-function rankBasis(row: RankedRow) {
-  const ms = millis(Number(row.is_todo_only) ? row.created_at : row.start_time) ?? millis(row.created_at) ?? 0;
-  return Math.floor(ms / 1000);
+/** A task's stable key: its provider identity when synced, else its order key (empty: its event id). */
+function sortKey(row: Pick<RankedRow, 'id' | 'order_key'>, identity?: Pick<TaskIdentity, 'uid' | 'recurrenceId'> | null) {
+  return identity?.uid ? hash(`key\n${identity.uid}\n${identity.recurrenceId}`) : String(row.order_key || row.id);
 }
 
 function dateRank(row: RankedRow, identity?: Pick<TaskIdentity, 'uid' | 'recurrenceId'> | null) {
-  const seed = identity?.uid ? `remote\n${identity.uid}\n${identity.recurrenceId}` : row.id;
-  const offset = parseInt(hash(`rank\n${seed}`).slice(0, 8), 16) % ID_OFFSET_SPAN;
-  return rankBasis(row) * RANK_SCALE + offset;
+  const ms = millis(Number(row.is_todo_only) ? row.created_at : row.start_time) ?? millis(row.created_at) ?? 0;
+  const offset = parseInt(hash(`rank\n${sortKey(row, identity)}`).slice(0, 8), 16) % ID_OFFSET_SPAN;
+  return Math.floor(ms / 1000) * RANK_SCALE + offset;
 }
 
 /**
@@ -114,34 +112,39 @@ async function identityOf(executor: SqlExecutor, userId: string, eventId: string
   return (await identities(userId, [eventId], executor)).get(eventId) ?? null;
 }
 
-interface StoredRank { rank: number; basis: number | null }
-
-async function storedRanks(userId: string, executor: SqlExecutor) {
-  const [rows] = await executor.execute<RowDataPacket[]>('SELECT item_key, sort_rank, auto_basis FROM task_order WHERE user_id = ?', [userId]);
-  return new Map<string, StoredRank>(rows.map(row => [String(row.item_key), { rank: Number(row.sort_rank), basis: row.auto_basis == null ? null : Number(row.auto_basis) }]));
+async function handRanks(userId: string, executor: SqlExecutor) {
+  const [rows] = await executor.execute<RowDataPacket[]>('SELECT item_key, sort_rank FROM task_order WHERE user_id = ?', [userId]);
+  return new Map(rows.map(row => [String(row.item_key), Number(row.sort_rank)]));
 }
 
-/** Adds sort_rank and hand_ordered to each event of the user (contracts/tasks.ts TaskRankFields). */
-async function attachRanks<T extends RankedRow>(userId: string, events: readonly T[], executor: SqlExecutor = db): Promise<(T & { sort_rank: number; hand_ordered: boolean })[]> {
+/** The order of ranked tasks: rank, then the stable key (contracts/tasks.ts). */
+function compareRanked(a: { sort_rank: number; sort_key: string }, b: { sort_rank: number; sort_key: string }) {
+  return a.sort_rank - b.sort_rank || (a.sort_key < b.sort_key ? -1 : a.sort_key > b.sort_key ? 1 : 0);
+}
+
+/**
+ * Adds sort_rank, sort_key and hand_ordered to each event of the user
+ * (contracts/tasks.ts TaskRankFields); the stored order_key stays internal.
+ */
+async function attachRanks<T extends RankedRow>(userId: string, events: readonly T[], executor: SqlExecutor = db): Promise<(Omit<T, 'order_key'> & { sort_rank: number; sort_key: string; hand_ordered: boolean })[]> {
   if (!events.length) return [];
-  const [ranks, ids] = await Promise.all([storedRanks(userId, executor), identities(userId, events.map(event => event.id), executor)]);
+  const [ranks, ids] = await Promise.all([handRanks(userId, executor), identities(userId, events.map(event => event.id), executor)]);
   return events.map(event => {
     const identity = ids.get(event.id);
-    const stored = identity ? ranks.get(identity.key) : undefined;
-    // A kept date rank no longer applies once the task's date changed.
-    const applies = stored && (stored.basis === null || stored.basis === rankBasis(event));
-    return { ...event, sort_rank: applies ? stored.rank : dateRank(event, identity), hand_ordered: !!applies && stored.basis === null };
+    const hand = identity ? ranks.get(identity.key) : undefined;
+    const { order_key: _orderKey, ...rest } = event;
+    void _orderKey;
+    return { ...rest, sort_rank: hand ?? dateRank(event, identity), sort_key: sortKey(event, identity), hand_ordered: hand !== undefined };
   });
 }
 
-// basis: null for a hand rank; for a kept date rank, the second it was computed from.
-async function writeRank(executor: SqlExecutor, userId: string, identity: TaskIdentity, rank: number, basis: number | null = null) {
+async function writeRank(executor: SqlExecutor, userId: string, identity: TaskIdentity, rank: number) {
   await executor.execute(
-    `INSERT INTO task_order (user_id, item_key, calendar_id, event_id, remote_uid, recurrence_id, sort_rank, auto_basis)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO task_order (user_id, item_key, calendar_id, event_id, remote_uid, recurrence_id, sort_rank)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE calendar_id = VALUES(calendar_id), event_id = VALUES(event_id), remote_uid = VALUES(remote_uid),
-       recurrence_id = VALUES(recurrence_id), sort_rank = VALUES(sort_rank), auto_basis = VALUES(auto_basis)`,
-    [userId, identity.key, identity.calendarId, identity.uid ? null : identity.eventId, identity.uid, identity.recurrenceId, rank, basis]
+       recurrence_id = VALUES(recurrence_id), sort_rank = VALUES(sort_rank)`,
+    [userId, identity.key, identity.calendarId, identity.uid ? null : identity.eventId, identity.uid, identity.recurrenceId, rank]
   );
 }
 
@@ -186,7 +189,7 @@ async function place(userId: string, taskId: string, input: unknown): Promise<{ 
     if (!own.length) throw notFound('TASK_NOT_FOUND', 'Task not found');
     // The open tasks: what ToDo lists (lists with ToDo on) and not done.
     const [rows] = await connection.execute<(RowDataPacket & RankedRow)[]>(
-      `SELECT e.id, e.start_time, e.created_at, e.is_todo_only
+      `SELECT e.id, e.start_time, e.created_at, e.is_todo_only, e.order_key
        FROM calendar_events e LEFT JOIN calendar_calendars c ON c.id = e.calendar_id
        WHERE e.user_id = ? AND (e.todo_status IS NULL OR e.todo_status NOT IN ('done', 'cancelled'))
          AND (c.auto_todo_enabled = TRUE OR c.auto_todo_enabled IS NULL)`,
@@ -197,8 +200,7 @@ async function place(userId: string, taskId: string, input: unknown): Promise<{ 
     // A neighbour that is gone, done or not this person's reads the same:
     // the list the person saw is out of date.
     if (!byId.has(taskId) || (after && !byId.has(after)) || (before && !byId.has(before))) throw stale();
-    const order = tasks.filter(task => task.id !== taskId)
-      .sort((a, b) => a.sort_rank - b.sort_rank || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const order = tasks.filter(task => task.id !== taskId).sort(compareRanked);
     const position = (id: string) => order.findIndex(task => task.id === id);
     const afterIndex = after ? position(after) : -1;
     const beforeIndex = before ? position(before) : -1;
@@ -264,18 +266,21 @@ async function clearRank(executor: SqlExecutor, userId: string, eventId: string,
 async function rekey(executor: SqlExecutor, userId: string, eventId: string, before: TaskIdentity) {
   const after = await identityOf(executor, userId, eventId);
   if (!after || after.key === before.key) return;
-  const [rows] = await executor.execute<RowDataPacket[]>('SELECT sort_rank, auto_basis FROM task_order WHERE user_id = ? AND item_key = ? FOR UPDATE', [userId, before.key]);
+  const [rows] = await executor.execute<RowDataPacket[]>('SELECT sort_rank FROM task_order WHERE user_id = ? AND item_key = ? FOR UPDATE', [userId, before.key]);
   if (!rows.length) return;
   await executor.execute('DELETE FROM task_order WHERE user_id = ? AND item_key = ?', [userId, before.key]);
-  await writeRank(executor, userId, after, Number(rows[0].sort_rank), rows[0].auto_basis == null ? null : Number(rows[0].auto_basis));
+  await writeRank(executor, userId, after, Number(rows[0].sort_rank));
 }
 
 /**
  * Removes the ranks of synced items whose server copy a sync verified as
  * deleted: the given UIDs of the calendar, and only when no stored server
- * copy with that UID remains. Never call it for an object that is merely
- * outside the sync window or missing from an incomplete listing: its rank
- * applies again when the item comes back.
+ * copy with that UID remains. This is the only removal of a synced task's
+ * rank besides removing its calendar or account. Never call it for an
+ * object that is merely outside the sync window or missing from an
+ * incomplete listing: its rank applies again when the item comes back. A
+ * rank of an occurrence that has passed or that its series no longer has
+ * stays until its object is deleted; only hand-placed occurrences have one.
  */
 async function sweepRemoteRanks(executor: SqlExecutor, userId: string, calendarId: string, uids: readonly string[]) {
   const present = [...new Set(uids.filter(Boolean))];
@@ -290,31 +295,5 @@ async function sweepRemoteRanks(executor: SqlExecutor, userId: string, calendarI
   }
 }
 
-// A recurrence id is the occurrence's original date: YYYYMMDD or YYYYMMDDTHHMMSSZ.
-function recurrenceMillis(recurrenceId: string) {
-  const match = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})Z)?$/.exec(recurrenceId);
-  return match ? Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4] ?? 0), Number(match[5] ?? 0), Number(match[6] ?? 0)) : null;
-}
-
-/**
- * Expires the ranks of occurrences whose original date lies before
- * `beforeMs` (the start of the sync window): such an occurrence can no
- * longer be shown, whether the series still has it or not. Occurrences
- * removed from a series (an EXDATE, a shorter RRULE, a new series time)
- * leave their rank until then; an expansion that omits an occurrence is no
- * evidence that the provider deleted it.
- */
-async function expireOccurrenceRanks(executor: SqlExecutor, userId: string, calendarId: string, beforeMs: number) {
-  const [rows] = await executor.execute<RowDataPacket[]>(
-    "SELECT item_key, recurrence_id FROM task_order WHERE user_id = ? AND calendar_id = ? AND remote_uid IS NOT NULL AND recurrence_id <> ''",
-    [userId, calendarId]
-  );
-  const expired = rows.filter(row => (recurrenceMillis(String(row.recurrence_id)) ?? Infinity) < beforeMs).map(row => String(row.item_key));
-  for (let index = 0; index < expired.length; index += CHUNK) {
-    const chunk = expired.slice(index, index + CHUNK);
-    await executor.execute(`DELETE FROM task_order WHERE user_id = ? AND item_key IN (${chunk.map(() => '?').join(', ')})`, [userId, ...chunk]);
-  }
-}
-
-export { place, attachRanks, identities, identityOf, clearRank, rekey, sweepRemoteRanks, expireOccurrenceRanks, itemKey, dateRank, rankBasis, writeRank, RANK_SCALE };
+export { place, attachRanks, identities, identityOf, clearRank, rekey, sweepRemoteRanks, itemKey, dateRank, sortKey, compareRanked, RANK_SCALE };
 export type { TaskIdentity };

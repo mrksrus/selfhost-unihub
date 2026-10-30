@@ -154,11 +154,13 @@ async function publicView(session: Session) {
       source_email: event.source_email_id ? emailSubjects.get(event.source_email_id) ?? `missing email ${event.source_email_id}` : null,
       subtasks: (event.subtasks as Row[]).map(subtask => ({ title: subtask.title, done: Boolean(subtask.is_done), position: subtask.position })),
       attendees: (event.attendees as Row[]).map(attendee => ({ email: attendee.email, name: attendee.display_name, response: attendee.response_status })) }))),
-    // The order ToDo shows (0.27): each list's open tasks by rank, and which
-    // were placed by hand. Ranks are compared by the order they give.
+    // The order ToDo shows (0.27): each list's open tasks by rank, then by the
+    // stable key (never by title, which could hide a flipped tie), and which
+    // were placed by hand. Ranks are compared by the order they give; the
+    // task_order row count above proves no hand place was lost or added.
     taskOrder: Object.fromEntries(calendars.map(calendar => [String(calendar.name), events
       .filter(event => event.calendar_id === calendar.id && (event.is_todo_only || calendar.auto_todo_enabled) && !['done', 'cancelled'].includes(String(event.todo_status)))
-      .sort((a, b) => Number(a.sort_rank) - Number(b.sort_rank) || String(a.title).localeCompare(String(b.title)))
+      .sort((a, b) => Number(a.sort_rank) - Number(b.sort_rank) || (String(a.sort_key) < String(b.sort_key) ? -1 : String(a.sort_key) > String(b.sort_key) ? 1 : 0))
       .map(event => [event.title, event.hand_ordered])]).filter(([, tasks]) => (tasks as unknown[]).length)),
     recordings: sort(recordings.map(recording => ({ title: recording.title, description: recording.description, original_filename: recording.original_filename,
       content_type: recording.content_type, size: recording.size_bytes, duration: recording.duration_seconds, source: recording.source, recorded_at: recording.recorded_at,

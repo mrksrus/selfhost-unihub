@@ -18,7 +18,7 @@ import { db } from '../state';
 import { decrypt } from '../security/encryption';
 import { canRunModule } from './access-policy';
 import { publishCalendarChanged } from './realtime';
-import { expireOccurrenceRanks, sweepRemoteRanks } from './task-order';
+import { sweepRemoteRanks } from './task-order';
 import * as caldav from './caldav';
 import * as ical from './calendar-ical';
 import {
@@ -616,8 +616,6 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       }
       ctx.stats.removedEvents += ids.length;
     }
-    // Ranks of occurrences from before the window can no longer show.
-    await expireOccurrenceRanks(db, ctx.account.user_id, calendar.id, ctx.windowStartMs);
   }
   return unreadable;
 }

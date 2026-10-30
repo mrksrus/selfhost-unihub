@@ -11,10 +11,17 @@ export interface TaskRankFields {
   /**
    * Where the task stands: its hand rank if it was ever placed by hand, else
    * a rank from its date (its creation time for a task without a date).
-   * Ascending; equal ranks are ordered by id. Compare only within one answer:
+   * Ascending; equal ranks are ordered by sort_key. Compare only within one answer:
    * a rank says nothing on its own.
    */
   sort_rank: number;
+  /**
+   * The tiebreak for equal ranks: order by sort_rank, then sort_key (plain
+   * string comparison, not locale-aware). Unlike the id it survives a sync
+   * that rebuilds the row and a restore that renews ids, so ties keep their
+   * order. Never derive it on the client.
+   */
+  sort_key: string;
   /** The task was placed by hand; a date changed in UniHub clears it. */
   hand_ordered: boolean;
 }
