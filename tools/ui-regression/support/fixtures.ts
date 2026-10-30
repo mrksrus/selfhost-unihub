@@ -197,16 +197,20 @@ export const CONTACTS = [
   contact('c-6', 'Alan', 'M. Turing', { display_name: 'Alan M. Turing', organization: { name: 'Example Institute', department: null }, emails: [value('e-8', 'ALAN@example.net', 'work')], phones: [value('p-5', '+1 555 0104', 'work')] }),
   contact('c-7', 'Jane', 'Doe', { phones: [value('p-6', '+1 555 0105', 'mobile')], emails: [value('e-9', 'jane@example.com')] }),
 ];
-const member = (id: string) => {
+// A member as GET /api/contacts/duplicates sends it: `field_values` holds its
+// value of each conflicting field as the server words it (the name with all its parts).
+const member = (id: string, fieldValues: Record<string, string | null> = {}) => {
   const found = CONTACTS.find(entry => entry.id === id)!;
   return { id, version: found.version, display_name: found.display_name, organization: found.organization?.name ?? null,
-    emails: (found.emails ?? []).map(entry => entry.value), phones: (found.phones ?? []).map(entry => entry.value), photo: null };
+    emails: (found.emails ?? []).map(entry => entry.value), phones: (found.phones ?? []).map(entry => entry.value), photo: null, field_values: fieldValues };
 };
 export const DUPLICATE_GROUPS = [
-  { id: 'dup-turing', confidence: 'high', large: false, members: [member('c-2'), member('c-6')],
-    reasons: [{ kind: 'email', detail: 'alan@example.net', a: 'c-2', b: 'c-6' }, { kind: 'name_subset', detail: 'Alan Turing', a: 'c-2', b: 'c-6' }], conflicts: ['organization'] },
+  // The family names differ ("Turing", "M. Turing"), so the name is chosen as well as the organisation.
+  { id: 'dup-turing', confidence: 'high', large: false,
+    members: [member('c-2', { name: 'Alan Turing', organization: 'Example University' }), member('c-6', { name: 'Alan M. Turing', organization: 'Example Institute' })],
+    reasons: [{ kind: 'email', detail: 'alan@example.net', a: 'c-2', b: 'c-6' }, { kind: 'name_subset', detail: 'Alan Turing', a: 'c-2', b: 'c-6' }], conflicts: ['name', 'organization'], auto_merge: false },
   { id: 'dup-doe', confidence: 'high', large: false, members: [member('c-5'), member('c-7')],
-    reasons: [{ kind: 'email', detail: 'jane@example.com', a: 'c-5', b: 'c-7' }, { kind: 'name', detail: 'Jane Doe', a: 'c-5', b: 'c-7' }], conflicts: [] },
+    reasons: [{ kind: 'email', detail: 'jane@example.com', a: 'c-5', b: 'c-7' }, { kind: 'name', detail: 'Jane Doe', a: 'c-5', b: 'c-7' }], conflicts: [], auto_merge: true },
 ];
 const KEPT_PROPERTIES = [
   { name: 'X-ABShowAs', group: null, params: null, value: 'PERSON' },
