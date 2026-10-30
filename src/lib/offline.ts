@@ -246,21 +246,53 @@ function mailRows(snapshot: OfflineSnapshot, params: URLSearchParams) {
     return !query || [row.subject,row.from_name,row.from_address,row.body_text].some(value=>text(value).toLowerCase().includes(query));
   }).sort(newestFirst);
 }
-// A contact row of the snapshot: the vCard model since 0.26 (name parts and
-// labelled lists), or the 3+3 columns of an older snapshot.
-function contactValues(row: Row, key: 'emails' | 'phones'): string[] {
-  const list = row[key];
-  if (Array.isArray(list)) return list.map(entry => text((entry as Record<string, unknown>)?.value).trim()).filter(Boolean);
-  const legacy = key === 'emails' ? ['email', 'email2', 'email3'] : ['phone', 'phone2', 'phone3'];
-  return legacy.map(column => text(row[column]).trim()).filter(Boolean);
+// A contact row of the snapshot in the read model the pages use (the vCard
+// model of 0.26, api/src/contracts/contacts.ts ContactRecord). A snapshot saved
+// before 0.26 holds the 3+3 columns instead (first_name, email…email3,
+// phone…phone3, company); its rows are converted here, once, for every reader
+// of offline contacts (the list, its search, the composer), so none of them
+// meets a row without name parts or lists.
+const LEGACY_EMAILS = ['email', 'email2', 'email3'];
+const LEGACY_PHONES = ['phone', 'phone2', 'phone3'];
+const optionalText = (value: unknown) => (text(value).trim() ? text(value) : null);
+const listOf = (value: unknown) => (Array.isArray(value) ? value : []);
+function legacyValues(row: Row, columns: string[]) {
+  return columns.map(column => text(row[column]).trim()).filter(Boolean).map(value => ({ value, label: '', custom_label: null, preferred: false }));
 }
+export function offlineContact(row: Row): Row {
+  const modern = Array.isArray(row.emails) && Array.isArray(row.phones) && !!row.name && typeof row.name === 'object';
+  const emails = modern ? row.emails as Row[] : legacyValues(row, LEGACY_EMAILS);
+  const phones = modern ? row.phones as Row[] : legacyValues(row, LEGACY_PHONES);
+  const given = optionalText(row.first_name), family = optionalText(row.last_name), company = optionalText(row.company);
+  const name = modern ? row.name : { display: null, given, family, middle: null, prefix: null, suffix: null };
+  const organization = modern && row.organization && typeof row.organization === 'object' ? row.organization : { name: company, department: null };
+  const derived = [given, family].filter(Boolean).join(' ') || company || text(emails[0]?.value) || text(phones[0]?.value);
+  return {
+    ...row,
+    uid: row.uid ?? `urn:uuid:${text(row.id)}`,
+    version: row.version ?? 1,
+    display_name: typeof row.display_name === 'string' && row.display_name ? row.display_name : derived,
+    name, organization,
+    job_title: optionalText(row.job_title), notes: optionalText(row.notes),
+    birthday: row.birthday && typeof row.birthday === 'object' ? row.birthday : null,
+    anniversary: row.anniversary && typeof row.anniversary === 'object' ? row.anniversary : null,
+    is_favorite: truthy(row.is_favorite),
+    emails, phones,
+    addresses: listOf(row.addresses), urls: listOf(row.urls), impp: listOf(row.impp), related: listOf(row.related),
+    nicknames: listOf(row.nicknames), categories: listOf(row.categories),
+    // Photos are never saved offline: the page shows initials.
+    photo: null,
+    kept_properties: typeof row.kept_properties === 'number' ? row.kept_properties : 0,
+  };
+}
+const valuesOf = (row: Row, key: 'emails' | 'phones') => (row[key] as Row[]).map(entry => text(entry?.value).trim()).filter(Boolean);
 function contactSearchText(row: Row) {
-  const name = (row.name || {}) as Record<string, unknown>;
-  const organization = (row.organization || {}) as Record<string, unknown>;
-  const list = (value: unknown) => Array.isArray(value) ? value.map(entry => typeof entry === 'string' ? entry : text((entry as Record<string, unknown>)?.value)) : [];
-  return [row.display_name, row.first_name, row.last_name, name.given, name.family, name.middle, name.prefix, name.suffix,
-    row.company, organization.name, organization.department, row.job_title, ...list(row.nicknames), ...list(row.categories),
-    ...contactValues(row, 'emails'), ...contactValues(row, 'phones')].map(text).filter(Boolean).join(' ').toLowerCase();
+  const name = row.name as Row;
+  const organization = row.organization as Row;
+  const list = (value: unknown) => listOf(value).map(entry => typeof entry === 'string' ? entry : text((entry as Row)?.value));
+  return [row.display_name, name.given, name.family, name.middle, name.prefix, name.suffix, name.display,
+    organization.name, organization.department, row.job_title, ...list(row.nicknames), ...list(row.categories),
+    ...valuesOf(row, 'emails'), ...valuesOf(row, 'phones')].map(text).filter(Boolean).join(' ').toLowerCase();
 }
 export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: string): {data: unknown} | {error: string;status?:number} | null {
   const url = new URL(endpoint,'https://offline.invalid');
@@ -272,20 +304,20 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
   const moduleId = moduleForPath(path);
   if (moduleId && !modules.some(module => module.id === moduleId && module.enabled)) return { error: 'This module was disabled when the offline copy was saved.', status: 403 };
   if (path === '/contacts') {
-    let rows = snapshot.contacts;
+    let rows = snapshot.contacts.map(offlineContact);
     const group = params.get('group');
     if (group === 'name_only' || group === 'number_or_email_only') {
       rows = rows.filter(row => {
-        const name = row.name as Record<string, unknown> | undefined;
-        const hasName = [row.first_name, row.last_name, name?.given, name?.family, name?.middle, name?.display].some(value => text(value).trim());
-        const hasAddress = ['email', 'email2', 'email3', 'phone', 'phone2', 'phone3'].some(key => text(row[key]).trim())
-          || contactValues(row, 'emails').length > 0 || contactValues(row, 'phones').length > 0;
+        const name = row.name as Row;
+        const hasName = [name.given, name.family, name.middle, name.display].some(value => text(value).trim());
+        const hasAddress = valuesOf(row, 'emails').length > 0 || valuesOf(row, 'phones').length > 0;
         return group === 'name_only' ? hasName && !hasAddress : !hasName && hasAddress;
       });
     }
     const query = (params.get('q') || '').toLowerCase();
-    const digits = query.replace(/\D/g, '');
-    if (query) rows = rows.filter(row => contactSearchText(row).includes(query) || (digits.length >= 3 && contactValues(row, 'phones').some(number => number.replace(/\D/g, '').includes(digits))));
+    // As the server: a query of digits and phone punctuation also matches numbers by their digits, without leading zeros.
+    const digits = /^[\d\s+\-()./]+$/.test(query) ? query.replace(/\D/g, '').replace(/^0+/, '') : '';
+    if (query) rows = rows.filter(row => contactSearchText(row).includes(query) || (digits.length >= 3 && valuesOf(row, 'phones').some(number => number.replace(/\D/g, '').includes(digits))));
     const offset=numberParam(params,'offset',0,10000000), limit=numberParam(params,'limit',2000,2000);
     return {data:{contacts:rows.slice(offset,offset+limit),has_more:offset+limit<rows.length,offset}};
   }

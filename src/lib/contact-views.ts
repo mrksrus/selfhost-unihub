@@ -43,7 +43,7 @@ function matches(contact: Contact, query: string) {
   if (!query) return true;
   if (contactSearchText(contact).includes(query)) return true;
   // "0171 12" finds "+49 171 12…": digits against digits.
-  const digits = query.replace(/\D/g, '');
+  const digits = /^[\d\s+\-()./]+$/.test(query) ? query.replace(/\D/g, '').replace(/^0+/, '') : '';
   return digits.length >= 3 && contactPhones(contact).some(number => number.replace(/\D/g, '').includes(digits));
 }
 
