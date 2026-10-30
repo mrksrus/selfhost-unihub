@@ -226,6 +226,12 @@ async function copyLegacyContactValues(connection: PoolConnection) {
         ORDER BY c.id LIMIT ${BATCH}`, [after]);
       if (!rows.length) break;
       after = rows[rows.length - 1].id;
+      // Every copied value keeps the place it had, even one the 0.24.3 to
+      // 0.25.1 apps cannot hold (longer than they keep in UTF-16 units, or a
+      // case or format twin of another): they dropped it from what they hold
+      // and their next whole write cleared it, as 0.25.1 did with the same
+      // fields. Taking the place away would make them delete it themselves,
+      // with its label on the phone (contacts-mysql-integration.test.cts).
       const values = rows.flatMap(row => (['email', 'phone'] as const).flatMap(kind => legacyValues(row, kind)
         .map((value, position) => [crypto.randomUUID(), row.id, row.user_id, kind, position, value, valueKey(kind, value), position + 1])));
       if (values.length) {

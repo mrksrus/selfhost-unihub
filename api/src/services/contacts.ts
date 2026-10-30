@@ -527,37 +527,40 @@ function draftNameKey(draft: Pick<ContactDraft, 'first_name' | 'middle_name' | '
 }
 
 // The old apps' places of written values (P-21). A draft may name its place
-// (a number, or null for none). Otherwise a kept row keeps its place while an
-// old app can still hold its value beside the others, and a new email or
-// phone takes the first free place when it can be held. A place is never
-// moved or refilled from a value already stored, so what an old app was shown
-// stays where it was, and a value it was not shown stays out of its reach.
+// (a number, or null for none). Otherwise a kept row whose value is
+// unchanged keeps its place, whatever else is written; a kept row with a
+// changed value keeps its place while an old app can hold the new value
+// beside the others; a new email or phone takes the first free place when it
+// can be held. A place is never moved or refilled from a value already
+// stored, so what an old app was shown stays where it was, and a value it
+// was not shown stays out of its reach.
 function legacySlots(drafts: readonly ValueDraft[], kept: readonly (ValueRow | undefined)[]) {
   const slots: (number | null)[] = drafts.map(() => null);
   const taken = { email: new Set<number>(), phone: new Set<number>() };
   const keys = { email: new Set<string>(), phone: new Set<string>() };
+  const hold = (index: number, kind: OldAppKind, slot: number) => {
+    taken[kind].add(slot); slots[index] = slot;
+    const key = oldAppKey(kind, kotlinTrim(drafts[index].value));
+    if (key) keys[kind].add(key);
+  };
   drafts.forEach((draft, index) => {
     if (draft.legacy_slot == null) return;
     const slot = draft.legacy_slot;
     if (!isOldAppKind(draft.kind) || !LEGACY_SLOT_NUMBERS.includes(slot as 1) || taken[draft.kind].has(slot)) throw invalid(`${KIND_NAMES[draft.kind]} has an invalid place for older apps`);
-    taken[draft.kind].add(slot);
-    slots[index] = slot;
-    const key = oldAppHoldable(draft.kind, draft.value);
-    if (key) keys[draft.kind].add(key);
+    hold(index, draft.kind, slot);
   });
   const claim = (index: number, kind: OldAppKind, slot: number | undefined) => {
     const key = oldAppHoldable(kind, drafts[index].value);
-    if (!slot || !key || keys[kind].has(key) || taken[kind].has(slot)) return;
-    taken[kind].add(slot); keys[kind].add(key); slots[index] = slot;
+    if (slot && key && !keys[kind].has(key) && !taken[kind].has(slot)) hold(index, kind, slot);
   };
-  const automatic = drafts.map((draft, index) => ({ draft, index, row: kept[index] })).filter(({ draft }) => draft.legacy_slot === undefined && isOldAppKind(draft.kind));
-  for (const { draft, index, row } of automatic.filter(({ row }) => row?.legacy_slot).sort((a, b) => Number(a.row!.legacy_slot) - Number(b.row!.legacy_slot))) {
-    claim(index, draft.kind as OldAppKind, Number(row!.legacy_slot));
+  const automatic = drafts.map((draft, index) => ({ draft, index, kind: draft.kind as OldAppKind, row: kept[index] }))
+    .filter(({ draft }) => draft.legacy_slot === undefined && isOldAppKind(draft.kind));
+  const placed = automatic.filter(({ row }) => row?.legacy_slot).sort((a, b) => Number(a.row!.legacy_slot) - Number(b.row!.legacy_slot));
+  for (const { draft, index, kind, row } of placed) {
+    if (draft.value === row!.value && !taken[kind].has(Number(row!.legacy_slot))) hold(index, kind, Number(row!.legacy_slot));
   }
-  for (const { draft, index } of automatic.filter(({ row }) => !row)) {
-    const kind = draft.kind as OldAppKind;
-    claim(index, kind, LEGACY_SLOT_NUMBERS.find(slot => !taken[kind].has(slot)));
-  }
+  for (const { draft, index, kind, row } of placed) if (draft.value !== row!.value) claim(index, kind, Number(row!.legacy_slot));
+  for (const { index, kind } of automatic.filter(({ row }) => !row)) claim(index, kind, LEGACY_SLOT_NUMBERS.find(slot => !taken[kind].has(slot)));
   return slots;
 }
 
@@ -655,41 +658,45 @@ async function replaceContact(cx: SqlExecutor, userId: string, id: string, draft
 type PlaceWrite = { slot: number; value: string };
 
 // One kind of a flat 3+3 body applied to the rows in the old apps' places
-// (P-21); a row outside them is never matched or changed. A whole body names
-// the kind's values: a stored value it sends back as an old app shows it
-// stays as it is, a changed value takes over a row it no longer names (in
-// place order, keeping that row's label), a further value takes a free place,
-// and a row it no longer names goes. A partial body addresses places: an
-// empty field clears that place and a value is set there. Either one sent
-// again changes nothing more.
-function legacyPlan(kind: OldAppKind, places: readonly (ValueRow | undefined)[], fields: LegacyFields, present: ReadonlySet<string>, whole: boolean) {
-  const removed: ValueRow[] = []; const changed: [ValueRow, string][] = []; const added: PlaceWrite[] = [];
+// (P-21). A whole body names the kind's values: a stored value it sends back
+// as an old app shows it stays as it is; a value already stored outside the
+// places takes a place instead of being added twice; a changed value takes
+// over the one row the body no longer names when that pairing is the only
+// one possible (keeping its label), and is otherwise added with no label in
+// a free place; a placed row the body no longer names goes. A partial body
+// addresses places: an empty field clears that place and a value is set
+// there. Rows outside the places are only ever given a place, never changed
+// or removed. Either body sent again changes nothing more.
+function legacyPlan(kind: OldAppKind, rows: readonly ValueRow[], fields: LegacyFields, present: ReadonlySet<string>, whole: boolean) {
+  const places = legacyPlaces(kind, rows);
+  const loose = rows.filter(row => row.kind === kind && !row.legacy_slot).sort((a, b) => a.position - b.position);
+  const removed: ValueRow[] = []; const changed: [ValueRow, string][] = []; const added: PlaceWrite[] = []; const placedLoose: [ValueRow, number][] = [];
+  const stored = (value: string) => { const index = loose.findIndex(row => sameEcho(row.value, value)); return index < 0 ? undefined : loose.splice(index, 1)[0]; };
   const sent = LEGACY_SLOTS[kind].map((field, index) => ({ slot: index + 1, field, value: fields[field] }));
   if (!whole) {
     for (const { slot, field, value } of sent) {
       if (!present.has(field)) continue;
       const row = places[slot - 1];
-      if (!value) { if (row) removed.push(row); } else if (!row) added.push({ slot, value }); else if (!sameEcho(row.value, value)) changed.push([row, value]);
+      if (!value) { if (row) removed.push(row); continue; }
+      if (row && sameEcho(row.value, value)) continue;
+      const known = stored(value);
+      if (known) { if (row) removed.push(row); placedLoose.push([known, slot]); } else if (row) changed.push([row, value]); else added.push({ slot, value });
     }
-    return { removed, changed, added };
+    return { removed, changed, added, placedLoose };
   }
   const open = places.filter((row): row is ValueRow => !!row);
   const take = (match: (row: ValueRow) => boolean) => { const index = open.findIndex(match); return index < 0 ? undefined : open.splice(index, 1)[0]; };
   const unmatched = sent.flatMap(({ slot, value }): PlaceWrite[] => value ? [{ slot, value }] : [])
     .filter(item => !(take(row => Number(row.legacy_slot) === item.slot && sameEcho(row.value, item.value)) || take(row => sameEcho(row.value, item.value))));
-  const extra: PlaceWrite[] = [];
-  for (const item of unmatched) {
-    const row = open.shift();
-    if (row) changed.push([row, item.value]); else extra.push(item);
-  }
+  const knownItems: [ValueRow, PlaceWrite][] = [];
+  const fresh = unmatched.filter(item => { const known = stored(item.value); if (known) knownItems.push([known, item]); return !known; });
+  if (open.length === 1 && fresh.length === 1) changed.push([open.pop()!, fresh.pop()!.value]);
   removed.push(...open);
   const taken = new Set(places.filter(row => row && !removed.includes(row)).map(row => Number(row!.legacy_slot)));
-  for (const item of extra) {
-    const slot = taken.has(item.slot) ? LEGACY_SLOT_NUMBERS.find(free => !taken.has(free))! : item.slot;
-    taken.add(slot);
-    added.push({ slot, value: item.value });
-  }
-  return { removed, changed, added };
+  const place = (preferred: number) => { const slot = taken.has(preferred) ? LEGACY_SLOT_NUMBERS.find(free => !taken.has(free))! : preferred; taken.add(slot); return slot; };
+  for (const [row, item] of knownItems) placedLoose.push([row, place(item.slot)]);
+  for (const item of fresh) added.push({ slot: place(item.slot), value: item.value });
+  return { removed, changed, added, placedLoose };
 }
 
 interface LegacyUpdate { whole: boolean; present: ReadonlySet<string>; favorite: boolean | null; expectedVersion: number | null }
@@ -697,12 +704,12 @@ interface LegacyUpdate { whole: boolean; present: ReadonlySet<string>; favorite:
 // A flat 3+3 body applied as a diff (P-21). A field the body does not carry
 // (in a body without first_name) stays; a value sent back as the app shows
 // it, or as an old app cuts it, leaves the stored value as it is; emails and
-// phones change only in the old apps' places (legacyPlan).
+// phones change only through the old apps' places (legacyPlan).
 async function applyLegacyUpdate(cx: SqlExecutor, userId: string, id: string, fields: LegacyFields, { whole, present, favorite, expectedVersion }: LegacyUpdate) {
   const row = await lockContact(cx, userId, id);
   if (expectedVersion !== null && Number(row.version) !== expectedVersion) throw await versionConflict(cx, userId, id);
   const [stored] = await cx.execute<ValueRow[]>(`SELECT ${VALUE_COLUMNS} FROM contact_values WHERE user_id = ? AND contact_id = ? AND kind IN ('email', 'phone')
-    AND legacy_slot IS NOT NULL ORDER BY kind, legacy_slot`, [userId, id]);
+    ORDER BY kind, position, id`, [userId, id]);
   const projection = legacyProjection(row, stored);
   const carries = (field: string) => whole || present.has(field);
   const changed = (field: keyof LegacyFields, current: string | null, max: number) => carries(field) && !sameForOldApp(fields[field], current, max);
@@ -715,13 +722,12 @@ async function applyLegacyUpdate(cx: SqlExecutor, userId: string, id: string, fi
   const company = changed('company', projection.company, OLD_APP_TEXT) ? fields.company : row.company;
   const jobTitle = changed('job_title', row.job_title, OLD_APP_TEXT) ? fields.job_title : row.job_title;
   const notes = carries('notes') ? fields.notes : row.notes;
-  const plans = (['email', 'phone'] as const).map(kind => ({ kind, ...legacyPlan(kind, legacyPlaces(kind, stored), fields, present, whole) }));
-  const [counts] = await cx.execute<(RowDataPacket & { kind: OldAppKind; n: number | string; last: number | string | null })[]>(
-    "SELECT kind, COUNT(*) AS n, MAX(position) AS last FROM contact_values WHERE user_id = ? AND contact_id = ? AND kind IN ('email', 'phone') GROUP BY kind", [userId, id]);
+  const plans = (['email', 'phone'] as const).map(kind => ({ kind, ...legacyPlan(kind, stored, fields, present, whole) }));
+  const ofKind = (kind: OldAppKind) => stored.filter(value => value.kind === kind);
   for (const { kind, removed, added } of plans) {
     // An addition beside values the app cannot see may not pass the limit a
     // full write and a restore hold to; nothing is dropped to make room.
-    if (Number(counts.find(count => count.kind === kind)?.n ?? 0) - removed.length + added.length > VALUES_PER_KIND) {
+    if (ofKind(kind).length - removed.length + added.length > VALUES_PER_KIND) {
       throw badRequest('TOO_MANY_VALUES', `This contact already has ${VALUES_PER_KIND} ${kind === 'email' ? 'email addresses' : 'phone numbers'}; remove one in UniHub before adding another`);
     }
   }
@@ -731,14 +737,15 @@ async function applyLegacyUpdate(cx: SqlExecutor, userId: string, id: string, fi
     draftNameKey({ ...names, middle_name: row.middle_name }), id, userId]);
   const removed = plans.flatMap(plan => plan.removed.map(value => value.id));
   if (removed.length) await cx.execute(`DELETE FROM contact_values WHERE user_id = ? AND contact_id = ? AND id IN (${placeholders(removed)})`, [userId, id, ...removed]);
-  for (const { kind, changed: edits } of plans) {
+  for (const { kind, changed: edits, placedLoose } of plans) {
     for (const [value, text] of edits) {
       await cx.execute('UPDATE contact_values SET value = ?, value_key = ? WHERE id = ? AND user_id = ? AND contact_id = ?', [text, valueKey(kind, text), value.id, userId, id]);
     }
+    for (const [value, slot] of placedLoose) await cx.execute('UPDATE contact_values SET legacy_slot = ? WHERE id = ? AND user_id = ? AND contact_id = ?', [slot, value.id, userId, id]);
   }
   const rows = plans.flatMap(({ kind, added }) => {
-    const last = counts.find(count => count.kind === kind)?.last;
-    return added.map(({ slot, value }, index) => [crypto.randomUUID(), id, userId, kind, (last == null ? -1 : Number(last)) + 1 + index, '', value, valueKey(kind, value), slot]);
+    const last = Math.max(-1, ...ofKind(kind).map(value => Number(value.position)));
+    return added.map(({ slot, value }, index) => [crypto.randomUUID(), id, userId, kind, last + 1 + index, '', value, valueKey(kind, value), slot]);
   });
   await insertRows(cx, 'contact_values (id, contact_id, user_id, kind, position, label, value, value_key, legacy_slot)', rows);
 }
