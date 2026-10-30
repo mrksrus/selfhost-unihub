@@ -169,7 +169,7 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       const [[legacyEvent]] = await connection.execute<RowDataPacket[]>('SELECT * FROM calendar_events WHERE id = ?', [legacyEventId]);
       serverWrites.length = 0;
       await assert.rejects(calendarSync.pushEventDelete({ userId, event: legacyEvent as FixtureValue, scope: 'occurrence' }), { code: 'CALENDAR_SYNC_PENDING', status: 409 });
-      await assert.rejects(calendarSync.pushEventMove({ userId, event: legacyEvent as FixtureValue, targetCalendarId: crypto.randomUUID(), changes: {} }), { code: 'CALENDAR_SYNC_PENDING' });
+      // Its move is refused the same way (calendar-move-mysql-integration.test.cts).
       await assert.rejects(calendarSync.pushEventUpdate({ userId, event: legacyEvent as FixtureValue, changes: { title: 'Renamed' }, scope: 'occurrence' }), { code: 'CALENDAR_SYNC_PENDING' });
       assert.deepEqual(serverWrites, []);
       // A linked event is still deleted on the server.

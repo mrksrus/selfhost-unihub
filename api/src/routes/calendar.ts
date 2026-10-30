@@ -52,7 +52,7 @@ type CalendarRecordRow = RowDataPacket & CalendarCalendar;
 type EventRow = RowDataPacket & CalendarEvent;
 type SubtaskRow = RowDataPacket & CalendarSubtask;
 type CountRow = RowDataPacket & { count: number };
-type PushResult = Record<string, unknown> & { error?: string; status?: number; scope?: string };
+type PushResult = Record<string, unknown> & { error?: string; status?: number; scope?: string; pending?: 'creating' | 'removing'; sourceKept?: boolean };
 
 const {
   CALENDAR_PROVIDER_DEFAULT_CAPABILITIES,
@@ -83,6 +83,7 @@ const {
 } = require('../services/calendar') as typeof import('../services/calendar');
 const taskOrder = require('../services/task-order') as typeof import('../services/task-order');
 const calendarSync = require('../services/calendar-sync') as typeof import('../services/calendar-sync');
+const calendarMove = require('../services/calendar-move') as typeof import('../services/calendar-move');
 const calendarAccounts = require('../services/calendar-accounts') as typeof import('../services/calendar-accounts');
 
 const has = (body: Record<string, unknown>, key: string) => Object.prototype.hasOwnProperty.call(body, key);
@@ -110,12 +111,14 @@ async function pushEventChanges(userId: string, event: CalendarEvent, body: Inpu
   try {
     const moving = has(body, 'calendar_id') && body.calendar_id && body.calendar_id !== event.calendar_id;
     if (moving) {
-      const target = await loadCalendarAccountRow(userId, body.calendar_id!);
-      if (target && isRemoteProvider(target.provider) && (body.is_todo_only ?? event.is_todo_only)) {
-        return { error: 'ToDos without a date cannot be saved to a server calendar.', status: 400 };
-      }
-      return (await calendarSync.pushEventMove({ userId, event, targetCalendarId: body.calendar_id!, changes })) || {};
+      // The same move as POST …/move (services/calendar-move.ts); the new
+      // copy carries the fields changed with it.
+      if (has(body, 'is_todo_only')) changes.is_todo_only = !!body.is_todo_only;
+      if (has(body, 'recurrence')) changes.recurrence = body.recurrence || null;
+      return { ...await calendarMove.moveEvent(userId, event.id, body.calendar_id!, { changes }) };
     }
+    // While its new copy is being created, an edit would be lost with the old one.
+    if (Object.keys(changes).length || body.is_todo_only === true) await calendarMove.assertNotMoving(userId, event.id);
     if (body.is_todo_only === true && event.calendar_id_remote) {
       return { error: 'ToDos without a date cannot be saved to a server calendar.', status: 400 };
     }
@@ -773,10 +776,9 @@ export = {
           }
           updates.push('calendar_id = NULL');
         } else {
+          // Another calendar: moved by pushEventChanges below, not here.
           const [calRows] = await db.execute<CalendarRecordRow[]>('SELECT id FROM calendar_calendars WHERE id = ? AND user_id = ?', [body.calendar_id, userId]);
           if (calRows.length === 0) return { error: 'Invalid calendar_id', status: 400 };
-          updates.push('calendar_id = ?');
-          params.push(body.calendar_id);
         }
       }
       // The link to the email the task came from: null removes it (and the
@@ -820,7 +822,10 @@ export = {
         await taskOrder.clearRank(db, userId, id, orderIdentity);
         if (updatedEvent) updatedEvent = await getCalendarEventWithSubtasks(userId, id);
       }
-      return { event: updatedEvent, ...(updatedEvent ? {} : { replaced: true }), ...(writeback.scope ? { scope: writeback.scope } : {}) };
+      // A move a calendar server has not confirmed yet finishes in the background.
+      const moved = writeback.pending ? { pending: writeback.pending, status: 202 } : {};
+      return { event: updatedEvent, ...(updatedEvent ? {} : { replaced: true }), ...(writeback.scope ? { scope: writeback.scope } : {}),
+        ...(writeback.sourceKept ? { source_kept: true } : {}), ...moved };
     } catch (error) {
       console.error('Update event error:', error);
       return clientError(error, 'Failed to update event');
@@ -1139,6 +1144,7 @@ export = {
       if (!events.length) return { message: 'Event deleted' };
       const scope = new URL(req.url, 'http://localhost').searchParams.get('scope');
       try {
+        await calendarMove.assertNotMoving(userId, id);
         await calendarSync.pushEventDelete({ userId, event: events[0], scope: scope === 'series' ? 'series' : 'occurrence' });
       } catch (error) {
         return calendarSync.calendarErrorResponse(error, 'Could not delete the event on the calendar server');

@@ -625,18 +625,23 @@ async function createTaskOrderAndMoves(connection: SqlExecutor) {
     FOREIGN KEY (calendar_id) REFERENCES calendar_calendars(id) ON DELETE CASCADE,
     FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE CASCADE
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-  // One open move per task. Removing either calendar (or its account) or the
-  // task ends the move; so does removing the source's server copy.
+  // The move journal (services/calendar-move.ts): one open move per task.
+  // Removing the source calendar (or its account) ends the move; so does
+  // removing the source's server copy. A move still removing the old copy
+  // outlives its task and its new calendar (event_id, target_calendar_id
+  // become NULL), so the old copy never comes back. target_ics is the object
+  // every attempt sends, under the UID fixed before the first.
   await connection.execute(`CREATE TABLE IF NOT EXISTS calendar_event_moves (
     id CHAR(36) NOT NULL PRIMARY KEY,
     user_id CHAR(36) NOT NULL,
-    event_id CHAR(36) NOT NULL,
+    event_id CHAR(36) NULL,
     source_calendar_id CHAR(36) NULL,
     source_object_id CHAR(36) NULL,
-    target_calendar_id CHAR(36) NOT NULL,
+    target_calendar_id CHAR(36) NULL,
     target_uid VARCHAR(255) NOT NULL,
     target_href TEXT NULL,
     target_etag VARCHAR(255) NULL,
+    target_ics MEDIUMTEXT NULL,
     state ENUM('creating', 'removing') NOT NULL,
     attempts INT NOT NULL DEFAULT 0,
     last_error VARCHAR(255) NULL,
@@ -647,10 +652,10 @@ async function createTaskOrderAndMoves(connection: SqlExecutor) {
     KEY idx_event_moves_due (state, next_attempt_at),
     KEY idx_event_moves_user (user_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE CASCADE,
+    FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE SET NULL,
     FOREIGN KEY (source_calendar_id) REFERENCES calendar_calendars(id) ON DELETE CASCADE,
     FOREIGN KEY (source_object_id) REFERENCES calendar_remote_objects(id) ON DELETE CASCADE,
-    FOREIGN KEY (target_calendar_id) REFERENCES calendar_calendars(id) ON DELETE CASCADE
+    FOREIGN KEY (target_calendar_id) REFERENCES calendar_calendars(id) ON DELETE SET NULL
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 }
 

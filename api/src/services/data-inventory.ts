@@ -102,8 +102,8 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 22])) })])),
   // Upgrade step 24 (0.27.0).
   calendar_event_moves: Object.freeze({ ...excluded('deliberately_excluded', 'A move in progress writes to calendar servers; a restore must not replay provider writes. The task comes back as archived, in whichever calendar held it.',
-    'id user_id event_id source_calendar_id source_object_id target_calendar_id target_uid target_href target_etag state attempts last_error next_attempt_at created_at updated_at'),
-  introducedIn: Object.freeze(Object.fromEntries('id user_id event_id source_calendar_id source_object_id target_calendar_id target_uid target_href target_etag state attempts last_error next_attempt_at created_at updated_at'.split(' ').map(column => [column, 24]))) }),
+    'id user_id event_id source_calendar_id source_object_id target_calendar_id target_uid target_href target_etag target_ics state attempts last_error next_attempt_at created_at updated_at'),
+  introducedIn: Object.freeze(Object.fromEntries('id user_id event_id source_calendar_id source_object_id target_calendar_id target_uid target_href target_etag target_ics state attempts last_error next_attempt_at created_at updated_at'.split(' ').map(column => [column, 24]))) }),
 });
 
 // From upgrade step 20 on, a new table states who owns a row, whether it can

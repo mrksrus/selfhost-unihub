@@ -76,6 +76,9 @@ const ACCOUNTS_PER_PASS = 20;
 const REMOTE_PROVIDERS = new Set(['caldav', 'ics']);
 const CALENDAR_COLORS = ['#22c55e', '#3b82f6', '#f97316', '#a855f7', '#ef4444', '#14b8a6', '#eab308', '#ec4899'];
 
+// The move journal (calendar-move.ts), which uses this module's writes.
+const moves = () => require('./calendar-move') as typeof import('./calendar-move');
+
 const inFlight = new Map<string, Promise<Awaited<ReturnType<typeof runAccountSync>>>>();
 const followUps = new Set<string>();
 let passRunning = false;
@@ -379,7 +382,8 @@ async function applyObject(ctx: Context, calendar: Calendar, object: ObjectRecor
     ctx.stats.unreadable += 1;
     return [];
   }
-  return inTransaction(ctx, connection => applyObjectRows(connection, ctx, calendar, object, expanded));
+  // The old copy of a moved event is never applied again (calendar-move.ts).
+  return inTransaction(ctx, async connection => await moves().lockMovedAway(connection, object.id) ? [] : applyObjectRows(connection, ctx, calendar, object, expanded));
 }
 
 // A stopped sync commits nothing more: the stop is checked again before the
@@ -502,6 +506,24 @@ async function storeObject(connection: SqlExecutor, account: Account, calendar: 
   return rows[0];
 }
 
+// Links an existing event row to a moved event's new server copy and brings
+// its fields to the copy's: the row keeps its id, and with it its ToDo
+// state, subtasks and source email. The copy is a single event; outside the
+// sync window the row is left as it is.
+async function linkMovedObject(connection: SqlExecutor, account: Account, calendar: Calendar, object: ObjectRecord, eventId: string, timeZone: string) {
+  await connection.execute(
+    `INSERT INTO calendar_event_external_refs
+      (id, user_id, event_id, calendar_id, account_id, provider, external_event_id, external_etag, remote_object_id, recurrence_id, last_synced_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, UTC_TIMESTAMP())`,
+    [crypto.randomUUID(), account.user_id, eventId, calendar.id, account.id, account.provider, externalEventId(object.id, ''), object.etag || null, object.id]
+  );
+  const ctx = rebuildContext({ account, timeZone });
+  const expanded = expandObject(ctx, object.ics);
+  if (expanded?.occurrences.length === 1 && !expanded.occurrences[0].recurrenceId) {
+    await applyObjectRows(connection as PoolConnection, ctx, calendar, object, expanded);
+  }
+}
+
 // Bring one calendar up to date from a listing of { href, url, etag }.
 // fetchObjects downloads the listed objects whose ETag changed. Returns the
 // number of objects that could not be read; their last readable copy and its
@@ -515,6 +537,10 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
   const unreadableBefore = ctx.stats.unreadable;
   const [stored] = await db.execute<RowDataPacket[]>('SELECT id, href, href_hash, etag FROM calendar_remote_objects WHERE calendar_id = ?', [calendar.id]);
   const storedByHash = new Map(stored.map(row => [row.href_hash, row]));
+  // Old copies of moved events that are still to be removed: never applied
+  // (or downloaded) again, so a failed removal shows no second event. The
+  // move retries the removal (calendar-move.ts).
+  const movedAway = await moves().movedAwayObjects(db, calendar.id);
   const listed = new Set();
   const changed = [];
   for (const item of listing) {
@@ -522,6 +548,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
     if (listed.has(hash)) continue;
     listed.add(hash);
     const known = storedByHash.get(hash);
+    if (known && movedAway.has(String(known.id))) continue;
     if (!known || !item.etag || known.etag !== item.etag) changed.push(item);
   }
   const vanished = stored.filter(row => !listed.has(row.href_hash));
@@ -535,6 +562,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
     for (const object of present) {
       const row = vanished.find(item => item.href_hash === hrefHash(object.href));
       if (!row) continue;
+      if (movedAway.has(String(row.id))) { listed.add(row.href_hash); continue; }
       // Still on the server: outside the window its local copy goes as
       // before; inside it (or unreadable) the listing missed it, so it stays.
       const expanded = expandObject(ctx, object.ics);
@@ -565,10 +593,19 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       continue;
     }
     ctx.signal?.throwIfAborted();
-    const { object, created } = await inTransaction(ctx, async connection => {
+    // A new object may be the copy an interrupted move created: it is linked
+    // to the moved event instead of becoming a second one. The journal is
+    // locked first, so a move committing at the same time is waited for.
+    const uid = known ? null : ical.objectUid(item.ics);
+    const result = await inTransaction(ctx, async connection => {
+      if (known && await moves().lockMovedAway(connection, String(known.id))) return null;
+      const move = uid ? await moves().lockCreatingMove(connection, calendar.id, uid) : null;
       const object = await storeObject(connection, ctx.account, calendar, { id: known?.id, href: item.href, etag: item.etag, ics: item.ics });
+      if (move && await moves().commitMove(connection, move, { account: ctx.account, calendar, object, timeZone: ctx.timeZone })) return { object, created: [] };
       return { object, created: await applyObjectRows(connection, ctx, calendar, object, expanded) };
     });
+    if (!result) continue;
+    const { object, created } = result;
     applied.add(object.id);
     ctx.stats.changedObjects += 1;
     if (ctx.notify && !known) {
@@ -579,7 +616,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
   if (expandAll) {
     // Recurring series move forward with the window once a day; legacy rows
     // without a server object link are replaced at the same time.
-    const remaining = stored.filter(row => listed.has(row.href_hash) && !applied.has(row.id)).map(row => row.id);
+    const remaining = stored.filter(row => listed.has(row.href_hash) && !applied.has(row.id) && !movedAway.has(String(row.id))).map(row => row.id);
     for (let index = 0; index < remaining.length; index += 100) {
       const chunk = remaining.slice(index, index + 100);
       const [objects] = await db.execute<ObjectRecord[]>(`SELECT id, href, etag, ics FROM calendar_remote_objects WHERE id IN (${chunk.map(() => '?').join(', ')})`, chunk);
@@ -875,6 +912,10 @@ async function runCalendarSyncPass() {
   const pass = passes.signal;
   let synced = 0;
   try {
+    // Moves waiting for a calendar server first: an old copy removed now is
+    // not listed by the syncs below.
+    await moves().resumeDueMoves(pass)
+      .catch((error: Error) => console.warn('[CALENDAR] Resuming moves failed:', error.message));
     const [rows] = await db.execute<RowDataPacket[]>(
       `SELECT id, user_id FROM calendar_accounts
        WHERE provider IN ('caldav', 'ics') AND is_active = TRUE AND (next_sync_at IS NULL OR next_sync_at <= UTC_TIMESTAMP())
@@ -927,7 +968,7 @@ async function withWriteContext<T>(base: BaseContext, write: (ctx: WriteContext)
   } finally { work.release(); }
 }
 
-function rebuildContext(ctx: WriteContext): Context {
+function rebuildContext(ctx: Pick<WriteContext, 'account' | 'timeZone'>): Context {
   const now = Date.now();
   return {
     account: ctx.account, timeZone: ctx.timeZone, notify: false, newEvents: [],
@@ -1085,63 +1126,6 @@ async function pushEventDelete({ userId, event, scope }: EventInput & { scope?: 
   });
 }
 
-// Moving a single event to another calendar: create it in the target first,
-// then remove it from the source, so a failure never loses the event.
-async function pushEventMove({ userId, event, targetCalendarId, changes }: EventInput & { targetCalendarId: string | null; changes: Partial<CalendarEvent> }) {
-  const source = await describeEventWrite(userId, event);
-  const target = await loadCalendarContext(userId, targetCalendarId);
-  if (!source.remote && !target) return null;
-  if (source.recurring) throw syncError('Recurring events cannot be moved to another calendar.', 400, 'CALENDAR_RECURRING_MOVE');
-  if (source.remote && source.link) assertWritable(source.ctx);
-  else if (source.remote) await assertNotPendingLink(source.ctx, userId, event.id);
-  // The source login is needed to remove the old object; check it before the
-  // target is created, so a refusal cannot leave a copy on both sides.
-  if (source.remote && source.link) await resolveLogin(source.ctx.account);
-  if (target) {
-    // Create the copy before unlinking the old one so a failure leaves it as it was.
-    const moved = { ...event, ...changes, calendar_id: targetCalendarId };
-    const sourceLink = source.link;
-    if (sourceLink) await db.execute('DELETE FROM calendar_event_external_refs WHERE event_id = ? AND user_id = ?', [event.id, userId]);
-    try {
-      await pushCreatedEvent({ userId, event: moved, calendarId: targetCalendarId });
-    } catch (error) {
-      if (sourceLink) {
-        await db.execute(
-          `INSERT INTO calendar_event_external_refs
-            (id, user_id, event_id, calendar_id, account_id, provider, external_event_id, external_etag, remote_object_id, recurrence_id, last_synced_at)
-           VALUES (?, ?, ?, ?, ?, 'caldav', ?, ?, ?, NULL, UTC_TIMESTAMP())`,
-          [crypto.randomUUID(), userId, event.id, source.ctx!.calendar.id, source.ctx!.account.id, externalEventId(sourceLink.object.id, ''), sourceLink.object.etag, sourceLink.object.id]
-        ).catch(() => {});
-      }
-      throw error;
-    }
-    if (sourceLink) await removeSourceObject(userId, source, sourceLink);
-    return { moved: true };
-  }
-  if (source.link) {
-    await db.execute('DELETE FROM calendar_event_external_refs WHERE event_id = ? AND user_id = ?', [event.id, userId]);
-    await removeSourceObject(userId, source, source.link);
-  }
-  return { moved: true };
-}
-
-async function removeSourceObject(userId: string, source: WriteDescription & { remote: true }, link: NonNullable<Awaited<ReturnType<typeof loadEventLink>>>) {
-  const accountId = source.ctx.account.id;
-  try {
-    // Inside the try: a mail disconnect during the move refuses the source
-    // login, and the move still completes with the target copy.
-    await withWriteContext(source.ctx, async ctx => {
-      await caldav.deleteCalendarObject({ url: objectUrl(ctx.account, link.object), etag: link.object.etag, ...ctx.login });
-      await db.execute('DELETE FROM calendar_remote_objects WHERE id = ? AND account_id = ?', [link.object.id, accountId]);
-    });
-  } catch (error) {
-    // The copy in the target calendar exists; the next sync shows the old one again.
-    console.warn('[CALENDAR] Could not remove moved event from its old calendar:', (error as Error).message);
-    syncCalendarAccountInBackground(accountId, { userId, reason: 'conflict' });
-  }
-  publishCalendarChanged(userId, accountId, 'local');
-}
-
 // Route response for a failed sync or writeback. Raw server statuses must not
 // reach the browser as-is: a 401 there would look like an expired session.
 function calendarErrorResponse(error: unknown, fallback: string) {
@@ -1176,5 +1160,17 @@ export {
   pushCreatedEvent,
   pushEventUpdate,
   pushEventDelete,
-  pushEventMove,
+  // For the move service (calendar-move.ts).
+  loadCalendarContext,
+  loadEventLink,
+  assertWritable,
+  withWriteContext,
+  resolveTimeZone,
+  storeObject,
+  linkMovedObject,
+  calendarUrl,
+  objectUrl,
+  eventFields,
+  isRecurringIcs,
 };
+export type { Account as SyncAccount, Calendar as SyncCalendar, ObjectRecord as SyncObject, BaseContext as SyncTarget };
