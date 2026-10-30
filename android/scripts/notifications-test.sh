@@ -221,18 +221,34 @@ where() { # the centre of the first element showing this text (any case), or not
 
 tap_text() { adb shell input tap $(where "$1"); }
 
-# Taps the action nearest below a notification's text: the shade can hold
-# Android's own actions of the same name (Android 16's notification cooldown
-# offers "Turn off" on a new phone).
-tap_action_below() { # notification text, action text
-  local nodes point
-  for _ in $(seq 1 20); do
-    nodes="$(screen | grep -o '<node [^>]*>' | sed -n 's/.* text="\([^"]*\)".* bounds="\[\([0-9]*\),\([0-9]*\)\]\[\([0-9]*\),\([0-9]*\)\]".*/\2 \3 \4 \5 \1/p')"
-    point="$(awk -v note="$1" -v action="$2" '
+# The centre of the action nearest below a notification's text, or nothing:
+# the shade can hold Android's own actions of the same name (Android 16's
+# notification cooldown offers "Turn off" on a new phone).
+action_below() { # notification text, action text
+  screen | grep -o '<node [^>]*>' \
+    | sed -n 's/.* text="\([^"]*\)".* bounds="\[\([0-9]*\),\([0-9]*\)\]\[\([0-9]*\),\([0-9]*\)\]".*/\2 \3 \4 \5 \1/p' \
+    | awk -v note="$1" -v action="$2" '
       { text = $0; sub(/^[0-9]+ [0-9]+ [0-9]+ [0-9]+ /, "", text) }
       tolower(text) == tolower(note) && top == "" { top = $2 }
       tolower(text) == tolower(action) { x[++n] = int(($1 + $3) / 2); y[n] = int(($2 + $4) / 2) }
-      END { if (top == "") exit; for (i = 1; i <= n; i++) if (y[i] > top && (best == "" || y[i] < y[best])) best = i; if (best != "") print x[best], y[best] }' <<<"$nodes")"
+      END { if (top == "") exit; for (i = 1; i <= n; i++) if (y[i] > top && (best == "" || y[i] < y[best])) best = i; if (best != "") print x[best], y[best] }'
+}
+
+# A silent notification may show its actions only when expanded (Android 10,
+# and Android 16 under another notification): pull it down, unless its action
+# is already in view.
+expand_notification() { # notification text, action text
+  local x y
+  [[ -n "$(action_below "$1" "$2")" ]] && return 0
+  read -r x y <<<"$(where "$1")"
+  adb shell input swipe "$x" "$y" "$x" $((y + 250)) 300
+  sleep 1
+}
+
+tap_action_below() { # notification text, action text
+  local point=
+  for _ in $(seq 1 20); do
+    point="$(action_below "$1" "$2")"
     [[ -n "$point" ]] && break
     sleep 1
   done
@@ -240,15 +256,6 @@ tap_action_below() { # notification text, action text
   adb shell input tap $point
 }
 
-# A silent notification may show its actions only when expanded (Android 10):
-# pull it down, unless the action is already in view.
-expand_notification() { # notification text, action text
-  local x y
-  screen | grep -i -o "text=\"$2\"" >/dev/null && return 0
-  read -r x y <<<"$(where "$1")"
-  adb shell input swipe "$x" "$y" "$x" $((y + 250)) 300
-  sleep 1
-}
 
 # Awake and past any lock screen (Android 10 keeps a swipe one after a PIN is removed).
 locked_screen() { adb shell dumpsys window 2>/dev/null | tr -d '\r' | contains 'isKeyguardShowing=true' || adb shell dumpsys window 2>/dev/null | tr -d '\r' | contains 'mDreamingLockscreen=true'; }
