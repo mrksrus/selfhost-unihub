@@ -94,8 +94,9 @@ test('contact photos: upload, formats, refusals, ETag, replace, delete, owner sc
 
   // ── PNG, WebP and HEIC uploads; the declared type plays no part ──
   const png = await sharp({ create: { width: 300, height: 300, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toBuffer();
-  const pngContact = (await upload(owner, bea.id, png, 'application/octet-stream')).body.contact;
+  const pngContact = (await call(owner, 'PUT', `/api/contacts/${bea.id}/photo?source=android`, png, 200, { 'content-type': 'application/octet-stream' })).body.contact;
   assert.deepEqual([pngContact.photo.width, pngContact.photo.height], [300, 300]);
+  assert.equal((await stored(bea.id)).source, 'android', 'the Android sync names itself as the source');
   const webp = await sharp({ create: { width: 700, height: 500, channels: 3, background: '#40a040' } }).webp().toBuffer();
   const webpContact = (await upload(owner, bea.id, webp, 'image/jpeg')).body.contact;
   assert.deepEqual([webpContact.photo.width, webpContact.version], [500, pngContact.version + 1]);

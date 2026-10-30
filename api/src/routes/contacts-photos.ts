@@ -48,7 +48,9 @@ export = defineRoutes({
 
   'PUT /api/contacts/:id/photo': { ...writeRoute, body: { kind: 'upload', limit: CONTACT_PHOTO_MAX_BYTES }, handler: async (req: Request, userId: string, body: unknown) => {
     try {
-      await setContactPhoto(userId, req.params.id, { path: (body as UploadBody).path }, 'upload');
+      // The Android app's sync says ?source=android; anything else is an upload.
+      const source = new URL(req.url, 'http://unihub.invalid').searchParams.get('source') === 'android' ? 'android' : 'upload';
+      await setContactPhoto(userId, req.params.id, { path: (body as UploadBody).path }, source);
       const answer: ContactResponse = { contact: await getContact(userId, req.params.id) };
       return { ...answer };
     } catch (error) { return failed(error, 'Failed to save contact photo'); }

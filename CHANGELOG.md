@@ -63,6 +63,18 @@ upgrades; back up first, and install the new Android app (see
 - **Edits are not lost to a change made elsewhere.** If a contact was changed
   on another device while you edited it, Save says so and keeps your edits:
   load the other version, or save yours anyway.
+- **The Android app syncs every contact field.** With a 0.26.0 server the
+  phone and UniHub share the whole name, every number, email, postal address,
+  web and messaging address, relation and nickname with their labels, the
+  organisation, department and job title, birthday, anniversary, favourite
+  and photo. Contacts merged in UniHub (also "Merge all") leave the phone
+  without asking about "too many deletions", and an edit made in UniHub while
+  the phone syncs is no longer overwritten. Updating the app keeps the synced
+  contacts: what only the phone had (a fourth number, addresses, birthdays,
+  labels, the photo) goes to UniHub, and nothing is added twice. Notes stay
+  in UniHub. Photos move at most 200 per sync and not on a metered network.
+  With an older server the app keeps syncing names, three numbers and three
+  emails as before ([Android](docs/ANDROID.md#contacts-on-the-phone)).
 
 ### Changed
 
