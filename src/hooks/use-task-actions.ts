@@ -110,8 +110,9 @@ export function useTaskActions() {
     mutationFn: ({ id, calendarId }: { id: string; calendarId: string; list?: CalendarCalendar }) => calendarApi.moveTask(id, calendarId),
     onSuccess: (result: TaskMove, { list }) => {
       refresh();
-      if (result.pending) toast({ title: 'Moving…', description: 'The calendar server has not confirmed yet. UniHub finishes this in the background.' });
-      else toast({ title: list ? `Task moved to ${list.name}` : 'Task moved' });
+      if (result.pending === 'creating') toast({ title: 'Moving…', description: 'The calendar server has not confirmed yet. UniHub finishes this in the background.' });
+      else toast({ title: list ? `Task moved to ${list.name}` : 'Task moved',
+        ...(result.sourceKept ? { description: 'Its old copy was changed in another app meanwhile, so it stays in the old calendar too.' } : {}) });
     },
     onError: failed('Could not move the task'),
   });

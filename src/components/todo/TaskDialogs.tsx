@@ -284,7 +284,8 @@ export function MoveListDialog({ task, onClose, actions, calendars }: {
     event.preventDefault();
     if (!task || !target || refusal || target.id === task.calendar_id) return;
     actions.moveToList.mutate({ id: task.id, calendarId: target.id, list: target }, {
-      onSuccess: result => { if (result.pending) setPending(result.pending); else onClose(); },
+      // Only a copy not yet confirmed keeps the dialog open: with 'removing' the task is in its new list.
+      onSuccess: result => { if (result.pending === 'creating') setPending(result.pending); else onClose(); },
     });
   };
   return (

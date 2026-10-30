@@ -257,6 +257,17 @@ describe('the list chooser', () => {
     // The footer's Close, not the dialog's corner X (also named Close).
     fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' }).find(button => !button.querySelector('svg'))!);
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    // Only the old copy still to remove: the task is in its new list, so the
+    // dialog closes as moved; an old copy changed elsewhere is mentioned.
+    vi.mocked(api.post).mockResolvedValueOnce({ data: { event: null, pending: 'removing', source_kept: true } });
+    fireEvent.click(within(await openMenu('Pay rent')).getByRole('menuitem', { name: 'Move to another list' }));
+    const again = await screen.findByRole('dialog', { name: 'Move to another list' });
+    fireEvent.click(within(again).getByRole('combobox', { name: 'New list' }));
+    fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /Archive/ }));
+    fireEvent.click(within(again).getByRole('button', { name: 'Move' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Task moved to Archive', description: expect.stringMatching(/stays in the old calendar too/) }));
   });
 });
 

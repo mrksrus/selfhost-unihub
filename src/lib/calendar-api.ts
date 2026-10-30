@@ -7,7 +7,7 @@ import type { CalendarChoiceFields, CalendarWriteBlock, TaskMoveRequest, TaskMov
 export type { CalendarWriteBlock, TaskPositionRequest, TaskPositionResponse } from '../../api/src/contracts/tasks';
 
 /** The answer of a move (contracts/tasks.ts TaskMoveResponse) with the event normalized for the browser. */
-export interface TaskMove { event: CalendarEvent | null; pending?: TaskMoveResponse['pending'] }
+export interface TaskMove { event: CalendarEvent | null; pending?: TaskMoveResponse['pending']; sourceKept?: boolean }
 
 export type TodoStatus = 'done' | 'changed' | 'time_moved' | 'cancelled' | null;
 
@@ -395,7 +395,9 @@ export const calendarApi = {
   /**
    * Moves a task (or event) to another list or calendar. `pending` means a
    * calendar server has not confirmed yet and UniHub finishes the move in the
-   * background; the task shows in its new list once it has.
+   * background: 'creating', the task shows in its new list once it has;
+   * 'removing', it is there already and only the old copy waits. `sourceKept`:
+   * the old copy was changed elsewhere and stays in its old calendar too.
    */
   async moveTask(id: string, calendarId: string): Promise<TaskMove> {
     const body: TaskMoveRequest = { calendar_id: calendarId };
@@ -404,7 +406,7 @@ export const calendarApi = {
     const event = response.data?.event ?? null;
     const pending = response.data?.pending;
     if (!event && !pending) throw new Error('Event response missing');
-    return { event: event ? normalizeEvent(event) : null, ...(pending ? { pending } : {}) };
+    return { event: event ? normalizeEvent(event) : null, ...(pending ? { pending } : {}), ...(response.data?.source_kept ? { sourceKept: true } : {}) };
   },
 
   async deleteCalendar(id: string): Promise<void> {
