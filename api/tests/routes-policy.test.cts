@@ -135,9 +135,14 @@ test('CSRF: sign-in and sign-up need no token, exactly the service-worker routes
 // deleting UniHub's copy of its mail are separate policies of one route.
 test('destructive actions name their policies: removing a mail account, and purging its mail only when asked', () => {
   const destructive = Object.keys(routes).filter(key => routes[key].destructive).sort();
-  assert.deepEqual(destructive, ['DELETE /api/contacts/:id', 'DELETE /api/mail/accounts/:id', 'POST /api/contacts/bulk-delete']);
-  // Deleting contacts for good; 0.28 turns a delete into a bin move.
-  for (const key of ['DELETE /api/contacts/:id', 'POST /api/contacts/bulk-delete']) assert.deepEqual(destructivePolicies(routes[key], new URLSearchParams()), ['contacts.delete'], key);
+  assert.deepEqual(destructive, ['DELETE /api/contacts/:id', 'DELETE /api/mail/accounts/:id', 'POST /api/contacts/bulk-delete', 'POST /api/contacts/merges',
+    'POST /api/contacts/merges/auto']);
+  // Deleting contacts for good; 0.28 turns a delete into a bin move. A merge
+  // puts the merged-away contacts in the bin, from which they go for good
+  // after 30 days; its undo and "Not the same person" remove nothing.
+  for (const key of ['DELETE /api/contacts/:id', 'POST /api/contacts/bulk-delete', 'POST /api/contacts/merges', 'POST /api/contacts/merges/auto']) {
+    assert.deepEqual(destructivePolicies(routes[key], new URLSearchParams()), ['contacts.delete'], key);
+  }
   const remove = routes['DELETE /api/mail/accounts/:id'];
   assert.deepEqual(destructivePolicies(remove, new URLSearchParams()), ['accounts.mail.remove'], 'disconnect');
   assert.deepEqual(destructivePolicies(remove, new URLSearchParams('purge=true&confirm_purge=x')), ['accounts.mail.remove', 'accounts.mail.purge'], 'purge a disconnected account');

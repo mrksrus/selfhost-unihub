@@ -216,6 +216,7 @@ test('contacts API: vCard model, input contract, 3+3 compatibility, versions, ow
     assert.equal((await owner.request(method, path, { vcf_data: 'BEGIN:VCARD\r\nEND:VCARD' })).status, 404, `${method} ${path}`);
   }
   // Their replacements (preview import, vCard 4.0/3.0 and CSV export) are tested in contacts-transfer-mysql-integration.test.cts.
+  // Duplicates and merges: contacts-merge-mysql-integration.test.cts.
 
   // ── Paging past 2,000 contacts with equal names: nothing lost or repeated ──
   const pager = await signIn('pager');

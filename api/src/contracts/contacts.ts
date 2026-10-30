@@ -227,15 +227,24 @@ export interface BulkContactUpdate {
 export type ExportFormat = 'vcard4' | 'vcard3' | 'google-csv' | 'outlook-csv';
 
 // ── Duplicates, merges and import (slices 3, 5 and 6) ─────────────────
-// Drafted with the model so the page and the services share one shape; the
-// owners of those routes may refine them before the page is wired to them.
+// Duplicates and merges: services/contact-duplicates.ts and contact-merge.ts,
+// described in docs/CONTACTS.md.
 
-/** The single-value fields a merge or an import may have to choose between ('name' is all name parts together). */
+/**
+ * The single-value fields a merge or an import may have to choose between.
+ * 'name' is every name part together with the written display name, so the
+ * duplicates and merge routes never list 'display_name' on its own.
+ */
 export type ContactSingleField = 'name' | 'display_name' | 'organization' | 'department' | 'job_title' | 'birthday' | 'anniversary' | 'photo';
 
 export type DuplicateConfidence = 'high' | 'medium' | 'low';
 
-/** Why two contacts look alike; `detail` names the shared value ("anna@example.com"), never a note. */
+/**
+ * Why two contacts look alike; `detail` names the shared value as written
+ * ("anna@example.com", the organisation, the name), never a note. 'uid': one
+ * carries the vCard UID of a contact merged into the other (detail empty).
+ * 'name_order': the same name with given and family name swapped.
+ */
 export interface DuplicateReason {
   kind: 'uid' | 'email' | 'phone' | 'name' | 'name_order' | 'name_subset' | 'initial' | 'organization';
   detail: string;
@@ -249,13 +258,19 @@ export interface DuplicateMember {
   emails: string[];
   phones: string[];
   photo: ContactPhoto | null;
+  /** This member's value of each conflicting field, as the review shows it (null: none). */
+  field_values: Partial<Record<ContactSingleField, string | null>>;
 }
 
 /**
- * GET /api/contacts/duplicates?min=low|medium|high. `id` hashes the sorted
- * member ids and versions, so an action on an outdated group answers 409.
- * Low-confidence matches come as groups of two. A `large` group (over 10
- * members) is never part of "Merge all".
+ * GET /api/contacts/duplicates?min=low|medium|high (default medium). `id`
+ * hashes the sorted member ids and versions, so an action on an outdated
+ * group answers 409. Members come in the suggested order: the first is the
+ * one a merge keeps by default. A group joins contacts over matches of at
+ * least `min`; its confidence is the weakest link it needs. Low matches come
+ * as groups of two. `auto_merge` marks the groups "Merge all" takes: high,
+ * not `large` (over 10 members), no `conflicts` ("needs your choice") and no
+ * "Not the same person" pair inside.
  */
 export interface DuplicateGroup {
   id: string;
@@ -264,6 +279,7 @@ export interface DuplicateGroup {
   members: DuplicateMember[];
   reasons: (DuplicateReason & { a: string; b: string })[];
   conflicts: ContactSingleField[];
+  auto_merge: boolean;
 }
 
 export interface DuplicatesResponse {
@@ -276,10 +292,15 @@ export interface DismissDuplicatesRequest {
 }
 
 /**
- * POST /api/contacts/merges. `versions` holds each member's version as shown;
- * `choices` names, per conflicting field, the contact whose value wins
- * (400 CHOICE_REQUIRED when one is missing). Every email, phone and other
- * list value of every member is kept.
+ * POST /api/contacts/merges (2 to 50 contacts). `versions` holds each
+ * member's version as shown: a changed or missing member answers 409
+ * VERSION_CONFLICT with `contacts` as they are now, or 404. `choices` names,
+ * per conflicting field, the contact whose value wins (400 CHOICE_REQUIRED
+ * with `conflicts` when one is missing; the chosen contact must have a
+ * value). `survivor_id` (default: the first contact) keeps its id, UID and
+ * place on phones; the others go to the bin for 30 days. Every email, phone
+ * and other list value of every member is kept, as are their kept
+ * properties, unique notes and categories; favourite if any member was.
  */
 export interface MergeRequest {
   contact_ids: string[];
@@ -294,7 +315,19 @@ export interface MergeResult {
   merged_ids: string[];
 }
 
-/** POST /api/contacts/merges/auto */
+/** 409 VERSION_CONFLICT of a merge: the members as they are now (missing ones left out). */
+export interface MergeConflict {
+  error: string;
+  code: 'VERSION_CONFLICT';
+  contacts: ContactRecord[];
+}
+
+/**
+ * POST /api/contacts/merges/auto ("Merge all high-confidence", up to 500
+ * groups). Each listed group is merged in its own transaction when it is
+ * still the same (`changed` otherwise) and `auto_merge` holds
+ * (`needs_choice` otherwise: medium, large, conflicting or dismissed inside).
+ */
 export interface AutoMergeRequest {
   group_ids: string[];
   min: 'high';
@@ -304,7 +337,12 @@ export interface AutoMergeResult {
   results: { group_id: string; status: 'merged' | 'changed' | 'needs_choice'; merge_id?: string }[];
 }
 
-/** GET /api/contacts/merges: "Recently merged" (30 days). */
+/**
+ * GET /api/contacts/merges answers { merges: MergeRecord[] }: "Recently
+ * merged", newest first, until each one's `purge_after` (30 days), undone
+ * ones included. `survivor_name` is the survivor's name now ('' when it was
+ * deleted since).
+ */
 export interface MergeRecord {
   id: string;
   survivor_id: string;
@@ -315,11 +353,21 @@ export interface MergeRecord {
   undone_at: string | null;
 }
 
-/** POST /api/contacts/merges/:id/undo */
+/**
+ * POST /api/contacts/merges/:id/undo. The merged-away contacts come back as
+ * they were (values, labels, kept properties, photo, favourite, version, UID
+ * and id; a new id only when a restore took theirs meanwhile). 409
+ * ALREADY_UNDONE or UNDO_EXPIRED; 404 for another person's merge.
+ */
 export interface UndoMergeResult {
   restored_ids: string[];
-  /** False when the survivor changed after the merge and was kept as it is. */
+  /**
+   * True: the survivor is back as it was before the merge. False: it changed
+   * after the merge (or was deleted) and was kept as it is, values from the
+   * merged contacts included; `message` says so.
+   */
   survivor_restored: boolean;
+  message: string;
 }
 
 export type ImportFormat = 'vcard4' | 'vcard3' | 'vcard21' | 'google-csv' | 'outlook-csv';
