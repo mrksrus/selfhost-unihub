@@ -2,14 +2,15 @@
 
 **ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of the database, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
-0.10.13 and later write account backups with data schema 4 and retains readers for schemas 1–3.
+0.26.0 and later write account backups with data schema 5 and retain readers for schemas 1–4
+(0.10.13 to 0.25.x wrote schema 4).
 `manifest.json` is the version file. Users do not select conversion scripts.
 
 ## Independent version fields
 
 | Field | Current value | Meaning |
 | --- | --- | --- |
-| Data `version` | 4 | Meaning and shape of exported records |
+| Data `version` | 5 | Meaning and shape of exported records |
 | ZIP `format` | `unihub-restorable-backup` | Identifies a restorable archive |
 | ZIP `format_version` | 1 | Archive layout |
 | Encrypted container | 1 | Authenticated encryption framing |
@@ -29,6 +30,7 @@ framing and a password-wrapped data key.
 | 2 | Automatic | Provider mappings included; newer filing/recovery data may be absent |
 | 3 | Automatic | Filing/recovery data, transcripts and server scores included |
 | 4 | Automatic | Adds durable mail intents, receipts and quarantined provider evidence |
+| 5 | Automatic | Contacts in the vCard model: values, kept properties, photos, merged-away UIDs and dismissed duplicates |
 | Unknown version | Rejected before restore | Requires a compatible reader |
 
 Schema 3 preserves account-scoped folder metadata, source and filing identities,
@@ -49,7 +51,7 @@ file-backed. Old archives cannot supply data they never contained; defaults and
 warnings are explicit. Old inline JSON schema-1 data still uses its historical
 internal reader; the upload UI accepts ZIP and encrypted archives.
 
-Current schema-4 validation rejects unknown tables/fields/file kinds and missing
+Current validation rejects unknown tables/fields/file kinds and missing
 required content. Unknown selected sections are errors, not a request for a full
 restore. Conflicting folder scopes and merges that would hide newly restored
 mail roll back. The original archive remains the historical record; optional
@@ -89,7 +91,44 @@ older mail are built again by the background threading. Installation policies
 archived: a restore must not send mail again, so a restored draft is not
 scheduled.
 
-Older applications that read only schemas 1–3 cannot import new schema-4 backups.
+0.26.0 introduces schema 5 for the contacts model (upgrade steps 22 and 23).
+The contacts section exports `contacts` (with `uid`, the name parts,
+department, birthday and anniversary; without the fixed email/phone fields),
+`contact_values` (every labelled email, phone, address, web address, chat
+handle, relation, nickname and category in its position), `contact_properties`
+(vCard properties UniHub keeps without showing them; `source_version` is
+opaque), `contact_photos`, `contact_uid_aliases` (UIDs of merged-away
+contacts) and `contact_duplicate_dismissals`. Photos are the file kind
+`contact_photo`: each converted JPEG and thumbnail is archived once under
+`files/contact-photos/<sha256>.jpg`, its entry id is that SHA-256, and a
+restore refuses a file whose bytes do not match its name, that is not a JPEG
+or that is larger than 2 MiB. Export leaves out, with a warning, a photo
+whose stored file is missing or damaged; the contact itself is archived.
+Not archived: the merge records and the bin of merged-away contacts (a restore
+brings back contacts, not their 30-day undo; 0.28 decides the bin) and staged
+contact imports (temporary).
+
+The schema 5 reader converts an archive of schema 1 to 4 before restore,
+after its checksums and fields were validated against that archive's own
+version: a schema 4 archive may carry the fixed `email`…`phone3` and
+`avatar_url` fields but none of the schema 5 fields or tables, and a schema 5
+archive the reverse. Each contact's non-empty fixed fields become values as
+upgrade step 22 copies them (verbatim, in slot order, repeats kept, no label)
+with UUIDv5 ids from the contact id, kind and position, so converting the same
+archive again gives the same rows; `avatar_url`, never filled, is dropped and a
+missing `uid` becomes `urn:uuid:<id>`. A restored contact is matched by id,
+then UID or merged-away UID, then an email over its values, then the same name
+with a phone in common. Replace matching replaces a matched contact's values,
+kept properties and photo with the archived ones; from a schema 1–4 archive it
+is applied as an old app's whole 3+3 update instead, so values beyond the
+three places, labels, other fields, kept properties and the photo stay. Keep
+both writes a copy with new ids and, when the UID is taken, a new UID.
+Restoring the same archive twice adds nothing.
+
+Applications that read only schemas 1–4 (0.25.x and older) refuse a schema 5
+backup before restoring anything: "Unsupported backup data version: 5. This
+UniHub version reads versions 1, 2, 3 and 4; a newer backup may need a newer
+UniHub release." Older applications that read only schemas 1–3 cannot import schema-4 backups.
 Downgrading an image is not a database rollback. Preserve a matching full server
 snapshot before upgrading. Future changes must retain supported readers and
 frozen fixtures; see [Recovery contracts](DATA_RECOVERY.md).
@@ -132,7 +171,9 @@ rules. Server deletion stays disabled on restored mail accounts.
 
 Frozen plain/encrypted archives from the actual `v0.9.23.0` exporter live under
 `api/tests/fixtures/backups/v1-0.9.23.0`. The frozen plain archive from the actual
-`v0.10.3` exporter is under `v2-0.10.3`. Their provenance and hashes are recorded.
+`v0.10.3` exporter is under `v2-0.10.3`, and the frozen schema 4 contacts
+archive from the actual `v0.25.1` exporter (fixed 3+3 fields with unicode,
+empty slots and repeated values) under `v4-0.25.1`. Their provenance and hashes are recorded.
 They contain invented data, not the owner's mailbox. Do not regenerate them just
 to accommodate a changed reader.
 

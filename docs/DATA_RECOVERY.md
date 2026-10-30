@@ -50,13 +50,28 @@ soon as a connection succeeds.
 
 ## Backup versions and restore behavior
 
-New exports write data schema 3. Readers for schemas 1 and 2 remain; the manifest
+New exports write data schema 5. Readers for schemas 1 to 4 remain; the manifest
 selects automatically. ZIP layout and encrypted framing remain version 1.
 Database upgrade IDs, data schema and application release are separate numbers.
 Preserve historical readers and frozen fixtures when evolving the format. Starting
 with 1.0, retain imports for every released stable backup format throughout 1.x.
 A later major release must retain old readers or provide a maintained conversion
 path before retiring one. Do not silently omit unsupported modules from a full restore.
+
+0.26.0 writes data schema 5 for the contacts model; the readers for schemas 1
+to 4 convert older contacts as upgrade step 22 does (see
+[Backup format](BACKUP_FORMAT.md)). Validation holds each archive to the
+fields of its own schema (`ARCHIVE_FIRST_STEPS` in `backup-format.ts` names
+the first upgrade step each schema carries), so a field an archive of that
+version never wrote is refused rather than imported. Content-addressed files
+(`CONTENT_FILE_POLICIES` in the catalog, today the contact photos) are written
+under their SHA-256 name before the restore's transaction and verified on the
+way; the photo rows may only name a file that was written. Their writes, the
+commit and the release of files nothing references any more run under the
+per-user photo lock; a known rollback releases the files the restore added, a
+lost commit outcome keeps them all, and the daily sweep skips users with a
+running contacts restore. Child rows of contacts are restored only with their
+contact from the same archive and get the restored contact's id.
 
 Mail restoration remaps both provider-source and local filing account IDs,
 folder ownership, routing overrides and recovery journals. It records translated
@@ -117,6 +132,10 @@ Use an empty disposable MariaDB database whose name ends in `_test`. Set
 - `backup-roundtrip-mysql-integration.test.cts`: real export/encryption/restore,
   module relationships/files, conflicts and migration replay protection.
 - `backup-v2-mysql-integration.test.cts`: frozen actual 0.10.3 exporter archive.
+- `backup-contacts-mysql-integration.test.cts`: frozen actual 0.25.1 contacts
+  archive, the schema 5 contacts section with photo files between two people,
+  restoring twice, Replace matching, Keep both, damaged photo files, an
+  interrupted restore and a lost commit outcome.
   The existing round-trip also imports frozen plain/encrypted 0.9.23 fixtures.
 - `backup-restore-cancellation-mysql-integration.test.cts` and
   `backup-ownership-mysql-integration.test.cts`: interruption and cross-user safety.
