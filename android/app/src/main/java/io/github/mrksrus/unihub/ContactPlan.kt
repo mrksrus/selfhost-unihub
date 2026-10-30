@@ -90,4 +90,44 @@ object ContactPlan {
         }
         return Plan(removeFromPhone, restore, undone, deleteInUniHub, tooMany, waiting, merge, intoSurvivor, unlinked)
     }
+
+    /** What happens to the photo of a merged-away phone contact the phone changed (intoSurvivor). */
+    enum class SurvivorPhoto {
+        /** The phone's picture did not change since the last sync: nothing to send. */
+        None,
+        /** The phone's new picture goes to the survivor; the copy may leave only after it was sent. */
+        Upload,
+        /** UniHub gave the survivor another photo meanwhile: UniHub's stays (a photo changed on both sides). */
+        UniHubKeeps,
+    }
+
+    /**
+     * [phonePhoto]: the copy's photo identity now ('' none); [phoneBase] and
+     * [serverBase]: its photo and its UniHub contact's etag at the last sync
+     * (null without a state: every picture is new); [survivorPhoto]: the
+     * survivor's etag now. Removing a picture on the phone is not passed on:
+     * it would take the survivor's photo, which may be another contact's.
+     */
+    fun survivorPhoto(phonePhoto: String, phoneBase: String?, serverBase: String?, survivorPhoto: String): SurvivorPhoto = when {
+        phonePhoto.isEmpty() || phonePhoto == phoneBase -> SurvivorPhoto.None
+        survivorPhoto.isEmpty() || survivorPhoto == serverBase -> SurvivorPhoto.Upload
+        else -> SurvivorPhoto.UniHubKeeps
+    }
+
+    /**
+     * Whether the copy may leave the phone: never while a picture it has to
+     * send could not be sent yet (a metered network, the per-sync limit, a
+     * failed upload); it stays and the step runs again at the next sync.
+     */
+    fun copyMayGo(photo: SurvivorPhoto, sent: Boolean): Boolean = photo != SurvivorPhoto.Upload || sent
+
+    /** Photo transfers of one sync: at most [limit], none on a metered network. Shared by intoSurvivor and the photo pass. */
+    class PhotoBudget(val metered: Boolean, private var left: Int) {
+        /** Takes one transfer; false when none may happen now. */
+        fun take(): Boolean {
+            if (metered || left <= 0) return false
+            left--
+            return true
+        }
+    }
 }

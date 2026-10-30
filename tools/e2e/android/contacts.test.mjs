@@ -36,9 +36,15 @@ async function signIn() {
   assert.ok(response.ok, `sign-in: ${response.status}`);
   const cookie = response.headers.getSetCookie().map(c => c.split(';')[0]).join('; ');
   api = async (method, path, data, { raw, type } = {}) => {
-    const res = await fetch(`${base}${path}`, { method, headers: { Cookie: cookie, 'X-CSRF-Token': body.csrfToken,
+    const send = () => fetch(`${base}${path}`, { method, headers: { Cookie: cookie, 'X-CSRF-Token': body.csrfToken,
       ...(data !== undefined ? { 'Content-Type': type ?? 'application/json' } : {}) },
     body: data === undefined ? undefined : raw ? data : JSON.stringify(data) });
+    // A read after a long wait on the phone may reuse a connection nginx
+    // closed meanwhile (keep-alive): it is asked again once. Writes are not.
+    const res = await send().catch(error => {
+      if (method !== 'GET' || error?.cause?.code !== 'UND_ERR_SOCKET') throw error;
+      return send();
+    });
     const text = await res.text();
     let json; try { json = JSON.parse(text); } catch { json = text; }
     if (!res.ok) throw new Error(`${method} ${path}: ${res.status} ${text.slice(0, 300)}`);
@@ -243,6 +249,34 @@ test('[26-10] a photo set in UniHub reaches the phone, and one set on the phone 
   await sleep(30_000);
   assert.equal((await contact(dee.id)).version, deeVersion, "UniHub's photo did not come back from the phone");
   assert.equal((await contact(eve.id)).version, eveVersion, "the phone's photo was sent once");
+});
+
+test('[26-10] a photo set on the phone for a contact UniHub merged away reaches the survivor; on a metered network the copy waits', { timeout: 1_200_000 }, async () => {
+  await contactsOn();
+  const body = number => ({ name: { given: 'Fay', family: tag }, emails: [v(`fay.${run}@example.com`)], phones: [v(number)] });
+  const keep = await create(body('+15550600'));
+  const away = await create(body('+15550601'));
+  await until(() => rawsFor(keep.id).length === 1 && rawsFor(away.id).length === 1, 'both copies on the phone');
+  // Merged in UniHub, and before the phone hears of it a picture is set on the merged-away copy.
+  const versions = { [keep.id]: (await contact(keep.id)).version, [away.id]: (await contact(away.id)).version };
+  // With mobile data the deferral is checked too: without Wi-Fi it is the active, metered network.
+  const mobileData = adb('shell', 'dumpsys', 'connectivity').includes('CELLULAR');
+  if (mobileData) adb('shell', 'svc', 'wifi', 'disable');
+  try {
+    await api('POST', '/api/contacts/merges', { contact_ids: [keep.id, away.id], survivor_id: keep.id, versions });
+    adb('logcat', '-c');
+    adb('shell', 'am', 'broadcast', '-n', `${PACKAGE}/.TestContactPhoto`, '--el', 'raw', rawsFor(away.id)[0]._id, '--es', 'jpeg', PHOTO);
+    if (mobileData) {
+      await until(() => adb('shell', 'logcat -d -s UniHubContacts').includes('stays on the phone until its new photo is sent'), 'the copy waiting for its photo');
+      assert.equal(rawsFor(away.id).length, 1, 'the copy stays while its photo cannot be sent');
+      assert.equal((await contact(keep.id)).photo, null);
+    }
+  } finally {
+    if (mobileData) adb('shell', 'svc', 'wifi', 'enable');
+  }
+  await until(async () => (await contact(keep.id)).photo !== null, "the merged-away copy's photo on the survivor");
+  await until(() => rawsFor(away.id).length === 0, 'the merged-away copy gone from the phone');
+  await until(() => { const raw = rawsFor(keep.id)[0]; return raw && of(dataOf(raw._id), 'photo').length === 1; }, "the survivor's copy with the photo");
 });
 
 test('[26-07] "Merge all" of twelve groups leaves one contact each on the phone, without "Too many deletions"; an undo brings one back', { timeout: 1_200_000 }, async () => {

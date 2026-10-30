@@ -896,8 +896,11 @@ phone_insert() { # raw contact, mimetype (short), --bind arguments
   adb shell content insert --uri $contacts_uri/data --bind raw_contact_id:i:$raw --bind mimetype:s:vnd.android.cursor.item/$mime "$@"
 }
 data_id() { # raw contact, mimetype (short), data1
-  adb shell content query --uri $contacts_uri/data --projection _id \
-    --where "\"raw_contact_id=$1 AND mimetype='vnd.android.cursor.item/$2' AND data1='$3'\"" | first_id
+  local id
+  id="$(adb shell content query --uri $contacts_uri/data --projection _id \
+    --where "\"raw_contact_id=$1 AND mimetype='vnd.android.cursor.item/$2' AND data1='$3'\"" | first_id)"
+  [[ -n "$id" ]] || fail "no $2 row \"$3\" on the phone"
+  echo "$id"
 }
 full_rows() {
   adb shell content query --uri $contacts_uri/raw_contacts --projection _id \
@@ -938,8 +941,9 @@ ada="$(raw_for c-ada)"
 phone_insert "$ada" phone_v2 --bind data1:s:"'+1 555 0113'" --bind data2:i:3
 phone_insert "$ada" postal-address_v2 --bind data4:s:"'1 Example Street'" --bind data7:s:Springfield --bind data2:i:1
 phone_insert "$ada" contact_event --bind data1:s:--12-10 --bind data2:i:3
-# content splits a binding at every colon that has no backslash before it.
-phone_insert "$ada" website --bind data1:s:"'https\://example.com/ada'" --bind data2:i:1
+# Without a scheme: content splits a binding at its colons, and the escape
+# (\:) is kept in the value by Android 10's content tool.
+phone_insert "$ada" website --bind data1:s:example.com/ada --bind data2:i:1
 phone_insert "$ada" note --bind data1:s:"'a note of the phone 5c2e'"
 adb shell content update --uri $contacts_uri/data --bind data5:s:M. --where "\"raw_contact_id=$ada AND mimetype='vnd.android.cursor.item/name'\""
 sync_now
@@ -1005,8 +1009,10 @@ adb shell content query --uri $contacts_uri/data --projection data1 --where "\"d
 
 echo 'The full model: every kind changed on the phone reaches UniHub'
 : > "$work/state/writes"
-adb shell content update --uri $contacts_uri/data --bind data2:i:17 --where "_id=$(data_id "$ada" phone_v2 +15550101)"
-adb shell content delete --uri $contacts_uri/data --where "_id=$(data_id "$ada" website https://example.com/ada)"
+relabelled="$(data_id "$ada" phone_v2 +15550101)"
+adb shell content update --uri $contacts_uri/data --bind data2:i:17 --where "_id=$relabelled"
+web="$(data_id "$ada" website example.com/ada)"
+adb shell content delete --uri $contacts_uri/data --where "_id=$web"
 phone_insert "$ada" relation --bind data1:s:"'Dee Sample'" --bind data2:i:6
 phone_insert "$ada" im --bind data1:s:ada-signal --bind data2:i:3 --bind data5:i:-1 --bind data6:s:Signal
 phone_insert "$ada" nickname --bind data1:s:A.L. --bind data2:i:5

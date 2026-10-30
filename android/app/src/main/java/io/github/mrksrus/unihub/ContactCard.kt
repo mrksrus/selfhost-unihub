@@ -334,20 +334,29 @@ enum class ValueKind(val field: String, val limit: Int, val labels: Set<String>,
     ), ""),
     NICKNAME("nicknames", 255, setOf("", "other_name", "maiden_name", "short_name", "initials", "custom"), "");
 
-    /** The server's value_key (api/src/services/contact-keys.ts): the same value on both sides. */
-    fun key(value: String): String = bounded(when (this) {
-        EMAIL -> value.trim().lowercase()
-        PHONE -> value.trim().let { text ->
-            val digits = text.filter { it in '0'..'9' }
-            if (digits.isEmpty()) "" else (if (text.startsWith("+")) "+" else "") + digits
+    /**
+     * A value's identity within its kind, as the server decides it
+     * (valueIdentity in api/src/services/contact-keys.ts): the whole
+     * normalised value, never cut, or its trimmed lower-case text when that
+     * is empty (a phone number without digits). The server's stored value_key
+     * is this cut to 255 characters for its index only, so two long web
+     * addresses may share one; it never decides that two values are the same.
+     */
+    fun key(value: String): String {
+        val full = when (this) {
+            EMAIL -> value.trim().lowercase()
+            PHONE -> value.trim().let { text ->
+                val digits = text.filter { it in '0'..'9' }
+                if (digits.isEmpty()) "" else (if (text.startsWith("+")) "+" else "") + digits
+            }
+            URL -> value.trim().lowercase().replace(SCHEME, "").replace(TRAILING_SLASHES, "")
+            else -> collapseSpaces(value.trim().lowercase())
         }
-        URL -> value.trim().lowercase().replace(SCHEME, "").replace(TRAILING_SLASHES, "")
-        else -> collapseSpaces(value.trim().lowercase())
-    })
+        return full.ifEmpty { "raw:" + value.trim().lowercase() }
+    }
 
     companion object {
         const val MAX_VALUES = 100
-        private const val KEY_MAX = 255
         private val SCHEME = Regex("^[a-z][a-z0-9+.-]*://")
         private val TRAILING_SLASHES = Regex("/+$")
         // JavaScript's \s (contact-keys.ts textKey); Android's regex engine has no (?U).
@@ -366,8 +375,6 @@ enum class ValueKind(val field: String, val limit: Int, val labels: Set<String>,
             }
         }
 
-        private fun bounded(text: String) =
-            if (text.codePointCount(0, text.length) <= KEY_MAX) text else text.substring(0, text.offsetByCodePoints(0, KEY_MAX))
     }
 }
 
@@ -384,7 +391,7 @@ object ContactMerge {
      * - The name (all its parts), organisation, department, job title,
      *   birthday, anniversary and favourite: a field both sides changed takes
      *   UniHub's value.
-     * - Lists merge value by value (by the server's value_key): each side's
+     * - Lists merge value by value (by the value's identity, ValueKind.key): each side's
      *   additions and removals reach the other, and so do label changes; a
      *   label both sides changed takes UniHub's. A value both sides added (a
      *   contact joined for the first time, or the first sync after updating
