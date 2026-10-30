@@ -221,6 +221,25 @@ where() { # the centre of the first element showing this text (any case), or not
 
 tap_text() { adb shell input tap $(where "$1"); }
 
+# Taps the action nearest below a notification's text: the shade can hold
+# Android's own actions of the same name (Android 16's notification cooldown
+# offers "Turn off" on a new phone).
+tap_action_below() { # notification text, action text
+  local nodes point
+  for _ in $(seq 1 20); do
+    nodes="$(screen | grep -o '<node [^>]*>' | sed -n 's/.* text="\([^"]*\)".* bounds="\[\([0-9]*\),\([0-9]*\)\]\[\([0-9]*\),\([0-9]*\)\]".*/\2 \3 \4 \5 \1/p')"
+    point="$(awk -v note="$1" -v action="$2" '
+      { text = $0; sub(/^[0-9]+ [0-9]+ [0-9]+ [0-9]+ /, "", text) }
+      tolower(text) == tolower(note) && top == "" { top = $2 }
+      tolower(text) == tolower(action) { x[++n] = int(($1 + $3) / 2); y[n] = int(($2 + $4) / 2) }
+      END { if (top == "") exit; for (i = 1; i <= n; i++) if (y[i] > top && (best == "" || y[i] < y[best])) best = i; if (best != "") print x[best], y[best] }' <<<"$nodes")"
+    [[ -n "$point" ]] && break
+    sleep 1
+  done
+  [[ -n "$point" ]] || fail "no \"$2\" below \"$1\" (on screen: $(screen | grep -o 'text="[^"]\+"' | tr '\n' ' '))"
+  adb shell input tap $point
+}
+
 # A silent notification may show its actions only when expanded (Android 10):
 # pull it down, unless the action is already in view.
 expand_notification() { # notification text, action text
@@ -401,7 +420,7 @@ echo "The ongoing notification's Turn off does the same"
 adb shell cmd statusbar expand-notifications
 sleep 1
 expand_notification 'Connected to 10.0.2.2' 'Turn off'
-tap_text 'Turn off'
+tap_action_below 'Connected to 10.0.2.2' 'Turn off'
 wait_for "unsubscribed.length === $((turned_off + 1))" 'Turn off did not unregister'
 expect_stopped 'Turn off'
 adb shell cmd statusbar collapse

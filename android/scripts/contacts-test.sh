@@ -582,6 +582,8 @@ if [[ -n "$previous" ]]; then
     [[ "$(converted)" == 2 ]] || fail "the update did not take over the previous app's contacts ($(converted) of 2)"
     [[ "$(unihub_rows)" == 2 && "$(unlinked_rows)" == 0 ]] || fail "after the update the phone has $(unihub_rows) UniHub contacts, $(unlinked_rows) unlinked"
     # This version's log line names what went to UniHub; the previous one's does not.
+    # The sync logs it when it ends, which can be after the rows above changed.
+    for _ in $(seq 1 30); do adb logcat -d -s UniHubContacts | grep -q 'Synced.*to UniHub' && break; sleep 1; done
     adb logcat -d -s UniHubContacts | grep -q 'Synced.*to UniHub' || fail 'no sync by the updated app'
     [[ -s "$work/state/writes" ]] && fail "the update sent the read-only copies back to UniHub: $(cat "$work/state/writes")"
     expect_name +15550100 'Ada Example' 'after the update'
