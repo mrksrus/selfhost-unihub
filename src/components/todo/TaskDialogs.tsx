@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Loader2, Plus, X } from 'lucide-react';
 import { EVENT_COLOR_OPTIONS, REMINDER_OPTIONS, localDatetimeToIso, toDatetimeLocalValue, type CalendarCalendar, type CalendarEvent } from '@/lib/calendar-api';
 import { defaultTaskList, listRefusal } from '@/lib/tasks';
@@ -39,12 +39,33 @@ export function NewTaskDialog({ open, onOpenChange, actions, timezone, calendars
 }) {
   const { toast } = useToast();
   const [form, setForm] = useState(emptyNewTask);
+  // Why the chosen list changed under the person: it went away or stopped taking the task.
+  const [listNote, setListNote] = useState<string | null>(null);
   const defaultList = defaultTaskList(calendars);
-  useEffect(() => { if (open) setForm({ ...emptyNewTask, calendar_id: defaultTaskList(calendars)?.id ?? '' }); }, [open, calendars]);
-  // Lists can arrive after the dialog opened.
-  if (open && !form.calendar_id && defaultList) setForm(prev => ({ ...prev, calendar_id: defaultList.id }));
+  // The form is set when the dialog opens, never when the lists are fetched
+  // again (another device may add a list while a title is being typed).
+  const latestLists = useRef(calendars);
+  latestLists.current = calendars;
+  useEffect(() => {
+    if (!open) return;
+    setForm({ ...emptyNewTask, calendar_id: defaultTaskList(latestLists.current)?.id ?? '' });
+    setListNote(null);
+  }, [open]);
   const chosen = calendars.find(calendar => calendar.id === form.calendar_id);
   const refusal = chosen ? listRefusal(chosen, { undated: !form.scheduled }) : null;
+  // Lists can arrive after the dialog opened; a chosen list that is gone or
+  // blocked since gives way to the default, with a note, and nothing else changes.
+  useEffect(() => {
+    if (!open || calendars.length === 0) return;
+    if (!form.calendar_id) { if (defaultList) setForm(prev => ({ ...prev, calendar_id: defaultList.id })); return; }
+    const current = calendars.find(calendar => calendar.id === form.calendar_id);
+    const blocked = current ? listRefusal(current, { undated: !form.scheduled }) : null;
+    if (current && !blocked) return;
+    const fallback = defaultList && defaultList.id !== form.calendar_id ? defaultList : calendars.find(calendar => !listRefusal(calendar, { undated: !form.scheduled }));
+    if (!fallback) return;
+    setForm(prev => ({ ...prev, calendar_id: fallback.id }));
+    setListNote(current ? `${current.name} no longer takes this task (${blocked!.toLowerCase()}); ${fallback.name} is chosen instead.` : `The list chosen before is no longer available; ${fallback.name} is chosen instead.`);
+  }, [open, calendars, defaultList, form.calendar_id, form.scheduled]);
   // Taking the time away from a task in a server calendar sends it back to the default list.
   const setScheduled = (scheduled: boolean) => setForm(prev => {
     const current = calendars.find(calendar => calendar.id === prev.calendar_id);
@@ -88,7 +109,8 @@ export function NewTaskDialog({ open, onOpenChange, actions, timezone, calendars
             <div className="space-y-2">
               <Label htmlFor="task-list">List</Label>
               <ListChooser id="task-list" calendars={calendars} value={form.calendar_id} undated={!form.scheduled} forTask
-                onChange={calendar_id => setForm(prev => ({ ...prev, calendar_id }))} />
+                onChange={calendar_id => { setForm(prev => ({ ...prev, calendar_id })); setListNote(null); }} />
+              {listNote && <p role="status" className="text-xs text-warning">{listNote}</p>}
             </div>
           )}
           <div className="space-y-2">
@@ -272,10 +294,14 @@ export function MoveListDialog({ task, onClose, actions, calendars }: {
   const [calendarId, setCalendarId] = useState('');
   const [pending, setPending] = useState<'creating' | 'removing' | null>(null);
   const [formTask, setFormTask] = useState<CalendarEvent | null>(null);
+  // Each opening is numbered: an answer to a move submitted from an earlier
+  // opening (another task, or the same one opened again) changes nothing here.
+  const opening = useRef(0);
   if (task !== formTask) {
     setFormTask(task);
     setCalendarId('');
     setPending(null);
+    opening.current += 1;
   }
   const current = task?.calendar_id ? calendars.find(calendar => calendar.id === task.calendar_id) : undefined;
   const target = calendars.find(calendar => calendar.id === calendarId);
@@ -283,8 +309,12 @@ export function MoveListDialog({ task, onClose, actions, calendars }: {
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!task || !target || refusal || target.id === task.calendar_id) return;
+    const submitted = { id: task.id, opening: opening.current };
     actions.moveToList.mutate({ id: task.id, calendarId: target.id, list: target }, {
-      onSuccess: result => { if (result.pending) setPending(result.pending); else onClose(); },
+      onSuccess: result => {
+        if (submitted.opening !== opening.current || submitted.id !== formTask?.id) return;
+        if (result.pending) setPending(result.pending); else onClose();
+      },
     });
   };
   return (

@@ -166,7 +166,7 @@ const TodoPage = () => {
     const label = section.label ?? VIEWS[view].label;
     const shared = (task: CalendarEvent) => ({
       task, actions, timezone, calendarColor: calendarColor(task), onEdit: setEditing, onMove: setMoving,
-      onMoveList: reorderable ? setMovingList : undefined,
+      onMoveList: reorderable ? setMovingList : undefined, canReorder: reorderable,
     });
     if (view === 'done' || !reorderable) return <ul>{section.tasks.map(task => <TaskRow key={task.id} {...shared(task)} />)}</ul>;
     return (

@@ -4,10 +4,13 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import TodoPage from '@/pages/TodoPage';
 import GeneralSettings from '@/components/settings/GeneralSettings';
+import { MoveListDialog, NewTaskDialog } from '@/components/todo/TaskDialogs';
+import { TaskRow } from '@/components/todo/TaskRow';
+import { useTaskActions, type TaskActions } from '@/hooks/use-task-actions';
 import { SortableList, DragHandle } from '@/components/ui/sortable-list';
 import { api } from '@/lib/api';
 import { calendarQueryKeys, normalizeCalendar, type CalendarCalendar, type CalendarEvent } from '@/lib/calendar-api';
-import { defaultTaskList, listRefusal, neighboursAt, orderTasks, rankBetween } from '@/lib/tasks';
+import { defaultTaskList, listRefusal, neighboursAt, optimisticRanks, orderTasks, rankBetween } from '@/lib/tasks';
 import { userSettingsAnswer, savedSettingsAnswer } from './settings-fixtures';
 
 const state = vi.hoisted(() => ({ toast: vi.fn() }));
@@ -42,6 +45,16 @@ const lists = [
     write_block: 'read_only', takes_undated_tasks: false }),
 ];
 
+/** A promise answered by the test, so a request stays pending while the optimistic state is checked. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+// What the server holds; a refetch answers from it, a position request may update it.
+let serverEvents: CalendarEvent[];
+const serverRank = (id: string, rank: number) => { serverEvents = serverEvents.map(event => event.id === id ? { ...event, sort_rank: rank, hand_ordered: true } : event); };
+
 function mount(ui: React.ReactNode, client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
   return { client, ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/todo']}>{ui}</MemoryRouter></QueryClientProvider>) };
 }
@@ -53,8 +66,9 @@ const openMenu = async (task: string) => {
 beforeEach(() => {
   Element.prototype.scrollIntoView ??= () => {};
   globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
+  serverEvents = undated;
   vi.mocked(api.get).mockImplementation(async (path: string) => {
-    if (path.startsWith('/calendar/events')) return { data: { events: undated } };
+    if (path.startsWith('/calendar/events')) return { data: { events: serverEvents } };
     if (path === '/calendar/calendars') return { data: { calendars: lists } };
     if (path === '/settings/values') return userSettingsAnswer();
     return { data: { modules: [] } };
@@ -96,10 +110,17 @@ describe('the order of tasks', () => {
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
     menu = await openMenu('Plan holiday');
     expect(within(menu).getByRole('menuitem', { name: 'Move down' })).toHaveAttribute('aria-disabled', 'true');
+    const answer = deferred<{ data: { ranks: Record<string, number> } }>();
+    vi.mocked(api.put).mockReturnValueOnce(answer.promise as never);
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move up' }));
-    // Shown between the two others before the server answers; then the server's rank is kept.
-    await waitFor(() => expect(titles()).toEqual(['Pay rent', 'Plan holiday', 'Call Sam']));
+    // Shown between the two others while the server has not answered.
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/calendar/events/Plan%20holiday/position', { after: 'Pay rent', before: 'Call Sam' }));
+    expect(titles()).toEqual(['Pay rent', 'Plan holiday', 'Call Sam']);
+    // Then the server's rank is kept and the lists are fetched again.
+    serverRank('Plan holiday', 150);
+    const fetched = vi.mocked(api.get).mock.calls.length;
+    await act(async () => { answer.resolve({ data: { ranks: { 'Plan holiday': 150 } } }); });
+    await waitFor(() => expect(vi.mocked(api.get).mock.calls.length).toBeGreaterThan(fetched));
     await waitFor(() => expect(titles()).toEqual(['Pay rent', 'Plan holiday', 'Call Sam']));
     expect(state.toast).not.toHaveBeenCalled();
   });
@@ -193,6 +214,180 @@ describe('the sortable list', () => {
       await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Reordering cancelled. Two is back at position 2 of 2 in Pages.'));
       expect(onReorder).not.toHaveBeenCalled();
     } finally { restore(); }
+  });
+});
+
+describe('placements that overlap', () => {
+  it('lets a newer move of the same task win over an older answer or failure, and ends at the server\'s ranks', async () => {
+    const first = deferred<{ data?: { ranks: Record<string, number> }; error?: string; status?: number }>();
+    const second = deferred<{ data: { ranks: Record<string, number> } }>();
+    vi.mocked(api.put).mockReturnValueOnce(first.promise as never).mockReturnValueOnce(second.promise as never);
+    const { client } = mount(<TodoPage />);
+    const section = await screen.findByRole('region', { name: 'No date' });
+    const titles = () => within(section).getAllByRole('listitem').map(item => item.querySelector('p')!.textContent);
+    const cached = (id: string) => client.getQueriesData<CalendarEvent[]>({ queryKey: calendarQueryKeys.all }).flatMap(([, events]) => events ?? []).find(event => event.id === id)!;
+    // Plan holiday moves up once (to the middle), then up again (to the top) before the first answer.
+    fireEvent.click(within(await openMenu('Plan holiday')).getByRole('menuitem', { name: 'Move up' }));
+    await waitFor(() => expect(titles()).toEqual(['Pay rent', 'Plan holiday', 'Call Sam']));
+    fireEvent.click(within(await openMenu('Plan holiday')).getByRole('menuitem', { name: 'Move up' }));
+    await waitFor(() => expect(titles()).toEqual(['Plan holiday', 'Pay rent', 'Call Sam']));
+    expect(api.put).toHaveBeenCalledTimes(2);
+    // The second answer arrives first: the server put it at 50.
+    serverRank('Plan holiday', 50);
+    await act(async () => { second.resolve({ data: { ranks: { 'Plan holiday': 50 } } }); });
+    expect(cached('Plan holiday').sort_rank).toBe(50);
+    // The first, older answer (rank 150) arrives late and changes nothing.
+    await act(async () => { first.resolve({ data: { ranks: { 'Plan holiday': 150 } } }); });
+    await waitFor(() => expect(cached('Plan holiday').sort_rank).toBe(50));
+    expect(titles()).toEqual(['Plan holiday', 'Pay rent', 'Call Sam']);
+
+    // The same with an older failure: its rollback is skipped.
+    const third = deferred<{ error: string; status: number }>();
+    const fourth = deferred<{ data: { ranks: Record<string, number> } }>();
+    vi.mocked(api.put).mockReturnValueOnce(third.promise as never).mockReturnValueOnce(fourth.promise as never);
+    fireEvent.click(within(await openMenu('Plan holiday')).getByRole('menuitem', { name: 'Move down' }));
+    await waitFor(() => expect(titles()).toEqual(['Pay rent', 'Plan holiday', 'Call Sam']));
+    fireEvent.click(within(await openMenu('Plan holiday')).getByRole('menuitem', { name: 'Move down' }));
+    await waitFor(() => expect(titles()).toEqual(['Pay rent', 'Call Sam', 'Plan holiday']));
+    serverRank('Plan holiday', 400);
+    await act(async () => { fourth.resolve({ data: { ranks: { 'Plan holiday': 400 } } }); });
+    await act(async () => { third.resolve({ error: 'Database unavailable', status: 500 }); });
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not move the task' })));
+    await waitFor(() => expect(cached('Plan holiday').sort_rank).toBe(400));
+    expect(titles()).toEqual(['Pay rent', 'Call Sam', 'Plan holiday']);
+  });
+
+  it('keeps the requested place while neighbours tie on rank', async () => {
+    const a = task('a', { is_todo_only: true, sort_rank: 100 }), c = task('c', { is_todo_only: true, sort_rank: 100 }), z = task('z', { is_todo_only: true, sort_rank: 100 });
+    const ranks = optimisticRanks([a, z, c], 'z');
+    expect(orderTasks([a, c, z].map(entry => ({ ...entry, sort_rank: ranks[entry.id] ?? entry.sort_rank }))).map(entry => entry.id)).toEqual(['a', 'z', 'c']);
+    // Only the moved task counts as placed by hand; a tie elsewhere is nudged, not claimed.
+    expect(ranks.z).toBeGreaterThan(ranks.a ?? 100);
+    expect(ranks.c).toBeGreaterThan(ranks.z);
+
+    serverEvents = [a, c, z];
+    const answer = deferred<{ data: { ranks: Record<string, number> } }>();
+    vi.mocked(api.put).mockReturnValueOnce(answer.promise as never);
+    mount(<TodoPage />);
+    const section = await screen.findByRole('region', { name: 'No date' });
+    const titles = () => within(section).getAllByRole('listitem').map(item => item.querySelector('p')!.textContent);
+    expect(titles()).toEqual(['a', 'c', 'z']);
+    fireEvent.click(within(await openMenu('z')).getByRole('menuitem', { name: 'Move up' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/calendar/events/z/position', { after: 'a', before: 'c' }));
+    expect(titles()).toEqual(['a', 'z', 'c']);
+    serverRank('z', 100); serverRank('c', 101);
+    await act(async () => { answer.resolve({ data: { ranks: { z: 100, c: 101 } } }); });
+    await waitFor(() => expect(titles()).toEqual(['a', 'z', 'c']));
+  });
+
+  it('puts back only the subtask order when a reorder fails, keeping what changed meanwhile', async () => {
+    const parent = task('Car service', { is_todo_only: true, sort_rank: 100, subtasks: [
+      { id: 's0', event_id: 'Car service', user_id: 'owner', title: 'Call the garage', is_done: false, position: 0, created_at: iso(-hour), updated_at: iso(-hour) },
+      { id: 's1', event_id: 'Car service', user_id: 'owner', title: 'Book a slot', is_done: false, position: 1, created_at: iso(-hour), updated_at: iso(-hour) },
+    ] });
+    serverEvents = [parent, undated[1]];
+    const answer = deferred<{ error: string; status: number }>();
+    vi.mocked(api.post).mockReturnValueOnce(answer.promise as never);
+    const { client } = mount(<TodoPage />);
+    const section = await screen.findByRole('region', { name: 'No date' });
+    const subtaskTitles = () => within(within(section).getByRole('list', { name: 'Subtasks' })).getAllByRole('checkbox').map(box => box.getAttribute('aria-label'));
+    fireEvent.click(screen.getByRole('button', { name: 'Move Book a slot up' }));
+    await waitFor(() => expect(subtaskTitles()).toEqual(['Book a slot', 'Call the garage']));
+    // Meanwhile another task changed in the cache (another device's answer, a tick, a rename).
+    const key = calendarQueryKeys.list({ includeTodos: true, respectAutoTodo: true });
+    client.setQueryData<CalendarEvent[]>(key, events => events!.map(event => event.id === 'Call Sam' ? { ...event, title: 'Call Sam back', sort_rank: 5 } : event));
+    serverEvents = serverEvents.map(event => event.id === 'Call Sam' ? { ...event, title: 'Call Sam back', sort_rank: 5 } : event);
+    await act(async () => { answer.resolve({ error: 'Database unavailable', status: 500 }); });
+    await waitFor(() => expect(subtaskTitles()).toEqual(['Call the garage', 'Book a slot']));
+    expect(client.getQueryData<CalendarEvent[]>(key)!.find(event => event.id === 'Call Sam')).toMatchObject({ title: 'Call Sam back', sort_rank: 5 });
+  });
+});
+
+describe('the new-task dialog while lists change', () => {
+  function Host({ calendars }: { calendars: CalendarCalendar[] }) {
+    const actions = useTaskActions();
+    return <NewTaskDialog open onOpenChange={() => {}} actions={actions} timezone="UTC" calendars={calendars} />;
+  }
+  it('keeps what was typed when the lists are fetched again, and only moves a vanished or blocked choice', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const wrap = (calendars: CalendarCalendar[]) => <QueryClientProvider client={client}><MemoryRouter><Host calendars={calendars} /></MemoryRouter></QueryClientProvider>;
+    const { rerender } = render(wrap(lists));
+    const dialog = await screen.findByRole('dialog', { name: 'New task' });
+    const chooser = () => within(dialog).getByRole('combobox', { name: 'List' });
+    await waitFor(() => expect(chooser()).toHaveTextContent('Home'));
+    fireEvent.change(within(dialog).getByLabelText('Title'), { target: { value: 'Buy stamps' } });
+    // A refreshed answer with the same lists (new array) changes nothing.
+    rerender(wrap(lists.map(list => ({ ...list }))));
+    expect(within(dialog).getByLabelText('Title')).toHaveValue('Buy stamps');
+    expect(within(dialog).queryByRole('status')).not.toBeInTheDocument();
+    // Another list added elsewhere: still nothing.
+    const extra = calendar({ id: 'list-extra', name: 'Errands' });
+    rerender(wrap([...lists, extra]));
+    expect(within(dialog).getByLabelText('Title')).toHaveValue('Buy stamps');
+    expect(chooser()).toHaveTextContent('Home');
+    // The chosen list vanishes: the selection moves to the list now in effect (Errands, the first own list shown in ToDo), with a note; the title stays.
+    rerender(wrap([...lists.filter(list => list.id !== 'list-home'), extra]));
+    await waitFor(() => expect(within(dialog).getByRole('status')).toHaveTextContent('The list chosen before is no longer available; Errands is chosen instead.'));
+    expect(within(dialog).getByLabelText('Title')).toHaveValue('Buy stamps');
+    expect(chooser()).toHaveTextContent('Errands');
+  });
+});
+
+describe('the move dialog opened again', () => {
+  function Host({ task, onClose }: { task: CalendarEvent | null; onClose: () => void }) {
+    const actions = useTaskActions();
+    return <MoveListDialog task={task} onClose={onClose} actions={actions} calendars={lists} />;
+  }
+  const wrap = (ui: React.ReactNode, client: QueryClient) => <QueryClientProvider client={client}><MemoryRouter>{ui}</MemoryRouter></QueryClientProvider>;
+  it('ignores the answer to an earlier task\'s move', async () => {
+    const first = deferred<{ data: { event: null; pending: 'creating' } }>();
+    vi.mocked(api.post).mockReturnValueOnce(first.promise as never);
+    const onClose = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const { rerender } = render(wrap(<Host task={undated[0]} onClose={onClose} />, client));
+    const dialog = await screen.findByRole('dialog', { name: 'Move to another list' });
+    fireEvent.click(within(dialog).getByRole('combobox', { name: 'New list' }));
+    fireEvent.click(await screen.findByRole('option', { name: /Archive/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/calendar/events/Pay%20rent/move', { calendar_id: 'list-archive' }));
+    // Closed, then opened for another task while the first move is still unanswered.
+    rerender(wrap(<Host task={null} onClose={onClose} />, client));
+    rerender(wrap(<Host task={undated[1]} onClose={onClose} />, client));
+    const second = await screen.findByRole('dialog', { name: 'Move to another list' });
+    expect(second).toHaveTextContent('Call Sam');
+    await act(async () => { first.resolve({ data: { event: null, pending: 'creating' } }); });
+    expect(within(second).queryByRole('status')).not.toBeInTheDocument();
+    expect(within(second).getByRole('combobox', { name: 'New list' })).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    // A completed answer to an earlier move does not close this dialog either.
+    const third = deferred<{ data: { event: CalendarEvent } }>();
+    vi.mocked(api.post).mockReturnValueOnce(third.promise as never);
+    fireEvent.click(within(second).getByRole('combobox', { name: 'New list' }));
+    fireEvent.click(await screen.findByRole('option', { name: /Archive/ }));
+    fireEvent.click(within(second).getByRole('button', { name: 'Move' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(2));
+    rerender(wrap(<Host task={null} onClose={onClose} />, client));
+    rerender(wrap(<Host task={undated[2]} onClose={onClose} />, client));
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Move to another list' })).toHaveTextContent('Plan holiday'));
+    await act(async () => { third.resolve({ data: { event: { ...undated[1], calendar_id: 'list-archive' } } }); });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog', { name: 'Move to another list' })).toHaveTextContent('Plan holiday');
+  });
+});
+
+describe('subtasks offline', () => {
+  function Row({ item, canReorder }: { item: CalendarEvent; canReorder: boolean }) {
+    const actions: TaskActions = useTaskActions();
+    return <ul><TaskRow task={item} actions={actions} timezone="UTC" onEdit={() => {}} onMove={() => {}} canReorder={canReorder} /></ul>;
+  }
+  it('shows no subtask handles when the order cannot be changed', async () => {
+    const parent = task('Car service', { is_todo_only: true, subtasks: [{ id: 's0', event_id: 'Car service', user_id: 'owner', title: 'Call the garage', is_done: false, position: 0, created_at: iso(-hour), updated_at: iso(-hour) }] });
+    mount(<Row item={parent} canReorder={false} />);
+    expect(await screen.findByRole('checkbox', { name: 'Call the garage' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reorder Call the garage' })).not.toBeInTheDocument();
+    cleanup();
+    mount(<Row item={parent} canReorder />);
+    expect(await screen.findByRole('button', { name: 'Reorder Call the garage' })).toBeInTheDocument();
   });
 });
 

@@ -52,6 +52,31 @@ export function rankBetween(after: Ranked | null, before: Ranked | null) {
   return 0;
 }
 
+// The least step between two cache ranks that still differs at the size of a
+// rank (seconds × 32768 ≈ 6e13, where a double resolves 1/128).
+const TIE_STEP = 1 / 32;
+
+/**
+ * The ranks the cache shows while a placement is in flight: the moved task
+ * gets a rank between its neighbours, and a tied run around it is nudged by
+ * a fraction so the section reads in the requested order instead of by id.
+ * Only the browser sees these; the server answers with the ranks it stored,
+ * and the lists are fetched again once no placement is pending.
+ */
+export function optimisticRanks<T extends Ranked>(order: readonly T[], movedId: string): Record<string, number> {
+  const at = order.findIndex(task => task.id === movedId);
+  const ranks: Record<string, number> = {};
+  const rankOf = (task: T) => ranks[task.id] ?? effectiveRank(task);
+  if (at !== -1) ranks[movedId] = rankBetween(order[at - 1] ?? null, order[at + 1] ?? null);
+  let last = -Infinity;
+  for (const task of order) {
+    let rank = rankOf(task);
+    if (rank <= last) { rank = last + TIE_STEP; ranks[task.id] = rank; }
+    last = rank;
+  }
+  return ranks;
+}
+
 /**
  * The neighbours a task gets when it moves to `index` within its section
  * (`after` just above it, `before` just below), as PUT …/position expects.
