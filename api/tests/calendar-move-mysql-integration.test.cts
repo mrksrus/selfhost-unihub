@@ -65,6 +65,15 @@ test('moving a task between lists and calendars: one copy, the same row, through
   const runtime = createBackupRuntime(directory, 'calendar-move-synthetic-key', pool);
   await runtime('services/database').ensureSchema();
   await runtime('services/data-inventory').verifyDatabaseInventory(pool);
+  // A branch database made an earlier journal, which nothing wrote to: step 24
+  // run again replaces it, and repeats without harm.
+  const step24 = (runtime('services/database').MIGRATIONS as FixtureValue[]).find(migration => migration.id === 24);
+  const repeat = await pool.getConnection();
+  try {
+    await repeat.execute('DROP TABLE calendar_event_moves');
+    await repeat.execute('CREATE TABLE calendar_event_moves (id CHAR(36) NOT NULL PRIMARY KEY, event_id CHAR(36) NOT NULL)');
+    await step24.up(repeat); await step24.up(repeat); await step24.verify(repeat);
+  } finally { repeat.release(); }
 
   // --- The calendar server: two calendars of one account ---------------------
   const remote = { version: 1, objects: new Map<string, { etag: string; ics: string }>(), writes: [] as string[][] };
