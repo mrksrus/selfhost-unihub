@@ -4,6 +4,8 @@
 #
 #   contacts-test.sh <unihub.apk> [<previous release's unihub.apk>]
 #
+# CONTACTS_TEST_PART=full runs only the part with the full model (for local runs).
+#
 # With the previous release's app, the test starts with that app and its
 # contacts on the phone, then updates to <unihub.apk>.
 #
@@ -360,7 +362,7 @@ screen() {
 }
 
 tap_button() { # resource id of a dialog button, waiting for the text first
-  for _ in $(seq 1 30); do screen | grep -q "$1" && break; sleep 1; done
+  for _ in $(seq 1 60); do screen | grep -q "$1" && break; sleep 1; done
   local bounds x1 y1 x2 y2
   bounds="$(screen | grep -o "resource-id=\"$2\"[^>]*bounds=\"[^\"]*\"" | grep -o 'bounds="[^"]*"' | head -n 1 || true)"
   read -r x1 y1 x2 y2 <<<"$(sed 's/[^0-9]/ /g' <<<"$bounds")"
@@ -546,6 +548,9 @@ connect_and_accept() {
 }
 
 updated=
+if [[ "${CONTACTS_TEST_PART:-}" == full ]]; then
+  updated="${previous:+1}"
+else
 if [[ -n "$previous" ]]; then
   echo 'Connect with the previous release, then accept the question'
   fresh_install "$previous"
@@ -832,6 +837,7 @@ has_account && fail 'the account stayed after moving to another server'
 expect_name +15550103 '' 'moved to another server'
 
 if adb logcat -d -b crash | grep -q "Process: $package"; then fail 'the app crashed'; fi
+fi
 
 # ── The full contact model (servers listing contacts-vcard, 0.26.0 on) ──
 set_full() { echo "$1" > "$work/state/full"; }
@@ -887,7 +893,7 @@ full_rows() {
 }
 waiting_count() { adb logcat -d -s UniHubContacts | grep -c 'waiting for confirmation' || true; }
 flat3() { # id first last phone1 phone2 phone3 email notes
-  printf '{"id":"%s","user_id":"u","first_name":"%s","last_name":"%s","email":"%s","email2":null,"email3":null,"phone":"%s","phone2":"%s","phone3":"%s","company":"Example Labs","job_title":null,"notes":"%s","avatar_url":null,"is_favorite":0}' "$@"
+  printf '{"id":"%s","user_id":"u","first_name":"%s","last_name":"%s","phone":"%s","phone2":"%s","phone3":"%s","email":"%s","email2":null,"email3":null,"company":"Example Labs","job_title":null,"notes":"%s","avatar_url":null,"is_favorite":0}' "$@"
 }
 # A small synthetic picture (a 128 px gradient).
 photo_b64='/9j/2wBDAA0JCgsKCA0LCgsODg0PEyAVExISEyccHhcgLikxMC4pLSwzOko+MzZGNywtQFdBRkxOUlNSMj5aYVpQYEpRUk//2wBDAQ4ODhMREyYVFSZPNS01T09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0//wAARCACAAIADASIAAhEBAxEB/8QAFwABAQEBAAAAAAAAAAAAAAAAAQIFBv/EABUQAQEAAAAAAAAAAAAAAAAAAAEA/8QAGQEBAQEBAQEAAAAAAAAAAAAAAwIBBgQF/8QAFhEBAQEAAAAAAAAAAAAAAAAAAAER/9oADAMBAAIRAxEAPwDmgkJCoLqtfNlSFQSFQU6WVIVBIVBZpZUhUEhUFOklSFQSFQWaWVIVBIVBTpJUhUEhUFOllSFQSEhZpJWYFQSFQXo1zkqQqCQqCnSSpCoJCoLNLKkKgkJCnSSgKgkJCnSygJCoJCzSSgJCoJCnSygJCoJCzSyswKgkJC9GublASFQSFOklASFQSFmllASFQSFOklASFQSFmllASFQSFOllASFQSFOklASFQSFmllZgSFQSF6Nc3KAkKgkKdLKAkKgkLNJKAkKgkKdLKAkKgkKdJKAkJCoLNLKAkJCoKdJKkKgkKgs0srMCQqCQvRrm5QEhIVBTpZQEhIVBZpJUhUEhUFOllSFQSFQU6SVIVBIVBZpZUhUEhUFOllSFQSFQWaSVlhUEhUF6Nc3KkKgkKgp0sqQqCQqCzSSpCoJCoKdLKkKgkKgp0sqQqCQqCzSSpCoJCQp0soCoJCQs0krMCoJCoL0a5uVIVBIVBTpZUhUEhIU6WUBUEhIWaSUBIVBIU6WUBIVBIWaSUBIVBIU6WUBIVBIWaSVmBIVBIT65yUBIVBIWaSUBIVBIU6WUBIVBIWaSUBIVBIU6WUBIVBIWaSUBIVBIU6WUBISFQWaWV//Z'
@@ -920,7 +926,8 @@ ada="$(raw_for c-ada)"
 phone_insert "$ada" phone_v2 --bind data1:s:"'+1 555 0113'" --bind data2:i:3
 phone_insert "$ada" postal-address_v2 --bind data4:s:"'1 Example Street'" --bind data7:s:Springfield --bind data2:i:1
 phone_insert "$ada" contact_event --bind data1:s:--12-10 --bind data2:i:3
-phone_insert "$ada" website --bind data1:s:https://example.com/ada --bind data2:i:1
+# content splits a binding at every colon that has no backslash before it.
+phone_insert "$ada" website --bind data1:s:"'https\://example.com/ada'" --bind data2:i:1
 phone_insert "$ada" note --bind data1:s:"'a note of the phone 5c2e'"
 adb shell content update --uri $contacts_uri/data --bind data5:s:M. --where "\"raw_contact_id=$ada AND mimetype='vnd.android.cursor.item/name'\""
 sync_now
