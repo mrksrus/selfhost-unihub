@@ -21,8 +21,8 @@ const operation = { id: 'old-operation', user_id: 'untrusted-owner', mail_accoun
   action: 'move', target_value: 'Archive', base_value: 'INBOX', target_folder: 'archive', remote_folder: 'INBOX',
   remote_uid: 42, remote_uidvalidity: 7, status: 'pending', state: 'reconciling', dispatched: true, attempts: 1, intent_revision: '3' };
 
-test('v4 explicitly exports operations, attempts, receipts and remote evidence in the mail section', () => {
-  assert.equal(BACKUP_VERSION, 4);
+test('schema 4 and later explicitly export operations, attempts, receipts and remote evidence in the mail section', () => {
+  assert.equal(BACKUP_VERSION, 5);
   for (const name of ['mail_writebacks','mail_operation_attempts','mail_command_receipts','mail_remote_occurrences','mail_engine_quarantine']) {
     assert.ok(SECTION_POLICIES.mail.tables.includes(name));
     assert.equal(TABLE_POLICIES[name].fieldPolicies.user_id, 'quarantine_provider_evidence');
