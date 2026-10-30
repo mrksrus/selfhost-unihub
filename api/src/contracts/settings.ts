@@ -35,6 +35,19 @@ export interface UserSettingValues {
   week_start: 'monday' | 'sunday' | 'saturday';
   /** Minutes before a new event starts; null is no reminder. */
   default_event_reminder: number | null;
+  /**
+   * The list new tasks go to: one of the person's own UniHub lists with
+   * ToDo on. '' means UniHub's choice (the oldest such list). A list that is
+   * gone or no longer qualifies reads as UniHub's choice where it is used;
+   * GET /api/calendar/calendars marks the list in effect (default_for_tasks).
+   */
+  default_task_list_id: string;
+  /**
+   * The calendar new events go to: any writable calendar of an active
+   * account, server calendars included. '' means UniHub's choice; the one in
+   * effect is marked default_for_events.
+   */
+  default_calendar_id: string;
   /** How much a calendar reminder shows: the title and time, or only "Event reminder". */
   reminder_notification_detail: 'full' | 'none';
   compose_format: 'rich' | 'plain';

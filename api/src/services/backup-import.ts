@@ -14,7 +14,7 @@ import { normalizeBackupPayload } from './backup-format';
 import { restoreMailRecovery, validateRestoredMailDestinations } from './backup-mail-recovery';
 import { pauseMailRestore, restoreMailEngineEvidence } from './backup-mail-engine';
 import { isModuleEnabled } from './module-settings';
-import { MAIL_ACCOUNT_REFERENCE_KEYS, SETTINGS, restorableValue } from './settings';
+import { SETTINGS, referenceKeys, restorableValue } from './settings';
 import { normalizeSignature } from './mail-signature';
 import {
   isFileRangeSource,
@@ -82,6 +82,30 @@ function sourceEmailJson(value: unknown) {
 }
 
 const SETTING_KEYS = new Set(Object.keys(SETTINGS.user));
+// Settings that name a record restored later in the run, by the section
+// whose id map remaps them: each is held back and written after it.
+const MAIL_REFERENCE_KEYS = new Set(referenceKeys('mail_account'));
+const CALENDAR_REFERENCE_KEYS = new Set(referenceKeys('calendar', 'task_list'));
+
+// The restored copy of the record, or the same record when it is still this
+// user's (settings restored without its section); otherwise '' (UniHub's
+// choice) rather than an id that names nothing.
+async function restoredReference(connection: SqlExecutor, userId: string, table: 'mail_accounts' | 'calendar_calendars', archivedId: string, idMap: ReadonlyMap<string, string>) {
+  const mapped = idMap.get(archivedId);
+  if (mapped) return mapped;
+  const [owned] = await connection.execute<RowDataPacket[]>(`SELECT id FROM ${table} WHERE id = ? AND user_id = ? LIMIT 1`, [archivedId, userId]);
+  return owned.length ? archivedId : '';
+}
+
+async function writeRestoredReferences(connection: SqlExecutor, userId: string, references: ReadonlyMap<string, string>, table: 'mail_accounts' | 'calendar_calendars', idMap: ReadonlyMap<string, string>) {
+  for (const [key, archivedId] of references) {
+    await writeOwnedRow(connection, userId, 'user_settings',
+      ['user_id', 'setting_key', 'setting_value'],
+      [userId, key, await restoredReference(connection, userId, table, archivedId, idMap)],
+      ['setting_value']
+    );
+  }
+}
 
 // Archives from before 0.24 carry no signature; the account keeps its own.
 async function restoreSignature(connection: SqlExecutor, userId: string, accountId: string, row: BackupRow) {
@@ -267,7 +291,8 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         );
       }
 
-      const archivedReferences = new Map<string, string>();
+      const archivedMailReferences = new Map<string, string>();
+      const archivedCalendarReferences = new Map<string, string>();
       for (const setting of data.user_settings || []) {
         await checkRestoreCancelled();
         const row = overwriteUserId(setting, userId);
@@ -278,9 +303,12 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
           );
           if (existingSetting.length) continue;
         }
-        // Names a mail account, which may get a new ID below; written after them.
-        if (MAIL_ACCOUNT_REFERENCE_KEYS.includes(String(row.setting_key)) && row.setting_value) {
-          archivedReferences.set(String(row.setting_key), String(row.setting_value));
+        // Names a mail account or calendar, which may get a new ID below;
+        // written after its section, with that section's id map.
+        const settingKey = String(row.setting_key);
+        if ((MAIL_REFERENCE_KEYS.has(settingKey) || CALENDAR_REFERENCE_KEYS.has(settingKey)) && row.setting_value) {
+          if (restorableValue('user', settingKey, row.setting_value) === null) continue;
+          (MAIL_REFERENCE_KEYS.has(settingKey) ? archivedMailReferences : archivedCalendarReferences).set(settingKey, String(row.setting_value));
           continue;
         }
         // A registry setting keeps only a value the registry accepts; other keys
@@ -491,6 +519,8 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         );
       }
 
+      await writeRestoredReferences(connection, userId, archivedCalendarReferences, 'calendar_calendars', calendarIdMap);
+
       await reportRestoreProgress('mail', 70);
       for (const account of data.mail_accounts || []) {
         await checkRestoreCancelled();
@@ -607,22 +637,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         await restoreSignature(connection, userId, targetAccountId, row);
       }
 
-      for (const [key, archivedAccountId] of archivedReferences) {
-        // The restored copy of the account, or the same account when it is still
-        // this user's (settings restored without mail); otherwise '' (the first
-        // account) rather than an ID that names nothing.
-        let accountId = mailAccountIdMap.get(archivedAccountId) || '';
-        if (!accountId) {
-          const [owned] = await connection.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1',
-            [archivedAccountId, userId]);
-          if (owned.length) accountId = archivedAccountId;
-        }
-        await writeOwnedRow(connection, userId, 'user_settings',
-          ['user_id', 'setting_key', 'setting_value'],
-          [userId, key, accountId],
-          ['setting_value']
-        );
-      }
+      await writeRestoredReferences(connection, userId, archivedMailReferences, 'mail_accounts', mailAccountIdMap);
 
       for (const folder of data.mail_folders || []) {
         await checkRestoreCancelled();

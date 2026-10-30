@@ -23,7 +23,7 @@ interface TablePolicy {
 const SECTION_POLICIES: Readonly<Record<string, SectionPolicy>> = Object.freeze({
   settings: { tables: ["user", "user_settings"], fileKinds: [] },
   contacts: { tables: ["contacts", "contact_values", "contact_properties", "contact_photos", "contact_uid_aliases", "contact_duplicate_dismissals"], fileKinds: ["contact_photo"] },
-  calendar: { tables: ["calendar_accounts", "calendar_calendars", "calendar_settings", "calendar_events", "calendar_event_subtasks", "calendar_event_attendees", "calendar_event_external_refs"], fileKinds: [] },
+  calendar: { tables: ["calendar_accounts", "calendar_calendars", "calendar_settings", "calendar_events", "calendar_event_subtasks", "calendar_event_attendees", "calendar_event_external_refs", "task_order"], fileKinds: [] },
   mail: { tables: ["mail_accounts", "mail_account_settings", "mail_templates", "mail_folders", "mail_folder_remote_boxes", "mail_sender_rules", "emails", "email_attachments", "mail_email_scores", "mail_folder_reconciliations", "mail_folder_recovery_items", "mail_folder_rule_overrides", ...Object.keys(ARCHIVE_COLUMNS)], fileKinds: ["email_attachment", "raw_email"] },
   recordings: { tables: ["recordings", "recording_tags", "recording_tag_links", "recording_transcription_jobs"], fileKinds: ["recording"] },
 });
@@ -68,6 +68,11 @@ const BASE_TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Obj
   calendar_event_subtasks: table('calendar', 'id event_id user_id title is_done position created_at updated_at', ["id"], {}),
   calendar_event_attendees: table('calendar', 'id user_id event_id email display_name response_status is_organizer optional_attendee comment created_at updated_at', ["id"], {}),
   calendar_event_external_refs: table('calendar', 'id user_id event_id calendar_id account_id provider external_event_id external_etag external_updated_at last_synced_at created_at updated_at', ["id"], {}),
+  // Upgrade step 24 (0.27.0): the hand order of tasks. A row names a local
+  // task by event_id, a synced one by calendar_id + remote_uid +
+  // recurrence_id; the key is the hash of that identity, computed again.
+  task_order: table('calendar', 'user_id item_key calendar_id event_id remote_uid recurrence_id sort_rank updated_at', ['user_id', 'item_key'],
+    { item_key: 'rebuild', recurrence_id: 'preserve' }, since(24, 'user_id item_key calendar_id event_id remote_uid recurrence_id sort_rank updated_at')),
   mail_accounts: table('mail', 'id user_id email_address display_name provider username imap_host imap_port smtp_host smtp_port encrypted_password sync_fetch_limit sync_mode sync_status delete_emails_on_server server_delete_enabled_at server_delete_grace_until server_delete_last_run_at allow_self_signed trusted_imap_fingerprint256 trusted_smtp_fingerprint256 is_active last_synced_at created_at updated_at sync_window_days trash_window_days sync_policy_confirmed_at signature_html signature_text', ["id"], {"delete_emails_on_server": "reset_server_deletion", "server_delete_enabled_at": "reset_server_deletion", "server_delete_grace_until": "reset_server_deletion", "server_delete_last_run_at": "reset_server_deletion", "sync_status": "reset_sync_progress", "sync_policy_confirmed_at": "reset_sync_policy_confirmation"}, { sync_mode: 3, sync_status: 3, sync_window_days: 10, trash_window_days: 10, sync_policy_confirmed_at: 10, signature_html: 20, signature_text: 20 }),
   // Settings of one mail account (F1); folder references are remapped.
   mail_account_settings: table('mail', 'mail_account_id user_id setting_key setting_value updated_at', ['mail_account_id', 'setting_key'], { setting_value: 'remap_setting_references' }, since(20, 'mail_account_id user_id setting_key setting_value updated_at')),
@@ -123,6 +128,8 @@ const REFERENCES: Readonly<Record<string, Readonly<Record<string, string>>>> = O
   calendar_event_subtasks: { event_id: 'calendar_events' },
   calendar_event_attendees: { event_id: 'calendar_events' },
   calendar_event_external_refs: { event_id: 'calendar_events', calendar_id: 'calendar_calendars', account_id: 'calendar_accounts' },
+  // Both nullable: a local task's row has only event_id, a synced one only calendar_id.
+  task_order: { calendar_id: 'calendar_calendars', event_id: 'calendar_events' },
   mail_account_settings: { mail_account_id: 'mail_accounts' },
   mail_templates: {},
   mail_folders: { mail_account_id: 'mail_accounts' },

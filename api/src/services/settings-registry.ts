@@ -5,14 +5,16 @@ import type { SettingScope } from '../contracts/settings';
 // value is. Pure data, so the frontend's defaults can be checked against it;
 // services/settings.ts stores, resolves and checks the values.
 
+export type ReferenceTarget = 'mail_account' | 'calendar' | 'task_list';
 export type Value = string | number | boolean | null | string[];
 export type Kind =
   | { type: 'enum'; values: readonly string[] }
   | { type: 'boolean' }
   | { type: 'integer'; min: number; max: number; values?: readonly number[]; nullable?: boolean }
-  // An id of one of the user's records ('' for none); checked when written,
-  // remapped on restore.
-  | { type: 'reference'; target: 'mail_account' }
+  // An id of one of the user's records ('' for none); checked when written
+  // (settings.ts checkReference), remapped on restore by its target's id map.
+  // A task_list is a calendar that can take tasks without a date.
+  | { type: 'reference'; target: ReferenceTarget }
   | { type: 'list'; item: RegExp; maxItems: number; unique: true; allowed?: readonly string[] };
 
 export interface Entry {
@@ -38,6 +40,10 @@ export const SETTINGS = {
     week_start: { scope: 'user', kind: { type: 'enum', values: ['monday', 'sunday', 'saturday'] }, default: 'monday' },
     // The event dialog's reminder choices (REMINDER_OPTIONS in src/lib/calendar-api.ts).
     default_event_reminder: { scope: 'user', kind: { type: 'integer', min: 0, max: 1440, values: [0, 5, 15, 30, 60, 120, 1440], nullable: true }, default: 0 },
+    // Where new tasks and events go (0.27); '' is UniHub's choice
+    // (services/calendar.ts resolveCalendarDefaults).
+    default_task_list_id: { scope: 'user', kind: { type: 'reference', target: 'task_list' }, default: '' },
+    default_calendar_id: { scope: 'user', kind: { type: 'reference', target: 'calendar' }, default: '' },
     reminder_notification_detail: { scope: 'user', kind: { type: 'enum', values: ['full', 'none'] }, default: 'full', strictness: ['full', 'none'] },
     compose_format: { scope: 'user', kind: { type: 'enum', values: ['rich', 'plain'] }, default: 'rich' },
     compose_format_switch: { scope: 'user', kind: { type: 'boolean' }, default: false },

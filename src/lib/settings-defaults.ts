@@ -9,6 +9,8 @@ export const DEFAULT_USER_SETTINGS: UserSettingValues = {
   accent_color: 'blue',
   week_start: 'monday',
   default_event_reminder: 0,
+  default_task_list_id: '',
+  default_calendar_id: '',
   reminder_notification_detail: 'full',
   compose_format: 'rich',
   compose_format_switch: false,

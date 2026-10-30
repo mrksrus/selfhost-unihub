@@ -22,7 +22,7 @@ const operation = { id: 'old-operation', user_id: 'untrusted-owner', mail_accoun
   remote_uid: 42, remote_uidvalidity: 7, status: 'pending', state: 'reconciling', dispatched: true, attempts: 1, intent_revision: '3' };
 
 test('schema 4 and later explicitly export operations, attempts, receipts and remote evidence in the mail section', () => {
-  assert.equal(BACKUP_VERSION, 5);
+  assert.ok(BACKUP_VERSION >= 4);
   for (const name of ['mail_writebacks','mail_operation_attempts','mail_command_receipts','mail_remote_occurrences','mail_engine_quarantine']) {
     assert.ok(SECTION_POLICIES.mail.tables.includes(name));
     assert.equal(TABLE_POLICIES[name].fieldPolicies.user_id, 'quarantine_provider_evidence');

@@ -409,6 +409,95 @@ async function loadCalendarWithAccount(userId: string, calendarId: string) {
   };
 }
 
+// What a calendar can take, from the server's rules, shared by the default
+// settings (checked when written and when read) and the calendar list's
+// marks (contracts/tasks.ts CalendarChoiceFields). Ordered as the calendar
+// list shows them: by account, then by calendar, oldest first.
+interface CalendarChoice {
+  id: string;
+  provider: string;
+  read_only: boolean;
+  auto_todo_enabled: boolean;
+  account_active: boolean;
+  mail_connected: boolean;
+}
+
+async function loadCalendarChoices(userId: string, executor: SqlExecutor = db): Promise<CalendarChoice[]> {
+  const [rows] = await executor.execute<RowDataPacket[]>(
+    `SELECT c.id, c.read_only, c.auto_todo_enabled, a.provider, a.is_active,
+            (a.mail_account_id IS NULL OR EXISTS (SELECT 1 FROM mail_accounts m WHERE m.id = a.mail_account_id AND ${MAIL_CONNECTED_SQL})) AS mail_connected
+     FROM calendar_calendars c
+     INNER JOIN calendar_accounts a ON a.id = c.account_id
+     WHERE c.user_id = ? AND a.user_id = ?
+     ORDER BY a.created_at ASC, c.created_at ASC, c.id ASC`,
+    [userId, userId]
+  );
+  return rows.map(row => ({
+    id: String(row.id),
+    provider: normalizeCalendarAccountProvider(row.provider) || 'local',
+    read_only: !!Number(row.read_only),
+    auto_todo_enabled: !!Number(row.auto_todo_enabled),
+    account_active: !!Number(row.is_active),
+    mail_connected: !!Number(row.mail_connected),
+  }));
+}
+
+function calendarWriteBlock(choice: CalendarChoice): 'read_only' | 'sync_paused' | null {
+  if (choice.provider === 'ics' || choice.read_only) return 'read_only';
+  if (choice.provider === 'caldav' && (!choice.account_active || !choice.mail_connected)) return 'sync_paused';
+  return null;
+}
+
+// Only UniHub's own lists hold tasks without a date: a server calendar
+// stores dated events only.
+const takesUndatedTasks = (choice: CalendarChoice) => choice.provider === 'local' && !calendarWriteBlock(choice);
+const qualifiesAsTaskList = (choice: CalendarChoice) => takesUndatedTasks(choice) && choice.auto_todo_enabled;
+
+/** Why the calendar cannot be the default of the target, or null when it can. */
+function calendarChoiceRefusal(target: 'task_list' | 'calendar', choice: CalendarChoice | undefined): string | null {
+  if (!choice) return target === 'task_list' ? 'Choose one of your own lists' : 'Choose one of your own calendars';
+  const block = calendarWriteBlock(choice);
+  if (block === 'read_only') return target === 'task_list' ? 'This list is read-only' : 'This calendar is read-only';
+  if (block === 'sync_paused') return 'Sync is paused for this calendar';
+  if (target === 'task_list' && choice.provider !== 'local') return 'Tasks without a date stay in UniHub: choose one of your UniHub lists';
+  if (target === 'task_list' && !choice.auto_todo_enabled) return 'This list does not show in ToDo';
+  return null;
+}
+
+/**
+ * Where new tasks and new events go: the person's default settings when
+ * their calendars still qualify, else UniHub's choice. Tasks: the oldest
+ * UniHub list with ToDo on, else the default local calendar. Events: the
+ * first writable calendar in list order, else the task list. A stored choice
+ * that no longer qualifies (deleted, read-only, paused) falls back the same
+ * way; `stale` says so.
+ */
+async function resolveCalendarDefaults(userId: string, executor: SqlExecutor = db) {
+  const { settingValues } = require('./settings') as typeof import('./settings');
+  const values = await settingValues('user', userId, userId, executor);
+  let choices = await loadCalendarChoices(userId, executor);
+  if (!choices.some(takesUndatedTasks)) {
+    await ensureDefaultLocalCalendarForUser(userId, executor);
+    choices = await loadCalendarChoices(userId, executor);
+  }
+  const byId = new Map(choices.map(choice => [choice.id, choice]));
+  const storedList = byId.get(values.default_task_list_id);
+  const storedCalendar = byId.get(values.default_calendar_id);
+  const taskListId = storedList && qualifiesAsTaskList(storedList) ? storedList.id
+    : choices.find(qualifiesAsTaskList)?.id ?? (await ensureDefaultLocalCalendarForUser(userId, executor)).calendarId;
+  const calendarId = storedCalendar && !calendarWriteBlock(storedCalendar) ? storedCalendar.id
+    : choices.find(choice => !calendarWriteBlock(choice))?.id ?? taskListId;
+  return {
+    taskListId,
+    calendarId,
+    stale: {
+      taskList: values.default_task_list_id !== '' && taskListId !== values.default_task_list_id,
+      calendar: values.default_calendar_id !== '' && calendarId !== values.default_calendar_id,
+    },
+    choices,
+  };
+}
+
 function formatProviderDateRange(value: unknown) {
   const parsed = parseDatetimeToMillis(value);
   if (parsed === null) return null;
@@ -443,4 +532,10 @@ export {
   applyLocalEventUpdate,
   loadCalendarWithAccount,
   formatProviderDateRange,
+  loadCalendarChoices,
+  calendarWriteBlock,
+  takesUndatedTasks,
+  calendarChoiceRefusal,
+  resolveCalendarDefaults,
 };
+export type { CalendarChoice };
