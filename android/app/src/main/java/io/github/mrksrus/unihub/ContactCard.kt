@@ -341,7 +341,7 @@ enum class ValueKind(val field: String, val limit: Int, val labels: Set<String>,
             if (digits.isEmpty()) "" else (if (text.startsWith("+")) "+" else "") + digits
         }
         URL -> value.trim().lowercase().replace(SCHEME, "").replace(TRAILING_SLASHES, "")
-        else -> value.trim().lowercase().replace(SPACES, " ")
+        else -> collapseSpaces(value.trim().lowercase())
     })
 
     companion object {
@@ -349,7 +349,21 @@ enum class ValueKind(val field: String, val limit: Int, val labels: Set<String>,
         private const val KEY_MAX = 255
         private val SCHEME = Regex("^[a-z][a-z0-9+.-]*://")
         private val TRAILING_SLASHES = Regex("/+$")
-        private val SPACES = Regex("(?U)\\s+")
+        // JavaScript's \s (contact-keys.ts textKey); Android's regex engine has no (?U).
+        private const val JS_SPACES = "\t\n\u000B\u000C\r \u00A0\u1680\u2028\u2029\u202F\u205F\u3000\uFEFF"
+
+        private fun collapseSpaces(text: String): String = buildString {
+            var space = false
+            for (char in text) {
+                if (char in JS_SPACES || char in '\u2000'..'\u200A') {
+                    if (!space) append(' ')
+                    space = true
+                } else {
+                    append(char)
+                    space = false
+                }
+            }
+        }
 
         private fun bounded(text: String) =
             if (text.codePointCount(0, text.length) <= KEY_MAX) text else text.substring(0, text.offsetByCodePoints(0, KEY_MAX))

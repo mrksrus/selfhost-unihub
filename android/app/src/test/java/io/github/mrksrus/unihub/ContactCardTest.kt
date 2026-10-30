@@ -250,6 +250,8 @@ class ContactCardTest {
         assertEquals("example.org/ada", ValueKind.URL.key("HTTPS://Example.org/ada/"))
         assertEquals("ada@example.com", ValueKind.EMAIL.key(" Ada@Example.com"))
         assertEquals("xmpp:ada@example.org", ValueKind.IMPP.key("XMPP:ada@example.org"))
+        // JavaScript's \s, without a regex Android's engine would refuse.
+        assertEquals("ada example", ValueKind.NICKNAME.key(" Ada\u2003\n\u00A0Example "))
         assertTrue(ContactPhone.same(
             ContactCard(phones = listOf(Value("+1 555 0100", "mobile"))),
             ContactCard(phones = listOf(Value("+15550100", "mobile", id = "v-1"))),

@@ -367,7 +367,12 @@ object ContactsSync {
      * answers; and, from servers with the full model, the card, version and
      * photo etag.
      */
-    private class ServerContact(val id: String, val json: JSONObject, val legacy: LegacyCard, val card: ContactCard, val version: Long?, val photo: String) {
+    private class ServerContact(val id: String, val json: JSONObject, val legacy: LegacyCard) {
+        // The full model, read only where a server has it.
+        val card: ContactCard by lazy { ContactCard.fromJson(json) }
+        val version: Long? get() = if (json.has("version") && !json.isNull("version")) json.optLong("version") else null
+        val photo: String get() = json.optJSONObject("photo")?.optString("etag").orEmpty()
+
         /**
          * A fingerprint of everything an old server keeps of the contact, notes
          * included, so the phone notices a change it does not share without
@@ -396,9 +401,7 @@ object ContactsSync {
                     listOf("email", "email2", "email3").map { json.text(it) }.filter { it.isNotEmpty() }.distinct(),
                     json.text("company"),
                     json.text("job_title"),
-                ), ContactCard.fromJson(json),
-                    if (json.has("version") && !json.isNull("version")) json.optLong("version") else null,
-                    json.optJSONObject("photo")?.optString("etag").orEmpty())
+                ))
             }
         }
     }
