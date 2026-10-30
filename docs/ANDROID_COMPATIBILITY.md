@@ -26,7 +26,12 @@ apps in today's window read `app` from the handshake, and the 0.22.1 app also
 `features` (it offers notifications only while they list
 `android-notifications`), so the server must keep answering `app: "unihub"`,
 keep listing that feature while such an app is in the window, and `minApp`
-must not refuse the oldest app in the window. Removing support for an app is a product decision: change the
+must not refuse the oldest app in the window. From 0.26.0 the app also looks
+for `contacts-vcard`: only then does it sync every contact field, with
+version-checked writes, photos and merges; without it (0.24.3 to 0.25.1
+servers) it syncs the 3+3 fields as those apps do. A 0.26.0 server keeps the
+3+3 projection and applies their flat writes as a diff (a fourth number and
+labels stay), as long as the 0.24.3 to 0.25.1 apps are in the window. Removing support for an app is a product decision: change the
 window and `minApp` together, on purpose.
 
 ## Checks

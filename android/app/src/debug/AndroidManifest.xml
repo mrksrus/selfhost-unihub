@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: helpers for the emulator tests (tools/e2e/android). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- adb holds DUMP; apps do not, so only the test can send this. -->
+        <receiver
+            android:name=".TestContactPhoto"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+    </application>
+</manifest>

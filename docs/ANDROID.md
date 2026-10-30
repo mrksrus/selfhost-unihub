@@ -114,19 +114,46 @@ Android 15; older versions resized the window themselves.
 
 From 0.22.0 the app can keep the signed-in user's UniHub contacts in the
 phone's own contacts, so the Phone app's caller name, WhatsApp, Messages and
-other apps find them. From 0.22.3 this works both ways. It is entirely in the
-app: the server and the web pages are unchanged, and it works with any server
-the app supports.
+other apps find them. From 0.22.3 this works both ways. From 0.26.0 the app
+syncs every field both sides have with a server that lists `contacts-vcard`
+in `GET /api/version` (0.26.0 and newer). With an older server it syncs the
+3+3 fields of the apps up to 0.25.1 (below), and it switches by itself when
+that server is updated.
 
 - **Turning it on.** Once signed in, with at least one contact, the app asks
   once per server: **Show contacts** or **Not now**. Android then asks for
   access to contacts. Later, Android's Settings → Accounts (Passwords &
   accounts on some phones) → Add account → UniHub asks again.
-- **What is shared.** Each contact's first and last name, phone numbers, email
-  addresses, company and job title. New numbers from UniHub are labelled
-  mobile, like the vCard export. Notes stay in UniHub: every app allowed to
-  read the phone's contacts could read them. A UniHub contact with none of
-  these is left off the phone.
+- **What is shared (0.26.0 servers).** The name with all its parts (prefix,
+  given, middle, family, suffix), every phone number, email address, postal
+  address, web address, messaging and SIP address, relation and nickname with
+  its label, the organisation, department and job title, the birthday and
+  anniversary (also without a year), the favourite star and the photo.
+  Android's types are UniHub's labels, as in Android's own vCard export: all
+  twenty phone types, custom labels as custom labels, and relations Android
+  has no type for ("Colleague") as a custom label that comes back as that
+  label. Messaging addresses are IMPP addresses (`xmpp:`, `skype:`, `sip:`
+  for SIP addresses, a custom protocol's name otherwise). A value UniHub has
+  no label for gets the phone's default (mobile for numbers). A name UniHub
+  knows only as a display name ("Example Labs Reception") is the given name
+  on the phone.
+- **What is shared (older servers).** Each contact's first and last name,
+  three phone numbers, three email addresses, company and job title. New
+  numbers from UniHub are labelled mobile, like the vCard export of those
+  versions.
+- **What stays in UniHub.** Notes (every app allowed to read the phone's
+  contacts could read them), categories and the details kept from imports. A write from the phone sends them back unchanged. A UniHub contact
+  with nothing to show (no name, organisation, email or number) is left off
+  the phone.
+- **What stays on the phone.** Phonetic names, the organisation's job
+  description, symbol, office and phonetic name, a second organisation, events
+  other than the birthday and anniversary, the phone's own notes, group
+  memberships and ringtones, and a value too long for UniHub (a number over 64
+  characters, for example). With an older server also everything beyond the
+  3+3 fields: a fourth number, labels, addresses, birthdays, a middle name or a
+  photo. Removing the UniHub account removes these with it (see Removal). A
+  contact added on the phone with only a postal address, say, stays the
+  phone's own until it gets a name, organisation, email or number.
 - **Both ways.** The contacts belong to a "UniHub" account on the phone, named
   after the server. Contacts apps can add, edit and delete contacts there; the
   next sync does the same in UniHub, and UniHub's changes come to the phone.
@@ -135,16 +162,26 @@ the app supports.
   place to save them. A contact added on the phone that has the same email
   address or phone number as one in UniHub is joined to it instead of being
   added twice. Each side then fills in what the other lacks. A field changed
-  on both sides since the last sync takes UniHub's value. Numbers and
-  addresses are merged one by one, so adding one on each side keeps both.
-- **What stays on the phone.** UniHub keeps three numbers and three addresses
-  per contact; any more stay on the phone. So do the parts of a contact UniHub
-  has no place for: a middle name, prefix or suffix, a photo, postal
-  addresses, birthdays, the phone's own notes and its labels for numbers and
-  addresses. Removing the UniHub account removes these with it (see
-  Removal). A contact added on the phone without a first name gets one in
-  UniHub (its last name, company, address or number), because UniHub
-  requires it.
+  on both sides since the last sync takes UniHub's value; the name counts as
+  one field. Lists (numbers, addresses, ...) are merged value by value, so
+  adding one on each side keeps both; a value is the same when UniHub's key
+  for it is ("+1 555 0100" and "+15550100"), and a number written
+  differently on the phone is no change. A changed label or preferred value
+  counts as a change of the value.
+- **Photos.** A photo set or removed on one side follows on the other (UniHub's
+  when both changed). UniHub converts a photo from the phone and Android
+  scales one from UniHub; neither counts as a change, so a photo never goes
+  back and forth. At most 200 photos move in one sync, and none on a metered
+  network (mobile data, a metered Wi-Fi); the rest follow at later syncs. With
+  an older server photos stay where they are.
+- **Merges in UniHub.** A contact merged into another in UniHub (also "Merge
+  all") leaves the phone, and the contact it was merged into brings every
+  value. If the phone had changed the merged-away contact since the last
+  sync, that change goes to the contact it was merged into first. These are
+  UniHub's deletions, so they never ask "Too many deletions". Undoing a merge
+  brings the contact back to the phone. The apps up to 0.25.1 see a merged
+  contact as deleted, and one they had changed comes back as a new contact,
+  which then shows as a duplicate in UniHub.
 - **Deleting.** A contact deleted on the phone is deleted in UniHub, unless
   UniHub changed it since the last sync, even only its note; then it comes
   back with the change.
@@ -160,27 +197,32 @@ the app supports.
   phone's copy as it is. A sync that fails or gets an incomplete listing
   changes nothing; a contact UniHub refuses is tried again at the next sync.
   A sync never writes over a contact that was edited on the phone while it
-  ran; that edit goes with the next sync. A change or deletion goes to UniHub
-  only if the contact is still as UniHub listed it a few seconds before;
-  otherwise the next sync merges the newer version first. The API has no
-  conditional write, so an edit made in UniHub in that very moment can still
-  be overwritten, as between two open web pages.
-- **Session.** The sync asks `GET /api/auth/me?background=1` and
-  `GET /api/contacts`, and writes with `POST /api/contacts`, `PUT` and
-  `DELETE /api/contacts/<id>` like the contacts page, using the app's own
-  WebView session cookie and its CSRF token. It needs no password of its own.
-  A `PUT` sends the contact's UniHub notes back unchanged. A sync uses the
-  session like the open app does, so while syncing is on the app's session
-  keeps being renewed (21 days from the last use, see
-  [authentication](AUTH_ADMIN_SETTINGS.md)). The app passes a renewed cookie
-  on to its pages, except while a page is signing in (the `/auth` page and
-  five minutes after), so it never replaces a new session.
+  ran; that edit goes with the next sync. With a 0.26.0 server a change is
+  written with the contact's version: if it changed in UniHub meanwhile,
+  UniHub refuses the write and the next sync merges both. Deletions, and
+  every write to an older server, go to UniHub only if the contact is still as
+  UniHub listed it a few seconds before; otherwise the next sync merges the
+  newer version first. Those have no conditional write, so an edit made in
+  UniHub in that very moment can still be overwritten, as between two open
+  web pages.
+- **Session.** The sync asks `GET /api/auth/me?background=1`,
+  `GET /api/version` and `GET /api/contacts` (with `include=merged` on a
+  0.26.0 server), and writes with `POST /api/contacts`, `PUT` and
+  `DELETE /api/contacts/<id>` and the photo routes
+  (`GET`, `PUT ?source=android` and `DELETE /api/contacts/<id>/photo`) like the
+  contacts page, using the app's own WebView session cookie and its CSRF token.
+  It needs no password of its own. A sync uses the session like the open app
+  does, so while syncing is on the app's session keeps being renewed (21 days
+  from the last use, see [authentication](AUTH_ADMIN_SETTINGS.md)). The app
+  passes a renewed cookie on to its pages, except while a page is signing in
+  (the `/auth` page and five minutes after), so it never replaces a new
+  session.
 - **Removal.** Signing out in the app, a session that ended (for example
   signed out on every device), or the Contacts module turned off removes
   UniHub's contacts from the phone at the next sync; signing in again brings
   them back. A contact the phone had not sent yet, or one holding something
-  UniHub does not keep (a photo, an address, a label chosen on the phone, a
-  fourth number), stays and syncs again when the same user signs in. Another
+  UniHub does not keep (see above), stays and syncs again when the same user
+  signs in. Another
   user signing in replaces the contacts with theirs; what stayed of the
   previous user is never sent to the other user. Contacts saved on the phone
   belong to the user who last used the app (recorded when contacts are turned
@@ -190,6 +232,14 @@ the app supports.
   removing the UniHub account in Android's settings, or uninstalling the app
   removes the account and Android deletes its contacts, including what only
   the phone kept.
+- **Updating to 0.26.0.** Contacts the earlier app synced stay linked; nothing
+  is added again. At the first sync with a 0.26.0 server, what that app kept
+  as the phone's own (a fourth number, labels, addresses, birthdays, a middle
+  name, the photo) goes to UniHub, and what UniHub has beyond the 3+3 fields
+  comes to the phone. A number UniHub already has (from a merge, say) is not
+  added twice, and where both sides have the same value UniHub's label wins
+  unless it has none. The app's state of each contact moves from format "2"
+  to "3" then.
 - **Updating from 0.22.0 or 0.22.1.** The read-only copies those versions
   wrote become ordinary synced contacts at the first sync after the update.
   Nothing is sent to UniHub for them until they are edited on the phone.
@@ -357,9 +407,24 @@ server with its notes kept, a phone contact joined to the same person in
 UniHub, many deletions waiting for an answer (undone, then confirmed), a
 contact not yet sent surviving a sign-out, a sync started by Android with the
 app closed, another user, a session that ended, signing in again and moving
-to another server. Given the previous release's app, it starts there and
-checks that updating keeps the contacts and sends nothing back. CI runs it on
-every emulator after the support window.
+to another server. Then the stub server takes the full model (`contacts-vcard`)
+under contacts the 3+3 sync linked: the phone's own address, birthday, middle
+name, web address and fourth number reach it without duplicates (also a number
+it already had, written differently), every kind and label goes both ways,
+a photo comes to the phone and goes again, an edit in UniHub during a write is
+not overwritten (409), "Merge all" of twelve groups leaves the phone without
+"Too many deletions", a merged-away contact changed on the phone gives that
+change to the survivor, and an undone merge comes back. Given the previous
+release's app, both parts start there and update to the candidate. CI runs it
+on every emulator after the support window.
+
+`tools/e2e/android/contacts.test.mjs` runs the debug app against a real
+server (the e2e stack): the update from the 0.25.1 app (given as
+`UNIHUB_E2E_PREVIOUS_APK`, signed like the installed app) with that app's 3+3
+writes keeping a fifth number and its labels, a contact with five numbers and
+four emails shown with its labels and every kind going both ways, photos both
+ways (the debug build's `TestContactPhoto` sets a phone photo, which adb
+cannot), and "Merge all" of twelve groups plus an undo.
 
 `scripts/android-server-check.mts` runs the release-built apps against real
 servers on the Android 16 emulator: the image the run built and the earlier

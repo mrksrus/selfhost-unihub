@@ -6,6 +6,23 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.26.0
+
+### Added
+
+- **The Android app syncs every contact field.** With a 0.26.0 server the
+  phone and UniHub share the whole name, every number, email, postal address,
+  web and messaging address, relation and nickname with their labels, the
+  organisation, department and job title, birthday, anniversary, favourite
+  and photo. Contacts merged in UniHub (also "Merge all") leave the phone
+  without asking about "too many deletions", and an edit made in UniHub while
+  the phone syncs is no longer overwritten. Updating the app keeps the synced
+  contacts: what only the phone had (a fourth number, addresses, birthdays,
+  labels, the photo) goes to UniHub, and nothing is added twice. Notes stay
+  in UniHub. Photos move at most 200 per sync and not on a metered network.
+  With an older server the app keeps syncing names, three numbers and three
+  emails as before ([Android](docs/ANDROID.md#contacts-on-the-phone)).
+
 ## 0.25.1
 
 Follow-up fixes for 0.25: interrupted sends, the start screen, the phone

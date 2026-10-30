@@ -117,9 +117,13 @@ test('[B-24] a download at the update\'s address signed with another key is refu
   const name = `unihub-update-${run}-other.apk`;
   adb('shell', 'pm', 'grant', PACKAGE, 'android.permission.POST_NOTIFICATIONS');
   adb('logcat', '-c');
-  swap(`${work}/other.apk`);
-  const { device, page } = await openApp();
+  let device;
   try {
+    // Inside try: a failed start must still put the served app back.
+    swap(`${work}/other.apk`);
+    const opened = await openApp();
+    device = opened.device;
+    const page = opened.page;
     adb('shell', 'input', 'keyevent', 'KEYCODE_HOME');
     await sleep(2000);
     await startUpdate(page, name);
@@ -134,9 +138,10 @@ test('[B-24] a download at the update\'s address signed with another key is refu
     assert.doesNotMatch(adb('shell', 'ls', '/sdcard/Download/'), new RegExp(name.replace(/[.]/g, '\\.')), 'the download is deleted from Downloads');
     assert.equal(adb('shell', `run-as ${PACKAGE} ls cache/update 2>/dev/null || true`).trim(), '', 'no copy is kept for the installer');
   } finally {
-    swap(original);
+    // The original link, unless the swap itself failed before replacing it.
+    if (fs.readlinkSync(served) !== original) swap(original);
     fs.rmSync(work, { recursive: true, force: true });
     adb('shell', 'rm', '-f', `/sdcard/Download/${name}`);
-    await device.close();
+    await device?.close();
   }
 });
