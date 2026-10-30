@@ -1,20 +1,18 @@
 // The browser's side of the contacts API (F11): the routes of docs/CONTACTS.md
 // with the shapes of api/src/contracts/contacts.ts, and the query keys every
 // contacts view shares. Views and hooks go through this module, never the raw
-// client. Routes that a later slice adds (duplicates, merges, imports, photos)
-// are called here already; until they exist the server answers 404 and the
-// views show that as an error with a retry, not as a crash.
+// client.
 import { queryOptions, type QueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { ApiError, unwrap } from '@/lib/api-error';
 import type {
   AutoMergeRequest, AutoMergeResult, BulkContactUpdate, ContactDetail, ContactInput, ContactListResponse, ContactRecord, ContactResponse,
-  DismissDuplicatesRequest, DuplicateConfidence, DuplicatesResponse, ExportFormat, ImportCommitRequest, ImportStatus, ImportSummary,
-  MergeRecord, MergeRequest, MergeResult, UndoMergeResult,
+  ContactSingleField, ContactValueKind, DismissDuplicatesRequest, DuplicateConfidence, DuplicatesResponse, ExportFormat, ImportCommitRequest, ImportStatus,
+  ImportSummary, MergeRecord, MergeRequest, MergeResult, UndoMergeResult,
 } from '../../api/src/contracts/contacts';
 
 export type {
-  Address, AddressInput, AutoMergeResult, ContactDetail, ContactInput, ContactName, ContactPhoto, ContactRecord, ContactSingleField,
+  Address, AddressInput, AutoMergeResult, ContactDetail, ImportCardSummary, ContactInput, ContactName, ContactPhoto, ContactRecord, ContactSingleField,
   DuplicateConfidence, DuplicateGroup, DuplicateMember, DuplicateReason, ExportFormat, ImportDecisionKind, ImportGroup, ImportStatus, ImportSummary,
   ImportWarning, KeptProperty, LabelledValue, LabelledValueInput, MergeRecord, MergeRequest, MergeResult, PartialDate, UndoMergeResult,
 } from '../../api/src/contracts/contacts';
@@ -66,10 +64,43 @@ export function invalidateContactQueries(client: QueryClient) {
   return client.invalidateQueries({ queryKey: contactsQueryKeys.all });
 }
 
+/**
+ * A merge the server refused with something to act on: the members changed
+ * (VERSION_CONFLICT, `contacts` as they are now), a field still needs a
+ * choice (CHOICE_REQUIRED, `conflicts`), or the merged contact would hold
+ * too many values (TOO_MANY_VALUES, `kinds`).
+ */
+export class MergeRefused extends ApiError {
+  readonly contacts: Contact[];
+  readonly conflicts: ContactSingleField[];
+  readonly kinds: ContactValueKind[];
+  constructor(response: { error?: string; status?: number; code?: unknown; contacts?: unknown; conflicts?: unknown; details?: unknown }) {
+    super(response as { error?: string; status?: number; [key: string]: unknown });
+    this.name = 'MergeRefused';
+    this.contacts = Array.isArray(response.contacts) ? response.contacts as Contact[] : [];
+    this.conflicts = Array.isArray(response.conflicts) ? response.conflicts as ContactSingleField[] : [];
+    const details = response.details as { kinds?: unknown } | undefined;
+    this.kinds = Array.isArray(details?.kinds) ? details.kinds as ContactValueKind[] : [];
+  }
+}
+
+const MERGE_REFUSALS = new Set(['VERSION_CONFLICT', 'CHOICE_REQUIRED', 'TOO_MANY_VALUES']);
+
+/** The largest picture the server takes (services/contact-photos.ts MAX_INPUT_BYTES); a larger one is refused before it is sent. */
+export const CONTACT_PHOTO_MAX_BYTES = 20 * 1024 * 1024;
+
 const required = <T,>(value: T | undefined, what: string): T => {
   if (value === undefined) throw new Error(`The server sent no ${what}.`);
   return value;
 };
+
+async function setPhoto(id: string, file: Blob) {
+  if (file.size > CONTACT_PHOTO_MAX_BYTES) throw new ApiError({ error: `This picture is larger than ${CONTACT_PHOTO_MAX_BYTES / 1024 / 1024} MB.`, status: 413, code: 'PHOTO_TOO_LARGE' });
+  const response = await api.uploadBlob<ContactResponse>(`/contacts/${encodeURIComponent(id)}/photo`, file, file.type || 'application/octet-stream', 'PUT');
+  // The request boundary's own size refusal carries no code.
+  if (response.error && response.status === 413 && !response.code) throw new ApiError({ ...response, error: `This picture is larger than ${CONTACT_PHOTO_MAX_BYTES / 1024 / 1024} MB.`, code: 'PHOTO_TOO_LARGE' });
+  return required(unwrap(response)?.contact, 'contact');
+}
 
 async function sendContact(request: Promise<{ data?: ContactResponse; error?: string; status?: number; [key: string]: unknown }>) {
   const response = await request;
@@ -95,13 +126,17 @@ export const contactsApi = {
   setFavorite: async (id: string, isFavorite: boolean) => { unwrap(await api.put(`/contacts/${encodeURIComponent(id)}/favorite`, { is_favorite: isFavorite })); },
 
   // Photos (slice 4): the server converts the picture; the page never crops.
-  setPhoto: async (id: string, file: Blob) => unwrap(await api.uploadBlob<{ contact?: Contact }>(`/contacts/${encodeURIComponent(id)}/photo`, file, file.type || 'application/octet-stream', 'PUT')),
-  removePhoto: async (id: string) => { unwrap(await api.delete(`/contacts/${encodeURIComponent(id)}/photo`)); },
+  setPhoto,
+  removePhoto: async (id: string) => required(unwrap(await api.delete<ContactResponse>(`/contacts/${encodeURIComponent(id)}/photo`))?.contact, 'contact'),
 
   // Duplicates and merges (slices 5 and 6).
   duplicates: async (min: DuplicateConfidence, signal?: AbortSignal) => required(unwrap(await api.get<DuplicatesResponse>(`/contacts/duplicates?min=${min}`, { signal })), 'duplicate groups'),
   dismissDuplicates: async (contactIds: string[]) => { unwrap(await api.post('/contacts/duplicates/dismiss', { contact_ids: contactIds } satisfies DismissDuplicatesRequest)); },
-  merge: async (request: MergeRequest) => required(unwrap(await api.post<MergeResult>('/contacts/merges', request)), 'merge result'),
+  merge: async (request: MergeRequest) => {
+    const response = await api.post<MergeResult>('/contacts/merges', request);
+    if (response.error && typeof response.code === 'string' && MERGE_REFUSALS.has(response.code)) throw new MergeRefused(response);
+    return required(unwrap(response), 'merge result');
+  },
   mergeAll: async (groupIds: string[]) => required(unwrap(await api.post<AutoMergeResult>('/contacts/merges/auto', { group_ids: groupIds, min: 'high' } satisfies AutoMergeRequest)), 'merge results'),
   merges: async (signal?: AbortSignal) => required(unwrap(await api.get<{ merges: MergeRecord[] }>('/contacts/merges', { signal })), 'merges').merges ?? [],
   undoMerge: async (mergeId: string) => required(unwrap(await api.post<UndoMergeResult>(`/contacts/merges/${encodeURIComponent(mergeId)}/undo`, {})), 'undo result'),

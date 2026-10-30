@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FileUp, Loader2 } from 'lucide-react';
-import { contactsApi, contactsQueryKeys, invalidateContactQueries, type ImportDecisionKind, type ImportGroup, type ImportStatus, type ImportSummary } from '@/lib/contacts-api';
-import { reasonText, SINGLE_FIELD_TEXT } from '@/lib/contact-fields';
+import { contactsApi, contactsQueryKeys, invalidateContactQueries, type ImportCardSummary, type ImportDecisionKind, type ImportGroup, type ImportStatus, type ImportSummary, type ImportWarning } from '@/lib/contacts-api';
+import { formatPartialDate, reasonText, SINGLE_FIELD_TEXT } from '@/lib/contact-fields';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ErrorState } from '@/components/ui/page-states';
@@ -13,8 +13,23 @@ const FORMAT_TEXT: Record<ImportSummary['format'], string> = { vcard4: 'vCard 4.
 const DECISION_TEXT: Record<ImportDecisionKind, string> = { add: 'Add as new', merge: 'Merge into existing', skip: 'Skip' };
 const MATCH_TEXT: Record<ImportGroup['match'], string> = { new: 'New', uid: 'Same contact (identity)', identical: 'Already present', duplicate: 'Likely duplicate' };
 const ACCEPT = '.vcf,.vcard,.csv,text/vcard,text/x-vcard,text/csv';
+const FINISHED: ImportStatus['state'][] = ['committed', 'failed', 'expired'];
 
-type Step = { kind: 'pick' } | { kind: 'reading' } | { kind: 'summary'; summary: ImportSummary } | { kind: 'committing'; id: string } | { kind: 'done'; status: ImportStatus };
+/** A warning names the card and the property, never a value (the server words it). */
+const warningText = (warning: ImportWarning) => `${warning.card !== null ? `Contact ${warning.card}: ` : ''}${warning.message}`;
+
+const timeOf = (iso: string) => {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+};
+
+/** What a card of the file holds, next to the field names that differ. */
+function cardText(card: ImportCardSummary) {
+  return [card.display_name || 'No name', card.organization.name, card.job_title, formatPartialDate(card.birthday), card.emails[0], card.phones[0]]
+    .filter(Boolean).join(' · ');
+}
+
+type Step = { kind: 'pick' } | { kind: 'reading' } | { kind: 'summary'; summary: ImportSummary } | { kind: 'committing'; id: string } | { kind: 'done'; status: ImportStatus; summary: ImportSummary };
 
 /**
  * Import in two steps: the file is read and matched first, then the person
@@ -28,35 +43,39 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
   const [decisions, setDecisions] = useState<Record<string, ImportDecisionKind>>({});
   const [showConflicts, setShowConflicts] = useState(false);
   const [fileName, setFileName] = useState('');
+  // The staged file and the decisions sent: a failed import resumes with them (the server keeps the first commit's decisions).
+  const [staged, setStaged] = useState<ImportSummary | null>(null);
 
-  useEffect(() => { if (open) { setStep({ kind: 'pick' }); setDecisions({}); setShowConflicts(false); setFileName(''); } }, [open]);
+  useEffect(() => { if (open) { setStep({ kind: 'pick' }); setDecisions({}); setShowConflicts(false); setFileName(''); setStaged(null); } }, [open]);
 
   const stage = useMutation({
     mutationFn: (file: File) => contactsApi.stageImport(file),
     onMutate: () => setStep({ kind: 'reading' }),
     onSuccess: summary => {
       setDecisions(Object.fromEntries(summary.groups.map(group => [group.id, group.default_decision])));
+      setStaged(summary);
       setStep({ kind: 'summary', summary });
     },
     onError: () => setStep({ kind: 'pick' }),
   });
   const commit = useMutation({
     mutationFn: ({ id, groups }: { id: string; groups: ImportGroup[] }) => contactsApi.commitImport(id, groups.map(group => ({ group_id: group.id, decision: decisions[group.id] ?? group.default_decision }))),
-    onSuccess: status => setStep(status.status === 'committed' || status.status === 'failed' ? { kind: 'done', status } : { kind: 'committing', id: status.id }),
+    onSuccess: status => setStep(FINISHED.includes(status.state) && staged ? { kind: 'done', status, summary: staged } : { kind: 'committing', id: status.id }),
   });
   const committingId = step.kind === 'committing' ? step.id : null;
   const progress = useQuery({
     queryKey: contactsQueryKeys.importStatus(committingId ?? ''),
     queryFn: ({ signal }) => contactsApi.importStatus(committingId!, signal),
     enabled: !!committingId,
-    refetchInterval: query => (query.state.data && ['committed', 'failed', 'expired'].includes(query.state.data.status) ? false : 1000),
+    refetchInterval: query => (query.state.data && FINISHED.includes(query.state.data.state) ? false : 1000),
   });
   useEffect(() => {
     const status = progress.data;
-    if (committingId && status && ['committed', 'failed', 'expired'].includes(status.status)) setStep({ kind: 'done', status });
-  }, [committingId, progress.data]);
+    if (committingId && staged && status?.id === committingId && FINISHED.includes(status.state)) setStep({ kind: 'done', status, summary: staged });
+  }, [committingId, progress.data, staged]);
   useEffect(() => {
-    if (step.kind === 'done' && step.status.status === 'committed') { void invalidateContactQueries(client); onImported?.(); }
+    // A failed import may have written part of the file; the list shows what is there.
+    if (step.kind === 'done' && step.status.state !== 'expired') { void invalidateContactQueries(client); if (step.status.state === 'committed') onImported?.(); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step.kind]);
 
@@ -101,7 +120,7 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
             <details className="text-xs">
               <summary className="cursor-pointer text-warning">{summary.warnings.length} warning{summary.warnings.length === 1 ? '' : 's'}</summary>
               <ul className="mt-1 list-disc space-y-0.5 pl-5 text-muted-foreground">
-                {summary.warnings.slice(0, 50).map((warning, index) => <li key={index}>{warning.card !== null ? `Contact ${warning.card}: ` : ''}{warning.message}</li>)}
+                {summary.warnings.slice(0, 50).map((warning, index) => <li key={index}>{warningText(warning)}</li>)}
                 {summary.warnings.length > 50 && <li>and {summary.warnings.length - 50} more</li>}
               </ul>
             </details>
@@ -123,7 +142,10 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
                       <span className="block">Contact{group.cards.length > 1 ? 's' : ''} {group.cards.join(', ')}: {MATCH_TEXT[group.match].toLowerCase()}{group.match === 'duplicate' && group.confidence ? `, ${group.confidence} confidence` : ''}</span>
                       <span className="block text-xs text-muted-foreground">{[...new Set(group.reasons.map(reasonText))].join(' · ')}</span>
                       {showConflicts && group.conflicts.length > 0 && (
-                        <span className="block text-xs text-warning">Differs in {group.conflicts.map(field => SINGLE_FIELD_TEXT[field].toLowerCase()).join(', ')}: UniHub's value is kept when merging.</span>
+                        <span className="mt-1 block space-y-0.5 text-xs">
+                          <span className="block text-warning">Differs in {group.conflicts.map(field => SINGLE_FIELD_TEXT[field].toLowerCase()).join(', ')}: UniHub's value is kept when merging.</span>
+                          {(group.summaries ?? []).map(card => <span key={card.card} className="block break-words text-muted-foreground">In the file: {cardText(card)}</span>)}
+                        </span>
                       )}
                     </span>
                     <Select value={decisions[group.id] ?? group.default_decision} onValueChange={value => setDecisions(prev => ({ ...prev, [group.id]: value as ImportDecisionKind }))}>
@@ -137,6 +159,7 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
               </ul>
             </section>
           )}
+          <p className="text-xs text-muted-foreground">{timeOf(summary.expires_at) ? `The file is kept for this preview until ${timeOf(summary.expires_at)}.` : ''}</p>
           {commit.error && <ErrorState title="The import could not start" error={commit.error} />}
         </div>
       );
@@ -155,18 +178,26 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
     const result = status.result;
     return (
       <div className="space-y-3 text-sm">
-        {status.status === 'committed' ? (
+        {status.state === 'committed' ? (
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
             <dt className="text-muted-foreground">Added</dt><dd>{result?.added ?? 0}</dd>
             <dt className="text-muted-foreground">Merged</dt><dd>{result?.merged ?? 0}</dd>
             <dt className="text-muted-foreground">Skipped</dt><dd>{result?.skipped ?? 0}</dd>
             {result && result.kept_conflicts.length > 0 && <><dt className="text-muted-foreground">Kept UniHub's value</dt><dd>{result.kept_conflicts.length} field{result.kept_conflicts.length === 1 ? '' : 's'} that differed</dd></>}
           </dl>
-        ) : <ErrorState title={status.status === 'expired' ? 'The staged file expired' : 'The import failed'} error={`Nothing further was written. ${status.status === 'expired' ? 'Choose the file again.' : 'Try again; already written contacts are not added twice.'}`} />}
+        ) : status.state === 'expired' ? <ErrorState title="The preview expired" error="Nothing was written. Choose the file again." />
+          : (
+            <ErrorState title="The import stopped" error={`${status.error?.message ?? 'The import stopped.'} Contacts already written stay; continuing does not add them twice.`}
+              onRetry={() => commit.mutate({ id: status.id, groups: step.summary.groups })} retrying={commit.isPending} />
+          )}
+        {status.state === 'failed' && result && <p className="text-xs text-muted-foreground">So far: {result.added} added, {result.merged} merged, {result.skipped} skipped.</p>}
         {result && result.warnings.length > 0 && (
           <details className="text-xs">
             <summary className="cursor-pointer text-warning">{result.warnings.length} warning{result.warnings.length === 1 ? '' : 's'}</summary>
-            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-muted-foreground">{result.warnings.slice(0, 50).map((warning, index) => <li key={index}>{warning.message}</li>)}</ul>
+            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-muted-foreground">
+              {result.warnings.slice(0, 50).map((warning, index) => <li key={index}>{warningText(warning)}</li>)}
+              {result.warnings.length > 50 && <li>and {result.warnings.length - 50} more</li>}
+            </ul>
           </details>
         )}
       </div>

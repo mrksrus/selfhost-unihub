@@ -142,4 +142,27 @@ describe('ContactEditor', { timeout: 20_000 }, () => {
     expect(api.put).toHaveBeenCalledTimes(1);
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  it('updates a new contact saved before its photo failed instead of adding it again', async () => {
+    const created = contact('robin', { version: 1, name: { given: 'Robin' }, emails: [{ id: 'e1', value: 'robin@example.com' }] });
+    vi.mocked(api.post).mockResolvedValueOnce({ data: { contact: created } });
+    vi.mocked(api.uploadBlob).mockResolvedValueOnce({ error: 'This picture could not be read.', status: 400, code: 'PHOTO_UNREADABLE' });
+    vi.mocked(api.put).mockResolvedValueOnce({ data: { contact: { ...created, version: 2 } } });
+    globalThis.URL.createObjectURL ??= () => 'blob:preview';
+    globalThis.URL.revokeObjectURL ??= () => {};
+    const onClose = mount({ kind: 'new' });
+    const dialog = await screen.findByRole('dialog', { name: 'New contact' });
+    fireEvent.change(within(dialog).getByLabelText('First name'), { target: { value: 'Robin' } });
+    fireEvent.change(within(dialog).getByLabelText('Choose photo'), { target: { files: [new File(['x'], 'photo.heic', { type: 'image/heic' })] } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add contact' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('This picture could not be read');
+    // The editor now holds the saved contact: the next save is an update with its version and value ids.
+    expect(await within(dialog).findByRole('heading', { name: 'Edit contact' })).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/contacts/robin', expect.objectContaining({
+      version: 1, emails: [expect.objectContaining({ id: 'e1', value: 'robin@example.com' })],
+    })));
+    expect(api.post).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
 });

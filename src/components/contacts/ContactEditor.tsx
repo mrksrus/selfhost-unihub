@@ -44,14 +44,17 @@ export function ContactEditor({ target, onClose, actions, onSaved }: {
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const editing = target?.kind === 'edit' ? target.contact : null;
+  // The contact as last saved here: a save whose picture then failed leaves the editor open on it,
+  // and the next save updates it (its version, its value ids) instead of adding it again.
+  const [saved, setSaved] = useState<Contact | null>(null);
+  const editing = saved ?? (target?.kind === 'edit' ? target.contact : null);
   const clearFocus = useCallback(() => setFocusId(null), []);
   useFocusAfterAdd(focusId, clearFocus);
 
   useEffect(() => {
     if (!target) return;
     setForm(target.kind === 'edit' ? formOf(target.contact) : formForNew(target.name, target.email));
-    setErrors({}); setSaveError(null); setConflict(null); setPhotoStatus(null); setPhotoError(null);
+    setErrors({}); setSaveError(null); setConflict(null); setPhotoStatus(null); setPhotoError(null); setSaved(null);
   }, [target]);
 
   const set = <K extends keyof ContactForm>(key: K, value: ContactForm[K]) => setForm(prev => ({ ...prev, [key]: value }));
@@ -76,7 +79,7 @@ export function ContactEditor({ target, onClose, actions, onSaved }: {
   const shown = (field: OptionalField) => form.shown.includes(field);
   const hidden = OPTIONAL_FIELDS.filter(field => !shown(field.id));
 
-  const finishPhoto = async (id: string) => {
+  const finishPhoto = async (id: string, before: Contact | null) => {
     if (form.photo.kind === 'file') {
       setPhotoStatus('Converting…');
       try { await actions.setPhoto.mutateAsync({ id, file: form.photo.file }); }
@@ -85,7 +88,7 @@ export function ContactEditor({ target, onClose, actions, onSaved }: {
         setPhotoError(error instanceof Error ? error.message : 'The picture could not be saved.');
         return false;
       }
-    } else if (form.photo.kind === 'remove' && editing?.photo) {
+    } else if (form.photo.kind === 'remove' && before?.photo) {
       setPhotoStatus('Removing…');
       try { await actions.removePhoto.mutateAsync(id); }
       catch (error) {
@@ -101,12 +104,17 @@ export function ContactEditor({ target, onClose, actions, onSaved }: {
   const save = async (version: number | undefined) => {
     setBusy(true); setSaveError(null); setConflict(null);
     try {
-      const saved = editing
+      const result = editing
         ? await actions.update.mutateAsync({ id: editing.id, contact: toInput(form, version ?? editing.version) })
         : await actions.create.mutateAsync(toInput(form));
       // The contact is saved before its picture; a failed picture leaves the editor open on the saved contact.
-      if (!(await finishPhoto(saved.id))) { setForm(prev => ({ ...prev, photo: { kind: 'keep' } })); onSaved?.(saved.id); return; }
-      onSaved?.(saved.id);
+      if (!(await finishPhoto(result.id, editing))) {
+        setSaved(result);
+        setForm({ ...formOf(result), shown: [...new Set([...formOf(result).shown, ...form.shown])] });
+        onSaved?.(result.id);
+        return;
+      }
+      onSaved?.(result.id);
       onClose();
     } catch (error) {
       if (error instanceof ContactVersionConflict) setConflict(error.current);
@@ -219,7 +227,7 @@ export function ContactEditor({ target, onClose, actions, onSaved }: {
         <div role="alert" className="space-y-2 rounded-md border border-warning/60 px-3 py-2 text-sm">
           <p>This contact was changed on another device meanwhile. Your changes are not saved yet.</p>
           <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="outline" size="sm" onClick={() => { setForm(formOf(conflict)); setConflict(null); }}>Load their version</Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => { setSaved(conflict); setForm(formOf(conflict)); setConflict(null); }}>Load their version</Button>
             <Button type="button" variant="outline" size="sm" onClick={() => void save(conflict.version)}>Save mine anyway</Button>
           </div>
         </div>

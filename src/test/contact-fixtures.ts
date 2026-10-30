@@ -1,5 +1,5 @@
 // Synthetic contacts in the shape the contacts API answers (api/src/contracts/contacts.ts).
-import type { Contact, DuplicateGroup, LabelledValue } from '@/lib/contacts-api';
+import type { Contact, ContactSingleField, DuplicateGroup, LabelledValue } from '@/lib/contacts-api';
 
 type Patch = Partial<Omit<Contact, 'name' | 'organization' | 'emails' | 'phones'>> & {
   name?: Partial<Contact['name']>;
@@ -30,11 +30,29 @@ export function contact(id: string, patch: Patch = {}): Contact {
   return { ...base, ...patch, emails, phones, name, organization, display_name: patch.display_name ?? display };
 }
 
+// A member's value of a conflicting field as the server words it (services/contact-duplicates.ts singleFieldValue).
+function fieldValue(member: Contact, field: ContactSingleField): string | null {
+  const text = (value: string | null | undefined) => (value || '').trim() || null;
+  const date = (value: Contact['birthday']) => value ? `${value.year ? String(value.year).padStart(4, '0') : '-'}-${String(value.month).padStart(2, '0')}-${String(value.day).padStart(2, '0')}` : null;
+  switch (field) {
+    case 'name': return text([member.name.prefix, member.name.given, member.name.middle, member.name.family, member.name.suffix].filter(Boolean).join(' ')) ?? text(member.name.display);
+    case 'display_name': return text(member.name.display);
+    case 'organization': return text(member.organization.name);
+    case 'department': return text(member.organization.department);
+    case 'job_title': return text(member.job_title);
+    case 'birthday': return date(member.birthday);
+    case 'anniversary': return date(member.anniversary);
+    case 'photo': return member.photo?.etag ?? null;
+  }
+}
+
 export function duplicateGroup(id: string, members: Contact[], patch: Partial<DuplicateGroup> = {}): DuplicateGroup {
+  const conflicts = patch.conflicts ?? [];
   return {
     id, confidence: 'high', large: false,
     members: members.map(member => ({ id: member.id, version: member.version, display_name: member.display_name, organization: member.organization.name,
-      emails: member.emails.map(entry => entry.value), phones: member.phones.map(entry => entry.value), photo: member.photo })),
-    reasons: [], conflicts: [], ...patch,
+      emails: member.emails.map(entry => entry.value), phones: member.phones.map(entry => entry.value), photo: member.photo,
+      field_values: Object.fromEntries(conflicts.map(field => [field, fieldValue(member, field)])) })),
+    reasons: [], conflicts, auto_merge: conflicts.length === 0, ...patch,
   };
 }

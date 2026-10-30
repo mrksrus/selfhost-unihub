@@ -133,6 +133,20 @@ describe('offline endpoint parity', () => {
     vi.setSystemTime(new Date('2026-09-06T09:00:00Z'));
     expect(data('/stats')).toMatchObject({ upcomingEvents: 2, contacts: 3, unreadEmails: 2 });
   });
+  it('searches a 0.26 snapshot contact by every email, phone digits, organisation and category', () => {
+    const value = (text: string) => ({ id: text, value: text, label: '', custom_label: null, preferred: false });
+    const modern = { ...snapshot(), contacts: [
+      { id: 'many', display_name: 'Cleo Example', name: { given: 'Cleo', family: 'Example' }, organization: { name: 'Northwind', department: null },
+        emails: ['one', 'two', 'three', 'fourth@example.test'].map(value), phones: [value('+49 171 1234567')], categories: ['Choir'], nicknames: [] },
+      { id: 'orgonly', display_name: 'Example Labs', name: { given: null, family: null }, organization: { name: 'Example Labs', department: null }, emails: [], phones: [value('555')], categories: [], nicknames: [] },
+    ] };
+    const read = (endpoint: string) => (resolveOfflineEndpoint(modern, endpoint) as { data: { contacts: { id: string }[] } }).data.contacts.map(contact => contact.id);
+    expect(read('/contacts?q=fourth@')).toEqual(['many']);
+    expect(read('/contacts?q=171%20123')).toEqual(['many']);
+    expect(read('/contacts?q=northwind')).toEqual(['many']);
+    expect(read('/contacts?q=choir')).toEqual(['many']);
+    expect(read('/contacts?group=number_or_email_only')).toEqual(['orgonly']);
+  });
   it('preserves contact groups and calendar filters, attendees and subtasks', () => {
     expect(data('/contacts?group=name_only').contacts).toMatchObject([{ id: 'name' }]);
     expect(data('/contacts?group=number_or_email_only&q=second').contacts).toMatchObject([{ id: 'address' }]);

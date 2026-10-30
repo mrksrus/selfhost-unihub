@@ -2,7 +2,7 @@ import { useMemo, useState, type MouseEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Copy } from 'lucide-react';
 import { duplicatesQueryOptions, type Contact, type DuplicateConfidence, type DuplicateGroup, type DuplicateMember } from '@/lib/contacts-api';
-import { mergesWithoutChoice, reasonText } from '@/lib/contact-fields';
+import { reasonText } from '@/lib/contact-fields';
 import type { ContactActions } from '@/hooks/use-contact-actions';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -48,7 +48,8 @@ export function DuplicatesView({ contacts, activeId, selectedIds, actions, onOpe
   const byId = useMemo(() => new Map(contacts.map(contact => [contact.id, contact])), [contacts]);
   const groups = query.data?.groups ?? [];
   const shown = filter === 'all' ? groups : groups.filter(group => group.confidence === filter);
-  const mergeable = groups.filter(mergesWithoutChoice);
+  // The server marks what "Merge all" takes: high, not large, nothing to choose, nobody kept apart inside.
+  const mergeable = groups.filter(group => group.auto_merge);
   const counts = { all: groups.length, high: 0, medium: 0, low: 0 };
   for (const group of groups) counts[group.confidence] += 1;
 

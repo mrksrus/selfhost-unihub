@@ -19,7 +19,7 @@ const contacts = [
   contact('ben', { name: { given: 'Ben', family: 'Sample' }, phones: [{ value: '+1 555 0100', label: 'mobile', preferred: true }, '+1 555 0199'], is_favorite: true }),
   contact('nameless', { emails: ['someone@example.org'] }),
 ];
-const groups = [duplicateGroup('g1', [contacts[0], contacts[1]], { reasons: [{ kind: 'email', detail: 'ada@example.com', a: 'ada', b: 'ada-2' }] })];
+const groups = [duplicateGroup('g1', [contacts[0], contacts[1]], { conflicts: ['name'], reasons: [{ kind: 'email', detail: 'ada@example.com', a: 'ada', b: 'ada-2' }] })];
 
 function Location() {
   const location = useLocation();

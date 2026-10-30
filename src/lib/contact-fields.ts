@@ -96,6 +96,13 @@ export function formatPartialDate(date: PartialDate | null | undefined) {
   return date.year ? `${date.day} ${month} ${date.year}` : `${date.day} ${month}`;
 }
 
+/** A stored date as the server sends it in a duplicate group (`YYYY-MM-DD` or `--MM-DD`), as text; other text as it is. */
+export function formatDateText(value: string) {
+  const match = /^(\d{4}|-)-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) return value;
+  return formatPartialDate({ year: match[1] === '-' ? null : Number(match[1]), month: Number(match[2]), day: Number(match[3]) });
+}
+
 /** The wire form of a partial date: `YYYY-MM-DD` or `--MM-DD`. */
 export function partialDateInput(date: PartialDate | null) {
   if (!date) return null;
@@ -145,7 +152,3 @@ export function reasonText(reason: { kind: string; detail: string }) {
     default: return reason.detail;
   }
 }
-
-/** A group "Merge all" may take: high confidence, not large, nothing to choose. */
-export const mergesWithoutChoice = (group: { confidence: string; large: boolean; conflicts: unknown[] }) =>
-  group.confidence === 'high' && !group.large && group.conflicts.length === 0;

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
-import type { Contact, ContactSingleField, DuplicateGroup, LabelledValue } from '@/lib/contacts-api';
-import { addressLines, formatPartialDate, labelText, SINGLE_FIELD_TEXT } from '@/lib/contact-fields';
+import { invalidateContactQueries, MergeRefused, type Contact, type ContactSingleField, type DuplicateGroup, type DuplicateMember, type LabelledValue } from '@/lib/contacts-api';
+import { addressLines, formatDateText, formatPartialDate, labelText, SINGLE_FIELD_TEXT } from '@/lib/contact-fields';
+import { useToast } from '@/hooks/use-toast';
 import type { ContactActions } from '@/hooks/use-contact-actions';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { cn } from '@/lib/utils';
@@ -33,6 +35,19 @@ const LISTS: { key: ListKey; title: string }[] = [
   { key: 'urls', title: 'Websites' }, { key: 'impp', title: 'Messaging' }, { key: 'related', title: 'Related people' }, { key: 'nicknames', title: 'Nicknames' },
 ];
 
+/**
+ * A member's value of a field to choose, as the server compared it (the name
+ * with all its parts, the stored date); the contact's own text when the
+ * server did not list the field.
+ */
+function choiceText(member: DuplicateMember | undefined, contact: Contact, field: ContactSingleField) {
+  const value = member?.field_values[field];
+  if (value === undefined) return singleValue(contact, field);
+  if (value === null) return '';
+  if (field === 'photo') return 'Photo';
+  return field === 'birthday' || field === 'anniversary' ? formatDateText(value) : value;
+}
+
 const valueKey = (key: ListKey, entry: LabelledValue) => key === 'emails' ? entry.value.trim().toLowerCase()
   : key === 'phones' ? entry.value.replace(/[^\d+]/g, '') : entry.value.trim().toLowerCase();
 
@@ -62,35 +77,51 @@ export function MergeReviewDialog({ group, contacts, onClose, actions, onMerged 
   group: DuplicateGroup | null; contacts: Contact[]; onClose: () => void; actions: ContactActions; onMerged?: () => void;
 }) {
   const isMobile = useIsMobile();
+  const client = useQueryClient();
+  const { toast } = useToast();
   const members = useMemo(() => group ? group.members.map(member => contacts.find(contact => contact.id === member.id)).filter((contact): contact is Contact => !!contact) : [], [group, contacts]);
   const missing = group ? group.members.length - members.length : 0;
   const [choices, setChoices] = useState<Partial<Record<ContactSingleField, string>>>({});
-  useEffect(() => { setChoices({}); }, [group?.id]);
+  // Fields the server asked a choice for (CHOICE_REQUIRED) beyond the group's list, and a refusal to show.
+  const [extraConflicts, setExtraConflicts] = useState<ContactSingleField[]>([]);
+  const [refusal, setRefusal] = useState<string | null>(null);
+  useEffect(() => { setChoices({}); setExtraConflicts([]); setRefusal(null); }, [group?.id]);
 
-  // A field with two different non-empty values needs a choice; the server lists them too, this covers a list it does not know yet.
+  // The server decides what differs ('name' compares every name part); the review asks exactly those.
   const conflicts = useMemo(() => {
-    const fields = new Set<ContactSingleField>(group?.conflicts ?? []);
-    for (const field of SINGLE_FIELDS) {
-      const values = new Set(members.map(member => singleValue(member, field)).filter(Boolean));
-      if (values.size > 1) fields.add(field);
-    }
+    const fields = new Set<ContactSingleField>([...(group?.conflicts ?? []), ...extraConflicts]);
     return SINGLE_FIELDS.filter(field => fields.has(field));
-  }, [group, members]);
+  }, [group, extraConflicts]);
+  const memberOf = (contact: Contact) => group?.members.find(member => member.id === contact.id);
+  const fieldText = (contact: Contact, field: ContactSingleField) => conflicts.includes(field) ? choiceText(memberOf(contact), contact, field) : singleValue(contact, field);
   const unresolved = conflicts.filter(field => !choices[field]);
   const result = (field: ContactSingleField) => {
     const chosen = choices[field] ? members.find(member => member.id === choices[field]) : undefined;
-    return chosen ? singleValue(chosen, field) : conflicts.includes(field) ? '' : members.map(member => singleValue(member, field)).find(Boolean) || '';
+    return chosen ? fieldText(chosen, field) : conflicts.includes(field) ? '' : members.map(member => singleValue(member, field)).find(Boolean) || '';
   };
   const stacked = isMobile || members.length > 3;
 
   const merge = () => {
     if (!group || unresolved.length) return;
+    setRefusal(null);
     actions.merge.mutate({
       contact_ids: group.members.map(member => member.id),
-      survivor_id: choices.name ?? members[0]?.id,
+      // The chosen name's contact keeps its identity; otherwise the server's suggestion (the first member).
+      survivor_id: choices.name ?? group.members[0]?.id,
       choices,
       versions: Object.fromEntries(group.members.map(member => [member.id, member.version])),
-    }, { onSuccess: () => { onMerged?.(); onClose(); } });
+    }, {
+      onSuccess: () => { onMerged?.(); onClose(); },
+      onError: error => {
+        if (!(error instanceof MergeRefused)) return;
+        if (error.code === 'CHOICE_REQUIRED') { setExtraConflicts(error.conflicts); setRefusal('Choose a value for each field that differs.'); return; }
+        if (error.code === 'TOO_MANY_VALUES') { setRefusal(error.message); return; }
+        // VERSION_CONFLICT: the group is outdated; it comes back from the server as it is now.
+        void invalidateContactQueries(client);
+        toast({ title: 'These contacts changed meanwhile', description: 'Nothing was merged. Review the group again.' });
+        onClose();
+      },
+    });
   };
   const keepApart = () => {
     if (!group) return;
@@ -100,13 +131,13 @@ export function MergeReviewDialog({ group, contacts, onClose, actions, onMerged 
 
   const choiceRow = (field: ContactSingleField) => {
     const label = SINGLE_FIELD_TEXT[field];
-    const options = members.filter(member => singleValue(member, field));
+    const options = members.filter(member => fieldText(member, field));
     return (
       <div key={field} className="space-y-1.5">
         <ChipGroup label={`${label} to keep`}>
           {options.map(member => (
             <Chip key={member.id} selected={choices[field] === member.id} onSelect={() => setChoices(prev => ({ ...prev, [field]: member.id }))}>
-              {field === 'photo' ? `Photo of ${member.display_name}` : singleValue(member, field)}
+              {field === 'photo' ? `Photo of ${member.display_name || 'No name'}` : fieldText(member, field)}
             </Chip>
           ))}
         </ChipGroup>
@@ -150,13 +181,13 @@ export function MergeReviewDialog({ group, contacts, onClose, actions, onMerged 
         ))}
         <span role="columnheader" className="font-medium text-accent">Result</span>
       </div>
-      {SINGLE_FIELDS.filter(field => members.some(member => singleValue(member, field))).map(field => {
+      {SINGLE_FIELDS.filter(field => members.some(member => fieldText(member, field))).map(field => {
         const conflict = conflicts.includes(field);
         return (
           <div key={field} role="row" className="grid gap-x-3 border-b border-border py-2" style={{ gridTemplateColumns: columns }}>
             <span role="rowheader" className="text-xs text-muted-foreground">{SINGLE_FIELD_TEXT[field]}</span>
             {members.map(member => {
-              const value = singleValue(member, field);
+              const value = fieldText(member, field);
               const id = `merge-${field}-${member.id}`;
               return (
                 <span key={member.id} role="cell" className="min-w-0">
@@ -189,6 +220,7 @@ export function MergeReviewDialog({ group, contacts, onClose, actions, onMerged 
         </DialogHeader>
         <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 py-2">
           {missing > 0 && <p className="text-sm text-warning">{missing} of these contacts could not be shown; reload the page before merging.</p>}
+          {refusal && <p role="alert" className="text-sm text-destructive">{refusal}</p>}
           {stacked ? stackedBody : sideBySide}
           {kept.length > 0 && (
             <section aria-label="Kept from all contacts" className="space-y-3">

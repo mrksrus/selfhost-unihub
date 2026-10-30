@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ToastAction } from '@/components/ui/toast';
 import { useToast } from '@/hooks/use-toast';
-import { contactsApi, contactsQueryKeys, ContactVersionConflict, invalidateContactQueries, type BulkContactChange, type ContactInput, type ExportFormat, type MergeRequest } from '@/lib/contacts-api';
+import { contactsApi, contactsQueryKeys, ContactVersionConflict, invalidateContactQueries, MergeRefused, type AutoMergeResult, type BulkContactChange, type ContactInput, type ExportFormat, type MergeRequest } from '@/lib/contacts-api';
 import { saveFile } from '@/lib/platform';
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
@@ -66,9 +66,8 @@ export function useContactActions() {
     mutationFn: (mergeId: string) => contactsApi.undoMerge(mergeId),
     onSuccess: result => {
       refresh();
-      toast(result.survivor_restored
-        ? { title: 'Merge undone', description: `${plural(result.restored_ids.length, 'contact')} restored.` }
-        : { title: 'Merge undone', description: 'The merged contact was edited since, so its later changes were kept; the restored contacts are back as they were.' });
+      // The server says what happened to the merged contact (back as it was, or kept with its later changes).
+      toast({ title: 'Merge undone', description: result.message || `${plural(result.restored_ids.length, 'contact')} restored.` });
     },
     onError: failed('Could not undo the merge'),
   });
@@ -83,18 +82,25 @@ export function useContactActions() {
         action: <ToastAction altText="Undo this merge" onClick={() => undoMerge.mutate(result.merge_id)}>Undo</ToastAction>,
       });
     },
-    onError: failed('Could not merge'),
+    // A refusal to act on (changed contacts, a missing choice, too many values) is shown in the review itself.
+    onError: (error: Error) => { if (!(error instanceof MergeRefused)) failed('Could not merge')(error); },
   });
 
   const mergeAll = useMutation({
     mutationFn: (groupIds: string[]) => contactsApi.mergeAll(groupIds),
     onSuccess: result => {
       refresh();
-      const merged = result.results.filter(entry => entry.status === 'merged').length;
-      const left = result.results.length - merged;
+      const count = (status: AutoMergeResult['results'][number]['status']) => result.results.filter(entry => entry.status === status).length;
+      const merged = count('merged');
+      const left = [
+        count('changed') && `${plural(count('changed'), 'group')} changed meanwhile`,
+        count('needs_choice') && `${plural(count('needs_choice'), 'group')} need${count('needs_choice') === 1 ? 's' : ''} your choice`,
+        count('too_many_values') && `${plural(count('too_many_values'), 'group')} would hold more values than one contact can`,
+      ].filter(Boolean);
       toast({
         title: merged ? `${plural(merged, 'group')} merged` : 'Nothing merged',
-        description: left ? `${plural(left, 'group')} changed meanwhile or needs your choice; it stays in the list.` : 'Undo each merge under Recently merged for 30 days.',
+        description: left.length ? `${left.join('; ')}. ${left.length === 1 && result.results.length - merged === 1 ? 'It stays' : 'They stay'} in the list to review.`
+          : 'Undo each merge under Recently merged for 30 days.',
       });
     },
     onError: failed('Could not merge the groups'),
