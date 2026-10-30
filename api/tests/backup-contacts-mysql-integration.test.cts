@@ -221,7 +221,7 @@ test('contacts recovery: frozen 0.25.1 archive, schema 5 round trip with photos,
   // ── 4. A damaged or misnamed photo file stops the restore before writes ─
   const careful = await newUser('v5-careful');
   const fullFile = v5.backup.files.find((file: FixtureValue) => file.id === annPhoto.etag) as FixtureValue;
-  const damaged = new Map(v5.fileSourcesByPath);
+  const damaged = new Map<string, import('../src/types').BackupFileSource>(v5.fileSourcesByPath);
   damaged.set(fullFile.archive_path, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]));
   const refused = await backup.importBackupForUser(careful, v5.backup, { mode: 'apply', conflict_mode: 'replace', fileSourcesByPath: damaged });
   assert.equal(refused.valid, false);

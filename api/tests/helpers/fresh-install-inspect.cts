@@ -70,6 +70,23 @@ async function main() {
         files.push({ kind, sha256: hash(bytes), size: bytes.length, uid: stat.uid, mode: stat.mode & 0o777 });
       }
     }
+    // Content-addressed files (contact photos): each named file once, inside
+    // the user's directory, with the bytes its name promises.
+    const CONTENT_ROOTS: Record<string, string> = { contact_photo: 'contact-photos' };
+    for (const [kind, policy] of Object.entries(catalog.CONTENT_FILE_POLICIES)) {
+      const names = new Set((data[policy.table] || []).flatMap(row => policy.columns.map(column => String(row[column]))));
+      const directory = path.join(UPLOADS, CONTENT_ROOTS[kind], userId) + path.sep;
+      for (const name of names) {
+        const stored = path.join(directory, `${name}.jpg`);
+        let stat: import('node:fs').Stats;
+        try { stat = fs.lstatSync(stored); } catch { problems.push(`${kind} file missing: ${stored}`); continue; }
+        if (!stat.isFile()) { problems.push(`${kind} is not a regular file: ${stored}`); continue; }
+        if (!fs.realpathSync(stored).startsWith(directory)) problems.push(`${kind} resolves outside ${directory}`);
+        const bytes = fs.readFileSync(stored);
+        if (hash(bytes) !== name) problems.push(`${kind} bytes differ from their name: ${stored}`);
+        files.push({ kind, sha256: hash(bytes), size: bytes.length, uid: stat.uid, mode: stat.mode & 0o777 });
+      }
+    }
     const leftovers = ['backups/restores', 'backups/imports'].flatMap(dir => {
       const root = path.join(UPLOADS, dir);
       return fs.existsSync(root) ? fs.readdirSync(root, { recursive: true, withFileTypes: true }).filter(entry => !entry.isDirectory()).map(entry => path.join(entry.parentPath, entry.name)) : [];

@@ -115,6 +115,8 @@ test('MySQL restores colliding backup IDs without changing another user in every
     id CHAR(36) PRIMARY KEY, contact_id CHAR(36) NOT NULL, user_id CHAR(36) NOT NULL, position SMALLINT UNSIGNED NOT NULL DEFAULT 0,
     vcard_group VARCHAR(64) NULL, name VARCHAR(64) NOT NULL, params JSON NULL, value MEDIUMTEXT NOT NULL, source_version VARCHAR(8) NULL) ENGINE=InnoDB`);
   await connection.execute('CREATE TEMPORARY TABLE contact_uid_aliases (user_id CHAR(36) NOT NULL, uid_hash CHAR(64) NOT NULL, uid VARCHAR(255) NOT NULL, contact_id CHAR(36) NOT NULL, merge_id CHAR(36) NULL, PRIMARY KEY (user_id, uid_hash)) ENGINE=InnoDB');
+  await connection.execute(`CREATE TEMPORARY TABLE contact_photos (contact_id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, sha256 CHAR(64) NOT NULL,
+    width SMALLINT UNSIGNED NOT NULL, height SMALLINT UNSIGNED NOT NULL, bytes INT UNSIGNED NOT NULL, thumb_sha256 CHAR(64) NOT NULL, source VARCHAR(16) NOT NULL) ENGINE=InnoDB`);
   await connection.execute('CREATE TEMPORARY TABLE contact_duplicate_dismissals (contact_a CHAR(36) NOT NULL, contact_b CHAR(36) NOT NULL, user_id CHAR(36) NOT NULL, PRIMARY KEY (contact_a, contact_b)) ENGINE=InnoDB');
   // A restored draft loses its schedule (0.24); the restore clears it on this connection.
   await connection.execute(`CREATE TEMPORARY TABLE mail_scheduled_sends (

@@ -1,7 +1,7 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { SECTION_POLICIES, TABLE_POLICIES, REFERENCES, FILE_POLICIES, assertRecoveryCatalog } = require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog');
+const { SECTION_POLICIES, TABLE_POLICIES, REFERENCES, FILE_POLICIES, CONTENT_FILE_POLICIES, assertRecoveryCatalog } = require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog');
 const { assertArchiveRelationships } = require('../dist/src/services/data-inventory') as typeof import('../src/services/data-inventory');
 
 test('adding declared data still fails if its export section, parent or file handling is missing', () => {
@@ -14,6 +14,12 @@ test('adding declared data still fails if its export section, parent or file han
   assert.throws(() => assertRecoveryCatalog({ references }), /missing reference emails.filing_account_id/);
   const files = { ...FILE_POLICIES, recording: { table: 'recordings', column: 'title' } };
   assert.throws(() => assertRecoveryCatalog({ files }), /missing file policy recordings.storage_path/);
+  // Content-addressed files: every hash column needs its file kind, and the kind its section.
+  assert.throws(() => assertRecoveryCatalog({ contentFiles: { contact_photo: { table: 'contact_photos', columns: ['sha256'] } } }), /missing file policy contact_photos.thumb_sha256/);
+  const withoutKind = structuredClone(SECTION_POLICIES);
+  withoutKind.contacts.fileKinds = [];
+  assert.throws(() => assertRecoveryCatalog({ sections: withoutKind }), /unhandled file contact_photo/);
+  assert.deepEqual(CONTENT_FILE_POLICIES.contact_photo.columns, ['sha256', 'thumb_sha256']);
   const tables = { ...TABLE_POLICIES, future_notes: { ...TABLE_POLICIES.contacts } };
   assert.throws(() => assertRecoveryCatalog({ tables }), /future_notes is not exported/);
 });

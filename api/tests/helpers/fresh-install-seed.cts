@@ -3,7 +3,9 @@ import type { ResultSetHeader } from 'mysql2/promise';
 // run there as its API user, with its database, keys and /app/uploads. Adds the
 // synthetic data the public API cannot create without a live provider: synced
 // mail with stored files, provider credentials, folder history, a CalDAV
-// account, completed transcripts and data saved by older releases.
+// account, completed transcripts, data saved by older releases, and the
+// contact details a vCard import or a merge leaves (a kept property, a
+// merged-away UID, a "Not the same person" pair).
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
 const fs = (require('node:fs') as typeof import('node:fs'));
 const path = (require('node:path') as typeof import('node:path'));
@@ -36,6 +38,14 @@ async function main() {
     await insert('user_settings', { user_id: userId, setting_key: 'calendar_preferences', setting_value: JSON.stringify({ firstDay: 1, custom: 'Grüße\nTwo lines' }) });
     await insert('user_settings', { user_id: userId, setting_key: 'module_preferences', setting_value: JSON.stringify({ notes: { visible: false, enabled: false, background: false }, games: { visible: false }, recordings: { visible: false } }) });
     await insert('user_settings', { user_id: userId, setting_key: 'module_order', setting_value: JSON.stringify(['notes', 'recordings', 'mail', 'calendar', 'contacts']) });
+    // Contacts created through the API by the gate: Zoë, Ana and Mia.
+    const [people] = await db.execute<import('mysql2/promise').RowDataPacket[]>('SELECT id, first_name FROM contacts WHERE user_id = ?', [userId]);
+    const person = (name: string) => people.find(row => row.first_name === name)!.id as string;
+    const [zoe, ana] = [person('Zoë'), person('Ana')];
+    await insert('contact_properties', { id: uuid(), contact_id: person('Mia'), user_id: userId, position: 0, vcard_group: 'item1', name: 'X-ABLABEL',
+      params: JSON.stringify({ type: ['pref'] }), value: 'Lake house ✓', source_version: '3.0' });
+    await insert('contact_uid_aliases', { user_id: userId, uid_hash: crypto.createHash('sha256').update('urn:uuid:fresh-merged-away').digest('hex'), uid: 'urn:uuid:fresh-merged-away', contact_id: zoe });
+    await insert('contact_duplicate_dismissals', { contact_a: zoe < ana ? zoe : ana, contact_b: zoe < ana ? ana : zoe, user_id: userId });
     // Legacy row from the removed Games module: kept in place, never exported.
     await insert('tetris_scores', { user_id: userId, score: 13500, lines: 42, level: 5, achieved_at: '2030-01-01 11:00:00' });
 
