@@ -630,13 +630,15 @@ async function createTaskOrderAndMoves(connection: SqlExecutor) {
   // removing the source's server copy. A move still removing the old copy
   // outlives its task and its new calendar (event_id, target_calendar_id
   // become NULL), so the old copy never comes back. target_ics is the object
-  // every attempt sends, under the UID fixed before the first.
+  // every attempt sends, under the UID fixed before the first; source_etag
+  // is the old copy as the move found it, the only version it may delete.
   await connection.execute(`CREATE TABLE IF NOT EXISTS calendar_event_moves (
     id CHAR(36) NOT NULL PRIMARY KEY,
     user_id CHAR(36) NOT NULL,
     event_id CHAR(36) NULL,
     source_calendar_id CHAR(36) NULL,
     source_object_id CHAR(36) NULL,
+    source_etag VARCHAR(255) NULL,
     target_calendar_id CHAR(36) NULL,
     target_uid VARCHAR(255) NOT NULL,
     target_href TEXT NULL,

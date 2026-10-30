@@ -205,6 +205,7 @@ CREATE TABLE `calendar_event_moves` (
   `event_id` char(36) DEFAULT NULL,
   `source_calendar_id` char(36) DEFAULT NULL,
   `source_object_id` char(36) DEFAULT NULL,
+  `source_etag` varchar(255) DEFAULT NULL,
   `target_calendar_id` char(36) DEFAULT NULL,
   `target_uid` varchar(255) NOT NULL,
   `target_href` text DEFAULT NULL,

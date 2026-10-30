@@ -5,6 +5,7 @@ import type { TaskMoveResponse } from '../contracts/tasks';
 import type { SyncAccount, SyncCalendar, SyncTarget } from './calendar-sync';
 import crypto from 'node:crypto';
 import { db } from '../state';
+import { log } from '../log';
 import { badRequest, conflict, forbidden, notFound, ApiError as HttpError } from '../http/errors';
 import { withTransaction } from './transactions';
 import { canRunModule } from './access-policy';
@@ -30,11 +31,12 @@ import * as calendarSync from './calendar-sync';
 //   (commit)  one transaction: link the row to the new copy (or the UniHub
 //             list), drop the old link, move the hand rank, and go on to
 //             removing (or finish, when the old copy was UniHub's own).
-//   removing  the old copy is to be deleted at the source server (If-Match).
-//             Until then the sync never applies it again, so it cannot come
-//             back as a second event. 404/410 count as removed. A 412 means
-//             it was changed elsewhere: it is kept there and shows as an
-//             event of its own with the next sync; nothing is lost.
+//   removing  the old copy is to be deleted at the source server, If-Match
+//             the version the move started from. Until then the sync never
+//             applies it again, so it cannot come back as a second event.
+//             404/410 count as removed. A 412 means it was changed elsewhere
+//             since: it is kept there and shows as an event of its own with
+//             the next sync; nothing is lost.
 //
 // A step that cannot finish now waits in the journal and is retried by the
 // sync pass (1, 5, 30 minutes, then hourly), or at once when the person
@@ -51,6 +53,7 @@ interface MoveRow extends RowDataPacket {
   event_id: string | null;
   source_calendar_id: string | null;
   source_object_id: string | null;
+  source_etag: string | null;
   target_calendar_id: string | null;
   target_uid: string;
   target_href: string | null;
@@ -178,7 +181,7 @@ function describe(error: unknown) {
 async function postpone(move: MoveRow, error: unknown) {
   const attempts = Number(move.attempts) + 1;
   if (move.state === 'creating' && attempts >= GIVE_UP_ATTEMPTS) {
-    console.warn(`[CALENDAR] Move ${move.id} gave up after ${attempts} attempts; the item stays in its calendar:`, describe(error));
+    log.warn('calendar', 'A move gave up; the item stays in its calendar', { move: move.id, attempts, reason: describe(error) });
     await closeMove(move.id);
     return false;
   }
@@ -242,14 +245,16 @@ async function removeOldCopy(move: MoveRow): Promise<MoveOutcome> {
   try {
     await calendarSync.withWriteContext(source, async ctx => {
       calendarSync.assertWritable(source);
-      await caldav.deleteCalendarObject({ url: calendarSync.objectUrl(ctx.account, { href: object.href }), etag: object.etag, ...ctx.login });
+      // The version the move started from: a change made elsewhere since, even one a sync read, is not deleted.
+      await caldav.deleteCalendarObject({ url: calendarSync.objectUrl(ctx.account, { href: object.href }), etag: move.source_etag ?? object.etag, ...ctx.login });
     });
   } catch (error) {
     if ((error as ApiError)?.code === 'CALDAV_CONFLICT') {
       // Changed elsewhere since the move: kept there. The next sync lists
-      // the calendar again and shows it as an event of its own.
-      console.warn(`[CALENDAR] The old copy of moved event ${move.event_id ?? '(removed)'} changed in its old calendar and was kept there.`);
+      // the calendar and downloads it again, and shows it as an event of its own.
+      log.warn('calendar', 'The old copy of a moved event changed in its old calendar and was kept there', { move: move.id, event: move.event_id });
       await closeMove(move.id);
+      await db.execute('UPDATE calendar_remote_objects SET etag = NULL WHERE id = ?', [object.id]);
       await db.execute('UPDATE calendar_calendars SET remote_ctag = NULL WHERE id = ?', [source.calendar.id]);
       calendarSync.syncCalendarAccountInBackground(source.account.id, { userId: move.user_id, reason: 'conflict' });
       return { sourceKept: true };
@@ -305,7 +310,7 @@ async function resumeDueMoves(signal?: AbortSignal) {
       await runMove(row.id);
       resumed += 1;
     } catch (error) {
-      console.warn(`[CALENDAR] Move ${row.id} could not finish:`, describe(error));
+      log.warn('calendar', 'A move could not finish', { move: row.id, reason: describe(error) });
     }
   }
   return { resumed };
@@ -394,9 +399,9 @@ async function moveEvent(userId: string, eventId: string, targetCalendarId: stri
       // A move still removing an older copy of this item goes on without it.
       await connection.execute("UPDATE calendar_event_moves SET event_id = NULL WHERE event_id = ? AND user_id = ? AND state = 'removing'", [eventId, userId]);
       await connection.execute(
-        `INSERT INTO calendar_event_moves (id, user_id, event_id, source_calendar_id, source_object_id, target_calendar_id, target_uid, target_href, target_ics, state, next_attempt_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', UTC_TIMESTAMP() + INTERVAL 1 MINUTE)`,
-        [moveId, userId, eventId, event.calendar_id || null, sourceObjectId, targetCalendarId, uid, href, ics]
+        `INSERT INTO calendar_event_moves (id, user_id, event_id, source_calendar_id, source_object_id, source_etag, target_calendar_id, target_uid, target_href, target_ics, state, next_attempt_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', UTC_TIMESTAMP() + INTERVAL 1 MINUTE)`,
+        [moveId, userId, eventId, event.calendar_id || null, sourceObjectId, link?.object.etag ?? null, targetCalendarId, uid, href, ics]
       );
     });
   } catch (error) {

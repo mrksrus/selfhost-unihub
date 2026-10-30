@@ -399,6 +399,23 @@ test('moving a task between lists and calendars: one copy, the same row, through
     const elsewhere = await rowsTitled(`${title} (edited elsewhere)`);
     assert.equal(elsewhere.length, 1, 'the changed old copy shows in its calendar');
     assert.equal(elsewhere[0].calendar_id, work);
+
+    // Changed elsewhere while the move waited for the new server, and read
+    // by a sync meanwhile: still not deleted.
+    const retreat = await serverTask('Team retreat');
+    const [retreatPath] = copiesOf('Team retreat');
+    faults.put = () => 'lose';
+    await owner('POST', `/calendar/events/${retreat}/move`, { calendar_id: privateCalendar }, 202);
+    faults.put = undefined;
+    store(retreatPath, eventIcs('retreat@example.test', 'Team retreat (new venue)', clock));
+    await sync();
+    assert.deepEqual((await rowsTitled('Team retreat (new venue)')).map(row => row.id), [retreat], 'the sync updated the waiting row in place');
+    assert.equal((await resume()).resumed, 1);
+    assert.equal((await journal()).length, 0);
+    await sync();
+    assert.deepEqual((await rowsTitled('Team retreat')).map(row => [row.id, row.calendar_id]), [[retreat, privateCalendar]], 'moved as it was when the move started');
+    assert.equal(copiesOf('Team retreat (new venue)').length, 1, 'the change made elsewhere is kept at the server');
+    assert.deepEqual((await rowsTitled('Team retreat (new venue)')).map(row => row.calendar_id), [work], 'and shows in its calendar');
   });
 
   await t.test('the event dialog\'s calendar change uses the same move, with the edited fields in the new copy', async () => {
