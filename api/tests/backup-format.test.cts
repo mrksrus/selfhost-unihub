@@ -123,3 +123,46 @@ test('schema 3 ZIP readers require complete SHA-256 metadata before import', asy
     }
   }
 });
+
+test('schema 5 holds each archive to the fields of its own version, and contact photos to their names', () => {
+  const user = 'user';
+  const contact = { id: 'c1', user_id: user, first_name: 'Zoë' };
+  const archive = (version: number, data: FixtureValue, files: FixtureValue[] = []) => ({ app: 'unihub', version, data, files });
+  const errors = (version: number, data: FixtureValue, files?: FixtureValue[]) => validateBackupPayload(archive(version, data, files)).errors;
+  // The fixed fields up to schema 4, the vCard model from schema 5 on.
+  assert.deepEqual(errors(4, { contacts: [{ ...contact, email: 'a@example.test', avatar_url: null }] }), []);
+  assert.deepEqual(errors(5, { contacts: [{ ...contact, uid: 'urn:uuid:c1', middle_name: 'M' }], contact_values: [{ id: 'v1', contact_id: 'c1', user_id: user, kind: 'email', value: 'a@example.test' }] }), []);
+  assert.deepEqual(errors(5, { contacts: [{ ...contact, email: 'a@example.test' }] }), ['Unsupported backup field: contacts.email']);
+  assert.deepEqual(errors(4, { contacts: [{ ...contact, uid: 'urn:uuid:c1' }] }), ['Unsupported backup field: contacts.uid']);
+  assert.deepEqual(errors(3, { contact_values: [] }), ['Unsupported backup table: contact_values']);
+  assert.deepEqual(errors(2, { contact_photos: [] }), ['Unsupported backup table: contact_photos']);
+  // A photo file is named by its SHA-256, is a JPEG and no larger than a stored photo.
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
+  const name = sha256Buffer(jpeg);
+  const file = (bytes: Buffer, extra: FixtureValue = {}) => ({ kind: 'contact_photo', id: sha256Buffer(bytes), sha256: sha256Buffer(bytes), size_bytes: bytes.length, data_base64: bytes.toString('base64'), ...extra });
+  const photo = (sha: string) => ({ contacts: [contact], contact_photos: [{ contact_id: 'c1', user_id: user, sha256: sha, thumb_sha256: sha, width: 1, height: 1, bytes: 7 }] });
+  assert.deepEqual(errors(5, photo(name), [file(jpeg)]), []);
+  assert.deepEqual(errors(4, {}, [file(jpeg)]), ['Unsupported backup file kind: contact_photo']);
+  assert.match(errors(5, photo(name), [file(jpeg, { id: sha256Buffer(Buffer.from('x')) })]).join('\n'), /does not match its name/);
+  assert.match(errors(5, photo(name), [file(jpeg, { data_base64: Buffer.from('not the photo').toString('base64') })]).join('\n'), /Checksum mismatch for file contact_photo/);
+  const png = Buffer.from('\x89PNG\r\n\x1a\n', 'latin1');
+  assert.match(errors(5, photo(sha256Buffer(png)), [file(png)]).join('\n'), /is not a stored contact photo/);
+  assert.match(errors(5, photo(name), []).join('\n'), new RegExp(`has no referenced file: contact_photo:${name}`));
+});
+
+test('the schema 5 reader turns fixed contact fields into values as upgrade 22 does, deterministically', () => {
+  const old = { app: 'unihub', version: 4, files: [], data: { contacts: [{ id: 'c1', user_id: 'u', first_name: 'Li', email: null, email2: '  ', email3: 'x@example.test',
+    phone: 'same', phone2: 'same', phone3: '', avatar_url: 'https://example.test/a.png' }] } };
+  const saved = structuredClone(old);
+  const first = normalizeBackupPayload(structuredClone(old));
+  assert.deepEqual(old, saved);
+  assert.equal(first.version, 5);
+  assert.deepEqual(first.data.contacts, [{ id: 'c1', user_id: 'u', first_name: 'Li', uid: 'urn:uuid:c1' }]);
+  assert.deepEqual((first.data.contact_values as FixtureValue[]).map(row => [row.kind, row.position, row.legacy_slot, row.value, row.label]),
+    [['email', 0, 1, 'x@example.test', ''], ['phone', 0, 1, 'same', ''], ['phone', 1, 2, 'same', '']]);
+  assert.deepEqual(normalizeBackupPayload(structuredClone(old)).data.contact_values, first.data.contact_values, 'Same archive, same value ids');
+  assert.equal(new Set((first.data.contact_values as FixtureValue[]).map(row => row.id)).size, 3);
+  // A schema 5 archive passes unchanged.
+  const current = { app: 'unihub', version: 5, files: [], data: { contacts: [{ id: 'c1', user_id: 'u', first_name: 'Li', uid: 'urn:uuid:own' }], contact_values: [] } };
+  assert.deepEqual(normalizeBackupPayload(structuredClone(current)).data, current.data);
+});
