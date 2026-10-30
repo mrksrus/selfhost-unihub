@@ -336,7 +336,8 @@ entries are deleted for good. An ordinary delete is still permanent in
 
 The offline snapshot holds the contacts with their lists and without photos
 (the page shows initials). The offline search reads every email and number
-(see [Offline](OFFLINE.md)).
+(see [Offline](OFFLINE.md)). A snapshot saved before 0.26.0 (the 3+3
+columns) is read in the same model until it is refreshed.
 
 ## Backup and restore (ALPHA)
 
@@ -358,7 +359,9 @@ numbers, emails, addresses, dates, websites, messaging and related people
 with copy buttons, shows categories and notes, and lists the details kept
 from imports read-only. The editor (a dialog, full screen on phones) has
 repeatable labelled rows with a preferred star, structured addresses, dates
-with an optional year, the photo and "Add field" for the rarer fields. The
+with an optional year, categories as chips (each a whole name, commas
+included; a stored category is never rewritten), the photo and "Add field"
+for the rarer fields. The
 selection offers "Set company…", "Export selected" and Delete. The mail
 composer suggests every email of every contact, the preferred one first.
 

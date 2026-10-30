@@ -100,6 +100,10 @@ upgrades; back up first, and install the new Android app (see
 - **Umlauts and other accented letters in older vCard files.** Names in
   vCard 2.1 files from older phones (quoted-printable, or ISO-8859-1 and
   windows-1252) were imported garbled; they now read as written.
+- **Notices stay with their account.** A notice shown just before switching
+  accounts or signing out (for example "Merged into …") no longer appears
+  for the next account, and an answer that arrives after the switch shows
+  and saves nothing.
 
 ### Database upgrade
 
