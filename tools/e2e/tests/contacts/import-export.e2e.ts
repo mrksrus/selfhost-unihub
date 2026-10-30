@@ -175,6 +175,9 @@ test('[26-12 D6] a selection exports as vCard 3.0, Google CSV and Outlook CSV', 
   for (const [format, extension, parts] of expected) {
     await app.open('/contacts');
     await screen.getByRole('searchbox', 'Search contacts').fill(name);
+    // The list follows the search after a pause, and a new search clears the
+    // selection: select once the list shows only the match.
+    await expect(screen.getByRole('button', /^Select /)).toHaveCount(1);
     await screen.getByRole('button', `Select ${name} Synthetic`).tap();
     await recordSavedFiles(browser);
     await screen.getByRole('button', 'Export selected', { exact: true }).tap();

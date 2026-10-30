@@ -180,6 +180,8 @@ stub_pid=$!
 
 fail() {
   echo "Notifications test failed: $1" >&2
+  echo "On screen (text, package, bounds):" >&2
+  screen | grep -o '<node [^>]*>' | sed -n 's/.* text="\([^"]\+\)".* package="\([^"]*\)".* bounds="\([^"]*\)".*/  \1 | \2 | \3/p' >&2 || true
   curl -s "$control/state" >&2 || true
   echo >&2
   adb logcat -d -s UniHubNotifications UniHubSession >&2 || true

@@ -47,6 +47,11 @@ test('[24-25 24-19 25-01] the phone composer: one row per field, a folded Cc/Bcc
     // Not openCompose: that opens the folded line to pick the sender.
     await screen.getByRole('button', 'Compose', { visible: true }).first().tap();
     await expect(screen.getByRole('textbox', 'Subject')).toBeVisible();
+    // Measure the settled dialog: it opens with a short zoom and slide.
+    await browser.evaluate(() => Promise.all([...document.querySelectorAll('[role="dialog"]')]
+      .flatMap(element => element.getAnimations({ subtree: true }))
+      .filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity)
+      .map(animation => animation.finished.catch(() => undefined))).then(() => true));
     const viewport = await browser.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
     const dialog = (await composeDialog(screen).boundingBox())!;
     expect(dialog.y, 'from the top').toBeLessThanOrEqual(1);
