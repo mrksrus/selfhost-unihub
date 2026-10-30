@@ -97,6 +97,11 @@ test('MySQL restores colliding backup IDs without changing another user in every
   await connection.execute('ALTER TABLE emails ADD COLUMN import_complete BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN filing_account_id CHAR(36) NULL, ADD COLUMN is_legacy BOOLEAN NOT NULL DEFAULT FALSE');
   await connection.execute('ALTER TABLE mail_folders ADD COLUMN mail_account_id CHAR(36) NULL, ADD COLUMN special_use VARCHAR(32) NULL');
   await connection.execute('ALTER TABLE calendar_events ADD COLUMN source_email_id CHAR(36) NULL, ADD COLUMN source_email_json LONGTEXT NULL');
+  // 0.27 (upgrade 24): the order key of events and the hand order of tasks.
+  await connection.execute('ALTER TABLE calendar_events ADD COLUMN order_key VARCHAR(64) NULL');
+  await connection.execute(`CREATE TEMPORARY TABLE task_order (user_id CHAR(36) NOT NULL, item_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    calendar_id CHAR(36) NULL, event_id CHAR(36) NULL, remote_uid VARCHAR(500) NULL, recurrence_id VARCHAR(64) NOT NULL DEFAULT '', sort_rank BIGINT NOT NULL,
+    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (user_id, item_key)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
   await connection.execute("ALTER TABLE mail_accounts ADD COLUMN sync_mode VARCHAR(16) NOT NULL DEFAULT 'download', ADD COLUMN sync_status VARCHAR(16) NOT NULL DEFAULT 'idle'");
   await connection.execute('ALTER TABLE mail_accounts ADD COLUMN sync_window_days INT NULL, ADD COLUMN trash_window_days INT NULL DEFAULT 30, ADD COLUMN sync_policy_confirmed_at DATETIME NULL');
   await connection.execute('ALTER TABLE emails ADD COLUMN remote_folder VARCHAR(255) NULL, ADD COLUMN remote_uid BIGINT NULL, ADD COLUMN remote_uidvalidity BIGINT NULL, ADD COLUMN remote_missing BOOLEAN NOT NULL DEFAULT FALSE');

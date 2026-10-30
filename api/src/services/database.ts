@@ -606,8 +606,9 @@ async function createFileTickets(connection: SqlExecutor) {
 // A task's hand rank: keyed by its event for a task UniHub holds, by
 // (calendar, UID, recurrence id) for a synced one, so the order survives a
 // sync or restore that rebuilds the row. calendar_id is set only for synced
-// items; a local item follows its event. auto_basis marks a date rank a
-// restore kept (services/task-order.ts).
+// items; a local item follows its event. calendar_events.order_key is the
+// order key a restore carries over (empty: the event id), so ties and
+// date-rank offsets survive new ids (services/task-order.ts).
 async function createTaskOrderAndMoves(connection: SqlExecutor) {
   await connection.execute(`CREATE TABLE IF NOT EXISTS task_order (
     user_id CHAR(36) NOT NULL,
@@ -617,7 +618,6 @@ async function createTaskOrderAndMoves(connection: SqlExecutor) {
     remote_uid VARCHAR(500) NULL,
     recurrence_id VARCHAR(64) NOT NULL DEFAULT '',
     sort_rank BIGINT NOT NULL,
-    auto_basis BIGINT NULL,
     updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, item_key),
     KEY idx_task_order_rank (user_id, sort_rank),
@@ -627,12 +627,11 @@ async function createTaskOrderAndMoves(connection: SqlExecutor) {
     FOREIGN KEY (calendar_id) REFERENCES calendar_calendars(id) ON DELETE CASCADE,
     FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE CASCADE
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-  // Test and development databases of the 0.27 branch made the table before the column.
-  if (!await hasColumn(connection, 'task_order', 'auto_basis')) await connection.execute('ALTER TABLE task_order ADD COLUMN auto_basis BIGINT NULL AFTER sort_rank');
+  if (!await hasColumn(connection, 'calendar_events', 'order_key')) await connection.execute('ALTER TABLE calendar_events ADD COLUMN order_key VARCHAR(64) NULL');
   // The move journal (services/calendar-move.ts): one open move per task.
-  // Removing the source calendar (or its account) ends the move; so does
-  // removing the source's server copy. A move still removing the old copy
-  // outlives its task and its new calendar (event_id, target_calendar_id
+  // Removing either calendar (or its account) or the task ends the move; so
+  // does removing the source's server copy. A move still removing the old
+  // copy outlives its task and its new calendar (event_id, target_calendar_id
   // become NULL), so the old copy never comes back. target_ics is the object
   // every attempt sends, under the UID fixed before the first; source_etag
   // is the old copy as the move found it, the only version it may delete.
