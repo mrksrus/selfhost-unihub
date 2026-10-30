@@ -16,6 +16,13 @@
 # ports shift by N-1, the mail and CalDAV servers bind 127.0.0.N, state gets
 # its own directory. Instances share the worktree's dist/ and api/dist/.
 #
+# UNIHUB_E2E_IMAGE=<image> (CI: the candidate image) runs that image in place
+# of the local nginx and API, and MariaDB 11.8 in a container with the
+# settings of docker-compose.yml, both with Docker on the host network as in
+# scripts/container-smoke.sh: the image's nginx serves port 80 and its API
+# 127.0.0.1:4000, so only instance 1 runs this way. The providers, the seeds
+# and the test CA stay as below; the API built here only seeds the database.
+#
 # Tool locations come from the environment or from
 # ${XDG_CONFIG_HOME:-~/.config}/unihub-e2e/tools.env: UNIHUB_E2E_NGINX,
 # UNIHUB_E2E_MIME_TYPES (Alpine nginx's mime.types, as in the image),
@@ -36,8 +43,14 @@ MIME_TYPES=${UNIHUB_E2E_MIME_TYPES:-}
 GREENMAIL_JAR=${UNIHUB_E2E_GREENMAIL_JAR:-}
 RADICALE=${UNIHUB_E2E_RADICALE:-$(command -v radicale || true)}
 JAVA=${JAVA:-$(command -v java || true)}
+IMAGE=${UNIHUB_E2E_IMAGE:-}
 
 DB_PORT=$((3310 + INSTANCE)) API_PORT=$((4099 + INSTANCE)) WEB_PORT=$((8087 + INSTANCE)) GREENMAIL_API_PORT=$((8184 + INSTANCE))
+if [ -n "$IMAGE" ]; then
+  [ "$INSTANCE" = 1 ] || { echo "e2e-stack: UNIHUB_E2E_IMAGE runs instance 1 only (the image's ports are fixed)" >&2; exit 1; }
+  API_PORT=4000 WEB_PORT=80
+fi
+APP_CONTAINER=unihub-e2e-app DB_CONTAINER=unihub-e2e-db
 # Implicit TLS on the standard ports (the API uses implicit TLS for SMTP only
 # on 465), so each instance's providers get their own loopback address.
 PROVIDER_HOST=127.0.0.$INSTANCE IMAPS_PORT=993 SMTPS_PORT=465 CALDAV_PORT=5232
@@ -108,7 +121,8 @@ app_env() {
   export JWT_SECRET=local-dev-jwt-secret-not-for-production-0001 ENCRYPTION_KEY=local-dev-encryption-key-not-for-production-01
   export BACKUP_MASTER_KEY=local-dev-backup-master-key-not-for-production
   export BOOTSTRAP_ADMIN_EMAIL=admin@example.com BOOTSTRAP_ADMIN_PASSWORD=local-dev-admin-password
-  export PORT=$API_PORT API_LISTEN_HOST=127.0.0.1 ALLOWED_ORIGINS=http://127.0.0.1:$WEB_PORT,http://localhost:$WEB_PORT
+  local port=":$WEB_PORT"; [ "$WEB_PORT" = 80 ] && port=
+  export PORT=$API_PORT API_LISTEN_HOST=127.0.0.1 ALLOWED_ORIGINS=http://127.0.0.1$port,http://localhost$port
   # The real providers' hosts may resolve to private addresses (split DNS), which
   # UniHub refuses unless they are trusted, as an administrator would set them.
   local real_hosts=""
@@ -169,21 +183,88 @@ level = warning
 EOF
 }
 
+# Image mode: the database container, seeded like scripts/local-db.sh dev.
+image_database() {
+  if [ ! -f "$UNIHUB_DB_ENV_FILE" ]; then
+    local root app
+    root=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)
+    app=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)
+    (umask 077; printf '# MariaDB of the e2e stack (container). Not a production secret.\nROOT_PW=%s\nAPP_PW=%s\n' "$root" "$app" > "$UNIHUB_DB_ENV_FILE")
+  fi
+  . "$UNIHUB_DB_ENV_FILE"
+  if [ -z "$(docker ps -q --filter "name=^$DB_CONTAINER\$")" ]; then
+    docker rm -f "$DB_CONTAINER" >/dev/null 2>&1 || true
+    # The options of docker-compose.yml, on this instance's loopback port and in UTC.
+    docker run -d --name "$DB_CONTAINER" --network host --init --security-opt no-new-privileges \
+      --mount type=volume,source=unihub-e2e-mariadb,target=/var/lib/mysql \
+      -e MARIADB_DATABASE=unihub_dev -e MARIADB_USER=unihub -e "MARIADB_PASSWORD=$APP_PW" -e "MARIADB_ROOT_PASSWORD=$ROOT_PW" \
+      mariadb:11.8 --port="$DB_PORT" --bind-address=127.0.0.1 --default-time-zone=+00:00 \
+      --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --max-connections=100 \
+      --innodb-buffer-pool-size=192M --innodb-log-file-size=96M --innodb-log-buffer-size=16M \
+      --innodb-flush-log-at-trx-commit=2 --innodb-snapshot-isolation=OFF --skip-name-resolve --local-infile=0 >/dev/null
+  fi
+  local ready=0
+  for _ in $(seq 1 120); do
+    docker exec "$DB_CONTAINER" healthcheck.sh --connect --innodb_initialized >/dev/null 2>&1 && { ready=1; break; }
+    sleep 1
+  done
+  [ "$ready" = 1 ] || { docker logs --tail 40 "$DB_CONTAINER" >&2; die "the database container did not become ready"; }
+  npm --prefix "$REPO/api" run --silent build
+  (cd "$REPO/api" && MYSQL_HOST=127.0.0.1 MYSQL_PORT=$DB_PORT MYSQL_USER=unihub MYSQL_PASSWORD=$APP_PW MYSQL_DATABASE=unihub_dev \
+    JWT_SECRET=local-dev-jwt-secret-not-for-production-0001 ENCRYPTION_KEY=local-dev-encryption-key-not-for-production-01 \
+    BACKUP_MASTER_KEY=local-dev-backup-master-key-not-for-production \
+    BOOTSTRAP_ADMIN_EMAIL=admin@example.com BOOTSTRAP_ADMIN_PASSWORD=local-dev-admin-password node scripts/seed-dev.cts)
+}
+
+# Image mode: the image as docker-compose.yml runs it (production settings,
+# Secure cookies; 127.0.0.1 is a secure context for the browser), with the
+# stack's keys, providers and test CA.
+image_app() {
+  app_env
+  docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
+  docker run -d --name "$APP_CONTAINER" --network host --init --stop-timeout 15 \
+    --cap-drop ALL --security-opt no-new-privileges --cap-add CHOWN --cap-add DAC_OVERRIDE \
+    --cap-add NET_BIND_SERVICE --cap-add SETGID --cap-add SETUID \
+    --mount type=volume,source=unihub-e2e-uploads,target=/app/uploads \
+    --mount "type=bind,source=$CA_DIR/ca.pem,target=/etc/unihub-e2e-ca.pem,readonly" \
+    -e NODE_ENV=production -e MYSQL_HOST -e MYSQL_PORT -e MYSQL_USER -e MYSQL_PASSWORD -e MYSQL_DATABASE \
+    -e JWT_SECRET -e ENCRYPTION_KEY -e BACKUP_MASTER_KEY -e BOOTSTRAP_ADMIN_EMAIL -e BOOTSTRAP_ADMIN_PASSWORD \
+    -e ALLOWED_ORIGINS -e TRUST_PROXY_HEADERS -e TRUSTED_MAIL_HOSTS -e NODE_EXTRA_CA_CERTS=/etc/unihub-e2e-ca.pem \
+    -e MYSQL_STARTUP_MAX_WAIT_SECONDS=60 -e MYSQL_STARTUP_CHECK_INTERVAL_SECONDS=2 "$IMAGE" >/dev/null
+  wait_healthy
+}
+wait_healthy() {
+  for _ in $(seq 1 120); do
+    [ "$(docker inspect --format '{{.State.Running}}' "$APP_CONTAINER" 2>/dev/null)" = true ] || break
+    curl --silent --fail --max-time 2 "http://127.0.0.1:$WEB_PORT/health" >/dev/null && return 0
+    sleep 1
+  done
+  docker logs --tail 80 "$APP_CONTAINER" >&2 || true
+  die "the image did not become healthy"
+}
+
 up() {
-  [ -x "$NGINX" ] || die "nginx not found; set UNIHUB_E2E_NGINX (README)"
-  [ -f "$MIME_TYPES" ] || die "set UNIHUB_E2E_MIME_TYPES to Alpine nginx's mime.types (README)"
+  if [ -z "$IMAGE" ]; then
+    [ -x "$NGINX" ] || die "nginx not found; set UNIHUB_E2E_NGINX (README)"
+    [ -f "$MIME_TYPES" ] || die "set UNIHUB_E2E_MIME_TYPES to Alpine nginx's mime.types (README)"
+  fi
   [ -f "$GREENMAIL_JAR" ] || die "set UNIHUB_E2E_GREENMAIL_JAR to greenmail-standalone.jar (README)"
   [ -x "$RADICALE" ] || die "radicale not found; set UNIHUB_E2E_RADICALE (README)"
   [ -x "$JAVA" ] || die "java not found; set JAVA"
   mkdir -p "$STATE/run" "$STATE/log" "$STATE/uploads"
   test_ca
 
-  if [ "${1:-}" = --rebuild ] || [ ! -f "$REPO/dist/index.html" ]; then
-    echo "e2e-stack: building the frontend"; (cd "$REPO" && npm run --silent build) >"$STATE/log/build.log" 2>&1 || die "frontend build failed ($STATE/log/build.log)"
+  if [ -n "$IMAGE" ]; then
+    echo "e2e-stack: starting the database container and seeding it"
+    image_database >"$STATE/log/db-seed.log" 2>&1 || die "database start or seed failed ($STATE/log/db-seed.log)"
+  else
+    if [ "${1:-}" = --rebuild ] || [ ! -f "$REPO/dist/index.html" ]; then
+      echo "e2e-stack: building the frontend"; (cd "$REPO" && npm run --silent build) >"$STATE/log/build.log" 2>&1 || die "frontend build failed ($STATE/log/build.log)"
+    fi
+    # Builds the API, then creates and seeds unihub_dev; the seed skips a database it already filled.
+    echo "e2e-stack: building the API and starting the database"
+    "$REPO/scripts/local-db.sh" dev >"$STATE/log/db-seed.log" 2>&1 || die "database start or seed failed ($STATE/log/db-seed.log)"
   fi
-  # Builds the API, then creates and seeds unihub_dev; the seed skips a database it already filled.
-  echo "e2e-stack: building the API and starting the database"
-  "$REPO/scripts/local-db.sh" dev >"$STATE/log/db-seed.log" 2>&1 || die "database start or seed failed ($STATE/log/db-seed.log)"
 
   local users="" u
   # GreenMail's format is local:password@domain; users.login=email signs in with the whole address.
@@ -199,13 +280,18 @@ up() {
   wait_port $GREENMAIL_API_PORT greenmail
   wait_port $CALDAV_PORT radicale "$PROVIDER_HOST"
 
-  app_env
-  spawn api node "$REPO/api/dist/server.js"
-  wait_port $API_PORT api
+  if [ -n "$IMAGE" ]; then
+    echo "e2e-stack: starting $IMAGE"
+    image_app
+  else
+    app_env
+    spawn api node "$REPO/api/dist/server.js"
+    wait_port $API_PORT api
 
-  nginx_config
-  spawn nginx "$NGINX" -p "$STATE/nginx" -c "$STATE/nginx/nginx.conf" -e "$STATE/log/nginx-error.log"
-  wait_port $WEB_PORT nginx
+    nginx_config
+    spawn nginx "$NGINX" -p "$STATE/nginx" -c "$STATE/nginx/nginx.conf" -e "$STATE/log/nginx-error.log"
+    wait_port $WEB_PORT nginx
+  fi
 
   # Connect each UniHub user's mail and calendar accounts once.
   ( eval "$(print_env | sed 's/^/export /')"; node "$REPO/tools/e2e/support/seed.mjs" ) >"$STATE/log/e2e-seed.log" 2>&1 || die "e2e seed failed ($STATE/log/e2e-seed.log)"
@@ -215,7 +301,7 @@ up() {
 print_env() {
   cat <<EOF
 UNIHUB_E2E_INSTANCE=$INSTANCE
-UNIHUB_E2E_URL=http://127.0.0.1:$WEB_PORT
+UNIHUB_E2E_URL=http://127.0.0.1$([ "$WEB_PORT" = 80 ] || echo ":$WEB_PORT")
 UNIHUB_E2E_STATE=$STATE
 UNIHUB_E2E_PROVIDER_HOST=$PROVIDER_HOST
 UNIHUB_E2E_PROVIDER_PASSWORD=$PROVIDER_PASSWORD
@@ -232,10 +318,15 @@ EOF
 
 status() {
   local name
-  for name in greenmail radicale api nginx; do printf '%-10s %s\n' "$name" "$(alive $name && echo running || echo stopped)"; done
-  printf '%-10s %s\n' mariadb "$("$REPO/scripts/local-db.sh" status 2>/dev/null | tail -1)"
+  for name in greenmail radicale; do printf '%-10s %s\n' "$name" "$(alive $name && echo running || echo stopped)"; done
+  if [ -n "$IMAGE" ]; then
+    for name in "$APP_CONTAINER" "$DB_CONTAINER"; do printf '%-10s %s\n' "${name#unihub-e2e-}" "$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || echo stopped)"; done
+  else
+    for name in api nginx; do printf '%-10s %s\n' "$name" "$(alive $name && echo running || echo stopped)"; done
+    printf '%-10s %s\n' mariadb "$("$REPO/scripts/local-db.sh" status 2>/dev/null | tail -1)"
+  fi
   cat <<EOF
-App:        http://127.0.0.1:$WEB_PORT  (admin@example.com, alex@example.com, blair@example.com; password local-dev-admin-password)
+App:        http://127.0.0.1:$WEB_PORT${IMAGE:+ ($IMAGE)}  (admin@example.com, alex@example.com, blair@example.com; password local-dev-admin-password)
 Providers:  $PROVIDER_HOST IMAPS $IMAPS_PORT, SMTPS $SMTPS_PORT, CalDAV https://$PROVIDER_HOST:$CALDAV_PORT/
             accounts $PROVIDER_USERS (password $PROVIDER_PASSWORD), certificate from the test CA $CA_DIR/ca.pem
 Mail API:   http://127.0.0.1:$GREENMAIL_API_PORT/api/user (GreenMail REST, for checking delivered mail)
@@ -244,6 +335,7 @@ EOF
 }
 
 down() {
+  if [ -n "$IMAGE" ]; then docker rm -f "$APP_CONTAINER" "$DB_CONTAINER" >/dev/null 2>&1 || true; fi
   stop_one nginx; stop_one api; stop_one radicale; stop_one greenmail
   [ -d "$STATE/mariadb" ] && "$REPO/scripts/local-db.sh" stop
   return 0
@@ -255,7 +347,12 @@ case "$cmd" in
   down) down ;;
   status) status ;;
   env) print_env ;;
-  reset) down; rm -rf "$STATE"; echo "e2e-stack: state removed ($STATE)" ;;
-  restart-api) stop_one api; app_env; spawn api node "$REPO/api/dist/server.js"; wait_port $API_PORT api; echo "e2e-stack: api restarted" ;;
+  reset) down; [ -z "$IMAGE" ] || docker volume rm unihub-e2e-uploads unihub-e2e-mariadb >/dev/null 2>&1 || true
+    rm -rf "$STATE"; echo "e2e-stack: state removed ($STATE)" ;;
+  restart-api)
+    # The image restarts as a whole (docker restart: SIGTERM, as docker stop).
+    if [ -n "$IMAGE" ]; then docker restart "$APP_CONTAINER" >/dev/null; wait_healthy
+    else stop_one api; app_env; spawn api node "$REPO/api/dist/server.js"; wait_port $API_PORT api; fi
+    echo "e2e-stack: api restarted" ;;
   *) sed -n '2,22p' "$0"; exit 1 ;;
 esac

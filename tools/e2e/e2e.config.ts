@@ -3,9 +3,10 @@ import { web } from '@e2e-dev/web';
 import { providerSecrets } from './tests/support/providers.ts';
 
 // The stack from ./stack.sh: nginx in front of the API, as in the image.
-// Instance N serves on port 8087 + N.
+// Instance N serves on port 8087 + N; the image itself (UNIHUB_E2E_IMAGE) on port 80.
 const instance = Number(process.env.UNIHUB_E2E_INSTANCE ?? '1');
-const app = { url: process.env.UNIHUB_E2E_URL ?? `http://127.0.0.1:${8087 + instance}`, identity: 'unihub-local' };
+const defaultUrl = process.env.UNIHUB_E2E_IMAGE ? 'http://127.0.0.1' : `http://127.0.0.1:${8087 + instance}`;
+const app = { url: process.env.UNIHUB_E2E_URL ?? defaultUrl, identity: 'unihub-local' };
 
 // The Android shell is a Chromium WebView that appends this marker
 // (android/.../MainActivity.kt); src/lib/platform.ts switches to app mode on it.

@@ -12,13 +12,27 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: mrksrus/selfhost-unihub
 
+# A newer push to a pull request replaces its run (the jobs below use up to
+# 17 of the 20 runners a free account gets at once). Pushes and tags never
+# cancel one another.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: true
+
+# The image is built once (build) and pushed to the registry under a run tag,
+# candidate-run-<run>-<attempt>; every test job pulls exactly that digest.
+# Only when every test job passed does publish give the digest its lasting
+# tags (no rebuild): candidate-<tree> on a pull request, or latest, the
+# version and the commit when publishing. Test jobs run side by side on
+# standard runners; nothing large passes between jobs except through the
+# registry.
 jobs:
   # A release publishes what a pull request already tested. A pull request
   # from this repository keeps its tested image as candidate-<tree> (the git
   # tree of the tested merge). A push to main or a release tag with exactly
   # that content only adds its tags to that image: no rebuild, no second test
   # run. Without such an image (a direct push, or main moved after the test)
-  # build-and-push builds and tests it here before publishing.
+  # the jobs below build and test it here before publishing.
   promote:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -92,16 +106,15 @@ jobs:
           docker buildx imagetools create "${args[@]}" "$REGISTRY/$IMAGE_NAME@$DIGEST"
           echo "- Published as: $(tr '\n' ' ' <<< "$IMAGE_TAGS")" >> "$GITHUB_STEP_SUMMARY"
 
-  build-and-push:
+  # Pull requests and manual runs skip promote; a push builds and tests only
+  # when no tested image exists for its content (or promote could not look).
+  # Every job below states its condition: a skipped promote would otherwise
+  # skip them all.
+  api-tests:
     needs: promote
-    # Pull requests and manual runs skip promote; a push builds and tests only
-    # when no tested image exists for its content (or promote could not look).
     if: ${{ !cancelled() && needs.promote.outputs.found != 'true' }}
     runs-on: ubuntu-latest
-    # The image build includes the Android app (Android SDK and Gradle), which
-    # is then started on three emulators with the apps of earlier releases,
-    # and run against this image and the earlier server releases.
-    timeout-minutes: 120
+    timeout-minutes: 30
     env:
       MYSQL_TEST_SCHEMA_SMOKE: "1"
       MYSQL_TEST_HOST: 127.0.0.1
@@ -129,15 +142,9 @@ jobs:
           --health-retries=20
     permissions:
       contents: read
-      packages: write
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          # Release tags define the support window (android/support-window.json).
-          fetch-depth: 0
-          fetch-tags: true
 
       # The tests run on the Node.js release the image pins (Dockerfile final
       # stage), also when Dependabot moves that pin.
@@ -159,13 +166,11 @@ jobs:
           npm ci
           npm --prefix api ci
 
-      - name: Report known vulnerabilities in shipped dependencies
+      - name: Report known vulnerabilities in shipped API dependencies
         # A report, not a gate: an advisory without a fix must not block a
         # release. Dependabot (.github/dependabot.yml) proposes the updates.
         continue-on-error: true
-        run: |
-          npm audit --omit=dev --audit-level=high
-          npm --prefix api audit --omit=dev --audit-level=high
+        run: npm --prefix api audit --omit=dev --audit-level=high
 
       - name: Match the database settings of docker-compose.yml
         # Service containers take no command options; tests also open their own pools.
@@ -173,6 +178,39 @@ jobs:
 
       - name: Run API tests
         run: npm --prefix api run test:ci
+
+  frontend:
+    needs: promote
+    if: ${{ !cancelled() && needs.promote.outputs.found != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Read the image's Node.js version
+        id: node
+        run: |
+          version="$(grep -E '^FROM ' Dockerfile | tail -n 1 | sed -nE 's/^FROM node:([0-9]+\.[0-9]+\.[0-9]+)-alpine@sha256:[0-9a-f]{64}$/\1/p')"
+          [ -n "$version" ] || { echo 'The Dockerfile final stage must be FROM node:<x.y.z>-alpine@sha256:<digest>.' >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix api ci
+
+      - name: Report known vulnerabilities in shipped frontend dependencies
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Run frontend checks
         run: |
@@ -198,6 +236,27 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # The image, built once. Its Android app (Android SDK and Gradle inside the
+  # build) is kept as a small artifact for the emulator jobs and for trying it
+  # on a phone; the image itself only travels through the registry.
+  build:
+    needs: promote
+    if: ${{ !cancelled() && needs.promote.outputs.found != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      # <registry>/<name>@<digest>, or empty when this run cannot push (a pull
+      # request from a fork): the test jobs then build the same commit themselves.
+      image: ${{ steps.push.outputs.image }}
+      tree: ${{ steps.push.outputs.tree }}
+      signing: ${{ steps.app.outputs.signing }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
@@ -205,10 +264,6 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           labels: |
             org.opencontainers.image.licenses=PolyForm-Noncommercial-1.0.0
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=sha,prefix=
 
       # Phones only update the Android app when every release is signed with
       # the same key, so a published image must never carry a throwaway key.
@@ -235,7 +290,7 @@ jobs:
             echo "key=none" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build image for smoke test
+      - name: Build the image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
@@ -253,6 +308,183 @@ jobs:
           secret-files: |
             android_keystore=${{ runner.temp }}/android-signing/keystore
             android_keystore_password=${{ runner.temp }}/android-signing/password
+
+      # The app is kept with each run (Artifacts) for trying it on a phone.
+      - name: Check and keep the Android app
+        id: app
+        env:
+          PUBLISHING: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+        run: |
+          container="$(docker create unihub:ci)"
+          mkdir -p android-app
+          docker cp "$container:/app/downloads/." android-app/
+          docker rm "$container" >/dev/null
+          cat android-app/unihub-android.json
+          if [ "$PUBLISHING" = true ] && ! grep -q '"signing":"release"' android-app/unihub-android.json; then
+            echo "The app is not signed with the release key." >&2
+            exit 1
+          fi
+          if grep -q '"signing":"release"' android-app/unihub-android.json; then
+            echo "signing=release" >> "$GITHUB_OUTPUT"
+          else
+            echo "signing=other" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload the Android app
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unihub-android-app
+          path: android-app/
+          retention-days: 14
+
+      - name: Log in to Container Registry
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Under a tag of this run only: nothing finds it as tested until publish
+      # below adds candidate-<tree> or the release tags. prune-candidates.yml
+      # deletes it after 30 days unless a release adopted it.
+      - name: Push the image under test
+        id: push
+        env:
+          CAN_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+          if [ "$CAN_PUSH" != true ]; then
+            echo "A pull request from a fork cannot push; each test job builds this commit itself."
+            echo "image=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tag="$REGISTRY/$IMAGE_NAME:candidate-run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          docker tag unihub:ci "$tag"
+          docker push --quiet "$tag"
+          digest="$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "No digest for $tag" >&2; exit 1; }
+          echo "image=$REGISTRY/$IMAGE_NAME@$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Image under test"
+            echo "- \`$REGISTRY/$IMAGE_NAME@$digest\` ($tag)"
+            echo "- App: $(cat android-app/unihub-android.json)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The current app and those of the three releases before it, read from
+  # their published images and checked against recorded hashes. Needs only
+  # the source (the candidate app's place is fixed), so it runs beside build.
+  android-window:
+    needs: promote
+    if: ${{ !cancelled() && needs.promote.outputs.found != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          # Release tags define the support window (android/support-window.json).
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Read the image's Node.js version
+        id: node
+        run: |
+          version="$(grep -E '^FROM ' Dockerfile | tail -n 1 | sed -nE 's/^FROM node:([0-9]+\.[0-9]+\.[0-9]+)-alpine@sha256:[0-9a-f]{64}$/\1/p')"
+          [ -n "$version" ] || { echo 'The Dockerfile final stage must be FROM node:<x.y.z>-alpine@sha256:<digest>.' >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+
+      - name: Build the API
+        run: |
+          npm --prefix api ci
+          npm --prefix api run build
+
+      - name: Collect the Android support window
+        run: node scripts/android-support-window.mts --candidate android-app --out android-window
+
+      - name: Keep the support window for the emulator jobs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unihub-android-window
+          path: android-window/
+          retention-days: 1
+
+  # The image starts as in production, a full backup moves to a fresh,
+  # independent installation, and an open web app updates to this build.
+  container:
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MYSQL_TEST_HOST: 127.0.0.1
+      MYSQL_TEST_PORT: "3306"
+      MYSQL_TEST_DATABASE: unihub_test
+      MYSQL_TEST_USER: unihub_test
+      MYSQL_TEST_PASSWORD: test-db-password
+      ENCRYPTION_KEY: ci-test-encryption-key
+      BACKUP_MASTER_KEY: ci-test-backup-master-key
+    services:
+      mariadb:
+        image: mariadb:11.8
+        env:
+          MARIADB_ROOT_PASSWORD: test-root-password
+          MARIADB_DATABASE: unihub_test
+          MARIADB_USER: unihub_test
+          MARIADB_PASSWORD: test-db-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Read the image's Node.js version
+        id: node
+        run: |
+          version="$(grep -E '^FROM ' Dockerfile | tail -n 1 | sed -nE 's/^FROM node:([0-9]+\.[0-9]+\.[0-9]+)-alpine@sha256:[0-9a-f]{64}$/\1/p')"
+          [ -n "$version" ] || { echo 'The Dockerfile final stage must be FROM node:<x.y.z>-alpine@sha256:<digest>.' >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix api ci
+
+      - name: Match the database settings of docker-compose.yml
+        run: docker exec ${{ job.services.mariadb.id }} mariadb -uroot -ptest-root-password -e "SET GLOBAL innodb_snapshot_isolation = OFF"
+
+      # The web build the checks below serve is the image's own.
+      - name: Pull the image under test
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+        run: |
+          if [ -n "$IMAGE" ]; then docker pull --quiet "$IMAGE" && docker tag "$IMAGE" unihub:ci
+          else docker build --quiet --tag unihub:ci .; fi
+          container="$(docker create unihub:ci)"
+          rm -rf dist && mkdir dist
+          docker cp "$container:/usr/share/nginx/html/." dist/
+          docker rm "$container" >/dev/null
 
       - name: Test container startup, auth and recording round-trip
         run: bash scripts/container-smoke.sh
@@ -290,55 +522,68 @@ jobs:
             check --image unihub:ci --old "$version" --new dist
           done
 
-      # The app is kept with each run (Artifacts) for trying it on a phone.
-      - name: Check and keep the Android app
-        env:
-          PUBLISHING: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
-        run: |
-          container="$(docker create unihub:ci)"
-          mkdir -p android-app
-          docker cp "$container:/app/downloads/." android-app/
-          docker rm "$container" >/dev/null
-          cat android-app/unihub-android.json
-          if [ "$PUBLISHING" = true ] && ! grep -q '"signing":"release"' android-app/unihub-android.json; then
-            echo "The app is not signed with the release key." >&2
-            exit 1
-          fi
-
-      - name: Upload the Android app
+      - name: Keep the release evidence
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          name: unihub-release-evidence-container
+          path: release-evidence/
+          if-no-files-found: ignore
+          retention-days: 1
+
+  # Building the app does not show that it starts. Start it, and the apps of
+  # the support window, on the oldest Android it supports, a current one and
+  # Android 17, where a phone reported the crash fixed in 0.21.4. Apps known
+  # to be broken must still fail as recorded; updating from the previous
+  # release's app must keep the saved server, and its contacts on the phone.
+  # The Android 10 image's WebView (74) cannot run the web app, which needs
+  # a current WebView as on any updated phone, so the real-server check runs
+  # on Android 16 only (docs/ANDROID_COMPATIBILITY.md).
+  android-10:
+    needs: [build, android-window]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.android-window.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Read the image's Node.js version
+        id: node
+        run: |
+          version="$(grep -E '^FROM ' Dockerfile | tail -n 1 | sed -nE 's/^FROM node:([0-9]+\.[0-9]+\.[0-9]+)-alpine@sha256:[0-9a-f]{64}$/\1/p')"
+          [ -n "$version" ] || { echo 'The Dockerfile final stage must be FROM node:<x.y.z>-alpine@sha256:<digest>.' >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+
+      - name: Fetch the Android app
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
           name: unihub-android-app
-          path: android-app/
-          retention-days: 14
+          path: android-app
 
-      # The current app and those of the three releases before it, read from
-      # their published images and checked against recorded hashes.
-      - name: Collect the Android support window
-        run: node scripts/android-support-window.mts --candidate android-app --out android-window
+      - name: Fetch the support window
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unihub-android-window
+          path: android-window
 
-      # Building the app does not show that it starts. Start it, and the apps of
-      # the support window, on the oldest Android it supports, a current one and
-      # Android 17, where a phone reported the crash fixed in 0.21.4. Apps known
-      # to be broken must still fail as recorded; updating from the previous
-      # release's app must keep the saved server, and its contacts on the phone.
+      # The app built into the image under test, byte for byte.
+      - name: Check the app against its image's record
+        run: node -e 'const fs=require("fs"),crypto=require("crypto");const meta=JSON.parse(fs.readFileSync("android-app/unihub-android.json"));const apk=fs.readFileSync("android-app/unihub.apk");if(crypto.createHash("sha256").update(apk).digest("hex")!==meta.sha256||apk.length!==meta.size){console.error("android-app/unihub.apk does not match unihub-android.json");process.exit(1)}console.log("App",meta.sha256)'
+
       - name: Enable KVM for the Android emulator
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      # The real-server check on Android 16 below runs the current app against
-      # these images; pulling them here keeps that step's time for the app.
-      - name: Pull the earlier server releases
-        run: |
-          for version in $(node -p 'require("./android/support-window.json").releases.slice(1).map(release => release.version).join(" ")'); do
-            docker pull --quiet "$REGISTRY/$IMAGE_NAME:$version"
-          done
-
-      # The Android 10 image's WebView (74) cannot run the web app, which needs
-      # a current WebView as on any updated phone, so the real-server check
-      # runs on Android 16 only (docs/ANDROID_COMPATIBILITY.md).
       - name: Start the Android apps on Android 10
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
@@ -352,36 +597,238 @@ jobs:
             bash android/scripts/contacts-test.sh android-app/unihub.apk "$(f="android-window/$(cat android-window/upgrade-from)/unihub.apk"; [ -f "$f" ] && echo "$f")"
             bash android/scripts/notifications-test.sh android-app/unihub.apk
 
-      - name: Start the Android apps on Android 16
+  # Android 16 runs the same three checks as Android 10, each on its own
+  # emulator so they run side by side.
+  android-16:
+    needs: [build, android-window]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.android-window.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - check: support window
+            script: 'bash android/scripts/window-test.sh android-window android-app/unihub.apk android-app/unihub-android.json'
+          - check: contacts
+            script: 'bash android/scripts/contacts-test.sh android-app/unihub.apk "$(f="android-window/$(cat android-window/upgrade-from)/unihub.apk"; [ -f "$f" ] && echo "$f")"'
+          - check: notifications
+            script: 'bash android/scripts/notifications-test.sh android-app/unihub.apk'
+    name: android-16 (${{ matrix.check }})
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Read the image's Node.js version
+        id: node
+        run: |
+          version="$(grep -E '^FROM ' Dockerfile | tail -n 1 | sed -nE 's/^FROM node:([0-9]+\.[0-9]+\.[0-9]+)-alpine@sha256:[0-9a-f]{64}$/\1/p')"
+          [ -n "$version" ] || { echo 'The Dockerfile final stage must be FROM node:<x.y.z>-alpine@sha256:<digest>.' >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+
+      - name: Fetch the Android app
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unihub-android-app
+          path: android-app
+
+      - name: Fetch the support window
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unihub-android-window
+          path: android-window
+
+      - name: Check the app against its image's record
+        run: node -e 'const fs=require("fs"),crypto=require("crypto");const meta=JSON.parse(fs.readFileSync("android-app/unihub-android.json"));const apk=fs.readFileSync("android-app/unihub.apk");if(crypto.createHash("sha256").update(apk).digest("hex")!==meta.sha256||apk.length!==meta.size){console.error("android-app/unihub.apk does not match unihub-android.json");process.exit(1)}console.log("App",meta.sha256)'
+
+      - name: Enable KVM for the Android emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Start the Android apps on Android 16 (${{ matrix.check }})
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
           api-level: 36
           arch: x86_64
           target: google_apis
           disable-animations: true
-          # With audio: the real-server check records with the emulator's microphone.
-          emulator-options: -no-window -gpu swiftshader_indirect -no-boot-anim -no-snapshot
-          # The last line runs the apps against real servers: this image and
-          # the earlier releases, each with its own empty database and
-          # synthetic people (scripts/android-server-check.mts).
-          script: |
-            bash android/scripts/window-test.sh android-window android-app/unihub.apk android-app/unihub-android.json
-            bash android/scripts/contacts-test.sh android-app/unihub.apk "$(f="android-window/$(cat android-window/upgrade-from)/unihub.apk"; [ -f "$f" ] && echo "$f")"
-            bash android/scripts/notifications-test.sh android-app/unihub.apk
-            node scripts/android-server-check.mts --window android-window --candidate-apk android-app/unihub.apk --candidate-image unihub:ci --evidence release-evidence/android-server
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: ${{ matrix.script }}
 
-      # The system image is named android-37.0 (stable channel). That image
-      # (google_apis x86_64, revision 6) is broken as of 2026-10-16: its
-      # surfaceflinger aborts right after boot ("!rcEnc->featureInfo()->
-      # hasReadColorBufferDma") with every -gpu mode, so the system restarts
-      # and installs fail before any app runs. Waiting for its boot timeout
-      # cost eleven minutes a run, so the step runs only with the repository
-      # variable UNIHUB_ANDROID17 set to true (try a new image that way); it
-      # does not block a release until a working image ships. Android 17 is
-      # checked on a real phone meanwhile (docs/ANDROID_COMPATIBILITY.md).
+  # The apps against real servers on Android 16: the candidate app against
+  # this image and the earlier server releases, and the earlier apps against
+  # this image, each with its own empty database and synthetic people
+  # (scripts/android-server-check.mts). The pairings are split over four
+  # emulators; together they run each pairing once.
+  android-16-servers:
+    needs: [build, android-window]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.android-window.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4]
+    name: android-16-servers (part ${{ matrix.part }} of 4)
+    env:
+      MYSQL_TEST_HOST: 127.0.0.1
+      MYSQL_TEST_PORT: "3306"
+      MYSQL_TEST_DATABASE: unihub_test
+      MYSQL_TEST_USER: unihub_test
+      MYSQL_TEST_PASSWORD: test-db-password
+    services:
+      mariadb:
+        image: mariadb:11.8
+        env:
+          MARIADB_ROOT_PASSWORD: test-root-password
+          MARIADB_DATABASE: unihub_test
+          MARIADB_USER: unihub_test
+          MARIADB_PASSWORD: test-db-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Read the image's Node.js version
+        id: node
+        run: |
+          version="$(grep -E '^FROM ' Dockerfile | tail -n 1 | sed -nE 's/^FROM node:([0-9]+\.[0-9]+\.[0-9]+)-alpine@sha256:[0-9a-f]{64}$/\1/p')"
+          [ -n "$version" ] || { echo 'The Dockerfile final stage must be FROM node:<x.y.z>-alpine@sha256:<digest>.' >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm --prefix api ci
+
+      - name: Match the database settings of docker-compose.yml
+        run: docker exec ${{ job.services.mariadb.id }} mariadb -uroot -ptest-root-password -e "SET GLOBAL innodb_snapshot_isolation = OFF"
+
+      - name: Fetch the Android app
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unihub-android-app
+          path: android-app
+
+      - name: Fetch the support window
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unihub-android-window
+          path: android-window
+
+      - name: Check the app against its image's record
+        run: node -e 'const fs=require("fs"),crypto=require("crypto");const meta=JSON.parse(fs.readFileSync("android-app/unihub-android.json"));const apk=fs.readFileSync("android-app/unihub.apk");if(crypto.createHash("sha256").update(apk).digest("hex")!==meta.sha256||apk.length!==meta.size){console.error("android-app/unihub.apk does not match unihub-android.json");process.exit(1)}console.log("App",meta.sha256)'
+
+      # The earlier server releases too, so the emulator's time goes to the app.
+      - name: Pull the image under test and the earlier server releases
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+        run: |
+          if [ -n "$IMAGE" ]; then docker pull --quiet "$IMAGE" && docker tag "$IMAGE" unihub:ci
+          else docker build --quiet --tag unihub:ci .; fi
+          for version in $(node -p 'require("./android/support-window.json").releases.slice(1).map(release => release.version).join(" ")'); do
+            docker pull --quiet "$REGISTRY/$IMAGE_NAME:$version"
+          done
+
+      - name: Enable KVM for the Android emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run the apps against real servers on Android 16
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 36
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          # With audio: the check records with the emulator's microphone.
+          emulator-options: -no-window -gpu swiftshader_indirect -no-boot-anim -no-snapshot
+          script: node scripts/android-server-check.mts --window android-window --candidate-apk android-app/unihub.apk --candidate-image unihub:ci --part ${{ matrix.part }}/4 --evidence release-evidence/android-server
+
+      - name: Keep the release evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unihub-release-evidence-android-server-${{ matrix.part }}
+          path: release-evidence/
+          if-no-files-found: ignore
+          retention-days: 1
+
+  # The system image is named android-37.0 (stable channel). That image
+  # (google_apis x86_64, revision 6) is broken as of 2026-10-16: its
+  # surfaceflinger aborts right after boot ("!rcEnc->featureInfo()->
+  # hasReadColorBufferDma") with every -gpu mode, so the system restarts
+  # and installs fail before any app runs. Waiting for its boot timeout
+  # cost eleven minutes a run, so the job runs only with the repository
+  # variable UNIHUB_ANDROID17 set to true (try a new image that way); it
+  # does not block a release until a working image ships. Android 17 is
+  # checked on a real phone meanwhile (docs/ANDROID_COMPATIBILITY.md).
+  android-17:
+    needs: [build, android-window]
+    if: ${{ !cancelled() && vars.UNIHUB_ANDROID17 == 'true' && needs.build.result == 'success' && needs.android-window.result == 'success' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Read the image's Node.js version
+        id: node
+        run: |
+          version="$(grep -E '^FROM ' Dockerfile | tail -n 1 | sed -nE 's/^FROM node:([0-9]+\.[0-9]+\.[0-9]+)-alpine@sha256:[0-9a-f]{64}$/\1/p')"
+          [ -n "$version" ] || { echo 'The Dockerfile final stage must be FROM node:<x.y.z>-alpine@sha256:<digest>.' >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+
+      - name: Fetch the Android app
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unihub-android-app
+          path: android-app
+
+      - name: Fetch the support window
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unihub-android-window
+          path: android-window
+
+      - name: Enable KVM for the Android emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
       - name: Start the Android apps on Android 17
-        if: vars.UNIHUB_ANDROID17 == 'true'
-        continue-on-error: true
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
           api-level: '37.0'
@@ -394,43 +841,206 @@ jobs:
             bash android/scripts/contacts-test.sh android-app/unihub.apk "$(f="android-window/$(cat android-window/upgrade-from)/unihub.apk"; [ -f "$f" ] && echo "$f")"
             bash android/scripts/notifications-test.sh android-app/unihub.apk
 
-      - name: Keep the release evidence
-        if: always()
+  # The end-to-end suite (tools/e2e) against the image under test: its nginx
+  # and API with MariaDB 11.8 in containers as in docker-compose.yml, and
+  # GreenMail and Radicale as synthetic mail and CalDAV providers behind a
+  # test CA (tools/e2e/stack.sh with UNIHUB_E2E_IMAGE). One target per runner.
+  # Real-provider tests stay local: they need private accounts.
+  e2e:
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [desktop, phone, android-app]
+    name: e2e (${{ matrix.target }})
+    env:
+      UNIHUB_E2E_IMAGE: unihub:ci
+      UNIHUB_E2E_STATE: ${{ github.workspace }}/.e2e-state
+      UNIHUB_E2E_CA: ${{ github.workspace }}/.e2e-ca
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.e2e-browsers
+      E2E_TELEMETRY_DISABLED: "1"
+      GREENMAIL_VERSION: 2.1.15
+      GREENMAIL_SHA256: 91d58798698cac357f015365240383b936ced2f2a1a9f7db37d9e3e1a31391b1
+      RADICALE_VERSION: 3.5.10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Read the image's Node.js version
+        id: node
+        run: |
+          version="$(grep -E '^FROM ' Dockerfile | tail -n 1 | sed -nE 's/^FROM node:([0-9]+\.[0-9]+\.[0-9]+)-alpine@sha256:[0-9a-f]{64}$/\1/p')"
+          [ -n "$version" ] || { echo 'The Dockerfile final stage must be FROM node:<x.y.z>-alpine@sha256:<digest>.' >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          npm --prefix api ci
+          npm --prefix tools/e2e ci
+          node tools/e2e/node_modules/playwright-core/cli.js install --with-deps chromium
+
+      - name: Cache GreenMail
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/unihub-e2e/greenmail
+          key: greenmail-${{ env.GREENMAIL_VERSION }}
+
+      # GreenMail from Maven Central and Radicale from PyPI, both pinned.
+      - name: Install the synthetic providers
+        run: |
+          jar="$HOME/.cache/unihub-e2e/greenmail/greenmail-standalone-$GREENMAIL_VERSION.jar"
+          if [ ! -f "$jar" ]; then
+            mkdir -p "$(dirname "$jar")"
+            curl --fail --silent --show-error --location -o "$jar.part" \
+              "https://repo1.maven.org/maven2/com/icegreen/greenmail-standalone/$GREENMAIL_VERSION/greenmail-standalone-$GREENMAIL_VERSION.jar"
+            mv "$jar.part" "$jar"
+          fi
+          echo "$GREENMAIL_SHA256  $jar" | sha256sum --check
+          python3 -m venv "$RUNNER_TEMP/radicale"
+          "$RUNNER_TEMP/radicale/bin/pip" install --quiet "radicale==$RADICALE_VERSION"
+          {
+            echo "UNIHUB_E2E_GREENMAIL_JAR=$jar"
+            echo "UNIHUB_E2E_RADICALE=$RUNNER_TEMP/radicale/bin/radicale"
+            echo "JAVA=$JAVA_HOME_17_X64/bin/java"
+          } >> "$GITHUB_ENV"
+          # The providers use the standard ports 993 and 465.
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+
+      - name: Pull the image under test
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+        run: |
+          if [ -n "$IMAGE" ]; then docker pull --quiet "$IMAGE" && docker tag "$IMAGE" unihub:ci
+          else docker build --quiet --tag unihub:ci .; fi
+
+      - name: Start the end-to-end stack
+        run: tools/e2e/stack.sh up
+
+      - name: Run the end-to-end suite (${{ matrix.target }})
+        working-directory: tools/e2e
+        run: npx e2e run --exclude-tag providers --target ${{ matrix.target }}
+
+      - name: Show the stack's logs
+        if: failure()
+        run: |
+          docker logs --tail 200 unihub-e2e-app || true
+          tail -n 50 "$UNIHUB_E2E_STATE"/log/*.log || true
+
+      # Synthetic data only; the cached sign-in sessions stay behind.
+      - name: Keep the end-to-end report
+        if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: unihub-release-evidence
-          path: release-evidence/
+          name: unihub-e2e-${{ matrix.target }}
+          path: |
+            tools/e2e/.e2e/
+            !tools/e2e/.e2e/sessions/
           if-no-files-found: ignore
+          retention-days: 7
+
+  # Gathers the evidence of the test jobs into one artifact, also after a
+  # failure.
+  evidence:
+    needs: [build, container, android-16-servers]
+    if: ${{ always() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Keep the release evidence
+        # Nothing to merge when every job failed before writing evidence.
+        continue-on-error: true
+        uses: actions/upload-artifact/merge@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unihub-release-evidence
+          pattern: unihub-release-evidence-*
           retention-days: 30
+          delete-merged: true
+
+  # Every test job passed: the tested digest gets its lasting tags. Nothing is
+  # built here.
+  publish:
+    needs: [build, api-tests, frontend, android-window, container, android-10, android-16, android-16-servers, e2e]
+    if: >-
+      ${{ !cancelled() && needs.build.result == 'success' && needs.build.outputs.image != ''
+        && needs.api-tests.result == 'success' && needs.frontend.result == 'success'
+        && needs.android-window.result == 'success' && needs.container.result == 'success'
+        && needs.android-10.result == 'success' && needs.android-16.result == 'success'
+        && needs.android-16-servers.result == 'success' && needs.e2e.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ${{ needs.build.outputs.image }}
+      PUBLISHING: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+      KEEPING: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=sha,prefix=
 
       - name: Log in to Container Registry
-        if: (github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+        if: env.PUBLISHING == 'true' || env.KEEPING == 'true'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Each tag must then name exactly the tested digest.
       - name: Publish the tested image
-        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        if: env.PUBLISHING == 'true'
         env:
           IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
+          args=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && args+=(--tag "$tag")
+          done <<< "$IMAGE_TAGS"
+          docker buildx imagetools create "${args[@]}" "$IMAGE"
           while IFS= read -r tag; do
             [ -n "$tag" ] || continue
-            docker tag unihub:ci "$tag"
-            docker push "$tag"
+            [ "$REGISTRY/$IMAGE_NAME@$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}')" = "$IMAGE" ] || { echo "$tag does not name $IMAGE" >&2; exit 1; }
           done <<< "$IMAGE_TAGS"
+          {
+            echo "### Published the tested image"
+            echo "- Image: \`$IMAGE\`"
+            echo "- Published as: $(tr '\n' ' ' <<< "$IMAGE_TAGS")"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Kept for the release that merges exactly this content (promote above).
       # Only with the release-signed app: a published image must carry it.
       - name: Keep the tested image for its release
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        if: env.KEEPING == 'true'
+        env:
+          TREE: ${{ needs.build.outputs.tree }}
+          SIGNING: ${{ needs.build.outputs.signing }}
         run: |
-          if ! grep -q '"signing":"release"' android-app/unihub-android.json; then
+          if [ "$SIGNING" != release ]; then
             echo "The app is not release-signed; this image cannot be published, so it is not kept."
             exit 0
           fi
-          candidate="$REGISTRY/$IMAGE_NAME:candidate-$(git rev-parse 'HEAD^{tree}')"
-          docker tag unihub:ci "$candidate"
-          docker push "$candidate"
+          candidate="$REGISTRY/$IMAGE_NAME:candidate-$TREE"
+          docker buildx imagetools create --tag "$candidate" "$IMAGE"
+          [ "$REGISTRY/$IMAGE_NAME@$(docker buildx imagetools inspect "$candidate" --format '{{.Manifest.Digest}}')" = "$IMAGE" ] || { echo "$candidate does not name $IMAGE" >&2; exit 1; }
+          echo "### Kept the tested image as \`$candidate\` ($IMAGE)" >> "$GITHUB_STEP_SUMMARY"
