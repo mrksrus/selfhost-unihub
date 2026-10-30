@@ -515,6 +515,59 @@ test('3+3 bridge: stored places for old apps keep hidden values, labels and repl
   const [flatSlots] = await pool.query<RowDataPacket[]>("SELECT value, legacy_slot FROM contact_values v JOIN contacts c ON c.id = v.contact_id WHERE c.user_id = ? AND c.first_name = 'Flat' ORDER BY v.position", [userId]);
   assert.deepEqual(flatSlots.map(row => [row.value, row.legacy_slot]), [['+44 20 6', 1], ['+44 20 7', 2]]);
 
+  // ── Review round 4 ──
+  // A deletion and an edit in one write: which row the edit came from is
+  // unknown, so no label moves; the untouched address keeps row and label.
+  const mixed = (await call('POST', '/api/contacts', { name: { given: 'Mixed' }, emails: [{ value: 'ma@example.test', label: 'home' },
+    { value: 'mb@example.test', label: 'work' }, { value: 'mc@example.test', label: 'custom', custom_label: 'Club' }] })).contact;
+  const mixedBody = { first_name: 'Mixed', email: 'mc@example.test', email2: 'mb.new@example.test' };
+  const mixedAfter = await put(mixed.id, mixedBody);
+  assert.deepEqual(rows(mixedAfter, 'emails')[0], rows(mixed, 'emails')[2], 'the kept address keeps row and label');
+  assert.deepEqual(mixedAfter.emails.slice(1).map((item: FixtureValue) => [item.value, item.label]), [['mb.new@example.test', '']], 'the edited address carries no guessed label');
+  assert.ok(!mixedAfter.emails.some((item: FixtureValue) => [mixed.emails[0].id, mixed.emails[1].id].includes(item.id)));
+  sameContact(await put(mixed.id, mixedBody), mixedAfter, 'sent again, nothing changes');
+
+  // An address the app sends that UniHub already stores outside the places takes a place; it is not added twice.
+  const refill = (await call('POST', '/api/contacts', { name: { given: 'Refill' }, emails: ['ra@example.test', 'rb@example.test', 'rc@example.test', { value: 'rd@example.test', label: 'other' }] })).contact;
+  assert.deepEqual(triples(refill, 'email'), ['ra@example.test', 'rb@example.test', 'rc@example.test']);
+  const refillBody = { first_name: 'Refill', email: 'ra@example.test', email2: 'rd@example.test' };
+  const refilled2 = await put(refill.id, refillBody);
+  assert.deepEqual(rows(refilled2, 'emails'), [rows(refill, 'emails')[0], rows(refill, 'emails')[3]], 'the stored rd keeps its row and label');
+  assert.deepEqual(triples(refilled2, 'email'), ['ra@example.test', 'rd@example.test', null]);
+  sameContact(await put(refill.id, refillBody), refilled2, 'sent again, nothing changes');
+  const partialRefill = (await call('POST', '/api/contacts', { name: { given: 'Partial refill' }, emails: ['pa@example.test', 'pb@example.test', 'pc@example.test', { value: 'pd@example.test', label: 'work' }] })).contact;
+  const partialAfter = await put(partialRefill.id, { email2: 'pd@example.test' });
+  assert.deepEqual(rows(partialAfter, 'emails'), [0, 2, 3].map(index => rows(partialRefill, 'emails')[index]), 'place 2 now holds the stored pd, once');
+  assert.deepEqual(triples(partialAfter, 'email'), ['pa@example.test', 'pd@example.test', 'pc@example.test']);
+  sameContact(await put(partialRefill.id, { email2: 'pd@example.test' }), partialAfter, 'sent again, nothing changes');
+
+  // A web edit that briefly makes one address the app twin of another never takes the unchanged one's place.
+  const twin = (await call('POST', '/api/contacts', { name: { given: 'Twin' }, emails: [{ value: 'ta@example.test', label: 'home' }, { value: 'tb@example.test', label: 'work' }] })).contact;
+  const collided = (await call('PUT', `/api/contacts/${twin.id}`, { name: { given: 'Twin' }, version: twin.version,
+    emails: [{ ...twin.emails[0], value: 'TB@example.test' }, twin.emails[1]] })).contact;
+  assert.deepEqual(triples(collided, 'email'), [null, 'tb@example.test', null], 'the changed twin leaves its place; tb keeps its own');
+  const twinDeleted = (await call('PUT', `/api/contacts/${twin.id}`, { name: { given: 'Twin' }, version: collided.version, emails: [collided.emails[1]] })).contact;
+  assert.deepEqual(triples(twinDeleted, 'email'), [null, 'tb@example.test', null]);
+  const twinPhone = await put(twin.id, { first_name: 'Twin', email: 'tb@example.test' });
+  assert.deepEqual(rows(twinPhone, 'emails'), [rows(twin, 'emails')[1]], 'the phone\'s write keeps tb with its label');
+
+  // Known limit, as in 0.25.1: values the old app cannot hold but had in its
+  // three fields (longer than 255 UTF-16 units, a case twin) keep their place
+  // after upgrade or restore; the app drops them and its next whole write
+  // clears them, exactly as the same write cleared those fields on 0.25.1.
+  const wideEmail = `${'😀'.repeat(130)}@example.test`;
+  const limitId = crypto.randomUUID();
+  await importBackupForUser(userId, { app: 'unihub', version: 4, files: [], data: { contacts: [{ id: limitId, first_name: 'Limit',
+    email: wideEmail, email2: 'Twin@example.test', email3: 'twin@example.test' }] } } as FixtureValue, { mode: 'apply', conflict_mode: 'keep_both' });
+  const limit = ((await call('GET', '/api/contacts?q=Limit')).contacts as FixtureValue[]).find(contact => contact.first_name === 'Limit');
+  assert.deepEqual(triples(limit, 'email'), [wideEmail, 'Twin@example.test', 'twin@example.test'], 'what 0.25.1 showed in its three fields');
+  // ContactCard.forServer(): the wide address is dropped, the twins collapse to the first.
+  const limitAfter = await put(limit.id, { first_name: 'Limit', email: 'Twin@example.test' });
+  // 0.25.1 kept email = Twin@example.test and cleared the rest; here the address stays in its place.
+  const keptOn0251 = ['Twin@example.test'];
+  assert.deepEqual(triples(limitAfter, 'email'), [null, 'Twin@example.test', null]);
+  assert.deepEqual(limitAfter.emails.map((item: FixtureValue) => item.value), keptOn0251, 'the same loss as on 0.25.1, no more');
+
   // ── Any sequence of flat writes: each one sent again changes nothing, and values outside the places are never touched ──
   let seed = 20261030;
   const random = (n: number) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
