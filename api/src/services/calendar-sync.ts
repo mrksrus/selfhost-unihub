@@ -749,12 +749,14 @@ function userFacingError(error: ApiError) {
   return message;
 }
 
-async function withAccountLock<T>(accountId: string, fn: () => Promise<T>): Promise<T | { skipped: true; reason: string; ok?: never }> {
+// One sync of an account at a time, across processes. waitSeconds: how long
+// to wait for a running one (the move's removal of an old copy waits briefly).
+async function withAccountLock<T>(accountId: string, fn: () => Promise<T>, waitSeconds = 0): Promise<T | { skipped: true; reason: string; ok?: never }> {
   const connection = await db.getConnection();
   const lockName = "SHA2(CONCAT(DATABASE(), ':calendar-sync:', ?), 256)";
   let locked = false;
   try {
-    const [rows] = await connection.execute<RowDataPacket[]>(`SELECT GET_LOCK(${lockName}, 0) AS acquired`, [accountId]);
+    const [rows] = await connection.execute<RowDataPacket[]>(`SELECT GET_LOCK(${lockName}, ?) AS acquired`, [accountId, waitSeconds]);
     locked = Number(rows[0]?.acquired) === 1;
     if (!locked) return { skipped: true, reason: 'busy' };
     return await fn();
@@ -1164,6 +1166,7 @@ export {
   pushEventUpdate,
   pushEventDelete,
   // For the move service (calendar-move.ts).
+  withAccountLock,
   loadCalendarContext,
   loadEventLink,
   assertWritable,
