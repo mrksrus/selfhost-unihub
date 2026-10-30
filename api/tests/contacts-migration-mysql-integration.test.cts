@@ -52,7 +52,7 @@ test('upgrade 22 copies every 3+3 value into contact_values and upgrade 23 drops
   try { await step22.up(connection); } finally { connection.release(); }
   await runMigrations(pool, MIGRATIONS, BASELINE);
 
-  const [history] = await pool.query<RowDataPacket[]>('SELECT id, name FROM schema_migrations WHERE id >= 22 ORDER BY id');
+  const [history] = await pool.query<RowDataPacket[]>('SELECT id, name FROM schema_migrations WHERE id BETWEEN 22 AND 23 ORDER BY id');
   assert.deepEqual(history.map(row => [row.id, row.name]), [[22, 'contacts-vcard-model'], [23, 'contacts-drop-legacy-columns']]);
   const [fields] = await pool.query<RowDataPacket[]>('SHOW COLUMNS FROM contacts');
   for (const column of ['email', 'email2', 'email3', 'phone', 'phone2', 'phone3', 'avatar_url']) assert.ok(!fields.some(field => field.Field === column), `${column} dropped`);
