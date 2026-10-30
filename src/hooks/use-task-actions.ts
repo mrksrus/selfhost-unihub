@@ -2,7 +2,7 @@ import { useRef } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
-import { CalendarRequestError, calendarApi, calendarQueryKeys, invalidateCalendarQueries, type CalendarCalendar, type CalendarEvent, type CalendarSubtask, type NewCalendarEvent, type TaskMove } from '@/lib/calendar-api';
+import { CalendarRequestError, MOVE_PENDING_NOTICE, calendarApi, calendarQueryKeys, invalidateCalendarQueries, isMovePending, type CalendarCalendar, type CalendarEvent, type CalendarSubtask, type NewCalendarEvent, type TaskMove } from '@/lib/calendar-api';
 import { neighboursAt, optimisticRanks } from '@/lib/tasks';
 
 export type NewTask = NewCalendarEvent;
@@ -26,7 +26,8 @@ export function useTaskActions() {
   const client = useQueryClient();
   const { toast } = useToast();
   const refresh = () => { void invalidateCalendarQueries(client); };
-  const failed = (title: string) => (error: Error) => toast({ title, description: error.message, variant: 'destructive' });
+  // A task still being moved refuses writes until the calendar server answers; that is a wait, not a failure.
+  const failed = (title: string) => (error: Error) => toast(isMovePending(error) ? MOVE_PENDING_NOTICE : { title, description: error.message, variant: 'destructive' });
 
   const create = useMutation({
     mutationFn: (task: NewTask) => calendarApi.createEvent(task),
@@ -112,7 +113,7 @@ export function useTaskActions() {
         toast({ title: 'The list changed in the meantime', description: 'It has been reloaded. Try again.' });
         return;
       }
-      toast({ title: 'Could not move the task', description: error.message, variant: 'destructive' });
+      failed('Could not move the task')(error);
     },
     onSettled: settleRanks,
   });
@@ -139,8 +140,9 @@ export function useTaskActions() {
     mutationFn: ({ id, calendarId }: { id: string; calendarId: string; list?: CalendarCalendar }) => calendarApi.moveTask(id, calendarId),
     onSuccess: (result: TaskMove, { list }) => {
       refresh();
-      if (result.pending) toast({ title: 'Moving…', description: 'The calendar server has not confirmed yet. UniHub finishes this in the background.' });
-      else toast({ title: list ? `Task moved to ${list.name}` : 'Task moved' });
+      if (result.pending === 'creating') toast({ title: 'Moving…', description: 'The calendar server has not confirmed yet. UniHub finishes this in the background.' });
+      else toast({ title: list ? `Task moved to ${list.name}` : 'Task moved',
+        ...(result.sourceKept ? { description: 'Its old copy was changed in another app meanwhile, so it stays in the old calendar too.' } : {}) });
     },
     onError: failed('Could not move the task'),
   });

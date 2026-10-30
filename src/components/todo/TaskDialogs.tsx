@@ -311,9 +311,12 @@ export function MoveListDialog({ task, onClose, actions, calendars }: {
     if (!task || !target || refusal || target.id === task.calendar_id) return;
     const submitted = { id: task.id, opening: opening.current };
     actions.moveToList.mutate({ id: task.id, calendarId: target.id, list: target }, {
+      // Only a copy not yet confirmed keeps the dialog open: with 'removing'
+      // the task is in its new list. An answer to a move submitted from an
+      // earlier opening (another task) changes nothing here.
       onSuccess: result => {
         if (submitted.opening !== opening.current || submitted.id !== formTask?.id) return;
-        if (result.pending) setPending(result.pending); else onClose();
+        if (result.pending === 'creating') setPending(result.pending); else onClose();
       },
     });
   };

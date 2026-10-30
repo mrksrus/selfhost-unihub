@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
@@ -7,6 +8,8 @@ import GeneralSettings from '@/components/settings/GeneralSettings';
 import { MoveListDialog, NewTaskDialog } from '@/components/todo/TaskDialogs';
 import { TaskRow } from '@/components/todo/TaskRow';
 import { useTaskActions, type TaskActions } from '@/hooks/use-task-actions';
+import { useEventActions } from '@/hooks/use-event-actions';
+import { EventDialog } from '@/components/calendar/EventDialog';
 import { SortableList, DragHandle } from '@/components/ui/sortable-list';
 import { api } from '@/lib/api';
 import { calendarQueryKeys, normalizeCalendar, type CalendarCalendar, type CalendarEvent } from '@/lib/calendar-api';
@@ -375,6 +378,82 @@ describe('the move dialog opened again', () => {
   });
 });
 
+describe('an item still being moved', () => {
+  const movePending = { error: 'This item is still being moved to another calendar. UniHub finishes the move when the calendar server answers; try again then.', status: 409, code: 'CALENDAR_MOVE_PENDING' };
+
+  it('says so plainly on a tick, a placement or a move, and leaves the row and the cache as they are', async () => {
+    vi.mocked(api.put).mockResolvedValue(movePending);
+    vi.mocked(api.post).mockResolvedValue(movePending);
+    const { client } = mount(<TodoPage />);
+    const section = await screen.findByRole('region', { name: 'No date' });
+    const titles = () => within(section).getAllByRole('listitem').map(item => item.querySelector('p')!.textContent);
+    const key = calendarQueryKeys.list({ includeTodos: true, respectAutoTodo: true });
+    const before = client.getQueryData<CalendarEvent[]>(key)!;
+    fireEvent.click(within(section).getByRole('button', { name: 'Mark Pay rent done' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith({ title: 'Still being moved to another list', description: 'UniHub finishes the move when the calendar server answers. Try again in a moment.' }));
+    expect(state.toast).not.toHaveBeenCalledWith(expect.objectContaining({ variant: 'destructive' }));
+    expect(within(section).getByRole('button', { name: 'Mark Pay rent done' })).toBeInTheDocument();
+    fireEvent.click(within(await openMenu('Call Sam')).getByRole('menuitem', { name: 'Move down' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledTimes(2));
+    expect(state.toast).toHaveBeenLastCalledWith({ title: 'Still being moved to another list', description: 'UniHub finishes the move when the calendar server answers. Try again in a moment.' });
+    await waitFor(() => expect(titles()).toEqual(['Pay rent', 'Call Sam', 'Plan holiday']));
+    expect(client.getQueryData<CalendarEvent[]>(key)!.map(event => [event.id, event.sort_rank, event.hand_ordered])).toEqual(before.map(event => [event.id, event.sort_rank, event.hand_ordered]));
+    fireEvent.click(within(await openMenu('Pay rent')).getByRole('menuitem', { name: 'Move to another list' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Move to another list' });
+    fireEvent.click(within(dialog).getByRole('combobox', { name: 'New list' }));
+    fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /Archive/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledTimes(3));
+    expect(state.toast).toHaveBeenLastCalledWith(expect.objectContaining({ title: 'Still being moved to another list' }));
+    expect(screen.getByRole('dialog', { name: 'Move to another list' })).toBeInTheDocument();
+  });
+});
+
+describe('the event dialog moving an event', () => {
+  const accounts = [
+    { id: 'local', provider: 'local' }, { id: 'caldav', provider: 'caldav' }, { id: 'ics', provider: 'ics' },
+  ] as never;
+  function Host({ event, onClose }: { event: CalendarEvent | null; onClose: () => void }) {
+    const actions = useEventActions();
+    // The page keeps the open target in state; a new object per render would read as another opening.
+    const target = useMemo(() => (event ? { kind: 'edit' as const, event } : null), [event]);
+    return <EventDialog target={target} onClose={onClose} calendars={lists} accounts={accounts} actions={actions} timezone="UTC" />;
+  }
+  it('shows the pending move when the calendar server has not confirmed, and ignores an answer to an earlier opening', async () => {
+    const dated = task('Dentist', { calendar_id: 'list-home' });
+    const answer = deferred<{ data: { event: CalendarEvent; pending: 'creating' } }>();
+    vi.mocked(api.put).mockReturnValueOnce(answer.promise as never);
+    const onClose = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const wrap = (event: CalendarEvent | null) => <QueryClientProvider client={client}><MemoryRouter><Host event={event} onClose={onClose} /></MemoryRouter></QueryClientProvider>;
+    const { rerender } = render(wrap(dated));
+    const dialog = await screen.findByRole('dialog', { name: 'Edit event' });
+    fireEvent.click(within(dialog).getByRole('combobox', { name: 'Calendar' }));
+    fireEvent.click(await screen.findByRole('option', { name: /Work/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/calendar/events/Dentist', expect.objectContaining({ calendar_id: 'cal-work' })));
+    // Closed and opened for another event before the server answers: the late answer changes nothing there.
+    rerender(wrap(null));
+    rerender(wrap(task('Haircut', { calendar_id: 'list-home' })));
+    await waitFor(() => expect(within(screen.getByRole('dialog', { name: 'Edit event' })).getByLabelText('Title')).toHaveValue('Haircut'));
+    await act(async () => { answer.resolve({ data: { event: { ...dated, calendar_id: 'cal-work' }, pending: 'creating' } }); });
+    expect(within(screen.getByRole('dialog')).queryByRole('status')).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Moving…' }));
+
+    // The dialog that submitted the move stays open with the pending state until closed.
+    vi.mocked(api.put).mockResolvedValueOnce({ data: { event: { ...dated, calendar_id: 'cal-work' }, pending: 'creating' } });
+    const second = screen.getByRole('dialog', { name: 'Edit event' });
+    fireEvent.click(within(second).getByRole('combobox', { name: 'Calendar' }));
+    fireEvent.click(await screen.findByRole('option', { name: /Work/ }));
+    fireEvent.click(within(second).getByRole('button', { name: 'Save' }));
+    expect(await within(second).findByRole('status')).toHaveTextContent('Moving… UniHub finishes this in the background and the event shows in Work once the calendar server has stored it.');
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(within(second).getAllByRole('button', { name: 'Close' }).find(button => !button.querySelector('svg'))!);
+    expect(onClose).toHaveBeenCalled();
+  });
+});
+
 describe('subtasks offline', () => {
   function Row({ item, canReorder }: { item: CalendarEvent; canReorder: boolean }) {
     const actions: TaskActions = useTaskActions();
@@ -452,6 +531,17 @@ describe('the list chooser', () => {
     // The footer's Close, not the dialog's corner X (also named Close).
     fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' }).find(button => !button.querySelector('svg'))!);
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    // Only the old copy still to remove: the task is in its new list, so the
+    // dialog closes as moved; an old copy changed elsewhere is mentioned.
+    vi.mocked(api.post).mockResolvedValueOnce({ data: { event: null, pending: 'removing', source_kept: true } });
+    fireEvent.click(within(await openMenu('Pay rent')).getByRole('menuitem', { name: 'Move to another list' }));
+    const again = await screen.findByRole('dialog', { name: 'Move to another list' });
+    fireEvent.click(within(again).getByRole('combobox', { name: 'New list' }));
+    fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /Archive/ }));
+    fireEvent.click(within(again).getByRole('button', { name: 'Move' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Task moved to Archive', description: expect.stringMatching(/stays in the old calendar too/) }));
   });
 });
 

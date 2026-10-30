@@ -133,7 +133,15 @@ a server calendar by `calendar_id`, `remote_uid` and `recurrence_id` (the
 provider's identity), because the sync rebuilds its event rows. The restore
 remaps `calendar_id` and `event_id`, computes `item_key` again from them, and
 lets an existing row win unless Replace is chosen; a synced task's order
-applies again once the next sync links its UID. Every row must name a task
+applies again once the next sync links its UID. Events keep their
+`created_at` (a task without a date is ordered by it). A task that was never
+placed by hand is ordered by its date with a small tiebreak from its id; a
+restored UniHub task gets a new id, so the restore keeps its archived date
+rank as a row with `auto_basis` (the second that rank was computed from). Such
+a row does not count as placed by hand and stops applying once the task's
+date changes. The order therefore comes back exactly as saved, also on
+another installation. A synced task's tiebreak comes from its UID and
+recurrence id, so it needs no such row. Every row must name a task
 (or a calendar) of the same archive. The settings section may carry
 `default_task_list_id` and `default_calendar_id`, which are remapped with the
 restored calendars. The move journal (`calendar_event_moves`) is never

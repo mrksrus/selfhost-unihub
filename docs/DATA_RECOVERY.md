@@ -66,6 +66,14 @@ settings section the calendar references `default_task_list_id` and
 account map). The move journal `calendar_event_moves` is installation state
 and never archived. Older archives restore without an order.
 
+A synced task's order is removed only on evidence that the provider deleted
+it: a verified deletion of its server object. An object or occurrence that
+leaves the sync window (the expansion is bounded) keeps its order and gets
+its place back when it returns. Ranks of occurrences whose original date lies
+before the sync window expire at the daily expansion, since such an occurrence
+cannot be shown again; this also ends the order of occurrences a series no
+longer has (an EXDATE, a shorter rule, a new series time).
+
 0.26.0 writes data schema 5 for the contacts model; the readers for schemas 1
 to 4 convert older contacts as upgrade step 22 does (see
 [Backup format](BACKUP_FORMAT.md)). Validation holds each archive to the

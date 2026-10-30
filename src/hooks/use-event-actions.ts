@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
 import {
-  calendarApi, invalidateCalendarQueries,
+  MOVE_PENDING_NOTICE, calendarApi, invalidateCalendarQueries, isMovePending,
   type CalendarEvent, type CalendarRsvpStatus, type RecurrenceScope,
 } from '@/lib/calendar-api';
 
@@ -12,7 +12,8 @@ export function useEventActions() {
   const client = useQueryClient();
   const { toast } = useToast();
   const refresh = () => { void invalidateCalendarQueries(client); };
-  const failed = (title: string) => (error: Error) => toast({ title, description: error.message, variant: 'destructive' });
+  // An item still being moved refuses writes until the calendar server answers; that is a wait, not a failure.
+  const failed = (title: string) => (error: Error) => toast(isMovePending(error) ? MOVE_PENDING_NOTICE : { title, description: error.message, variant: 'destructive' });
 
   const create = useMutation({
     mutationFn: (event: EventInput) => calendarApi.createEvent(event),
@@ -22,8 +23,15 @@ export function useEventActions() {
 
   const update = useMutation({
     mutationFn: ({ id, event, scope }: { id: string; event: Partial<CalendarEvent>; scope?: RecurrenceScope }) => calendarApi.updateEvent(id, event, scope),
-    // A changed series is expanded again; its occurrences get new ids.
-    onSuccess: ({ replaced }) => { refresh(); toast({ title: replaced ? 'Series updated' : 'Event updated' }); },
+    // A changed series is expanded again; its occurrences get new ids. A
+    // changed calendar is a move: a server copy not yet confirmed ('creating')
+    // finishes in the background and the event stays where it was meanwhile.
+    onSuccess: ({ replaced, pending, sourceKept }) => {
+      refresh();
+      if (pending === 'creating') toast({ title: 'Moving…', description: 'The calendar server has not confirmed yet. UniHub finishes this in the background.' });
+      else toast({ title: replaced ? 'Series updated' : 'Event updated',
+        ...(sourceKept ? { description: 'Its old copy was changed in another app meanwhile, so it stays in the old calendar too.' } : {}) });
+    },
     onError: failed('Could not update the event'),
   });
 

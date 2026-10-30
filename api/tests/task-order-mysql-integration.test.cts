@@ -128,6 +128,7 @@ test('task order and calendar defaults: owner-scoped, gated, kept over re-sync a
   }
   const titles = async (request = owner) => (await order(request)).map(event => event.title);
   const orderRows = async (userId = ids.owner) => Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM task_order WHERE user_id = ?', [userId]))[0][0].n);
+  const handRows = async (userId = ids.owner) => Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM task_order WHERE user_id = ? AND auto_basis IS NULL', [userId]))[0][0].n);
 
   const inbox = await localCalendar(ids.owner, 'Inbox');
   const t0 = Date.UTC(2026, 9, 1, 8);
@@ -390,6 +391,93 @@ test('task order and calendar defaults: owner-scoped, gated, kept over re-sync a
     await pool.execute("DELETE FROM calendar_accounts WHERE user_id = ? AND provider = 'caldav'", [ids.owner]);
   });
 
+  await t.test('order of synced items leaves only on deletion at the server, not with the sync window', async () => {
+    const caldav = runtime('services/caldav');
+    const calendarSync = runtime('services/calendar-sync');
+    // A listing covers the sync window only: an object without an occurrence
+    // there is left out, though the server still has it.
+    const remote = { ctag: '1', objects: new Map<string, { etag: string; ics: string; outside?: boolean }>() };
+    caldav.listCalendars = async () => [{ href: CALENDAR_HREF, url: `${BASE}${CALENDAR_HREF}`, displayName: 'Work', ctag: remote.ctag, readOnly: false }];
+    caldav.listCalendarObjects = async () => [...remote.objects].filter(([, object]) => !object.outside).map(([href, object]) => ({ href, url: `${BASE}${href}`, etag: object.etag }));
+    caldav.fetchCalendarObjects = async ({ objects }: FixtureValue) => objects.filter((item: FixtureValue) => remote.objects.has(item.href))
+      .map((item: FixtureValue) => ({ href: item.href, etag: remote.objects.get(item.href)!.etag, ics: remote.objects.get(item.href)!.ics }));
+    caldav.resourceGone = async ({ url, kind }: FixtureValue) => kind === 'calendar' ? !url.endsWith(CALENDAR_HREF) : !remote.objects.has(new URL(url).pathname);
+    const accountId = crypto.randomUUID();
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, display_name, username, encrypted_password, base_url, provider_config, is_active)
+      VALUES (?, ?, 'caldav', 'owner@dav.example.test', 'Work server', 'owner', ?, ?, ?, TRUE)`,
+    [accountId, ids.owner, encrypt('synthetic-dav-password'), `${BASE}/dav/calendars/person/`, JSON.stringify({ server: { url: BASE, source: 'discovered', label: 'dav.example.test' }, principalHref: '/dav/principals/person/' })]);
+    const week = 7 * DAY;
+    const first = Math.ceil((Date.now() + 2 * DAY) / 3600000) * 3600000;
+    const far = Date.now() + 900 * DAY;
+    const series = (moved: number | null) => ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//UniHub test//EN',
+      'BEGIN:VEVENT', 'UID:weekly@example.test', 'DTSTAMP:20261001T000000Z', `DTSTART:${icsDate(first)}`, `DTEND:${icsDate(first + 3600000)}`,
+      'RRULE:FREQ=WEEKLY;COUNT=3', 'SUMMARY:Weekly review', 'END:VEVENT',
+      ...(moved === null ? [] : ['BEGIN:VEVENT', 'UID:weekly@example.test', 'DTSTAMP:20261001T000000Z', `RECURRENCE-ID:${icsDate(first + week)}`,
+        `DTSTART:${icsDate(moved)}`, `DTEND:${icsDate(moved + 3600000)}`, 'SUMMARY:Weekly review', 'END:VEVENT']),
+      'END:VCALENDAR', ''].join('\r\n');
+    // A single event is always expanded; a series is bounded by the window.
+    const solo = (start: number) => ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//UniHub test//EN', 'BEGIN:VEVENT', 'UID:solo@example.test',
+      'DTSTAMP:20261001T000000Z', `DTSTART:${icsDate(start)}`, `DTEND:${icsDate(start + 3600000)}`, 'RRULE:FREQ=DAILY;COUNT=1', 'SUMMARY:Solo',
+      'END:VEVENT', 'END:VCALENDAR', ''].join('\r\n');
+    const seriesHref = `${CALENDAR_HREF}weekly.ics`, soloHref = `${CALENDAR_HREF}solo.ics`;
+    remote.objects.set(seriesHref, { etag: '"w1"', ics: series(null) });
+    remote.objects.set(soloHref, { etag: '"o1"', ics: solo(first + 3 * week) });
+    let version = 1;
+    const sync = async () => {
+      remote.ctag = String(++version);
+      await pool.execute('UPDATE calendar_calendars SET remote_expanded_on = NULL WHERE account_id = ?', [accountId]);
+      await calendarSync.syncCalendarAccount(accountId, { userId: ids.owner });
+    };
+    await sync();
+    await pool.execute('UPDATE calendar_calendars SET auto_todo_enabled = TRUE WHERE account_id = ?', [accountId]);
+    const [[work]] = await pool.query<RowDataPacket[]>('SELECT id FROM calendar_calendars WHERE account_id = ?', [accountId]);
+    // The calendar's tasks in order, by title and original week.
+    const label = (event: FixtureValue) => event.title === 'Solo' ? 'Solo' : `Week ${Math.round((Date.parse(event.start_time) - first) / week) + 1}`;
+    const listed = async () => (await order()).filter(event => event.calendar_id === work.id);
+    const labels = async () => (await listed()).map(label);
+    assert.deepEqual(await labels(), ['Week 1', 'Week 2', 'Week 3', 'Solo']);
+    const byLabel = async () => Object.fromEntries((await listed()).map(event => [label(event), event.id]));
+    const events = await byLabel();
+    await owner('PUT', `/calendar/events/${events['Week 2']}/position`, { after: null, before: events['Week 1'] });
+    await owner('PUT', `/calendar/events/${events.Solo}/position`, { after: events['Week 2'], before: events['Week 1'] });
+    assert.deepEqual(await labels(), ['Week 2', 'Solo', 'Week 1', 'Week 3']);
+    const ranks = async () => (await pool.query<RowDataPacket[]>('SELECT remote_uid, recurrence_id FROM task_order WHERE user_id = ? AND calendar_id = ? ORDER BY remote_uid, recurrence_id', [ids.owner, work.id]))[0].map(row => `${row.remote_uid}|${row.recurrence_id}`);
+    const placed = [`solo@example.test|${icsDate(first + 3 * week)}`, `weekly@example.test|${icsDate(first + week)}`];
+    assert.deepEqual(await ranks(), placed);
+
+    // Another client moves week 2 and the single event beyond the window:
+    // their rows go, their places stay.
+    remote.objects.set(seriesHref, { etag: '"w2"', ics: series(far) });
+    remote.objects.set(soloHref, { etag: '"o2"', ics: solo(far), outside: true });
+    await sync();
+    assert.deepEqual(await labels(), ['Week 1', 'Week 3']);
+    assert.deepEqual(await ranks(), placed, 'an expansion that omits an item is no deletion');
+    // Moved back to their dates: the hand places apply again.
+    remote.objects.set(seriesHref, { etag: '"w3"', ics: series(first + week) });
+    remote.objects.set(soloHref, { etag: '"o3"', ics: solo(first + 3 * week) });
+    await sync();
+    assert.deepEqual(await labels(), ['Week 2', 'Solo', 'Week 1', 'Week 3']);
+    assert.deepEqual((await listed()).slice(0, 2).map(event => event.hand_ordered), [true, true]);
+
+    // Occurrences from before the window expire; one still ahead stays.
+    const stale = '20200106T100000Z';
+    const keyOf = runtime('services/task-order').itemKey;
+    for (const recurrence of [stale, '20300107T100000Z']) {
+      await pool.execute('INSERT INTO task_order (user_id, item_key, calendar_id, remote_uid, recurrence_id, sort_rank) VALUES (?, ?, ?, ?, ?, 1)',
+        [ids.owner, keyOf({ calendar_id: work.id, remote_uid: 'weekly@example.test', recurrence_id: recurrence }), work.id, 'weekly@example.test', recurrence]);
+    }
+    await sync();
+    assert.deepEqual(await ranks(), [...placed, 'weekly@example.test|20300107T100000Z']);
+
+    // Deleted at the server (verified): its order goes.
+    remote.objects.delete(soloHref);
+    await sync();
+    assert.deepEqual(await labels(), ['Week 2', 'Week 1', 'Week 3']);
+    assert.deepEqual(await ranks(), [`weekly@example.test|${icsDate(first + week)}`, 'weekly@example.test|20300107T100000Z']);
+    await pool.execute('DELETE e FROM calendar_events e JOIN calendar_calendars c ON c.id = e.calendar_id WHERE c.account_id = ?', [accountId]);
+    await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [accountId]);
+  });
+
   await t.test('restore keeps local order and calendar defaults with remapped ids', async () => {
     await pool.execute('DELETE FROM calendar_events WHERE user_id = ?', [ids.owner]);
     const first = await task(ids.owner, inbox, 'First', { createdMs: t0 });
@@ -410,12 +498,13 @@ test('task order and calendar defaults: owner-scoped, gated, kept over re-sync a
     const { settings } = await owner('GET', '/settings/values');
     assert.equal(settings.default_task_list_id.value, copy.id);
     assert.equal(settings.default_calendar_id.value, copy.id);
-    assert.equal(await orderRows(), 2);
+    assert.equal(await handRows(), 2);
     const restored = (await order()).filter(event => event.calendar_id === copy.id).map(event => [event.title, event.hand_ordered]);
     assert.deepEqual(restored, [['Second', true], ['First', false]]);
     // Restoring again with Keep existing adds no rows.
+    const rowsBefore = await orderRows();
     await runtime('services/backup').importBackupForUser(ids.owner, backup, { mode: 'apply', sections: ['settings', 'calendar'], conflict_mode: 'keep_existing', startAccountSync: () => {} });
-    assert.equal(await orderRows(), 2);
+    assert.equal(await orderRows(), rowsBefore);
 
     // Settings alone: a calendar still the person's stays; one that names
     // nothing of theirs becomes UniHub's choice.
@@ -432,5 +521,48 @@ test('task order and calendar defaults: owner-scoped, gated, kept over re-sync a
     const refused = await runtime('services/backup').importBackupForUser(ids.owner, broken, { mode: 'dry-run', sections: ['calendar'] });
     assert.equal(refused.valid, false);
     assert.match(refused.errors.join('\n'), /task order row that names no task/);
+  });
+  await t.test('a restore on a later day brings back the exact order, next to tasks placed by hand', async () => {
+    const chores = await localCalendar(ids.owner, 'Chores');
+    const at = (text: string) => Date.parse(`${text}Z`);
+    const made: Record<string, string> = {};
+    for (const [title, created] of [['First', '2026-10-01T08:00:00'], ['Second', '2026-10-01T08:01:00'], ['Pair A', '2026-10-01T09:00:00'],
+      ['Pair B', '2026-10-01T09:00:00'], ['Pair C', '2026-10-01T09:00:00'], ['Close', '2026-10-01T09:00:01'], ['Last', '2026-10-01T10:00:00']] as const) {
+      made[title] = await task(ids.owner, chores, title, { createdMs: at(created) });
+    }
+    const listOf = async (request: FixtureValue, calendarId: string) => (await order(request)).filter(event => event.calendar_id === calendarId)
+      .map(event => [event.title, event.hand_ordered]);
+    // First goes after Second; Close goes between two tasks of one second.
+    await owner('PUT', `/calendar/events/${made.First}/position`, { after: made.Second, before: (await order()).find(event => event.title === 'Pair A' || event.title === 'Pair B' || event.title === 'Pair C')!.id });
+    const pairs = (await order()).filter(event => event.title.startsWith('Pair'));
+    await owner('PUT', `/calendar/events/${made.Close}/position`, { after: pairs[0].id, before: pairs[1].id });
+    const saved = await listOf(owner, chores);
+    assert.deepEqual(saved.map(([title]) => title), ['Second', 'First', pairs[0].title, 'Close', pairs[1].title, pairs[2].title, 'Last']);
+    const backup = await runtime('services/backup').buildBackupForUser(ids.owner, { sections: ['calendar'] });
+    const restoreInto = async (userId: string, conflict_mode: string) => {
+      const result = await runtime('services/backup').importBackupForUser(userId, structuredClone(backup), { mode: 'apply', sections: ['calendar'], conflict_mode, startAccountSync: () => {} });
+      assert.equal(result.valid, true, JSON.stringify(result.errors));
+    };
+
+    // Into a new person, weeks later: new ids, the creation times kept.
+    const freshId = crypto.randomUUID();
+    await pool.execute<ResultSetHeader>('INSERT INTO users (id,email,password_hash,full_name) VALUES (?,?,?,?)', [freshId, 'fresh@example.test', passwordHash, 'fresh']);
+    await restoreInto(freshId, 'keep_existing');
+    const fresh = await signIn('fresh');
+    const [[freshChores]] = await pool.query<RowDataPacket[]>("SELECT id FROM calendar_calendars WHERE user_id = ? AND name = 'Chores'", [freshId]);
+    assert.deepEqual(await listOf(fresh, freshChores.id), saved);
+    // Its kept date ranks do not count as placed by hand and follow a new date.
+    const [[pairCopy]] = await pool.query<RowDataPacket[]>('SELECT id FROM calendar_events WHERE user_id = ? AND title = ?', [freshId, pairs[2].title]);
+    await fresh('PUT', `/calendar/events/${pairCopy.id}`, { is_todo_only: false, start_time: '2026-12-01T09:00:00.000Z', end_time: '2026-12-01T10:00:00.000Z' });
+    assert.equal((await fresh('GET', `/calendar/events/${pairCopy.id}`)).event.hand_ordered, false);
+
+    // Into the same person: Replace keeps the rows, Keep both makes a copy.
+    await restoreInto(ids.owner, 'replace');
+    assert.deepEqual(await listOf(owner, chores), saved);
+    await restoreInto(ids.owner, 'keep_both');
+    assert.deepEqual(await listOf(owner, chores), saved);
+    const [copies] = await pool.query<RowDataPacket[]>("SELECT id FROM calendar_calendars WHERE user_id = ? AND name LIKE 'Chores%' AND id <> ?", [ids.owner, chores]);
+    assert.equal(copies.length, 1);
+    assert.deepEqual(await listOf(owner, copies[0].id), saved);
   });
 });

@@ -202,13 +202,15 @@ CREATE TABLE `calendar_event_external_refs` (
 CREATE TABLE `calendar_event_moves` (
   `id` char(36) NOT NULL,
   `user_id` char(36) NOT NULL,
-  `event_id` char(36) NOT NULL,
+  `event_id` char(36) DEFAULT NULL,
   `source_calendar_id` char(36) DEFAULT NULL,
   `source_object_id` char(36) DEFAULT NULL,
-  `target_calendar_id` char(36) NOT NULL,
+  `source_etag` varchar(255) DEFAULT NULL,
+  `target_calendar_id` char(36) DEFAULT NULL,
   `target_uid` varchar(255) NOT NULL,
   `target_href` text DEFAULT NULL,
   `target_etag` varchar(255) DEFAULT NULL,
+  `target_ics` mediumtext DEFAULT NULL,
   `state` enum('creating','removing') NOT NULL,
   `attempts` int(11) NOT NULL DEFAULT 0,
   `last_error` varchar(255) DEFAULT NULL,
@@ -223,10 +225,10 @@ CREATE TABLE `calendar_event_moves` (
   KEY `source_object_id` (`source_object_id`),
   KEY `target_calendar_id` (`target_calendar_id`),
   CONSTRAINT `calendar_event_moves_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `calendar_event_moves_ibfk_2` FOREIGN KEY (`event_id`) REFERENCES `calendar_events` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `calendar_event_moves_ibfk_2` FOREIGN KEY (`event_id`) REFERENCES `calendar_events` (`id`) ON DELETE SET NULL,
   CONSTRAINT `calendar_event_moves_ibfk_3` FOREIGN KEY (`source_calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE CASCADE,
   CONSTRAINT `calendar_event_moves_ibfk_4` FOREIGN KEY (`source_object_id`) REFERENCES `calendar_remote_objects` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `calendar_event_moves_ibfk_5` FOREIGN KEY (`target_calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE CASCADE
+  CONSTRAINT `calendar_event_moves_ibfk_5` FOREIGN KEY (`target_calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `calendar_event_subtasks` (
@@ -1289,6 +1291,7 @@ CREATE TABLE `task_order` (
   `remote_uid` varchar(500) DEFAULT NULL,
   `recurrence_id` varchar(64) NOT NULL DEFAULT '',
   `sort_rank` bigint(20) NOT NULL,
+  `auto_basis` bigint(20) DEFAULT NULL,
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   PRIMARY KEY (`user_id`,`item_key`),
   KEY `idx_task_order_rank` (`user_id`,`sort_rank`),
