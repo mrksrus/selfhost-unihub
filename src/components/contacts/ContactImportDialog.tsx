@@ -18,9 +18,10 @@ const FINISHED: ImportStatus['state'][] = ['committed', 'failed', 'expired'];
 /** A warning names the card and the property, never a value (the server words it). */
 const warningText = (warning: ImportWarning) => `${warning.card !== null ? `Contact ${warning.card}: ` : ''}${warning.message}`;
 
+// The preview is kept for 24 hours, so the day matters as much as the time.
 const timeOf = (iso: string) => {
   const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString(undefined, { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
 };
 
 /** What a card of the file holds, next to the field names that differ. */
