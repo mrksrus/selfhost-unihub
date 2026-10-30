@@ -2,6 +2,10 @@
 // contact_values.value_key and contacts.name_key with these, the duplicate
 // engine and restore matching compare them, and the upgrade step 22 copy
 // uses them too, so a key computed today equals the stored one.
+//
+// A stored key is cut to 255 characters for its index, so two long values
+// (web addresses, addresses) can share one. It finds candidates; whether two
+// values are the same is decided by fullValueKey, which is never cut.
 import type { ContactValueKind } from '../contracts/contacts';
 
 const KEY_MAX = 255;
@@ -12,33 +16,44 @@ function bounded(text: string, max = KEY_MAX) {
 }
 
 // Phone: the digits, with a leading + when the number was written with one.
-function phoneKey(value: string) {
+function fullPhoneKey(value: string) {
   const text = value.trim();
   const digits = text.replace(/\D/g, '');
-  return bounded(digits ? (text.startsWith('+') ? '+' : '') + digits : '');
+  return digits ? (text.startsWith('+') ? '+' : '') + digits : '';
 }
+const phoneKey = (value: string) => bounded(fullPhoneKey(value));
 
-function emailKey(value: string) {
-  return bounded(value.trim().toLowerCase());
-}
+const fullEmailKey = (value: string) => value.trim().toLowerCase();
+const emailKey = (value: string) => bounded(fullEmailKey(value));
 
 // A web address without its scheme and trailing slash, so http/https and
 // "example.org/" compare equal.
-function urlKey(value: string) {
-  return bounded(value.trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/\/+$/, ''));
-}
+const fullUrlKey = (value: string) => value.trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/\/+$/, '');
+const urlKey = (value: string) => bounded(fullUrlKey(value));
 
-function textKey(value: string) {
-  return bounded(value.trim().toLowerCase().replace(/\s+/g, ' '));
-}
+const fullTextKey = (value: string) => value.trim().toLowerCase().replace(/\s+/g, ' ');
 
-function valueKey(kind: ContactValueKind, value: string) {
+/** The whole normalised form of a value: what decides whether two values of a kind are the same. */
+function fullValueKey(kind: ContactValueKind, value: string) {
   switch (kind) {
-    case 'email': return emailKey(value);
-    case 'phone': return phoneKey(value);
-    case 'url': return urlKey(value);
-    default: return textKey(value);
+    case 'email': return fullEmailKey(value);
+    case 'phone': return fullPhoneKey(value);
+    case 'url': return fullUrlKey(value);
+    default: return fullTextKey(value);
   }
+}
+
+/** The stored key (contact_values.value_key): the normalised form cut to 255 characters, for the index. */
+function valueKey(kind: ContactValueKind, value: string) {
+  return bounded(fullValueKey(kind, value));
+}
+
+/**
+ * A value's identity within its kind: its full normalised key, or its
+ * trimmed lower-case text when the key is empty (a phone without digits).
+ */
+function valueIdentity(kind: ContactValueKind, value: string) {
+  return `${kind}\u0000${fullValueKey(kind, value) || `raw:${value.trim().toLowerCase()}`}`;
 }
 
 // Letters that do not decompose under NFKD.
@@ -77,5 +92,5 @@ function nameKey(parts: NameParts) {
   return bounded(nameTokens(parts).join(' '));
 }
 
-export { valueKey, phoneKey, emailKey, urlKey, nameKey, nameTokens, orderedNameTokens, foldName, KEY_MAX };
+export { valueKey, fullValueKey, valueIdentity, phoneKey, emailKey, urlKey, nameKey, nameTokens, orderedNameTokens, foldName, KEY_MAX };
 export type { NameParts };

@@ -13,7 +13,7 @@ import type { SqlExecutor, BackupRow } from '../types';
 import type { ContactValueKind } from '../contracts/contacts';
 import type { ValueDraft, KeptPropertyDraft, LegacyFields } from './contacts';
 import { LABELS, VALUE_KINDS, VALUE_LIMITS, VALUES_PER_KIND, KEPT_PROPERTIES_MAX, applyLegacyUpdate, draftNameKey, newUid, uidHash, writeKeptProperties, writeValues } from './contacts';
-import { valueKey } from './contact-keys';
+import { fullValueKey, valueKey } from './contact-keys';
 import { chooseTargetId, writeOwnedRow } from './backup-ownership';
 
 type Row = BackupRow & Record<string, unknown>;
@@ -135,10 +135,12 @@ async function findExistingContactForRestore(connection: SqlExecutor, row: Row, 
   for (const value of values.filter(item => item.kind === 'email')) {
     const key = valueKey('email', value.value);
     if (!key) continue;
-    const [byEmail] = await connection.execute<(RowDataPacket & { id: string; first_name: string; last_name: string | null })[]>(`SELECT c.id, c.first_name, c.last_name FROM contacts c
-      WHERE c.user_id = ? AND EXISTS (SELECT 1 FROM contact_values v WHERE v.contact_id = c.id AND v.user_id = ? AND v.kind = 'email' AND v.value_key = ?)
-      ORDER BY c.created_at, c.id`, [userId, userId, key]);
-    const match = unclaimed(byEmail);
+    // The stored key is cut for its index; the whole address must be the same.
+    const full = fullValueKey('email', value.value);
+    const [byEmail] = await connection.execute<(RowDataPacket & { id: string; first_name: string; last_name: string | null; value: string })[]>(`SELECT c.id, c.first_name, c.last_name, v.value
+      FROM contacts c JOIN contact_values v ON v.contact_id = c.id AND v.user_id = c.user_id AND v.kind = 'email' AND v.value_key = ?
+      WHERE c.user_id = ? ORDER BY c.created_at, c.id`, [key, userId]);
+    const match = unclaimed(byEmail.filter(row => fullValueKey('email', row.value) === full));
     if (match) return match;
   }
   const first = text(row.first_name).trim().toLowerCase();

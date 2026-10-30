@@ -261,6 +261,22 @@ function labelled(kind: ContactValueKind, labelText: string, value: string, extr
   return { kind, value, label, custom_label, preferred, params: null, vcard_group: null, ...extra };
 }
 
+/**
+ * A name, organisation, title or note cell for its field. A cell longer than
+ * the field is cut for the field and kept whole as an other detail (exported
+ * again), with a warning naming the card and the column, never the value.
+ */
+function fitCell(number: number, header: string, cell: string, properties: KeptPropertyDraft[], warnings: ImportWarning[], { notes = false } = {}) {
+  const fitted = notes ? fitNotes(cell) : fitText(cell);
+  if (fitted.cut) {
+    properties.push(keptCsv(header, cell));
+    warnings.push(warn(number, header, notes ? 'NOTE_CUT' : 'VALUE_CUT', notes
+      ? 'The note is longer than 64 KB; the shown note was cut and the whole note was kept as an other detail'
+      : 'A value longer than its field was cut; the whole value was kept as an other detail'));
+  }
+  return fitted.text;
+}
+
 /** One Google row to a card; null when the row holds nothing. */
 function googleCard(number: number, header: readonly string[], row: readonly string[], warnings: ImportWarning[]): ImportedCard | null {
   const draft = emptyDraft();
@@ -283,19 +299,20 @@ function googleCard(number: number, header: readonly string[], row: readonly str
       numbered.set(kind, entries);
       return;
     }
+    const fit = (options?: { notes: boolean }) => fitCell(number, headerText, cell, properties, warnings, options);
     switch (headerText.toLowerCase()) {
-      case 'first name': case 'given name': draft.first_name = fitText(cell).text || ''; return;
-      case 'middle name': case 'additional name': draft.middle_name = fitText(cell).text; return;
-      case 'last name': case 'family name': draft.last_name = fitText(cell).text; return;
-      case 'name': display = fitText(cell).text; return;
-      case 'name prefix': draft.name_prefix = fitText(cell).text; return;
-      case 'name suffix': draft.name_suffix = fitText(cell).text; return;
+      case 'first name': case 'given name': draft.first_name = fit() || ''; return;
+      case 'middle name': case 'additional name': draft.middle_name = fit(); return;
+      case 'last name': case 'family name': draft.last_name = fit(); return;
+      case 'name': display = fit(); return;
+      case 'name prefix': draft.name_prefix = fit(); return;
+      case 'name suffix': draft.name_suffix = fit(); return;
       case 'nickname': for (const nickname of splitMulti(cell)) values.push(labelled('nickname', '', nickname)); return;
-      case 'organization name': draft.company = fitText(cell).text; return;
-      case 'organization title': draft.job_title = fitText(cell).text; return;
-      case 'organization department': draft.department = fitText(cell).text; return;
+      case 'organization name': draft.company = fit(); return;
+      case 'organization title': draft.job_title = fit(); return;
+      case 'organization department': draft.department = fit(); return;
       case 'birthday': draft.birthday = csvDate(cell, 'google'); if (!draft.birthday) properties.push(keptCsv(headerText, cell)); return;
-      case 'notes': draft.notes = fitNotes(cell).text; return;
+      case 'notes': draft.notes = fit({ notes: true }); return;
       case 'photo': properties.push({ name: 'PHOTO', group: null, params: { VALUE: ['uri'] }, value: cell, source_version: CSV_SOURCE }); return;
       case 'labels': case 'group membership':
         for (const group of splitMulti(cell)) {
@@ -338,9 +355,10 @@ function googleCard(number: number, header: readonly string[], row: readonly str
   for (const entry of sorted('custom field')) if (entry.value) properties.push(keptCsv(label(entry) || 'Custom field', entry.value));
   const [organization] = sorted('organization');
   if (organization) {
-    draft.company ||= fitText(organization.name).text;
-    draft.job_title ||= fitText(organization.title).text;
-    draft.department ||= fitText(organization.department).text;
+    const fit = (part: string, header: string) => (part ? fitCell(number, header, part, properties, warnings) : null);
+    draft.company ||= fit(organization.name, 'Organization 1 - Name');
+    draft.job_title ||= fit(organization.title, 'Organization 1 - Title');
+    draft.department ||= fit(organization.department, 'Organization 1 - Department');
   }
   return finishCard(number, draft, values, properties, display, favorite, warnings);
 }
@@ -362,16 +380,17 @@ function outlookCard(number: number, header: readonly string[], row: readonly st
       return;
     }
     if ('field' in target) {
+      const fit = (options?: { notes: boolean }) => fitCell(number, headerText, cell, properties, warnings, options);
       switch (target.field) {
-        case 'given': draft.first_name = fitText(cell).text || ''; return;
-        case 'middle': draft.middle_name = fitText(cell).text; return;
-        case 'family': draft.last_name = fitText(cell).text; return;
-        case 'prefix': draft.name_prefix = fitText(cell).text; return;
-        case 'suffix': draft.name_suffix = fitText(cell).text; return;
-        case 'company': draft.company = fitText(cell).text; return;
-        case 'department': draft.department = fitText(cell).text; return;
-        case 'job_title': draft.job_title = fitText(cell).text; return;
-        case 'notes': draft.notes = fitNotes(cell).text; return;
+        case 'given': draft.first_name = fit() || ''; return;
+        case 'middle': draft.middle_name = fit(); return;
+        case 'family': draft.last_name = fit(); return;
+        case 'prefix': draft.name_prefix = fit(); return;
+        case 'suffix': draft.name_suffix = fit(); return;
+        case 'company': draft.company = fit(); return;
+        case 'department': draft.department = fit(); return;
+        case 'job_title': draft.job_title = fit(); return;
+        case 'notes': draft.notes = fit({ notes: true }); return;
         case 'birthday': case 'anniversary': {
           const date = csvDate(cell, layout);
           if (date) draft[target.field] = date; else if (!/^0+[/.]0+[/.]0+$/.test(cell)) properties.push(keptCsv(headerText, cell));

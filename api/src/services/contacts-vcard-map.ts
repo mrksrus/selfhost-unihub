@@ -15,7 +15,7 @@ import type { ImportWarning, ContactValueKind } from '../contracts/contacts';
 import type { ContactDraft, KeptPropertyDraft, ValueDraft } from './contacts';
 import type { VCardCard, VCardProperty } from './contacts-vcard-read';
 import { LABELS, VALUE_LIMITS, VALUES_PER_KIND, KEPT_PROPERTIES_MAX, displayName } from './contacts';
-import { valueKey } from './contact-keys';
+import { valueIdentity } from './contact-keys';
 
 // The store's field bounds (services/contacts.ts input contract).
 const TEXT_MAX = 255;
@@ -317,7 +317,7 @@ function boundValues(values: readonly (ValueDraft & { source?: KeptPropertyDraft
   const seen = new Set<string>();
   const counts = new Map<ContactValueKind, number>();
   for (const { source, ...value } of values) {
-    const key = `${value.kind}\u0000${valueKey(value.kind, value.value) || value.value.trim().toLowerCase()}`;
+    const key = valueIdentity(value.kind, value.value);
     if (seen.has(key)) continue;
     seen.add(key);
     const count = counts.get(value.kind) || 0;

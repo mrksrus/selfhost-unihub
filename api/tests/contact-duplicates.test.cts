@@ -142,3 +142,25 @@ test('conflicts list each differing single value; a group id changes with any ve
   assert.equal(group.id, groupId([a, b]));
   assert.notEqual(group.id, groupId([a, { ...b, version: 2 }]));
 });
+
+// Review (Sol): 200 identical contacts took 12.7 s of the single API
+// process. A large block now proposes only the pairs that can be high.
+test('dense groups: hundreds of copies of one person are grouped well within a second, and big blocks still find their high pairs', () => {
+  const timed = (contacts: Candidate[], min: Confidence) => { const start = process.hrtime.bigint(); const groups = detect(contacts, min); return { groups, ms: Number(process.hrtime.bigint() - start) / 1e6 }; };
+  const copies = Array.from({ length: 400 }, () => contact({ first_name: 'Dora', last_name: 'Dense', emails: ['dora@example.org'], phones: ['+49 171 5550123'] }));
+  for (const min of ['low', 'medium', 'high'] as const) {
+    const { groups, ms } = timed(copies, min);
+    assert.deepEqual([groups.length, groups[0].members.length, groups[0].confidence, groups[0].large, groups[0].reasons.length <= 50], [1, 400, 'high', true, true]);
+    assert.ok(ms < 1000, `${min}: ${ms} ms`);
+  }
+  // The same person with a different number each time: still one high group, through the shared address.
+  const numbered = Array.from({ length: 300 }, (_, index) => contact({ first_name: 'Nora', last_name: 'Numbered', emails: ['nora@example.org'], phones: [`+49 171 55${String(index).padStart(5, '0')}`] }));
+  const one = timed(numbered, 'medium');
+  assert.deepEqual([one.groups.length, one.groups[0].members.length, one.groups[0].confidence], [1, 300, 'high']);
+  assert.ok(one.ms < 1000, `${one.ms} ms`);
+  // A shared address under compatible names (a middle name, a missing family name) joins them across the big block.
+  const variants = Array.from({ length: 120 }, (_, index) => contact({ first_name: 'Vera', middle_name: index % 3 === 0 ? 'Maria' : null, last_name: index % 3 === 2 ? null : 'Variant',
+    emails: ['vera@example.org'] }));
+  const joined = detect(variants, 'high');
+  assert.deepEqual([joined.length, joined[0].members.length], [1, 120]);
+});

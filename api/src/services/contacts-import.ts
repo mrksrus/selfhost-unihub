@@ -34,7 +34,7 @@ import { getActiveRestoreSections, getActiveRestoreSectionsByUser } from './rest
 import {
   displayName, draftNameKey, insertContact, loadContacts, uidHash, KEPT_PROPERTIES_MAX, KEPT_PROPERTIES_MAX_BYTES,
 } from './contacts';
-import { valueKey } from './contact-keys';
+import { fullValueKey, valueIdentity } from './contact-keys';
 import { singleFieldConflicts } from './contact-duplicates';
 import { mergeLocked } from './contact-merge';
 import {
@@ -43,7 +43,7 @@ import {
 import { readVCards, looksLikeVCard, IMPORT_LIMITS } from './contacts-vcard-read';
 import { mapVCard, ADDRESS_PARTS, FIELD_SOURCE } from './contacts-vcard-map';
 import { readContactsCsv, looksLikeCsv } from './contacts-csv';
-import { partialDateText, stillAgrees } from './contacts-vcard-write';
+import { keptLine, partialDateText, stillAgrees } from './contacts-vcard-write';
 
 const EXPIRY_HOURS = 24;
 const CHUNK_CARDS = 200;
@@ -137,8 +137,8 @@ async function loadIndex(executor: SqlExecutor, userId: string): Promise<Contact
     'SELECT id, uid_hash, name_key FROM contacts WHERE user_id = ?', [userId]);
   const [aliases] = await executor.execute<(RowDataPacket & { uid_hash: string; contact_id: string })[]>(
     'SELECT uid_hash, contact_id FROM contact_uid_aliases WHERE user_id = ?', [userId]);
-  const [values] = await executor.execute<(RowDataPacket & { contact_id: string; kind: string; value_key: string })[]>(
-    "SELECT contact_id, kind, value_key FROM contact_values WHERE user_id = ? AND kind IN ('email', 'phone') AND value_key <> ''", [userId]);
+  const [values] = await executor.execute<(RowDataPacket & { contact_id: string; kind: 'email' | 'phone'; value: string })[]>(
+    "SELECT contact_id, kind, value FROM contact_values WHERE user_id = ? AND kind IN ('email', 'phone') AND value_key <> ''", [userId]);
   const add = (map: Map<string, Set<string>>, key: string, id: string) => { const set = map.get(key) || new Set(); set.add(id); map.set(key, set); };
   const index: ContactIndex = { byUid: new Map(), byKey: new Map(), byName: new Map(), names: new Map() };
   for (const alias of aliases) index.byUid.set(alias.uid_hash, alias.contact_id);
@@ -147,12 +147,13 @@ async function loadIndex(executor: SqlExecutor, userId: string): Promise<Contact
     index.names.set(contact.id, contact.name_key);
     if (contact.name_key) add(index.byName, contact.name_key, contact.id);
   }
-  for (const value of values) add(index.byKey, `${value.kind}:${value.value_key}`, value.contact_id);
+  // The whole normalised value: the stored key is cut for its index.
+  for (const value of values) add(index.byKey, `${value.kind}:${fullValueKey(value.kind, value.value)}`, value.contact_id);
   return index;
 }
 
 const cardKeys = (draft: ContactDraft) => draft.values.filter(value => value.kind === 'email' || value.kind === 'phone')
-  .map(value => ({ key: `${value.kind}:${valueKey(value.kind, value.value)}`, kind: value.kind as 'email' | 'phone', value: value.value }))
+  .map(value => ({ key: `${value.kind}:${fullValueKey(value.kind, value.value)}`, kind: value.kind as 'email' | 'phone', value: value.value }))
   .filter(item => !item.key.endsWith(':'));
 // Names are compatible when either is unknown or one's words are all in the
 // other ("jurgen muller" and "jurgen karl muller"); keys are sorted word sets.
@@ -266,38 +267,71 @@ function cardSummary(card: ImportedCard): ImportCardSummary {
 
 const NAME_FIELDS = ['first_name', 'middle_name', 'last_name', 'name_prefix', 'name_suffix'] as const;
 
-// Equal content: the shown fields, every value with its label, as many kept
-// properties, and a photo on both or neither (a converted photo cannot be
-// compared with the file's bytes).
-function signature(draft: ContactDraft, keptCount: number, photo: boolean) {
-  const values = draft.values.map(value => [value.kind, valueKey(value.kind, value.value) || value.value, value.label, value.custom_label || '', value.preferred ? 1 : 0].join('\u0001')).sort();
+// Equal content: the shown fields, every value with its label and the same
+// kept properties (each as the export writes it). The photo is compared
+// apart (samePhoto).
+function signature(draft: ContactDraft, kept: readonly string[]) {
+  const values = draft.values.map(value => [valueIdentity(value.kind, value.value), value.label, value.custom_label || '', value.preferred ? 1 : 0].join('\u0001')).sort();
   return JSON.stringify([draft.display_name || null, draft.first_name || '', ...NAME_FIELDS.slice(1).map(field => draft[field] || null), draft.company || null,
-    draft.department || null, draft.job_title || null, draft.birthday || null, draft.anniversary || null, (draft.notes || '').trim(), values, keptCount, photo]);
+    draft.department || null, draft.job_title || null, draft.birthday || null, draft.anniversary || null, (draft.notes || '').trim(), values,
+    [...new Set(kept)].sort()]);
 }
 
-// How many kept properties an export of each contact writes: a field's old
-// copy that no longer agrees is not one. An inline PHOTO kept as it came (one
-// the photo service could not read) is read back as the card's photo, so it
-// counts as the photo, not as a kept property. One query per thousand contacts.
-async function writtenKeptCounts(userId: string, contacts: readonly ContactRecord[]) {
-  const counts = new Map<string, { count: number; photo: boolean }>();
+/**
+ * Whether the card's photo is the stored one, proven by bytes: the stored
+ * file itself (a UniHub export), or a picture that converts to exactly the
+ * stored file (the conversion is deterministic). Never assumed.
+ */
+async function samePhoto(card: ImportedCard, own: string | null, theirs: string | null, stored: ContactRecord) {
+  if (own === theirs) return true;
+  if (!own || !theirs || !card.photo || stored.photo?.etag !== theirs) return false;
+  try {
+    return (await convertContactPhoto(Buffer.from(card.photo.data, 'base64'))).sha256 === theirs;
+  } catch {
+    return false;
+  }
+}
+
+const sha256 = (bytes: Buffer) => crypto.createHash('sha256').update(bytes).digest('hex');
+// The bytes of an inline PHOTO property (3.0 ENCODING=b or a 4.0 data: URI).
+function inlinePhotoBytes(property: KeptPropertyDraft) {
+  const value = property.value.trim();
+  const comma = /^data:[^,]*;base64,/i.test(value.slice(0, 256)) ? value.indexOf(',') : -1;
+  return Buffer.from(comma >= 0 ? value.slice(comma + 1) : value, 'base64');
+}
+
+/** A card's content as compared: its kept properties as written, and its photo's bytes. */
+function cardIdentity(card: ImportedCard) {
+  return { kept: card.properties.map(property => keptLine(property, '4.0')), photo: card.photo ? sha256(Buffer.from(card.photo.data, 'base64')) : null };
+}
+
+/**
+ * The same for stored contacts, as an export of each would read back: a
+ * field's old copy that no longer agrees is not written; with a stored
+ * photo, the photo is its file's sha256 and kept PHOTOs are not written;
+ * without one, the first inline PHOTO kept as it came is read back as the
+ * card's photo. One query per thousand contacts.
+ */
+async function storedIdentities(userId: string, contacts: readonly ContactRecord[]) {
+  const identities = new Map<string, { kept: string[]; photo: string | null }>(contacts.map(contact => [contact.id, { kept: [], photo: contact.photo?.etag ?? null }]));
   const withKept = contacts.filter(contact => contact.kept_properties > 0);
   for (let start = 0; start < withKept.length; start += 1000) {
     const slice = withKept.slice(start, start + 1000);
     const byId = new Map(slice.map(contact => [contact.id, contact]));
     const [rows] = await db.execute<(RowDataPacket & { contact_id: string; name: string; vcard_group: string | null; params: unknown; value: string; source_version: string | null })[]>(
-      `SELECT contact_id, name, vcard_group, params, value, source_version FROM contact_properties WHERE user_id = ? AND contact_id IN (${slice.map(() => '?').join(', ')})`,
-      [userId, ...slice.map(contact => contact.id)]);
+      `SELECT contact_id, name, vcard_group, params, value, source_version FROM contact_properties WHERE user_id = ? AND contact_id IN (${slice.map(() => '?').join(', ')})
+       ORDER BY contact_id, position, id`, [userId, ...slice.map(contact => contact.id)]);
     for (const row of rows) {
       const property: KeptPropertyDraft = { name: row.name, group: row.vcard_group, params: typeof row.params === 'string' ? JSON.parse(row.params) : (row.params as KeptPropertyDraft['params']) ?? null,
         value: row.value, source_version: row.source_version };
-      const entry = counts.get(row.contact_id) || { count: 0, photo: false };
-      if (isInlinePhoto(property) && !entry.photo && !byId.get(row.contact_id)!.photo) entry.photo = true;
-      else if (property.source_version !== FIELD_SOURCE || stillAgrees(property, byId.get(row.contact_id)!)) entry.count++;
-      counts.set(row.contact_id, entry);
+      const contact = byId.get(row.contact_id)!;
+      const identity = identities.get(row.contact_id)!;
+      if (property.name.toUpperCase() === 'PHOTO' && contact.photo) continue;
+      if (isInlinePhoto(property) && identity.photo === null) { identity.photo = sha256(inlinePhotoBytes(property)); continue; }
+      if (property.source_version !== FIELD_SOURCE || stillAgrees(property, contact)) identity.kept.push(keptLine(property, '4.0'));
     }
   }
-  return counts;
+  return identities;
 }
 
 /** Matches the cards and builds the groups the person decides on. */
@@ -307,7 +341,7 @@ async function matchCards(userId: string, cards: readonly ImportedCard[]) {
   const targets = [...new Set(matches.flatMap(match => match.existing.slice(0, 1)))];
   const loaded = await loadContacts(db, userId, targets);
   const existing = new Map(loaded.map(contact => [contact.id, contact]));
-  const writtenKept = await writtenKeptCounts(userId, loaded);
+  const stored = await storedIdentities(userId, loaded);
   const groups: (ImportGroup & { cardIndexes: number[] })[] = [];
   for (const members of fileGroups(cards)) {
     const memberMatches = members.map(at => matches[at]);
@@ -327,8 +361,10 @@ async function matchCards(userId: string, cards: readonly ImportedCard[]) {
         ...members.map(at => fieldSource(cards[at].draft, cards[at].photo ? `card:${cards[at].number}` : null)),
       ]);
       const card = cards[members[0]];
-      if (target && members.length === 1
-        && signature(card.draft, card.properties.length, !!card.photo) === signature(recordDraft(target), writtenKept.get(target.id)?.count || 0, !!target.photo || !!writtenKept.get(target.id)?.photo)) {
+      const own = cardIdentity(card);
+      const theirs = target ? stored.get(target.id)! : null;
+      if (target && theirs && members.length === 1 && signature(card.draft, own.kept) === signature(recordDraft(target), theirs.kept)
+        && await samePhoto(card, own.photo, theirs.photo, target)) {
         match = 'identical';
         confidence = 'high';
       }
@@ -564,7 +600,13 @@ async function runCommit(userId: string, id: string) {
     const end = chunkEnd(staged.groups, start);
     const decided = (group: StagedImport['groups'][number], state: CommitState) => state.decisions[group.id] ?? group.default_decision;
     const photos = await convertPhotos(staged.groups.slice(start, end).filter(group => decided(group, planned) !== 'skip').flatMap(cardsOf));
+    // Converting and waiting for the lock take time: the module switch and a
+    // contacts restore are checked again before anything is written, and
+    // once more inside the transaction.
+    let stopped: { code: string; message: string } | null = null;
     const outcome = await withContactPhotoLock(userId, async () => {
+      stopped = await commitBlocked(userId);
+      if (stopped) return 'blocked';
       for (const photo of photos.converted.values()) await writePhotoFiles(userId, photo);
       const released: string[] = [];
       // A failed transaction leaves the new files for the photo sweep: a lost commit may still reference them.
@@ -573,6 +615,8 @@ async function runCommit(userId: string, id: string) {
         if (!locked || locked.status !== 'committing') return 'stop';
         const state = parseResult(locked.result)!;
         if (state.next !== start) return 'again';
+        stopped = await commitBlocked(userId);
+        if (stopped) return 'blocked';
         for (let at = start; at < end; at++) {
           const group = staged.groups[at];
           await applyGroup(cx, userId, group, decided(group, state), cardsOf(group), state, photos, released);
@@ -588,6 +632,7 @@ async function runCommit(userId: string, id: string) {
       return result;
     });
     if (outcome === 'stop') return;
+    if (outcome === 'blocked') { await setFailed(userId, id, stopped!); return; }
     if (outcome === 'done') {
       await fs.promises.rm(stagedPath(userId, id), { force: true }).catch(() => {});
       const [[final]] = await db.execute<ImportRow[]>('SELECT result FROM contact_imports WHERE id = ? AND user_id = ?', [id, userId]);
