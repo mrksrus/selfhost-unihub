@@ -56,10 +56,10 @@ test('MySQL offline queries match application schema, include every contact and 
     await connection.execute<ResultSetHeader>(`INSERT INTO contacts (id, user_id, uid, uid_hash, first_name, notes) VALUES ${ids.map(() => '(?, ?, ?, SHA2(?, 256), ?, ?)').join(',')}`,
       ids.flatMap((id, row) => [id, userId, `urn:uuid:${id}`, `urn:uuid:${id}`, `Contact ${index + row}`, 'Complete notes']));
   }
-  // Values beyond the 3+3 of older releases travel with the contact.
-  await connection.execute<ResultSetHeader>(`INSERT INTO contact_values (id, contact_id, user_id, kind, position, label, value, value_key) VALUES
-    (UUID(), ?, ?, 'email', 0, 'work', 'first@example.test', 'first@example.test'), (UUID(), ?, ?, 'email', 1, '', 'second@example.test', 'second@example.test'),
-    (UUID(), ?, ?, 'email', 2, '', 'third@example.test', 'third@example.test'), (UUID(), ?, ?, 'email', 3, 'home', 'fourth@example.test', 'fourth@example.test')`,
+  // Values beyond the 3+3 of older releases travel with the contact; the first three hold the old apps' places.
+  await connection.execute<ResultSetHeader>(`INSERT INTO contact_values (id, contact_id, user_id, kind, position, label, value, value_key, legacy_slot) VALUES
+    (UUID(), ?, ?, 'email', 0, 'work', 'first@example.test', 'first@example.test', 1), (UUID(), ?, ?, 'email', 1, '', 'second@example.test', 'second@example.test', 2),
+    (UUID(), ?, ?, 'email', 2, '', 'third@example.test', 'third@example.test', 3), (UUID(), ?, ?, 'email', 3, 'home', 'fourth@example.test', 'fourth@example.test', NULL)`,
   Array(4).fill([contactIds[0], userId]).flat());
   const otherContact = crypto.randomUUID();
   await connection.execute<ResultSetHeader>('INSERT INTO contacts (id, user_id, uid, uid_hash, first_name) VALUES (?, ?, ?, SHA2(?, 256), ?)', [otherContact, otherUser, `urn:uuid:${otherContact}`, `urn:uuid:${otherContact}`, 'Other user']);
