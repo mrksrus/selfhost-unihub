@@ -86,6 +86,22 @@
       "sha256": "69d0404de2df34a8db8e7b64845f6bd63cf11a9ea6937178934b9f99551eca17",
       "bytes": 95506
     },
+    "new-task-phone-dark.png": {
+      "sha256": "38ce71edb57a1ad16ec095ef57c62c3823c2e3e1c1281750a5d2b855a0229cc5",
+      "bytes": 47697
+    },
+    "new-task-phone-light.png": {
+      "sha256": "82c7221b293465b17c692128f7612712a4f4280209d8cfb6a4985b21ec8ce2b9",
+      "bytes": 49700
+    },
+    "new-task-wide-dark.png": {
+      "sha256": "8f80ac7e04885e8332f605ee2e297f72e029dcc96d3ade5a021964b46a7fc76e",
+      "bytes": 106486
+    },
+    "new-task-wide-light.png": {
+      "sha256": "673f72c3c969442c88a0b3ea5ab7ee7003da91cb7612437a7955428dc0cffc48",
+      "bytes": 111470
+    },
     "recordings-phone-dark.png": {
       "sha256": "30b8530f865fd11b7e05379b33d2bb208fef68a34c36933b94d1f77df017952b",
       "bytes": 48752
@@ -102,21 +118,45 @@
       "sha256": "3a19117b8e77764a94911efc3d2780c9db3413d5b537a541f7b12db36c05b3fd",
       "bytes": 103347
     },
+    "settings-pages-wide-dark.png": {
+      "sha256": "0fd1c20a605284cda0c2ab7c584cd942164464f25e89c91eca28b9b7bf1aaae2",
+      "bytes": 116806
+    },
+    "settings-pages-wide-light.png": {
+      "sha256": "28dd219ce313d8a99bc8da8c4c5fff96be1798fdfd33e5685a9d0bd747afdcd9",
+      "bytes": 120795
+    },
+    "todo-drag-phone-dark.png": {
+      "sha256": "cd9aa4c9edec5346bcb78c6293cc60dfd33ffc7e58414d6f795d1df032fa8698",
+      "bytes": 68307
+    },
+    "todo-drag-phone-light.png": {
+      "sha256": "f5f3a7c395e66c78fd2ea1bffcb6260a09e99b10711f918e959baba0b2a82e04",
+      "bytes": 73751
+    },
+    "todo-drag-wide-dark.png": {
+      "sha256": "5a164520c001aeeea40b56b8160a299fbb901fbb698a15780f94a02c35346c94",
+      "bytes": 101671
+    },
+    "todo-drag-wide-light.png": {
+      "sha256": "2ef67928dd9c9b00a803b811aa423754da33c2c4ab4eb37a9d3431fba2d04a63",
+      "bytes": 105984
+    },
     "todo-phone-dark.png": {
-      "sha256": "da157bcce7c5d7f4558c4823a1ecbff2cb1efaad5929af93df1e9bd692f24509",
-      "bytes": 65704
+      "sha256": "1505478bdf35f20353878cf19372148cb6a309716a5a9ff7c2e3b92065298ee1",
+      "bytes": 67258
     },
     "todo-phone-light.png": {
-      "sha256": "c1de650d252190a369e51a1eff2a0968e0544f1af0c006d3e2f695a803f34a7e",
-      "bytes": 70643
+      "sha256": "d504168cb90fcab8a90d4e9af68e467bed67f35307b2258cbdeb0a507d4b4b03",
+      "bytes": 72259
     },
     "todo-wide-dark.png": {
-      "sha256": "ae4cf4b570cdeaf208ec5930dfe0c6ab64a847a2bc1cb835c23106d4c04d42d5",
-      "bytes": 100371
+      "sha256": "2f9b3ed83eb4a59908891ac5a284a7fcdacac9f38064fec6ab0d9b951adf9fbd",
+      "bytes": 100340
     },
     "todo-wide-light.png": {
-      "sha256": "4a9a1c6edfe4301b8a4583cb75c6da1c36e72a5ec395d9e028ea2d17a25adad2",
-      "bytes": 103897
+      "sha256": "323d3e50db34ca71c4866aaa50e959a54de923365b32a96513075c8120bca0c2",
+      "bytes": 104207
     }
   },
   "approvals": [
@@ -424,6 +464,109 @@
         "merge-review-wide-light.png"
       ],
       "changed": [],
+      "removed": []
+    },
+    {
+      "date": "2026-10-30T21:27:26.227Z",
+      "reason": "0.27.0 stream C (Fable, P-29/D29/D31): drag handles on ToDo rows (todo-* updated: a handle column beside the row menu, a server calendar chip); new pictures todo-drag-*, new-task-* and settings-pages-wide-* for the picked-up row, the list chooser and the pages handles. Integrator shows old beside new in the PR (P-27).",
+      "source": {
+        "commit": "e6ca516744486ffce191b5f06423989260367765",
+        "branch": "wip/0.27.0-ui",
+        "dirty": false,
+        "digest": "88e1d9dea0755e68f388c6a236e74b37810e1fcc7f0730a960ee5bddfe25d081"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [
+        "new-task-phone-dark.png",
+        "new-task-phone-light.png",
+        "new-task-wide-dark.png",
+        "new-task-wide-light.png",
+        "settings-pages-wide-dark.png",
+        "settings-pages-wide-light.png",
+        "todo-drag-phone-dark.png",
+        "todo-drag-phone-light.png",
+        "todo-drag-wide-dark.png",
+        "todo-drag-wide-light.png"
+      ],
+      "changed": [
+        "todo-phone-dark.png",
+        "todo-phone-light.png",
+        "todo-wide-dark.png",
+        "todo-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-10-30T21:34:36.637Z",
+      "reason": "0.27.0 stream C (Fable, P-29/D29/D31): drag handles on ToDo rows (todo-* updated: a handle column beside the row menu, subtasks reaching under it, a server calendar chip); new pictures todo-drag-*, new-task-* and settings-pages-wide-* for the picked-up row, the list chooser and the pages handles. Integrator shows old beside new in the PR (P-27).",
+      "source": {
+        "commit": "e6ca516744486ffce191b5f06423989260367765",
+        "branch": "wip/0.27.0-ui",
+        "dirty": true,
+        "digest": "b0d1c0b276d5122d1d5674a3fcd9154ea1d2f1cdbd5013ffa6d6167023bc390b"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [],
+      "changed": [
+        "new-task-phone-dark.png",
+        "new-task-phone-light.png",
+        "new-task-wide-dark.png",
+        "new-task-wide-light.png",
+        "todo-drag-phone-dark.png",
+        "todo-drag-phone-light.png",
+        "todo-drag-wide-dark.png",
+        "todo-drag-wide-light.png",
+        "todo-phone-dark.png",
+        "todo-phone-light.png",
+        "todo-wide-dark.png",
+        "todo-wide-light.png"
+      ],
       "removed": []
     }
   ]

@@ -1,16 +1,24 @@
-import { ChevronDown, ChevronUp } from 'lucide-react';
+import { MoreHorizontal } from 'lucide-react';
 import { useModules, useReorderPages, useUpdateModule, useUpdatePage } from '@/hooks/use-modules';
+import type { PagePreference } from '@/lib/modules';
 import { pageLink } from '@/lib/navigation';
+import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { ErrorState, LoadingState } from '@/components/ui/page-states';
+import { DragHandle, SortableList, draggingRowClass } from '@/components/ui/sortable-list';
 import { SettingsSection } from '@/components/settings/SettingsLayout';
+
+const pageId = (page: PagePreference) => page.id;
+const pageName = (page: PagePreference) => page.label;
 
 export default function ModuleSettings() {
   const { modules, pages, isPending, error, refetch, isFetching } = useModules();
   const update = useUpdateModule();
   const updatePage = useUpdatePage();
   const reorder = useReorderPages();
+  // Dragging a row or Move up/down from its menu saves the whole order, as before; the rail and bottom bar follow.
   const move = (index: number, offset: number) => {
     const order = pages.map(page => page.id);
     [order[index], order[index + offset]] = [order[index + offset], order[index]];
@@ -24,30 +32,43 @@ export default function ModuleSettings() {
   return (
     <>
       {failure && <p role="alert" className="mb-4 text-sm text-destructive">{failure.message}</p>}
-      <SettingsSection title="Pages" description="On phones, the first four are in the bottom bar and the rest under More.">
-        {pages.map((page, index) => {
-          const Icon = pageLink(page.id).icon;
-          const module = modules.find(entry => entry.id === page.module);
-          return (
-            <div key={page.id} className="flex items-center justify-between gap-3 py-2.5">
-              <div className="flex min-w-0 items-center gap-2">
-                <div className="flex flex-col">
-                  <Button type="button" variant="ghost" size="icon" className="h-6 w-6" aria-label={`Move ${page.label} up`} disabled={index === 0 || reorder.isPending} onClick={() => move(index, -1)}><ChevronUp aria-hidden="true" /></Button>
-                  <Button type="button" variant="ghost" size="icon" className="h-6 w-6" aria-label={`Move ${page.label} down`} disabled={index === pages.length - 1 || reorder.isPending} onClick={() => move(index, 1)}><ChevronDown aria-hidden="true" /></Button>
+      <SettingsSection title="Pages" description="Drag a page by its handle, or use its menu. On phones, the first four are in the bottom bar and the rest under More.">
+        <SortableList items={pages} getId={pageId} getName={pageName} label="Pages" disabled={reorder.isPending} aria-label="Pages" className="divide-y divide-border"
+          onReorder={({ order }) => reorder.mutate(order.map(page => page.id))}>
+          {(page, row, index) => {
+            const Icon = pageLink(page.id).icon;
+            const module = modules.find(entry => entry.id === page.module);
+            return (
+              <li key={page.id} ref={row.setNodeRef} style={row.style} className={cn('flex items-center justify-between gap-3 py-2', row.dragging && draggingRowClass)}>
+                <div className="flex min-w-0 items-center gap-2">
+                  <DragHandle {...row.handle} label={`Reorder ${page.label}`} dragging={row.dragging} className="sm:-ml-2" />
+                  <Icon aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-medium">{page.label}</h3>
+                    {module && !module.enabled && <p className="text-xs text-muted-foreground">Off while {module.label} is turned off</p>}
+                  </div>
                 </div>
-                <Icon aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <div className="min-w-0">
-                  <h3 className="text-sm font-medium">{page.label}</h3>
-                  {module && !module.enabled && <p className="text-xs text-muted-foreground">Off while {module.label} is turned off</p>}
+                <div className="flex shrink-0 items-center gap-2 touch:gap-3">
+                  <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <span className="hidden sm:inline">Show in navigation</span>
+                    <Switch aria-label={`${page.label}: show in navigation`} checked={page.visible} disabled={updatePage.isPending} onCheckedChange={visible => updatePage.mutate({ id: page.id, visible })} />
+                  </label>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button type="button" variant="ghost" size="icon-sm" className="-mr-2 text-muted-foreground" aria-label={`More actions for ${page.label}`}>
+                        <MoreHorizontal aria-hidden="true" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem disabled={index === 0 || reorder.isPending} onClick={() => move(index, -1)}>Move up</DropdownMenuItem>
+                      <DropdownMenuItem disabled={index === pages.length - 1 || reorder.isPending} onClick={() => move(index, 1)}>Move down</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
-              </div>
-              <label className="flex shrink-0 items-center gap-2 text-sm text-muted-foreground">
-                <span className="hidden sm:inline">Show in navigation</span>
-                <Switch aria-label={`${page.label}: show in navigation`} checked={page.visible} disabled={updatePage.isPending} onCheckedChange={visible => updatePage.mutate({ id: page.id, visible })} />
-              </label>
-            </div>
-          );
-        })}
+              </li>
+            );
+          }}
+        </SortableList>
       </SettingsSection>
       <SettingsSection title="Modules" description="A module that is off keeps its data, and backups include it.">
         {modules.map(module => (
