@@ -103,7 +103,13 @@ jobs:
           while IFS= read -r tag; do
             [ -n "$tag" ] && args+=(--tag "$tag")
           done <<< "$IMAGE_TAGS"
-          docker buildx imagetools create "${args[@]}" "$REGISTRY/$IMAGE_NAME@$DIGEST"
+          # A carbon copy: each tag names the tested digest itself, not a new
+          # index around it.
+          docker buildx imagetools create --prefer-index=false "${args[@]}" "$REGISTRY/$IMAGE_NAME@$DIGEST"
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            [ "$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}')" = "$DIGEST" ] || { echo "$tag does not name $DIGEST" >&2; exit 1; }
+          done <<< "$IMAGE_TAGS"
           echo "- Published as: $(tr '\n' ' ' <<< "$IMAGE_TAGS")" >> "$GITHUB_STEP_SUMMARY"
 
   # Pull requests and manual runs skip promote; a push builds and tests only
@@ -1028,7 +1034,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Each tag must then name exactly the tested digest.
+      # A carbon copy (--prefer-index=false): each tag must then name exactly
+      # the tested digest, not a new index around it.
       - name: Publish the tested image
         if: env.PUBLISHING == 'true'
         env:
@@ -1038,7 +1045,7 @@ jobs:
           while IFS= read -r tag; do
             [ -n "$tag" ] && args+=(--tag "$tag")
           done <<< "$IMAGE_TAGS"
-          docker buildx imagetools create "${args[@]}" "$IMAGE"
+          docker buildx imagetools create --prefer-index=false "${args[@]}" "$IMAGE"
           while IFS= read -r tag; do
             [ -n "$tag" ] || continue
             [ "$REGISTRY/$IMAGE_NAME@$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}')" = "$IMAGE" ] || { echo "$tag does not name $IMAGE" >&2; exit 1; }
@@ -1062,6 +1069,6 @@ jobs:
             exit 0
           fi
           candidate="$REGISTRY/$IMAGE_NAME:candidate-$TREE"
-          docker buildx imagetools create --tag "$candidate" "$IMAGE"
+          docker buildx imagetools create --prefer-index=false --tag "$candidate" "$IMAGE"
           [ "$REGISTRY/$IMAGE_NAME@$(docker buildx imagetools inspect "$candidate" --format '{{.Manifest.Digest}}')" = "$IMAGE" ] || { echo "$candidate does not name $IMAGE" >&2; exit 1; }
           echo "### Kept the tested image as \`$candidate\` ($IMAGE)" >> "$GITHUB_STEP_SUMMARY"

@@ -49,7 +49,8 @@ together; once `build` has pushed the image, `container`, `android-10`,
 pairings over four emulators, `--part k/4`) and `e2e` (one job per target;
 desktop in three: the scheduled-send and snooze files, which wait on server
 timers, each alone, and every other file) start together. `publish` needs every one of them and re-tags the tested
-digest without building; `evidence` gathers the evidence into one artifact,
+digest without building (a carbon copy, so every tag names that digest, as
+`promote` does for the release tags); `evidence` gathers the evidence into one artifact,
 also after a failure. Between jobs only small artifacts travel (the Android
 app and the support window's earlier apps, kept a day; the release-signed app
 is also kept 14 days for trying it on a phone); the image travels only through
