@@ -13,7 +13,7 @@ env:
   IMAGE_NAME: mrksrus/selfhost-unihub
 
 # A newer push to a pull request replaces its run (the jobs below use up to
-# 18 of the 20 runners a free account gets at once). Pushes and tags never
+# 15 of the 20 runners a free account gets at once). Pushes and tags never
 # cancel one another.
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
@@ -845,8 +845,9 @@ jobs:
   # and API with MariaDB 11.8 in containers as in docker-compose.yml, and
   # GreenMail and Radicale as synthetic mail and CalDAV providers behind a
   # test CA (tools/e2e/stack.sh with UNIHUB_E2E_IMAGE). One target per runner;
-  # desktop, which runs most tests, in two halves (e2e --shard). Real-provider
-  # tests stay local: they need private accounts.
+  # desktop, which runs most tests, in three: the two files that wait longest
+  # on server timers each alone, and every other file. Real-provider tests
+  # stay local: they need private accounts.
   e2e:
     needs: build
     if: ${{ !cancelled() && needs.build.result == 'success' }}
@@ -858,11 +859,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: desktop, shard: 1/2 }
-          - { target: desktop, shard: 2/2 }
-          - { target: phone, shard: 1/1 }
-          - { target: android-app, shard: 1/1 }
-    name: e2e (${{ matrix.target }}${{ matrix.shard != '1/1' && format(' {0}', matrix.shard) || '' }})
+          # The files run alone here are left out of "the rest" (DESKTOP_ALONE).
+          - { target: desktop, part: scheduled send, only: tests/mail/scheduled-send.e2e.ts }
+          - { target: desktop, part: snooze, only: tests/mail/snooze.e2e.ts }
+          - { target: desktop, part: the rest, rest: true }
+          - { target: phone }
+          - { target: android-app }
+    name: e2e (${{ matrix.target }}${{ matrix.part && format(', {0}', matrix.part) || '' }})
     env:
       UNIHUB_E2E_IMAGE: unihub:ci
       UNIHUB_E2E_STATE: ${{ github.workspace }}/.e2e-state
@@ -872,6 +875,7 @@ jobs:
       GREENMAIL_VERSION: 2.1.15
       GREENMAIL_SHA256: 91d58798698cac357f015365240383b936ced2f2a1a9f7db37d9e3e1a31391b1
       RADICALE_VERSION: 3.5.10
+      DESKTOP_ALONE: tests/mail/scheduled-send.e2e.ts tests/mail/snooze.e2e.ts
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -932,9 +936,20 @@ jobs:
       - name: Start the end-to-end stack
         run: tools/e2e/stack.sh up
 
-      - name: Run the end-to-end suite (${{ matrix.target }}, part ${{ matrix.shard }})
+      - name: Run the end-to-end suite (${{ matrix.target }}${{ matrix.part && format(', {0}', matrix.part) || '' }})
         working-directory: tools/e2e
-        run: npx e2e run --exclude-tag providers --target ${{ matrix.target }} --shard ${{ matrix.shard }}
+        env:
+          TARGET: ${{ matrix.target }}
+          ONLY: ${{ matrix.only }}
+          REST: ${{ matrix.rest }}
+        run: |
+          files=()
+          if [ -n "$ONLY" ]; then
+            files=("$ONLY")
+          elif [ "$REST" = true ]; then
+            mapfile -t files < <(find tests -name '*.e2e.ts' | sort | grep -v -x -F $(printf -- '-e %s ' $DESKTOP_ALONE))
+          fi
+          npx e2e run --exclude-tag providers --target "$TARGET" "${files[@]}"
 
       - name: Show the stack's logs
         if: failure()
