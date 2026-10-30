@@ -56,7 +56,8 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 describe('Contacts', () => {
   it('lists contacts by name, shows the preferred number, and offers only the views that have contacts', async () => {
     mount();
-    expect(await screen.findByRole('button', { name: /^Ada Example/ })).toBeInTheDocument();
+    // The first test of the file also waits for the page's first load.
+    expect(await screen.findByRole('button', { name: /^Ada Example/ }, { timeout: 5000 })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Ben Sample/ })).toHaveTextContent('+1 555 0100');
     expect(screen.getByRole('button', { name: /^Favorites, 1 contacts/ })).toBeInTheDocument();
     expect(await screen.findByRole('button', { name: /^Possible duplicates, 1 groups/ })).toBeInTheDocument();

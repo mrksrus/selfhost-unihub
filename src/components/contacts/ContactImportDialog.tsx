@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { FileUp, Loader2 } from 'lucide-react';
 import { contactsApi, contactsQueryKeys, invalidateContactQueries, type ImportCardSummary, type ImportDecisionKind, type ImportGroup, type ImportStatus, type ImportSummary, type ImportWarning } from '@/lib/contacts-api';
 import { formatPartialDate, reasonText, SINGLE_FIELD_TEXT } from '@/lib/contact-fields';
@@ -52,7 +53,7 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
 
   useEffect(() => { if (open) { setStep({ kind: 'pick' }); setDecisions({}); setShowConflicts(false); setFileName(''); setStaged(null); } }, [open]);
 
-  const stage = useMutation({
+  const stage = useSessionMutation({
     mutationFn: (file: File) => contactsApi.stageImport(file),
     onMutate: () => setStep({ kind: 'reading' }),
     onSuccess: summary => {
@@ -62,7 +63,7 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
     },
     onError: () => setStep({ kind: 'pick' }),
   });
-  const commit = useMutation({
+  const commit = useSessionMutation({
     mutationFn: ({ id, groups }: { id: string; groups: ImportGroup[] }) => contactsApi.commitImport(id, groups.map(group => ({ group_id: group.id, decision: decisions[group.id] ?? group.default_decision }))),
     onSuccess: status => setStep(FINISHED.includes(status.state) && staged ? { kind: 'done', status, summary: staged } : { kind: 'committing', id: status.id }),
   });
