@@ -18,6 +18,7 @@ import { db } from '../state';
 import { decrypt } from '../security/encryption';
 import { canRunModule } from './access-policy';
 import { publishCalendarChanged } from './realtime';
+import { sweepRemoteRanks } from './task-order';
 import * as caldav from './caldav';
 import * as ical from './calendar-ical';
 import {
@@ -474,7 +475,12 @@ async function removeObjects(ctx: Context, objectIds: string[]) {
       if (eventIds.length) {
         await connection.execute(`DELETE FROM calendar_events WHERE user_id = ? AND id IN (${eventIds.map(() => '?').join(', ')})`, [ctx.account.user_id, ...eventIds]);
       }
+      const [removed] = await connection.execute<RowDataPacket[]>(`SELECT calendar_id, uid FROM calendar_remote_objects WHERE account_id = ? AND id IN (${placeholders})`, [ctx.account.id, ...chunk]);
       await connection.execute(`DELETE FROM calendar_remote_objects WHERE account_id = ? AND id IN (${placeholders})`, [ctx.account.id, ...chunk]);
+      // A verified deletion also ends the hand order of its items (task-order.ts).
+      const uidsByCalendar = new Map<string, string[]>();
+      for (const row of removed) if (row.uid) uidsByCalendar.set(row.calendar_id, [...(uidsByCalendar.get(row.calendar_id) || []), row.uid]);
+      for (const [calendarId, uids] of uidsByCalendar) await sweepRemoteRanks(connection, ctx.account.user_id, calendarId, uids);
       ctx.stats.removedEvents += eventIds.length;
     }
   });
@@ -607,6 +613,8 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       }
       ctx.stats.removedEvents += ids.length;
     }
+    // Every object was read: hand ranks of items no longer on the server go.
+    await sweepRemoteRanks(db, ctx.account.user_id, calendar.id);
   }
   return unreadable;
 }

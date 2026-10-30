@@ -46,6 +46,8 @@ function fixture({ oversizeTable, failTable, modules = {} }: FixtureValue = {}) 
       return [(transactionData || data).contacts.filter((row: FixtureValue) => row.user_id === params[0] && ids.has(row.id))
         .map((row: FixtureValue) => ({ uid: `urn:uuid:${row.id}`, version: 1, created_at: new Date(0), updated_at: new Date(0), ...row }))];
     }
+    // The person's hand order of tasks (none here).
+    if (sql.includes('FROM task_order WHERE user_id = ?')) { assert.equal(params[0], 'user-1'); return [[]]; }
     const table = (sql.match as FixtureValue)(/\bFROM (contacts|calendar_events|calendar_event_subtasks|calendar_event_attendees|calendar_calendars|calendar_accounts|mail_accounts|mail_folders|emails|email_attachments)\b/)[1];
     assert.match(sql, /WHERE user_id = \?/);
     assert.equal(params[0], 'user-1');
