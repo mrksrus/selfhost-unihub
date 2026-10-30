@@ -150,7 +150,8 @@ test('older archives with Notes, note files or a notes section import everything
   assert.equal(validation.valid, true, validation.errors.join('\n'));
   assert.deepEqual(validation.warnings, ['Notes from the removed Notes module were skipped.']);
   const normalized = normalizeBackupPayload(old());
-  assert.deepEqual(Object.keys(normalized.data), ['contacts']);
+  // The 3+3 reader adds the (here empty) values table of the contacts.
+  assert.deepEqual(Object.keys(normalized.data), ['contacts', 'contact_values']);
   assert.deepEqual(normalized.files, []);
   const result = await importBackupForUser('destination', old(), { mode: 'apply', sections: ['contacts', 'notes'] });
   assert.equal(result.valid, true);

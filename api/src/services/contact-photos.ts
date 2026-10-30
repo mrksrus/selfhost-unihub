@@ -332,6 +332,29 @@ async function writePhotoFiles(userId: string, photo: ConvertedPhoto) {
   await writeFileAtomically(photoPath(userId, photo.thumbSha256), photo.thumb);
 }
 
+/**
+ * Places a restored photo file under its SHA-256 name. `write` fills the
+ * given temporary path and must verify the bytes against `sha` (the backup's
+ * file writer does). Answers whether the file is new, so a restore that does
+ * not commit can release exactly what it added. Call inside
+ * withContactPhotoLock, before the row is committed.
+ */
+async function writeRestoredPhotoFile(userId: string, sha: string, write: (temporary: string) => Promise<void>) {
+  const target = photoPath(userId, sha);
+  await userDirectory(userId, { create: true });
+  const existed = !!(await fs.promises.lstat(target).catch(() => null));
+  const temporary = path.join(path.dirname(target), `.${path.basename(target)}.${crypto.randomUUID()}.tmp`);
+  try {
+    await write(temporary);
+    // Also refreshes the time of an existing file, as writeFileAtomically does.
+    await fs.promises.rename(temporary, target);
+  } catch (error) {
+    await fs.promises.rm(temporary, { force: true }).catch(() => {});
+    throw error;
+  }
+  return !existed;
+}
+
 // Whether any row of the user still names the file: a contact photo, or a bin
 // item (merged-away contacts keep their photo until purged). file_refs is
 // matched as text so its JSON shape may grow.
@@ -487,6 +510,7 @@ export {
   contactPhotoFile,
   attachContactPhoto,
   writePhotoFiles,
+  writeRestoredPhotoFile,
   releasePhotoFiles,
   withContactPhotoLock,
   sweepContactPhotos,

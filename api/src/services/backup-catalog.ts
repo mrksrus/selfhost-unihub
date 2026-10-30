@@ -22,7 +22,7 @@ interface TablePolicy {
 }
 const SECTION_POLICIES: Readonly<Record<string, SectionPolicy>> = Object.freeze({
   settings: { tables: ["user", "user_settings"], fileKinds: [] },
-  contacts: { tables: ["contacts", "contact_values", "contact_properties", "contact_photos", "contact_uid_aliases", "contact_duplicate_dismissals"], fileKinds: [] },
+  contacts: { tables: ["contacts", "contact_values", "contact_properties", "contact_photos", "contact_uid_aliases", "contact_duplicate_dismissals"], fileKinds: ["contact_photo"] },
   calendar: { tables: ["calendar_accounts", "calendar_calendars", "calendar_settings", "calendar_events", "calendar_event_subtasks", "calendar_event_attendees", "calendar_event_external_refs"], fileKinds: [] },
   mail: { tables: ["mail_accounts", "mail_account_settings", "mail_templates", "mail_folders", "mail_folder_remote_boxes", "mail_sender_rules", "emails", "email_attachments", "mail_email_scores", "mail_folder_reconciliations", "mail_folder_recovery_items", "mail_folder_rule_overrides", ...Object.keys(ARCHIVE_COLUMNS)], fileKinds: ["email_attachment", "raw_email"] },
   recordings: { tables: ["recordings", "recording_tags", "recording_tag_links", "recording_transcription_jobs"], fileKinds: ["recording"] },
@@ -51,7 +51,10 @@ const BASE_TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Obj
     { value_key: 'rebuild' }, since(22, 'id contact_id user_id kind position is_preferred label custom_label value value_key po_box extended street locality region postal_code country params vcard_group created_at updated_at')),
   contact_properties: table('contacts', 'id contact_id user_id position vcard_group name params value source_version created_at', ['id'], {},
     since(22, 'id contact_id user_id position vcard_group name params value source_version created_at')),
-  contact_photos: table('contacts', 'contact_id user_id sha256 width height bytes thumb_sha256 source created_at', ['contact_id'], {},
+  // Both files are content-addressed (CONTENT_FILE_POLICIES); a restored photo
+  // is marked as restored.
+  contact_photos: table('contacts', 'contact_id user_id sha256 width height bytes thumb_sha256 source created_at', ['contact_id'],
+    { sha256: 'content_file', thumb_sha256: 'content_file', source: 'reset' },
     since(22, 'contact_id user_id sha256 width height bytes thumb_sha256 source created_at')),
   // merge_id names a merge record, which is not archived (see data-inventory.ts).
   contact_uid_aliases: table('contacts', 'user_id uid_hash uid contact_id merge_id created_at', ['user_id', 'uid_hash'], { uid_hash: 'rebuild', merge_id: 'reset' },
@@ -146,6 +149,13 @@ const FILE_POLICIES: Readonly<Record<string, { table: string; column: string }>>
   raw_email: { table: 'emails', column: 'raw_storage_path' },
   recording: { table: 'recordings', column: 'storage_path' },
 });
+// Files named by their SHA-256 under a per-user root. Each listed column holds
+// the hash of one file; the archive entry's id is that hash, so one file
+// shared by several rows is archived once, and restore verifies the bytes
+// against the name before any row may point at them.
+const CONTENT_FILE_POLICIES: Readonly<Record<string, { table: string; columns: readonly string[] }>> = Object.freeze({
+  contact_photo: { table: 'contact_photos', columns: ['sha256', 'thumb_sha256'] },
+});
 const BACKGROUND_WRITERS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   settings: [], recordings: [],
   // The bin purge, the photo sweep and the expiry of staged imports (0.26.0);
@@ -156,15 +166,15 @@ const BACKGROUND_WRITERS: Readonly<Record<string, readonly string[]>> = Object.f
 });
 // Fields older archives carry that the current schema no longer has. A
 // reader converts them (the 3+3 contact fields become contact_values,
-// backup-import.ts); validation accepts them only up to the archive version
-// that still wrote them.
+// backup-formats/v5.ts); validation accepts them only up to the archive
+// version that still wrote them.
 const RETIRED_ARCHIVE_FIELDS: Readonly<Record<string, { columns: readonly string[]; throughVersion: number }>> = Object.freeze({
   contacts: Object.freeze({ columns: Object.freeze(['email', 'email2', 'email3', 'phone', 'phone2', 'phone3', 'avatar_url']), throughVersion: 4 }),
 });
 
 // Which routes are read-only while a section is restored is declared on the
 // route specs (routes/*.ts, checked by http/route.ts assertRouteTable).
-function assertRecoveryCatalog({ sections = SECTION_POLICIES, tables = TABLE_POLICIES, references = REFERENCES, files = FILE_POLICIES, backgroundWriters = BACKGROUND_WRITERS } = {}) {
+function assertRecoveryCatalog({ sections = SECTION_POLICIES, tables = TABLE_POLICIES, references = REFERENCES, files = FILE_POLICIES, contentFiles = CONTENT_FILE_POLICIES, backgroundWriters = BACKGROUND_WRITERS } = {}) {
   const seen = new Set();
   const seenFiles = new Set();
   const fail = (message: string): never => { throw new Error(`Invalid recovery catalog: ${message}`); };
@@ -175,7 +185,8 @@ function assertRecoveryCatalog({ sections = SECTION_POLICIES, tables = TABLE_POL
       seen.add(name);
     }
     for (const kind of policy.fileKinds) {
-      if (!files[kind] || tables[files[kind].table]?.section !== section || seenFiles.has(kind)) fail(`invalid file kind ${kind}`);
+      const file = files[kind] || contentFiles[kind];
+      if (!file || (files[kind] && contentFiles[kind]) || tables[file.table]?.section !== section || seenFiles.has(kind)) fail(`invalid file kind ${kind}`);
       seenFiles.add(kind);
     }
   }
@@ -185,6 +196,7 @@ function assertRecoveryCatalog({ sections = SECTION_POLICIES, tables = TABLE_POL
     for (const [column, treatment] of Object.entries(policy.fieldPolicies)) {
       if ((treatment === 'remap' || treatment === 'remap_optional_history') && !['id', 'user_id'].includes(column) && !references[name]?.[column]) fail(`missing reference ${name}.${column}`);
       if (treatment === 'restored_file' && !Object.values(files).some(file => file.table === name && file.column === column)) fail(`missing file policy ${name}.${column}`);
+      if (treatment === 'content_file' && !Object.values(contentFiles).some(file => file.table === name && file.columns.includes(column))) fail(`missing file policy ${name}.${column}`);
     }
   }
   for (const [name, fields] of Object.entries(references)) for (const [column, target] of Object.entries(fields)) {
@@ -192,6 +204,9 @@ function assertRecoveryCatalog({ sections = SECTION_POLICIES, tables = TABLE_POL
   }
   for (const [kind, file] of Object.entries(files)) {
     if (!seenFiles.has(kind) || tables[file.table]?.fieldPolicies[file.column] !== 'restored_file') fail(`unhandled file ${kind}`);
+  }
+  for (const [kind, file] of Object.entries(contentFiles)) {
+    if (!seenFiles.has(kind) || !file.columns.length || file.columns.some(column => tables[file.table]?.fieldPolicies[column] !== 'content_file')) fail(`unhandled file ${kind}`);
   }
 }
 assertRecoveryCatalog();
@@ -260,6 +275,7 @@ export {
   TABLE_POLICIES,
   REFERENCES,
   FILE_POLICIES,
+  CONTENT_FILE_POLICIES,
   BACKGROUND_WRITERS,
   assertRecoveryCatalog,
   normalizeBackupSections,
