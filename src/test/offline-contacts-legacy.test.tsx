@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Contacts from '@/pages/Contacts';
 import { api } from '@/lib/api';
 import { resolveOfflineEndpoint, type OfflineSnapshot } from '@/lib/offline';
-import { contactEmails } from '@/lib/contacts-api';
+import { contactEmails, type Contact } from '@/lib/contacts-api';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn(), getBlob: vi.fn(), postBlob: vi.fn(), uploadBlob: vi.fn(), getDownloadUrl: (path: string) => `/api${path}` } }));
 
@@ -22,7 +22,7 @@ const legacySnapshot: OfflineSnapshot = {
   events: [], calendars: [], calendarAccounts: [], mailAccounts: [], folders: [], emails: [],
 } as unknown as OfflineSnapshot;
 
-const offline = (endpoint: string) => resolveOfflineEndpoint(legacySnapshot, endpoint) as { data: { contacts: Record<string, any>[] } };
+const offline = (endpoint: string) => resolveOfflineEndpoint(legacySnapshot, endpoint) as { data: { contacts: Contact[] } };
 
 beforeEach(() => {
   globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
@@ -40,10 +40,10 @@ describe('a pre-0.26 offline snapshot', () => {
       display_name: 'Olga Oldsnapshot', name: { given: 'Olga', family: 'Oldsnapshot', display: null }, organization: { name: 'Example GmbH', department: null },
       job_title: 'Engineer', is_favorite: true, addresses: [], urls: [], categories: [], photo: null, kept_properties: 0,
     });
-    expect(olga.emails.map((entry: { value: string }) => entry.value)).toEqual(['olga@example.com', 'olga.third@example.org']);
-    expect(olga.phones.map((entry: { value: string }) => entry.value)).toEqual(['+49 171 5550100', '+49 30 5550101']);
+    expect(olga.emails.map(entry => entry.value)).toEqual(['olga@example.com', 'olga.third@example.org']);
+    expect(olga.phones.map(entry => entry.value)).toEqual(['+49 171 5550100', '+49 30 5550101']);
     // What the composer's suggestions read.
-    expect(contactEmails(olga as never)).toEqual(['olga@example.com', 'olga.third@example.org']);
+    expect(contactEmails(olga)).toEqual(['olga@example.com', 'olga.third@example.org']);
     expect(nameless).toMatchObject({ display_name: 'nameless@example.org', name: { given: null } });
     expect(offline('/contacts?q=third@').data.contacts.map(row => row.id)).toEqual(['c-1']);
     expect(offline('/contacts?q=0171%205550').data.contacts.map(row => row.id)).toEqual(['c-1']);
