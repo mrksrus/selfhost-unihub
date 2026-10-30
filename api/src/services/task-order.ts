@@ -15,6 +15,14 @@ import { publishCalendarChanged } from './realtime';
 // never placed by hand stays at its date's place. Only placing writes, and
 // usually only the placed task: ranks are sparse.
 //
+// A date rank must not depend on anything a sync or restore renews: its
+// tiebreak offset comes from the provider identity (UID and recurrence id)
+// for a synced task, whose event row a sync may rebuild, and from the event
+// id for a local one. A restore gives local tasks new ids, so it keeps their
+// archived date ranks as "kept" rows (auto_basis set): such a row applies
+// only while the task's date is still the one it was computed from, and
+// does not count as placed by hand.
+//
 // Hand ranks are UniHub's own overlay (F2 `local`), kept in task_order and
 // never written to a calendar server (D32). A row is keyed by the item's
 // identity, not by the derived event row: a local task by its event id, a
@@ -63,10 +71,16 @@ function millis(value: unknown) {
   return Number.isNaN(ms) ? null : ms;
 }
 
-function dateRank(row: RankedRow) {
+/** The second a task's date rank is computed from: its start, or its creation for a task without a date. */
+function rankBasis(row: RankedRow) {
   const ms = millis(Number(row.is_todo_only) ? row.created_at : row.start_time) ?? millis(row.created_at) ?? 0;
-  const offset = parseInt(hash(`rank\n${row.id}`).slice(0, 8), 16) % ID_OFFSET_SPAN;
-  return Math.floor(ms / 1000) * RANK_SCALE + offset;
+  return Math.floor(ms / 1000);
+}
+
+function dateRank(row: RankedRow, identity?: Pick<TaskIdentity, 'uid' | 'recurrenceId'> | null) {
+  const seed = identity?.uid ? `remote\n${identity.uid}\n${identity.recurrenceId}` : row.id;
+  const offset = parseInt(hash(`rank\n${seed}`).slice(0, 8), 16) % ID_OFFSET_SPAN;
+  return rankBasis(row) * RANK_SCALE + offset;
 }
 
 /**
@@ -100,29 +114,34 @@ async function identityOf(executor: SqlExecutor, userId: string, eventId: string
   return (await identities(userId, [eventId], executor)).get(eventId) ?? null;
 }
 
-async function handRanks(userId: string, executor: SqlExecutor) {
-  const [rows] = await executor.execute<RowDataPacket[]>('SELECT item_key, sort_rank FROM task_order WHERE user_id = ?', [userId]);
-  return new Map(rows.map(row => [String(row.item_key), Number(row.sort_rank)]));
+interface StoredRank { rank: number; basis: number | null }
+
+async function storedRanks(userId: string, executor: SqlExecutor) {
+  const [rows] = await executor.execute<RowDataPacket[]>('SELECT item_key, sort_rank, auto_basis FROM task_order WHERE user_id = ?', [userId]);
+  return new Map<string, StoredRank>(rows.map(row => [String(row.item_key), { rank: Number(row.sort_rank), basis: row.auto_basis == null ? null : Number(row.auto_basis) }]));
 }
 
 /** Adds sort_rank and hand_ordered to each event of the user (contracts/tasks.ts TaskRankFields). */
 async function attachRanks<T extends RankedRow>(userId: string, events: readonly T[], executor: SqlExecutor = db): Promise<(T & { sort_rank: number; hand_ordered: boolean })[]> {
-  const ranks = events.length ? await handRanks(userId, executor) : new Map<string, number>();
-  const ids = ranks.size ? await identities(userId, events.map(event => event.id), executor) : new Map<string, TaskIdentity>();
+  if (!events.length) return [];
+  const [ranks, ids] = await Promise.all([storedRanks(userId, executor), identities(userId, events.map(event => event.id), executor)]);
   return events.map(event => {
-    const key = ids.get(event.id)?.key;
-    const hand = key === undefined ? undefined : ranks.get(key);
-    return { ...event, sort_rank: hand ?? dateRank(event), hand_ordered: hand !== undefined };
+    const identity = ids.get(event.id);
+    const stored = identity ? ranks.get(identity.key) : undefined;
+    // A kept date rank no longer applies once the task's date changed.
+    const applies = stored && (stored.basis === null || stored.basis === rankBasis(event));
+    return { ...event, sort_rank: applies ? stored.rank : dateRank(event, identity), hand_ordered: !!applies && stored.basis === null };
   });
 }
 
-async function writeRank(executor: SqlExecutor, userId: string, identity: TaskIdentity, rank: number) {
+// basis: null for a hand rank; for a kept date rank, the second it was computed from.
+async function writeRank(executor: SqlExecutor, userId: string, identity: TaskIdentity, rank: number, basis: number | null = null) {
   await executor.execute(
-    `INSERT INTO task_order (user_id, item_key, calendar_id, event_id, remote_uid, recurrence_id, sort_rank)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO task_order (user_id, item_key, calendar_id, event_id, remote_uid, recurrence_id, sort_rank, auto_basis)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE calendar_id = VALUES(calendar_id), event_id = VALUES(event_id), remote_uid = VALUES(remote_uid),
-       recurrence_id = VALUES(recurrence_id), sort_rank = VALUES(sort_rank)`,
-    [userId, identity.key, identity.calendarId, identity.uid ? null : identity.eventId, identity.uid, identity.recurrenceId, rank]
+       recurrence_id = VALUES(recurrence_id), sort_rank = VALUES(sort_rank), auto_basis = VALUES(auto_basis)`,
+    [userId, identity.key, identity.calendarId, identity.uid ? null : identity.eventId, identity.uid, identity.recurrenceId, rank, basis]
   );
 }
 
@@ -245,42 +264,57 @@ async function clearRank(executor: SqlExecutor, userId: string, eventId: string,
 async function rekey(executor: SqlExecutor, userId: string, eventId: string, before: TaskIdentity) {
   const after = await identityOf(executor, userId, eventId);
   if (!after || after.key === before.key) return;
-  const [rows] = await executor.execute<RowDataPacket[]>('SELECT sort_rank FROM task_order WHERE user_id = ? AND item_key = ? FOR UPDATE', [userId, before.key]);
+  const [rows] = await executor.execute<RowDataPacket[]>('SELECT sort_rank, auto_basis FROM task_order WHERE user_id = ? AND item_key = ? FOR UPDATE', [userId, before.key]);
   if (!rows.length) return;
   await executor.execute('DELETE FROM task_order WHERE user_id = ? AND item_key = ?', [userId, before.key]);
-  await writeRank(executor, userId, after, Number(rows[0].sort_rank));
+  await writeRank(executor, userId, after, Number(rows[0].sort_rank), rows[0].auto_basis == null ? null : Number(rows[0].auto_basis));
 }
 
 /**
- * Removes the hand ranks of synced items of a calendar that are gone. With
- * `uids`, only those UIDs (objects a sync verified as deleted) and only when
- * no server copy with that UID remains. Without, after a full expansion that
- * read every object: every ranked item whose UID and recurrence id no longer
- * has a row. Never call it after an incomplete listing.
+ * Removes the ranks of synced items whose server copy a sync verified as
+ * deleted: the given UIDs of the calendar, and only when no stored server
+ * copy with that UID remains. Never call it for an object that is merely
+ * outside the sync window or missing from an incomplete listing: its rank
+ * applies again when the item comes back.
  */
-async function sweepRemoteRanks(executor: SqlExecutor, userId: string, calendarId: string, uids?: readonly string[]) {
-  if (uids) {
-    const present = [...new Set(uids.filter(Boolean))];
-    for (let index = 0; index < present.length; index += CHUNK) {
-      const chunk = present.slice(index, index + CHUNK);
-      await executor.execute(
-        `DELETE t FROM task_order t
-         WHERE t.user_id = ? AND t.calendar_id = ? AND t.remote_uid IN (${chunk.map(() => '?').join(', ')})
-           AND NOT EXISTS (SELECT 1 FROM calendar_remote_objects o WHERE o.calendar_id = t.calendar_id AND o.uid = t.remote_uid)`,
-        [userId, calendarId, ...chunk]
-      );
-    }
-    return;
+async function sweepRemoteRanks(executor: SqlExecutor, userId: string, calendarId: string, uids: readonly string[]) {
+  const present = [...new Set(uids.filter(Boolean))];
+  for (let index = 0; index < present.length; index += CHUNK) {
+    const chunk = present.slice(index, index + CHUNK);
+    await executor.execute(
+      `DELETE t FROM task_order t
+       WHERE t.user_id = ? AND t.calendar_id = ? AND t.remote_uid IN (${chunk.map(() => '?').join(', ')})
+         AND NOT EXISTS (SELECT 1 FROM calendar_remote_objects o WHERE o.calendar_id = t.calendar_id AND o.uid = t.remote_uid)`,
+      [userId, calendarId, ...chunk]
+    );
   }
-  await executor.execute(
-    `DELETE t FROM task_order t
-     WHERE t.user_id = ? AND t.calendar_id = ? AND t.remote_uid IS NOT NULL
-       AND NOT EXISTS (SELECT 1 FROM calendar_event_external_refs r
-         JOIN calendar_remote_objects o ON o.id = r.remote_object_id
-         WHERE o.calendar_id = t.calendar_id AND o.uid = t.remote_uid AND COALESCE(r.recurrence_id, '') = t.recurrence_id)`,
-    [userId, calendarId]
-  );
 }
 
-export { place, attachRanks, identities, identityOf, clearRank, rekey, sweepRemoteRanks, itemKey, dateRank, RANK_SCALE };
+// A recurrence id is the occurrence's original date: YYYYMMDD or YYYYMMDDTHHMMSSZ.
+function recurrenceMillis(recurrenceId: string) {
+  const match = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})Z)?$/.exec(recurrenceId);
+  return match ? Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4] ?? 0), Number(match[5] ?? 0), Number(match[6] ?? 0)) : null;
+}
+
+/**
+ * Expires the ranks of occurrences whose original date lies before
+ * `beforeMs` (the start of the sync window): such an occurrence can no
+ * longer be shown, whether the series still has it or not. Occurrences
+ * removed from a series (an EXDATE, a shorter RRULE, a new series time)
+ * leave their rank until then; an expansion that omits an occurrence is no
+ * evidence that the provider deleted it.
+ */
+async function expireOccurrenceRanks(executor: SqlExecutor, userId: string, calendarId: string, beforeMs: number) {
+  const [rows] = await executor.execute<RowDataPacket[]>(
+    "SELECT item_key, recurrence_id FROM task_order WHERE user_id = ? AND calendar_id = ? AND remote_uid IS NOT NULL AND recurrence_id <> ''",
+    [userId, calendarId]
+  );
+  const expired = rows.filter(row => (recurrenceMillis(String(row.recurrence_id)) ?? Infinity) < beforeMs).map(row => String(row.item_key));
+  for (let index = 0; index < expired.length; index += CHUNK) {
+    const chunk = expired.slice(index, index + CHUNK);
+    await executor.execute(`DELETE FROM task_order WHERE user_id = ? AND item_key IN (${chunk.map(() => '?').join(', ')})`, [userId, ...chunk]);
+  }
+}
+
+export { place, attachRanks, identities, identityOf, clearRank, rekey, sweepRemoteRanks, expireOccurrenceRanks, itemKey, dateRank, rankBasis, writeRank, RANK_SCALE };
 export type { TaskIdentity };

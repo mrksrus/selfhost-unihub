@@ -77,7 +77,7 @@ function validateTaskOrder(data: BackupPayload['data'] | undefined) {
   const errors = new Set<string>();
   for (const row of rows as Record<string, unknown>[]) {
     const synced = typeof row?.remote_uid === 'string' && row.remote_uid !== '';
-    const valid = row && typeof row === 'object' && Number.isSafeInteger(row.sort_rank)
+    const valid = row && typeof row === 'object' && Number.isSafeInteger(row.sort_rank) && (row.auto_basis == null || Number.isSafeInteger(row.auto_basis))
       && (synced
         ? calendars.has(row.calendar_id) && (row.event_id == null) && (row.remote_uid as string).length <= 500
           && (row.recurrence_id == null || (typeof row.recurrence_id === 'string' && row.recurrence_id.length <= 64))

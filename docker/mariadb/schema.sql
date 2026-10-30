@@ -1289,6 +1289,7 @@ CREATE TABLE `task_order` (
   `remote_uid` varchar(500) DEFAULT NULL,
   `recurrence_id` varchar(64) NOT NULL DEFAULT '',
   `sort_rank` bigint(20) NOT NULL,
+  `auto_basis` bigint(20) DEFAULT NULL,
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   PRIMARY KEY (`user_id`,`item_key`),
   KEY `idx_task_order_rank` (`user_id`,`sort_rank`),

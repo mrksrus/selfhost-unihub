@@ -606,7 +606,8 @@ async function createFileTickets(connection: SqlExecutor) {
 // A task's hand rank: keyed by its event for a task UniHub holds, by
 // (calendar, UID, recurrence id) for a synced one, so the order survives a
 // sync or restore that rebuilds the row. calendar_id is set only for synced
-// items; a local item follows its event.
+// items; a local item follows its event. auto_basis marks a date rank a
+// restore kept (services/task-order.ts).
 async function createTaskOrderAndMoves(connection: SqlExecutor) {
   await connection.execute(`CREATE TABLE IF NOT EXISTS task_order (
     user_id CHAR(36) NOT NULL,
@@ -616,6 +617,7 @@ async function createTaskOrderAndMoves(connection: SqlExecutor) {
     remote_uid VARCHAR(500) NULL,
     recurrence_id VARCHAR(64) NOT NULL DEFAULT '',
     sort_rank BIGINT NOT NULL,
+    auto_basis BIGINT NULL,
     updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, item_key),
     KEY idx_task_order_rank (user_id, sort_rank),
@@ -625,6 +627,8 @@ async function createTaskOrderAndMoves(connection: SqlExecutor) {
     FOREIGN KEY (calendar_id) REFERENCES calendar_calendars(id) ON DELETE CASCADE,
     FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE CASCADE
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  // Test and development databases of the 0.27 branch made the table before the column.
+  if (!await hasColumn(connection, 'task_order', 'auto_basis')) await connection.execute('ALTER TABLE task_order ADD COLUMN auto_basis BIGINT NULL AFTER sort_rank');
   // One open move per task. Removing either calendar (or its account) or the
   // task ends the move; so does removing the source's server copy.
   await connection.execute(`CREATE TABLE IF NOT EXISTS calendar_event_moves (

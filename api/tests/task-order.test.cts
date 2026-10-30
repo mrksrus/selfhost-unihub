@@ -26,3 +26,10 @@ test('an order row is keyed by the identity it names, so a restore rebuilds the 
   assert.notEqual(itemKey({ event_id: 'e1' }), itemKey({ event_id: 'e2' }));
   assert.match(itemKey({ event_id: 'e1' }), /^[0-9a-f]{64}$/);
 });
+
+test('a synced task ranks by its provider identity, so a rebuilt row keeps its place', () => {
+  const row = (id: string) => ({ id, start_time: '2026-11-20 09:00:00', created_at: '2026-10-01 08:00:00', is_todo_only: 0 });
+  const identity = { uid: 'review@example.test', recurrenceId: '' };
+  assert.equal(dateRank(row('7f0c2c4e-0000-4000-8000-000000000001'), identity), dateRank(row('7f0c2c4e-0000-4000-8000-000000000002'), identity));
+  assert.notEqual(dateRank(row('7f0c2c4e-0000-4000-8000-000000000001'), identity), dateRank(row('7f0c2c4e-0000-4000-8000-000000000001'), { ...identity, recurrenceId: '20261120T090000Z' }));
+});

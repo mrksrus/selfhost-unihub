@@ -18,7 +18,7 @@ import { db } from '../state';
 import { decrypt } from '../security/encryption';
 import { canRunModule } from './access-policy';
 import { publishCalendarChanged } from './realtime';
-import { sweepRemoteRanks } from './task-order';
+import { expireOccurrenceRanks, sweepRemoteRanks } from './task-order';
 import * as caldav from './caldav';
 import * as ical from './calendar-ical';
 import {
@@ -461,7 +461,9 @@ async function applyObjectRows(connection: PoolConnection, ctx: Context, calenda
   return created;
 }
 
-async function removeObjects(ctx: Context, objectIds: string[]) {
+// outsideWindow: objects the server still has, removed only because none of
+// their occurrences is inside the sync window; their order is kept.
+async function removeObjects(ctx: Context, objectIds: string[], outsideWindow: ReadonlySet<string> = new Set()) {
   if (!objectIds.length) return;
   await inTransaction(ctx, async connection => {
     for (let index = 0; index < objectIds.length; index += 200) {
@@ -475,11 +477,11 @@ async function removeObjects(ctx: Context, objectIds: string[]) {
       if (eventIds.length) {
         await connection.execute(`DELETE FROM calendar_events WHERE user_id = ? AND id IN (${eventIds.map(() => '?').join(', ')})`, [ctx.account.user_id, ...eventIds]);
       }
-      const [removed] = await connection.execute<RowDataPacket[]>(`SELECT calendar_id, uid FROM calendar_remote_objects WHERE account_id = ? AND id IN (${placeholders})`, [ctx.account.id, ...chunk]);
+      const [removed] = await connection.execute<RowDataPacket[]>(`SELECT id, calendar_id, uid FROM calendar_remote_objects WHERE account_id = ? AND id IN (${placeholders})`, [ctx.account.id, ...chunk]);
       await connection.execute(`DELETE FROM calendar_remote_objects WHERE account_id = ? AND id IN (${placeholders})`, [ctx.account.id, ...chunk]);
       // A verified deletion also ends the hand order of its items (task-order.ts).
       const uidsByCalendar = new Map<string, string[]>();
-      for (const row of removed) if (row.uid) uidsByCalendar.set(row.calendar_id, [...(uidsByCalendar.get(row.calendar_id) || []), row.uid]);
+      for (const row of removed) if (row.uid && !outsideWindow.has(String(row.id))) uidsByCalendar.set(row.calendar_id, [...(uidsByCalendar.get(row.calendar_id) || []), row.uid]);
       for (const [calendarId, uids] of uidsByCalendar) await sweepRemoteRanks(connection, ctx.account.user_id, calendarId, uids);
       ctx.stats.removedEvents += eventIds.length;
     }
@@ -527,6 +529,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
   const vanished = stored.filter(row => !listed.has(row.href_hash));
   let removed = vanished.map(row => String(row.id));
   const kept: FetchedObject[] = [];
+  const outsideWindow = new Set<string>();
   // Expanded once per object and sync, however it was found.
   const expansions = new Map<string, ReturnType<typeof expandObject>>();
   if (vanished.length && verifyVanished) {
@@ -538,7 +541,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       // Still on the server: outside the window its local copy goes as
       // before; inside it (or unreadable) the listing missed it, so it stays.
       const expanded = expandObject(ctx, object.ics);
-      if (expanded && !expanded.occurrences.length) { confirmed.add(String(row.id)); continue; }
+      if (expanded && !expanded.occurrences.length) { confirmed.add(String(row.id)); outsideWindow.add(String(row.id)); continue; }
       listed.add(row.href_hash);
       // A server whose listing keeps leaving it out would otherwise have it
       // stored and applied again on every sync; unchanged, it is already
@@ -552,7 +555,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
     removed = removed.filter(id => confirmed.has(id));
   }
   ctx.signal?.throwIfAborted();
-  await removeObjects(ctx, removed);
+  await removeObjects(ctx, removed, outsideWindow);
   ctx.stats.removedObjects += removed.length;
 
   const fetched = [...(changed.length ? await fetchObjects(changed) : []), ...kept];
@@ -613,8 +616,8 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       }
       ctx.stats.removedEvents += ids.length;
     }
-    // Every object was read: hand ranks of items no longer on the server go.
-    await sweepRemoteRanks(db, ctx.account.user_id, calendar.id);
+    // Ranks of occurrences from before the window can no longer show.
+    await expireOccurrenceRanks(db, ctx.account.user_id, calendar.id, ctx.windowStartMs);
   }
   return unreadable;
 }
