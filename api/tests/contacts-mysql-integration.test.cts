@@ -568,13 +568,39 @@ test('3+3 bridge: stored places for old apps keep hidden values, labels and repl
   assert.deepEqual(triples(limitAfter, 'email'), [null, 'Twin@example.test', null]);
   assert.deepEqual(limitAfter.emails.map((item: FixtureValue) => item.value), keptOn0251, 'the same loss as on 0.25.1, no more');
 
+  // ── Review round 5: the app's own formatting of a stored value is that value ──
+  // The phone deletes 333 and fills the free field from its own "+44209"
+  // (ContactMerge.fill), the app twin of the stored "+44 20 9": that row takes
+  // the place with its text and label; nothing is added and 333 goes.
+  const formatted = (await call('POST', '/api/contacts', { name: { given: 'Formatted' }, phones: ['111', '222', '333', { value: '+44 20 9', label: 'work' }] })).contact;
+  assert.deepEqual(triples(formatted, 'phone'), ['111', '222', '333']);
+  const formattedBody = { first_name: 'Formatted', phone: '111', phone2: '222', phone3: '+44209' };
+  const formattedAfter = await put(formatted.id, formattedBody);
+  assert.deepEqual(rows(formattedAfter, 'phones'), [0, 1, 3].map(index => rows(formatted, 'phones')[index]), 'one +44 20 9, with its row, text and label');
+  assert.deepEqual(triples(formattedAfter, 'phone'), ['111', '222', '+44 20 9']);
+  sameContact(await put(formatted.id, formattedBody), formattedAfter, 'sent again, nothing changes');
+  sameContact(await put(formatted.id, { phone3: '+44209' }), formattedAfter, 'a partial body with the app\'s formatting changes nothing either');
+  // An email differing only in case is the same address for the app.
+  const cased = (await call('POST', '/api/contacts', { name: { given: 'Cased' }, emails: ['ca@example.test', 'cb@example.test', 'cc@example.test', { value: 'Dee@Example.test', label: 'work' }] })).contact;
+  const casedBody = { first_name: 'Cased', email: 'ca@example.test', email2: 'cb@example.test', email3: 'dee@example.test' };
+  const casedAfter = await put(cased.id, casedBody);
+  assert.deepEqual(rows(casedAfter, 'emails'), [0, 1, 3].map(index => rows(cased, 'emails')[index]), 'one Dee@Example.test, with its row, text and label');
+  assert.deepEqual(triples(casedAfter, 'email'), ['ca@example.test', 'cb@example.test', 'Dee@Example.test']);
+  sameContact(await put(cased.id, casedBody), casedAfter, 'sent again, nothing changes');
+  const casedPartial = (await call('POST', '/api/contacts', { name: { given: 'Cased partial' }, emails: ['pa2@example.test', 'pb2@example.test', 'pc2@example.test', { value: 'PD2@example.test', label: 'home' }] })).contact;
+  const casedPartialAfter = await put(casedPartial.id, { email3: 'pd2@example.test' });
+  assert.deepEqual(rows(casedPartialAfter, 'emails'), [0, 1, 3].map(index => rows(casedPartial, 'emails')[index]));
+  assert.deepEqual(triples(casedPartialAfter, 'email'), ['pa2@example.test', 'pb2@example.test', 'PD2@example.test']);
+  sameContact(await put(casedPartial.id, { email3: 'pd2@example.test' }), casedPartialAfter, 'sent again, nothing changes');
+
   // ── Any sequence of flat writes: each one sent again changes nothing, and values outside the places are never touched ──
   let seed = 20261030;
   const random = (n: number) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
   const pool3 = { phone: ['111', '222', '+44 20 9', '٣٣٣', '\u001c555', '(666)'], email: ['p@example.test', 'q@example.test', ' R@example.test', 's@example.test'] };
   const subject = (await call('POST', '/api/contacts', { name: { given: 'Random' },
     phones: [{ value: '111', label: 'mobile' }, '𝟙', { value: '+1 555 0100', label: 'work' }, { value: '+15550100', label: 'home' }, `+43 ${'9'.repeat(56)}`],
-    emails: [{ value: 'p@example.test', label: 'home' }, 'q@example.test', 'P@example.test', `${'😀'.repeat(130)}@example.test`] })).contact;
+    // X@ is the app twin of x@, so it has no place; no value of the pool shares its key, so it is never adopted here.
+    emails: [{ value: 'p@example.test', label: 'home' }, 'q@example.test', 'x@example.test', 'X@example.test', `${'😀'.repeat(130)}@example.test`] })).contact;
   const unplaced = async () => (await pool.query<RowDataPacket[]>('SELECT id, kind, value, label, position FROM contact_values WHERE contact_id = ? AND legacy_slot IS NULL ORDER BY id', [subject.id]))[0];
   const outside = await unplaced();
   assert.ok(outside.length >= 4, 'the subject has values the app cannot see');

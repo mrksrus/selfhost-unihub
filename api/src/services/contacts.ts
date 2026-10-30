@@ -360,6 +360,12 @@ function sameForOldApp(sent: string | null, current: string | null, max: number)
 // stored values are compared in this form.
 const oldAppEcho = (value: string) => kotlinTrim(value).trim();
 const sameEcho = (stored: string, sent: string) => oldAppEcho(stored) === oldAppEcho(sent);
+// The same value for an old app: the same text, or the same app key
+// (ContactCard.phoneKey / emailKey), which it treats as one value.
+function sameForOldAppKey(kind: OldAppKind, stored: string, sent: string) {
+  const key = oldAppKey(kind, kotlinTrim(sent));
+  return !!key && oldAppKey(kind, kotlinTrim(stored)) === key;
+}
 
 // The app key of a value an old app holds as it is (forServer() measures the
 // trimmed text); null when it would drop the value.
@@ -663,7 +669,9 @@ type PlaceWrite = { slot: number; value: string };
 // places takes a place instead of being added twice; a changed value takes
 // over the one row the body no longer names when that pairing is the only
 // one possible (keeping its label), and is otherwise added with no label in
-// a free place; a placed row the body no longer names goes. A partial body
+// a free place. A value with the app key of a stored one (the app's own
+// formatting, or a case variant of an email) counts as that value, whose
+// stored text stays; a placed row the body no longer names goes. A partial body
 // addresses places: an empty field clears that place and a value is set
 // there. Rows outside the places are only ever given a place, never changed
 // or removed. Either body sent again changes nothing more.
@@ -671,14 +679,21 @@ function legacyPlan(kind: OldAppKind, rows: readonly ValueRow[], fields: LegacyF
   const places = legacyPlaces(kind, rows);
   const loose = rows.filter(row => row.kind === kind && !row.legacy_slot).sort((a, b) => a.position - b.position);
   const removed: ValueRow[] = []; const changed: [ValueRow, string][] = []; const added: PlaceWrite[] = []; const placedLoose: [ValueRow, number][] = [];
-  const stored = (value: string) => { const index = loose.findIndex(row => sameEcho(row.value, value)); return index < 0 ? undefined : loose.splice(index, 1)[0]; };
+  // A sent value UniHub already stores outside the places: the same text,
+  // else the same app key (the first such row by position when several
+  // share it). That row takes the place with its own text and label.
+  const stored = (value: string) => {
+    let index = loose.findIndex(row => sameEcho(row.value, value));
+    if (index < 0) index = loose.findIndex(row => sameForOldAppKey(kind, row.value, value));
+    return index < 0 ? undefined : loose.splice(index, 1)[0];
+  };
   const sent = LEGACY_SLOTS[kind].map((field, index) => ({ slot: index + 1, field, value: fields[field] }));
   if (!whole) {
     for (const { slot, field, value } of sent) {
       if (!present.has(field)) continue;
       const row = places[slot - 1];
       if (!value) { if (row) removed.push(row); continue; }
-      if (row && sameEcho(row.value, value)) continue;
+      if (row && (sameEcho(row.value, value) || sameForOldAppKey(kind, row.value, value))) continue;
       const known = stored(value);
       if (known) { if (row) removed.push(row); placedLoose.push([known, slot]); } else if (row) changed.push([row, value]); else added.push({ slot, value });
     }
@@ -687,7 +702,9 @@ function legacyPlan(kind: OldAppKind, rows: readonly ValueRow[], fields: LegacyF
   const open = places.filter((row): row is ValueRow => !!row);
   const take = (match: (row: ValueRow) => boolean) => { const index = open.findIndex(match); return index < 0 ? undefined : open.splice(index, 1)[0]; };
   const unmatched = sent.flatMap(({ slot, value }): PlaceWrite[] => value ? [{ slot, value }] : [])
-    .filter(item => !(take(row => Number(row.legacy_slot) === item.slot && sameEcho(row.value, item.value)) || take(row => sameEcho(row.value, item.value))));
+    .filter(item => !(take(row => Number(row.legacy_slot) === item.slot && sameEcho(row.value, item.value)) || take(row => sameEcho(row.value, item.value))))
+    // A value the app sends in its own formatting (the same app key) leaves the stored text as it is.
+    .filter(item => !take(row => sameForOldAppKey(kind, row.value, item.value)));
   const knownItems: [ValueRow, PlaceWrite][] = [];
   const fresh = unmatched.filter(item => { const known = stored(item.value); if (known) knownItems.push([known, item]); return !known; });
   if (open.length === 1 && fresh.length === 1) changed.push([open.pop()!, fresh.pop()!.value]);
