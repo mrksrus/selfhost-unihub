@@ -33,7 +33,10 @@ export interface ContactForm {
   company: string; department: string; job_title: string; notes: string;
   phones: ValueDraft[]; emails: ValueDraft[]; urls: ValueDraft[]; impp: ValueDraft[]; related: ValueDraft[]; nicknames: ValueDraft[];
   addresses: AddressDraft[];
-  categories: string;
+  /** Each category whole, as stored: a comma is part of a name ("Friends, family"). */
+  categories: string[];
+  /** A category typed but not added yet; saving adds it. */
+  categoryDraft: string;
   birthday: DateDraft; anniversary: DateDraft;
   shown: OptionalField[];
   photo: { kind: 'keep' } | { kind: 'remove' } | { kind: 'file'; file: File; url: string };
@@ -49,7 +52,7 @@ const emptyDate = (): DateDraft => ({ year: '', month: '', day: '' });
 export function emptyForm(): ContactForm {
   return {
     given: '', family: '', middle: '', prefix: '', suffix: '', display: '', company: '', department: '', job_title: '', notes: '',
-    phones: [emptyValue()], emails: [emptyValue()], urls: [], impp: [], related: [], nicknames: [], addresses: [], categories: '',
+    phones: [emptyValue()], emails: [emptyValue()], urls: [], impp: [], related: [], nicknames: [], addresses: [], categories: [], categoryDraft: '',
     birthday: emptyDate(), anniversary: emptyDate(), shown: [], photo: { kind: 'keep' },
   };
 }
@@ -83,7 +86,7 @@ export function formOf(contact: Contact): ContactForm {
       street: text(address.street), extended: text(address.extended), po_box: text(address.po_box), locality: text(address.locality),
       region: text(address.region), postal_code: text(address.postal_code), country: text(address.country),
     })),
-    categories: contact.categories.join(', '),
+    categories: [...contact.categories], categoryDraft: '',
     birthday: dateOf(contact.birthday), anniversary: dateOf(contact.anniversary),
     shown, photo: { kind: 'keep' },
   };
@@ -140,6 +143,15 @@ export function validate(form: ContactForm): Partial<Record<'identity' | 'birthd
   return errors;
 }
 
+/**
+ * The categories to save: the stored ones exactly as they were (the person
+ * only adds or removes whole ones), plus a typed one not added yet, as one.
+ */
+export function categoriesOf(form: Pick<ContactForm, 'categories' | 'categoryDraft'>) {
+  const typed = form.categoryDraft.trim();
+  return typed && !form.categories.includes(typed) ? [...form.categories, typed] : form.categories;
+}
+
 /** The body of POST or PUT /api/contacts: empty inputs are left out, so the server stores nothing for them. */
 export function toInput(form: ContactForm, version?: number): ContactInput {
   const named = (value: string) => value.trim() || null;
@@ -154,6 +166,6 @@ export function toInput(form: ContactForm, version?: number): ContactInput {
     anniversary: partialDateInput(dateOfDraft(form.anniversary).date),
     emails: list(form.emails), phones: list(form.phones), urls: list(form.urls), impp: list(form.impp), related: list(form.related), nicknames: list(form.nicknames),
     addresses: form.addresses.filter(addressFilled).map(addressInput),
-    categories: form.categories.split(',').map(entry => entry.trim()).filter(Boolean),
+    categories: categoriesOf(form),
   };
 }

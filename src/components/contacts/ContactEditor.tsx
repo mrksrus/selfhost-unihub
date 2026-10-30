@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { useFocusAfterAdd } from '@/hooks/use-focus-after-add';
 import { useSessionScope } from '@/lib/session-scope';
-import { AddressRows, DateField, Field, PhotoField, ValueRows } from '@/components/contacts/ContactEditorFields';
+import { AddressRows, CategoryField, DateField, Field, PhotoField, ValueRows } from '@/components/contacts/ContactEditorFields';
 import {
   emptyAddress, emptyForm, emptyValue, formForNew, formOf, OPTIONAL_FIELDS, toInput, validate, type ContactForm, type OptionalField,
 } from '@/components/contacts/contact-editor-form';
@@ -74,7 +74,7 @@ export function ContactEditor({ target, onClose, actions, onSaved }: {
   const hide = (field: OptionalField) => setForm(prev => {
     const next: ContactForm = { ...prev, shown: prev.shown.filter(entry => entry !== field) };
     if (field === 'birthday' || field === 'anniversary') next[field] = { year: '', month: '', day: '' };
-    if (field === 'categories') next.categories = '';
+    if (field === 'categories') Object.assign(next, { categories: [], categoryDraft: '' });
     if (field === 'department') next.department = '';
     if (field === 'name_details') Object.assign(next, { middle: '', prefix: '', suffix: '', display: '' });
     return next;
@@ -211,13 +211,8 @@ export function ContactEditor({ target, onClose, actions, onSaved }: {
       {shown('impp') && <ValueRows kind="impp" values={form.impp} onChange={values => set('impp', values)} keepOne={false} onAdded={setFocusId} onAllRemoved={() => hide('impp')} />}
       {shown('related') && <ValueRows kind="related" values={form.related} onChange={values => set('related', values)} keepOne={false} onAdded={setFocusId} onAllRemoved={() => hide('related')} />}
       {shown('categories') && (
-        <Field id="contact-categories" label="Categories">
-          <div className="flex gap-2">
-            <Input id="contact-categories" value={form.categories} placeholder="Family, Running club" onChange={event => set('categories', event.target.value)} />
-            <Button type="button" variant="ghost" size="icon-sm" className="shrink-0 self-center text-muted-foreground" aria-label="Remove categories" onClick={() => hide('categories')}><X aria-hidden="true" /></Button>
-          </div>
-          <p className="text-xs text-muted-foreground">Separate with commas.</p>
-        </Field>
+        <CategoryField categories={form.categories} draft={form.categoryDraft} onChange={categories => set('categories', categories)}
+          onDraftChange={draft => set('categoryDraft', draft)} onRemoveAll={() => hide('categories')} />
       )}
 
       <Field id="contact-notes" label="Notes">

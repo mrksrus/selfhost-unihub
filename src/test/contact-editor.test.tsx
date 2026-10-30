@@ -53,6 +53,13 @@ describe('contact editor form', () => {
     expect(body.categories).toEqual(['Family']);
   });
 
+  it('keeps categories whole: a name with a comma round-trips, and a typed one is added as one', () => {
+    const form = formOf(contact('cat', { name: { given: 'Cat' }, categories: ['Friends, family', 'Work'] }));
+    expect(toInput(form, 1).categories).toEqual(['Friends, family', 'Work']);
+    expect(toInput({ ...form, categoryDraft: '  Choir, Tuesdays ' }, 1).categories).toEqual(['Friends, family', 'Work', 'Choir, Tuesdays']);
+    expect(toInput({ ...form, categoryDraft: 'Work' }, 1).categories).toEqual(['Friends, family', 'Work']);
+  });
+
   it('accepts a date without a year, refuses half a date and an impossible day', () => {
     expect(dateOfDraft({ year: '', month: '2', day: '29' })).toEqual({ date: { year: null, month: 2, day: 29 } });
     expect(dateOfDraft({ year: '2023', month: '2', day: '29' }).error).toBe('That is not a date.');
@@ -95,6 +102,29 @@ describe('ContactEditor', { timeout: 20_000 }, () => {
       birthday: '--03-14',
     })));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it('saves untouched categories exactly, adds a typed one whole and removes one', { timeout: 15_000 }, async () => {
+    const withCategories = contact('cat', { version: 2, name: { given: 'Cat', family: 'Egory' }, categories: ['Friends, family', 'Work'] });
+    vi.mocked(api.put).mockResolvedValue({ data: { contact: withCategories } });
+    const onClose = mount({ kind: 'edit', contact: withCategories });
+    const dialog = await screen.findByRole('dialog', { name: 'Edit contact' });
+    const chips = within(dialog).getByRole('list', { name: 'Categories' });
+    expect(within(chips).getAllByRole('listitem').map(item => item.textContent)).toEqual(['Friends, family', 'Work']);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.put).toHaveBeenLastCalledWith('/contacts/cat', expect.objectContaining({ categories: ['Friends, family', 'Work'] })));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    cleanup();
+
+    mount({ kind: 'edit', contact: withCategories });
+    const again = await screen.findByRole('dialog', { name: 'Edit contact' });
+    fireEvent.change(within(again).getByLabelText('New category'), { target: { value: 'Choir, Tuesdays' } });
+    fireEvent.keyDown(within(again).getByLabelText('New category'), { key: 'Enter' });
+    expect(api.put).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(again).getByRole('button', { name: 'Remove category Work' }));
+    fireEvent.change(within(again).getByLabelText('New category'), { target: { value: 'Typed, not added' } });
+    fireEvent.click(within(again).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.put).toHaveBeenLastCalledWith('/contacts/cat', expect.objectContaining({ categories: ['Friends, family', 'Choir, Tuesdays', 'Typed, not added'] })));
   });
 
   it('refuses a half date and an empty contact before sending anything', async () => {

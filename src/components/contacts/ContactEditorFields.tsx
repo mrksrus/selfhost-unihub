@@ -225,3 +225,42 @@ export function Field({ id, label, children, className }: { id: string; label: s
     </div>
   );
 }
+
+/**
+ * Categories as whole names: each one is a chip with its own remove, and the
+ * typed text becomes one category on Enter or Add, commas included
+ * ("Friends, family"). Stored categories are never split or rewritten.
+ */
+export function CategoryField({ categories, draft, onChange, onDraftChange, onRemoveAll }: {
+  categories: string[]; draft: string; onChange: (categories: string[]) => void; onDraftChange: (draft: string) => void; onRemoveAll: () => void;
+}) {
+  const add = () => {
+    const name = draft.trim();
+    if (name && !categories.includes(name)) onChange([...categories, name]);
+    onDraftChange('');
+  };
+  return (
+    <fieldset className="space-y-2">
+      <legend className="mb-2 text-sm font-medium">Categories</legend>
+      {categories.length > 0 && (
+        <ul aria-label="Categories" className="flex flex-wrap gap-2">
+          {categories.map(category => (
+            <li key={category} className="flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border py-0.5 pl-3 pr-1 text-sm">
+              <span className="min-w-0 break-words">{category}</span>
+              <Button type="button" variant="ghost" size="icon-xs" className="shrink-0 rounded-full text-muted-foreground" aria-label={`Remove category ${category}`}
+                onClick={() => onChange(categories.filter(entry => entry !== category))}><X aria-hidden="true" /></Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex gap-2">
+        <Input id="contact-categories" value={draft} placeholder="Family" aria-label="New category" autoComplete="off"
+          onChange={event => onDraftChange(event.target.value)}
+          onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); add(); } }} />
+        <Button type="button" variant="outline" className="shrink-0" onClick={add} disabled={!draft.trim()}>Add</Button>
+        <Button type="button" variant="ghost" size="icon-sm" className="shrink-0 self-center text-muted-foreground" aria-label="Remove categories" onClick={onRemoveAll}><X aria-hidden="true" /></Button>
+      </div>
+      <p className="text-xs text-muted-foreground">Add one category at a time; a name may contain commas.</p>
+    </fieldset>
+  );
+}
