@@ -37,9 +37,10 @@ function groupBy(rows: unknown, key: string) {
 
 // The values of one archived contact, as drafts for the store: the child
 // rows of a newer archive, else the fixed fields of an older one (verbatim,
-// as upgrade 22 copies them). Unknown labels are cleared; an unknown kind,
-// more values of a kind than a contact holds or a value beyond its limit
-// stops the restore.
+// as upgrade 22 copies them, each in its old apps' place). Unknown labels
+// are cleared; an unknown kind, more values of a kind than a contact holds, a
+// value beyond its limit or an impossible place for old apps stops the
+// restore. A row without legacy_slot leaves the place to the store.
 function archivedValues(contact: Row, children: readonly Row[] | undefined): ValueDraft[] {
   if (children?.length) {
     const sorted = [...children].sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
@@ -62,7 +63,14 @@ function archivedValues(contact: Row, children: readonly Row[] | undefined): Val
       const archivedPosition = Number(row.position);
       const position = Number.isInteger(archivedPosition) && archivedPosition >= 0 && archivedPosition <= 65535 && !taken.has(`${kind}:${archivedPosition}`) ? archivedPosition : undefined;
       if (position !== undefined) taken.add(`${kind}:${position}`);
+      let legacySlot: number | null | undefined;
+      if (Object.prototype.hasOwnProperty.call(row, 'legacy_slot') && row.legacy_slot != null) {
+        legacySlot = Number(row.legacy_slot);
+        if ((kind !== 'email' && kind !== 'phone') || ![1, 2, 3].includes(legacySlot) || taken.has(`${kind}:slot${legacySlot}`)) throw beyondLimits('an impossible place for older apps');
+        taken.add(`${kind}:slot${legacySlot}`);
+      } else if (Object.prototype.hasOwnProperty.call(row, 'legacy_slot')) legacySlot = null;
       return [{
+        legacy_slot: legacySlot,
         position, kind, value: bounded(value, VALUE_LIMITS[kind], kind), label: label === 'custom' && !customLabel ? '' : label, custom_label: customLabel, preferred: !!row.is_preferred,
         po_box: nullable(row.po_box, 'address part'), extended: nullable(row.extended, 'address part'), street: nullable(row.street, 'street', 1000), locality: nullable(row.locality, 'address part'),
         region: nullable(row.region, 'address part'), postal_code: nullable(row.postal_code, 'address part'), country: nullable(row.country, 'address part'),
@@ -71,7 +79,7 @@ function archivedValues(contact: Row, children: readonly Row[] | undefined): Val
     });
   }
   return (['email', 'phone'] as const).flatMap(kind => LEGACY_SLOTS[kind].map(slot => text(contact[slot])).filter(value => value.trim())
-    .map((value): ValueDraft => ({ kind, value: bounded(value, VALUE_LIMITS[kind], kind), label: '', custom_label: null, preferred: false })));
+    .map((value, index): ValueDraft => ({ kind, value: bounded(value, VALUE_LIMITS[kind], kind), label: '', custom_label: null, preferred: false, legacy_slot: index + 1 })));
 }
 
 function archivedProperties(rows: readonly Row[] | undefined): KeptPropertyDraft[] {
