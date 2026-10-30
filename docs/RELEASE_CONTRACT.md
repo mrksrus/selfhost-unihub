@@ -46,8 +46,8 @@ A run uses only standard `ubuntu-latest` runners of the free plan and takes
 about 25 minutes. `api-tests`, `frontend`, `build` and `android-window` start
 together; once `build` has pushed the image, `container`, `android-10`,
 `android-16` (one job per script), `android-16-servers` (the real-server
-pairings over four emulators, `--part k/4`) and `e2e` (one job per target)
-start together. `publish` needs every one of them and re-tags the tested
+pairings over four emulators, `--part k/4`) and `e2e` (one job per target,
+desktop in two halves) start together. `publish` needs every one of them and re-tags the tested
 digest without building; `evidence` gathers the evidence into one artifact,
 also after a failure. Between jobs only small artifacts travel (the Android
 app and the support window's earlier apps, kept a day; the release-signed app

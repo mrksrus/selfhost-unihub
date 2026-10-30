@@ -13,7 +13,7 @@ env:
   IMAGE_NAME: mrksrus/selfhost-unihub
 
 # A newer push to a pull request replaces its run (the jobs below use up to
-# 17 of the 20 runners a free account gets at once). Pushes and tags never
+# 18 of the 20 runners a free account gets at once). Pushes and tags never
 # cancel one another.
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
@@ -844,8 +844,9 @@ jobs:
   # The end-to-end suite (tools/e2e) against the image under test: its nginx
   # and API with MariaDB 11.8 in containers as in docker-compose.yml, and
   # GreenMail and Radicale as synthetic mail and CalDAV providers behind a
-  # test CA (tools/e2e/stack.sh with UNIHUB_E2E_IMAGE). One target per runner.
-  # Real-provider tests stay local: they need private accounts.
+  # test CA (tools/e2e/stack.sh with UNIHUB_E2E_IMAGE). One target per runner;
+  # desktop, which runs most tests, in two halves (e2e --shard). Real-provider
+  # tests stay local: they need private accounts.
   e2e:
     needs: build
     if: ${{ !cancelled() && needs.build.result == 'success' }}
@@ -856,8 +857,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [desktop, phone, android-app]
-    name: e2e (${{ matrix.target }})
+        include:
+          - { target: desktop, shard: 1/2 }
+          - { target: desktop, shard: 2/2 }
+          - { target: phone, shard: 1/1 }
+          - { target: android-app, shard: 1/1 }
+    name: e2e (${{ matrix.target }}${{ matrix.shard != '1/1' && format(' {0}', matrix.shard) || '' }})
     env:
       UNIHUB_E2E_IMAGE: unihub:ci
       UNIHUB_E2E_STATE: ${{ github.workspace }}/.e2e-state
@@ -927,9 +932,9 @@ jobs:
       - name: Start the end-to-end stack
         run: tools/e2e/stack.sh up
 
-      - name: Run the end-to-end suite (${{ matrix.target }})
+      - name: Run the end-to-end suite (${{ matrix.target }}, part ${{ matrix.shard }})
         working-directory: tools/e2e
-        run: npx e2e run --exclude-tag providers --target ${{ matrix.target }}
+        run: npx e2e run --exclude-tag providers --target ${{ matrix.target }} --shard ${{ matrix.shard }}
 
       - name: Show the stack's logs
         if: failure()
@@ -942,10 +947,11 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: unihub-e2e-${{ matrix.target }}
+          name: unihub-e2e-${{ matrix.target }}-${{ strategy.job-index }}
           path: |
             tools/e2e/.e2e/
             !tools/e2e/.e2e/sessions/
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
 
