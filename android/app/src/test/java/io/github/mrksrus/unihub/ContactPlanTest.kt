@@ -107,9 +107,12 @@ class ContactPlanTest {
      */
     @Test
     fun aMergedAwayCopysNewPhotoGoesToTheSurvivorBeforeTheCopyLeaves() {
-        // Changed on the phone since the last sync; the survivor has no photo, or still the copy's.
-        assertEquals(ContactPlan.SurvivorPhoto.Upload, ContactPlan.survivorPhoto("f12", "f7", "e-old", ""))
+        // Changed on the phone since the last sync; the survivor still has the
+        // photo the copy last saw (the merge carries it over), or never had one.
         assertEquals(ContactPlan.SurvivorPhoto.Upload, ContactPlan.survivorPhoto("f12", "f7", "e-old", "e-old"))
+        assertEquals(ContactPlan.SurvivorPhoto.Upload, ContactPlan.survivorPhoto("f12", "f7", "", ""))
+        // Removed in UniHub since: a change there, so UniHub's (no photo) stays and the copy goes.
+        assertEquals(ContactPlan.SurvivorPhoto.UniHubKeeps, ContactPlan.survivorPhoto("f12", "f7", "e-old", ""))
         // A state from the 3+3 sync (no photo state): every picture is new.
         assertEquals(ContactPlan.SurvivorPhoto.Upload, ContactPlan.survivorPhoto("t0a1b", "", "", ""))
         assertEquals(ContactPlan.SurvivorPhoto.Upload, ContactPlan.survivorPhoto("f12", null, null, ""))
@@ -132,6 +135,47 @@ class ContactPlanTest {
         // A copy kept for its photo is planned the same way at the next sync: still changed on the phone.
         val again = ContactPlan.plan(listOf(row(1, "m-1", changed = true)), listed = setOf("s-1"), merged = mapOf("m-1" to "s-1"))
         assertEquals(listOf(1L to "s-1"), again.intoSurvivor.map { it.first.id to it.second })
+    }
+
+    /**
+     * A copy kept for its unsent photo: the card changes it delivered are
+     * checkpointed, so the next sync sends only the picture and keeps what
+     * UniHub changed on the survivor meanwhile (a title, a number).
+     */
+    @Test
+    fun aCopyKeptForItsPhotoDoesNotReplayItsDeliveredChanges() {
+        val copyInUniHub = ContactCard(given = "Ada", family = "Example", title = "Engineer", phones = listOf(Value("+15550100", id = "v-1")))
+        val bases = ContactState(copyInUniHub.forPhone(), "f7") to ContactState(copyInUniHub, "e-old", 3)
+        val survivor = copyInUniHub.copy(emails = listOf(Value("ada@example.com", id = "v-2")))
+        // On the phone: a new title, a second number and a new photo.
+        val phone = bases.first.card.copy(title = "Director", phones = bases.first.card.phones + Value("+15550101", "work"))
+
+        // Sync 1, metered: the card reaches the survivor, the photo waits.
+        val first = ContactPlan.survivorStep(phone, "f12", bases, survivor, "e-old")
+        val saved = first.survivor!!
+        assertEquals("Director", saved.title)
+        assertEquals(listOf("+15550100", "+15550101"), saved.phones.map { it.value })
+        assertEquals(ContactPlan.SurvivorPhoto.Upload, first.photo)
+        assertFalse(ContactPlan.copyMayGo(first.photo, sent = ContactPlan.PhotoBudget(metered = true, 200).take()))
+
+        // In UniHub meanwhile: another title, the phone's number removed, another added.
+        val edited = saved.copy(title = "CTO", phones = listOf(Value("+15550100", id = "v-1"), Value("+15550102", id = "v-3")))
+
+        // Sync 2 from the checkpoint: nothing to write; only the photo is sent.
+        val second = ContactPlan.survivorStep(phone, "f12", first.checkpoint, edited, "e-old")
+        assertEquals(null, second.survivor)
+        assertEquals(ContactPlan.SurvivorPhoto.Upload, second.photo)
+        // Without the checkpoint the old title and number would come back.
+        val replayed = ContactPlan.survivorStep(phone, "f12", bases, edited, "e-old").survivor!!
+        assertEquals("Director", replayed.title)
+        assertTrue(replayed.phones.any { it.value == "+15550101" })
+
+        // Still a change on the phone (its photo), so it is retried, not taken as a copy.
+        assertTrue(first.checkpoint.first.photo != "f12")
+        // The photo was removed in UniHub before it could be sent: UniHub's stays and the copy goes.
+        val removed = ContactPlan.survivorStep(phone, "f12", first.checkpoint, edited, "")
+        assertEquals(ContactPlan.SurvivorPhoto.UniHubKeeps, removed.photo)
+        assertTrue(ContactPlan.copyMayGo(removed.photo, sent = false))
     }
 }
 

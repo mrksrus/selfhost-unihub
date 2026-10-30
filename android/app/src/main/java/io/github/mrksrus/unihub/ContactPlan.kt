@@ -104,14 +104,38 @@ object ContactPlan {
     /**
      * [phonePhoto]: the copy's photo identity now ('' none); [phoneBase] and
      * [serverBase]: its photo and its UniHub contact's etag at the last sync
-     * (null without a state: every picture is new); [survivorPhoto]: the
-     * survivor's etag now. Removing a picture on the phone is not passed on:
-     * it would take the survivor's photo, which may be another contact's.
+     * (null without a state); [survivorPhoto]: the survivor's etag now.
+     * UniHub changed the photo when the survivor's is not the one the copy
+     * last saw: another photo, or none because it was removed in UniHub;
+     * then UniHub's stays. Without a state, only an empty survivor takes the
+     * picture. Removing a picture on the phone is not passed on: it would
+     * take the survivor's photo, which may be another contact's.
      */
     fun survivorPhoto(phonePhoto: String, phoneBase: String?, serverBase: String?, survivorPhoto: String): SurvivorPhoto = when {
         phonePhoto.isEmpty() || phonePhoto == phoneBase -> SurvivorPhoto.None
-        survivorPhoto.isEmpty() || survivorPhoto == serverBase -> SurvivorPhoto.Upload
+        survivorPhoto == serverBase -> SurvivorPhoto.Upload
+        serverBase == null && survivorPhoto.isEmpty() -> SurvivorPhoto.Upload
         else -> SurvivorPhoto.UniHubKeeps
+    }
+
+    /**
+     * One sync's step for a merged-away copy the phone changed (intoSurvivor):
+     * [survivor] is what UniHub should now hold (null: nothing to write),
+     * [photo] what happens to the copy's picture, and [checkpoint] the copy's
+     * states once [survivor] is saved: the phone's card counts as delivered,
+     * its photo still as the last sync's. A copy kept for its unsent picture
+     * keeps these, so the next sync sends only the picture and never replays
+     * card changes over newer edits of the survivor.
+     */
+    class SurvivorStep(val survivor: ContactCard?, val photo: SurvivorPhoto, val checkpoint: Pair<ContactState, ContactState>)
+
+    fun survivorStep(phone: ContactCard, phonePhoto: String, bases: Pair<ContactState, ContactState>?, survivor: ContactCard, survivorPhoto: String): SurvivorStep {
+        val merged = if (bases == null) ContactMerge.merge(phone, ContactCard(), survivor, ContactCard())
+        else ContactMerge.merge(phone, bases.first.card, survivor, survivor)
+        val write = merged.server.takeUnless { ContactPhone.same(it, survivor) }
+        val checkpoint = ContactState(phone, bases?.first?.photo ?: "") to
+            ContactState(bases?.second?.card ?: ContactCard(), bases?.second?.photo ?: "", bases?.second?.version)
+        return SurvivorStep(write, survivorPhoto(phonePhoto, bases?.first?.photo, bases?.second?.photo, survivorPhoto), checkpoint)
     }
 
     /**

@@ -945,30 +945,33 @@ object ContactsSync {
          * are applied to the survivor, a new picture included, then the copy
          * leaves the phone (the survivor's own copy brings the result). While
          * the picture cannot be sent yet (a metered network, the per-sync
-         * limit, a refusal) the copy stays and this runs again next sync;
-         * the changes already sent are then no change.
+         * limit, a refusal) the copy stays with its card recorded as
+         * delivered, and the next sync sends only the picture.
          */
         private fun intoSurvivor(row: Row, survivor: ServerContact) {
             val phone = row.full
-            val bases = row.fullBases(null)
-            val merged = if (bases == null) ContactMerge.merge(phone.card, ContactCard(), survivor.card, ContactCard())
-            else ContactMerge.merge(phone.card, bases.first.card, survivor.card, survivor.card)
+            val step = ContactPlan.survivorStep(phone.card, phone.photo, row.fullBases(null), survivor.card, survivor.photo)
             var now = survivor
-            if (!ContactPhone.same(merged.server, survivor.card)) {
-                now = server.saveFull(survivor, merged.server) ?: run { result.stats.numSkippedEntries++; return }
+            if (step.survivor != null) {
+                now = server.saveFull(survivor, step.survivor) ?: run { result.stats.numSkippedEntries++; return }
                 remote[now.id] = now
                 updated++
             }
-            val photo = ContactPlan.survivorPhoto(phone.photo, bases?.first?.photo, bases?.second?.photo, now.photo)
             var sent = false
-            if (photo == ContactPlan.SurvivorPhoto.Upload && budget.take()) {
+            if (step.photo == ContactPlan.SurvivorPhoto.Upload && budget.take()) {
                 val saved = phonePicture(provider, account, row.id)?.let { server.setPhoto(now, it) }
                 if (saved != null) {
                     remote[saved.id] = saved
                     sent = true
                 }
             }
-            if (!ContactPlan.copyMayGo(photo, sent)) {
+            if (!ContactPlan.copyMayGo(step.photo, sent)) {
+                // The card is delivered: the copy keeps only its picture to send.
+                batch += updateRow(account, row.id) {
+                    put(RawContacts.SYNC1, FORMAT_FULL)
+                    put(RawContacts.SYNC2, step.checkpoint.first.encode())
+                    put(RawContacts.SYNC3, step.checkpoint.second.encode())
+                }
                 Log.i(TAG, "A contact merged in UniHub stays on the phone until its new photo is sent")
                 result.stats.numSkippedEntries++
                 return
