@@ -303,6 +303,10 @@ adb install "$apk" >/dev/null
 # system dialogs.
 if (( sdk >= 33 )); then adb shell pm grant "$package" android.permission.POST_NOTIFICATIONS; fi
 adb shell dumpsys deviceidle whitelist +"$package" >/dev/null
+# Android 15 on lowers alert sounds after a burst of notifications, which this
+# test sends, and then puts its own notice, with a "Turn off" of its own, over
+# UniHub's notification in the shade. It changes only sounds; off here.
+if (( sdk >= 35 )); then adb shell settings put system notification_cooldown_enabled 0; fi
 adb logcat -c -b all
 adb shell cmd statusbar collapse >/dev/null 2>&1 || true
 unlock
