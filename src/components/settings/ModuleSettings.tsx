@@ -41,7 +41,7 @@ export default function ModuleSettings() {
             return (
               <li key={page.id} ref={row.setNodeRef} style={row.style} className={cn('flex items-center justify-between gap-3 py-2', row.dragging && draggingRowClass)}>
                 <div className="flex min-w-0 items-center gap-2">
-                  <DragHandle {...row.handle} label={`Reorder ${page.label}`} dragging={row.dragging} className="-ml-2" />
+                  <DragHandle {...row.handle} label={`Reorder ${page.label}`} dragging={row.dragging} className="sm:-ml-2" />
                   <Icon aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
                   <div className="min-w-0">
                     <h3 className="text-sm font-medium">{page.label}</h3>

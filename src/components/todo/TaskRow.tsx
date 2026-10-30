@@ -103,11 +103,16 @@ export function TaskRow({ task, actions, timezone, onEdit, onMove, onMoveList, c
           </DropdownMenu>
         </div>
       )}
-      {(task.description || task.source_email || subtasks) && (
+      {(task.description || task.source_email) && (
         <div className="col-start-2 mt-2 min-w-0 space-y-2.5">
           {task.description && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{task.description}</p>}
           {task.source_email && <SourceEmailBlock source={task.source_email} timezone={timezone} onUnlink={done ? undefined : () => unlink.mutate(task)} unlinking={unlink.isPending} />}
-          {subtasks && <Subtasks task={task} actions={actions} readOnly={done} autoFocus={addingSubtask} />}
+        </div>
+      )}
+      {/* Subtasks reach under the row's handle and menu, so their own handle and menu line up there and a title keeps its width on a phone. */}
+      {subtasks && (
+        <div className="col-span-2 col-start-2 mt-2 min-w-0">
+          <Subtasks task={task} actions={actions} readOnly={done} autoFocus={addingSubtask} />
         </div>
       )}
     </li>

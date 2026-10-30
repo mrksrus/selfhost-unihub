@@ -104,7 +104,7 @@ export default function GeneralSettings() {
           </SettingsRow>
           <SettingsRow label="New tasks go to" htmlFor="default-task-list" lock={lock('default_task_list_id')}
             description={<>
-              The list a new task starts in, in ToDo and from an email; each task can still go elsewhere. Only your own UniHub lists shown in ToDo can take every task. Mail&apos;s Send from is in Settings → Mail.
+              The list a new task starts in, in ToDo and from an email; each task can still go elsewhere. Only your own UniHub lists shown in ToDo can take every task. Where mail is sent from is chosen under Settings, Mail.
               {staleList && <span className="block text-warning">The list chosen before is no longer available; new tasks go to {listInEffect?.name ?? 'UniHub’s choice'}.</span>}
             </>}>
             <ListChooser id="default-task-list" calendars={taskLists} value={staleList ? UNIHUB_CHOICE.value : storedList || UNIHUB_CHOICE.value} undated extra={UNIHUB_CHOICE}

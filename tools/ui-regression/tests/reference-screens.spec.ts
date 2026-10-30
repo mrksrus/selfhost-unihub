@@ -15,7 +15,7 @@ async function pickUpRow(page: Page, title: string) {
   await handle.focus();
   await page.keyboard.press('Space');
   await expect(handle).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByRole('status').last()).toContainText(`Picked up ${title}`);
+  await expect(page.getByRole('status').filter({ hasText: `Picked up ${title}` })).toHaveCount(1);
 }
 
 // The new-task dialog with its chooser open: the lists grouped by account,

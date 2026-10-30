@@ -81,7 +81,10 @@ test('[27-01 27-03] a task dragged by its handle keeps its place after a reload 
     await handle(screen, `${prefix} 1`).focus();
     await browser.keyboard.press('Space');
     await expect(handle(screen, `${prefix} 1`)).toHaveAttribute('aria-pressed', 'true');
+    // Each step is announced; the next key follows the announcement, as a screen-reader user would.
+    await expect(screen.getByRole('status').filter({ hasText: `Picked up ${prefix} 1,` })).toHaveCount(1);
     await browser.keyboard.press('ArrowDown');
+    await expect(screen.getByRole('status').filter({ hasText: `${prefix} 1 moved to position` })).toHaveCount(1);
     await browser.keyboard.press('Space');
     await expect.poll(() => shownOrder(screen, prefix)).toEqual([`${prefix} 3`, `${prefix} 1`, `${prefix} 2`]);
     await expect.poll(() => storedOrder(browser, prefix), { timeout: 15_000 }).toEqual([`${prefix} 3`, `${prefix} 1`, `${prefix} 2`]);
