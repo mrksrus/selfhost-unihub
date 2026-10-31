@@ -26,10 +26,26 @@ export const WRITE_DEADLINE_MS = 30_000;
 /** A move, or its cancellation, waits for the calendar server (up to about 20 s on the API side). */
 export const MOVE_DEADLINE_MS = 60_000;
 
+/**
+ * A task or subtask the writes are counted for: 'task:<id>' or 'subtask:<id>'.
+ * Every write issued for it takes the next sequence number; a reply applies
+ * its confirmed fields only while no newer write has been issued since.
+ */
+export type EntityKey = `task:${string}` | `subtask:${string}`;
+export const taskKey = (id: string): EntityKey => `task:${id}`;
+export const subtaskKey = (id: string): EntityKey => `subtask:${id}`;
+
 interface TaskWrites {
   /** Queued and in-flight changes, oldest first; the first is the one in flight. */
   changes: OrderChange[];
   tail: Promise<void>;
+  /** The sequence number of the latest write issued per task or subtask. */
+  sequence: Map<EntityKey, number>;
+  /** Deleted on the server, with the fetch count at that moment: absent until a fetch started after the deletion answers. */
+  tombstones: Map<EntityKey, number>;
+  /** How many list fetches have started, and at which count each query's current fetch started. */
+  fetches: number;
+  fetchStartedAt: Map<string, number>;
 }
 
 // One queue per QueryClient, and SessionQueryProvider makes one client per
@@ -40,17 +56,59 @@ const writesByClient = new WeakMap<QueryClient, TaskWrites>();
 function writesFor(client: QueryClient): TaskWrites {
   const known = writesByClient.get(client);
   if (known) return known;
-  const writes: TaskWrites = { changes: [], tail: Promise.resolve() };
+  const writes: TaskWrites = { changes: [], tail: Promise.resolve(), sequence: new Map(), tombstones: new Map(), fetches: 0, fetchStartedAt: new Map() };
   writesByClient.set(client, writes);
-  // A list fetched for another reason while writes are pending (a live-update
-  // hint, another page's refresh, a window focus) would show the order from
-  // before them; the pending changes are laid over its answer again.
+  // A list fetched while writes are pending (a refresh, a live-update hint, a
+  // window focus) would show the order from before them and bring back what
+  // was deleted meanwhile: the pending changes are laid over its answer
+  // again, and a deletion holds until a fetch that started after it answers.
   client.getQueryCache().subscribe(event => {
-    if (event.type !== 'updated' || event.action.type !== 'success' || event.action.manual || !writes.changes.length) return;
-    if (!isEventList(event.query.queryKey) || !Array.isArray(event.action.data)) return;
-    client.setQueryData<EventLists>(event.query.queryKey, applyOrderChanges(event.action.data as CalendarEvent[], writes.changes));
+    if (event.type !== 'updated' || !isEventList(event.query.queryKey)) return;
+    if (event.action.type === 'fetch') { writes.fetchStartedAt.set(event.query.queryHash, ++writes.fetches); return; }
+    if (event.action.type !== 'success' || event.action.manual || !Array.isArray(event.action.data)) return;
+    const startedAt = writes.fetchStartedAt.get(event.query.queryHash) ?? 0;
+    for (const [key, since] of writes.tombstones) if (startedAt > since) writes.tombstones.delete(key);
+    if (!writes.changes.length && !writes.tombstones.size) return;
+    client.setQueryData<EventLists>(event.query.queryKey, applyOrderChanges(withoutDeleted(event.action.data as CalendarEvent[], writes.tombstones), writes.changes));
   });
   return writes;
+}
+
+/** The lists without the tasks and subtasks deleted on the server since the fetch started. */
+function withoutDeleted(events: readonly CalendarEvent[], tombstones: ReadonlyMap<EntityKey, number>): CalendarEvent[] {
+  if (!tombstones.size) return [...events];
+  return events.filter(event => !tombstones.has(taskKey(event.id)))
+    .map(event => event.subtasks.some(subtask => tombstones.has(subtaskKey(subtask.id))) ? { ...event, subtasks: event.subtasks.filter(subtask => !tombstones.has(subtaskKey(subtask.id))) } : event);
+}
+
+/** Counts a write issued for a task or subtask; its reply applies only while this is still the latest (isCurrentWrite). */
+export function issueWrite(client: QueryClient, key: EntityKey): number {
+  const writes = writesFor(client);
+  const sequence = (writes.sequence.get(key) ?? 0) + 1;
+  writes.sequence.set(key, sequence);
+  return sequence;
+}
+
+/**
+ * Whether a reply may apply what it confirmed: no newer write for the task
+ * or subtask was issued since. A reply to a creation counts as sequence 0,
+ * the oldest write for its new id: it applies only while nothing newer
+ * touched it, so a tick on the fetched copy is never undone by it.
+ */
+export function isCurrentWrite(client: QueryClient, key: EntityKey, sequence: number): boolean {
+  return (writesFor(client).sequence.get(key) ?? 0) === sequence;
+}
+
+/**
+ * Marks a task or subtask deleted on the server: it is removed from every
+ * cached list and stays absent, whatever an older reply or an older fetch
+ * says, until a fetch that started after the deletion answers.
+ */
+export function markDeleted(client: QueryClient, key: EntityKey) {
+  const writes = writesFor(client);
+  writes.tombstones.set(key, writes.fetches);
+  issueWrite(client, key);
+  client.setQueriesData<EventLists>(EVENT_LISTS, events => events && withoutDeleted(events, writes.tombstones));
 }
 
 function orderSubtasks(subtasks: readonly CalendarSubtask[], ids: readonly string[]) {
@@ -172,11 +230,11 @@ export function writeTaskSubtasks(client: QueryClient, eventId: string, update: 
 }
 
 /**
- * Refreshes everything that shows events and tasks, now when no ordering
- * write is pending; otherwise the refresh that follows the last of them
- * covers it, as a fetch landing in between would show the order from before them.
+ * Refreshes everything that shows events and tasks, at once: a list that
+ * answers while ordering writes are pending gets them laid over it again
+ * (the cache subscription above), so nothing wrong stays on show longer
+ * than one round trip. The queue fetches once more when it drains.
  */
-export function refreshTasksWhenIdle(client: QueryClient) {
-  if (writesFor(client).changes.length) return;
+export function refreshTasks(client: QueryClient) {
   void invalidateCalendarQueries(client);
 }

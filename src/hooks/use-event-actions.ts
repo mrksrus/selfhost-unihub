@@ -6,7 +6,7 @@ import {
 } from '@/lib/calendar-api';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { useSessionScope } from '@/lib/session-scope';
-import { MOVE_DEADLINE_MS, cancelledMoveNotice, confirmedFields, queueTaskWrite, writeTaskFields } from '@/lib/task-order-queue';
+import { MOVE_DEADLINE_MS, cancelledMoveNotice, confirmedFields, isCurrentWrite, issueWrite, markDeleted, queueTaskWrite, taskKey, writeTaskFields } from '@/lib/task-order-queue';
 
 export type EventInput = Partial<CalendarEvent> & { title: string };
 
@@ -47,7 +47,8 @@ export function useEventActions() {
 
   const remove = useMutation({
     mutationFn: ({ id, scope }: { id: string; scope?: RecurrenceScope }) => calendarApi.deleteEvent(id, scope),
-    onSuccess: (_data, { scope }) => { refresh(); toast({ title: scope === 'series' ? 'Series deleted' : 'Event deleted' }); },
+    // Deleted stays deleted, whatever an older reply or an older fetch says (task-order-queue.ts).
+    onSuccess: (_data, { id, scope }) => { markDeleted(client, taskKey(id)); refresh(); toast({ title: scope === 'series' ? 'Series deleted' : 'Event deleted' }); },
     onError: failed('Could not delete the event'),
   });
 
@@ -61,8 +62,9 @@ export function useEventActions() {
   // its calendar), in the same queue as the task writes it would race.
   const cancelMove = useSessionMutation({
     mutationFn: ({ id }: { id: string; from?: string; to?: string }) => queueTaskWrite(client, scope, { kind: 'move', id }, signal => calendarApi.cancelMove(id, signal), MOVE_DEADLINE_MS),
-    onSuccess: (result: TaskMoveCancelled, { id, from, to }) => {
-      if (result.event) writeTaskFields(client, id, confirmedFields(result.event, ['calendar_id', 'move_pending', 'updated_at']));
+    onMutate: ({ id }) => ({ sequence: issueWrite(client, taskKey(id)) }),
+    onSuccess: (result: TaskMoveCancelled, { id, from, to }, { sequence }) => {
+      if (result.event && isCurrentWrite(client, taskKey(id), sequence)) writeTaskFields(client, id, confirmedFields(result.event, ['calendar_id', 'move_pending', 'updated_at']));
       if (result.cancelled) toast({ title: 'Move cancelled', description: cancelledMoveNotice('event', from, to) });
       else { refresh(); toast({ title: 'Nothing to cancel', description: 'No move was waiting on the calendar server.' }); }
     },

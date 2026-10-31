@@ -4,15 +4,19 @@ import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { calendarApi, writeRefusal, type CalendarCalendar, type CalendarEvent, type CalendarSubtask, type NewCalendarEvent, type TaskMove, type TaskMoveCancelled } from '@/lib/calendar-api';
 import { useSessionScope } from '@/lib/session-scope';
 import { neighboursAt } from '@/lib/tasks';
-import { MOVE_DEADLINE_MS, cancelledMoveNotice, confirmedFields, queueTaskWrite, refreshTasksWhenIdle, writeTaskFields, writeTaskRanks, writeTaskSubtasks } from '@/lib/task-order-queue';
+import { MOVE_DEADLINE_MS, cancelledMoveNotice, confirmedFields, isCurrentWrite, issueWrite, markDeleted, queueTaskWrite, refreshTasks, subtaskKey, taskKey, writeTaskFields, writeTaskRanks, writeTaskSubtasks } from '@/lib/task-order-queue';
 
 export type NewTask = NewCalendarEvent;
 
-// The fields a status answer confirms (a tick, a cancellation, a new time), and the ones a move answer confirms.
-const STATUS_FIELDS = ['todo_status', 'done_at', 'updated_at', 'sort_rank', 'sort_key', 'hand_ordered'] as const;
+// Every reply writes only the fields its request changed, and only while no
+// newer write for the task or subtask was issued (task-order-queue.ts).
+// A status reply confirms the status; the times and the place only when the
+// request set a time (a new date returns the task to its date's place, D31).
+const STATUS_FIELDS = ['todo_status', 'done_at', 'updated_at'] as const;
+const TIME_FIELDS = ['start_time', 'end_time', 'sort_rank', 'sort_key', 'hand_ordered'] as const;
 const MOVE_FIELDS = ['calendar_id', 'move_pending', 'updated_at'] as const;
-const mergeSubtask = (subtasks: readonly CalendarSubtask[], subtask: CalendarSubtask) =>
-  subtasks.some(known => known.id === subtask.id) ? subtasks.map(known => known.id === subtask.id ? { ...known, ...subtask } : known) : [...subtasks, subtask];
+const replaceSubtask = (subtasks: readonly CalendarSubtask[], subtask: CalendarSubtask) =>
+  subtasks.map(known => known.id === subtask.id ? { ...known, ...subtask } : known);
 
 /**
  * Where a task goes: between the two tasks shown next to it, either null at a
@@ -41,7 +45,8 @@ export function useTaskActions() {
   const client = useQueryClient();
   const scope = useSessionScope();
   const { toast } = useToast();
-  const refresh = () => refreshTasksWhenIdle(client);
+  const refresh = () => refreshTasks(client);
+  const issueTask = ({ id }: { id: string }) => ({ sequence: issueWrite(client, taskKey(id)) });
   // A write the server refused with a reason (still being moved, changed on
   // the server, a stale list) is a plain notice, not a failure; a reason that
   // needs the current lists reloads them first.
@@ -63,8 +68,10 @@ export function useTaskActions() {
       await calendarApi.updateEvent(id, update);
       return calendarApi.updateTodoStatus(id, { todo_status: 'changed' });
     },
-    onSuccess: (event, { id, update }) => {
-      writeTaskFields(client, id, confirmedFields(event, [...Object.keys(update) as (keyof CalendarEvent)[], ...STATUS_FIELDS]));
+    onMutate: issueTask,
+    onSuccess: (event, { id, update }, { sequence }) => {
+      const changed = Object.keys(update) as (keyof CalendarEvent)[];
+      if (isCurrentWrite(client, taskKey(id), sequence)) writeTaskFields(client, id, confirmedFields(event, [...changed, ...STATUS_FIELDS, ...(changed.includes('start_time') ? TIME_FIELDS : [])]));
       refresh();
       toast({ title: 'Task updated' });
     },
@@ -74,8 +81,9 @@ export function useTaskActions() {
   const setStatus = useSessionMutation({
     mutationFn: ({ id, todo_status, start_time, end_time }: { id: string; todo_status: CalendarEvent['todo_status']; start_time?: string; end_time?: string }) =>
       calendarApi.updateTodoStatus(id, { todo_status, start_time, end_time }),
-    onSuccess: (event, { id, todo_status }) => {
-      writeTaskFields(client, id, confirmedFields(event, [...STATUS_FIELDS, 'start_time', 'end_time']));
+    onMutate: issueTask,
+    onSuccess: (event, { id, todo_status, start_time, end_time }, { sequence }) => {
+      if (isCurrentWrite(client, taskKey(id), sequence)) writeTaskFields(client, id, confirmedFields(event, [...STATUS_FIELDS, ...(start_time || end_time ? TIME_FIELDS : [])]));
       refresh();
       if (todo_status === 'done') toast({ title: 'Task done' });
       else if (todo_status === 'cancelled') toast({ title: 'Task cancelled' });
@@ -121,9 +129,10 @@ export function useTaskActions() {
   const moveToList = useSessionMutation({
     mutationFn: ({ id, calendarId }: { id: string; calendarId: string; list?: CalendarCalendar }) =>
       queueTaskWrite(client, scope, { kind: 'move', id }, signal => calendarApi.moveTask(id, calendarId, signal), MOVE_DEADLINE_MS),
-    onSuccess: (result: TaskMove, { id, list }) => {
+    onMutate: issueTask,
+    onSuccess: (result: TaskMove, { id, list }, { sequence }) => {
       // The answer carries the task as it is now: in its new list, or still in the old one with its move marked (move_pending).
-      if (result.event) writeTaskFields(client, id, confirmedFields(result.event, MOVE_FIELDS));
+      if (result.event && isCurrentWrite(client, taskKey(id), sequence)) writeTaskFields(client, id, confirmedFields(result.event, MOVE_FIELDS));
       if (result.pending === 'creating') toast({ title: 'Moving…', description: 'The calendar server has not confirmed yet. UniHub finishes this in the background.' });
       else toast({ title: list ? `Task moved to ${list.name}` : 'Task moved',
         ...(result.sourceKept ? { description: 'Its old copy was changed in another app meanwhile, so it stays in the old calendar too.' } : {}) });
@@ -140,8 +149,9 @@ export function useTaskActions() {
    */
   const cancelMove = useSessionMutation({
     mutationFn: ({ id }: { id: string; from?: string; to?: string }) => queueTaskWrite(client, scope, { kind: 'move', id }, signal => calendarApi.cancelMove(id, signal), MOVE_DEADLINE_MS),
-    onSuccess: (result: TaskMoveCancelled, { id, from, to }) => {
-      if (result.event) writeTaskFields(client, id, confirmedFields(result.event, MOVE_FIELDS));
+    onMutate: issueTask,
+    onSuccess: (result: TaskMoveCancelled, { id, from, to }, { sequence }) => {
+      if (result.event && isCurrentWrite(client, taskKey(id), sequence)) writeTaskFields(client, id, confirmedFields(result.event, MOVE_FIELDS));
       if (result.cancelled) toast({ title: 'Move cancelled', description: cancelledMoveNotice('task', from, to) });
       // Where the task is now comes from the lists, not from this answer.
       else { refresh(); toast({ title: 'Nothing to cancel', description: 'No move was waiting on the calendar server.' }); }
@@ -151,21 +161,33 @@ export function useTaskActions() {
 
   const addSubtask = useSessionMutation({
     mutationFn: ({ eventId, title }: { eventId: string; title: string }) => calendarApi.createSubtask(eventId, { title }),
-    // A list fetched meanwhile may hold the new subtask already: merged by id, never appended twice.
-    onSuccess: (subtask, { eventId }) => { writeTaskSubtasks(client, eventId, subtasks => mergeSubtask(subtasks, subtask)); refresh(); },
+    // The reply to a creation is the oldest write for the new id: it applies
+    // only while nothing newer touched the subtask (a tick on the copy a list
+    // fetched meanwhile, a deletion). A list holding it already gets it replaced, never twice.
+    onSuccess: (subtask, { eventId }) => {
+      if (isCurrentWrite(client, subtaskKey(subtask.id), 0)) {
+        writeTaskSubtasks(client, eventId, subtasks => subtasks.some(known => known.id === subtask.id) ? replaceSubtask(subtasks, subtask) : [...subtasks, subtask]);
+      }
+      refresh();
+    },
     onError: failed('Could not add the subtask'),
   });
 
   const updateSubtask = useSessionMutation({
     mutationFn: ({ eventId, subtaskId, update }: { eventId: string; subtaskId: string; update: Partial<Pick<CalendarSubtask, 'title' | 'is_done' | 'position'>> }) =>
       calendarApi.updateSubtask(eventId, subtaskId, update),
-    onSuccess: (subtask, { eventId }) => { writeTaskSubtasks(client, eventId, subtasks => mergeSubtask(subtasks, subtask)); refresh(); },
+    onMutate: ({ subtaskId }) => ({ sequence: issueWrite(client, subtaskKey(subtaskId)) }),
+    // Absent from the cache means deleted or not fetched, never "create it".
+    onSuccess: (subtask, { eventId, subtaskId }, { sequence }) => {
+      if (isCurrentWrite(client, subtaskKey(subtaskId), sequence)) writeTaskSubtasks(client, eventId, subtasks => replaceSubtask(subtasks, subtask));
+      refresh();
+    },
     onError: failed('Could not update the subtask'),
   });
 
   const deleteSubtask = useSessionMutation({
     mutationFn: ({ eventId, subtaskId }: { eventId: string; subtaskId: string }) => calendarApi.deleteSubtask(eventId, subtaskId),
-    onSuccess: (_, { eventId, subtaskId }) => { writeTaskSubtasks(client, eventId, subtasks => subtasks.filter(subtask => subtask.id !== subtaskId)); refresh(); },
+    onSuccess: (_, { subtaskId }) => { markDeleted(client, subtaskKey(subtaskId)); refresh(); },
     onError: failed('Could not delete the subtask'),
   });
 

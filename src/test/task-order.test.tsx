@@ -689,7 +689,7 @@ describe('ordering writes in one queue', () => {
     expect(shown()).toEqual(['b', 'a', 'c']);
   });
 
-  it('holds every other refresh until the queue is empty, and a move waits its turn behind a placement and a subtask order', async () => {
+  it('refreshes at once for another write and lays the pending order over the answer; a move waits its turn behind a placement and a subtask order', async () => {
     serverEvents = [...undated.map((entry, index) => index === 0 ? { ...entry, subtasks: pair(entry.id) } : entry), task('Archive me', { is_todo_only: true, sort_rank: 400 })];
     const placeAnswer = deferred<{ data: { ranks: Record<string, number> } }>(), subtaskAnswer = deferred<{ data: { subtasks: [] } }>(), moveAnswer = deferred<{ data: { event: CalendarEvent | null; pending?: string } }>();
     vi.mocked(api.put).mockReturnValueOnce(placeAnswer.promise as never);
@@ -703,29 +703,31 @@ describe('ordering writes in one queue', () => {
     act(() => probeActions.moveToList.mutate({ id: 'Archive me', calendarId: 'list-archive' }));
     await waitFor(() => expect(data()[0].subtasks.map(subtask => subtask.id)).toEqual(['s1', 's0']));
     expect(api.post).not.toHaveBeenCalled();
-    // A tick answered meanwhile: its refresh waits, so the pending order is not fetched away.
+    // A tick answered meanwhile: its answer is in the cache at once, its refresh
+    // runs at once, and the lists it fetches get the pending order laid over them again.
+    serverEvents = serverEvents.map(event => event.id === 'Call Sam' ? { ...event, todo_status: 'done' as const } : event);
     act(() => probeActions.setStatus.mutate({ id: 'Call Sam', todo_status: 'done' }));
     await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(state.toast).toHaveBeenCalledWith({ title: 'Task done' }));
-    expect(listCalls()).toBe(fetched);
-    // The tick's confirmed answer is in the cache at once, under the pending order.
     expect(data().find(event => event.id === 'Call Sam')!.todo_status).toBe('done');
+    await waitFor(() => expect(listCalls()).toBeGreaterThan(fetched));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
     expect(data().find(event => event.id === 'Plan holiday')!.sort_rank).toBe(150);
     expect(data()[0].subtasks.map(subtask => subtask.id)).toEqual(['s1', 's0']);
+    expect(api.post).not.toHaveBeenCalled();
     serverEvents = serverEvents.map(event => event.id === 'Plan holiday' ? { ...event, sort_rank: 150 } : event);
     await act(async () => { placeAnswer.resolve({ data: { ranks: { 'Plan holiday': 150 } } }); });
     await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1));
     expect(api.post).toHaveBeenLastCalledWith('/calendar/events/Pay rent/subtasks/reorder', { subtask_ids: ['s1', 's0'] }, { signal: expect.any(AbortSignal) });
-    expect(listCalls()).toBe(fetched);
     serverEvents = serverEvents.map(event => event.id === 'Pay rent' ? { ...event, subtasks: [...event.subtasks].reverse() } : event);
     await act(async () => { subtaskAnswer.resolve({ data: { subtasks: [] } }); });
     await waitFor(() => expect(api.post).toHaveBeenCalledTimes(2));
     expect(api.post).toHaveBeenLastCalledWith('/calendar/events/Archive%20me/move', { calendar_id: 'list-archive' }, { signal: expect.any(AbortSignal) });
-    expect(listCalls()).toBe(fetched);
     serverEvents = serverEvents.filter(event => event.id !== 'Archive me');
+    const before = listCalls();
     await act(async () => { moveAnswer.resolve({ data: { event: task('Archive me', { calendar_id: 'list-archive' }), pending: 'removing' } }); });
-    // The queue is empty: one refresh, with everything the server holds.
-    await waitFor(() => expect(listCalls()).toBe(fetched + 1));
+    // The queue is empty: a refresh with everything the server holds.
+    await waitFor(() => expect(listCalls()).toBeGreaterThan(before));
     await waitFor(() => expect(orderTasks(data()).map(event => event.id)).toEqual(['Pay rent', 'Plan holiday', 'Call Sam']));
     expect(data()[0].subtasks.map(subtask => subtask.id)).toEqual(['s1', 's0']);
   });
@@ -1070,6 +1072,7 @@ describe('answers of the other writes while the queue is busy', () => {
     await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2));
     // The tick was stored with no subtasks; its answer waits on the network while a subtask is confirmed.
     const tickAnswer = { ...serverEvents[0], todo_status: 'done' as const, done_at: iso(0) };
+    serverEvents = serverEvents.map(entry => entry.id === 'Pay rent' ? { ...entry, todo_status: 'done' as const, subtasks: [subtask] } : entry);
     act(() => probeActions.addSubtask.mutate({ eventId: 'Pay rent', title: 'Pack bag' }));
     await waitFor(() => expect(payRent().subtasks).toHaveLength(1));
     await act(async () => { tick.resolve({ data: { event: tickAnswer } }); });
@@ -1095,5 +1098,81 @@ describe('an item that moved or changed while its dialog was open', () => {
     expect(within(screen.getByRole('dialog', { name: 'Edit task' })).getByLabelText('Title')).toHaveValue('Pay rent and bills');
     await waitFor(() => expect(listCalls()).toBeGreaterThan(fetched));
     expect(client.getQueryData<CalendarEvent[]>(probeKey)![0].title).toBe('Pay rent');
+  });
+});
+
+describe('replies that arrive after a newer write for the same task or subtask', () => {
+  it('lets a late done reply confirm the status only, not the dates an edit changed since', async () => {
+    const hold = deferred<{ data: { ranks: Record<string, number> } }>(), tick = deferred<{ data: { event: CalendarEvent } }>();
+    serverEvents = undated.map(entry => ({ ...entry, is_todo_only: false }));
+    vi.mocked(api.put).mockReturnValueOnce(hold.promise as never).mockReturnValueOnce(tick.promise as never);
+    const { client } = await probeMount();
+    const payRent = () => client.getQueryData<CalendarEvent[]>(probeKey)![0];
+    const later = { key: 'later', of: (entry: CalendarEvent) => taskSection(entry, 'UTC') };
+    act(() => probeActions.placeTask(serverEvents, 'Plan holiday', 1, later));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
+    act(() => probeActions.setStatus.mutate({ id: 'Pay rent', todo_status: 'done' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2));
+    const tickAnswer = { ...serverEvents[0], todo_status: 'done' as const, done_at: iso(0) };
+    const edited = { ...tickAnswer, todo_status: 'changed' as const, start_time: '2099-01-01T10:00:00Z', end_time: '2099-01-01T11:00:00Z', sort_rank: 987654 };
+    serverEvents = serverEvents.map(entry => entry.id === 'Pay rent' ? edited : entry);
+    vi.mocked(api.put).mockResolvedValueOnce({ data: { event: edited } }).mockResolvedValueOnce({ data: { event: edited } });
+    act(() => probeActions.update.mutate({ id: 'Pay rent', update: { start_time: edited.start_time, end_time: edited.end_time } }));
+    await waitFor(() => expect(payRent().start_time).toBe(edited.start_time));
+    expect(payRent().sort_rank).toBe(987654);
+    await act(async () => { tick.resolve({ data: { event: tickAnswer } }); });
+    expect([payRent().start_time, payRent().end_time, payRent().todo_status]).toEqual([edited.start_time, edited.end_time, 'changed']);
+    await act(async () => { hold.resolve({ data: { ranks: { 'Plan holiday': 150 } } }); });
+  });
+
+  it('never brings back a subtask deleted since: not by a late tick reply, nor by a fetch that started before the deletion', async () => {
+    const hold = deferred<{ data: { ranks: Record<string, number> } }>(), toggle = deferred<{ data: { subtask: CalendarSubtask } }>(), oldFetch = deferred<{ data: { events: CalendarEvent[] } }>();
+    serverEvents = undated.map(entry => entry.id === 'Pay rent' ? { ...entry, subtasks: pair(entry.id) } : entry);
+    vi.mocked(api.put).mockReturnValueOnce(hold.promise as never).mockReturnValueOnce(toggle.promise as never);
+    vi.mocked(api.delete).mockResolvedValueOnce({ data: { success: true } });
+    const { client } = await probeMount();
+    const ids = () => client.getQueryData<CalendarEvent[]>(probeKey)![0].subtasks.map(subtask => subtask.id);
+    act(() => probeActions.placeTask(serverEvents, 'Plan holiday', 1, undatedSection));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
+    act(() => probeActions.updateSubtask.mutate({ eventId: 'Pay rent', subtaskId: 's0', update: { is_done: true } }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2));
+    // A fetch under way (started before the deletion) will answer with s0 still there.
+    const withS0 = serverEvents;
+    vi.mocked(api.get).mockReturnValueOnce(oldFetch.promise as never);
+    const fetching = client.refetchQueries({ queryKey: probeKey });
+    serverEvents = serverEvents.map(entry => entry.id === 'Pay rent' ? { ...entry, subtasks: entry.subtasks.filter(subtask => subtask.id !== 's0') } : entry);
+    act(() => probeActions.deleteSubtask.mutate({ eventId: 'Pay rent', subtaskId: 's0' }));
+    await waitFor(() => expect(ids()).toEqual(['s1']));
+    await act(async () => { toggle.resolve({ data: { subtask: { ...pair('Pay rent')[0], is_done: true } } }); });
+    expect(ids()).toEqual(['s1']);
+    await act(async () => { oldFetch.resolve({ data: { events: withS0 } }); await fetching; });
+    expect(ids()).toEqual(['s1']);
+    // A fetch started after the deletion is the truth, whatever it says.
+    serverEvents = withS0;
+    await act(async () => { await client.refetchQueries({ queryKey: probeKey }); });
+    expect(ids()).toEqual(['s0', 's1']);
+    await act(async () => { hold.resolve({ data: { ranks: { 'Plan holiday': 150 } } }); });
+  });
+
+  it('lets a late creation reply stand back from a tick confirmed since on the fetched copy', async () => {
+    const hold = deferred<{ data: { ranks: Record<string, number> } }>(), add = deferred<{ data: { subtask: CalendarSubtask } }>();
+    vi.mocked(api.put).mockReturnValueOnce(hold.promise as never);
+    vi.mocked(api.post).mockReturnValueOnce(add.promise as never);
+    const { client } = await probeMount();
+    const subtasks = () => client.getQueryData<CalendarEvent[]>(probeKey)![0].subtasks;
+    act(() => probeActions.placeTask(serverEvents, 'Plan holiday', 1, undatedSection));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
+    act(() => probeActions.addSubtask.mutate({ eventId: 'Pay rent', title: 'new' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1));
+    const subtask = { ...pair('Pay rent')[0], id: 'new', title: 'new' };
+    serverEvents = serverEvents.map(entry => entry.id === 'Pay rent' ? { ...entry, subtasks: [subtask] } : entry);
+    await act(async () => { await client.refetchQueries({ queryKey: probeKey }); });
+    serverEvents = serverEvents.map(entry => entry.id === 'Pay rent' ? { ...entry, subtasks: [{ ...subtask, is_done: true }] } : entry);
+    vi.mocked(api.put).mockResolvedValueOnce({ data: { subtask: { ...subtask, is_done: true } } });
+    act(() => probeActions.updateSubtask.mutate({ eventId: 'Pay rent', subtaskId: 'new', update: { is_done: true } }));
+    await waitFor(() => expect(subtasks()[0].is_done).toBe(true));
+    await act(async () => { add.resolve({ data: { subtask } }); });
+    expect(subtasks().map(entry => [entry.id, entry.is_done])).toEqual([['new', true]]);
+    await act(async () => { hold.resolve({ data: { ranks: { 'Plan holiday': 150 } } }); });
   });
 });
