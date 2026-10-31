@@ -122,6 +122,8 @@ test('contacts import and export: preview before writing, decisions, idempotent 
   const done = await waitFor(summary.id);
   assert.deepEqual([done.state, done.progress, done.result.added, done.result.merged, done.result.skipped, done.error], ['committed', 1, 1, 1, 0, null]);
   assert.deepEqual(done.result.kept_conflicts.map((item: FixtureValue) => item.field), ['job_title']);
+  // The file goes only after the commit is known (contacts-import.ts), a moment after the job reads committed.
+  for (let waited = 0; stagedFiles().length && waited < 5000; waited += 50) await new Promise(resolve => setTimeout(resolve, 50));
   assert.deepEqual(stagedFiles(), [], 'the staged file is removed after the commit');
   const again = await owner.call('POST', `/api/contacts/imports/${summary.id}/commit`, { decisions: [{ group_id: 'g1', decision: 'add' }] });
   assert.equal(again.state, 'committed');
