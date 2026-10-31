@@ -5,6 +5,17 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.27.1 Follow-up fix for the Android app
+
+No database upgrade and no configuration change. Going back to 0.27.0 is
+possible.
+
+- **Android app.** Install 0.27.1's app when it is offered: "Open in app"
+  from UniHub's page then always asks to connect to that server, also in the
+  first minutes after the phone has started. The window is 0.27.1, 0.27.0,
+  0.26.0 and 0.25.1: the 0.25.0 app leaves it, so update a phone that still
+  has it.
+
 ## 0.27.0 ToDo and calendar: order and defaults
 
 **Make a database backup first.** One automatic database upgrade runs at the

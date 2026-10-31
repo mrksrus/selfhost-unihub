@@ -22,10 +22,19 @@
   ],
   "releases": [
     {
+      "version": "0.27.1",
+      "apk": {
+        "versionCode": 27001,
+        "sha256": null,
+        "signing": "release"
+      },
+      "shell": "supported"
+    },
+    {
       "version": "0.27.0",
       "apk": {
         "versionCode": 27000,
-        "sha256": null,
+        "sha256": "f389d4b9377308a306a899699c88adc2bd3cbb5524905815888d58ade24afaec",
         "signing": "release"
       },
       "shell": "supported"
@@ -44,15 +53,6 @@
       "apk": {
         "versionCode": 25001,
         "sha256": "28ca335e9a264951006729f1a00712eac892e82d0f7392c9d61db25f62fa3043",
-        "signing": "release"
-      },
-      "shell": "supported"
-    },
-    {
-      "version": "0.25.0",
-      "apk": {
-        "versionCode": 25000,
-        "sha256": "825ae93f1785765b283f90690d08e83ab148dfb01238967ad99a25b2f0942bb6",
         "signing": "release"
       },
       "shell": "supported"

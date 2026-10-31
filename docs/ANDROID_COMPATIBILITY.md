@@ -31,7 +31,7 @@ for `contacts-vcard`: only then does it sync every contact field, with
 version-checked writes, photos and merges; without it (0.24.3 to 0.25.1
 servers) it syncs the 3+3 fields as those apps do. A 0.26.0 server keeps the
 3+3 projection and applies their flat writes as a diff (a fourth number and
-labels stay), as long as the 0.25.0 and 0.25.1 apps are in the window. Removing support for an app is a product decision: change the
+labels stay), as long as the 0.25.1 app is in the window. Removing support for an app is a product decision: change the
 window and `minApp` together, on purpose.
 
 ## Checks
@@ -86,17 +86,18 @@ needs a current WebView; phones update theirs through the Play Store.
 
 ## Current window
 
-As recorded in `android/support-window.json` for 0.27.0. The CI table is the
+As recorded in `android/support-window.json` for 0.27.1. The CI table is the
 evidence; this table is what it is checked against.
 
 | App | Android 10 | Android 16 | Android 17 |
 | --- | --- | --- | --- |
+| 0.27.1 | starts and connects | starts and connects | starts and connects |
 | 0.27.0 | starts and connects | starts and connects | starts and connects |
 | 0.26.0 | starts and connects | starts and connects | starts and connects |
 | 0.25.1 | starts and connects | starts and connects | starts and connects |
-| 0.25.0 | starts and connects | starts and connects | starts and connects |
 
 All four apps put contacts on the phone and sync them both ways.
+The 0.27.0, 0.26.0 and 0.25.1 apps can lose the "Connect to <server>?" question when Android rebuilds their screen (in the first minutes after the phone starts, or after a theme or font change); the link can simply be opened again. The 0.27.1 app keeps it, and `android/scripts/launch-test.sh --candidate` checks that for the candidate only.
 From 0.23.0 the app also reads the handshake `protocol` and `minApp` when
 connecting to a server.
 `android/scripts/contacts-test.sh` checks that on each emulator against a stub

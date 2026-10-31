@@ -9,7 +9,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 ## 0.27.1
 
 A fix for the Android app. No database upgrade; install the new Android app
-when it is offered.
+when it is offered (see
+[Upgrading](docs/UPGRADING.md#0271-follow-up-fix-for-the-android-app)).
 
 ### Fixed
 
