@@ -375,10 +375,15 @@ are then rebuilt from the server's answer, so the server stays the authority.
   not confirmed shows as `move_pending` and finishes in the background, or can
   be cancelled; edits wait for it (`409 CALENDAR_MOVE_PENDING`). Recurring
   events cannot be moved.
-- **One change at a time.** Edits, time moves, deletions, moves and their
-  cancel of one item run one after another (a lock per item, held from the
-  first read to the local write); a change waits up to 25 seconds for the one
-  before it, then answers `409 CALENDAR_EVENT_CHANGED` to try again.
+- **One change at a time.** Creating an item on a server, edits, time moves,
+  deletions, moves, their cancel, a move's background run and a sync's
+  adoption of a move's copy run one after another for one item (a lock per
+  item, held from the first read to the local write). A change waits up to 25
+  seconds for the one before it; past that, with two already waiting, or when
+  the lock connections are in use (`services/named-locks.ts`), it answers
+  `409 CALENDAR_EVENT_CHANGED` to try again. A request that waited checks the
+  Calendar module and a running restore again; a sync leaves a copy it may
+  not adopt yet for its next run.
 - **Read-only.** ICS subscriptions and calendars marked read-only reject
   changes with `403 CALENDAR_READ_ONLY`; the event dialog shows them read-only.
 - **Not yet synced.** Events imported before 0.17 have no server copy until the

@@ -148,7 +148,8 @@ test('moving a task between lists and calendars: one copy, the same row, through
   const base = `http://127.0.0.1:${server.address().port}`;
   function session() {
     const cookies = new Map<string, string>(); let csrf: string | undefined;
-    return async (method: string, route: string, body?: unknown, expected = 200) => {
+    // expected null: answers { status, body } instead of checking the status.
+    return async (method: string, route: string, body?: unknown, expected: number | null = 200) => {
       const response = await fetch(base + '/api' + route, { method, headers: {
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         ...(cookies.size ? { Cookie: [...cookies].map(([key, value]) => `${key}=${value}`).join('; ') } : {}),
@@ -156,6 +157,7 @@ test('moving a task between lists and calendars: one copy, the same row, through
       }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15000) });
       for (const cookie of response.headers.getSetCookie()) { const pair = cookie.split(';')[0]; const separator = pair.indexOf('='); cookies.set(pair.slice(0, separator), pair.slice(separator + 1)); }
       const result = await response.json();
+      if (expected === null) return { status: response.status, body: result };
       assert.equal(response.status, expected, `${method} ${route}: ${JSON.stringify(result)}`);
       if (result.csrfToken) csrf = result.csrfToken;
       return result;
@@ -240,7 +242,7 @@ test('moving a task between lists and calendars: one copy, the same row, through
   async function lockWaiters(count: number) {
     for (const until = Date.now() + 3000; Date.now() < until; await new Promise(resolve => setTimeout(resolve, 20))) {
       const [[row]] = await pool.query<RowDataPacket[]>(`SELECT COUNT(*) AS waiting FROM information_schema.PROCESSLIST
-        WHERE ID <> CONNECTION_ID() AND INFO LIKE '%GET_LOCK%' AND INFO LIKE '%:calendar-event:%'`);
+        WHERE ID <> CONNECTION_ID() AND INFO LIKE '%GET_LOCK%' AND INFO LIKE '%calendar-event%'`);
       if (Number(row.waiting) >= count) return;
     }
   }
@@ -1016,5 +1018,127 @@ test('moving a task between lists and calendars: one copy, the same row, through
     await resume();
     assert.equal((await journal()).length, 0);
     assert.deepEqual(remote.writes, []);
+  });
+
+  await t.test('a new server event is created holding its lock: a move sent meanwhile waits for the link, or finds it gone', async () => {
+    for (const outcome of ['created', 'refused']) {
+      const title = outcome === 'created' ? 'Created then moved' : 'Refused at creation';
+      clock += 3600000;
+      // The row is in, the server write not yet made.
+      const gate = hold(); const original = calendarSync.pushCreatedEvent; let once = true;
+      calendarSync.pushCreatedEvent = async (opts: FixtureValue) => {
+        if (once && opts.event.title === title) { once = false; gate.reached(); await gate.go; }
+        return original(opts);
+      };
+      if (outcome === 'refused') faults.put = () => 'refuse';
+      try {
+        const creating = owner('POST', '/calendar/events', { title, calendar_id: work, start_time: new Date(clock).toISOString(), end_time: new Date(clock + 1800000).toISOString() }, null);
+        await gate.at;
+        const [row] = await rowsTitled(title);
+        const moving = owner('POST', `/calendar/events/${row.id}/move`, { calendar_id: errands }, null);
+        await lockWaiters(1);
+        gate.release();
+        const [created, moved] = await Promise.all([creating, moving]);
+        if (outcome === 'created') {
+          assert.deepEqual([created.status, moved.status, moved.body.event?.calendar_id], [200, 200, errands]);
+          await assertOnce(title, row.id, errands, { copies: 0 });
+          await sync(); await expandAll();
+          await assertOnce(title, row.id, errands, { copies: 0 });
+        } else {
+          assert.notEqual(created.status, 200);
+          assert.deepEqual([moved.status, moved.body.code], [404, 'TASK_NOT_FOUND']);
+          assert.deepEqual(await rowsTitled(title), []);
+          assert.equal(copiesOf(title).length, 0);
+        }
+      } finally { calendarSync.pushCreatedEvent = original; faults.put = undefined; gate.release(); }
+    }
+  });
+
+  await t.test('a sync does not adopt a move\'s copy while a request holds the task; a cancel then ends the move', async () => {
+    const title = 'Adopted while cancelling';
+    const task = await localTask(title);
+    const before = await kept(task);
+    faults.put = () => 'store-then-lose';
+    await owner('POST', `/calendar/events/${task}/move`, { calendar_id: work }, 202);
+    faults.put = undefined;
+    assert.equal(copiesOf(title).length, 1);
+    // The cancel holds the task's lock and stops before it reads the move.
+    const gate = hold(); const execute = pool.execute.bind(pool); let once = true;
+    (pool as FixtureValue).execute = async (sql: string, params?: FixtureValue) => {
+      if (once && String(sql).startsWith('SELECT * FROM calendar_event_moves WHERE event_id = ?') && params?.[0] === task) { once = false; gate.reached(); await gate.go; }
+      return execute(sql, params);
+    };
+    try {
+      const cancelling = owner('DELETE', `/calendar/events/${task}/move`);
+      await gate.at;
+      await sync();
+      // Left for a later sync: not adopted, not shown as an event of its own.
+      assert.deepEqual((await rowsTitled(title)).map(row => [row.id, row.calendar_id]), [[task, inbox]]);
+      assert.equal((await journal(task))[0]?.state, 'creating');
+      gate.release();
+      const cancelled = await cancelling;
+      assert.deepEqual([cancelled.cancelled, cancelled.event.calendar_id], [true, inbox]);
+    } finally { (pool as FixtureValue).execute = execute; gate.release(); }
+    assert.deepEqual(await kept(task), before);
+    // The next sync lists the calendar again: the copy shows as Work's own event.
+    await sync();
+    const rows = await rowsTitled(title);
+    assert.deepEqual(rows.map(row => row.calendar_id).sort(), [inbox, work].sort());
+    assert.equal(rows.find(row => row.calendar_id === inbox)?.id, task);
+    await pool.execute('DELETE FROM calendar_events WHERE user_id = ? AND title = ? AND id <> ?', [ids.owner, title, task]);
+    remote.objects.delete(copiesOf(title)[0]); remote.version += 1;
+    await sync();
+  });
+
+  await t.test('a deletion that waited for the task is refused when a calendar restore began meanwhile', async () => {
+    const task = await serverTask('Deleted during restore');
+    // An edit holds the task, after its server write.
+    const gate = hold(); const original = calendarSync.pushEventUpdate; let once = true;
+    calendarSync.pushEventUpdate = async (opts: FixtureValue) => {
+      const answer = await original(opts);
+      if (once && opts.event.id === task) { once = false; gate.reached(); await gate.go; }
+      return answer;
+    };
+    const restoreId = crypto.randomUUID();
+    try {
+      const editing = owner('PUT', `/calendar/events/${task}`, { title: 'Edited before restore' });
+      await gate.at;
+      const deleting = owner('DELETE', `/calendar/events/${task}`, undefined, null);
+      await lockWaiters(1);
+      await pool.execute("INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', ?)", [restoreId, ids.owner, JSON.stringify(['calendar'])]);
+      gate.release();
+      await editing;
+      const deleted = await deleting;
+      assert.deepEqual([deleted.status, deleted.body.code], [409, 'RESTORE_IN_PROGRESS']);
+    } finally {
+      calendarSync.pushEventUpdate = original; gate.release();
+      await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restoreId]);
+    }
+    await assertOnce('Edited before restore', task, work);
+  });
+
+  // Last: on a build whose locks share the main pool, this one stalls the API.
+  await t.test('fifty edits of different tasks at once finish or are refused at once, and other requests still answer', async () => {
+    const tasks = [];
+    for (let index = 0; index < 50; index += 1) tasks.push(await localTask(`Crowded task ${index}`, inbox, { done: false }));
+    const started = Date.now();
+    const edits = tasks.map((task, index) => owner('PUT', `/calendar/events/${task}`, { title: `Crowded edit ${index}` }, null));
+    const elsewhere = await stranger('GET', '/calendar/events');
+    const answeredIn = Date.now() - started;
+    assert.ok(Array.isArray(elsewhere.events));
+    const answers = await Promise.all(edits);
+    const took = Date.now() - started;
+    assert.ok(answeredIn < 5000, `another person's request answered after ${answeredIn} ms`);
+    assert.ok(took < 10000, `the edits ended after ${took} ms`);
+    for (const [index, answer] of answers.entries()) {
+      if (answer.status === 200) assert.equal(answer.body.event.title, `Crowded edit ${index}`);
+      else assert.deepEqual([answer.status, answer.body.code], [409, 'CALENDAR_EVENT_CHANGED']);
+    }
+    assert.ok(answers.filter(answer => answer.status === 200).length >= 10, 'at least a lock share of edits saved');
+    // Every lock was given back: each refused edit goes through now.
+    for (const [index, answer] of answers.entries()) {
+      if (answer.status !== 200) await owner('PUT', `/calendar/events/${tasks[index]}`, { title: `Crowded edit ${index}` });
+    }
+    assert.equal((await pool.query<RowDataPacket[]>("SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ? AND title LIKE 'Crowded edit %'", [ids.owner]))[0][0].n, 50);
   });
 });

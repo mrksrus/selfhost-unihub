@@ -3,7 +3,10 @@ import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import type { TaskMovePending } from '../contracts/tasks';
 import { db } from '../state';
-import { conflict } from '../http/errors';
+import { conflict, forbidden } from '../http/errors';
+import { isModuleEnabled } from './module-settings';
+import { getActiveRestoreSections } from './restore-locks';
+import { withNamedLock } from './named-locks';
 
 const CHUNK = 500;
 const iso = (value: unknown) => value instanceof Date ? value.toISOString() : String(value ?? '');
@@ -71,51 +74,55 @@ const eventBusy = () => conflict('CALENDAR_EVENT_CHANGED',
   'Another change to this item is still being saved. It has been refreshed; please try again.');
 
 // Longer than one calendar server request (DAV_TIMEOUT_MS, 20 s), so a
-// change waits out the one before it.
+// change waits out the one before it; more than two waiting are refused.
 const EVENT_LOCK_WAIT_SECONDS = 25;
-const EVENT_LOCK = "SHA2(CONCAT(DATABASE(), ':calendar-event:', ?), 256)";
+const WAITERS_PER_ITEM = 2;
 const heldEventLocks = new AsyncLocalStorage<{ key: string; held: boolean }[]>();
 
-/**
- * One change of an item's server copy, link or calendar at a time, across
- * processes: an edit, a time move, a deletion, a move and its cancel each
- * hold it from reading the item to the local write, so none acts on what
- * another one is changing. Taken before an account's sync lock and row
- * locks, never while holding a sync lock (a sync does not take it). Nested
- * calls in the same request (an edit starting a move) share it.
- */
-async function underEventLock<T>(userId: string, eventId: string, fn: () => Promise<T>, waitSeconds: number): Promise<{ value: T } | null> {
-  const key = `${userId}:${eventId}`;
-  const outer = heldEventLocks.getStore() ?? [];
-  if (outer.some(lock => lock.key === key && lock.held)) return { value: await fn() };
-  const connection = await db.getConnection();
-  const lock = { key, held: false };
-  try {
-    const [rows] = await connection.execute<RowDataPacket[]>(`SELECT GET_LOCK(${EVENT_LOCK}, ?) AS acquired`, [key, waitSeconds]);
-    if (Number(rows[0]?.acquired) !== 1) return null;
-    lock.held = true;
-    return { value: await heldEventLocks.run([...outer, lock], fn) };
-  } finally {
-    // Work left running past the end (none should be) takes the lock again itself.
-    if (lock.held) {
-      lock.held = false;
-      await connection.execute(`SELECT RELEASE_LOCK(${EVENT_LOCK})`, [key]).catch(() => {});
-    }
-    connection.release();
+// A change that waited may find the Calendar module turned off or a calendar
+// restore begun meanwhile: the request boundary's checks, made again.
+async function assertStillAdmitted(userId: string) {
+  if (!await isModuleEnabled(userId, 'calendar')) throw forbidden('MODULE_DISABLED', 'This module is disabled. Enable it in Settings.');
+  if ((await getActiveRestoreSections(userId)).has('calendar')) {
+    throw conflict('RESTORE_IN_PROGRESS', 'Restore in progress for calendar. This section is temporarily read-only.');
   }
 }
 
-/** Waits up to 25 s for the change going on, then answers 409 CALENDAR_EVENT_CHANGED. */
+/**
+ * One change of an item's server copy, link or calendar at a time, across
+ * processes (named-locks.ts): creating it on a server, an edit, a time move,
+ * a deletion, a move, its cancel, its background run and its adoption by a
+ * sync each hold it from reading the item to the local write, so none acts
+ * on what another one is changing. Taken before an account's sync lock and
+ * row locks; a sync holding its lock only tries it, never waits. Nested
+ * calls in the same request (an edit starting a move) share it.
+ */
+async function underEventLock<T>(userId: string, eventId: string, fn: () => Promise<T>, { waitSeconds, request }: { waitSeconds: number; request: boolean }): Promise<{ value: T } | null> {
+  const key = `${userId}:${eventId}`;
+  const outer = heldEventLocks.getStore() ?? [];
+  // Background work never shares it: a sync a request set off runs beside it.
+  if (request && outer.some(lock => lock.key === key && lock.held)) return { value: await fn() };
+  const lock = { key, held: true };
+  return withNamedLock('calendar-event', key, () => heldEventLocks.run([...outer, lock], async () => {
+    // Work left running past the end (none should be) takes the lock again itself.
+    try {
+      if (request) await assertStillAdmitted(userId);
+      return await fn();
+    } finally { lock.held = false; }
+  }), { waitSeconds, maxWaiters: WAITERS_PER_ITEM });
+}
+
+/** For a request: waits up to 25 s for the change going on, then answers 409 CALENDAR_EVENT_CHANGED. */
 async function withEventLock<T>(userId: string, eventId: string, fn: () => Promise<T>): Promise<T> {
-  const done = await underEventLock(userId, eventId, fn, EVENT_LOCK_WAIT_SECONDS);
+  const done = await underEventLock(userId, eventId, fn, { waitSeconds: EVENT_LOCK_WAIT_SECONDS, request: true });
   if (!done) throw eventBusy();
   return done.value;
 }
 
-/** For background work: null at once while a request holds the item. */
-async function withEventLockIfFree<T>(userId: string, eventId: string, fn: () => Promise<T>): Promise<T | null> {
-  return (await underEventLock(userId, eventId, fn, 0))?.value ?? null;
+/** For background work, which checks its own gates: null at once while a request holds the item. */
+async function tryEventLock<T>(userId: string, eventId: string, fn: () => Promise<T>): Promise<{ value: T } | null> {
+  return underEventLock(userId, eventId, fn, { waitSeconds: 0, request: false });
 }
 
-export { attachMoveState, refuseWhileMoving, refuseIfMoved, writebackIdentity, movePending, eventChanged, withEventLock, withEventLockIfFree };
+export { attachMoveState, refuseWhileMoving, refuseIfMoved, writebackIdentity, movePending, eventChanged, withEventLock, tryEventLock };
 export type { WritebackIdentity };

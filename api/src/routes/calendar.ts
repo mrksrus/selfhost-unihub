@@ -640,55 +640,63 @@ export = {
       }
 
       const eventId = crypto.randomUUID();
-      const connection = await db.getConnection();
-      try {
-        await connection.beginTransaction();
-        await connection.execute(
-          `INSERT INTO calendar_events
-            (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only,
-             source_email_id, source_email_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            eventId,
-            userId,
-            calendarId,
-            title.trim(),
-            description || null,
-            start,
-            end,
-            !!all_day,
-            location?.trim() || null,
-            color || '#2563eb',
-            recurrence || null,
-            reminder_minutes ?? null,
-            reminders ? JSON.stringify(reminders) : null,
-            !!is_todo_only,
-            sourceEmail ? String(source_email_id) : null,
-            sourceEmail ? JSON.stringify(sourceEmail) : null,
-          ]
-        );
-        if (Array.isArray(body.attendees)) {
-          await replaceEventAttendees(userId, eventId, body.attendees, connection);
-        }
-
-        await (require('../services/notifications') as typeof import('../services/notifications')).enqueueCalendarNotification({ userId, eventId }, connection);
-        await connection.commit();
-      } catch (error) {
-        await connection.rollback();
-        throw error;
-      } finally {
-        connection.release();
-      }
-      if (remoteTarget) {
-        const [created] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+      // A copy for a server is created holding the new item's lock, taken
+      // before its row is visible: a move or edit of it waits until the copy
+      // is linked, or the row is gone again (calendar-move-state.ts).
+      const create = async () => {
+        const connection = await db.getConnection();
         try {
-          await calendarSync.pushCreatedEvent({ userId, event: created[0] });
+          await connection.beginTransaction();
+          await connection.execute(
+            `INSERT INTO calendar_events
+              (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only,
+               source_email_id, source_email_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              eventId,
+              userId,
+              calendarId,
+              title.trim(),
+              description || null,
+              start,
+              end,
+              !!all_day,
+              location?.trim() || null,
+              color || '#2563eb',
+              recurrence || null,
+              reminder_minutes ?? null,
+              reminders ? JSON.stringify(reminders) : null,
+              !!is_todo_only,
+              sourceEmail ? String(source_email_id) : null,
+              sourceEmail ? JSON.stringify(sourceEmail) : null,
+            ]
+          );
+          if (Array.isArray(body.attendees)) {
+            await replaceEventAttendees(userId, eventId, body.attendees, connection);
+          }
+
+          await (require('../services/notifications') as typeof import('../services/notifications')).enqueueCalendarNotification({ userId, eventId }, connection);
+          await connection.commit();
         } catch (error) {
-          // Nothing is kept that the server did not accept.
-          await db.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
-          return calendarSync.calendarErrorResponse(error, 'Could not save the event to the calendar server');
+          await connection.rollback();
+          throw error;
+        } finally {
+          connection.release();
         }
-      }
+        if (remoteTarget) {
+          const [created] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+          try {
+            await calendarSync.pushCreatedEvent({ userId, event: created[0] });
+          } catch (error) {
+            // Nothing is kept that the server did not accept.
+            await db.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+            return calendarSync.calendarErrorResponse(error, 'Could not save the event to the calendar server');
+          }
+        }
+        return null;
+      };
+      const refused = remoteTarget ? await withEventLock(userId, eventId, create) : await create();
+      if (refused) return refused;
       const event = await getCalendarEventWithSubtasks(userId, eventId);
       return { event };
     } catch (error) {

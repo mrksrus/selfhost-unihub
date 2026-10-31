@@ -20,6 +20,8 @@ import { canRunModule } from './access-policy';
 import { publishCalendarChanged } from './realtime';
 import { sweepRemoteRanks } from './task-order';
 import { isDeadlock, DEADLOCK_RETRIES } from './transactions';
+import { withNamedLock } from './named-locks';
+import { tryEventLock } from './calendar-move-state';
 import * as caldav from './caldav';
 import * as ical from './calendar-ical';
 import {
@@ -79,6 +81,7 @@ const CALENDAR_COLORS = ['#22c55e', '#3b82f6', '#f97316', '#a855f7', '#ef4444', 
 
 // The move journal (calendar-move.ts), which uses this module's writes.
 const moves = () => require('./calendar-move') as typeof import('./calendar-move');
+const DEFERRED = Symbol('deferred');
 
 const inFlight = new Map<string, Promise<Awaited<ReturnType<typeof runAccountSync>>>>();
 const followUps = new Set<string>();
@@ -593,6 +596,8 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
 
   const fetched = [...(changed.length ? await fetchObjects(changed) : []), ...kept];
   const applied = new Set();
+  // Objects left for the next sync, which lists the calendar again.
+  let deferred = 0;
   for (const item of fetched) {
     const known = storedByHash.get(hrefHash(item.href));
     const expanded = expansions.has(hrefHash(item.href)) ? expansions.get(hrefHash(item.href))! : expandObject(ctx, item.ics);
@@ -602,19 +607,26 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
     }
     ctx.signal?.throwIfAborted();
     // A new object may be the copy an interrupted move created: it is linked
-    // to the moved event instead of becoming a second one. The journal is
-    // locked first, so a move committing at the same time is waited for.
-    // This commit does not take the item's lock (calendar-move-state.ts) as
-    // it runs under the sync lock; none is needed: while the copy is being
-    // created, edits are refused and no other move is admitted.
+    // to the moved event instead of becoming a second one. That commit holds
+    // the item's lock (calendar-move-state.ts), only tried as this sync holds
+    // its account's lock: while a request changes the item, the object waits
+    // for the next sync. The journal is locked as well, so a move committing
+    // at the same time is waited for.
     const uid = known ? null : ical.objectUid(item.ics);
-    const result = await inTransaction(ctx, async connection => {
+    const adopting = uid ? await moves().creatingMoveItem(db, calendar.id, uid) : null;
+    const apply = (heldEventId: string | null) => inTransaction(ctx, async connection => {
       if (known && await moves().lockMovedAway(connection, String(known.id))) return null;
       const move = uid ? await moves().lockCreatingMove(connection, calendar.id, uid) : null;
+      if (move?.event_id && move.event_id !== heldEventId) return DEFERRED;
       const object = await storeObject(connection, ctx.account, calendar, { id: known?.id, href: item.href, etag: item.etag, ics: item.ics });
       if (move && await moves().commitMove(connection, move, { account: ctx.account, calendar, object, timeZone: ctx.timeZone })) return { object, created: [] };
       return { object, created: await applyObjectRows(connection, ctx, calendar, object, expanded) };
     });
+    const result = adopting ? (await tryEventLock(adopting.userId, adopting.eventId, () => apply(adopting.eventId)))?.value ?? DEFERRED : await apply(null);
+    if (result === DEFERRED) {
+      deferred += 1;
+      continue;
+    }
     if (!result) continue;
     const { object, created } = result;
     applied.add(object.id);
@@ -641,7 +653,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       }
     }
   }
-  const unreadable = ctx.stats.unreadable - unreadableBefore;
+  const unreadable = ctx.stats.unreadable - unreadableBefore + deferred;
   if (expandAll && !unreadable) {
     // Rows from before 0.17 are only dropped once every object was read, as
     // an unreadable one may be what replaces them.
@@ -755,21 +767,12 @@ function userFacingError(error: ApiError) {
   return message;
 }
 
-// One sync of an account at a time, across processes. waitSeconds: how long
-// to wait for a running one (the move's removal of an old copy waits briefly).
+// One sync of an account at a time, across processes (named-locks.ts).
+// waitSeconds: how long to wait for a running one (the move's removal of an
+// old copy waits briefly). Busy, or no lock connection free: skipped.
 async function withAccountLock<T>(accountId: string, fn: () => Promise<T>, waitSeconds = 0): Promise<T | { skipped: true; reason: string; ok?: never }> {
-  const connection = await db.getConnection();
-  const lockName = "SHA2(CONCAT(DATABASE(), ':calendar-sync:', ?), 256)";
-  let locked = false;
-  try {
-    const [rows] = await connection.execute<RowDataPacket[]>(`SELECT GET_LOCK(${lockName}, ?) AS acquired`, [accountId, waitSeconds]);
-    locked = Number(rows[0]?.acquired) === 1;
-    if (!locked) return { skipped: true, reason: 'busy' };
-    return await fn();
-  } finally {
-    if (locked) await connection.execute<RowDataPacket[]>(`SELECT RELEASE_LOCK(${lockName})`, [accountId]).catch(() => {});
-    connection.release();
-  }
+  const done = await withNamedLock('calendar-sync', accountId, fn, { waitSeconds });
+  return done ? done.value : { skipped: true, reason: 'busy' };
 }
 
 // After a mail reconnect or login change the linked calendars sync now

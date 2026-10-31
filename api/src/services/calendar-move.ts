@@ -12,7 +12,7 @@ import { canRunModule } from './access-policy';
 import { publishCalendarChanged } from './realtime';
 import { identityOf, rekey } from './task-order';
 import { getCalendarEventWithSubtasks } from './calendar';
-import { movePending, withEventLock, withEventLockIfFree } from './calendar-move-state';
+import { movePending, withEventLock, tryEventLock } from './calendar-move-state';
 import * as caldav from './caldav';
 import * as ical from './calendar-ical';
 import * as calendarSync from './calendar-sync';
@@ -96,6 +96,13 @@ async function movedAwayObjects(executor: SqlExecutor, calendarId: string) {
 async function lockMovedAway(connection: SqlExecutor, objectId: string) {
   const [rows] = await connection.execute<RowDataPacket[]>('SELECT state FROM calendar_event_moves WHERE source_object_id = ? FOR UPDATE', [objectId]);
   return rows.some(row => row.state === 'removing');
+}
+
+/** Before a sync's transaction: the item whose open move creates this object (its calendar and UID), if any. */
+async function creatingMoveItem(executor: SqlExecutor, calendarId: string, uid: string) {
+  const [rows] = await executor.execute<RowDataPacket[]>(
+    "SELECT user_id, event_id FROM calendar_event_moves WHERE target_calendar_id = ? AND target_uid = ? AND state = 'creating' AND event_id IS NOT NULL LIMIT 1", [calendarId, uid]);
+  return rows[0] ? { userId: String(rows[0].user_id), eventId: String(rows[0].event_id) } : null;
 }
 
 /** In a sync's transaction: the open move whose new copy is this object (its calendar and UID), locked. */
@@ -336,9 +343,7 @@ async function resumeDueMoves(signal?: AbortSignal) {
     }
     try {
       // A request changing the item now finishes first; this move waits for the next pass.
-      const ran = row.event_id
-        ? await withEventLockIfFree(row.user_id, row.event_id, async () => { await runMove(row.id); return true; })
-        : (await runMove(row.id), true);
+      const ran = row.event_id ? await tryEventLock(row.user_id, row.event_id, () => runMove(row.id)) : { value: await runMove(row.id) };
       if (ran) resumed += 1;
     } catch (error) {
       log.warn('calendar', 'A move could not finish', { move: row.id, reason: describe(error) });
@@ -609,6 +614,7 @@ export {
   movedAwayObjects,
   lockMovedAway,
   lockCreatingMove,
+  creatingMoveItem,
   commitMove,
 };
 export type { MoveOutcome };
