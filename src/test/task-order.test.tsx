@@ -1176,3 +1176,29 @@ describe('replies that arrive after a newer write for the same task or subtask',
     await act(async () => { hold.resolve({ data: { ranks: { 'Plan holiday': 150 } } }); });
   });
 });
+
+describe('a deletion while an older fetch of another list is still outstanding', () => {
+  it('stays deleted in the older answer although a fresh fetch of another list settled first, and a fetch started after the deletion may show it', async () => {
+    serverEvents = undated.map(entry => entry.id === 'Pay rent' ? { ...entry, subtasks: pair(entry.id) } : entry);
+    vi.mocked(api.delete).mockResolvedValue({ data: { success: true } });
+    const { client } = await probeMount();
+    const ids = (key: readonly unknown[]) => client.getQueryData<CalendarEvent[]>(key)![0].subtasks.map(subtask => subtask.id);
+    // Another list (the reminders' filters) with an answer still on its way, from before the deletion.
+    const otherKey = calendarQueryKeys.list({ includeTodos: true, includeDone: false, visibleOnly: true });
+    const old = deferred<{ data: { events: CalendarEvent[] } }>();
+    const withS0 = serverEvents;
+    vi.mocked(api.get).mockReturnValueOnce(old.promise as never);
+    const older = client.fetchQuery({ queryKey: otherKey, queryFn: ({ signal }) => calendarApi.fetchEvents({ includeTodos: true, includeDone: false, visibleOnly: true }, signal) });
+    serverEvents = serverEvents.map(entry => entry.id === 'Pay rent' ? { ...entry, subtasks: entry.subtasks.filter(subtask => subtask.id !== 's0') } : entry);
+    act(() => probeActions.deleteSubtask.mutate({ eventId: 'Pay rent', subtaskId: 's0' }));
+    await waitFor(() => expect(ids(probeKey)).toEqual(['s1']));
+    // The deletion's own refresh of the page's list answers first (a fresh fetch): the older answer must still be stripped.
+    await waitFor(() => expect(client.isFetching({ queryKey: probeKey })).toBe(0));
+    await act(async () => { old.resolve({ data: { events: withS0 } }); await older; });
+    expect(ids(otherKey)).toEqual(['s1']);
+    // Restored on the server: a fetch started after the deletion shows it.
+    serverEvents = withS0;
+    await act(async () => { await client.refetchQueries({ queryKey: otherKey }); });
+    expect(ids(otherKey)).toEqual(['s0', 's1']);
+  });
+});

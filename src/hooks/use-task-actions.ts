@@ -162,11 +162,12 @@ export function useTaskActions() {
   const addSubtask = useSessionMutation({
     mutationFn: ({ eventId, title }: { eventId: string; title: string }) => calendarApi.createSubtask(eventId, { title }),
     // The reply to a creation is the oldest write for the new id: it applies
-    // only while nothing newer touched the subtask (a tick on the copy a list
-    // fetched meanwhile, a deletion). A list holding it already gets it replaced, never twice.
+    // only while nothing newer touched the subtask here (a deletion), and
+    // never over a copy a list fetched meanwhile, which may carry a tick from
+    // another device already.
     onSuccess: (subtask, { eventId }) => {
       if (isCurrentWrite(client, subtaskKey(subtask.id), 0)) {
-        writeTaskSubtasks(client, eventId, subtasks => subtasks.some(known => known.id === subtask.id) ? replaceSubtask(subtasks, subtask) : [...subtasks, subtask]);
+        writeTaskSubtasks(client, eventId, subtasks => subtasks.some(known => known.id === subtask.id) ? [...subtasks] : [...subtasks, subtask]);
       }
       refresh();
     },

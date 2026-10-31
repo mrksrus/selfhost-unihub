@@ -41,11 +41,8 @@ interface TaskWrites {
   tail: Promise<void>;
   /** The sequence number of the latest write issued per task or subtask. */
   sequence: Map<EntityKey, number>;
-  /** Deleted on the server, with the fetch count at that moment: absent until a fetch started after the deletion answers. */
-  tombstones: Map<EntityKey, number>;
-  /** How many list fetches have started, and at which count each query's current fetch started. */
-  fetches: number;
-  fetchStartedAt: Map<string, number>;
+  /** Deleted on the server, each with the list queries whose fetch was under way at that moment (by query hash): absent from those fetches' answers. */
+  tombstones: Map<EntityKey, Set<string>>;
 }
 
 // One queue per QueryClient, and SessionQueryProvider makes one client per
@@ -56,29 +53,43 @@ const writesByClient = new WeakMap<QueryClient, TaskWrites>();
 function writesFor(client: QueryClient): TaskWrites {
   const known = writesByClient.get(client);
   if (known) return known;
-  const writes: TaskWrites = { changes: [], tail: Promise.resolve(), sequence: new Map(), tombstones: new Map(), fetches: 0, fetchStartedAt: new Map() };
+  const writes: TaskWrites = { changes: [], tail: Promise.resolve(), sequence: new Map(), tombstones: new Map() };
   writesByClient.set(client, writes);
   // A list fetched while writes are pending (a refresh, a live-update hint, a
   // window focus) would show the order from before them and bring back what
   // was deleted meanwhile: the pending changes are laid over its answer
-  // again, and a deletion holds until a fetch that started after it answers.
+  // again, and a deletion is stripped from the answer of every fetch that
+  // was under way when it happened, whichever query answers first. A fetch
+  // started after the deletion shows what it holds (a restore is legitimate);
+  // the deletion is forgotten once none of those fetches is outstanding.
   client.getQueryCache().subscribe(event => {
+    if (event.type === 'removed') { forgetFetch(writes, event.query.queryHash); return; }
     if (event.type !== 'updated' || !isEventList(event.query.queryKey)) return;
-    if (event.action.type === 'fetch') { writes.fetchStartedAt.set(event.query.queryHash, ++writes.fetches); return; }
+    const hash = event.query.queryHash;
+    // A fetch starting now was not under way at any deletion: it answers for itself.
+    if (event.action.type === 'fetch') { forgetFetch(writes, hash); return; }
+    const deleted = new Set([...writes.tombstones].filter(([, fetching]) => fetching.has(hash)).map(([key]) => key));
+    if (event.query.state.fetchStatus === 'idle') forgetFetch(writes, hash);
     if (event.action.type !== 'success' || event.action.manual || !Array.isArray(event.action.data)) return;
-    const startedAt = writes.fetchStartedAt.get(event.query.queryHash) ?? 0;
-    for (const [key, since] of writes.tombstones) if (startedAt > since) writes.tombstones.delete(key);
-    if (!writes.changes.length && !writes.tombstones.size) return;
-    client.setQueryData<EventLists>(event.query.queryKey, applyOrderChanges(withoutDeleted(event.action.data as CalendarEvent[], writes.tombstones), writes.changes));
+    if (!writes.changes.length && !deleted.size) return;
+    client.setQueryData<EventLists>(event.query.queryKey, applyOrderChanges(withoutDeleted(event.action.data as CalendarEvent[], deleted), writes.changes));
   });
   return writes;
 }
 
-/** The lists without the tasks and subtasks deleted on the server since the fetch started. */
-function withoutDeleted(events: readonly CalendarEvent[], tombstones: ReadonlyMap<EntityKey, number>): CalendarEvent[] {
-  if (!tombstones.size) return [...events];
-  return events.filter(event => !tombstones.has(taskKey(event.id)))
-    .map(event => event.subtasks.some(subtask => tombstones.has(subtaskKey(subtask.id))) ? { ...event, subtasks: event.subtasks.filter(subtask => !tombstones.has(subtaskKey(subtask.id))) } : event);
+/** A query's fetch settled, restarted or went away: no deletion waits for it any more. */
+function forgetFetch(writes: TaskWrites, hash: string) {
+  for (const [key, fetching] of writes.tombstones) {
+    fetching.delete(hash);
+    if (!fetching.size) writes.tombstones.delete(key);
+  }
+}
+
+/** The lists without the given deleted tasks and subtasks. */
+function withoutDeleted(events: readonly CalendarEvent[], deleted: ReadonlySet<EntityKey>): CalendarEvent[] {
+  if (!deleted.size) return [...events];
+  return events.filter(event => !deleted.has(taskKey(event.id)))
+    .map(event => event.subtasks.some(subtask => deleted.has(subtaskKey(subtask.id))) ? { ...event, subtasks: event.subtasks.filter(subtask => !deleted.has(subtaskKey(subtask.id))) } : event);
 }
 
 /** Counts a write issued for a task or subtask; its reply applies only while this is still the latest (isCurrentWrite). */
@@ -101,14 +112,15 @@ export function isCurrentWrite(client: QueryClient, key: EntityKey, sequence: nu
 
 /**
  * Marks a task or subtask deleted on the server: it is removed from every
- * cached list and stays absent, whatever an older reply or an older fetch
- * says, until a fetch that started after the deletion answers.
+ * cached list and stays absent, whatever an older reply or a fetch started
+ * before the deletion says; only a fetch started after it may show it again.
  */
 export function markDeleted(client: QueryClient, key: EntityKey) {
   const writes = writesFor(client);
-  writes.tombstones.set(key, writes.fetches);
   issueWrite(client, key);
-  client.setQueriesData<EventLists>(EVENT_LISTS, events => events && withoutDeleted(events, writes.tombstones));
+  client.setQueriesData<EventLists>(EVENT_LISTS, events => events && withoutDeleted(events, new Set([key])));
+  const fetching = new Set(client.getQueryCache().findAll({ ...EVENT_LISTS, fetchStatus: 'fetching' }).map(query => query.queryHash));
+  if (fetching.size) writes.tombstones.set(key, fetching);
 }
 
 function orderSubtasks(subtasks: readonly CalendarSubtask[], ids: readonly string[]) {
