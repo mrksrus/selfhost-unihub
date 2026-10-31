@@ -256,10 +256,12 @@ test('[27-02] a task dropped on another section goes back to its place; at its o
     expect(await sectionOrder('Later')).toEqual([`${prefix} Later 1`, `${prefix} Later 2`]);
     const before = await stored();
 
-    // Today 1 dragged down and let go on Later 1: back to its place, nothing stored.
+    // Today 1 dragged down and let go on the Later section (its heading, right
+    // below Today's list): back to its place, nothing stored. The drop point is
+    // measured first, so the scroll that brings it into view cannot move the handle after it was measured.
+    const into = await centreOf(screen.getByRole('region', 'Later').getByRole('heading', 'Later'));
     await todayRow(`${prefix} Today 1`).hover();
     const from = await centreOf(handle(screen, `${prefix} Today 1`));
-    const into = await centreOf(laterRow(`${prefix} Later 1`));
     await mouseDrag(browser, from, { x: from.x, y: into.y });
     await expect(screen.getByRole('status').filter({ hasText: `Dropped outside Today. ${prefix} Today 1 is back at position` })).toHaveCount(1);
     await new Promise(resolve => setTimeout(resolve, 1500));
