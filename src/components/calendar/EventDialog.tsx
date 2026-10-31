@@ -21,7 +21,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { SourceEmailBlock } from '@/components/todo/SourceEmail';
 import { useSourceEmailUnlink } from '@/hooks/use-source-email-unlink';
 import { selectUserSetting, userSettingsQueryOptions } from '@/lib/settings-api';
-import { defaultEventCalendar } from '@/lib/tasks';
+import { defaultEventCalendar, movingTo } from '@/lib/tasks';
 import { ListChooser } from '@/components/todo/ListChooser';
 
 /** What the dialog shows: a new event (optionally on a day) or an existing one. */
@@ -95,7 +95,8 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
   // an empty form first. Later calendar refreshes do not reset what was typed.
   if (target !== formTarget) {
     setFormTarget(target);
-    setMovePending(null);
+    // An event opened while its move waits for the calendar server shows that state, with the move's cancellation.
+    setMovePending(target?.kind === 'edit' ? movingTo(target.event, calendars) : null);
     opening.current += 1;
     // A new event starts in the calendar the server marks as the default (Settings → General, else UniHub's choice).
     if (target) setForm(formFor(target, timezone, defaultEventCalendar(calendars)?.id || '', defaultReminder === undefined ? 0 : defaultReminder));
@@ -155,6 +156,13 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
   };
 
   const saving = actions.create.isPending || actions.update.isPending;
+  const cancelMove = () => {
+    if (!editing) return;
+    const submitted = { id: editing.id, opening: opening.current };
+    actions.cancelMove.mutate({ id: editing.id, from: calendarById.get(editing.calendar_id ?? '')?.name, to: movePending ?? undefined }, {
+      onSuccess: () => { if (submitted.opening === opening.current && formTarget?.kind === 'edit' && formTarget.event.id === submitted.id) onClose(); },
+    });
+  };
 
   return <>
     <Dialog open={!!target} onOpenChange={open => { if (!open) onClose(); }}>
@@ -187,7 +195,10 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
               <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin motion-reduce:animate-none" />
               Moving… UniHub finishes this in the background and the event shows in {movePending} once the calendar server has stored it. Until then it stays where it was.
             </p>
-            <DialogFooter>
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button type="button" variant="outline" disabled={actions.cancelMove.isPending} onClick={cancelMove}>
+                {actions.cancelMove.isPending && <Loader2 aria-hidden="true" className="animate-spin" />}Cancel move
+              </Button>
               <Button type="button" onClick={onClose}>Close</Button>
             </DialogFooter>
           </div>

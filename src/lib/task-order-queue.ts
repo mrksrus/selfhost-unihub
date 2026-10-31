@@ -1,14 +1,18 @@
 import type { QueryClient } from '@tanstack/react-query';
-import { calendarQueryKeys, invalidateCalendarQueries, type CalendarEvent, type CalendarSubtask } from '@/lib/calendar-api';
+import { CalendarRequestError, WRITE_TIMEOUT, calendarQueryKeys, invalidateCalendarQueries, type CalendarEvent, type CalendarSubtask } from '@/lib/calendar-api';
+import type { SessionScope } from '@/lib/session-scope';
 import { optimisticRanks } from '@/lib/tasks';
 
 /**
  * A change to the shown order whose request is queued or in flight, kept as
  * positions (not ranks), so it can be laid over whatever the cache holds at
  * the time: the list as fetched, or the server's ranks from an earlier answer.
+ * A placement remembers the section it was made in (`section`, by
+ * `sectionOf`): once the moved task is in another section or gone, the
+ * placement is superseded and the server's answer decides.
  */
 export type OrderChange =
-  | { kind: 'place'; id: string; order: readonly string[] }
+  | { kind: 'place'; id: string; order: readonly string[]; section: string; sectionOf: (task: CalendarEvent) => string }
   | { kind: 'subtasks'; eventId: string; ids: readonly string[] }
   | { kind: 'move'; id: string };
 
@@ -16,6 +20,11 @@ type EventLists = CalendarEvent[] | undefined;
 const EVENT_LISTS = { queryKey: calendarQueryKeys.all };
 const isEventList = (queryKey: readonly unknown[]) => queryKey[0] === calendarQueryKeys.all[0];
 const noop = () => {};
+
+/** How long a queued write may wait for its answer before the outcome counts as unknown. */
+export const WRITE_DEADLINE_MS = 30_000;
+/** A move, or its cancellation, waits for the calendar server (up to about 20 s on the API side). */
+export const MOVE_DEADLINE_MS = 60_000;
 
 interface TaskWrites {
   /** Queued and in-flight changes, oldest first; the first is the one in flight. */
@@ -57,7 +66,10 @@ export function applyOrderChanges(events: readonly CalendarEvent[], changes: rea
   for (const change of changes) {
     if (change.kind === 'place') {
       const byId = new Map(result.map(event => [event.id, event]));
-      const order = change.order.map(id => byId.get(id)).filter((event): event is CalendarEvent => !!event);
+      const moved = byId.get(change.id);
+      // Gone, or in another section by now (a date change, a tick): the placement no longer applies to anyone.
+      if (!moved || change.sectionOf(moved) !== change.section) continue;
+      const order = change.order.map(id => byId.get(id)).filter((event): event is CalendarEvent => !!event && change.sectionOf(event) === change.section);
       const ranks = optimisticRanks(order, change.id);
       result = result.map(event => ranks[event.id] === undefined ? event : { ...event, sort_rank: ranks[event.id], ...(event.id === change.id ? { hand_ordered: true } : {}) });
     } else if (change.kind === 'subtasks') {
@@ -71,6 +83,9 @@ const showChanges = (client: QueryClient, writes: TaskWrites) => {
   client.setQueriesData<EventLists>(EVENT_LISTS, events => events && applyOrderChanges(events, writes.changes));
 };
 
+const timedOut = () => new CalendarRequestError({ error: 'The server has not answered.', code: WRITE_TIMEOUT }, 'The server has not answered.');
+const sessionEnded = () => new CalendarRequestError({ error: 'The session ended before this change was sent.', code: 'SESSION_ENDED' }, 'The session ended.');
+
 /**
  * Sends an ordering write (a placement, a subtask order, a move) after the
  * ones before it have settled, so only one is in flight and an answer never
@@ -78,15 +93,28 @@ const showChanges = (client: QueryClient, writes: TaskWrites) => {
  * with the changes queued before it. Nothing is rolled back on failure: once
  * the queue is empty the lists are fetched again, and the server's order
  * replaces whatever was shown, without touching unrelated data.
+ *
+ * A write still queued when its session ends (sign-out, account change) is
+ * never sent. One that gets no answer within its deadline is abandoned with
+ * an unknown outcome (WRITE_TIMEOUT), so the writes behind it go on and the
+ * refresh after the queue shows what the server did with it.
  */
-export function queueTaskWrite<T>(client: QueryClient, change: OrderChange, request: () => Promise<T>): Promise<T> {
+export function queueTaskWrite<T>(client: QueryClient, scope: SessionScope, change: OrderChange, request: (signal: AbortSignal) => Promise<T>, deadline = WRITE_DEADLINE_MS): Promise<T> {
   const writes = writesFor(client);
   writes.changes.push(change);
   // A fetch in flight would land after the change below; cancelling reverts it
   // at once (its last manual write is kept), then the change goes on top.
   void client.cancelQueries(EVENT_LISTS);
   showChanges(client, writes);
-  const run = writes.tail.then(request, request);
+  const dispatch = async () => {
+    if (scope.ended) throw sessionEnded();
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limit = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(timedOut()); }, deadline); });
+    try { return await Promise.race([request(controller.signal), limit]); }
+    finally { clearTimeout(timer); }
+  };
+  const run = writes.tail.then(dispatch, dispatch);
   writes.tail = run.then(noop, noop);
   return run.finally(() => {
     writes.changes.splice(writes.changes.indexOf(change), 1);
@@ -94,11 +122,39 @@ export function queueTaskWrite<T>(client: QueryClient, change: OrderChange, requ
   });
 }
 
+/**
+ * What a cancelled move means for the person: nothing is deleted at the
+ * calendar server, so a copy it stored after all appears in the new list as
+ * an item of its own.
+ */
+export function cancelledMoveNotice(what: 'task' | 'event', from?: string, to?: string) {
+  const place = what === 'task' ? 'list' : 'calendar';
+  return `The ${what} stays in ${from ?? `its ${place}`}. If ${to ?? `the new ${place}`} received a copy anyway, it will show up there; delete it if you don't want it.`;
+}
+
 /** Writes the ranks the server stored into every cached list, with the changes still pending laid over them. */
 export function writeTaskRanks(client: QueryClient, ranks: Record<string, number>) {
   const writes = writesFor(client);
   client.setQueriesData<EventLists>(EVENT_LISTS, events => events && applyOrderChanges(
     events.map(event => ranks[event.id] === undefined ? event : { ...event, sort_rank: ranks[event.id], hand_ordered: true }), writes.changes));
+}
+
+/**
+ * Writes a task as the server answered it into every cached list that holds
+ * it, with the changes still pending laid over it: a tick or an edit shows
+ * at once, whatever ordering writes are still in flight.
+ */
+export function writeTaskEvent(client: QueryClient, event: CalendarEvent) {
+  const writes = writesFor(client);
+  client.setQueriesData<EventLists>(EVENT_LISTS, events => events && applyOrderChanges(
+    events.map(known => known.id === event.id ? { ...known, ...event } : known), writes.changes));
+}
+
+/** Changes a task's subtasks in every cached list that holds it, as the server confirmed them. */
+export function writeTaskSubtasks(client: QueryClient, eventId: string, update: (subtasks: readonly CalendarSubtask[]) => CalendarSubtask[]) {
+  const writes = writesFor(client);
+  client.setQueriesData<EventLists>(EVENT_LISTS, events => events && applyOrderChanges(
+    events.map(known => known.id === eventId ? { ...known, subtasks: update(known.subtasks) } : known), writes.changes));
 }
 
 /**

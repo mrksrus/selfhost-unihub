@@ -2,12 +2,20 @@ import { format, parseISO, type Locale } from 'date-fns';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import type { QueryClient } from '@tanstack/react-query';
 import { api, type ApiResponse } from '@/lib/api';
-import type { CalendarChoiceFields, CalendarWriteBlock, TaskMoveRequest, TaskMoveResponse, TaskPositionRequest, TaskPositionResponse, TaskRankFields } from '../../api/src/contracts/tasks';
+import type { CalendarChoiceFields, CalendarWriteBlock, TaskMoveCancelResponse, TaskMovePending, TaskMoveRequest, TaskMoveResponse, TaskPositionRequest, TaskPositionResponse, TaskRankFields } from '../../api/src/contracts/tasks';
 
 export type { CalendarWriteBlock, TaskPositionRequest, TaskPositionResponse } from '../../api/src/contracts/tasks';
 
 /** The answer of a move (contracts/tasks.ts TaskMoveResponse) with the event normalized for the browser. */
 export interface TaskMove { event: CalendarEvent | null; pending?: TaskMoveResponse['pending']; sourceKept?: boolean }
+export type { TaskMovePending };
+
+/** The answer of DELETE …/move: `cancelled` false when there was nothing to cancel (the item is in its new list already). */
+export interface TaskMoveCancelled { event: CalendarEvent | null; cancelled: boolean }
+
+/** An ordering write whose answer did not come within its deadline: the outcome is unknown until the lists are fetched again. */
+export const WRITE_TIMEOUT = 'WRITE_TIMEOUT';
+export const isWriteTimeout = (error: unknown) => error instanceof CalendarRequestError && error.code === WRITE_TIMEOUT;
 
 /** A write refused because the item is still being moved to another calendar (409 CALENDAR_MOVE_PENDING). */
 export const isMovePending = (error: unknown) => error instanceof CalendarRequestError && error.code === 'CALENDAR_MOVE_PENDING';
@@ -31,6 +39,7 @@ export function writeRefusal(error: unknown): WriteRefusal | null {
     // The server copy changed, or the server reports no versions: the lists are fetched again before another try.
     case 'CALDAV_CONFLICT': return { title: 'Changed on the calendar server', description: error.message, reload: true };
     case 'ORDER_STALE': return { title: 'The list changed in the meantime', description: 'It has been reloaded. Try again.', reload: true };
+    case WRITE_TIMEOUT: return { title: 'Could not confirm the change', description: 'The server has not answered. The list is being reloaded.', reload: true };
     default: return null;
   }
 }
@@ -195,6 +204,8 @@ export interface CalendarEvent extends Partial<TaskRankFields> {
   attendees: CalendarAttendee[];
   /** The email this task or event was made from, if any. */
   source_email?: import('@/lib/email-tasks').SourceEmail | null;
+  /** A move to another list not finished yet (contracts/tasks.ts); absent in an answer from an older server. */
+  move_pending?: TaskMovePending | null;
 }
 
 /** What creates an event or task; `source_email_id` links it to the email it came from. */
@@ -212,6 +223,7 @@ export interface CalendarEventFilters {
 
 const normalizeEvent = (event: CalendarEvent): CalendarEvent => ({
   ...event,
+  move_pending: event.move_pending ?? null,
   subtasks: Array.isArray(event.subtasks) ? event.subtasks : [],
   attendees: Array.isArray(event.attendees) ? event.attendees : [],
   reminders: Array.isArray(event.reminders) ? event.reminders : (event.reminders ?? null),
@@ -414,8 +426,8 @@ export const calendarApi = {
    * is gone or no longer adjacent is refused with ORDER_STALE: reload the list
    * instead of guessing (contracts/tasks.ts).
    */
-  async setTaskPosition(id: string, position: TaskPositionRequest): Promise<TaskPositionResponse> {
-    const response = await api.put<TaskPositionResponse>(`/calendar/events/${encodeURIComponent(id)}/position`, position);
+  async setTaskPosition(id: string, position: TaskPositionRequest, signal?: AbortSignal): Promise<TaskPositionResponse> {
+    const response = await api.put<TaskPositionResponse>(`/calendar/events/${encodeURIComponent(id)}/position`, position, { signal });
     if (response.error || !response.data?.ranks) throw new CalendarRequestError(response, 'Could not reorder the task');
     return { ranks: response.data.ranks };
   },
@@ -427,14 +439,26 @@ export const calendarApi = {
    * 'removing', it is there already and only the old copy waits. `sourceKept`:
    * the old copy was changed elsewhere and stays in its old calendar too.
    */
-  async moveTask(id: string, calendarId: string): Promise<TaskMove> {
+  async moveTask(id: string, calendarId: string, signal?: AbortSignal): Promise<TaskMove> {
     const body: TaskMoveRequest = { calendar_id: calendarId };
-    const response = await api.post<TaskMoveResponse>(`/calendar/events/${encodeURIComponent(id)}/move`, body);
+    const response = await api.post<TaskMoveResponse>(`/calendar/events/${encodeURIComponent(id)}/move`, body, { signal });
     if (response.error) throw new CalendarRequestError(response, 'Could not move the task');
     const event = response.data?.event ?? null;
     const pending = response.data?.pending;
     if (!event && !pending) throw new Error('Event response missing');
     return { event: event ? normalizeEvent(event) : null, ...(pending ? { pending } : {}), ...(response.data?.source_kept ? { sourceKept: true } : {}) };
+  },
+
+  /**
+   * Cancels a move whose new copy is not confirmed yet ('creating'): the item
+   * stays in its old list. `cancelled` false: nothing to cancel, the item is
+   * in its new list already. Can take up to about 20 s while a server attempt
+   * is in flight.
+   */
+  async cancelMove(id: string, signal?: AbortSignal): Promise<TaskMoveCancelled> {
+    const response = await api.delete<TaskMoveCancelResponse>(`/calendar/events/${encodeURIComponent(id)}/move`, undefined, { signal });
+    if (response.error || !response.data) throw new CalendarRequestError(response, 'Could not cancel the move');
+    return { event: response.data.event ? normalizeEvent(response.data.event) : null, cancelled: response.data.cancelled === true };
   },
 
   async deleteCalendar(id: string): Promise<void> {
@@ -506,10 +530,10 @@ export const calendarApi = {
     if (response.error) throw new CalendarRequestError(response, 'Could not delete the subtask');
   },
 
-  async reorderSubtasks(eventId: string, subtaskIds: string[]): Promise<CalendarSubtask[]> {
+  async reorderSubtasks(eventId: string, subtaskIds: string[], signal?: AbortSignal): Promise<CalendarSubtask[]> {
     const response = await api.post<{ subtasks: CalendarSubtask[] }>(`/calendar/events/${eventId}/subtasks/reorder`, {
       subtask_ids: subtaskIds,
-    });
+    }, { signal });
     if (response.error) throw new CalendarRequestError(response, 'Could not reorder the subtasks');
     return response.data?.subtasks || [];
   },

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Loader2, Plus, X } from 'lucide-react';
-import { EVENT_COLOR_OPTIONS, REMINDER_OPTIONS, localDatetimeToIso, toDatetimeLocalValue, type CalendarCalendar, type CalendarEvent } from '@/lib/calendar-api';
+import { EVENT_COLOR_OPTIONS, REMINDER_OPTIONS, isWriteTimeout, localDatetimeToIso, toDatetimeLocalValue, type CalendarCalendar, type CalendarEvent } from '@/lib/calendar-api';
 import { defaultTaskList, listRefusal } from '@/lib/tasks';
 import type { TaskActions } from '@/hooks/use-task-actions';
 import { useToast } from '@/hooks/use-toast';
@@ -292,7 +292,9 @@ export function MoveListDialog({ task, onClose, actions, calendars }: {
   task: CalendarEvent | null; onClose: () => void; actions: TaskActions; calendars: CalendarCalendar[];
 }) {
   const [calendarId, setCalendarId] = useState('');
-  const [pending, setPending] = useState<'creating' | 'removing' | null>(null);
+  // 'creating': the calendar server has not confirmed the copy; 'unknown': the
+  // move request got no answer in time, so the move may or may not be under way.
+  const [pending, setPending] = useState<'creating' | 'unknown' | null>(null);
   const [formTask, setFormTask] = useState<CalendarEvent | null>(null);
   // Each opening is numbered: an answer to a move submitted from an earlier
   // opening (another task, or the same one opened again) changes nothing here.
@@ -318,6 +320,17 @@ export function MoveListDialog({ task, onClose, actions, calendars }: {
         if (submitted.opening !== opening.current || submitted.id !== formTask?.id) return;
         if (result.pending === 'creating') setPending(result.pending); else onClose();
       },
+      onError: error => {
+        if (submitted.opening !== opening.current || submitted.id !== formTask?.id || !isWriteTimeout(error)) return;
+        setPending('unknown');
+      },
+    });
+  };
+  const cancelMove = () => {
+    if (!task) return;
+    const submitted = { id: task.id, opening: opening.current };
+    actions.cancelMove.mutate({ id: task.id, from: current?.name, to: target?.name }, {
+      onSuccess: () => { if (submitted.opening === opening.current && submitted.id === formTask?.id) onClose(); },
     });
   };
   return (
@@ -331,9 +344,14 @@ export function MoveListDialog({ task, onClose, actions, calendars }: {
           <div className="space-y-4">
             <p className="flex items-center gap-2 text-sm" role="status">
               <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin motion-reduce:animate-none" />
-              Moving… UniHub finishes this in the background and the task shows in {target?.name ?? 'its new list'} once the calendar server has stored it.
+              {pending === 'creating'
+                ? `Moving… UniHub finishes this in the background and the task shows in ${target?.name ?? 'its new list'} once the calendar server has stored it.`
+                : `The server has not answered yet. If the move went through, the task shows in ${target?.name ?? 'its new list'} once the list is reloaded.`}
             </p>
-            <DialogFooter>
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button type="button" variant="outline" disabled={actions.cancelMove.isPending} onClick={cancelMove}>
+                {actions.cancelMove.isPending && <Loader2 aria-hidden="true" className="animate-spin" />}Cancel move
+              </Button>
               <Button type="button" onClick={onClose}>Close</Button>
             </DialogFooter>
           </div>

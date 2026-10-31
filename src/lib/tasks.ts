@@ -14,6 +14,23 @@ export function taskWhen(task: Pick<CalendarEvent, 'is_todo_only' | 'all_day' | 
 
 export const isOverdue = (task: CalendarEvent, now = Date.now()) => !task.is_todo_only && new Date(task.end_time).getTime() < now;
 
+export type TaskSection = 'overdue' | 'today' | 'later' | 'undated';
+
+/** The ToDo section an open task is shown in: by its date against today, or No date. */
+export function taskSection(task: Pick<CalendarEvent, 'is_todo_only' | 'start_time' | 'end_time'>, timezone: string | null, now = new Date()): TaskSection {
+  if (task.is_todo_only) return 'undated';
+  if (new Date(task.end_time).getTime() < now.getTime()) return 'overdue';
+  const today = formatEventTime(now.toISOString(), 'yyyy-MM-dd', timezone);
+  return formatEventTime(task.start_time, 'yyyy-MM-dd', timezone) === today ? 'today' : 'later';
+}
+
+/** The name of the list a task is being moved to, for the "Moving to…" marker; null when no move waits on the person. */
+export function movingTo(task: Pick<CalendarEvent, 'move_pending'>, calendars: readonly Pick<CalendarCalendar, 'id' | 'name'>[]): string | null {
+  const pending = task.move_pending;
+  if (pending?.state !== 'creating') return null;
+  return calendars.find(calendar => calendar.id === pending.target_calendar_id)?.name ?? 'another list';
+}
+
 // The server's rank scale (api/src/services/task-order.ts RANK_SCALE): one
 // second of start time spans this many ranks. A task from an older answer or
 // snapshot without a rank gets one from its date on the same scale, so a

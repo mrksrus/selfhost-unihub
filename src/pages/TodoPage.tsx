@@ -7,7 +7,7 @@ import { useAuth } from '@/contexts/useAuth';
 import { useModules } from '@/hooks/use-modules';
 import { useTaskActions } from '@/hooks/use-task-actions';
 import { useNotificationEventLink } from '@/hooks/use-notification-event-link';
-import { calendarApi, calendarQueryKeys, formatEventTime, type CalendarEvent } from '@/lib/calendar-api';
+import { calendarApi, calendarQueryKeys, type CalendarEvent } from '@/lib/calendar-api';
 import { isOfflineMode } from '@/lib/offline';
 import { Button } from '@/components/ui/button';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
@@ -15,7 +15,7 @@ import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { Chip, ChipGroup } from '@/components/ui/chips';
 import { SortableList } from '@/components/ui/sortable-list';
 import { TaskRow } from '@/components/todo/TaskRow';
-import { isOverdue, orderTasks } from '@/lib/tasks';
+import { movingTo, orderTasks, taskSection } from '@/lib/tasks';
 import { EditTaskDialog, MoveListDialog, MoveTaskDialog, NewTaskDialog } from '@/components/todo/TaskDialogs';
 
 const VIEWS = {
@@ -39,13 +39,12 @@ const active = (task: CalendarEvent) => task.todo_status !== 'done' && task.todo
  */
 function groupTasks(tasks: CalendarEvent[], timezone: string | null) {
   const now = new Date();
-  const today = formatEventTime(now.toISOString(), 'yyyy-MM-dd', timezone);
   const open = orderTasks(tasks.filter(active));
-  const isToday = (task: CalendarEvent) => !task.is_todo_only && formatEventTime(task.start_time, 'yyyy-MM-dd', timezone) === today;
-  const overdue = open.filter(task => isOverdue(task, now.getTime()));
-  const todayTasks = open.filter(task => isToday(task) && !overdue.includes(task));
-  const later = open.filter(task => !task.is_todo_only && !overdue.includes(task) && !todayTasks.includes(task));
-  const undated = open.filter(task => task.is_todo_only);
+  const section = (task: CalendarEvent) => taskSection(task, timezone, now);
+  const overdue = open.filter(task => section(task) === 'overdue');
+  const todayTasks = open.filter(task => section(task) === 'today');
+  const later = open.filter(task => section(task) === 'later');
+  const undated = open.filter(task => section(task) === 'undated');
   const done = tasks.filter(task => task.todo_status === 'done')
     .sort((a, b) => new Date(b.done_at ?? b.updated_at).getTime() - new Date(a.done_at ?? a.updated_at).getTime());
   return { open, overdue, today: todayTasks, later, undated, done };
@@ -119,6 +118,7 @@ const TodoPage = () => {
   const openCount = (id: string) => (tasksQuery.data ?? []).filter(task => active(task) && task.calendar_id === id).length;
   // Reordering needs a server to keep it: not offline, and not while the list is still loading.
   const reorderable = !isOfflineMode() && !tasksQuery.isPending;
+  const cancelMove = (task: CalendarEvent) => actions.cancelMove.mutate({ id: task.id, from: calendars.find(calendar => calendar.id === task.calendar_id)?.name, to: movingTo(task, calendars) ?? undefined });
 
   const selectView = (next: View) => {
     const nextParams = new URLSearchParams(params);
@@ -167,14 +167,18 @@ const TodoPage = () => {
     const shared = (task: CalendarEvent) => ({
       task, actions, timezone, calendarColor: calendarColor(task), onEdit: setEditing, onMove: setMoving,
       onMoveList: reorderable ? setMovingList : undefined, canReorder: reorderable,
+      // A move not confirmed yet is marked on the row; it can be cancelled with a server at hand.
+      movingTo: movingTo(task, calendars), onCancelMove: reorderable ? cancelMove : undefined,
     });
     if (view === 'done' || !reorderable) return <ul>{section.tasks.map(task => <TaskRow key={task.id} {...shared(task)} />)}</ul>;
+    // A placement belongs to its section: a task that lands elsewhere meanwhile (a date change, a tick) is no longer placed by it.
+    const identity = { key: section.id, of: (task: CalendarEvent) => taskSection(task, timezone) };
     return (
       <SortableList items={section.tasks} getId={taskId} getName={taskName} label={label}
-        onReorder={({ item, to }) => actions.placeTask(section.tasks, item.id, to)}>
+        onReorder={({ item, to }) => actions.placeTask(section.tasks, item.id, to, identity)}>
         {(task, sortable, index) => (
           <TaskRow key={task.id} {...shared(task)} sortable={sortable}
-            order={{ index, count: section.tasks.length, up: () => actions.moveTask(section.tasks, task.id, -1), down: () => actions.moveTask(section.tasks, task.id, 1) }} />
+            order={{ index, count: section.tasks.length, up: () => actions.moveTask(section.tasks, task.id, -1, identity), down: () => actions.moveTask(section.tasks, task.id, 1, identity) }} />
         )}
       </SortableList>
     );

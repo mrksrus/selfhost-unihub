@@ -2,14 +2,18 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
 import {
   calendarApi, invalidateCalendarQueries, writeRefusal,
-  type CalendarEvent, type CalendarRsvpStatus, type RecurrenceScope,
+  type CalendarEvent, type CalendarRsvpStatus, type RecurrenceScope, type TaskMoveCancelled,
 } from '@/lib/calendar-api';
+import { useSessionMutation } from '@/hooks/use-session-mutation';
+import { useSessionScope } from '@/lib/session-scope';
+import { MOVE_DEADLINE_MS, cancelledMoveNotice, queueTaskWrite, writeTaskEvent } from '@/lib/task-order-queue';
 
 export type EventInput = Partial<CalendarEvent> & { title: string };
 
 /** Every change to a calendar event, with its feedback. */
 export function useEventActions() {
   const client = useQueryClient();
+  const scope = useSessionScope();
   const { toast } = useToast();
   const refresh = () => { void invalidateCalendarQueries(client); };
   // A write the server refused with a reason (still being moved, changed on
@@ -53,7 +57,19 @@ export function useEventActions() {
     onError: failed('Could not save the reply'),
   });
 
-  return { create, update, remove, rsvp };
+  // Cancels a move whose new copy is not confirmed yet (the event stays in
+  // its calendar), in the same queue as the task writes it would race.
+  const cancelMove = useSessionMutation({
+    mutationFn: ({ id }: { id: string; from?: string; to?: string }) => queueTaskWrite(client, scope, { kind: 'move', id }, signal => calendarApi.cancelMove(id, signal), MOVE_DEADLINE_MS),
+    onSuccess: (result: TaskMoveCancelled, { from, to }) => {
+      if (result.event) writeTaskEvent(client, result.event);
+      if (result.cancelled) toast({ title: 'Move cancelled', description: cancelledMoveNotice('event', from, to) });
+      else { refresh(); toast({ title: 'Nothing to cancel', description: 'The event is in its new calendar already.' }); }
+    },
+    onError: failed('Could not cancel the move'),
+  });
+
+  return { create, update, remove, rsvp, cancelMove };
 }
 
 export type EventActions = ReturnType<typeof useEventActions>;

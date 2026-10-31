@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Check, ChevronDown, ChevronUp, MapPin, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, Loader2, MapPin, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
 import { formatEventTime, type CalendarEvent } from '@/lib/calendar-api';
 import { isOverdue, taskWhen } from '@/lib/tasks';
 import type { TaskActions } from '@/hooks/use-task-actions';
@@ -40,6 +40,10 @@ interface Props {
   order?: RowOrder;
   /** Whether the order can be changed at all (not offline, list loaded); subtasks follow it. */
   canReorder?: boolean;
+  /** The list the task is being moved to while the calendar server has not confirmed (move_pending 'creating'). */
+  movingTo?: string | null;
+  /** Cancels that move; absent offline, where it cannot be sent. */
+  onCancelMove?: (task: CalendarEvent) => void;
 }
 
 /**
@@ -48,11 +52,14 @@ interface Props {
  * done; the ≡ handle (shown on hover with a mouse, always on touch screens)
  * drags it within its section; the remaining actions sit in the row's menu.
  */
-export function TaskRow({ task, actions, timezone, onEdit, onMove, onMoveList, calendarColor, sortable, order, canReorder = true }: Props) {
+export function TaskRow({ task, actions, timezone, onEdit, onMove, onMoveList, calendarColor, sortable, order, canReorder = true, movingTo = null, onCancelMove }: Props) {
   const unlink = useSourceEmailUnlink();
   const done = task.todo_status === 'done';
   const overdue = !done && isOverdue(task);
-  const busy = actions.setStatus.isPending && actions.setStatus.variables?.id === task.id;
+  // While a move waits for the calendar server, the server refuses every other change to the task.
+  const moving = movingTo !== null;
+  const busy = moving || (actions.setStatus.isPending && actions.setStatus.variables?.id === task.id);
+  const cancellingMove = actions.cancelMove.isPending && actions.cancelMove.variables?.id === task.id;
   // The first subtask is added from the menu; a task with subtasks always offers the next one.
   const [addingSubtask, setAddingSubtask] = useState(false);
   const subtasks = task.subtasks.length > 0 || (addingSubtask && !done);
@@ -74,6 +81,11 @@ export function TaskRow({ task, actions, timezone, onEdit, onMove, onMoveList, c
           <span className={cn(overdue && 'text-warning')}>{overdue ? `Overdue · ${taskWhen(task, timezone)}` : taskWhen(task, timezone)}</span>
           {task.location && <span className="inline-flex min-w-0 items-center gap-1"><MapPin aria-hidden="true" className="h-3 w-3" /><span className="truncate">{task.location}</span></span>}
           {task.todo_status && statusText[task.todo_status] && <span>{statusText[task.todo_status]}</span>}
+          {moving && (
+            <span role="status" className="inline-flex items-center gap-1 text-accent">
+              <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin motion-reduce:animate-none" />Moving to {movingTo}…
+            </span>
+          )}
           {done && task.done_at && <span>Done {formatEventTime(task.done_at, 'd MMM yyyy, HH:mm', timezone)}</span>}
           {calendarColor && <span aria-hidden="true" className="h-2 w-2 rounded-full" style={{ backgroundColor: calendarColor }} />}
         </p>
@@ -89,18 +101,24 @@ export function TaskRow({ task, actions, timezone, onEdit, onMove, onMoveList, c
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => onEdit(task)}>Edit</DropdownMenuItem>
-              {task.subtasks.length === 0 && <DropdownMenuItem onClick={() => setAddingSubtask(true)}>Add a subtask</DropdownMenuItem>}
+              {moving && <>
+                {/* The reason the rest is greyed out, then the one action the server takes meanwhile. */}
+                <DropdownMenuItem disabled>Still being moved to {movingTo}</DropdownMenuItem>
+                {onCancelMove && <DropdownMenuItem disabled={cancellingMove} onClick={() => onCancelMove(task)}>Cancel move</DropdownMenuItem>}
+                <DropdownMenuSeparator />
+              </>}
+              <DropdownMenuItem disabled={moving} onClick={() => onEdit(task)}>Edit</DropdownMenuItem>
+              {task.subtasks.length === 0 && <DropdownMenuItem disabled={moving} onClick={() => setAddingSubtask(true)}>Add a subtask</DropdownMenuItem>}
               {order && <>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem disabled={order.index === 0} onClick={order.up}>Move up</DropdownMenuItem>
-                <DropdownMenuItem disabled={order.index >= order.count - 1} onClick={order.down}>Move down</DropdownMenuItem>
+                <DropdownMenuItem disabled={moving || order.index === 0} onClick={order.up}>Move up</DropdownMenuItem>
+                <DropdownMenuItem disabled={moving || order.index >= order.count - 1} onClick={order.down}>Move down</DropdownMenuItem>
               </>}
               {(!task.is_todo_only || onMoveList) && <DropdownMenuSeparator />}
-              {!task.is_todo_only && <DropdownMenuItem onClick={() => onMove(task)}>Move to another time</DropdownMenuItem>}
-              {onMoveList && <DropdownMenuItem onClick={() => onMoveList(task)}>Move to another list</DropdownMenuItem>}
+              {!task.is_todo_only && <DropdownMenuItem disabled={moving} onClick={() => onMove(task)}>Move to another time</DropdownMenuItem>}
+              {onMoveList && <DropdownMenuItem disabled={moving} onClick={() => onMoveList(task)}>Move to another list</DropdownMenuItem>}
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => actions.setStatus.mutate({ id: task.id, todo_status: 'cancelled' })}>Cancel task</DropdownMenuItem>
+              <DropdownMenuItem disabled={moving} onClick={() => actions.setStatus.mutate({ id: task.id, todo_status: 'cancelled' })}>Cancel task</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -114,7 +132,7 @@ export function TaskRow({ task, actions, timezone, onEdit, onMove, onMoveList, c
       {/* Subtasks reach under the row's handle and menu, so their own handle and menu line up there and a title keeps its width on a phone. */}
       {subtasks && (
         <div className="col-span-2 col-start-2 mt-2 min-w-0">
-          <Subtasks task={task} actions={actions} readOnly={done} canReorder={canReorder && !done} autoFocus={addingSubtask} />
+          <Subtasks task={task} actions={actions} readOnly={done || moving} canReorder={canReorder && !done && !moving} autoFocus={addingSubtask} />
         </div>
       )}
     </li>
