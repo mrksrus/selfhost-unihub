@@ -33,3 +33,17 @@ test('a synced task ranks by its provider identity, so a rebuilt row keeps its p
   assert.equal(dateRank(row('7f0c2c4e-0000-4000-8000-000000000001'), identity), dateRank(row('7f0c2c4e-0000-4000-8000-000000000002'), identity));
   assert.notEqual(dateRank(row('7f0c2c4e-0000-4000-8000-000000000001'), identity), dateRank(row('7f0c2c4e-0000-4000-8000-000000000001'), { ...identity, recurrenceId: '20261120T090000Z' }));
 });
+
+test('copy keys share their base: the same rank as the original, after it, in counter order', () => {
+  const { copyKey, keyBase, copyNumber, sortKey } = require('../dist/src/services/task-order') as typeof import('../src/services/task-order');
+  const base = '7f0c2c4e-0000-4000-8000-000000000001';
+  const row = (key: string) => ({ id: '7f0c2c4e-0000-4000-8000-0000000000ff', order_key: key, start_time: '2026-10-04 08:00:00', created_at: '2026-10-04 08:00:00', is_todo_only: 1 });
+  const keys = [base, copyKey(base, 1), copyKey(base, 2), copyKey(base, 10)];
+  assert.deepEqual([...keys].sort(), keys, 'plain string order is the copy order');
+  assert.equal(new Set(keys.map(key => dateRank(row(key)))).size, 1);
+  assert.deepEqual(keys.map(key => [keyBase(key), copyNumber(key, base)]), [[base, 0], [base, 1], [base, 2], [base, 10]]);
+  // The same UID in two calendars: one rank, two keys.
+  const synced = (source: string) => sortKey(row(base), { uid: 'shared@example.test', recurrenceId: '', source });
+  assert.notEqual(synced('https://dav.example.test\n/a/'), synced('https://dav.example.test\n/b/'));
+  assert.equal(dateRank(row(base), { uid: 'shared@example.test', recurrenceId: '', source: 'x' }), dateRank(row(base), { uid: 'shared@example.test', recurrenceId: '', source: 'y' }));
+});

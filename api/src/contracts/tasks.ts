@@ -19,7 +19,9 @@ export interface TaskRankFields {
    * The tiebreak for equal ranks: order by sort_rank, then sort_key (plain
    * string comparison, not locale-aware). Unlike the id it survives a sync
    * that rebuilds the row and a restore that renews ids, so ties keep their
-   * order. Never derive it on the client.
+   * order. Opaque: it may carry a suffix after `~` (a restored copy, or a
+   * synced task's calendar), and two tasks never share one. Never derive it
+   * on the client.
    */
   sort_key: string;
   /** The task was placed by hand; a date changed in UniHub clears it. */
