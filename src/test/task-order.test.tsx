@@ -293,6 +293,63 @@ describe('the sortable list', () => {
     } finally { restore(); }
   });
 
+  it('judges the drop by the release itself, not by the last move before it', async () => {
+    const restore = stacked([50, 50, 50]);
+    const onReorder = vi.fn();
+    try {
+      renderList(onReorder);
+      const handle = () => screen.getByRole('button', { name: 'Reorder Pay rent' });
+      // The last move just inside the list's right edge, the release just outside it: back.
+      fireEvent.mouseDown(handle(), { clientX: 380, clientY: 25, button: 0 });
+      fireEvent.mouseMove(document, { clientX: 380, clientY: 31 });
+      fireEvent.mouseMove(document, { clientX: 399, clientY: 125 });
+      fireEvent.mouseUp(document, { clientX: 401, clientY: 125 });
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(backAnnouncement));
+      expect(onReorder).not.toHaveBeenCalled();
+      // The reverse: the last move outside, the release inside: placed.
+      fireEvent.mouseDown(handle(), { clientX: 380, clientY: 25, button: 0 });
+      fireEvent.mouseMove(document, { clientX: 380, clientY: 31 });
+      fireEvent.mouseMove(document, { clientX: 401, clientY: 125 });
+      fireEvent.mouseUp(document, { clientX: 399, clientY: 125 });
+      await waitFor(() => expect(onReorder).toHaveBeenCalledTimes(1));
+      expect(onReorder.mock.calls[0][0]).toMatchObject({ item: 'Pay rent', from: 0, to: 2 });
+    } finally { restore(); }
+  });
+
+  it('follows the finger that started a touch drag to where it lifts, and no other input', async () => {
+    const restore = stacked([50, 50, 50]);
+    const onReorder = vi.fn();
+    const finger = (clientX: number, clientY: number, identifier = 1) => ({ clientX, clientY, identifier });
+    // Touch events go to the element the finger landed on, as a browser delivers them.
+    const touchDrag = async (moves: Array<{ x: number; y: number }>, lift: { x: number; y: number }, meanwhile?: () => void) => {
+      const handle = screen.getByRole('button', { name: 'Reorder Pay rent' });
+      fireEvent.touchStart(handle, { touches: [finger(380, 25)], changedTouches: [finger(380, 25)] });
+      // The touch sensor picks the row up after a 250 ms hold.
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 320)); });
+      for (const move of moves) fireEvent.touchMove(handle, { touches: [finger(move.x, move.y)], changedTouches: [finger(move.x, move.y)] });
+      meanwhile?.();
+      // The finger that lifts is in changedTouches only.
+      fireEvent.touchEnd(handle, { touches: [], changedTouches: [finger(lift.x, lift.y)] });
+    };
+    try {
+      renderList(onReorder);
+      // Lifted just outside the list after moving inside it: back.
+      await touchDrag([{ x: 380, y: 125 }], { x: 401, y: 125 });
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(backAnnouncement));
+      expect(onReorder).not.toHaveBeenCalled();
+      // A second pointer moving inside the list while the finger is outside changes nothing: still back.
+      await touchDrag([{ x: 401, y: 125 }], { x: 401, y: 125 }, () => {
+        fireEvent.pointerMove(window, { clientX: 380, clientY: 125, pointerId: 2, pointerType: 'touch' });
+        fireEvent.mouseMove(window, { clientX: 380, clientY: 125 });
+      });
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(backAnnouncement));
+      expect(onReorder).not.toHaveBeenCalled();
+      // And the control: lifted inside, placed.
+      await touchDrag([{ x: 380, y: 125 }], { x: 380, y: 125 });
+      await waitFor(() => expect(onReorder).toHaveBeenCalledTimes(1));
+    } finally { restore(); }
+  });
+
   it('puts a row back when the pointer lets go beside the list, although the row itself cannot leave it sideways', async () => {
     const restore = stacked([50, 50, 50]);
     const onReorder = vi.fn();
