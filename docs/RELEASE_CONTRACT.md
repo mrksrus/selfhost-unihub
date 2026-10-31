@@ -34,7 +34,11 @@ actions, both npm packages, the interface check, the Docker base images and
 the Android build as ordinary pull requests that pass the same checks. Each
 run reports `npm audit` findings for shipped dependencies without blocking.
 `prune-candidates.yml` deletes, monthly, `candidate-*` images (run tags
-included) older than 30 days that no release adopted; it needs the package to grant this repository
+included) older than 30 days that no release adopted. It keeps any image a
+release tag or `latest` names, directly or inside an index (releases up to
+0.26.0 are an index around their tested image), and the candidate of a push
+whose run has not ended, and it reads each image's tags again just before
+deleting it; it needs the package to grant this repository
 the Admin role, and a manual run lists without deleting by default.
 
 Feature details stay in their own documents; this page lists what must be
@@ -43,19 +47,33 @@ shown before publishing and how.
 ## How CI runs the checks
 
 A run uses only standard `ubuntu-latest` runners of the free plan and takes
-about 25 minutes. `api-tests`, `frontend`, `build` and `android-window` start
-together; once `build` has pushed the image, `container`, `android-10`,
+about 16 to 18 minutes. `api-tests`, `frontend`, `build` and `android-window`
+start together; once `build` has pushed the image, `container`, `android-10`,
 `android-16` (one job per script), `android-16-servers` (the real-server
 pairings over four emulators, `--part k/4`) and `e2e` (one job per target;
 desktop in three: the scheduled-send and snooze files, which wait on server
-timers, each alone, and every other file) start together. `publish` needs every one of them and re-tags the tested
-digest without building (a carbon copy, so every tag names that digest, as
-`promote` does for the release tags); `evidence` gathers the evidence into one artifact,
-also after a failure. Between jobs only small artifacts travel (the Android
-app and the support window's earlier apps, kept a day; the release-signed app
-is also kept 14 days for trying it on a phone); the image travels only through
-the registry. A pull request from a fork cannot push, so its test jobs build
-the same commit themselves; nothing from it is kept or published.
+timers, each alone, and every other file) start together.
+
+`evidence` gathers the evidence of `container` and the four server parts into
+`unihub-release-evidence` (with a `manifest.json` naming each part's attempt
+and files), also after a failure, and checks that every part is present and
+records a pass (`scripts/collect-release-evidence.mts`). Each part is
+uploaded per attempt, so re-running failed jobs replaces the parts they re-ran
+and keeps the others; the parts are kept up to 7 days and deleted once the
+complete evidence is kept. `publish` needs every test job and that check, and
+re-tags the tested digest without building (a carbon copy, so every tag names
+that digest, as `promote` does for the release tags). `promote`, `publish` and
+`prune-candidates.yml` share the `ghcr-tags` concurrency group, so they never
+run at the same time. GitHub keeps at most one job of a group waiting: when
+three arrive at once, the oldest waiting one is cancelled. A cancelled
+`publish` keeps nothing, and the next merge then builds and tests anew; it
+never publishes anything else.
+
+Between jobs only small artifacts travel (the Android app and the support
+window's earlier apps, kept a day; the release-signed app is also kept 14 days
+for trying it on a phone); the image travels only through the registry. A pull
+request from a fork cannot push, so its test jobs build the same commit
+themselves; nothing from it is kept or published.
 
 ## Required for every release
 

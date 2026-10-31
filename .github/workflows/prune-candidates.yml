@@ -1,11 +1,24 @@
 name: Prune old candidate images
 
-# Every pull request leaves a tested image tagged candidate-<tree> (see
-# docker-image.yml). A release adds its own tags to the image it promotes, so
-# only images whose every tag is a candidate tag and that are older than 30
-# days are deleted. A merge that finds no candidate builds and tests a new one,
-# so pruning never blocks a release. Untagged versions (the per-platform parts
-# of an image) are left alone: deleting one would break the image it belongs to.
+# Every run of docker-image.yml pushes the image it tests under a run tag
+# (candidate-run-<run>-<attempt>), and a pull request whose tests all passed
+# also tags it candidate-<tree>. A release adds its own tags to the image it
+# promotes, so only images whose every tag is a candidate tag and that are
+# older than 30 days are deleted. A merge that finds no candidate builds and
+# tests a new one, so pruning never blocks a release. Untagged versions (the
+# per-platform parts of an image) are left alone: deleting one would break
+# the image it belongs to.
+#
+# Never deleted, also when only candidate tags name them:
+# - an image a release tag or latest names directly, or through an index
+#   (releases up to 0.26.0 were published as an index around the tested image,
+#   which itself keeps only its candidate tag);
+# - the candidate of a push to main or a release tag whose run has not ended,
+#   which its promote job is about to adopt.
+# Each version's tags are read again just before it is deleted, and this job
+# shares the ghcr-tags concurrency group with every job that writes lasting
+# tags (promote and publish in docker-image.yml), so no release adopts an
+# image while it is pruned.
 #
 # Deleting needs the package to grant this repository the Admin role
 # (package settings, "Manage Actions access").
@@ -22,30 +35,85 @@ on:
 
 permissions:
   packages: write
+  # In-flight runs of docker-image.yml and the trees of their commits.
+  actions: read
+  contents: read
 
 jobs:
   prune:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    concurrency:
+      group: ghcr-tags
+      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
       OWNER: mrksrus
       PACKAGE: selfhost-unihub
+      REPO: ${{ github.repository }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
     steps:
       - name: Delete candidate-only images older than 30 days
         run: |
           set -euo pipefail
+          versions="/users/$OWNER/packages/container/$PACKAGE/versions"
           cutoff="$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ)"
-          gh api --paginate "/users/$OWNER/packages/container/$PACKAGE/versions" \
-            --jq ".[] | select((.metadata.container.tags | length) > 0)
-                      | select(all(.metadata.container.tags[]; startswith(\"candidate-\")))
-                      | select(.updated_at < \"$cutoff\")
-                      | \"\(.id) \(.updated_at) \(.metadata.container.tags | join(\",\"))\"" > old.txt
+          gh api --paginate "$versions?per_page=100" \
+            --jq '.[] | {id, name, updated_at, tags: .metadata.container.tags}' | jq -s . > versions.json
+          echo "Versions: $(jq length versions.json)"
+
+          # Every image a release tag names, and every image inside it.
+          token="$(curl -fsS "https://ghcr.io/token?scope=repository:$OWNER/$PACKAGE:pull" | jq -r .token)"
+          accept='application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json'
+          jq -r '.[] | select(any(.tags[]; startswith("candidate-") | not)) | .name' versions.json > protected.txt
+          queue="$(cat protected.txt)"
+          while [ -n "$queue" ]; do
+            next=
+            for digest in $queue; do
+              # A failed read stops the job: an unread index could hide a release's image.
+              manifest="$(curl -fsS -H "Authorization: Bearer $token" -H "Accept: $accept" \
+                "https://ghcr.io/v2/$OWNER/$PACKAGE/manifests/$digest")"
+              for child in $(jq -r '.manifests[]?.digest' <<< "$manifest"); do
+                grep -qxF "$child" protected.txt || { echo "$child" >> protected.txt; next="$next $child"; }
+              done
+            done
+            queue="$next"
+          done
+          echo "Images a release names, directly or inside an index: $(wc -l < protected.txt)"
+
+          # The trees of pushes whose run has not ended: promote may adopt candidate-<tree>.
+          for status in requested queued pending waiting in_progress; do
+            gh api "repos/$REPO/actions/workflows/docker-image.yml/runs?event=push&status=$status&per_page=100" --jq '.workflow_runs[].head_sha'
+          done | sort -u | while read -r sha; do
+            gh api "repos/$REPO/git/commits/$sha" --jq .tree.sha
+          done > in-flight.txt
+          echo "Pushes in flight: $(wc -l < in-flight.txt)"
+
+          jq -r --arg cutoff "$cutoff" '.[] | select((.tags | length) > 0)
+            | select(all(.tags[]; startswith("candidate-"))) | select(.updated_at < $cutoff)
+            | "\(.id) \(.name)"' versions.json > old.txt
           echo "Candidate-only images older than $cutoff: $(wc -l < old.txt)"
-          while read -r id updated tags; do
-            echo "$id $updated $tags"
+          while read -r id digest; do
+            # Read again: tags added since the listing count.
+            tags="$(gh api "$versions/$id" --jq '.metadata.container.tags | join(" ")')"
+            reason=
+            if [ -z "$tags" ]; then
+              reason='it has no tag now'
+            elif grep -qv '^candidate-' <<< "$(tr ' ' '\n' <<< "$tags")"; then
+              reason='it has a release tag now'
+            elif grep -qxF "$digest" protected.txt; then
+              reason='a release names it'
+            else
+              for tag in $tags; do
+                if grep -qxF "${tag#candidate-}" in-flight.txt; then reason="a release in flight adopts $tag"; fi
+              done
+            fi
+            if [ -n "$reason" ]; then
+              echo "keep   $id $digest ($tags): $reason"
+              continue
+            fi
+            echo "delete $id $digest ($tags)"
             if [ "$DRY_RUN" != true ]; then
-              gh api -X DELETE "/users/$OWNER/packages/container/$PACKAGE/versions/$id"
+              gh api -X DELETE "$versions/$id"
             fi
           done < old.txt

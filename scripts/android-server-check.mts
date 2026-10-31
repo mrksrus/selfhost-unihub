@@ -838,7 +838,7 @@ const notes = [...new Set(rows.flatMap(row => row.steps.map(item => item.known).
 for (const note of notes) console.log(`k = known failure, recorded in KNOWN: ${note}`);
 if (rows.some(row => row.steps.some(item => item.notOffered))) console.log(`· = not offered: the file steps need an app and a server from ${FILE_ACTIONS_FROM}.`);
 fs.writeFileSync(path.join(evidence, `android-${sdkLevel}${part.count > 1 ? `-part${part.index}of${part.count}` : ''}.json`),
-  JSON.stringify({ android: release, api: sdkLevel, webView: webView.version, part: partArgument, rows }, null, 2));
+  JSON.stringify({ android: release, api: sdkLevel, webView: webView.version, part: partArgument, passed: !failed, rows }, null, 2));
 if (process.env.GITHUB_STEP_SUMMARY) {
   fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, [`### Android ${release} (API ${sdkLevel}, WebView ${webView.version}) against real servers${partLabel}`, '',
     `| App | Server | Result | ${STEP_NAMES.join(' | ')} |`, `| --- | --- | --- | ${STEP_NAMES.map(() => '---').join(' | ')} |`,
