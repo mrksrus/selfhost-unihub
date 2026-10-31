@@ -633,38 +633,66 @@ async function assertNotMoving(userId: string, eventId: string) {
 // --- A restore ------------------------------------------------------------------
 
 /**
- * At the start of a calendar restore's transaction: the person's moves are
- * locked until it commits. A move committing meanwhile is waited for (and
- * its result is what the restore finds), and none starts.
+ * Where a move's writes to each of the person's calendars go: the server
+ * collection (its address resolved against the account's server, as
+ * calendar-sync.ts does for every request, and as a move's fixed address is),
+ * the kind of account and the login it is written with. A UniHub list goes
+ * nowhere.
  */
-async function lockMovesForRestore(connection: SqlExecutor, userId: string) {
-  await connection.execute('SELECT id FROM calendar_event_moves WHERE user_id = ? FOR UPDATE', [userId]);
+async function moveDestinations(executor: SqlExecutor, userId: string) {
+  const [rows] = await executor.execute<RowDataPacket[]>(
+    `SELECT c.id, c.external_id, a.provider, a.base_url, a.discovery_url, a.username FROM calendar_calendars c
+     JOIN calendar_accounts a ON a.id = c.account_id AND a.user_id = c.user_id WHERE c.user_id = ?`, [userId]);
+  const where = (row: RowDataPacket) => {
+    if (!calendarSync.REMOTE_PROVIDERS.has(row.provider)) return null;
+    try {
+      return calendarSync.calendarUrl({ base_url: row.base_url } as SyncAccount, { external_id: row.external_id } as SyncCalendar);
+    } catch { return `unresolved ${row.base_url} ${row.external_id}`; }
+  };
+  return new Map(rows.map(row => [String(row.id), JSON.stringify([row.provider, where(row), row.discovery_url ?? null, row.username ?? null])]));
 }
 
 /**
- * In a restore's transaction, once its events are written: the moves the
- * restore overtook end. An item the restore wrote over is as the archive has
- * it, so a move still creating its new copy must not go on with what it froze
- * before (the copy would bring the overwritten fields back). A move whose
- * calendar the restore pointed at another account or server collection would
- * write to the wrong place. Ending is the cancel's (cancelMove): nothing is
- * deleted at any server, and a copy a server took after all shows with its
- * next sync, once, as its calendar's own item.
+ * At the start of a calendar restore's transaction, before it writes any
+ * account or calendar: the person's moves are locked until it commits (a move
+ * committing meanwhile is waited for, and its result is what the restore
+ * finds; none starts), and where each calendar's writes go is noted, for
+ * settleMovesForRestore to compare with what the restore leaves.
+ */
+async function lockMovesForRestore(connection: SqlExecutor, userId: string) {
+  await connection.execute('SELECT id FROM calendar_event_moves WHERE user_id = ? FOR UPDATE', [userId]);
+  return { destinations: await moveDestinations(connection, userId) };
+}
+
+/**
+ * In a restore's transaction, once its accounts, calendars and events are
+ * written: the moves the restore overtook end.
+ * - An item the restore wrote over is as the archive has it, so a move still
+ *   creating its new copy must not go on with what it froze before (the copy
+ *   would bring the overwritten fields back).
+ * - A move one of whose calendars the restore pointed elsewhere (another
+ *   server, collection, kind of account or login: an account's server among
+ *   them, which every fixed address of a move is resolved against) would
+ *   write its copy, or remove the old one, at the wrong place. It ends,
+ *   whatever its state.
+ * Ending is the cancel's (cancelMove): nothing is deleted at any server, and
+ * a copy a server took after all shows with its next sync, once, as its
+ * calendar's own item; an old copy a move was removing is kept and shows the
+ * same way.
  *
  * A move only removing an old copy had already moved the item in UniHub. A
  * restore matches an item in the calendar it is in, so one it wrote over is
- * where the move took it, as the archive has it, and the old copy is still
- * removed; an archive from before the move restores a separate row in the old
- * calendar, linked to the old copy, which is gone with that removal. Only where
- * the restore re-pointed a calendar of the move does the removal end: the old
- * copy is kept and shows with the next sync as its calendar's own item.
- * Returns how many moves ended.
+ * where the move took it, as the archive has it, and (its calendars where
+ * they were) the old copy is still removed; an archive from before the move
+ * restores a separate row in the old calendar, linked to the old copy, which
+ * is gone with that removal. Returns how many moves ended.
  */
-async function settleMovesForRestore(connection: SqlExecutor, userId: string, { overwrittenEventIds, relocatedCalendarIds }: { overwrittenEventIds: ReadonlySet<string>; relocatedCalendarIds: ReadonlySet<string> }) {
+async function settleMovesForRestore(connection: SqlExecutor, userId: string, { overwrittenEventIds, before }: { overwrittenEventIds: ReadonlySet<string>; before: Awaited<ReturnType<typeof lockMovesForRestore>> }) {
+  const destinations = await moveDestinations(connection, userId);
   const [rows] = await connection.execute<MoveRow[]>('SELECT * FROM calendar_event_moves WHERE user_id = ? FOR UPDATE', [userId]);
   let ended = 0;
   for (const move of rows) {
-    const relocated = [move.source_calendar_id, move.target_calendar_id].some(id => !!id && relocatedCalendarIds.has(id));
+    const relocated = [move.source_calendar_id, move.target_calendar_id].some(id => !!id && before.destinations.get(id) !== destinations.get(id));
     const overwritten = !!move.event_id && overwrittenEventIds.has(move.event_id);
     if (!relocated && !(overwritten && move.state === 'creating')) continue;
     await connection.execute('DELETE FROM calendar_event_moves WHERE id = ?', [move.id]);

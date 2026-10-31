@@ -76,8 +76,12 @@ item. Keep existing and Keep both leave the task, and its move goes on. A move
 only removing an old copy had already moved the task: the restore matches it
 where it now is, so the removal goes on, and a row an older archive brings
 back in the old calendar goes with the removed copy. A move whose calendar
-the restore points at another account or server collection ends without
-deleting anything. A change holding a task when a calendar restore begins
+(old or new) the restore points elsewhere ends without deleting anything,
+whatever its state: the restore compares where each calendar's writes go
+before and after it writes accounts and calendars (the kind of account, the
+collection's address resolved against the account's server, the discovery
+address and the login), so an account restored to another server counts too.
+A change holding a task when a calendar restore begins
 writes nothing more (`409 RESTORE_IN_PROGRESS`).
 
 A synced task's order is removed only on evidence that the provider deleted
