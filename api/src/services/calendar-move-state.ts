@@ -5,7 +5,7 @@ import type { TaskMovePending } from '../contracts/tasks';
 import { db } from '../state';
 import { conflict, forbidden } from '../http/errors';
 import { isModuleEnabled } from './module-settings';
-import { getActiveRestoreSections } from './restore-locks';
+import { getActiveRestoreSectionsByUser } from './restore-locks';
 import { withNamedLock, stillHeld } from './named-locks';
 import type { Lease } from './named-locks';
 import { withTransaction } from './transactions';
@@ -88,8 +88,11 @@ async function assertStillAdmitted(userId: string) {
   await assertNoCalendarRestore(userId);
 }
 
-async function assertNoCalendarRestore(userId: string) {
-  if ((await getActiveRestoreSections(userId)).has('calendar')) {
+// Read on executor: inside a fenced write, the write's own connection. A
+// second connection taken from the pool while the write holds one would let
+// as many writes as the pool has connections wait for each other for ever.
+async function assertNoCalendarRestore(userId: string, executor: SqlExecutor = db) {
+  if ((await getActiveRestoreSectionsByUser(executor, userId)).get(userId)?.has('calendar')) {
     throw conflict('RESTORE_IN_PROGRESS', 'Restore in progress for calendar. This section is temporarily read-only.');
   }
 }
@@ -134,7 +137,7 @@ async function fenceTaskLocks(executor: SqlExecutor = db) {
   for (const lock of held) {
     if (!await stillHeld(executor, lock.lease)) throw eventChanged();
   }
-  for (const userId of new Set(held.map(lock => lock.userId))) await assertNoCalendarRestore(userId);
+  for (const userId of new Set(held.map(lock => lock.userId))) await assertNoCalendarRestore(userId, executor);
 }
 
 /** A local write of work holding items' locks, in a transaction fenced by them. */

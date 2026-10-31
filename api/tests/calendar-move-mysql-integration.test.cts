@@ -42,9 +42,17 @@ test('moving a task between lists and calendars: one copy, the same row, through
   let server: FixtureValue; let owned = false;
   t.after(async () => {
     try {
-      if (server) await new Promise(resolve => server.close(resolve));
+      // A request that never answered (a failed run) must not hold the
+      // teardown: its socket is closed, and ending the pool fails whatever
+      // still waits for a connection. The tables go on a connection of its own.
+      if (server) {
+        server.closeAllConnections();
+        await new Promise(resolve => server.close(resolve));
+      }
+      await pool.end().catch(() => {});
       if (owned) {
-        const connection = await pool.getConnection();
+        const connection = await mysql.createConnection({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306), database: process.env.MYSQL_TEST_DATABASE,
+          user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD });
         try {
           await connection.execute('SET FOREIGN_KEY_CHECKS = 0');
           const [tables] = await connection.query<RowDataPacket[]>('SHOW TABLES');
@@ -54,10 +62,9 @@ test('moving a task between lists and calendars: one copy, the same row, through
             await connection.execute('DROP TABLE `' + table + '`');
           }
           await connection.execute('SET FOREIGN_KEY_CHECKS = 1');
-        } finally { connection.release(); }
+        } finally { await connection.end(); }
       }
     } finally {
-      await pool.end();
       await fs.rm(directory, { recursive: true, force: true });
     }
   });
@@ -1514,16 +1521,52 @@ test('moving a task between lists and calendars: one copy, the same row, through
     await assertOnce('Moved as a restore begins', task, work);
   });
 
+  // Fails (instead of waiting for ever) when requests stop answering.
+  const within = <T,>(ms: number, what: string, work: Promise<T>) => {
+    let timer: NodeJS.Timeout;
+    return Promise.race([work, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not answer within ${ms} ms`)), ms); })])
+      .finally(() => clearTimeout(timer));
+  };
+
+  await t.test('edits holding their tasks at once never wait for a second database connection', { timeout: 60000 }, async () => {
+    // As many edits as the pool has connections (8) reach their fenced local
+    // write at once, each holding a connection: none may need another one.
+    const tasks: string[] = [];
+    for (let index = 0; index < 8; index += 1) tasks.push(await localTask(`Fenced together ${index}`, inbox, { done: false }));
+    const held = new Set(tasks); let arrived = 0;
+    let open!: () => void; const together = new Promise<void>(resolve => { open = resolve; });
+    const stop = setTimeout(() => open(), 3000);
+    const getConnection = pool.getConnection.bind(pool);
+    (pool as FixtureValue).getConnection = async () => {
+      const connection = await getConnection(); const execute = connection.execute.bind(connection); const release = connection.release.bind(connection);
+      (connection as FixtureValue).execute = async (sql: string, params?: FixtureValue) => {
+        const result = await execute(sql, params);
+        if (String(sql).startsWith('SELECT id FROM calendar_events WHERE id = ? AND user_id = ? FOR UPDATE') && held.has(params?.[0])) {
+          if (++arrived === tasks.length) open();
+          await together;
+        }
+        return result;
+      };
+      (connection as FixtureValue).release = () => { (connection as FixtureValue).execute = execute; (connection as FixtureValue).release = release; release(); };
+      return connection;
+    };
+    try {
+      const answers = await within(10000, 'the edits', Promise.all(tasks.map((task, index) => owner('PUT', `/calendar/events/${task}`, { title: `Fenced edit ${index}` }, null))));
+      assert.equal(arrived, tasks.length, 'every edit held its connection at once');
+      assert.deepEqual(answers.map(answer => [answer.status, answer.body.event?.title]), tasks.map((_, index) => [200, `Fenced edit ${index}`]));
+    } finally { (pool as FixtureValue).getConnection = getConnection; clearTimeout(stop); open(); }
+  });
+
   // Last: on a build whose locks share the main pool, this one stalls the API.
-  await t.test('fifty edits of different tasks at once finish or are refused at once, and other requests still answer', async () => {
+  await t.test('fifty edits of different tasks at once finish or are refused at once, and other requests still answer', { timeout: 60000 }, async () => {
     const tasks = [];
     for (let index = 0; index < 50; index += 1) tasks.push(await localTask(`Crowded task ${index}`, inbox, { done: false }));
     const started = Date.now();
     const edits = tasks.map((task, index) => owner('PUT', `/calendar/events/${task}`, { title: `Crowded edit ${index}` }, null));
-    const elsewhere = await stranger('GET', '/calendar/events');
+    const elsewhere = await within(10000, "another person's request", stranger('GET', '/calendar/events'));
     const answeredIn = Date.now() - started;
     assert.ok(Array.isArray(elsewhere.events));
-    const answers = await Promise.all(edits);
+    const answers = await within(10000, 'the edits', Promise.all(edits));
     const took = Date.now() - started;
     assert.ok(answeredIn < 5000, `another person's request answered after ${answeredIn} ms`);
     assert.ok(took < 10000, `the edits ended after ${took} ms`);
