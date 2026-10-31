@@ -4,7 +4,7 @@ name: Prune old candidate images
 # (candidate-run-<run>-<attempt>), and a pull request whose tests all passed
 # also tags it candidate-<tree>. A release adds its own tags to the image it
 # promotes, so only images whose every tag is a candidate tag and that are
-# older than 30 days are deleted. A merge that finds no candidate builds and
+# older than 30 days (min_age_days of a manual run) are deleted. A merge that finds no candidate builds and
 # tests a new one, so pruning never blocks a release. Untagged versions (the
 # per-platform parts of an image) are left alone: deleting one would break
 # the image it belongs to.
@@ -32,6 +32,10 @@ on:
         description: List what would be deleted without deleting it
         type: boolean
         default: true
+      min_age_days:
+        description: Only candidates older than this many days (a dry run with fewer shows the checks on younger ones)
+        type: number
+        default: 30
 
 permissions:
   packages: write
@@ -52,12 +56,14 @@ jobs:
       PACKAGE: selfhost-unihub
       REPO: ${{ github.repository }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+      MIN_AGE_DAYS: ${{ github.event_name == 'workflow_dispatch' && inputs.min_age_days || 30 }}
     steps:
       - name: Delete candidate-only images older than 30 days
         run: |
           set -euo pipefail
           versions="/users/$OWNER/packages/container/$PACKAGE/versions"
-          cutoff="$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+          [[ "$MIN_AGE_DAYS" =~ ^[0-9]+$ ]] || { echo "min_age_days must be a whole number" >&2; exit 1; }
+          cutoff="$(date -u -d "$MIN_AGE_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ)"
           gh api --paginate "$versions?per_page=100" \
             --jq '.[] | {id, name, updated_at, tags: .metadata.container.tags}' | jq -s . > versions.json
           echo "Versions: $(jq length versions.json)"
