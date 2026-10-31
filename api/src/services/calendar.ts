@@ -8,7 +8,8 @@ import { db } from '../state';
 import { getCalendarEventIdFromPath, getCalendarSubtaskIdFromPath } from '../../calendar-route-utils';
 import { sourceEmailPresentSql, presentSourceEmail } from './email-tasks';
 import { attachRanks } from './task-order';
-import { attachMoveState, refuseWhileMoving } from './calendar-move-state';
+import { attachMoveState, refuseWhileMoving, refuseIfMoved } from './calendar-move-state';
+import type { WritebackIdentity } from './calendar-move-state';
 
 const CALENDAR_PROVIDER_DEFAULT_CAPABILITIES = {
   local: {
@@ -359,8 +360,11 @@ async function replaceEventAttendees(userId: string, eventId: string, attendees:
 // the row was replaced. The row lock keeps a concurrent rebuild from removing
 // it between the check and the attendee rows.
 // fieldsOfMove: the update changes fields a move's new copy carries, so it
-// is refused while such a copy is being created (checked under the row lock).
-async function applyLocalEventUpdate(userId: string, eventId: string, { sets, params }: { sets: string[]; params: ExecuteValues[] }, attendees: unknown, { fieldsOfMove = false } = {}) {
+// is refused while such a copy is being created. identity: the calendar and
+// server copy the caller's writeback decision was made for; another one
+// (a move finished meanwhile) refuses the write. Both under the row lock.
+async function applyLocalEventUpdate(userId: string, eventId: string, { sets, params }: { sets: string[]; params: ExecuteValues[] }, attendees: unknown,
+  { fieldsOfMove = false, identity = null }: { fieldsOfMove?: boolean; identity?: WritebackIdentity | null } = {}) {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
@@ -370,6 +374,7 @@ async function applyLocalEventUpdate(userId: string, eventId: string, { sets, pa
       return null;
     }
     if (fieldsOfMove) await refuseWhileMoving(connection, eventId);
+    if (identity) await refuseIfMoved(connection, userId, eventId, identity);
     if (sets.length > 0) {
       await connection.execute(`UPDATE calendar_events SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`, [...params, eventId, userId]);
     }

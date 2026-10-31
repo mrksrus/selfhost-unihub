@@ -169,10 +169,12 @@ export interface TaskMoveResponse {
 /**
  * DELETE /api/calendar/events/:id/move: cancel a move whose new copy is not
  * confirmed yet ('creating'). The item stays in its old list and can be
- * edited, deleted or moved again at once; a copy the new server stored after
- * all is removed from there in the background and never shown. `cancelled`
- * false: nothing to cancel (no move, or one already 'removing', whose item is
- * in its new list). 404 TASK_NOT_FOUND when the item is not this person's.
+ * edited, deleted or moved again at once. Nothing is deleted at any server:
+ * if the new calendar received the copy anyway, it appears there as its own
+ * item after the next sync; the person deletes it if they don't want it.
+ * `cancelled` false: nothing to cancel (no move, or one already 'removing',
+ * whose item is in its new list). 404 TASK_NOT_FOUND when the item is not
+ * this person's.
  */
 export interface TaskMoveCancelResponse {
   event: CalendarEventDto | null;

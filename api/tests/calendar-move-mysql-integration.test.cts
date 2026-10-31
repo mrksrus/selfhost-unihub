@@ -684,6 +684,14 @@ test('moving a task between lists and calendars: one copy, the same row, through
     assert.equal((await journal(toner)).length, 0);
     await assertOnce('Order toner', toner, inbox, { copies: 0 });
     assert.equal((await owner('GET', `/calendar/events/${toner}`)).event.calendar_id, inbox);
+    // A write that lands after the move gave up is a duplicate, not a loss: imported once as its own task.
+    store(waiting.target_href, waiting.target_ics);
+    remote.writes.length = 0;
+    await sync(); await sync();
+    const rows = await rowsTitled('Order toner');
+    assert.deepEqual(rows.filter(row => row.id === toner).map(row => row.calendar_id), [inbox]);
+    assert.deepEqual(rows.filter(row => row.id !== toner).map(row => row.calendar_id), [work]);
+    assert.deepEqual(remote.writes, []);
   });
 
   await t.test('a retry of a waiting move with other fields is refused, the same fields resume it', async () => {
@@ -738,7 +746,7 @@ test('moving a task between lists and calendars: one copy, the same row, through
     assert.equal((await journal()).length, 0);
   });
 
-  await t.test('a move that never resolves shows on the task and can be cancelled; its copy is removed and never imported', async () => {
+  await t.test('a move that never resolves shows on the task and can be cancelled; nothing is deleted, a copy that arrived shows as its own task', async () => {
     const title = 'Unavailable destination';
     const task = await localTask(title);
     faults.put = () => 'store-then-lose';
@@ -763,18 +771,38 @@ test('moving a task between lists and calendars: one copy, the same row, through
     const cancelled = await owner('DELETE', `/calendar/events/${task}/move`);
     assert.deepEqual([cancelled.cancelled, cancelled.event.calendar_id, cancelled.event.move_pending], [true, inbox, null]);
     assert.equal((await owner('DELETE', `/calendar/events/${task}/move`)).cancelled, false, 'nothing left to cancel');
-    // The copy the server did store is never imported, and goes once the server answers.
-    await sync();
-    assert.deepEqual((await rowsTitled(title)).map(row => [row.id, row.calendar_id]), [[task, inbox]]);
-    assert.equal(copiesOf(title).length, 1);
+    assert.equal((await journal()).length, 0, 'the move is over');
+    // Nothing is deleted at the server: the copy it did store shows as that calendar's own task.
     faults.put = undefined; faults.get = undefined;
-    await resume();
-    assert.equal(copiesOf(title).length, 0);
-    assert.equal((await journal()).length, 0);
-    // Free again: edited, and moved anew.
+    remote.writes.length = 0;
+    await sync(); await resume(); await sync();
+    const rows = await rowsTitled(title);
+    assert.equal(rows.length, 2, 'the task, and the copy as a visible duplicate');
+    assert.deepEqual(rows.filter(row => row.id === task).map(row => row.calendar_id), [inbox], 'the task stays in its old list');
+    assert.deepEqual(rows.filter(row => row.id !== task).map(row => row.calendar_id), [work]);
+    assert.equal(copiesOf(title).length, 1);
+    assert.deepEqual(remote.writes, [], 'nothing written to the server');
+    // The person deletes the duplicate; the task is free again: edited, and moved anew.
+    await owner('DELETE', `/calendar/events/${rows.find(row => row.id !== task)!.id}`);
     await owner('PUT', `/calendar/events/${task}`, { title: `${title} (edited)` });
     await owner('POST', `/calendar/events/${task}/move`, { calendar_id: work });
     await assertOnce(`${title} (edited)`, task, work);
+    assert.equal(copiesOf(title).length, 0);
+
+    // A write whose answer was lost lands after the cancel: imported once, as its own task.
+    const late = await localTask('Late arrival');
+    faults.put = () => 'lose';
+    await owner('POST', `/calendar/events/${late}/move`, { calendar_id: work }, 202);
+    faults.put = undefined;
+    const [{ target_href: lateHref, target_ics: lateIcs }] = await journal(late);
+    assert.equal((await owner('DELETE', `/calendar/events/${late}/move`)).cancelled, true);
+    store(lateHref, lateIcs);
+    remote.writes.length = 0;
+    await sync(); await sync();
+    const arrived = await rowsTitled('Late arrival');
+    assert.deepEqual(arrived.filter(row => row.id === late).map(row => row.calendar_id), [inbox]);
+    assert.deepEqual(arrived.filter(row => row.id !== late).map(row => row.calendar_id), [work], 'exactly one imported task');
+    assert.deepEqual(remote.writes, []);
     // A move only removing an old copy is not cancelled: the task is in its new list.
     const fixing = await serverTask('Already moved');
     const [oldPath] = copiesOf('Already moved');
@@ -832,6 +860,53 @@ test('moving a task between lists and calendars: one copy, the same row, through
     await assertOnce(title, task, privateCalendar);
     await sync();
     await assertOnce(title, task, privateCalendar);
+  });
+
+  await t.test('an edit decided for a UniHub list is refused when the move finished before it was written', async () => {
+    for (const via of ['dialog', 'time']) {
+      const title = via === 'dialog' ? 'Copy before late local write' : 'Time changed after move';
+      const task = await localTask(title, inbox, { done: false });
+      const before = (await owner('GET', `/calendar/events/${task}`)).event;
+      // The edit has decided "UniHub only" and stops before it writes.
+      const gate = hold(); const original = calendarSync.pushEventUpdate;
+      calendarSync.pushEventUpdate = async (opts: FixtureValue) => {
+        const answer = await original(opts);
+        if (opts.event.id === task) { gate.reached(); await gate.go; }
+        return answer;
+      };
+      const start = new Date(new Date(before.start_time).getTime() + DAY).toISOString();
+      const editing = via === 'dialog'
+        ? owner('PUT', `/calendar/events/${task}`, { title: 'Accepted late local write' }, 409)
+        : owner('PUT', `/calendar/events/${task}/todo-status`, { todo_status: 'time_moved', start_time: start }, 409);
+      try {
+        await gate.at;
+        await owner('POST', `/calendar/events/${task}/move`, { calendar_id: work });
+        gate.release();
+        assert.equal((await editing).code, 'CALENDAR_EVENT_CHANGED');
+      } finally { calendarSync.pushEventUpdate = original; }
+      await expandAll();
+      const kept = (await owner('GET', `/calendar/events/${task}`)).event;
+      assert.deepEqual([kept.title, kept.start_time, kept.calendar_id], [title, before.start_time, work], 'what the server copy holds');
+      // Asked again, the edit goes to the server copy.
+      if (via === 'dialog') await owner('PUT', `/calendar/events/${task}`, { title: 'Accepted late local write' });
+      else await owner('PUT', `/calendar/events/${task}/todo-status`, { todo_status: 'time_moved', start_time: start });
+      await expandAll();
+      const saved = (await owner('GET', `/calendar/events/${task}`)).event;
+      if (via === 'dialog') await assertOnce('Accepted late local write', task, work);
+      else assert.equal(new Date(saved.start_time).getTime(), new Date(start).getTime());
+    }
+  });
+
+  await t.test('a task is not detached from its list while its move is creating the copy', async () => {
+    const title = 'Detached during creating';
+    const task = await localTask(title);
+    faults.put = () => 'lose';
+    await owner('POST', `/calendar/events/${task}/move`, { calendar_id: work }, 202);
+    faults.put = undefined;
+    assert.equal((await owner('PUT', `/calendar/events/${task}`, { calendar_id: null }, 409)).code, 'CALENDAR_MOVE_PENDING');
+    assert.equal((await owner('GET', `/calendar/events/${task}`)).event.calendar_id, inbox);
+    await resume();
+    await assertOnce(title, task, work);
   });
 
   await t.test('removing the calendar ends a move that needs it', async () => {

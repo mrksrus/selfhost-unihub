@@ -607,9 +607,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
     const uid = known ? null : ical.objectUid(item.ics);
     const result = await inTransaction(ctx, async connection => {
       if (known && await moves().lockMovedAway(connection, String(known.id))) return null;
-      const move = uid ? await moves().lockMoveOfCopy(connection, calendar.id, uid) : null;
-      // The copy of a cancelled move is never imported; its cleanup removes it.
-      if (move?.state === 'cancelled') return null;
+      const move = uid ? await moves().lockCreatingMove(connection, calendar.id, uid) : null;
       const object = await storeObject(connection, ctx.account, calendar, { id: known?.id, href: item.href, etag: item.etag, ics: item.ics });
       if (move && await moves().commitMove(connection, move, { account: ctx.account, calendar, object, timeZone: ctx.timeZone })) return { object, created: [] };
       return { object, created: await applyObjectRows(connection, ctx, calendar, object, expanded) };

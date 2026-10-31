@@ -82,7 +82,7 @@ const {
   takesUndatedTasks,
 } = require('../services/calendar') as typeof import('../services/calendar');
 const taskOrder = require('../services/task-order') as typeof import('../services/task-order');
-const { attachMoveState, movePending } = require('../services/calendar-move-state') as typeof import('../services/calendar-move-state');
+const { attachMoveState, movePending, eventChanged, writebackIdentity } = require('../services/calendar-move-state') as typeof import('../services/calendar-move-state');
 const calendarSync = require('../services/calendar-sync') as typeof import('../services/calendar-sync');
 const calendarMove = require('../services/calendar-move') as typeof import('../services/calendar-move');
 const calendarAccounts = require('../services/calendar-accounts') as typeof import('../services/calendar-accounts');
@@ -700,9 +700,13 @@ export = {
       const id = getCalendarEventIdFromReq(req)!;
       if (!id) return { error: 'Invalid event id', status: 400 };
 
+      // The calendar and server copy the writeback decision below rests on,
+      // read first: the local write is refused if either changed meanwhile.
+      const decidedFor = await writebackIdentity(db, userId, id);
       const [events] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
       if (events.length === 0) return { error: 'Event not found', status: 404 };
       const currentEvent = events[0];
+      if ((currentEvent.calendar_id || null) !== decidedFor.calendarId) return clientError(eventChanged(), 'Failed to update event');
       const currentCalendar = currentEvent.calendar_id ? await loadCalendarAccountRow(userId, currentEvent.calendar_id) : null;
       currentEvent.calendar_id_remote = isRemoteProvider(currentCalendar?.provider);
       const updates = [];
@@ -820,9 +824,11 @@ export = {
       // with them the edited id: then there is no local row left to update.
       // An edit that raced a move's start is refused under the row lock (a
       // move this request started carries the fields itself).
+      // A move this request started changes the identity itself and carries the fields.
       const startedMove = has(body, 'calendar_id') && !!body.calendar_id && body.calendar_id !== currentEvent.calendar_id;
-      const fieldsOfMove = !startedMove && ['title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'reminders', 'reminder_minutes', 'is_todo_only', 'recurrence'].some(key => has(body, key));
-      let updatedEvent = await applyLocalEventUpdate(userId, id, { sets: updates, params }, body.attendees, { fieldsOfMove });
+      const fieldsOfMove = !startedMove && ['title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'reminders', 'reminder_minutes', 'is_todo_only', 'recurrence', 'calendar_id'].some(key => has(body, key));
+      const identity = startedMove ? null : { ...decidedFor, objectId: typeof writeback.objectId === 'string' ? writeback.objectId : decidedFor.objectId };
+      let updatedEvent = await applyLocalEventUpdate(userId, id, { sets: updates, params }, body.attendees, { fieldsOfMove, identity });
       if (dateChanged) {
         await taskOrder.clearRank(db, userId, id, orderIdentity);
         if (updatedEvent) updatedEvent = await getCalendarEventWithSubtasks(userId, id);
@@ -849,6 +855,8 @@ export = {
       }
 
       const { todo_status, start_time, end_time } = body;
+      // Set when the time changes: what its writeback decision rests on.
+      let timeDecidedFor: import('../services/calendar-move-state').WritebackIdentity | null = null;
       if (!['done', 'changed', 'time_moved', 'cancelled', null].includes(todo_status!)) {
         return { error: 'Invalid todo_status', status: 400 };
       }
@@ -894,11 +902,14 @@ export = {
         }
 
         if (movedStart && movedEnd) {
+          timeDecidedFor = await writebackIdentity(db, userId, id);
           const [[current]] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
+          if ((current.calendar_id || null) !== timeDecidedFor.calendarId) return clientError(eventChanged(), 'Failed to update todo status');
           const orderIdentity = await taskOrder.identityOf(db, userId, id);
           const writeback = await pushEventChanges(userId, current, { start_time: movedStart, end_time: movedEnd },
             { start_time: movedStart, end_time: movedEnd });
           if (writeback.error) return writeback;
+          if (typeof writeback.objectId === 'string') timeDecidedFor.objectId = writeback.objectId;
           // "Move to another time" returns the task to its new date's place (D31).
           if (movedStart !== toMysqlDatetime(current.start_time)) await taskOrder.clearRank(db, userId, id, orderIdentity);
           updates.push('start_time = ?', 'end_time = ?');
@@ -906,14 +917,20 @@ export = {
         }
       }
 
-      // A new time is refused while a move's new copy is being created (the
-      // move is admitted under this row's lock, so the check is atomic).
-      const timeMoved = updates.includes('start_time = ?');
+      // A new time is refused while a move's new copy is being created, and
+      // when the calendar or server copy it was written back for changed
+      // meanwhile (a move finished): checked in the same statement.
+      const timeMoved = !!timeDecidedFor;
       const updateQuery = `UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id = ?${timeMoved
-        ? " AND NOT EXISTS (SELECT 1 FROM calendar_event_moves m WHERE m.event_id = calendar_events.id AND m.state = 'creating' AND m.target_calendar_id IS NOT NULL)" : ''}`;
+        ? ` AND NOT EXISTS (SELECT 1 FROM calendar_event_moves m WHERE m.event_id = calendar_events.id AND m.state = 'creating' AND m.target_calendar_id IS NOT NULL)
+           AND calendar_id <=> ? AND (SELECT r.remote_object_id FROM calendar_event_external_refs r WHERE r.event_id = calendar_events.id LIMIT 1) <=> ?` : ''}`;
       params.push(id, userId);
+      if (timeDecidedFor) params.push(timeDecidedFor.calendarId, timeDecidedFor.objectId);
       const [written] = await db.execute<ResultSetHeader>(updateQuery, params);
-      if (timeMoved && !written.affectedRows) return clientError(movePending(), 'Failed to update todo status');
+      if (timeMoved && !written.affectedRows) {
+        const [moving] = await db.execute<RowDataPacket[]>("SELECT id FROM calendar_event_moves WHERE event_id = ? AND state = 'creating'", [id]);
+        return clientError(moving.length ? movePending() : eventChanged(), 'Failed to update todo status');
+      }
 
       const updatedEvent = await getCalendarEventWithSubtasks(userId, id);
       return { event: updatedEvent };
