@@ -65,6 +65,15 @@ API tests import `api/dist/` and worker tests read `.worker-dist/`, so run
 test commands and `scripts/local-db.sh` build automatically. API-only Docker
 build stages compile the API; the frontend stage compiles browser workers.
 
+Those commands also load `api/tests/helpers/pool-guard.cts`: while app code
+holds a pooled database connection (a transaction, or one taken with
+`getConnection()`), asking the same pool for another fails the test file. As
+many such tasks as the pool has connections would wait for each other for
+ever. Pass the held connection to helpers instead (`executor` parameters);
+`outsideHeldConnection` in `services/transactions.ts` marks the few bounded
+exceptions. Add `--require ./tests/helpers/pool-guard.cts` to a direct
+`node --test` run from `api/` to get the same check.
+
 API modules use ES module syntax and compile to CommonJS. A few conventions
 keep the compiled modules testable:
 

@@ -20,7 +20,7 @@ async function main() {
   const api = path.resolve(__dirname, '..');
   const tests = fs.readdirSync(path.join(api, 'tests')).filter(name => name.endsWith('.test.cts') &&
     (process.argv.includes('--all') || name.startsWith('backup-') || ['data-inventory.test.cts', 'database-migrations.test.cts', 'database-startup-mysql-integration.test.cts'].includes(name))).sort();
-  const child = spawn(process.execPath, ['--test', '--test-concurrency=1', '--test-reporter=tap', ...tests.map(name => 'tests/' + name)], {
+  const child = spawn(process.execPath, ['--require', './tests/helpers/pool-guard.cts', '--test', '--test-concurrency=1', '--test-reporter=tap', ...tests.map(name => 'tests/' + name)], {
     cwd: api, env: { ...process.env, MYSQL_TEST_SCHEMA_SMOKE: '1' }, stdio: ['ignore', 'pipe', 'inherit'],
   });
   let tail = '';

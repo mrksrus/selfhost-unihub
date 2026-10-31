@@ -52,6 +52,7 @@ import {
 import { backupFromZipBuffer, backupFromZipFile } from './backup-zip-reader';
 import { restoreContactsSection } from './backup-contacts';
 import { releasePhotoFiles, withContactPhotoLock } from './contact-photos';
+import { outsideHeldConnection } from './transactions';
 import { log } from '../log';
 
 const accountLabel = (row: BackupRow) => row.email_address || row.account_email || row.display_name || row.id;
@@ -253,10 +254,12 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
     const createdPhotos: string[] = [];
     let releasedPhotos: string[] = [];
     const photoNames = new Set((Array.isArray(data.contact_photos) ? data.contact_photos as BackupRow[] : []).flatMap(row => [row.sha256, row.thumb_sha256].map(String)));
-    const cleanupCreatedFiles = () => Promise.all([
+    // Also after a rollback, while the connection is still held: only the
+    // restore worker runs this.
+    const cleanupCreatedFiles = outsideHeldConnection(() => Promise.all([
       ...createdRestorePaths.map(filePath => fs.promises.rm(filePath, { force: true }).catch(() => {})),
       releasePhotoFiles(userId, createdPhotos).catch(() => {}),
-    ]);
+    ]));
     let connection;
     let commitAttempted = false;
     try {

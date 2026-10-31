@@ -1,5 +1,6 @@
 import type { Pool, PoolConnection, RowDataPacket } from 'mysql2/promise';
 import { log } from '../log';
+import { outsideHeldConnection } from './transactions';
 
 // One API process per database runs the background work: the timers, the
 // mail IDLE sessions and the durable mail scheduler. Two of them would hold
@@ -41,6 +42,8 @@ interface OwnershipOptions {
 
 async function startWorkerOwnership({ pool, onGained, onLost, everyMs = 5_000, handoverMs = 3 * everyMs, timers = globalThis }: OwnershipOptions) {
   owner = false;
+  // The work runs beside the lock's connection, not inside it.
+  const gained = outsideHeldConnection(onGained);
   let held: PoolConnection | null = null;
   let checking = false, stopped = false, warned = false;
   // Counts the roles this process gained; failedRole is one whose start-up failed.
@@ -106,7 +109,7 @@ async function startWorkerOwnership({ pool, onGained, onLost, everyMs = 5_000, h
         owner = true; warned = false;
         const mine = ++role;
         log.info('OWNER', 'This process runs the background work');
-        Promise.resolve().then(onGained).catch(error => {
+        Promise.resolve().then(gained).catch(error => {
           log.error('OWNER', 'Starting the background work failed', error);
           // A start-up of a role already lost has been stopped; its failure says nothing about the current one.
           if (mine === role && owner) failedRole = mine;

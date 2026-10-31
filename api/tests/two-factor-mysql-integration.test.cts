@@ -101,18 +101,20 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     // between the password check and the locked recheck changes nothing either.
     for (const change of ['UPDATE users SET password_hash = ? WHERE id = ?', 'UPDATE users SET is_active = FALSE WHERE id = ?']) {
       const [[saved]] = await pool.execute<RowDataPacket[]>('SELECT password_hash FROM users WHERE id = ?', [person]);
+      // The other session has a connection of its own.
+      const other = await pool.getConnection();
       const getConnection = async () => {
         const cx = await pool.getConnection();
         return { beginTransaction: () => cx.beginTransaction(), commit: () => cx.commit(), rollback: () => cx.rollback(), release: () => cx.release(),
           execute: async (sql: string, params: FixtureValue) => {
-            if (/FROM users WHERE id = \? FOR UPDATE/.test(sql)) await pool.execute(change, change.includes('password_hash') ? ['changed-meanwhile', person] : [person]);
+            if (/FROM users WHERE id = \? FOR UPDATE/.test(sql)) await other.execute(change, change.includes('password_hash') ? ['changed-meanwhile', person] : [person]);
             return cx.execute(sql, params);
           } };
       };
       setDb({ execute: (...args: FixtureValue[]) => pool.execute(...args as [string, FixtureValue]), getConnection } as FixtureValue);
       try {
         assert.equal(((await confirm({ code: otp(setup.secret), current_password: 'synthetic-person-password' })) as FixtureValue).status, 401);
-      } finally { setDb(pool); }
+      } finally { setDb(pool); other.release(); }
       await pool.execute<ResultSetHeader>('UPDATE users SET password_hash = ?, is_active = TRUE WHERE id = ?', [saved.password_hash, person]);
       assert.equal(((await authRoutes['GET /api/auth/2fa/status'].handler(request('person-current') as FixtureValue, person)) as FixtureValue).enabled, false);
       assert.deepEqual(await sessions(person), ['person-current', 'person-laptop']);
@@ -159,18 +161,19 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     assert.equal(((await authRoutes['GET /api/auth/2fa/status'].handler(request('person-current') as FixtureValue, person)) as FixtureValue).enabled, true);
     await pool.execute<ResultSetHeader>('UPDATE users SET is_active = TRUE WHERE id = ?', [admin]);
     // So is an admin whose password changed after it was checked, before the session deletion.
+    const other = await pool.getConnection();
     setDb({ execute: (...args: FixtureValue[]) => pool.execute(...args as [string, FixtureValue]), getConnection: (async () => {
       const cx = await pool.getConnection();
       return { beginTransaction: () => cx.beginTransaction(), commit: () => cx.commit(), rollback: () => cx.rollback(), release: () => cx.release(),
         execute: async (sql: string, params: FixtureValue) => {
           if (/FROM users WHERE id IN \(\?, \?\) ORDER BY id FOR UPDATE/.test(sql))
-            await pool.execute<ResultSetHeader>("UPDATE users SET password_hash = 'changed-meanwhile' WHERE id = ?", [admin]);
+            await other.execute<ResultSetHeader>("UPDATE users SET password_hash = 'changed-meanwhile' WHERE id = ?", [admin]);
           return cx.execute(sql, params);
         } };
     }) } as FixtureValue);
     try {
       assert.equal((await reset(admin, person, 'synthetic-admin-password')).status, 401);
-    } finally { setDb(pool); }
+    } finally { setDb(pool); other.release(); }
     await pool.execute<ResultSetHeader>('UPDATE users SET password_hash = ? WHERE id = ?', [await hashPassword('synthetic-admin-password'), admin]);
     assert.equal(((await authRoutes['GET /api/auth/2fa/status'].handler(request('person-current') as FixtureValue, person)) as FixtureValue).enabled, true);
 

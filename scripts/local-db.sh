@@ -147,7 +147,7 @@ run_tests() {
     MYSQL_TEST_USER=unihub MYSQL_TEST_PASSWORD="$APP_PW" MYSQL_TEST_SCHEMA_SMOKE=1
     ENCRYPTION_KEY=ci-test-encryption-key BACKUP_MASTER_KEY=ci-test-backup-master-key)
   mkdir -p "$TEST_TMP"
-  if [ $# -gt 0 ]; then (cd "$REPO/api" && env "${env[@]}" TMPDIR="$TEST_TMP" node --test --test-concurrency=1 "${@#api/}")
+  if [ $# -gt 0 ]; then (cd "$REPO/api" && env "${env[@]}" TMPDIR="$TEST_TMP" node --require ./tests/helpers/pool-guard.cts --test --test-concurrency=1 "${@#api/}")
   else (cd "$REPO/api" && env "${env[@]}" TMPDIR="$TEST_TMP" npm run --silent test:ci); fi
 }
 migrate() {

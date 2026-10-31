@@ -12,6 +12,7 @@ import {
   wrapDataKeyForServer,
   protectRecoveryPassword,
 } from './backup-container';
+import { outsideHeldConnection } from './transactions';
 import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
 
 type CheckCancelled = (() => Promise<unknown>) | null;
@@ -414,7 +415,8 @@ async function runDataExportJob(jobId: string) {
     entries = await collectExportEntries(job.user_id, sections, {
       mailAccountId: job.mail_account_id || null,
       portableCredentialKey: dataKey,
-      checkCancelled: () => checkExportCancelled(jobId),
+      // Runs while the snapshot read holds its connection; a read on it would not see a later cancellation.
+      checkCancelled: outsideHeldConnection(() => checkExportCancelled(jobId)),
     });
     await checkExportCancelled(jobId);
     await updateJob(jobId!, { phase: 'archiving', progress: 35 });

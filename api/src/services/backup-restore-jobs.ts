@@ -1,5 +1,5 @@
 import type { RowDataPacket, ResultSetHeader, ExecuteValues } from 'mysql2/promise';
-import type { ApiError, StoredFlag } from '../types';
+import type { ApiError, SqlExecutor, StoredFlag } from '../types';
 import type { ImportOptions } from '../types/backup-restore';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -19,6 +19,7 @@ import {
   unwrapDataKeyFromServer,
   wrapDataKeyForServer,
 } from './backup-container';
+import { outsideHeldConnection } from './transactions';
 import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
 import { attachmentsRoot, rawRoot } from './mail-storage';
 import { isAnyDraftSendRunning } from './mail-drafts';
@@ -316,11 +317,12 @@ async function restoreValidatedJob(job: RestoreJob) {
       fileSourcesByPath: parsed.fileSourcesByPath,
       portableCredentialKey: dataKey,
       restoreJobId: job.id,
-      checkCancelled: () => checkRestoreCancelled(job.id),
-      onProgress: async (phase, progress) => {
+      // The import's transaction holds a connection while these run.
+      checkCancelled: outsideHeldConnection(() => checkRestoreCancelled(job.id)),
+      onProgress: outsideHeldConnection(async (phase: string, progress: number) => {
         await updateRestoreJob(job.id, { phase, progress });
-      },
-      beforeCommit: async (connection, restoreResult) => {
+      }),
+      beforeCommit: outsideHeldConnection(async (connection: SqlExecutor, restoreResult: Record<string, unknown>) => {
         // Publishing phase=commit prevents new cancellation requests. Honor a
         // request accepted just before that boundary before marking completion.
         await checkRestoreCancelled(job.id);
@@ -335,7 +337,7 @@ async function restoreValidatedJob(job: RestoreJob) {
            WHERE id = ?`,
           [JSON.stringify(restoreResult), job.id]
         );
-      },
+      }),
     });
     if (!result.valid || result.errors?.length) {
       throw new Error(result.errors?.[0] || 'Backup validation failed before restore.');

@@ -5,6 +5,7 @@ import { db } from '../state';
 import { encrypt, decrypt } from '../security/encryption';
 import { pushAgent } from './push-transport';
 import { asUtcDate, hash, retryDisposition } from './notification-rules';
+import { outsideHeldConnection } from './transactions';
 
 // Delivery transports, keyed by the kind of target a delivery row points at
 // (push_subscriptions.transport).
@@ -45,7 +46,8 @@ type PushError = Error & { statusCode?: number };
 
 let keyPromise: Promise<VapidKeys> | null = null;
 async function getVapidKeys(): Promise<VapidKeys> {
-  if (!keyPromise) keyPromise = (async () => {
+  // Shared by every caller, so read on its own connection (one at a time).
+  if (!keyPromise) keyPromise = outsideHeldConnection(async () => {
     let [rows] = await db.execute<(RowDataPacket & { public_key: string; encrypted_private_key: string; subject: string })[]>('SELECT public_key, encrypted_private_key, subject FROM notification_config WHERE id = 1');
     if (!rows.length) {
       const webPush = require('web-push') as typeof import('web-push');

@@ -8,7 +8,7 @@
     "build": "node scripts/build.cts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc -p tsconfig.scripts.json && tsc -p tsconfig.tests.json",
     "start": "npm run build && node dist/server.js",
-    "test": "npm run build && node --test --test-concurrency=1 tests/*.test.cts",
+    "test": "npm run build && node --require ./tests/helpers/pool-guard.cts --test --test-concurrency=1 tests/*.test.cts",
     "test:recovery": "npm run build && node scripts/test-recovery.cts",
     "test:ci": "npm run build && node scripts/test-recovery.cts --all"
   },
