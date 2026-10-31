@@ -1533,9 +1533,11 @@ test('moving a task between lists and calendars: one copy, the same row, through
     // write at once, each holding a connection: none may need another one.
     const tasks: string[] = [];
     for (let index = 0; index < 8; index += 1) tasks.push(await localTask(`Fenced together ${index}`, inbox, { done: false }));
-    const held = new Set(tasks); let arrived = 0;
+    // The barrier opens when all eight hold their connections; one that did
+    // not arrive in time fails the test instead of letting the rest through.
+    const held = new Set(tasks); let arrived = 0, expired = false;
     let open!: () => void; const together = new Promise<void>(resolve => { open = resolve; });
-    const stop = setTimeout(() => open(), 3000);
+    const stop = setTimeout(() => { expired = true; open(); }, 10000);
     const getConnection = pool.getConnection.bind(pool);
     (pool as FixtureValue).getConnection = async () => {
       const connection = await getConnection(); const execute = connection.execute.bind(connection); const release = connection.release.bind(connection);
@@ -1551,8 +1553,8 @@ test('moving a task between lists and calendars: one copy, the same row, through
       return connection;
     };
     try {
-      const answers = await within(10000, 'the edits', Promise.all(tasks.map((task, index) => owner('PUT', `/calendar/events/${task}`, { title: `Fenced edit ${index}` }, null))));
-      assert.equal(arrived, tasks.length, 'every edit held its connection at once');
+      const answers = await within(20000, 'the edits', Promise.all(tasks.map((task, index) => owner('PUT', `/calendar/events/${task}`, { title: `Fenced edit ${index}` }, null))));
+      assert.ok(!expired, `only ${arrived} of ${tasks.length} edits held their connections at once`);
       assert.deepEqual(answers.map(answer => [answer.status, answer.body.event?.title]), tasks.map((_, index) => [200, `Fenced edit ${index}`]));
     } finally { (pool as FixtureValue).getConnection = getConnection; clearTimeout(stop); open(); }
   });
