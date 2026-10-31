@@ -124,11 +124,10 @@ test('task order and calendar defaults: owner-scoped, gated, kept over re-sync a
   // The open tasks as ToDo orders them: by rank, then id.
   async function order(request = owner) {
     const { events } = await request('GET', '/calendar/events?include_todos=true&include_done=false&respect_auto_todo=true');
-    return (events as FixtureValue[]).sort((a, b) => a.sort_rank - b.sort_rank || (a.id < b.id ? -1 : 1));
+    return (events as FixtureValue[]).sort((a, b) => a.sort_rank - b.sort_rank || (a.sort_key < b.sort_key ? -1 : a.sort_key > b.sort_key ? 1 : 0));
   }
   const titles = async (request = owner) => (await order(request)).map(event => event.title);
   const orderRows = async (userId = ids.owner) => Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM task_order WHERE user_id = ?', [userId]))[0][0].n);
-  const handRows = async (userId = ids.owner) => Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM task_order WHERE user_id = ? AND auto_basis IS NULL', [userId]))[0][0].n);
 
   const inbox = await localCalendar(ids.owner, 'Inbox');
   const t0 = Date.UTC(2026, 9, 1, 8);
@@ -459,7 +458,8 @@ test('task order and calendar defaults: owner-scoped, gated, kept over re-sync a
     assert.deepEqual(await labels(), ['Week 2', 'Solo', 'Week 1', 'Week 3']);
     assert.deepEqual((await listed()).slice(0, 2).map(event => event.hand_ordered), [true, true]);
 
-    // Occurrences from before the window expire; one still ahead stays.
+    // No expiry by date: a rank of an occurrence from long ago (or one whose
+    // RECURRENCE-ID is old while its moved start is in view) stays.
     const stale = '20200106T100000Z';
     const keyOf = runtime('services/task-order').itemKey;
     for (const recurrence of [stale, '20300107T100000Z']) {
@@ -467,13 +467,18 @@ test('task order and calendar defaults: owner-scoped, gated, kept over re-sync a
         [ids.owner, keyOf({ calendar_id: work.id, remote_uid: 'weekly@example.test', recurrence_id: recurrence }), work.id, 'weekly@example.test', recurrence]);
     }
     await sync();
-    assert.deepEqual(await ranks(), [...placed, 'weekly@example.test|20300107T100000Z']);
+    const withOld = [...placed, `weekly@example.test|${stale}`, 'weekly@example.test|20300107T100000Z'].sort();
+    assert.deepEqual(await ranks(), withOld);
 
     // Deleted at the server (verified): its order goes.
     remote.objects.delete(soloHref);
     await sync();
     assert.deepEqual(await labels(), ['Week 2', 'Week 1', 'Week 3']);
-    assert.deepEqual(await ranks(), [`weekly@example.test|${icsDate(first + week)}`, 'weekly@example.test|20300107T100000Z']);
+    assert.deepEqual(await ranks(), withOld.filter(rank => !rank.startsWith('solo@')));
+    // Deleting the series removes every rank of its UID.
+    remote.objects.delete(seriesHref);
+    await sync();
+    assert.deepEqual(await ranks(), []);
     await pool.execute('DELETE e FROM calendar_events e JOIN calendar_calendars c ON c.id = e.calendar_id WHERE c.account_id = ?', [accountId]);
     await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [accountId]);
   });
@@ -498,7 +503,7 @@ test('task order and calendar defaults: owner-scoped, gated, kept over re-sync a
     const { settings } = await owner('GET', '/settings/values');
     assert.equal(settings.default_task_list_id.value, copy.id);
     assert.equal(settings.default_calendar_id.value, copy.id);
-    assert.equal(await handRows(), 2);
+    assert.equal(await orderRows(), 2, 'the restore adds only the archived hand places');
     const restored = (await order()).filter(event => event.calendar_id === copy.id).map(event => [event.title, event.hand_ordered]);
     assert.deepEqual(restored, [['Second', true], ['First', false]]);
     // Restoring again with Keep existing adds no rows.
@@ -551,10 +556,9 @@ test('task order and calendar defaults: owner-scoped, gated, kept over re-sync a
     const fresh = await signIn('fresh');
     const [[freshChores]] = await pool.query<RowDataPacket[]>("SELECT id FROM calendar_calendars WHERE user_id = ? AND name = 'Chores'", [freshId]);
     assert.deepEqual(await listOf(fresh, freshChores.id), saved);
-    // Its kept date ranks do not count as placed by hand and follow a new date.
-    const [[pairCopy]] = await pool.query<RowDataPacket[]>('SELECT id FROM calendar_events WHERE user_id = ? AND title = ?', [freshId, pairs[2].title]);
-    await fresh('PUT', `/calendar/events/${pairCopy.id}`, { is_todo_only: false, start_time: '2026-12-01T09:00:00.000Z', end_time: '2026-12-01T10:00:00.000Z' });
-    assert.equal((await fresh('GET', `/calendar/events/${pairCopy.id}`)).event.hand_ordered, false);
+    // Only the archived hand places became rows; the rest follows the
+    // restored order keys and creation times.
+    assert.equal(await orderRows(freshId), (backup.data.task_order as FixtureValue[]).length);
 
     // Into the same person: Replace keeps the rows, Keep both makes a copy.
     await restoreInto(ids.owner, 'replace');
@@ -564,5 +568,59 @@ test('task order and calendar defaults: owner-scoped, gated, kept over re-sync a
     const [copies] = await pool.query<RowDataPacket[]>("SELECT id FROM calendar_calendars WHERE user_id = ? AND name LIKE 'Chores%' AND id <> ?", [ids.owner, chores]);
     assert.equal(copies.length, 1);
     assert.deepEqual(await listOf(owner, copies[0].id), saved);
+  });
+
+  await t.test('Replace makes the order the archive\'s; Keep existing and Keep both leave the destination\'s', async () => {
+    const errands = await localCalendar(ids.owner, 'Shopping');
+    const milk = await task(ids.owner, errands, 'Milk', { createdMs: Date.UTC(2026, 9, 2, 8) });
+    const bread = await task(ids.owner, errands, 'Bread', { createdMs: Date.UTC(2026, 9, 2, 8, 1) });
+    const listOf = async (calendarId: string) => (await order()).filter(event => event.calendar_id === calendarId).map(event => [event.title, event.hand_ordered]);
+    const archived = await listOf(errands);
+    assert.deepEqual(archived, [['Milk', false], ['Bread', false]]);
+    const backup = await runtime('services/backup').buildBackupForUser(ids.owner, { sections: ['calendar'] });
+    const restore = async (conflict_mode: string) => {
+      const result = await runtime('services/backup').importBackupForUser(ids.owner, structuredClone(backup), { mode: 'apply', sections: ['calendar'], conflict_mode, startAccountSync: () => {} });
+      assert.equal(result.valid, true, JSON.stringify(result.errors));
+    };
+    // Placed after the backup.
+    const dragged = [['Bread', true], ['Milk', false]];
+    await owner('PUT', `/calendar/events/${bread}/position`, { after: null, before: milk });
+    assert.deepEqual(await listOf(errands), dragged);
+    // Keep existing: the existing tasks and their order stay.
+    await restore('keep_existing');
+    assert.deepEqual(await listOf(errands), dragged);
+    // Keep both: the original keeps its order, the copy has the archive's.
+    await restore('keep_both');
+    assert.deepEqual(await listOf(errands), dragged);
+    const [[copy]] = await pool.query<RowDataPacket[]>("SELECT id FROM calendar_calendars WHERE user_id = ? AND name = 'Shopping' AND id <> ?", [ids.owner, errands]);
+    assert.deepEqual(await listOf(copy.id), archived);
+    // Replace: the archive's order, the later placement gone.
+    await restore('replace');
+    assert.deepEqual(await listOf(errands), archived);
+  });
+
+  await t.test('tasks with equal ranks keep their order over a restore with new ids', async () => {
+    const ties = await localCalendar(ids.owner, 'Ties');
+    // Two ids whose date-rank offsets collide (2467), made in the same second.
+    const created = '2026-10-03 08:00:00';
+    for (const [id, title] of [['7f0c2c4e-0000-4000-8000-000000000027', 'Twenty-seven'], ['7f0c2c4e-0000-4000-8000-000000000009', 'Nine']]) {
+      await pool.execute(`INSERT INTO calendar_events (id, user_id, calendar_id, title, start_time, end_time, is_todo_only, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, TRUE, ?)`, [id, ids.owner, ties, title, created, created, created]);
+    }
+    const listOf = async (request: FixtureValue, calendarId: string) => (await order(request)).filter(event => event.calendar_id === calendarId);
+    const saved = await listOf(owner, ties);
+    assert.equal(saved[0].sort_rank, saved[1].sort_rank, 'the two ranks tie');
+    assert.deepEqual(saved.map(event => event.title), ['Nine', 'Twenty-seven'], 'the tie is ordered by the stable key');
+    const backup = await runtime('services/backup').buildBackupForUser(ids.owner, { sections: ['calendar'] });
+    const tiedId = crypto.randomUUID();
+    await pool.execute<ResultSetHeader>('INSERT INTO users (id,email,password_hash,full_name) VALUES (?,?,?,?)', [tiedId, 'tied@example.test', passwordHash, 'tied']);
+    const result = await runtime('services/backup').importBackupForUser(tiedId, backup, { mode: 'apply', sections: ['calendar'], startAccountSync: () => {} });
+    assert.equal(result.valid, true, JSON.stringify(result.errors));
+    const tied = await signIn('tied');
+    const [[restoredTies]] = await pool.query<RowDataPacket[]>("SELECT id FROM calendar_calendars WHERE user_id = ? AND name = 'Ties'", [tiedId]);
+    const restored = await listOf(tied, restoredTies.id);
+    assert.deepEqual(restored.map(event => [event.title, event.sort_rank, event.sort_key]), saved.map(event => [event.title, event.sort_rank, event.sort_key]));
+    assert.ok(restored.every(event => !saved.some(source => source.id === event.id)), 'the restored tasks have new ids');
+    assert.equal(await orderRows(tiedId), (backup.data.task_order as FixtureValue[]).length, 'only the archived hand places, no rows for the tie');
   });
 });

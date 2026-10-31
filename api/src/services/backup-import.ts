@@ -16,7 +16,7 @@ import { pauseMailRestore, restoreMailEngineEvidence } from './backup-mail-engin
 import { isModuleEnabled } from './module-settings';
 import { SETTINGS, referenceKeys, restorableValue } from './settings';
 import { normalizeSignature } from './mail-signature';
-import { dateRank, itemKey, rankBasis } from './task-order';
+import { itemKey } from './task-order';
 import {
   isFileRangeSource,
   normalizeMysqlDateTime,
@@ -83,6 +83,13 @@ function sourceEmailJson(value: unknown) {
 }
 
 const SETTING_KEYS = new Set(Object.keys(SETTINGS.user));
+
+// The archived task's order key (its own, or its id before 0.27), kept on the
+// restored event unless it is the event's id anyway (services/task-order.ts).
+function restoredOrderKey(row: BackupRow, targetId: string) {
+  const key = typeof row.order_key === 'string' && row.order_key ? row.order_key : String(row.id);
+  return key === targetId ? null : key;
+}
 // Settings that name a record restored later in the run, by the section
 // whose id map remaps them: each is held back and written after it.
 const MAIL_REFERENCE_KEYS = new Set(referenceKeys('mail_account'));
@@ -261,6 +268,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
       const claimedCalendarEventIds = new Set<string>();
       // Events this restore wrote, with their archived row (for the order).
       const writtenCalendarEvents: { row: BackupRow; targetId: string }[] = [];
+      const writtenCalendarIds = new Set<string>();
       const mailAccountIdMap = new Map();
       const mailFolderIdMap = new Map();
       const mailRuleIdMap = new Map();
@@ -417,6 +425,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         const targetCalendarId = chooseTargetId(row.id, existingCalendarId, conflictMode, { canKeepBoth: canKeepBothCalendar });
         calendarIdMap.set(row.id, targetCalendarId);
         if (!shouldWriteExisting(existingCalendarId, targetCalendarId, conflictMode)) continue;
+        writtenCalendarIds.add(targetCalendarId);
         const calendarName = targetCalendarId !== existingCalendarId && conflictMode === 'keep_both' && existingCalendarId
           ? `${row.name || 'Calendar'} (Restored)`
           : row.name || 'Calendar';
@@ -453,11 +462,12 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         calendarEventIdMap.set(row.id, targetEventId);
         claimedCalendarEventIds.add(targetEventId);
         if (!shouldWriteExisting(existingEventId, targetEventId, conflictMode)) continue;
-        // created_at too (0.27): a task without a date is ordered by it.
+        // created_at and the order key too (0.27): a task without a date is
+        // ordered by when it was made, and ties by the archived task's key.
         await writeOwnedRow(connection, userId, 'calendar_events',
-          ['id', 'user_id', 'calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json', 'created_at'],
-          [targetEventId, row.user_id, targetCalendarId, row.title || 'Untitled Event', row.description ?? null, normalizeMysqlDateTime(row.start_time), normalizeMysqlDateTime(row.end_time), row.all_day ? 1 : 0, row.location || null, row.color || '#22c55e', row.recurrence || null, row.reminder_minutes ?? null, row.reminders ? (typeof row.reminders === 'string' ? row.reminders : JSON.stringify(row.reminders)) : null, row.todo_status || null, row.is_todo_only ? 1 : 0, normalizeMysqlDateTime(row.done_at), sourceEmailId(row.source_email_id), sourceEmailJson(row.source_email_json), normalizeMysqlDateTime(row.created_at, new Date())],
-          ['calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json', 'created_at']
+          ['id', 'user_id', 'calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json', 'created_at', 'order_key'],
+          [targetEventId, row.user_id, targetCalendarId, row.title || 'Untitled Event', row.description ?? null, normalizeMysqlDateTime(row.start_time), normalizeMysqlDateTime(row.end_time), row.all_day ? 1 : 0, row.location || null, row.color || '#22c55e', row.recurrence || null, row.reminder_minutes ?? null, row.reminders ? (typeof row.reminders === 'string' ? row.reminders : JSON.stringify(row.reminders)) : null, row.todo_status || null, row.is_todo_only ? 1 : 0, normalizeMysqlDateTime(row.done_at), sourceEmailId(row.source_email_id), sourceEmailJson(row.source_email_json), normalizeMysqlDateTime(row.created_at, new Date()), restoredOrderKey(row, targetEventId)],
+          ['calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json', 'created_at', 'order_key']
         );
         writtenCalendarEvents.push({ row, targetId: targetEventId });
         if (sourceEmailId(row.source_email_id)) eventsWithSourceEmail.set(targetEventId, row.source_email_id);
@@ -527,6 +537,11 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
       // The hand order (0.27): a local task's row follows its restored event,
       // a synced one its calendar; the key is computed again from them. A
       // synced task's order matches its UID once the next sync links it.
+      // The hand order. Keep existing and Keep both: a destination row wins
+      // (a copy kept beside has its own key). Replace: the order becomes the
+      // archive's, so a restored task or calendar that the archive has no
+      // row for loses a destination row too (placed after the backup).
+      const restoredOrderKeys = new Set<string>();
       for (const order of data.task_order || []) {
         await checkRestoreCancelled();
         const row = overwriteUserId(order, userId);
@@ -536,44 +551,28 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
           : { calendar_id: null, event_id: await resolveOwnedReference(connection, userId, 'calendar_events', row.event_id, calendarEventIdMap), remote_uid: null, recurrence_id: '' };
         const key = itemKey(target);
         if (conflictMode !== 'replace') {
-          // An existing order wins; a copy kept beside it has its own key.
           const [existingOrder] = await connection.execute<RowDataPacket[]>('SELECT item_key FROM task_order WHERE user_id = ? AND item_key = ?', [userId, key]);
           if (existingOrder.length) continue;
         }
+        restoredOrderKeys.add(key);
         await writeOwnedRow(connection, userId, 'task_order',
-          ['user_id', 'item_key', 'calendar_id', 'event_id', 'remote_uid', 'recurrence_id', 'sort_rank', 'auto_basis'],
-          [userId, key, target.calendar_id, target.event_id, target.remote_uid, target.recurrence_id, Number(row.sort_rank), row.auto_basis == null ? null : Number(row.auto_basis)],
-          ['calendar_id', 'event_id', 'remote_uid', 'recurrence_id', 'sort_rank', 'auto_basis']
+          ['user_id', 'item_key', 'calendar_id', 'event_id', 'remote_uid', 'recurrence_id', 'sort_rank'],
+          [userId, key, target.calendar_id, target.event_id, target.remote_uid, target.recurrence_id, Number(row.sort_rank)],
+          ['calendar_id', 'event_id', 'remote_uid', 'recurrence_id', 'sort_rank']
         );
       }
 
-      // A local task's date rank breaks ties with an offset from its event
-      // id, which the restore renews. Where that changes the rank, the
-      // archived one is kept (auto_basis: it applies while the task keeps
-      // its date), so the order comes back exactly as saved, also next to
-      // hand-placed tasks. Synced tasks need none: their offset comes from
-      // the UID, and the next sync rebuilds their rows anyway.
-      const archivedCalendars = new Map((data.calendar_calendars || []).map(row => [String(row.id), row]));
-      const syncedEvents = new Set((data.calendar_event_external_refs || []).map(row => String(row.event_id)));
-      const placedEvents = new Set((data.task_order || []).filter(row => !row.remote_uid).map(row => String(row.event_id)));
-      for (const { row, targetId } of writtenCalendarEvents) {
-        if (syncedEvents.has(String(row.id)) || placedEvents.has(String(row.id)) || ['done', 'cancelled'].includes(String(row.todo_status))) continue;
-        const calendar = archivedCalendars.get(String(row.calendar_id));
-        const listsTasks = !!row.is_todo_only || (calendar !== undefined && calendar.auto_todo_enabled !== false && calendar.auto_todo_enabled !== 0);
-        if (!listsTasks) continue;
-        const ranked = { start_time: row.start_time, created_at: row.created_at, is_todo_only: row.is_todo_only };
-        const archivedRank = dateRank({ id: String(row.id), ...ranked });
-        if (archivedRank === dateRank({ id: targetId, ...ranked })) continue;
-        const key = itemKey({ event_id: targetId });
-        if (conflictMode !== 'replace') {
-          const [existingOrder] = await connection.execute<RowDataPacket[]>('SELECT item_key FROM task_order WHERE user_id = ? AND item_key = ?', [userId, key]);
-          if (existingOrder.length) continue;
+      if (conflictMode === 'replace') {
+        for (const { targetId } of writtenCalendarEvents) {
+          const key = itemKey({ event_id: targetId });
+          if (!restoredOrderKeys.has(key)) await connection.execute('DELETE FROM task_order WHERE user_id = ? AND item_key = ?', [userId, key]);
         }
-        await writeOwnedRow(connection, userId, 'task_order',
-          ['user_id', 'item_key', 'calendar_id', 'event_id', 'remote_uid', 'recurrence_id', 'sort_rank', 'auto_basis'],
-          [userId, key, null, targetId, null, '', archivedRank, rankBasis({ id: targetId, ...ranked })],
-          ['calendar_id', 'event_id', 'remote_uid', 'recurrence_id', 'sort_rank', 'auto_basis']
-        );
+        for (const calendarId of writtenCalendarIds) {
+          const [rows] = await connection.execute<RowDataPacket[]>('SELECT item_key FROM task_order WHERE user_id = ? AND calendar_id = ?', [userId, calendarId]);
+          for (const row of rows) {
+            if (!restoredOrderKeys.has(String(row.item_key))) await connection.execute('DELETE FROM task_order WHERE user_id = ? AND item_key = ?', [userId, row.item_key]);
+          }
+        }
       }
 
       await writeRestoredReferences(connection, userId, archivedCalendarReferences, 'calendar_calendars', calendarIdMap);
