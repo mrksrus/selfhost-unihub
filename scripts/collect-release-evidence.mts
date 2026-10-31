@@ -34,7 +34,8 @@ const latest = new Map<string, { attempt: number; dir: string; files: string[] }
 const offer = (part: string, source: { attempt: number; dir: string; files: string[] }) => {
   if ((latest.get(part)?.attempt ?? 0) < source.attempt) latest.set(part, source);
 };
-const previous = previousDir && readJson(path.join(previousDir, 'manifest.json')) as { parts?: Record<string, { attempt?: number; files?: string[] }> } | undefined;
+interface Manifest { parts?: Record<string, { attempt?: number; files?: string[] }> }
+const previous: Manifest | undefined = previousDir ? readJson(path.join(previousDir, 'manifest.json')) : undefined;
 for (const [part, entry] of Object.entries(previous?.parts ?? {})) {
   const kept = (entry.files ?? []).filter(file => fs.existsSync(path.join(previousDir!, file)));
   if (entry.attempt && kept.length) offer(part, { attempt: entry.attempt, dir: previousDir!, files: kept });
