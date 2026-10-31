@@ -227,35 +227,82 @@ describe('the sortable list', () => {
     fireEvent.mouseUp(document, { clientX: to.x, clientY: to.y });
   };
 
-  it('puts a row back when the pointer lets go outside the list, and still places it last at the list\'s bottom edge', async () => {
-    // The list is three rows of 50 px; a dragged row's box follows its transform.
+  /**
+   * Rows of the given heights, stacked from 0 in a list 400 px wide; a dragged
+   * row's box follows its transform, scaled about its centre as the browser
+   * does (dnd-kit scales the dragged row to the row it is over).
+   */
+  const stacked = (heights: number[]) => {
     const original = Element.prototype.getBoundingClientRect;
+    const tops = heights.map((_, index) => heights.slice(0, index).reduce((sum, height) => sum + height, 0));
+    const total = heights.reduce((sum, height) => sum + height, 0);
     Element.prototype.getBoundingClientRect = function () {
-      const element = this as HTMLElement;
-      const row = element.closest('li');
-      if (!row) return { x: 0, y: 0, top: 0, left: 0, width: 400, height: 150, right: 400, bottom: 150, toJSON() { return this; } } as DOMRect;
+      const row = (this as HTMLElement).closest('li');
+      if (!row) return { x: 0, y: 0, top: 0, left: 0, width: 400, height: total, right: 400, bottom: total, toJSON() { return this; } } as DOMRect;
       const index = row.parentElement ? Array.from(row.parentElement.children).indexOf(row) : 0;
       const shift = Number(/translate3d\([^,]*,\s*(-?[\d.]+)px/.exec(row.style.transform ?? '')?.[1] ?? 0);
-      const top = index * 50 + shift;
-      return { x: 0, y: top, top, left: 0, width: 400, height: 50, right: 400, bottom: top + 50, toJSON() { return this; } } as DOMRect;
+      const scale = Number(/scaleY\(([\d.]+)\)/.exec(row.style.transform ?? '')?.[1] ?? 1);
+      const height = heights[index] * scale;
+      const top = tops[index] + shift + (heights[index] - height) / 2;
+      return { x: 0, y: top, top, left: 0, width: 400, height, right: 400, bottom: top + height, toJSON() { return this; } } as DOMRect;
     };
+    return () => { Element.prototype.getBoundingClientRect = original; };
+  };
+  const names = ['Pay rent', 'Call Sam', 'Plan holiday'];
+  const renderList = (onReorder: (reorder: unknown) => void) => render(
+    <SortableList items={names} getId={name => name} getName={name => name} label="No date" onReorder={onReorder}>
+      {(name, row) => <li key={name} ref={row.setNodeRef} style={row.style}>{name}<DragHandle {...row.handle} label={`Reorder ${name}`} /></li>}
+    </SortableList>,
+  );
+  const backAnnouncement = 'Dropped outside No date. Pay rent is back at position 1 of 3 in No date.';
+
+  it('puts a row back when the pointer lets go outside the list, and still places it last at the list\'s bottom edge', async () => {
+    const restore = stacked([50, 50, 50]);
     const onReorder = vi.fn();
     try {
-      const names = ['Pay rent', 'Call Sam', 'Plan holiday'];
-      render(
-        <SortableList items={names} getId={name => name} getName={name => name} label="No date" onReorder={onReorder}>
-          {(name, row) => <li key={name} ref={row.setNodeRef} style={row.style}>{name}<DragHandle {...row.handle} label={`Reorder ${name}`} /></li>}
-        </SortableList>,
-      );
+      renderList(onReorder);
       // Taken hold of at the first row's middle, let go 200 px below the list (another section): nothing.
       pointerDrag(screen.getByRole('button', { name: 'Reorder Pay rent' }), { x: 380, y: 25 }, { x: 380, y: 350 });
-      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Dropped outside No date. Pay rent is back at position 1 of 3 in No date.'));
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(backAnnouncement));
       expect(onReorder).not.toHaveBeenCalled();
       // Let go just inside the bottom edge: last.
       pointerDrag(screen.getByRole('button', { name: 'Reorder Pay rent' }), { x: 380, y: 25 }, { x: 380, y: 145 });
       await waitFor(() => expect(onReorder).toHaveBeenCalledTimes(1));
       expect(onReorder.mock.calls[0][0]).toMatchObject({ item: 'Pay rent', from: 0, to: 2, after: 'Plan holiday', before: null });
-    } finally { Element.prototype.getBoundingClientRect = original; }
+    } finally { restore(); }
+  });
+
+  it('judges the drop by the pointer, not by the dragged row\'s box, when rows differ in height', async () => {
+    // A tall row (a description, subtasks) dragged over short ones shrinks to their height: let go at 235, inside a list ending at 250, it is placed.
+    let restore = stacked([150, 50, 50]);
+    const onReorder = vi.fn();
+    try {
+      const { unmount } = renderList(onReorder);
+      pointerDrag(screen.getByRole('button', { name: 'Reorder Pay rent' }), { x: 380, y: 25 }, { x: 380, y: 235 });
+      await waitFor(() => expect(onReorder).toHaveBeenCalledTimes(1));
+      expect(onReorder.mock.calls[0][0]).toMatchObject({ item: 'Pay rent', from: 0, to: 2 });
+      unmount();
+      restore();
+      // A short row dragged over a tall one grows: let go at 275, below the list's end at 250, it goes back.
+      restore = stacked([50, 50, 150]);
+      onReorder.mockClear();
+      renderList(onReorder);
+      pointerDrag(screen.getByRole('button', { name: 'Reorder Pay rent' }), { x: 380, y: 25 }, { x: 380, y: 275 });
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(backAnnouncement));
+      expect(onReorder).not.toHaveBeenCalled();
+    } finally { restore(); }
+  });
+
+  it('puts a row back when the pointer lets go beside the list, although the row itself cannot leave it sideways', async () => {
+    const restore = stacked([50, 50, 50]);
+    const onReorder = vi.fn();
+    try {
+      renderList(onReorder);
+      // Moved down one row and 150 px to the right of the list (400 px wide).
+      pointerDrag(screen.getByRole('button', { name: 'Reorder Pay rent' }), { x: 380, y: 25 }, { x: 550, y: 125 });
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(backAnnouncement));
+      expect(onReorder).not.toHaveBeenCalled();
+    } finally { restore(); }
   });
 
   it('cancels with Escape and leaves the order alone', async () => {

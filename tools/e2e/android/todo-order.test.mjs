@@ -230,6 +230,9 @@ test('[27-02] a Today task dropped in Later goes back to its place in Today', { 
       finger(from, { x: from.x, y: into.y }, { steps: 8 });
       await sleep(2500);
       deviceScreenshot(`${evidence}/android-todo-order-section-drop.png`);
+      // The drag ran and ended outside Today: the list announced it (its live region keeps the last announcement).
+      const announced = await page.evaluate(() => [...document.querySelectorAll('[role="status"]')].map(node => node.textContent ?? ''));
+      assert.ok(announced.some(text => text.startsWith(`Dropped outside Today. ${prefix} Today 1 is back at position`)), `the drop was announced as outside Today: ${JSON.stringify(announced)}`);
       // It cannot leave its section: Later did not take it, it is still in Today with its date.
       assert.deepEqual(await shownOrder(page, 'Later', pattern), later, 'Later did not take the task');
       const shownToday = await shownOrder(page, 'Today', pattern);

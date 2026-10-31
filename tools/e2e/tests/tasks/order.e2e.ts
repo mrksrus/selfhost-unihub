@@ -269,11 +269,22 @@ test('[27-02] a task dropped on another section goes back to its place; at its o
     expect(await sectionOrder('Later')).toEqual([`${prefix} Later 1`, `${prefix} Later 2`]);
     expect(await stored()).toEqual(before);
 
+    const box = await screen.getByRole('region', 'Today').getByRole('list').first().boundingBox();
+    if (!box) throw new Error('the Today list has no box');
+    // Let go beside the list (room for that on the wide layout only): back as well, although the row itself only moves up and down.
+    if (await targetOf(browser) === 'desktop') {
+      await todayRow(`${prefix} Today 1`).hover();
+      const grip = await centreOf(handle(screen, `${prefix} Today 1`));
+      await mouseDrag(browser, grip, { x: box.x + box.width + 150, y: grip.y + 60 });
+      await expect(screen.getByRole('status').filter({ hasText: `Dropped outside Today. ${prefix} Today 1 is back at position` })).toHaveCount(1);
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      expect(await sectionOrder('Today')).toEqual([`${prefix} Today 1`, `${prefix} Today 2`]);
+      expect(await stored()).toEqual(before);
+    }
+
     // Let go just inside the bottom edge of Today: placed last there.
     await todayRow(`${prefix} Today 1`).hover();
     const again = await centreOf(handle(screen, `${prefix} Today 1`));
-    const box = await screen.getByRole('region', 'Today').getByRole('list').first().boundingBox();
-    if (!box) throw new Error('the Today list has no box');
     await mouseDrag(browser, again, { x: again.x, y: box.y + box.height - 6 });
     await expect.poll(() => sectionOrder('Today')).toEqual([`${prefix} Today 2`, `${prefix} Today 1`]);
     await expect.poll(async () => (await stored())[0][1], { timeout: 15_000 }).toBe(true);

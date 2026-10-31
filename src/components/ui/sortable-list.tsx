@@ -1,7 +1,7 @@
-import { forwardRef, useCallback, useMemo, useRef, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from 'react';
+import { forwardRef, useCallback, useEffect, useMemo, useRef, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from 'react';
 import {
   DndContext, KeyboardSensor, MouseSensor, TouchSensor, closestCenter, useSensor, useSensors,
-  type Announcements, type DragEndEvent, type Modifier, type ScreenReaderInstructions, type UniqueIdentifier,
+  type Announcements, type DragEndEvent, type DragStartEvent, type Modifier, type ScreenReaderInstructions, type UniqueIdentifier,
 } from '@dnd-kit/core';
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS, getEventCoordinates } from '@dnd-kit/utilities';
@@ -80,23 +80,33 @@ export function SortableList<T>({ items, getId, getName, label, onReorder, disab
   );
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
   const list = useRef<HTMLElement | null>(null);
-  const nodes = useRef(new Map<string, HTMLElement>());
-  const register = useCallback((id: string, node: HTMLElement | null) => { if (node) nodes.current.set(id, node); else nodes.current.delete(id); }, []);
+  // Where the pointer is during a pointer drag, in viewport coordinates: from
+  // the press that started it, then every move on the window. The dragged
+  // row's own box cannot tell (dnd-kit pins its x and scales it to the row it
+  // is over). A keyboard drag has no pointer and stays within the list anyway.
+  const pointer = useRef<{ x: number; y: number } | null>(null);
+  const stopTracking = useRef<() => void>(() => {});
+  const trackPointer = ({ activatorEvent }: DragStartEvent) => {
+    stopTracking.current();
+    pointer.current = activatorEvent ? getEventCoordinates(activatorEvent) : null;
+    if (!pointer.current) return;
+    const follow = (event: Event) => { pointer.current = getEventCoordinates(event) ?? pointer.current; };
+    const moves = ['pointermove', 'mousemove', 'touchmove'] as const;
+    for (const move of moves) window.addEventListener(move, follow, { capture: true, passive: true });
+    stopTracking.current = () => { for (const move of moves) window.removeEventListener(move, follow, { capture: true }); stopTracking.current = () => {}; };
+  };
+  useEffect(() => () => stopTracking.current(), []);
   /**
    * Whether the pointer let go outside this list (over another section, its
-   * heading, or nothing): then the drop changes nothing and the row goes back
-   * (D31: a drag stays within its section). The pointer keeps its hold on the
-   * row, so its place is the row's place now plus where it took hold. A
-   * keyboard drag has no pointer and stays within the list anyway.
+   * heading, beside it, or nothing): then the drop changes nothing and the
+   * row goes back (D31: a drag stays within its section).
    */
-  const droppedOutside = ({ active, activatorEvent }: DragEndEvent) => {
-    const pointer = activatorEvent ? getEventCoordinates(activatorEvent) : null;
-    const initial = active.rect.current.initial;
-    const row = nodes.current.get(String(active.id))?.getBoundingClientRect();
+  const droppedOutside = () => {
+    stopTracking.current();
+    const at = pointer.current;
     const bounds = list.current?.getBoundingClientRect();
-    if (!pointer || !initial || !row || !bounds) return false;
-    const x = row.left + (pointer.x - initial.left), y = row.top + (pointer.y - initial.top);
-    return x < bounds.left || x > bounds.right || y < bounds.top || y > bounds.bottom;
+    if (!at || !bounds) return false;
+    return at.x < bounds.left || at.x > bounds.right || at.y < bounds.top || at.y > bounds.bottom;
   };
   // Read by the announcement of the drop, which dnd-kit makes right after onDragEnd.
   const outside = useRef(false);
@@ -128,9 +138,8 @@ export function SortableList<T>({ items, getId, getName, label, onReorder, disab
     onDragCancel: ({ active }) => `Reordering cancelled. ${nameOf(active.id)} is back at position ${position(active.id)} of ${ids.length} in ${label}.`,
   }), [nameOf, position, ids.length, label]);
 
-  const onDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event;
-    outside.current = droppedOutside(event);
+  const onDragEnd = ({ active, over }: DragEndEvent) => {
+    outside.current = droppedOutside();
     if (!over || over.id === active.id || outside.current) return;
     const from = ids.indexOf(String(active.id));
     const to = ids.indexOf(String(over.id));
@@ -142,11 +151,11 @@ export function SortableList<T>({ items, getId, getName, label, onReorder, disab
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} modifiers={[verticalOnly]}
       accessibility={{ announcements, screenReaderInstructions: INSTRUCTIONS }}
-      onDragEnd={onDragEnd}>
+      onDragStart={trackPointer} onDragEnd={onDragEnd} onDragCancel={() => stopTracking.current()}>
       <SortableContext items={ids} strategy={verticalListSortingStrategy} disabled={disabled}>
         <Tag ref={list as never} className={className} aria-label={ariaLabel}>
           {items.map((item, index) => (
-            <SortableItem key={ids[index]} id={ids[index]} disabled={disabled} reducedMotion={reducedMotion} register={register}>
+            <SortableItem key={ids[index]} id={ids[index]} disabled={disabled} reducedMotion={reducedMotion}>
               {row => children(item, row, index)}
             </SortableItem>
           ))}
@@ -156,12 +165,10 @@ export function SortableList<T>({ items, getId, getName, label, onReorder, disab
   );
 }
 
-function SortableItem({ id, disabled, reducedMotion, register, children }: {
-  id: string; disabled: boolean; reducedMotion: boolean; register: (id: string, node: HTMLElement | null) => void; children: (row: SortableRow) => ReactNode;
+function SortableItem({ id, disabled, reducedMotion, children }: {
+  id: string; disabled: boolean; reducedMotion: boolean; children: (row: SortableRow) => ReactNode;
 }) {
-  const { attributes, listeners, setNodeRef: setSortableNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id, disabled });
-  // The list keeps the row's element too, to tell where the row is when the pointer lets go.
-  const setNodeRef = useCallback((node: HTMLElement | null) => { setSortableNodeRef(node); register(id, node); }, [setSortableNodeRef, register, id]);
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id, disabled });
   // dnd-kit's role goes: the handle is a real button. aria-describedby points
   // at the instructions DndContext renders.
   const { role: _role, ...handleAttributes } = attributes;
