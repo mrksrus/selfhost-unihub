@@ -157,7 +157,9 @@ nginx_config() {
       "$REPO/docker/nginx/default.conf" > "$conf/conf.d/default.conf"
   # The debug Android app, when built, is offered like the image's.
   local apk=$REPO/android/app/build/outputs/apk/debug/app-debug.apk
-  [ -f "$apk" ] && ln -sfn "$apk" "$STATE/downloads/unihub.apk"
+  # The state folder is per instance, not per checkout: never keep a link to
+  # another checkout's app, which the update test would take for this one.
+  if [ -f "$apk" ]; then ln -sfn "$apk" "$STATE/downloads/unihub.apk"; else rm -f -- "$STATE/downloads/unihub.apk"; fi
   return 0
 }
 
