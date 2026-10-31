@@ -1,0 +1,235 @@
+// Request and response shapes of the task and calendar routes that 0.27
+// added or extended (F11). The frontend imports these as types only; the
+// rules are in services/task-order.ts, services/calendar.ts and the move
+// service, and docs/CALENDAR.md describes them.
+
+/** A ToDo state; null is open. */
+export type TodoStatus = 'done' | 'changed' | 'time_moved' | 'cancelled' | null;
+
+/** The hand order of a task (services/task-order.ts). */
+export interface TaskRankFields {
+  /**
+   * Where the task stands: its hand rank if it was ever placed by hand, else
+   * a rank from its date (its creation time for a task without a date).
+   * Ascending; equal ranks are ordered by sort_key. Compare only within one answer:
+   * a rank says nothing on its own.
+   */
+  sort_rank: number;
+  /**
+   * The tiebreak for equal ranks: order by sort_rank, then sort_key (plain
+   * string comparison, not locale-aware). Unlike the id it survives a sync
+   * that rebuilds the row and a restore that renews ids, so ties keep their
+   * order. Opaque: it may carry a suffix after `~` (a restored copy, or a
+   * synced task's calendar), and two tasks never share one. Never derive it
+   * on the client.
+   */
+  sort_key: string;
+  /** The task was placed by hand; a date changed in UniHub clears it. */
+  hand_ordered: boolean;
+}
+
+export interface CalendarSubtaskDto {
+  id: string;
+  event_id: string;
+  user_id: string;
+  title: string;
+  is_done: boolean;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CalendarAttendeeDto {
+  id: string;
+  user_id: string;
+  event_id: string;
+  email: string;
+  display_name: string | null;
+  response_status: 'needsAction' | 'accepted' | 'tentative' | 'declined';
+  is_organizer: boolean;
+  optional_attendee: boolean;
+  comment: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** The email a task was made from: what was kept of it, and whether it still exists. */
+export interface SourceEmailDto {
+  email_id: string;
+  subject: string | null;
+  from_name: string | null;
+  from_address: string;
+  received_at: string | null;
+  attachments: string[];
+  account: string | null;
+  draft: boolean;
+  to: string | null;
+  available: boolean;
+}
+
+/**
+ * An event or task as GET /api/calendar/events and the event routes answer.
+ * Every event carries its rank; ToDo and Today order open tasks by it.
+ */
+/**
+ * A move of this item to another calendar that a calendar server has not
+ * finished. 'creating': the new server has not confirmed the copy; the item
+ * stays in its old list, edits and deletion answer 409 CALENDAR_MOVE_PENDING,
+ * and DELETE …/move cancels it. 'removing': the item is in its new list
+ * (target_calendar_id) and only the old copy is still to be removed; nothing
+ * waits on the person and it cannot be cancelled. `since` is when the move
+ * began; `attempts` counts failed tries at the server.
+ */
+export interface TaskMovePending {
+  state: 'creating' | 'removing';
+  target_calendar_id: string | null;
+  since: string;
+  attempts: number;
+}
+
+export interface CalendarEventDto extends TaskRankFields {
+  id: string;
+  user_id: string;
+  calendar_id: string | null;
+  title: string;
+  description: string | null;
+  start_time: string;
+  end_time: string;
+  all_day: boolean;
+  location: string | null;
+  color: string;
+  recurrence: string | null;
+  reminder_minutes: number | null;
+  reminders: number[] | null;
+  todo_status: TodoStatus;
+  is_todo_only: boolean;
+  done_at: string | null;
+  created_at: string;
+  updated_at: string;
+  source_email_id: string | null;
+  source_email: SourceEmailDto | null;
+  subtasks: CalendarSubtaskDto[];
+  attendees: CalendarAttendeeDto[];
+  /** A move to another calendar not finished yet, else null (also in the offline snapshot). */
+  move_pending: TaskMovePending | null;
+}
+
+/**
+ * PUT /api/calendar/events/:id/position: place the task between two tasks
+ * the person sees next to each other. `after` is the task just above (null
+ * at the top of the section), `before` the task just below (null at the
+ * bottom). At least one is given. A neighbour that is gone, done, not this
+ * person's, or no longer in that order answers 409 ORDER_STALE: refetch and
+ * let the person try again; do not guess.
+ */
+export interface TaskPositionRequest {
+  before: string | null;
+  after: string | null;
+}
+
+/**
+ * The new rank of every task the placement changed: usually only the moved
+ * one; several when tasks with equal ranks had to be spread apart.
+ */
+export interface TaskPositionResponse {
+  ranks: Record<string, number>;
+}
+
+/** POST /api/calendar/events/:id/move: move a task (or event) to another calendar or list. */
+export interface TaskMoveRequest {
+  calendar_id: string;
+}
+
+/**
+ * The moved task. `pending` says a calendar server has not confirmed the
+ * move yet (status 202): UniHub finishes it in the background. 'creating':
+ * the new server has not confirmed the copy; the task stays in its old list
+ * until it has, and edits and deletion answer 409 CALENDAR_MOVE_PENDING
+ * meanwhile (moving it to the same list again retries at once). 'removing':
+ * the task is in its new list; the old copy is still to be removed from the
+ * old server and does not show meanwhile. `source_kept`: the old copy was
+ * changed elsewhere since, so it was kept there and shows as an event of its
+ * own after the next sync.
+ *
+ * Errors: 404 TASK_NOT_FOUND or CALENDAR_NOT_FOUND (not this person's),
+ * 400 CALENDAR_TODO_REMOTE (a task without a date to a server calendar),
+ * 400 CALENDAR_RECURRING_MOVE, 403 CALENDAR_READ_ONLY, 409
+ * CALENDAR_SYNC_PAUSED, 409 CALENDAR_SYNC_PENDING, 409
+ * CALENDAR_MOVE_PENDING (moving to another list while a move is open), 409
+ * CALENDAR_EVENT_CHANGED (another change of the task, an edit or a move,
+ * was still being saved after 25 s, two more already wait for it, or too
+ * many changes run at once; changes of one task run one after another),
+ * 409 CALDAV_CONFLICT, the login errors of the calendar accounts (409
+ * MAIL_ACCOUNT_DISCONNECTED, CALDAV_NO_PASSWORD, MAIL_CALENDAR_UNLINKED),
+ * 422 CALDAV_AUTH_FAILED or CALDAV_FORBIDDEN, 502 CALDAV_SERVER_ERROR.
+ */
+export interface TaskMoveResponse {
+  event: CalendarEventDto | null;
+  pending?: 'creating' | 'removing';
+  source_kept?: boolean;
+}
+
+/**
+ * DELETE /api/calendar/events/:id/move: cancel a move whose new copy is not
+ * confirmed yet ('creating'). The item stays in its old list and can be
+ * edited, deleted or moved again at once. Nothing is deleted at any server:
+ * if the new calendar received the copy anyway, it appears there as its own
+ * item after the next sync; the person deletes it if they don't want it.
+ * `cancelled` false: nothing to cancel (no move, or one already 'removing',
+ * whose item is in its new list). 404 TASK_NOT_FOUND when the item is not
+ * this person's.
+ */
+export interface TaskMoveCancelResponse {
+  event: CalendarEventDto | null;
+  cancelled: boolean;
+}
+
+/**
+ * Why a calendar takes no new events or tasks: 'read_only' (a subscription,
+ * or a calendar the server marks read-only) or 'sync_paused' (its account's
+ * sync is paused).
+ */
+export type CalendarWriteBlock = 'read_only' | 'sync_paused';
+
+/**
+ * Fields the server adds to each calendar of GET /api/calendar/calendars, so
+ * no client re-implements the rules: where new items go and what a calendar
+ * can take.
+ */
+export interface CalendarChoiceFields {
+  /** New tasks go here: the default task list setting, or UniHub's fallback. */
+  default_for_tasks: boolean;
+  /** New events go here: the default calendar setting, or UniHub's fallback. */
+  default_for_events: boolean;
+  /** Why nothing new can be added here; null when it can. */
+  write_block: CalendarWriteBlock | null;
+  /** A task without a date can be saved here (only UniHub's own lists). */
+  takes_undated_tasks: boolean;
+}
+
+export type CalendarProvider = 'local' | 'caldav' | 'ics';
+
+/** A calendar (a "list" in ToDo) as GET /api/calendar/calendars answers. */
+export interface CalendarDto extends CalendarChoiceFields {
+  id: string;
+  user_id: string;
+  account_id: string;
+  name: string;
+  external_id: string | null;
+  color: string;
+  is_visible: boolean;
+  auto_todo_enabled: boolean;
+  read_only: boolean;
+  is_primary: boolean;
+  sync_token: string | null;
+  account_provider: CalendarProvider;
+  account_display_name: string | null;
+  account_email: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** GET /api/calendar/calendars */
+export interface CalendarListResponse {
+  calendars: CalendarDto[];
+}

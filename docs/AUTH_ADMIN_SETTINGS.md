@@ -398,6 +398,8 @@ are greyed out the same way. The shared types are in
 | `accent_color` | `blue`, `indigo`, `violet`, `pink`, `teal`, `green` (src/lib/accent.ts) | `blue` | Appearance |
 | `week_start` | `monday`, `sunday`, `saturday` | `monday` | General, Calendar |
 | `default_event_reminder` | minutes before a new event: `0`, `5`, `15`, `30`, `60`, `120`, `1440`, or `null` for none | `0` | General, Calendar |
+| `default_task_list_id` | the id of one of the user's own UniHub lists (a local calendar) with ToDo on and not read-only; empty means UniHub's choice: the oldest such list (remapped on restore with the calendars) | empty | General, ToDo |
+| `default_calendar_id` | the id of one of the user's calendars that can take new events: not read-only, not a subscription, its account's sync not paused; server calendars included; empty means UniHub's choice: the first such calendar in list order (remapped on restore with the calendars) | empty | General, Calendar |
 | `reminder_notification_detail` | `full` (title and time), `none` (only "Event reminder"); may carry a floor | `full` | Notifications |
 | `default_mail_account_id` | the id of one of the user's active, connected mail accounts; empty means the first account (remapped on restore) | empty | Mail |
 | `compose_format` | `rich`, `plain` | `rich` | Mail |
@@ -407,6 +409,19 @@ are greyed out the same way. The shared types are in
 | `mail_preview_lines` | `0` to `5` | `1` | Mail |
 | `snooze_choices` | a list from `1h`, `3h`, `tomorrow`, `1d`, `2d`, `next_week`, `1w`, `2w`, `1mo`, each at most once | `1h`, `1d`, `1w` | Mail |
 | `snoozed_messages` | `hide` (out of the lists until due), `keep` (stays in its folder, marked); a view rule applied at once ([Snooze](MAIL_SYNC.md#snooze)) | `hide` | Mail |
+
+A reference (`default_mail_account_id`, `default_task_list_id`,
+`default_calendar_id`) is checked against its own kind of record when it is
+written; a value naming something that no longer qualifies (deleted,
+read-only, paused) is kept but reads as UniHub's choice where it is used.
+`GET /api/calendar/calendars` marks the list and calendar in effect
+(`default_for_tasks`, `default_for_events`) together with what each calendar
+can take (`write_block`, `takes_undated_tasks`), so no client repeats the
+fallback (`api/src/contracts/tasks.ts`). A reference names one person's
+record, so it cannot be an installation policy: such a policy row is ignored.
+A restore remaps each reference with the id map of its own section (mail
+accounts or calendars); one whose record is neither restored nor still the
+person's becomes empty.
 
 ### Mail account scope
 

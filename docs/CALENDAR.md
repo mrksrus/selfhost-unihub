@@ -368,9 +368,37 @@ are then rebuilt from the server's answer, so the server stays the authority.
 - **Conflicts.** If the event changed on the server meanwhile (HTTP 412), the
   edit is refused with a message, nothing is overwritten, and the account syncs
   at once.
-- **Moving.** A single event moves between calendars and accounts by creating
-  it in the target before deleting it from the source. Recurring events cannot
-  be moved.
+- **Moving.** A single event or task moves between calendars, accounts and
+  UniHub lists by creating it in the target before deleting it from the
+  source (`services/calendar-move.ts`, journalled in `calendar_event_moves`):
+  the row, its done state, subtasks and hand place stay. A move a server has
+  not confirmed shows as `move_pending` and finishes in the background, or can
+  be cancelled; edits wait for it (`409 CALENDAR_MOVE_PENDING`). Recurring
+  events cannot be moved.
+- **One change at a time.** Creating an item on a server, edits, time moves,
+  deletions, moves, their cancel, a move's background run and a sync's
+  adoption of a move's copy run one after another for one item (a lock per
+  item, held from the first read to the local write). A change waits up to 25
+  seconds for the one before it; past that, with two already waiting, or when
+  the lock connections are in use, it answers `409 CALENDAR_EVENT_CHANGED` to
+  try again. The locks have a connection pool of their own
+  (`services/named-locks.ts`): `CALENDAR_EVENT_LOCKS` (10) for items and
+  `CALENDAR_SYNC_LOCKS` (8) for account syncs, beside the main pool of 50; the
+  comment there says how to size them. A request that waited checks the
+  Calendar module and a running restore again; a sync leaves a copy it may
+  not adopt yet for its next run. A lock whose database session ended (a
+  killed or broken connection) is lost: every server write and the local
+  write of the change holding it check it first, so that change writes
+  nothing more and answers 409, and the change that took the lock since
+  stands. Known limit: an account sync's lock is not checked that way. A
+  sync whose lock session ended can run beside the next one and write what it
+  read before, for example an old copy a move removed or an older calendar
+  tag; the next sync repairs both.
+- **A move copies the version it deletes.** Every sync and edit that applies
+  a server copy to its row notes the copy's version (ETag) on the link. A move
+  whose row was applied from another version than the one it would delete is
+  refused with `409 CALDAV_CONFLICT`, and the row is refreshed from the server
+  first.
 - **Read-only.** ICS subscriptions and calendars marked read-only reject
   changes with `403 CALENDAR_READ_ONLY`; the event dialog shows them read-only.
 - **Not yet synced.** Events imported before 0.17 have no server copy until the

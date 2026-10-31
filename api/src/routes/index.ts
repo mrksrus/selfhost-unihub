@@ -10,6 +10,7 @@ import backupRoutes = require('./backup');
 import searchRoutes = require('./search');
 import recordingsRoutes = require('./recordings');
 import calendarRoutes = require('./calendar');
+import calendarTasksRoutes = require('./calendar-tasks');
 import mailRoutes = require('./mail');
 import mailEssentialsRoutes = require('./mail-essentials');
 import mailThreadsRoutes = require('./mail-threads');
@@ -38,6 +39,7 @@ const routes = mergeRouteTables(
   searchRoutes,
   legacyRoutes(recordingsRoutes),
   legacyRoutes(calendarRoutes),
+  calendarTasksRoutes,
   legacyRoutes(mailRoutes),
   mailEssentialsRoutes,
   mailThreadsRoutes,

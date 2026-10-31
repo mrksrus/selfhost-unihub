@@ -8,6 +8,7 @@ not replace or restrict those rights.
 ## Frontend
 
 - `src/components/ui` includes components derived from [shadcn/ui](https://github.com/shadcn-ui/ui), copyright (c) 2023 shadcn, under MIT. The notice is preserved in `licenses/third-party/shadcn-MIT.txt`.
+- Drag and drop (the ≡ handles of tasks, subtasks and pages, 0.27.0) uses [dnd kit](https://dndkit.com/) (`@dnd-kit/core`, `@dnd-kit/sortable`, `@dnd-kit/utilities`, `@dnd-kit/accessibility`), copyright (c) 2021 Claudéric Demers, under MIT. The notice is preserved in `licenses/third-party/dnd-kit-MIT.txt`.
 - Icons use [Lucide](https://lucide.dev/), under ISC, with Feather-derived portions under MIT. The installed package's original notice is preserved in `licenses/third-party/lucide-ISC.txt`.
 - React, React DOM, Radix UI and the other frontend dependencies retain the licenses shipped in their npm packages. `package-lock.json` records exact package versions and source tarballs. The image build collects installed production-package license and notice files into `/app/licenses/frontend-dependency-notices.txt` alongside the compiled frontend.
 

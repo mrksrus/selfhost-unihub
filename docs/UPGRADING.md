@@ -5,6 +5,30 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.27.0 ToDo and calendar: order and defaults
+
+**Make a database backup first.** One automatic database upgrade runs at the
+first start: **step 24** adds the task order (`task_order`), the move journal
+(`calendar_event_moves`) and an order key on events. Nothing existing is
+changed: every task keeps its date's place until you move it.
+
+Going back to 0.26.0 means restoring that backup: 0.26.0 does not know step
+24 and refuses to start ("Database upgrade history is unknown or out of
+order"). Backups made by 0.27.0 use **data schema 6** (with the task order
+and the default list and calendar). An older UniHub cannot read them; 0.27.0
+reads every older backup.
+
+No configuration change is needed. Worth knowing:
+
+- **Android app.** Nothing changed in the app; install 0.27.0's app when it
+  is offered. The window is 0.27.0, 0.26.0, 0.25.1 and 0.25.0: the 0.24.3 app
+  leaves it, so update a phone that still has it.
+- **Defaults stay as they were.** "New tasks go to" and "New events go to"
+  start on "Let UniHub choose", which is the previous behaviour.
+- **The order stays in UniHub.** Other calendar apps do not see it.
+- **Reload open pages** (or reopen the app) after updating, so the handles
+  and the list chooser load.
+
 ## 0.26.0 Contacts: complete fields and duplicate handling
 
 **Make a database backup first** (and of the uploads volume). Two automatic

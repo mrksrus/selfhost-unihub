@@ -7,6 +7,9 @@ import crypto from 'crypto';
 import { db } from '../state';
 import { getCalendarEventIdFromPath, getCalendarSubtaskIdFromPath } from '../../calendar-route-utils';
 import { sourceEmailPresentSql, presentSourceEmail } from './email-tasks';
+import { attachRanks } from './task-order';
+import { attachMoveState, refuseWhileMoving, refuseIfMoved, fenceTaskLocks } from './calendar-move-state';
+import type { WritebackIdentity } from './calendar-move-state';
 
 const CALENDAR_PROVIDER_DEFAULT_CAPABILITIES = {
   local: {
@@ -291,11 +294,12 @@ async function getCalendarEventWithSubtasks(userId: string, eventId: string) {
     'SELECT * FROM calendar_event_attendees WHERE event_id = ? AND user_id = ? ORDER BY created_at ASC',
     [eventId, userId]
   );
-  return serializeCalendarEvent(
+  const [ranked] = await attachMoveState(userId, await attachRanks(userId, [serializeCalendarEvent(
     events[0],
     subtasks.map(serializeCalendarSubtask),
     attendees.map(serializeCalendarAttendee)
-  );
+  )]));
+  return ranked;
 }
 
 function normalizeResponseStatus(value: unknown) {
@@ -355,7 +359,12 @@ async function replaceEventAttendees(userId: string, eventId: string, attendees:
 // written for it (an attendee row would hit the foreign key) and null says
 // the row was replaced. The row lock keeps a concurrent rebuild from removing
 // it between the check and the attendee rows.
-async function applyLocalEventUpdate(userId: string, eventId: string, { sets, params }: { sets: string[]; params: ExecuteValues[] }, attendees: unknown) {
+// fieldsOfMove: the update changes fields a move's new copy carries, so it
+// is refused while such a copy is being created. identity: the calendar and
+// server copy the caller's writeback decision was made for; another one
+// (a move finished meanwhile) refuses the write. Both under the row lock.
+async function applyLocalEventUpdate(userId: string, eventId: string, { sets, params }: { sets: string[]; params: ExecuteValues[] }, attendees: unknown,
+  { fieldsOfMove = false, identity = null }: { fieldsOfMove?: boolean; identity?: WritebackIdentity | null } = {}) {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
@@ -364,6 +373,9 @@ async function applyLocalEventUpdate(userId: string, eventId: string, { sets, pa
       await connection.rollback();
       return null;
     }
+    await fenceTaskLocks(connection);
+    if (fieldsOfMove) await refuseWhileMoving(connection, eventId);
+    if (identity) await refuseIfMoved(connection, userId, eventId, identity);
     if (sets.length > 0) {
       await connection.execute(`UPDATE calendar_events SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`, [...params, eventId, userId]);
     }
@@ -409,6 +421,95 @@ async function loadCalendarWithAccount(userId: string, calendarId: string) {
   };
 }
 
+// What a calendar can take, from the server's rules, shared by the default
+// settings (checked when written and when read) and the calendar list's
+// marks (contracts/tasks.ts CalendarChoiceFields). Ordered as the calendar
+// list shows them: by account, then by calendar, oldest first.
+interface CalendarChoice {
+  id: string;
+  provider: string;
+  read_only: boolean;
+  auto_todo_enabled: boolean;
+  account_active: boolean;
+  mail_connected: boolean;
+}
+
+async function loadCalendarChoices(userId: string, executor: SqlExecutor = db): Promise<CalendarChoice[]> {
+  const [rows] = await executor.execute<RowDataPacket[]>(
+    `SELECT c.id, c.read_only, c.auto_todo_enabled, a.provider, a.is_active,
+            (a.mail_account_id IS NULL OR EXISTS (SELECT 1 FROM mail_accounts m WHERE m.id = a.mail_account_id AND ${MAIL_CONNECTED_SQL})) AS mail_connected
+     FROM calendar_calendars c
+     INNER JOIN calendar_accounts a ON a.id = c.account_id
+     WHERE c.user_id = ? AND a.user_id = ?
+     ORDER BY a.created_at ASC, c.created_at ASC, c.id ASC`,
+    [userId, userId]
+  );
+  return rows.map(row => ({
+    id: String(row.id),
+    provider: normalizeCalendarAccountProvider(row.provider) || 'local',
+    read_only: !!Number(row.read_only),
+    auto_todo_enabled: !!Number(row.auto_todo_enabled),
+    account_active: !!Number(row.is_active),
+    mail_connected: !!Number(row.mail_connected),
+  }));
+}
+
+function calendarWriteBlock(choice: CalendarChoice): 'read_only' | 'sync_paused' | null {
+  if (choice.provider === 'ics' || choice.read_only) return 'read_only';
+  if (choice.provider === 'caldav' && (!choice.account_active || !choice.mail_connected)) return 'sync_paused';
+  return null;
+}
+
+// Only UniHub's own lists hold tasks without a date: a server calendar
+// stores dated events only.
+const takesUndatedTasks = (choice: CalendarChoice) => choice.provider === 'local' && !calendarWriteBlock(choice);
+const qualifiesAsTaskList = (choice: CalendarChoice) => takesUndatedTasks(choice) && choice.auto_todo_enabled;
+
+/** Why the calendar cannot be the default of the target, or null when it can. */
+function calendarChoiceRefusal(target: 'task_list' | 'calendar', choice: CalendarChoice | undefined): string | null {
+  if (!choice) return target === 'task_list' ? 'Choose one of your own lists' : 'Choose one of your own calendars';
+  const block = calendarWriteBlock(choice);
+  if (block === 'read_only') return target === 'task_list' ? 'This list is read-only' : 'This calendar is read-only';
+  if (block === 'sync_paused') return 'Sync is paused for this calendar';
+  if (target === 'task_list' && choice.provider !== 'local') return 'Tasks without a date stay in UniHub: choose one of your UniHub lists';
+  if (target === 'task_list' && !choice.auto_todo_enabled) return 'This list does not show in ToDo';
+  return null;
+}
+
+/**
+ * Where new tasks and new events go: the person's default settings when
+ * their calendars still qualify, else UniHub's choice. Tasks: the oldest
+ * UniHub list with ToDo on, else the default local calendar. Events: the
+ * first writable calendar in list order, else the task list. A stored choice
+ * that no longer qualifies (deleted, read-only, paused) falls back the same
+ * way; `stale` says so.
+ */
+async function resolveCalendarDefaults(userId: string, executor: SqlExecutor = db) {
+  const { settingValues } = require('./settings') as typeof import('./settings');
+  const values = await settingValues('user', userId, userId, executor);
+  let choices = await loadCalendarChoices(userId, executor);
+  if (!choices.some(takesUndatedTasks)) {
+    await ensureDefaultLocalCalendarForUser(userId, executor);
+    choices = await loadCalendarChoices(userId, executor);
+  }
+  const byId = new Map(choices.map(choice => [choice.id, choice]));
+  const storedList = byId.get(values.default_task_list_id);
+  const storedCalendar = byId.get(values.default_calendar_id);
+  const taskListId = storedList && qualifiesAsTaskList(storedList) ? storedList.id
+    : choices.find(qualifiesAsTaskList)?.id ?? (await ensureDefaultLocalCalendarForUser(userId, executor)).calendarId;
+  const calendarId = storedCalendar && !calendarWriteBlock(storedCalendar) ? storedCalendar.id
+    : choices.find(choice => !calendarWriteBlock(choice))?.id ?? taskListId;
+  return {
+    taskListId,
+    calendarId,
+    stale: {
+      taskList: values.default_task_list_id !== '' && taskListId !== values.default_task_list_id,
+      calendar: values.default_calendar_id !== '' && calendarId !== values.default_calendar_id,
+    },
+    choices,
+  };
+}
+
 function formatProviderDateRange(value: unknown) {
   const parsed = parseDatetimeToMillis(value);
   if (parsed === null) return null;
@@ -443,4 +544,10 @@ export {
   applyLocalEventUpdate,
   loadCalendarWithAccount,
   formatProviderDateRange,
+  loadCalendarChoices,
+  calendarWriteBlock,
+  takesUndatedTasks,
+  calendarChoiceRefusal,
+  resolveCalendarDefaults,
 };
+export type { CalendarChoice };

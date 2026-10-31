@@ -35,14 +35,14 @@ test('v2 backup reader retains provider mappings and section-only backups stay s
 });
 
 test('future, missing and malformed data versions fail before normalization', () => {
-  for (const version of [undefined, null, 0, 6, 999, '1', '2', 1.5]) {
+  for (const version of [undefined, null, 0, 7, 999, '1', '2', 1.5]) {
     const backup = { app: 'unihub', version, data: {}, files: [] };
     assert.equal(validateBackupPayload(backup as FixtureValue).valid, false);
     assert.throws(() => normalizeBackupPayload(backup as FixtureValue), /Unsupported backup data version/);
   }
   // What an older release says about a newer archive, from the readers it has.
-  assert.deepEqual(validateBackupPayload({ app: 'unihub', version: 6, data: {}, files: [] } as FixtureValue).errors,
-    ['Unsupported backup data version: 6. This UniHub version reads versions 1, 2, 3, 4 and 5; a newer backup may need a newer UniHub release.']);
+  assert.deepEqual(validateBackupPayload({ app: 'unihub', version: 7, data: {}, files: [] } as FixtureValue).errors,
+    ['Unsupported backup data version: 7. This UniHub version reads versions 1, 2, 3, 4, 5 and 6; a newer backup may need a newer UniHub release.']);
 });
 
 test('archive and payload must agree on supported versions', () => {
@@ -58,7 +58,7 @@ test('both ZIP import paths reject unknown or inconsistent versions with intact 
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'backup-version-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   for (const [name, manifestVersion, dataVersion, archiveVersion] of [
-    ['old', 1, 1, 1], ['v2', 2, 2, 1], ['v3', 3, 3, 1], ['v4', 4, 4, 1], ['current', 5, 5, 1], ['future', 6, 6, 1],
+    ['old', 1, 1, 1], ['v2', 2, 2, 1], ['v3', 3, 3, 1], ['v4', 4, 4, 1], ['v5', 5, 5, 1], ['current', 6, 6, 1], ['future', 7, 7, 1],
     ['mismatch', 1, 2, 1], ['future-archive', 2, 2, 2],
   ] as const) {
     const filePath = path.join(directory, name + '.zip');
@@ -70,7 +70,7 @@ test('both ZIP import paths reject unknown or inconsistent versions with intact 
       { name: 'checksums.json', data: JSON.stringify({ algorithm: 'sha256', entries: { 'data/backup.json': sha256Buffer(data) } }) },
     ], filePath);
     const bytes = await fs.readFile(filePath);
-    if (['old', 'v2', 'v3', 'v4', 'current'].includes(name)) {
+    if (['old', 'v2', 'v3', 'v4', 'v5', 'current'].includes(name)) {
       assert.equal(backupFromZipBuffer(bytes).backup.version, dataVersion);
       assert.equal((await backupFromZipFile(filePath)).backup.version, dataVersion);
     } else {
@@ -156,7 +156,7 @@ test('the schema 5 reader turns fixed contact fields into values as upgrade 22 d
   const saved = structuredClone(old);
   const first = normalizeBackupPayload(structuredClone(old));
   assert.deepEqual(old, saved);
-  assert.equal(first.version, 5);
+  assert.equal(first.version, 6);
   assert.deepEqual(first.data.contacts, [{ id: 'c1', user_id: 'u', first_name: 'Li', uid: 'urn:uuid:c1' }]);
   assert.deepEqual((first.data.contact_values as FixtureValue[]).map(row => [row.kind, row.position, row.legacy_slot, row.value, row.label]),
     [['email', 0, 1, 'x@example.test', ''], ['phone', 0, 1, 'same', ''], ['phone', 1, 2, 'same', '']]);
@@ -165,4 +165,17 @@ test('the schema 5 reader turns fixed contact fields into values as upgrade 22 d
   // A schema 5 archive passes unchanged.
   const current = { app: 'unihub', version: 5, files: [], data: { contacts: [{ id: 'c1', user_id: 'u', first_name: 'Li', uid: 'urn:uuid:own' }], contact_values: [] } };
   assert.deepEqual(normalizeBackupPayload(structuredClone(current)).data, current.data);
+});
+
+test('task order arrives with schema 6: an older schema may not carry it, and an older archive restores in date order', () => {
+  const row = { user_id: 'u', item_key: 'a'.repeat(64), calendar_id: null, event_id: 'e1', remote_uid: null, recurrence_id: '', sort_rank: 5, updated_at: '2026-10-30 10:00:00' };
+  const archive = (version: number) => ({ app: 'unihub', version, files: [], data: { calendar_events: [{ id: 'e1' }], task_order: [row] } }) as FixtureValue;
+  assert.deepEqual(validateBackupPayload(archive(6)).errors, []);
+  assert.deepEqual(validateBackupPayload(archive(5)).errors, ['Unsupported backup table: task_order']);
+  // A schema 5 archive is read unchanged: no order, so every task keeps its date's place.
+  const old = { app: 'unihub', version: 5, files: [], data: { calendar_events: [] } };
+  const read = normalizeBackupPayload(structuredClone(old));
+  assert.equal(read.version, 6);
+  assert.equal(read.source_backup_version, 5);
+  assert.deepEqual(read.data, old.data);
 });

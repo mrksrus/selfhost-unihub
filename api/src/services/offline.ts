@@ -16,6 +16,8 @@ import {
   serializeCalendarAttendee,
   safeJsonParse,
 } from './calendar';
+import { attachRanks } from './task-order';
+import { attachMoveState } from './calendar-move-state';
 
 interface Section { columns: string; table: string; order: string; filter?: string; limit?: number }
 interface OfflineMail extends Record<string, unknown> {
@@ -48,7 +50,7 @@ const SECTIONS = {
   // their values (no photos: the snapshot shows initials).
   contacts: { table: 'contacts', columns: 'id user_id uid version display_name first_name last_name middle_name name_prefix name_suffix company department job_title birthday anniversary notes is_favorite', order: 'is_favorite DESC, first_name, last_name, id' },
   contactValues: { table: 'contact_values', columns: 'id contact_id kind position is_preferred label custom_label value po_box extended street locality region postal_code country', order: 'contact_id, kind, position' },
-  events: { table: 'calendar_events', columns: 'id user_id calendar_id title description start_time end_time all_day location color recurrence reminder_minutes reminders todo_status is_todo_only done_at created_at updated_at source_email_id source_email_json', order: 'start_time, id' },
+  events: { table: 'calendar_events', columns: 'id user_id calendar_id title description start_time end_time all_day location color recurrence reminder_minutes reminders todo_status is_todo_only done_at created_at updated_at source_email_id source_email_json order_key', order: 'start_time, id' },
   subtasks: { table: 'calendar_event_subtasks', columns: 'id event_id user_id title is_done position created_at updated_at', order: 'position, created_at, id' },
   attendees: { table: 'calendar_event_attendees', columns: 'id user_id event_id email display_name response_status is_organizer optional_attendee comment created_at updated_at', order: 'created_at, id' },
   calendars: { table: 'calendar_calendars', columns: 'id user_id account_id name color is_visible auto_todo_enabled read_only is_primary created_at updated_at', order: 'created_at, id' },
@@ -104,7 +106,11 @@ async function collectOfflineSnapshot(connection: SqlExecutor, userId: string) {
   }
   const subtasks = groupByEvent(data.subtasks.map(serializeCalendarSubtask));
   const attendees = groupByEvent(data.attendees.map(serializeCalendarAttendee));
-  const events = data.events.map(row => serializeCalendarEvent(row, subtasks.get(row.id) || [], attendees.get(row.id) || []));
+  // Each event carries its rank (sort_rank, hand_ordered), so ToDo offline
+  // shows the saved order; a snapshot from before 0.27 has none and the app
+  // falls back to date order.
+  // A move not finished yet shows as such offline too (move_pending).
+  const events = await attachMoveState(userId, await attachRanks(userId, data.events.map(row => serializeCalendarEvent(row, subtasks.get(row.id) || [], attendees.get(row.id) || [])), connection), connection);
   let attachmentRows: Record<string, unknown>[] = [];
   if (data.emails.length) {
     const section = { columns: 'id email_id filename content_type size_bytes' };

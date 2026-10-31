@@ -11,7 +11,7 @@ import type {
 import { db } from '../state';
 import { ApiError, badRequest, forbidden, notFound } from '../http/errors';
 import { SETTINGS } from './settings-registry';
-import type { Entry, Kind, Value } from './settings-registry';
+import type { Entry, Kind, ReferenceTarget, Value } from './settings-registry';
 
 // The one owner of settings and policies (F1). Every option is one entry of
 // the registry (settings-registry.ts). Values are stored per scope:
@@ -86,7 +86,9 @@ async function loadPolicies(executor: SqlExecutor): Promise<Policies> {
   for (const row of rows) {
     const [scope, key] = String(row.setting_key).split('.', 2) as [SettingScope, string];
     const entry = STORAGE[scope] ? entryOf(scope, key) : undefined;
-    const value = entry ? decode(entry.kind, String(row.setting_value)) : undefined;
+    // A reference names one person's record, so it cannot be an
+    // installation's policy; such a row is ignored.
+    const value = entry && entry.kind.type !== 'reference' ? decode(entry.kind, String(row.setting_value)) : undefined;
     if (value !== undefined) policies.set(row.setting_key, { value, locked: !!Number(row.locked) });
   }
   return policies;
@@ -165,8 +167,16 @@ async function defaultSettingValues<S extends SettingScope>(scope: S, executor: 
 
 async function checkReference(userId: string, kind: Kind, value: Value, executor: SqlExecutor) {
   if (kind.type !== 'reference' || value === '') return;
-  const [owned] = await executor.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? AND is_active = TRUE AND disconnected_at IS NULL', [value, userId]);
-  if (!owned.length) throw badRequest('SETTING_REFERENCE_INVALID', 'Choose one of your connected mail accounts');
+  if (kind.target === 'mail_account') {
+    const [owned] = await executor.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? AND is_active = TRUE AND disconnected_at IS NULL', [value, userId]);
+    if (!owned.length) throw badRequest('SETTING_REFERENCE_INVALID', 'Choose one of your connected mail accounts');
+    return;
+  }
+  // The same rules decide where new items go when the value is read
+  // (services/calendar.ts resolveCalendarDefaults).
+  const calendar = require('./calendar') as typeof import('./calendar');
+  const refusal = calendar.calendarChoiceRefusal(kind.target, (await calendar.loadCalendarChoices(userId, executor)).find(choice => choice.id === value));
+  if (refusal) throw badRequest('SETTING_REFERENCE_INVALID', refusal);
 }
 
 // A folder named by id must be one of the user's folders.
@@ -223,9 +233,17 @@ function restorableValue(scope: SettingScope, key: string, text: unknown): strin
   return decode(entry.kind, text) === undefined ? null : text;
 }
 
-/** The registry's keys of a scope whose values name a mail account, for restore. */
-const MAIL_ACCOUNT_REFERENCE_KEYS: readonly string[] = Object.entries(SETTINGS.user)
-  .filter(([, entry]) => (entry.kind as Kind).type === 'reference').map(([key]) => key);
+/**
+ * The registry's user keys whose values name a record of the target, for
+ * restore: each is remapped with its own target's id map ('task_list' and
+ * 'calendar' both name calendars).
+ */
+function referenceKeys(...targets: ReferenceTarget[]): string[] {
+  return Object.entries(SETTINGS.user).filter(([, entry]) => {
+    const kind = entry.kind as Kind;
+    return kind.type === 'reference' && targets.includes(kind.target);
+  }).map(([key]) => key);
+}
 
 // The four preferences before 0.24 (GET/PUT /api/settings/preferences), kept
 // for clients from before the settings registry.
@@ -281,7 +299,7 @@ export {
   updateSettings,
   valuesOf,
   restorableValue,
-  MAIL_ACCOUNT_REFERENCE_KEYS,
+  referenceKeys,
   getUserPreferences,
   setUserPreferences,
   SIGNUP_MODES,

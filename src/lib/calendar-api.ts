@@ -1,9 +1,66 @@
 import { format, parseISO, type Locale } from 'date-fns';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import type { QueryClient } from '@tanstack/react-query';
-import { api } from '@/lib/api';
+import { api, type ApiResponse } from '@/lib/api';
+import type { CalendarChoiceFields, CalendarWriteBlock, TaskMoveCancelResponse, TaskMovePending, TaskMoveRequest, TaskMoveResponse, TaskPositionRequest, TaskPositionResponse, TaskRankFields } from '../../api/src/contracts/tasks';
+
+export type { CalendarWriteBlock, TaskPositionRequest, TaskPositionResponse } from '../../api/src/contracts/tasks';
+
+/** The answer of a move (contracts/tasks.ts TaskMoveResponse) with the event normalized for the browser. */
+export interface TaskMove { event: CalendarEvent | null; pending?: TaskMoveResponse['pending']; sourceKept?: boolean }
+export type { TaskMovePending };
+
+/** The answer of DELETE …/move: `cancelled` false when there was nothing to cancel (the item is in its new list already). */
+export interface TaskMoveCancelled { event: CalendarEvent | null; cancelled: boolean }
+
+/** An ordering write whose answer did not come within its deadline: the outcome is unknown until the lists are fetched again. */
+export const WRITE_TIMEOUT = 'WRITE_TIMEOUT';
+export const isWriteTimeout = (error: unknown) => error instanceof CalendarRequestError && error.code === WRITE_TIMEOUT;
+
+/** A write refused because the item is still being moved to another calendar (409 CALENDAR_MOVE_PENDING). */
+export const isMovePending = (error: unknown) => error instanceof CalendarRequestError && error.code === 'CALENDAR_MOVE_PENDING';
+
+/** What a refused write tells the person; `reload` when the lists must be fetched again first. */
+export interface WriteRefusal { title: string; description: string; reload?: boolean }
+
+/**
+ * A write the server refused for a reason the person can act on, by its
+ * error code (api/src/services/calendar-move.ts, task-order.ts), as a plain
+ * notice rather than a failure: the row and the cache stay as they are.
+ * Null for anything else.
+ */
+export function writeRefusal(error: unknown): WriteRefusal | null {
+  if (!(error instanceof CalendarRequestError)) return null;
+  switch (error.code) {
+    case 'CALENDAR_MOVE_PENDING': return MOVE_PENDING_NOTICE;
+    // A shared calendar entry (several components in one object) or a repeating event: the server says which.
+    case 'CALENDAR_MOVE_UNSUPPORTED': return { title: 'This item cannot be moved on its own', description: error.message };
+    case 'CALENDAR_RECURRING_MOVE': return { title: 'Repeating events stay in their calendar', description: error.message };
+    // The server copy changed, or the server reports no versions: the lists are fetched again before another try.
+    case 'CALDAV_CONFLICT': return { title: 'Changed on the calendar server', description: error.message, reload: true };
+    // The item moved to another calendar or changed while the dialog was open: its lists are fetched again, the draft stays.
+    case 'CALENDAR_EVENT_CHANGED': return { title: 'Changed in the meantime', description: error.message, reload: true };
+    case 'ORDER_STALE': return { title: 'The list changed in the meantime', description: 'It has been reloaded. Try again.', reload: true };
+    case WRITE_TIMEOUT: return { title: 'Could not confirm the change', description: 'The server has not answered. The list is being reloaded.', reload: true };
+    default: return null;
+  }
+}
+/** What to say then, instead of a failure: the row and the cache stay as they are. */
+export const MOVE_PENDING_NOTICE = { title: 'Still being moved to another list', description: 'UniHub finishes the move when the calendar server answers. Try again in a moment.' } as const;
 
 export type TodoStatus = 'done' | 'changed' | 'time_moved' | 'cancelled' | null;
+
+/** A refused request with the server's error code, so a caller can tell a stale list (ORDER_STALE) from a failure. */
+export class CalendarRequestError extends Error {
+  code: string | null;
+  status: number | null;
+  constructor(response: ApiResponse<unknown>, fallback: string) {
+    super(response.error || fallback);
+    this.name = 'CalendarRequestError';
+    this.code = typeof response.code === 'string' ? response.code : null;
+    this.status = typeof response.status === 'number' ? response.status : null;
+  }
+}
 export type CalendarRsvpStatus = 'needsAction' | 'accepted' | 'tentative' | 'declined';
 export type CalendarProvider = 'local' | 'caldav' | 'ics';
 export type CalendarSyncStatus = 'pending' | 'syncing' | 'ok' | 'error' | 'paused' | null;
@@ -79,7 +136,13 @@ export const browserTimeZone = () => {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined; } catch { return undefined; }
 };
 
-export interface CalendarCalendar {
+/**
+ * A calendar (a "list" in ToDo). The choice fields (where new items go and
+ * what a calendar can take) come from the server (contracts/tasks.ts); an
+ * answer from an older server lacks them and gets the fallback in
+ * `normalizeCalendar`.
+ */
+export interface CalendarCalendar extends CalendarChoiceFields {
   id: string;
   user_id: string;
   account_id: string;
@@ -98,7 +161,29 @@ export interface CalendarCalendar {
   updated_at: string;
 }
 
-export interface CalendarEvent {
+/** The calendar as the server lists it; the choice fields may be missing from an older server. */
+type CalendarCalendarRow = Omit<CalendarCalendar, keyof CalendarChoiceFields> & Partial<CalendarChoiceFields>;
+
+/**
+ * Fills the choice fields an older server leaves out, from the rules it
+ * applies anyway: a subscription or a read-only calendar takes nothing new,
+ * and only UniHub's own lists hold tasks without a date. Nothing is marked as
+ * a default then; the chooser falls back to the first list that qualifies.
+ */
+export function normalizeCalendar(calendar: CalendarCalendarRow): CalendarCalendar {
+  const provider = calendar.account_provider ?? 'local';
+  const write_block: CalendarWriteBlock | null = calendar.write_block !== undefined ? calendar.write_block
+    : provider === 'ics' || calendar.read_only ? 'read_only' : null;
+  return {
+    ...calendar,
+    write_block,
+    takes_undated_tasks: calendar.takes_undated_tasks ?? (provider === 'local' && !write_block),
+    default_for_tasks: calendar.default_for_tasks ?? false,
+    default_for_events: calendar.default_for_events ?? false,
+  };
+}
+
+export interface CalendarEvent extends Partial<TaskRankFields> {
   id: string;
   user_id: string;
   calendar_id: string | null;
@@ -121,6 +206,8 @@ export interface CalendarEvent {
   attendees: CalendarAttendee[];
   /** The email this task or event was made from, if any. */
   source_email?: import('@/lib/email-tasks').SourceEmail | null;
+  /** A move to another list not finished yet (contracts/tasks.ts); absent in an answer from an older server. */
+  move_pending?: TaskMovePending | null;
 }
 
 /** What creates an event or task; `source_email_id` links it to the email it came from. */
@@ -138,6 +225,7 @@ export interface CalendarEventFilters {
 
 const normalizeEvent = (event: CalendarEvent): CalendarEvent => ({
   ...event,
+  move_pending: event.move_pending ?? null,
   subtasks: Array.isArray(event.subtasks) ? event.subtasks : [],
   attendees: Array.isArray(event.attendees) ? event.attendees : [],
   reminders: Array.isArray(event.reminders) ? event.reminders : (event.reminders ?? null),
@@ -302,9 +390,9 @@ export const calendarApi = {
   },
 
   async fetchCalendars(signal?: AbortSignal): Promise<CalendarCalendar[]> {
-    const response = await api.get<{ calendars: CalendarCalendar[] }>('/calendar/calendars', { signal });
+    const response = await api.get<{ calendars: CalendarCalendarRow[] }>('/calendar/calendars', { signal });
     if (response.error) throw new Error(response.error);
-    return response.data?.calendars || [];
+    return (response.data?.calendars || []).map(normalizeCalendar);
   },
 
   async createCalendar(payload: {
@@ -317,20 +405,62 @@ export const calendarApi = {
     read_only?: boolean;
     is_primary?: boolean;
   }): Promise<CalendarCalendar> {
-    const response = await api.post<{ calendar: CalendarCalendar }>('/calendar/calendars', payload);
+    const response = await api.post<{ calendar: CalendarCalendarRow }>('/calendar/calendars', payload);
     if (response.error) throw new Error(response.error);
     if (!response.data?.calendar) throw new Error('Calendar response missing');
-    return response.data.calendar;
+    return normalizeCalendar(response.data.calendar);
   },
 
   async updateCalendar(
     id: string,
     payload: Partial<Pick<CalendarCalendar, 'name' | 'color' | 'is_visible' | 'auto_todo_enabled' | 'read_only' | 'is_primary'>>
   ): Promise<CalendarCalendar> {
-    const response = await api.put<{ calendar: CalendarCalendar }>(`/calendar/calendars/${id}`, payload);
+    const response = await api.put<{ calendar: CalendarCalendarRow }>(`/calendar/calendars/${id}`, payload);
     if (response.error) throw new Error(response.error);
     if (!response.data?.calendar) throw new Error('Calendar response missing');
-    return response.data.calendar;
+    return normalizeCalendar(response.data.calendar);
+  },
+
+  /**
+   * Places a task between the two it is shown next to (`after` above, `before`
+   * below; null at a section's end). The answer holds the rank the server
+   * stored for it, and for any tasks it had to spread apart. A neighbour that
+   * is gone or no longer adjacent is refused with ORDER_STALE: reload the list
+   * instead of guessing (contracts/tasks.ts).
+   */
+  async setTaskPosition(id: string, position: TaskPositionRequest, signal?: AbortSignal): Promise<TaskPositionResponse> {
+    const response = await api.put<TaskPositionResponse>(`/calendar/events/${encodeURIComponent(id)}/position`, position, { signal });
+    if (response.error || !response.data?.ranks) throw new CalendarRequestError(response, 'Could not reorder the task');
+    return { ranks: response.data.ranks };
+  },
+
+  /**
+   * Moves a task (or event) to another list or calendar. `pending` means a
+   * calendar server has not confirmed yet and UniHub finishes the move in the
+   * background: 'creating', the task shows in its new list once it has;
+   * 'removing', it is there already and only the old copy waits. `sourceKept`:
+   * the old copy was changed elsewhere and stays in its old calendar too.
+   */
+  async moveTask(id: string, calendarId: string, signal?: AbortSignal): Promise<TaskMove> {
+    const body: TaskMoveRequest = { calendar_id: calendarId };
+    const response = await api.post<TaskMoveResponse>(`/calendar/events/${encodeURIComponent(id)}/move`, body, { signal });
+    if (response.error) throw new CalendarRequestError(response, 'Could not move the task');
+    const event = response.data?.event ?? null;
+    const pending = response.data?.pending;
+    if (!event && !pending) throw new Error('Event response missing');
+    return { event: event ? normalizeEvent(event) : null, ...(pending ? { pending } : {}), ...(response.data?.source_kept ? { sourceKept: true } : {}) };
+  },
+
+  /**
+   * Cancels a move whose new copy is not confirmed yet ('creating'): the item
+   * stays in its old list. `cancelled` false: nothing to cancel, the item is
+   * in its new list already. Can take up to about 20 s while a server attempt
+   * is in flight.
+   */
+  async cancelMove(id: string, signal?: AbortSignal): Promise<TaskMoveCancelled> {
+    const response = await api.delete<TaskMoveCancelResponse>(`/calendar/events/${encodeURIComponent(id)}/move`, undefined, { signal });
+    if (response.error || !response.data) throw new CalendarRequestError(response, 'Could not cancel the move');
+    return { event: response.data.event ? normalizeEvent(response.data.event) : null, cancelled: response.data.cancelled === true };
   },
 
   async deleteCalendar(id: string): Promise<void> {
@@ -350,12 +480,14 @@ export const calendarApi = {
    * A synced recurring event changed for the whole series comes back as
    * `replaced`: its occurrences were rebuilt and the edited id is gone.
    */
-  async updateEvent(id: string, payload: Partial<CalendarEvent> & { source_email_id?: string | null }, scope?: RecurrenceScope): Promise<{ event: CalendarEvent | null; replaced: boolean }> {
-    const response = await api.put<{ event: CalendarEvent | null; replaced?: boolean }>(`/calendar/events/${id}`, scope ? { ...payload, scope } : payload);
-    if (response.error) throw new Error(response.error);
+  async updateEvent(id: string, payload: Partial<CalendarEvent> & { source_email_id?: string | null }, scope?: RecurrenceScope): Promise<{ event: CalendarEvent | null; replaced: boolean } & Pick<TaskMove, 'pending' | 'sourceKept'>> {
+    const response = await api.put<{ event: CalendarEvent | null; replaced?: boolean; pending?: TaskMoveResponse['pending']; source_kept?: boolean }>(`/calendar/events/${id}`, scope ? { ...payload, scope } : payload);
+    if (response.error) throw new CalendarRequestError(response, 'Could not update the event');
     const event = response.data?.event ?? null;
     if (!event && !response.data?.replaced) throw new Error('Event response missing');
-    return { event: event ? normalizeEvent(event) : null, replaced: response.data?.replaced === true };
+    // A changed calendar is a move; a calendar server that has not confirmed answers 202 with `pending`.
+    return { event: event ? normalizeEvent(event) : null, replaced: response.data?.replaced === true,
+      ...(response.data?.pending ? { pending: response.data.pending } : {}), ...(response.data?.source_kept ? { sourceKept: true } : {}) };
   },
 
   async updateTodoStatus(
@@ -363,7 +495,7 @@ export const calendarApi = {
     payload: { todo_status: TodoStatus; start_time?: string; end_time?: string }
   ): Promise<CalendarEvent> {
     const response = await api.put<{ event: CalendarEvent }>(`/calendar/events/${id}/todo-status`, payload);
-    if (response.error) throw new Error(response.error);
+    if (response.error) throw new CalendarRequestError(response, 'Could not update the task');
     const event = response.data?.event;
     if (!event) throw new Error('Event response missing');
     return normalizeEvent(event);
@@ -371,12 +503,12 @@ export const calendarApi = {
 
   async deleteEvent(id: string, scope?: RecurrenceScope): Promise<void> {
     const response = await api.delete(`/calendar/events/${id}${scope ? `?scope=${scope}` : ''}`);
-    if (response.error) throw new Error(response.error);
+    if (response.error) throw new CalendarRequestError(response, 'Could not delete the event');
   },
 
   async createSubtask(eventId: string, payload: { title: string; position?: number; is_done?: boolean }): Promise<CalendarSubtask> {
     const response = await api.post<{ subtask: CalendarSubtask }>(`/calendar/events/${eventId}/subtasks`, payload);
-    if (response.error) throw new Error(response.error);
+    if (response.error) throw new CalendarRequestError(response, 'Could not add the subtask');
     if (!response.data?.subtask) throw new Error('Subtask response missing');
     return response.data.subtask;
   },
@@ -390,21 +522,21 @@ export const calendarApi = {
       `/calendar/events/${eventId}/subtasks/${subtaskId}`,
       payload
     );
-    if (response.error) throw new Error(response.error);
+    if (response.error) throw new CalendarRequestError(response, 'Could not update the subtask');
     if (!response.data?.subtask) throw new Error('Subtask response missing');
     return response.data.subtask;
   },
 
   async deleteSubtask(eventId: string, subtaskId: string): Promise<void> {
     const response = await api.delete(`/calendar/events/${eventId}/subtasks/${subtaskId}`);
-    if (response.error) throw new Error(response.error);
+    if (response.error) throw new CalendarRequestError(response, 'Could not delete the subtask');
   },
 
-  async reorderSubtasks(eventId: string, subtaskIds: string[]): Promise<CalendarSubtask[]> {
+  async reorderSubtasks(eventId: string, subtaskIds: string[], signal?: AbortSignal): Promise<CalendarSubtask[]> {
     const response = await api.post<{ subtasks: CalendarSubtask[] }>(`/calendar/events/${eventId}/subtasks/reorder`, {
       subtask_ids: subtaskIds,
-    });
-    if (response.error) throw new Error(response.error);
+    }, { signal });
+    if (response.error) throw new CalendarRequestError(response, 'Could not reorder the subtasks');
     return response.data?.subtasks || [];
   },
 };

@@ -14,8 +14,9 @@ import { normalizeBackupPayload } from './backup-format';
 import { restoreMailRecovery, validateRestoredMailDestinations } from './backup-mail-recovery';
 import { pauseMailRestore, restoreMailEngineEvidence } from './backup-mail-engine';
 import { isModuleEnabled } from './module-settings';
-import { MAIL_ACCOUNT_REFERENCE_KEYS, SETTINGS, restorableValue } from './settings';
+import { SETTINGS, referenceKeys, restorableValue } from './settings';
 import { normalizeSignature } from './mail-signature';
+import { copyKey, copyNumber, isOrderKey, itemKey, keyBase } from './task-order';
 import {
   isFileRangeSource,
   normalizeMysqlDateTime,
@@ -82,6 +83,72 @@ function sourceEmailJson(value: unknown) {
 }
 
 const SETTING_KEYS = new Set(Object.keys(SETTINGS.user));
+
+// The archived task's order key: its own, or its id before 0.27 (an id that
+// is no valid key, which UniHub never writes, leaves the new id as the key).
+function archivedOrderKey(row: BackupRow) {
+  if (typeof row.order_key === 'string' && row.order_key) return row.order_key;
+  return isOrderKey(String(row.id)) ? String(row.id) : null;
+}
+
+// Kept on the restored event unless it is the event's id anyway (services/task-order.ts).
+function restoredOrderKey(row: BackupRow, targetId: string) {
+  const key = archivedOrderKey(row);
+  return key === null || key === targetId ? null : key;
+}
+
+// Distinct tasks must not share a key, or they tie for good. When a restored
+// task's key is already another of the person's tasks' (a copy kept beside
+// its original), every restored task of that key base is renumbered: in the
+// archive's key order, after every key of that base the person already has.
+// So the restored group keeps its own order and follows the tasks there
+// before it.
+async function separateCopyKeys(connection: SqlExecutor, userId: string, written: readonly { row: BackupRow; targetId: string }[]) {
+  const restored = new Set(written.map(entry => entry.targetId));
+  const groups = new Map<string, { key: string; targetId: string }[]>();
+  for (const { row, targetId } of written) {
+    const key = archivedOrderKey(row);
+    if (key !== null) groups.set(keyBase(key), [...(groups.get(keyBase(key)) || []), { key, targetId }]);
+  }
+  for (const [base, entries] of groups) {
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      "SELECT id, COALESCE(order_key, id) AS order_key FROM calendar_events WHERE user_id = ? AND (id = ? OR order_key = ? OR order_key LIKE ? ESCAPE '\\\\')",
+      [userId, base, base, `${base.replace(/[\\%_]/g, '\\$&')}~%`]);
+    const held = rows.filter(row => !restored.has(String(row.id))).map(row => String(row.order_key));
+    const keys = entries.map(entry => entry.key);
+    if (new Set(keys).size === keys.length && !keys.some(key => held.includes(key))) continue;
+    let next = Math.max(0, ...held.map(key => copyNumber(key, base))) + 1;
+    entries.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : a.targetId < b.targetId ? -1 : 1));
+    for (const entry of entries) {
+      await connection.execute('UPDATE calendar_events SET order_key = ? WHERE id = ? AND user_id = ?', [copyKey(base, next), entry.targetId, userId]);
+      next += 1;
+    }
+  }
+}
+// Settings that name a record restored later in the run, by the section
+// whose id map remaps them: each is held back and written after it.
+const MAIL_REFERENCE_KEYS = new Set(referenceKeys('mail_account'));
+const CALENDAR_REFERENCE_KEYS = new Set(referenceKeys('calendar', 'task_list'));
+
+// The restored copy of the record, or the same record when it is still this
+// user's (settings restored without its section); otherwise '' (UniHub's
+// choice) rather than an id that names nothing.
+async function restoredReference(connection: SqlExecutor, userId: string, table: 'mail_accounts' | 'calendar_calendars', archivedId: string, idMap: ReadonlyMap<string, string>) {
+  const mapped = idMap.get(archivedId);
+  if (mapped) return mapped;
+  const [owned] = await connection.execute<RowDataPacket[]>(`SELECT id FROM ${table} WHERE id = ? AND user_id = ? LIMIT 1`, [archivedId, userId]);
+  return owned.length ? archivedId : '';
+}
+
+async function writeRestoredReferences(connection: SqlExecutor, userId: string, references: ReadonlyMap<string, string>, table: 'mail_accounts' | 'calendar_calendars', idMap: ReadonlyMap<string, string>) {
+  for (const [key, archivedId] of references) {
+    await writeOwnedRow(connection, userId, 'user_settings',
+      ['user_id', 'setting_key', 'setting_value'],
+      [userId, key, await restoredReference(connection, userId, table, archivedId, idMap)],
+      ['setting_value']
+    );
+  }
+}
 
 // Archives from before 0.24 carry no signature; the account keeps its own.
 async function restoreSignature(connection: SqlExecutor, userId: string, accountId: string, row: BackupRow) {
@@ -234,6 +301,9 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
       // Email links of restored events, remapped once the mail section is in.
       const eventsWithSourceEmail = new Map<string, string>();
       const claimedCalendarEventIds = new Set<string>();
+      // Events this restore wrote, with their archived row (for the order).
+      const writtenCalendarEvents: { row: BackupRow; targetId: string }[] = [];
+      const writtenCalendarIds = new Set<string>();
       const mailAccountIdMap = new Map();
       const mailFolderIdMap = new Map();
       const mailRuleIdMap = new Map();
@@ -267,7 +337,8 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         );
       }
 
-      const archivedReferences = new Map<string, string>();
+      const archivedMailReferences = new Map<string, string>();
+      const archivedCalendarReferences = new Map<string, string>();
       for (const setting of data.user_settings || []) {
         await checkRestoreCancelled();
         const row = overwriteUserId(setting, userId);
@@ -278,9 +349,12 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
           );
           if (existingSetting.length) continue;
         }
-        // Names a mail account, which may get a new ID below; written after them.
-        if (MAIL_ACCOUNT_REFERENCE_KEYS.includes(String(row.setting_key)) && row.setting_value) {
-          archivedReferences.set(String(row.setting_key), String(row.setting_value));
+        // Names a mail account or calendar, which may get a new ID below;
+        // written after its section, with that section's id map.
+        const settingKey = String(row.setting_key);
+        if ((MAIL_REFERENCE_KEYS.has(settingKey) || CALENDAR_REFERENCE_KEYS.has(settingKey)) && row.setting_value) {
+          if (restorableValue('user', settingKey, row.setting_value) === null) continue;
+          (MAIL_REFERENCE_KEYS.has(settingKey) ? archivedMailReferences : archivedCalendarReferences).set(settingKey, String(row.setting_value));
           continue;
         }
         // A registry setting keeps only a value the registry accepts; other keys
@@ -386,6 +460,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         const targetCalendarId = chooseTargetId(row.id, existingCalendarId, conflictMode, { canKeepBoth: canKeepBothCalendar });
         calendarIdMap.set(row.id, targetCalendarId);
         if (!shouldWriteExisting(existingCalendarId, targetCalendarId, conflictMode)) continue;
+        writtenCalendarIds.add(targetCalendarId);
         const calendarName = targetCalendarId !== existingCalendarId && conflictMode === 'keep_both' && existingCalendarId
           ? `${row.name || 'Calendar'} (Restored)`
           : row.name || 'Calendar';
@@ -422,13 +497,18 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         calendarEventIdMap.set(row.id, targetEventId);
         claimedCalendarEventIds.add(targetEventId);
         if (!shouldWriteExisting(existingEventId, targetEventId, conflictMode)) continue;
+        // created_at and the order key too (0.27): a task without a date is
+        // ordered by when it was made, and ties by the archived task's key.
         await writeOwnedRow(connection, userId, 'calendar_events',
-          ['id', 'user_id', 'calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json'],
-          [targetEventId, row.user_id, targetCalendarId, row.title || 'Untitled Event', row.description ?? null, normalizeMysqlDateTime(row.start_time), normalizeMysqlDateTime(row.end_time), row.all_day ? 1 : 0, row.location || null, row.color || '#22c55e', row.recurrence || null, row.reminder_minutes ?? null, row.reminders ? (typeof row.reminders === 'string' ? row.reminders : JSON.stringify(row.reminders)) : null, row.todo_status || null, row.is_todo_only ? 1 : 0, normalizeMysqlDateTime(row.done_at), sourceEmailId(row.source_email_id), sourceEmailJson(row.source_email_json)],
-          ['calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json']
+          ['id', 'user_id', 'calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json', 'created_at', 'order_key'],
+          [targetEventId, row.user_id, targetCalendarId, row.title || 'Untitled Event', row.description ?? null, normalizeMysqlDateTime(row.start_time), normalizeMysqlDateTime(row.end_time), row.all_day ? 1 : 0, row.location || null, row.color || '#22c55e', row.recurrence || null, row.reminder_minutes ?? null, row.reminders ? (typeof row.reminders === 'string' ? row.reminders : JSON.stringify(row.reminders)) : null, row.todo_status || null, row.is_todo_only ? 1 : 0, normalizeMysqlDateTime(row.done_at), sourceEmailId(row.source_email_id), sourceEmailJson(row.source_email_json), normalizeMysqlDateTime(row.created_at, new Date()), restoredOrderKey(row, targetEventId)],
+          ['calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json', 'created_at', 'order_key']
         );
+        writtenCalendarEvents.push({ row, targetId: targetEventId });
         if (sourceEmailId(row.source_email_id)) eventsWithSourceEmail.set(targetEventId, row.source_email_id);
       }
+
+      await separateCopyKeys(connection, userId, writtenCalendarEvents);
 
       for (const subtask of data.calendar_event_subtasks || []) {
         await checkRestoreCancelled();
@@ -490,6 +570,49 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
           ['event_id', 'calendar_id', 'provider', 'external_etag', 'external_updated_at', 'last_synced_at']
         );
       }
+
+      // The hand order (0.27): a local task's row follows its restored event,
+      // a synced one its calendar; the key is computed again from them. A
+      // synced task's order matches its UID once the next sync links it.
+      // The hand order. Keep existing and Keep both: a destination row wins
+      // (a copy kept beside has its own key). Replace: the order becomes the
+      // archive's, so a restored task or calendar that the archive has no
+      // row for loses a destination row too (placed after the backup).
+      const restoredOrderKeys = new Set<string>();
+      for (const order of data.task_order || []) {
+        await checkRestoreCancelled();
+        const row = overwriteUserId(order, userId);
+        const synced = typeof row.remote_uid === 'string' && row.remote_uid !== '';
+        const target = synced
+          ? { calendar_id: await resolveOwnedReference(connection, userId, 'calendar_calendars', row.calendar_id, calendarIdMap), event_id: null, remote_uid: row.remote_uid, recurrence_id: String(row.recurrence_id ?? '') }
+          : { calendar_id: null, event_id: await resolveOwnedReference(connection, userId, 'calendar_events', row.event_id, calendarEventIdMap), remote_uid: null, recurrence_id: '' };
+        const key = itemKey(target);
+        if (conflictMode !== 'replace') {
+          const [existingOrder] = await connection.execute<RowDataPacket[]>('SELECT item_key FROM task_order WHERE user_id = ? AND item_key = ?', [userId, key]);
+          if (existingOrder.length) continue;
+        }
+        restoredOrderKeys.add(key);
+        await writeOwnedRow(connection, userId, 'task_order',
+          ['user_id', 'item_key', 'calendar_id', 'event_id', 'remote_uid', 'recurrence_id', 'sort_rank'],
+          [userId, key, target.calendar_id, target.event_id, target.remote_uid, target.recurrence_id, Number(row.sort_rank)],
+          ['calendar_id', 'event_id', 'remote_uid', 'recurrence_id', 'sort_rank']
+        );
+      }
+
+      if (conflictMode === 'replace') {
+        for (const { targetId } of writtenCalendarEvents) {
+          const key = itemKey({ event_id: targetId });
+          if (!restoredOrderKeys.has(key)) await connection.execute('DELETE FROM task_order WHERE user_id = ? AND item_key = ?', [userId, key]);
+        }
+        for (const calendarId of writtenCalendarIds) {
+          const [rows] = await connection.execute<RowDataPacket[]>('SELECT item_key FROM task_order WHERE user_id = ? AND calendar_id = ?', [userId, calendarId]);
+          for (const row of rows) {
+            if (!restoredOrderKeys.has(String(row.item_key))) await connection.execute('DELETE FROM task_order WHERE user_id = ? AND item_key = ?', [userId, row.item_key]);
+          }
+        }
+      }
+
+      await writeRestoredReferences(connection, userId, archivedCalendarReferences, 'calendar_calendars', calendarIdMap);
 
       await reportRestoreProgress('mail', 70);
       for (const account of data.mail_accounts || []) {
@@ -607,22 +730,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         await restoreSignature(connection, userId, targetAccountId, row);
       }
 
-      for (const [key, archivedAccountId] of archivedReferences) {
-        // The restored copy of the account, or the same account when it is still
-        // this user's (settings restored without mail); otherwise '' (the first
-        // account) rather than an ID that names nothing.
-        let accountId = mailAccountIdMap.get(archivedAccountId) || '';
-        if (!accountId) {
-          const [owned] = await connection.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1',
-            [archivedAccountId, userId]);
-          if (owned.length) accountId = archivedAccountId;
-        }
-        await writeOwnedRow(connection, userId, 'user_settings',
-          ['user_id', 'setting_key', 'setting_value'],
-          [userId, key, accountId],
-          ['setting_value']
-        );
-      }
+      await writeRestoredReferences(connection, userId, archivedMailReferences, 'mail_accounts', mailAccountIdMap);
 
       for (const folder of data.mail_folders || []) {
         await checkRestoreCancelled();

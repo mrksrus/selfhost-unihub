@@ -694,6 +694,17 @@ together with its mail is a first-class choice when disconnecting it, and it
 removes only UniHub's copy; the provider keeps its mail. The dialog says so
 plainly and asks for the typed address.
 
+#### P-33 Tasks keep their date sections; the order inside a section is the user's
+
+Accepted, 2026-10-30 (maintainer, for 0.27.0). Built in 0.27.0.
+
+A task list keeps its date sections (Overdue, Today, Later, No date). Inside
+a section the order is the person's own: a task they never moved stays at its
+date's place, and a task they dragged keeps its place. A task can be dragged
+only within its section; changing its date returns it to its date's place in
+the new section. Done stays in completion order. The order lives in UniHub
+only and is not written to CalDAV (X-APPLE-SORT-ORDER is a parking-lot item).
+
 #### P-34 The full database and web e2e suites run in CI, not on this hardware
 
 Accepted, 2026-10-30 (maintainer, approved, with the parallel CI jobs).

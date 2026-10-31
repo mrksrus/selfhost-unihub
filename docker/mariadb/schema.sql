@@ -3,7 +3,7 @@
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
--- Through migration 23.
+-- Through migration 24.
 
 CREATE TABLE `audit_log` (
   `id` char(36) NOT NULL DEFAULT uuid(),
@@ -199,6 +199,38 @@ CREATE TABLE `calendar_event_external_refs` (
   CONSTRAINT `calendar_event_external_refs_ibfk_4` FOREIGN KEY (`account_id`) REFERENCES `calendar_accounts` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `calendar_event_moves` (
+  `id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `event_id` char(36) DEFAULT NULL,
+  `source_calendar_id` char(36) DEFAULT NULL,
+  `source_object_id` char(36) DEFAULT NULL,
+  `source_etag` varchar(255) DEFAULT NULL,
+  `target_calendar_id` char(36) DEFAULT NULL,
+  `target_uid` varchar(255) NOT NULL,
+  `target_href` text DEFAULT NULL,
+  `target_etag` varchar(255) DEFAULT NULL,
+  `target_ics` mediumtext DEFAULT NULL,
+  `state` enum('creating','removing') NOT NULL,
+  `attempts` int(11) NOT NULL DEFAULT 0,
+  `last_error` varchar(255) DEFAULT NULL,
+  `next_attempt_at` datetime DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_event_move` (`event_id`),
+  KEY `idx_event_moves_due` (`state`,`next_attempt_at`),
+  KEY `idx_event_moves_user` (`user_id`),
+  KEY `source_calendar_id` (`source_calendar_id`),
+  KEY `source_object_id` (`source_object_id`),
+  KEY `target_calendar_id` (`target_calendar_id`),
+  CONSTRAINT `calendar_event_moves_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `calendar_event_moves_ibfk_2` FOREIGN KEY (`event_id`) REFERENCES `calendar_events` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `calendar_event_moves_ibfk_3` FOREIGN KEY (`source_calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `calendar_event_moves_ibfk_4` FOREIGN KEY (`source_object_id`) REFERENCES `calendar_remote_objects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `calendar_event_moves_ibfk_5` FOREIGN KEY (`target_calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE `calendar_event_subtasks` (
   `id` char(36) NOT NULL DEFAULT uuid(),
   `event_id` char(36) NOT NULL,
@@ -237,6 +269,7 @@ CREATE TABLE `calendar_events` (
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   `source_email_id` char(36) DEFAULT NULL,
   `source_email_json` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`source_email_json`)),
+  `order_key` varchar(64) DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_events_user` (`user_id`),
   KEY `idx_events_start` (`start_time`),
@@ -1249,6 +1282,24 @@ CREATE TABLE `system_settings` (
   `setting_value` text NOT NULL,
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   PRIMARY KEY (`setting_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `task_order` (
+  `user_id` char(36) NOT NULL,
+  `item_key` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `calendar_id` char(36) DEFAULT NULL,
+  `event_id` char(36) DEFAULT NULL,
+  `remote_uid` varchar(500) DEFAULT NULL,
+  `recurrence_id` varchar(64) NOT NULL DEFAULT '',
+  `sort_rank` bigint(20) NOT NULL,
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`user_id`,`item_key`),
+  KEY `idx_task_order_rank` (`user_id`,`sort_rank`),
+  KEY `idx_task_order_event` (`event_id`),
+  KEY `idx_task_order_calendar` (`calendar_id`),
+  CONSTRAINT `task_order_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `task_order_ibfk_2` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `task_order_ibfk_3` FOREIGN KEY (`event_id`) REFERENCES `calendar_events` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `tetris_scores` (

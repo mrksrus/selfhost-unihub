@@ -50,13 +50,31 @@ soon as a connection succeeds.
 
 ## Backup versions and restore behavior
 
-New exports write data schema 5. Readers for schemas 1 to 4 remain; the manifest
+New exports write data schema 6. Readers for schemas 1 to 5 remain; the manifest
 selects automatically. ZIP layout and encrypted framing remain version 1.
 Database upgrade IDs, data schema and application release are separate numbers.
 Preserve historical readers and frozen fixtures when evolving the format. Starting
 with 1.0, retain imports for every released stable backup format throughout 1.x.
 A later major release must retain old readers or provide a maintained conversion
 path before retiring one. Do not silently omit unsupported modules from a full restore.
+
+0.27.0 writes data schema 6: the calendar section adds `task_order`, the hand
+order of tasks, an overlay keyed by the item's identity (event id for a task
+UniHub holds; calendar, UID and recurrence id for a synced one), and the
+settings section the calendar references `default_task_list_id` and
+`default_calendar_id`, remapped with the calendar id map (never the mail
+account map). The move journal `calendar_event_moves` is installation state
+and never archived. Older archives restore without an order.
+
+A synced task's order is removed only on evidence that the provider deleted
+it: a verified deletion of its server object. An object or occurrence that
+leaves the sync window (the expansion is bounded) keeps its order and gets
+its place back when it returns. Nothing expires by date: an occurrence's
+recurrence id is its original date, not where it shows now. The rank of a
+hand-placed occurrence that has passed, or that its series no longer has (an
+EXDATE, a shorter rule, a new series time), stays until its object is
+deleted at the server or its calendar or account is removed; only
+hand-placed occurrences have such a row.
 
 0.26.0 writes data schema 5 for the contacts model; the readers for schemas 1
 to 4 convert older contacts as upgrade step 22 does (see

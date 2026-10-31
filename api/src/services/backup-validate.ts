@@ -7,6 +7,7 @@ import { validateRestoreRows } from './backup-ownership';
 import { AUDIO_HEADER_BYTES, identifyRecordingAudio } from './recording-audio';
 import { archiveCarriesStep, validateBackupVersionFields } from './backup-format';
 import { countContactConflicts } from './backup-contacts';
+import { isOrderKey } from './task-order';
 import {
   ACCOUNT_ONLY_TABLES,
   CONTENT_FILE_POLICIES,
@@ -65,6 +66,31 @@ function carriedField(table: string, column: string, version: number) {
   return archiveCarriesStep(version, TABLE_POLICIES[table].introducedIn[column] ?? 1);
 }
 
+// A hand rank names its task inside the archive: a local one by its event,
+// a synced one by its calendar, UID and recurrence id (never both).
+function validateTaskOrder(data: BackupPayload['data'] | undefined) {
+  const keys = (Array.isArray(data?.calendar_events) ? data.calendar_events as Record<string, unknown>[] : [])
+    .some(event => event?.order_key != null && (typeof event.order_key !== 'string' || !isOrderKey(event.order_key)));
+  const keyErrors = keys ? ['Backup has an invalid task order key'] : [];
+  const rows = data?.task_order;
+  if (rows === undefined) return keyErrors;
+  if (!Array.isArray(rows)) return [...keyErrors, 'Backup task_order must be an array'];
+  const ids = (table: string) => new Set((Array.isArray(data?.[table]) ? data[table] as Record<string, unknown>[] : []).map(row => row?.id));
+  const events = ids('calendar_events');
+  const calendars = ids('calendar_calendars');
+  const errors = new Set<string>();
+  for (const row of rows as Record<string, unknown>[]) {
+    const synced = typeof row?.remote_uid === 'string' && row.remote_uid !== '';
+    const valid = row && typeof row === 'object' && Number.isSafeInteger(row.sort_rank)
+      && (synced
+        ? calendars.has(row.calendar_id) && (row.event_id == null) && (row.remote_uid as string).length <= 500
+          && (row.recurrence_id == null || (typeof row.recurrence_id === 'string' && row.recurrence_id.length <= 64))
+        : events.has(row.event_id) && row.calendar_id == null && row.remote_uid == null);
+    if (!valid) errors.add('Backup has a task order row that names no task of this backup');
+  }
+  return [...keyErrors, ...errors];
+}
+
 // Contact photos are JPEG files the server wrote; anything larger did not come from it.
 const CONTACT_PHOTO_MAX_BYTES = 2 * 1024 * 1024;
 const SHA256_NAME = /^[0-9a-f]{64}$/;
@@ -113,6 +139,7 @@ function validateBackupPayload(backup: ArchiveEnvelope | null | undefined, {
     }
   }
   errors.push(...validateRestoreRows(backup.data));
+  errors.push(...validateTaskOrder(backup.data));
   errors.push(...validateAccountOnlySections(backup));
   for (const row of Array.isArray(backup.data?.user_settings) ? backup.data.user_settings : []) {
     if (row?.setting_key === 'module_preferences') {

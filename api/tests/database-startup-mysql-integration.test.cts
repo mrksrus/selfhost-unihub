@@ -80,7 +80,7 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
     [13, 'calendar-mail-link-marker'], [14, 'calendar-linked-login'], [15, 'notification-tables-and-mail-indexes'], [16, 'event-source-email'], [17, 'android-notification-devices'],
     [18, 'session-token-hashes'],
     [19, 'audit-log'], [20, 'settings-and-mail-essentials'], [21, 'file-tickets'],
-    [22, 'contacts-vcard-model'], [23, 'contacts-drop-legacy-columns'],
+    [22, 'contacts-vcard-model'], [23, 'contacts-drop-legacy-columns'], [24, 'task-order-and-moves'],
   ]);
   const [policyColumns] = await db.execute<RowDataPacket[]>(`SELECT COLUMN_NAME AS name, COLUMN_DEFAULT AS dflt, IS_NULLABLE AS nullable
     FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mail_accounts'
@@ -148,7 +148,7 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   await getDb()!.end();
   await initDatabase();
   const [history] = await db.execute<RowDataPacket[]>('SELECT id FROM schema_migrations ORDER BY id');
-  assert.deepEqual(history.map((row) => row.id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]);
+  assert.deepEqual(history.map((row) => row.id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]);
   // Both stay signed in; the table holds only hashes, and a hash is not hashed twice.
   assert.equal((await findSession(legacyToken))?.user_id, user.id);
   assert.equal((await findSession(hashedToken))?.user_id, user.id);

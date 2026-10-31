@@ -2,15 +2,15 @@
 
 **ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of the database, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
-0.26.0 and later write account backups with data schema 5 and retain readers for schemas 1–4
-(0.10.13 to 0.25.x wrote schema 4).
+0.27.0 and later write account backups with data schema 6 and retain readers for schemas 1–5
+(0.26.x wrote schema 5, 0.10.13 to 0.25.x schema 4).
 `manifest.json` is the version file. Users do not select conversion scripts.
 
 ## Independent version fields
 
 | Field | Current value | Meaning |
 | --- | --- | --- |
-| Data `version` | 5 | Meaning and shape of exported records |
+| Data `version` | 6 | Meaning and shape of exported records |
 | ZIP `format` | `unihub-restorable-backup` | Identifies a restorable archive |
 | ZIP `format_version` | 1 | Archive layout |
 | Encrypted container | 1 | Authenticated encryption framing |
@@ -31,6 +31,7 @@ framing and a password-wrapped data key.
 | 3 | Automatic | Filing/recovery data, transcripts and server scores included |
 | 4 | Automatic | Adds durable mail intents, receipts and quarantined provider evidence |
 | 5 | Automatic | Contacts in the vCard model: values, kept properties, photos, merged-away UIDs and dismissed duplicates |
+| 6 | Automatic | The hand order of tasks (`task_order`) and the default task list and calendar settings |
 | Unknown version | Rejected before restore | Requires a compatible reader |
 
 Schema 3 preserves account-scoped folder metadata, source and filing identities,
@@ -124,6 +125,42 @@ is applied as an old app's whole 3+3 update instead, so values beyond the
 three places, labels, other fields, kept properties and the photo stay. Keep
 both writes a copy with new ids and, when the UID is taken, a new UID.
 Restoring the same archive twice adds nothing.
+
+0.27.0 introduces schema 6 (upgrade step 24). The calendar section exports
+`task_order`, the hand order of tasks: one row per task placed by hand, with
+its rank (`sort_rank`). A task UniHub holds is named by `event_id`; a task in
+a server calendar by `calendar_id`, `remote_uid` and `recurrence_id` (the
+provider's identity), because the sync rebuilds its event rows. The restore
+remaps `calendar_id` and `event_id`, computes `item_key` again from them, and
+lets an existing row win unless Replace is chosen; a synced task's order
+applies again once the next sync links its UID. Replace makes the order the
+archive's: a restored task or calendar loses a destination hand place the
+archive does not have. Keep existing and Keep both leave the destination's
+order (a kept copy has the archive's). Events keep their `created_at` (a task
+without a date is ordered by it) and carry `order_key`: a task never placed
+by hand is ordered by its date with a small tiebreak, and equal ranks by a
+key, both from the task's order key (its id when empty). A restored UniHub
+task gets a new id but keeps the archived task's key (an archive before 0.27:
+its archived id), so the order comes back exactly as saved, ties included,
+also on another installation. When a restored task's key is already
+another of the person's tasks' (a copy kept beside its original), every
+restored task of that key's base gets a copy counter (`<base>~11`, `~12`, ...
+`~210`: the digit count, then the digits), in the archive's order and after
+the keys already there: a copy ranks like its original and follows it. An
+order key is an id of at most 36 characters, optionally with such a counter;
+an archive with any other key is refused before anything is restored. A synced task's key comes from its UID and
+recurrence id. Every row must name a task
+(or a calendar) of the same archive. The settings section may carry
+`default_task_list_id` and `default_calendar_id`, which are remapped with the
+restored calendars. The move journal (`calendar_event_moves`) is never
+archived: a restore must not replay calendar server writes. Archives of
+schemas 1 to 5 carry no order, so every task keeps its date's place; a schema
+5 archive that carries `task_order` is refused as not made by UniHub.
+
+Applications that read only schemas 1–5 (0.26.x and older) refuse a schema 6
+backup before restoring anything: "Unsupported backup data version: 6. This
+UniHub version reads versions 1, 2, 3, 4 and 5; a newer backup may need a
+newer UniHub release."
 
 Applications that read only schemas 1–4 (0.25.x and older) refuse a schema 5
 backup before restoring anything: "Unsupported backup data version: 5. This

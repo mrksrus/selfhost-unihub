@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useMemo, useRef, useState, type FormEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import { Loader2, Repeat } from 'lucide-react';
@@ -16,12 +16,13 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { SourceEmailBlock } from '@/components/todo/SourceEmail';
 import { useSourceEmailUnlink } from '@/hooks/use-source-email-unlink';
 import { selectUserSetting, userSettingsQueryOptions } from '@/lib/settings-api';
+import { defaultEventCalendar, movingTo } from '@/lib/tasks';
+import { ListChooser } from '@/components/todo/ListChooser';
 
 /** What the dialog shows: a new event (optionally on a day) or an existing one. */
 export type EventDialogTarget = { kind: 'new'; date?: Date } | { kind: 'edit'; event: CalendarEvent } | null;
@@ -63,6 +64,11 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
   const [form, setForm] = useState(emptyForm);
   const [formTarget, setFormTarget] = useState<EventDialogTarget>(null);
   const [pendingScope, setPendingScope] = useState<PendingScope | null>(null);
+  // A calendar change a server has not confirmed yet (202 'creating'): the
+  // dialog says so instead of closing. Each opening is numbered, so a late
+  // answer from an earlier opening changes nothing here.
+  const [movePending, setMovePending] = useState<string | null>(null);
+  const opening = useRef(0);
   const editing = target?.kind === 'edit' ? target.event : null;
   const defaultReminder = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('default_event_reminder') }).data;
 
@@ -75,20 +81,25 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
     const calendar = calendarId ? calendarById.get(calendarId) : undefined;
     return Boolean(calendar && (calendar.read_only || accountOf(calendarId)?.provider === 'ics'));
   };
-  const writable = calendars.filter(calendar => !isReadOnly(calendar.id));
   const readOnly = Boolean(editing && isReadOnly(editing.calendar_id));
   const unlink = useSourceEmailUnlink();
   // The open event is a copy from the list; once unlinked, its block goes until the list refreshes.
   const [unlinkedId, setUnlinkedId] = useState<string | null>(null);
-  // A read-only event still shows its own calendar in the picker.
-  const options = readOnly && editing?.calendar_id && calendarById.has(editing.calendar_id) ? [calendarById.get(editing.calendar_id)!] : writable;
+  // A read-only event still shows its own calendar in the picker; otherwise
+  // every calendar is listed, the ones that take nothing new greyed out with
+  // the server's reason (contracts/tasks.ts).
+  const options = readOnly && editing?.calendar_id && calendarById.has(editing.calendar_id) ? [calendarById.get(editing.calendar_id)!] : calendars;
   const isRemote = (event: CalendarEvent) => isRemoteCalendarAccount(accountOf(event.calendar_id));
 
   // The form is filled while rendering a new target, so the dialog never shows
   // an empty form first. Later calendar refreshes do not reset what was typed.
   if (target !== formTarget) {
     setFormTarget(target);
-    if (target) setForm(formFor(target, timezone, writable[0]?.id || '', defaultReminder === undefined ? 0 : defaultReminder));
+    // An event opened while its move waits for the calendar server shows that state, with the move's cancellation.
+    setMovePending(target?.kind === 'edit' ? movingTo(target.event, calendars) : null);
+    opening.current += 1;
+    // A new event starts in the calendar the server marks as the default (Settings → General, else UniHub's choice).
+    if (target) setForm(formFor(target, timezone, defaultEventCalendar(calendars)?.id || '', defaultReminder === undefined ? 0 : defaultReminder));
   }
 
   const payload = (): Partial<CalendarEvent> & { title: string } => ({
@@ -106,8 +117,15 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
   });
 
   const save = (scope?: RecurrenceScope) => {
-    if (editing) actions.update.mutate({ id: editing.id, event: payload(), scope }, { onSuccess: onClose });
-    else actions.create.mutate(payload(), { onSuccess: onClose });
+    if (editing) {
+      const submitted = { id: editing.id, opening: opening.current, calendarName: calendarById.get(form.calendar_id)?.name ?? 'its new calendar' };
+      actions.update.mutate({ id: editing.id, event: payload(), scope }, {
+        onSuccess: result => {
+          if (submitted.opening !== opening.current || formTarget?.kind !== 'edit' || formTarget.event.id !== submitted.id) return;
+          if (result.pending === 'creating') setMovePending(submitted.calendarName); else onClose();
+        },
+      });
+    } else actions.create.mutate(payload(), { onSuccess: onClose });
   };
 
   const submit = (event: FormEvent) => {
@@ -138,6 +156,13 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
   };
 
   const saving = actions.create.isPending || actions.update.isPending;
+  const cancelMove = () => {
+    if (!editing) return;
+    const submitted = { id: editing.id, opening: opening.current };
+    actions.cancelMove.mutate({ id: editing.id, from: calendarById.get(editing.calendar_id ?? '')?.name, to: movePending ?? undefined }, {
+      onSuccess: () => { if (submitted.opening === opening.current && formTarget?.kind === 'edit' && formTarget.event.id === submitted.id) onClose(); },
+    });
+  };
 
   return <>
     <Dialog open={!!target} onOpenChange={open => { if (!open) onClose(); }}>
@@ -164,6 +189,20 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
           <SourceEmailBlock source={editing.source_email} timezone={timezone} unlinking={unlink.isPending}
             onUnlink={readOnly ? undefined : () => unlink.mutate(editing, { onSuccess: () => setUnlinkedId(editing.id) })} />
         )}
+        {movePending ? (
+          <div className="space-y-4">
+            <p className="flex items-center gap-2 text-sm" role="status">
+              <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin motion-reduce:animate-none" />
+              Moving… UniHub finishes this in the background and the event shows in {movePending} once the calendar server has stored it. Until then it stays where it was.
+            </p>
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button type="button" variant="outline" disabled={actions.cancelMove.isPending} onClick={cancelMove}>
+                {actions.cancelMove.isPending && <Loader2 aria-hidden="true" className="animate-spin" />}Cancel move
+              </Button>
+              <Button type="button" onClick={onClose}>Close</Button>
+            </DialogFooter>
+          </div>
+        ) : (
         <form onSubmit={submit} className="space-y-4">
           <fieldset disabled={readOnly} className="min-w-0 space-y-4">
             <div className="space-y-2">
@@ -172,10 +211,8 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
             </div>
             <div className="space-y-2">
               <Label htmlFor="event-calendar">Calendar</Label>
-              <Select value={form.calendar_id} onValueChange={value => setForm(prev => ({ ...prev, calendar_id: value }))}>
-                <SelectTrigger id="event-calendar"><SelectValue placeholder="Choose a calendar" /></SelectTrigger>
-                <SelectContent>{options.map(calendar => <SelectItem key={calendar.id} value={calendar.id}>{calendar.name}</SelectItem>)}</SelectContent>
-              </Select>
+              <ListChooser id="event-calendar" calendars={options} value={form.calendar_id} placeholder="Choose a calendar"
+                onChange={value => setForm(prev => ({ ...prev, calendar_id: value }))} />
             </div>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
@@ -235,6 +272,7 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
             )}
           </DialogFooter>
         </form>
+        )}
       </DialogContent>
     </Dialog>
 

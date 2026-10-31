@@ -154,6 +154,14 @@ async function publicView(session: Session) {
       source_email: event.source_email_id ? emailSubjects.get(event.source_email_id) ?? `missing email ${event.source_email_id}` : null,
       subtasks: (event.subtasks as Row[]).map(subtask => ({ title: subtask.title, done: Boolean(subtask.is_done), position: subtask.position })),
       attendees: (event.attendees as Row[]).map(attendee => ({ email: attendee.email, name: attendee.display_name, response: attendee.response_status })) }))),
+    // The order ToDo shows (0.27): each list's open tasks by rank, then by the
+    // stable key (never by title, which could hide a flipped tie), and which
+    // were placed by hand. Ranks are compared by the order they give; the
+    // task_order row count above proves no hand place was lost or added.
+    taskOrder: Object.fromEntries(calendars.map(calendar => [String(calendar.name), events
+      .filter(event => event.calendar_id === calendar.id && (event.is_todo_only || calendar.auto_todo_enabled) && !['done', 'cancelled'].includes(String(event.todo_status)))
+      .sort((a, b) => Number(a.sort_rank) - Number(b.sort_rank) || (String(a.sort_key) < String(b.sort_key) ? -1 : String(a.sort_key) > String(b.sort_key) ? 1 : 0))
+      .map(event => [event.title, event.hand_ordered])]).filter(([, tasks]) => (tasks as unknown[]).length)),
     recordings: sort(recordings.map(recording => ({ title: recording.title, description: recording.description, original_filename: recording.original_filename,
       content_type: recording.content_type, size: recording.size_bytes, duration: recording.duration_seconds, source: recording.source, recorded_at: recording.recorded_at,
       tags: recording.tags, bytes: recordingBytes.find(item => item.title === recording.title)?.sha256 }))),
@@ -281,6 +289,15 @@ try {
   for (const title of ['Read it', 'Reply']) await owner.json('POST', `/api/calendar/events/${task.id}/subtasks`, { title }, { expected: [200, 201] });
   await owner.json('POST', '/api/calendar/events', { title: 'Local all-day', start_time: '2030-04-01T00:00:00.000Z', end_time: '2030-04-02T00:00:00.000Z', all_day: true,
     location: 'Graz', reminders: [30] }, { expected: [200, 201] });
+  // The hand order (0.27): tasks without a date and a dated one; the newest
+  // undated task is placed above the oldest by hand. The restore must give
+  // back this order although every task gets a new id.
+  for (const title of ['Pack boxes', 'Label boxes']) await owner.json('POST', '/api/calendar/events', { title, is_todo_only: true }, { expected: [200, 201] });
+  await owner.json('POST', '/api/calendar/events', { title: 'Book van', start_time: '2030-03-02T08:00:00.000Z', end_time: '2030-03-02T08:30:00.000Z' }, { expected: [200, 201] });
+  const undated = (await owner.json<{ events: Row[] }>('GET', '/api/calendar/events?include_todos=true&include_done=false&respect_auto_todo=true')).events
+    .filter(event => event.is_todo_only).sort((a, b) => Number(a.sort_rank) - Number(b.sort_rank));
+  assert.ok(undated.length >= 3, 'three tasks without a date');
+  await owner.json('PUT', `/api/calendar/events/${undated.at(-1)!.id}/position`, { after: null, before: undated[0].id });
 
   const before = await publicView(owner);
   const sourceServer = inspect(source, ownerId);

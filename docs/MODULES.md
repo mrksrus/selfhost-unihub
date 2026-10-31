@@ -5,7 +5,8 @@ Settings → Modules has two lists.
 **Pages** controls the navigation. Each page has its own entry: Mail, Calendar,
 ToDo, Contacts, Recordings, Music and Today.
 
-- **Order:** move a page up or down. The navigation rail, the mobile bar and the More
+- **Order:** drag a page by its ≡ handle, or use Move up and Move down in its
+  menu (also with the keyboard). The navigation rail, the mobile bar and the More
   page follow this order. The mobile bar shows the first four pages; the rest
   are listed on More.
 - **Show in navigation:** show or hide the page's shortcuts. A hidden page can

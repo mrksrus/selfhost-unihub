@@ -16,7 +16,7 @@ function oldRestoreSection(pathname: string) {
   }
   return null;
 }
-const NATIVE_ROUTE_FILES = ['notifications', 'admin', 'auth', 'settings', 'modules', 'system', 'offline', 'search', 'events', 'mail-essentials', 'mail-threads', 'files',
+const NATIVE_ROUTE_FILES = ['calendar-tasks', 'notifications', 'admin', 'auth', 'settings', 'modules', 'system', 'offline', 'search', 'events', 'mail-essentials', 'mail-threads', 'files',
   'contacts', 'contacts-transfer', 'contacts-photos', 'contacts-merge'];
 const nativeKeys = new Set(NATIVE_ROUTE_FILES.flatMap(name => Object.keys(require(`../dist/src/routes/${name}`))));
 

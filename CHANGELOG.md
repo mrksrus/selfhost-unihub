@@ -6,6 +6,101 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.27.0
+
+ToDo and calendar: your own order, and the list you choose. One automatic
+database upgrade; back up first (see
+[Upgrading](docs/UPGRADING.md#0270-todo-and-calendar-order-and-defaults)).
+
+### Added
+
+- **Put your tasks in your own order.** Drag a task by its ≡ handle within
+  its section (Overdue, Today, Later, No date): with a mouse once it moves a
+  few pixels, on a phone after holding the handle for a moment, so a swipe
+  still scrolls. With the keyboard, Tab to the handle, press Space, move with
+  the arrow keys and press Space again; each step is announced. Move up and
+  Move down are in every task's menu too. The order is kept on every device
+  and after a reload, in All lists and in each list.
+- **Dates still come first.** A task you never moved stays at its date's
+  place, and a new task lands at its date (or at the end of No date).
+  Changing a task's date or time in UniHub returns it to its date's place in
+  its new section; a change from the calendar server keeps your place. Done
+  stays in the order things were finished. A task dropped outside its
+  section goes back where it was.
+- **Subtasks and pages too.** Subtasks drag by their handle, with Move up and
+  Move down in their menu. Settings → Pages and modules has a handle and a
+  menu per page; the navigation rail and the bottom bar follow at once.
+- **Choose the list when creating a task.** New task has a List chooser,
+  grouped into "On this UniHub" and each calendar account. A list that cannot
+  take the task is greyed out with the reason ("Tasks without a date stay in
+  UniHub", "Read-only", "Sync is paused"). New event groups its calendars the
+  same way and preselects your default.
+- **Move a task to another list.** "Move to another list" in a task's menu
+  moves it between your UniHub lists, calendar accounts and their calendars;
+  the event dialog moves a single event the same way. The task keeps its done
+  state, subtasks, linked email and place in your order. When the calendar
+  server has not confirmed yet, it says "Moving…" and UniHub finishes in the
+  background; until then the task stays where it was, and the move can be
+  cancelled. If the item changed on the server meanwhile, the move is refused,
+  the item is refreshed, and moving it again works. Recurring events still
+  cannot be moved.
+- **Default task list and calendar.** Settings → General → "New tasks go to"
+  and "New events go to", beside "Reminder for new events" (with the Calendar
+  module on). Leave them on "Let UniHub choose" for the previous behaviour. A
+  list that is gone, read-only or paused is named, and new items go to
+  UniHub's choice instead. Creating a task from an email starts with the list
+  this device used last, else your default.
+
+### Changed
+
+- **The order lives in UniHub.** It is not written to CalDAV servers, so
+  another calendar app shows your tasks in its own order (UniHub does not
+  sync CalDAV task lists yet).
+- **Offline reading shows your order** without handles (it stays read-only).
+
+### Fixed
+
+- **A moved event or task shows once.** Before, when the old copy could not
+  be removed from the calendar server, the item came back beside its new
+  copy at the next sync, and a move retried after a lost connection could
+  create a second copy. A move is now recorded first and finished or adopted
+  after a failure; a calendar server that changed the old copy meanwhile
+  keeps it as its own item instead of losing those changes.
+- **Changes to one item no longer overlap.** An edit, a move, a deletion and
+  the sync that touches the same item now run one after another, so a late
+  answer cannot undo a newer change; a change that waited too long says so
+  and can be tried again.
+
+### Database upgrade
+
+- Upgrade step 24 adds the task order (`task_order`, keyed by the item's
+  identity, so a synced task keeps its place after a full re-sync) and the
+  move journal (`calendar_event_moves`), and gives events an order key.
+- Backups use data schema 6, with the task order and the default list and
+  calendar. An older UniHub cannot read them; 0.27.0 reads every older backup
+  (without an order: every task keeps its date's place). The move journal is
+  never part of a backup.
+
+### API
+
+- `PUT /api/calendar/events/:id/position` places a task between two
+  neighbours; `POST /api/calendar/events/:id/move` moves an item to another
+  calendar (202 with `move_pending` while the server has not confirmed), and
+  `DELETE /api/calendar/events/:id/move` cancels a pending move. Events carry
+  `sort_rank`, `hand_ordered` and `move_pending`; `GET
+  /api/calendar/calendars` marks `default_for_tasks`, `default_for_events`,
+  `write_block` and `takes_undated_tasks` (`api/src/contracts/tasks.ts`).
+- New errors: `409 CALENDAR_MOVE_PENDING`, `409 CALENDAR_EVENT_CHANGED`,
+  `409 CALDAV_CONFLICT` on a move, `400 CALENDAR_MOVE_UNSUPPORTED` and
+  `400 CALENDAR_RECURRING_MOVE`.
+- Settings: `default_task_list_id` and `default_calendar_id`.
+
+### Pinned interface pictures
+
+- `todo-drag`, `new-task` (wide and phone) and `settings-pages` (wide), dark
+  and light: the drag handle, the list chooser and the pages order, designed
+  under P-29 and D31 for 0.27.0.
+
 ## 0.26.0
 
 Contacts: complete fields and duplicate handling. Two automatic database

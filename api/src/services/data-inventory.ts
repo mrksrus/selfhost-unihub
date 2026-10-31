@@ -100,6 +100,10 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
       'id user_id status format file_path summary result progress created_at expires_at committed_at'],
   ].map(([name, treatment, reason, columns]) => [name, Object.freeze({ ...excluded(treatment, reason, columns),
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 22])) })])),
+  // Upgrade step 24 (0.27.0).
+  calendar_event_moves: Object.freeze({ ...excluded('deliberately_excluded', 'A move in progress writes to calendar servers; a restore must not replay provider writes. The task comes back as archived, in whichever calendar held it.',
+    'id user_id event_id source_calendar_id source_object_id source_etag target_calendar_id target_uid target_href target_etag target_ics state attempts last_error next_attempt_at created_at updated_at'),
+  introducedIn: Object.freeze(Object.fromEntries('id user_id event_id source_calendar_id source_object_id source_etag target_calendar_id target_uid target_href target_etag target_ics state attempts last_error next_attempt_at created_at updated_at'.split(' ').map(column => [column, 24]))) }),
 });
 
 // From upgrade step 20 on, a new table states who owns a row, whether it can
@@ -131,6 +135,11 @@ const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.fr
   // Each item's module column names the module that gates it.
   bin_items: { owner: 'user', shareable: false, dataClass: 'local', module: null, restore: 'Not archived in 0.26; 0.28 decides the bin with D13.' },
   contact_imports: { owner: 'user', shareable: false, dataClass: 'installation', module: 'contacts', restore: 'Never restored: a staged import expires after 24 hours.' },
+  // Upgrade step 24 (0.27.0). The hand order is UniHub's own overlay on
+  // tasks, including mirrored ones: keyed by the provider identity (calendar,
+  // UID, recurrence id) for those, so a re-sync or restore matches it again.
+  task_order: { owner: 'user', shareable: false, dataClass: 'local', module: 'calendar', restore: 'Restored with the Calendar section; calendar and event ids remapped, the key rebuilt. A synced task\'s order matches its UID after the next sync.' },
+  calendar_event_moves: { owner: 'user', shareable: false, dataClass: 'installation', module: 'calendar', restore: 'Never restored: a restore must not replay provider writes.' },
 });
 
 function assertTableDeclarations(fields: ReadonlyMap<string, InventoryField>) {

@@ -7,14 +7,16 @@ import { useAuth } from '@/contexts/useAuth';
 import { useModules } from '@/hooks/use-modules';
 import { useTaskActions } from '@/hooks/use-task-actions';
 import { useNotificationEventLink } from '@/hooks/use-notification-event-link';
-import { calendarApi, calendarQueryKeys, formatEventTime, type CalendarEvent } from '@/lib/calendar-api';
+import { calendarApi, calendarQueryKeys, type CalendarEvent } from '@/lib/calendar-api';
+import { isOfflineMode } from '@/lib/offline';
 import { Button } from '@/components/ui/button';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
 import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { Chip, ChipGroup } from '@/components/ui/chips';
+import { SortableList } from '@/components/ui/sortable-list';
 import { TaskRow } from '@/components/todo/TaskRow';
-import { isOverdue } from '@/lib/tasks';
-import { EditTaskDialog, MoveTaskDialog, NewTaskDialog } from '@/components/todo/TaskDialogs';
+import { movingTo, orderTasks, taskSection } from '@/lib/tasks';
+import { EditTaskDialog, MoveListDialog, MoveTaskDialog, NewTaskDialog } from '@/components/todo/TaskDialogs';
 
 const VIEWS = {
   open: { label: 'Open', icon: ListTodo },
@@ -29,20 +31,27 @@ const isView = (value: string | null): value is View => !!value && value in VIEW
 
 const active = (task: CalendarEvent) => task.todo_status !== 'done' && task.todo_status !== 'cancelled';
 
-/** Sorts and groups tasks once; views only pick from the groups. */
+/**
+ * Sorts and groups tasks once; views only pick from the groups. The date
+ * sections stay (D31); within each, the order is the person's own: a task
+ * never placed by hand stands at its date's place (orderTasks). Done keeps
+ * completion order.
+ */
 function groupTasks(tasks: CalendarEvent[], timezone: string | null) {
   const now = new Date();
-  const today = formatEventTime(now.toISOString(), 'yyyy-MM-dd', timezone);
-  const open = tasks.filter(active).sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
-  const isToday = (task: CalendarEvent) => !task.is_todo_only && formatEventTime(task.start_time, 'yyyy-MM-dd', timezone) === today;
-  const overdue = open.filter(task => isOverdue(task, now.getTime()));
-  const todayTasks = open.filter(task => isToday(task) && !overdue.includes(task));
-  const later = open.filter(task => !task.is_todo_only && !overdue.includes(task) && !todayTasks.includes(task));
-  const undated = open.filter(task => task.is_todo_only);
+  const open = orderTasks(tasks.filter(active));
+  const section = (task: CalendarEvent) => taskSection(task, timezone, now);
+  const overdue = open.filter(task => section(task) === 'overdue');
+  const todayTasks = open.filter(task => section(task) === 'today');
+  const later = open.filter(task => section(task) === 'later');
+  const undated = open.filter(task => section(task) === 'undated');
   const done = tasks.filter(task => task.todo_status === 'done')
     .sort((a, b) => new Date(b.done_at ?? b.updated_at).getTime() - new Date(a.done_at ?? a.updated_at).getTime());
   return { open, overdue, today: todayTasks, later, undated, done };
 }
+
+const taskId = (task: CalendarEvent) => task.id;
+const taskName = (task: CalendarEvent) => task.title;
 
 const TodoPage = () => {
   const { user } = useAuth();
@@ -55,6 +64,7 @@ const TodoPage = () => {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<CalendarEvent | null>(null);
   const [moving, setMoving] = useState<CalendarEvent | null>(null);
+  const [movingList, setMovingList] = useState<CalendarEvent | null>(null);
   // A task linked from an email that ToDo does not list: its list is hidden from ToDo.
   const [hiddenTask, setHiddenTask] = useState<string | null>(null);
   // A task linked from an email, scrolled to once its row is on the page.
@@ -106,6 +116,9 @@ const TodoPage = () => {
   const groups = useMemo(() => groupTasks(tasks, timezone), [tasks, timezone]);
   const calendarColor = (task: CalendarEvent) => calendars.length > 1 ? calendars.find(calendar => calendar.id === task.calendar_id)?.color : undefined;
   const openCount = (id: string) => (tasksQuery.data ?? []).filter(task => active(task) && task.calendar_id === id).length;
+  // Reordering needs a server to keep it: not offline, and not while the list is still loading.
+  const reorderable = !isOfflineMode() && !tasksQuery.isPending;
+  const cancelMove = (task: CalendarEvent) => actions.cancelMove.mutate({ id: task.id, from: calendars.find(calendar => calendar.id === task.calendar_id)?.name, to: movingTo(task, calendars) ?? undefined });
 
   const selectView = (next: View) => {
     const nextParams = new URLSearchParams(params);
@@ -149,6 +162,28 @@ const TodoPage = () => {
     </div>
   );
 
+  const rows = (section: { id: string; label?: string; tasks: CalendarEvent[] }) => {
+    const label = section.label ?? VIEWS[view].label;
+    const shared = (task: CalendarEvent) => ({
+      task, actions, timezone, calendarColor: calendarColor(task), onEdit: setEditing, onMove: setMoving,
+      onMoveList: reorderable ? setMovingList : undefined, canReorder: reorderable,
+      // A move not confirmed yet is marked on the row; it can be cancelled with a server at hand.
+      movingTo: movingTo(task, calendars), onCancelMove: reorderable ? cancelMove : undefined,
+    });
+    if (view === 'done' || !reorderable) return <ul>{section.tasks.map(task => <TaskRow key={task.id} {...shared(task)} />)}</ul>;
+    // A placement belongs to its section: a task that lands elsewhere meanwhile (a date change, a tick) is no longer placed by it.
+    const identity = { key: section.id, of: (task: CalendarEvent) => taskSection(task, timezone) };
+    return (
+      <SortableList items={section.tasks} getId={taskId} getName={taskName} label={label}
+        onReorder={({ item, to }) => actions.placeTask(section.tasks, item.id, to, identity)}>
+        {(task, sortable, index) => (
+          <TaskRow key={task.id} {...shared(task)} sortable={sortable}
+            order={{ index, count: section.tasks.length, up: () => actions.moveTask(section.tasks, task.id, -1, identity), down: () => actions.moveTask(section.tasks, task.id, 1, identity) }} />
+        )}
+      </SortableList>
+    );
+  };
+
   return (
     <PageShell>
       <PageHeader title={title} actions={<Button size="sm" onClick={() => setCreating(true)} aria-label="New task"><Plus aria-hidden="true" /><span className="hidden sm:inline">New task</span></Button>}>
@@ -172,17 +207,14 @@ const TodoPage = () => {
           ) : sections.map(section => (
             <section key={section.id} aria-label={section.label ?? VIEWS[view].label} className="mb-6 last:mb-0">
               {section.label && <h2 className={section.tone === 'warning' ? 'mb-1 text-sm font-medium text-warning' : 'mb-1 text-sm font-medium text-muted-foreground'}>{section.label}</h2>}
-              <ul>
-                {section.tasks.map(task => (
-                  <TaskRow key={task.id} task={task} actions={actions} timezone={timezone} calendarColor={calendarColor(task)} onEdit={setEditing} onMove={setMoving} />
-                ))}
-              </ul>
+              {rows(section)}
             </section>
           ))}
       </PageBody>
-      <NewTaskDialog open={creating} onOpenChange={setCreating} actions={actions} timezone={timezone} />
+      <NewTaskDialog open={creating} onOpenChange={setCreating} actions={actions} timezone={timezone} calendars={calendars} />
       <EditTaskDialog task={editing} onClose={() => setEditing(null)} actions={actions} timezone={timezone} />
       <MoveTaskDialog task={moving} onClose={() => setMoving(null)} actions={actions} timezone={timezone} />
+      <MoveListDialog task={movingList} onClose={() => setMovingList(null)} actions={actions} calendars={calendars} />
     </PageShell>
   );
 };

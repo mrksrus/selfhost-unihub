@@ -361,6 +361,17 @@ const MIGRATIONS: readonly Migration[] = [
       await verifyDatabaseInventory(connection, { throughMigration: 23 });
     },
   },
+  {
+    // 0.27.0: the hand order of tasks, an overlay keyed by the item's identity
+    // (services/task-order.ts), and the journal of moves between calendars,
+    // so a retried or interrupted move never makes a second copy.
+    id: 24,
+    name: 'task-order-and-moves',
+    up: createTaskOrderAndMoves,
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 24 });
+    },
+  },
 ];
 const LATEST_MIGRATION_ID = MIGRATIONS[MIGRATIONS.length - 1].id;
 
@@ -589,6 +600,72 @@ async function createFileTickets(connection: SqlExecutor) {
     KEY idx_file_tickets_expires (expires_at),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+}
+
+// A task's hand rank: keyed by its event for a task UniHub holds, by
+// (calendar, UID, recurrence id) for a synced one, so the order survives a
+// sync or restore that rebuilds the row. calendar_id is set only for synced
+// items; a local item follows its event. calendar_events.order_key is the
+// order key a restore carries over (empty: the event id), so ties and
+// date-rank offsets survive new ids (services/task-order.ts).
+async function createTaskOrderAndMoves(connection: SqlExecutor) {
+  await connection.execute(`CREATE TABLE IF NOT EXISTS task_order (
+    user_id CHAR(36) NOT NULL,
+    item_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    calendar_id CHAR(36) NULL,
+    event_id CHAR(36) NULL,
+    remote_uid VARCHAR(500) NULL,
+    recurrence_id VARCHAR(64) NOT NULL DEFAULT '',
+    sort_rank BIGINT NOT NULL,
+    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, item_key),
+    KEY idx_task_order_rank (user_id, sort_rank),
+    KEY idx_task_order_event (event_id),
+    KEY idx_task_order_calendar (calendar_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (calendar_id) REFERENCES calendar_calendars(id) ON DELETE CASCADE,
+    FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  if (!await hasColumn(connection, 'calendar_events', 'order_key')) await connection.execute('ALTER TABLE calendar_events ADD COLUMN order_key VARCHAR(64) NULL');
+  // The move journal (services/calendar-move.ts): one open move per task.
+  // Removing either calendar (or its account) or the task ends the move; so
+  // does removing the source's server copy. A move still removing the old
+  // copy outlives its task and its new calendar (event_id, target_calendar_id
+  // become NULL), so the old copy never comes back. target_ics is the object
+  // every attempt sends, under the UID fixed before the first; source_etag
+  // is the old copy as the move found it, the only version it may delete.
+  // Branch databases made an earlier shape of it, which nothing wrote to.
+  const [journal] = await connection.execute<RowDataPacket[]>("SHOW TABLES LIKE 'calendar_event_moves'");
+  if (journal.length && !await hasColumn(connection, 'calendar_event_moves', 'source_etag')) {
+    await connection.execute('DROP TABLE calendar_event_moves');
+  }
+  await connection.execute(`CREATE TABLE IF NOT EXISTS calendar_event_moves (
+    id CHAR(36) NOT NULL PRIMARY KEY,
+    user_id CHAR(36) NOT NULL,
+    event_id CHAR(36) NULL,
+    source_calendar_id CHAR(36) NULL,
+    source_object_id CHAR(36) NULL,
+    source_etag VARCHAR(255) NULL,
+    target_calendar_id CHAR(36) NULL,
+    target_uid VARCHAR(255) NOT NULL,
+    target_href TEXT NULL,
+    target_etag VARCHAR(255) NULL,
+    target_ics MEDIUMTEXT NULL,
+    state ENUM('creating', 'removing') NOT NULL,
+    attempts INT NOT NULL DEFAULT 0,
+    last_error VARCHAR(255) NULL,
+    next_attempt_at DATETIME NULL,
+    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_event_move (event_id),
+    KEY idx_event_moves_due (state, next_attempt_at),
+    KEY idx_event_moves_user (user_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE SET NULL,
+    FOREIGN KEY (source_calendar_id) REFERENCES calendar_calendars(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_object_id) REFERENCES calendar_remote_objects(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_calendar_id) REFERENCES calendar_calendars(id) ON DELETE SET NULL
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 }
 

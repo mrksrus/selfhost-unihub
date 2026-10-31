@@ -10,6 +10,11 @@ test('calendar detail resolves one owned event with its children and hides other
   const calls: FixtureValue[] = [];
   setDb({ async execute(sql: string, params: FixtureValue) {
     calls.push({ sql, params });
+    // The person's hand order (none here): owner-scoped like the rest.
+    if (sql.includes('FROM task_order WHERE user_id = ?')) return [[]];
+    // The order identities (task-order.ts): no server copy here.
+    if (sql.includes('LEFT JOIN calendar_remote_objects o')) { assert.match(sql, /WHERE e\.user_id = \?/); return [[]]; }
+    if (sql.includes('FROM calendar_event_moves')) { assert.match(sql, /WHERE (user_id|event_id) = \?/); return [[]]; }
     assert.match(sql, /WHERE (id|event_id) = \? AND user_id = \?/);
     const owned = params[0] === 'target' && params[1] === 'owner';
     if (!owned) return [[]];
@@ -49,8 +54,12 @@ function eventUpdateHarness(t: import('node:test').TestContext, execute: (sql: s
   stub(paths[2], legacyTable({ 'PUT /api/calendar/events/:id': routes['PUT /api/calendar/events/:id'] }));
   stub(paths[3], { isModuleEnabled: async () => true });
   stub(paths[4], { getActiveRestoreSections: async () => new Set<FixtureValue>() });
-  const connection = { execute, async beginTransaction() {}, async commit() {}, async rollback() {}, release() {} };
-  setDb({ execute, getConnection: async () => connection } as FixtureValue);
+  // The item's lock (calendar-move-state.ts) is always free here, and the
+  // module and restore checks made again under it find the defaults.
+  const answer = (sql: string, params: FixtureValue) => /^SELECT (GET|RELEASE|IS_USED)_LOCK\(/.test(sql) ? Promise.resolve([[{ acquired: 1, session: 7, holder: 7 }]])
+    : /FROM (user_settings|backup_restore_jobs)\b/.test(sql) ? Promise.resolve([[]]) : execute(sql, params);
+  const connection = { execute: answer, async beginTransaction() {}, async commit() {}, async rollback() {}, release() {} };
+  setDb({ execute: answer, getConnection: async () => connection } as FixtureValue);
   const { handleRequest } = require(paths[0]) as typeof import('../src/request-handler');
   const { EventEmitter } = require('node:events') as typeof import('node:events');
   const { PassThrough } = require('node:stream') as typeof import('node:stream');
@@ -77,6 +86,12 @@ test('removing the calendar of a synced event is refused; a local event can stil
       if (sql.includes('calendar_id = NULL')) state.calendar_id = null;
       return [{ affectedRows: 1 }];
     }
+    if (sql.includes('FROM task_order WHERE user_id = ?')) return [[]];
+    // The order identities (task-order.ts): no server copy here.
+    if (sql.includes('LEFT JOIN calendar_remote_objects o')) { assert.match(sql, /WHERE e\.user_id = \?/); return [[]]; }
+    if (sql.includes('FROM calendar_event_moves')) { assert.match(sql, /WHERE (user_id|event_id) = \?/); return [[]]; }
+    // What an edit's writeback decision rests on (calendar-move-state.ts).
+    if (sql.includes('AS object_id')) { assert.deepEqual(params, ['target', 'owner']); return [[{ calendar_id: state.calendar_id, object_id: state.linked ? 'object' : null }]]; }
     assert.match(sql, /WHERE (id|event_id|c\.id) = \? AND (c\.)?user_id = \?/);
     if (params[1] !== 'owner') return [[]];
     if (sql.includes('FROM calendar_events')) return [[{ id: 'target', user_id: 'owner', calendar_id: state.calendar_id, title: 'Synced', start_time: '2026-10-20 10:00:00', end_time: '2026-10-20 11:00:00' }]];

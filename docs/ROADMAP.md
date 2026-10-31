@@ -133,6 +133,7 @@ These items are not planned. Each one can come after 1.0, or never.
 - Assigning tasks to people, board views
 - Calendars in the phone's own calendar app
 - CardDAV contact sync with providers
+- CalDAV task lists, with their manual sort order
 - UnifiedPush as an optional notification route
 - Sharing into UniHub from other Android apps, document scanning
 - Quiet hours and smart notification rules

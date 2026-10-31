@@ -14,10 +14,26 @@ export function adb(...args) {
   return execFileSync(`${SDK}/platform-tools/adb`, ['-s', serial, ...args], { encoding: 'utf8', timeout: 120_000 });
 }
 
+/**
+ * Android's view hierarchy as uiautomator's XML. On a slow emulator the dump
+ * is sometimes killed (exit 137) after or before writing the file: retry.
+ */
+export function dumpScreen() {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      adb('shell', 'uiautomator', 'dump', '/data/local/tmp/unihub-ui.xml');
+      break;
+    } catch (error) {
+      if (/dumped to/.test(String(error.stdout ?? ''))) break;
+      if (attempt >= 3) throw error;
+    }
+  }
+  return adb('shell', 'cat', '/data/local/tmp/unihub-ui.xml');
+}
+
 /** Android's on-screen nodes: text, description and centre. */
 export function screenNodes() {
-  adb('shell', 'uiautomator', 'dump', '/data/local/tmp/unihub-ui.xml');
-  const xml = adb('shell', 'cat', '/data/local/tmp/unihub-ui.xml');
+  const xml = dumpScreen();
   return [...xml.matchAll(/<node [^>]*>/g)].map(match => {
     const attrs = Object.fromEntries([...match[0].matchAll(/([\w-]+)="([^"]*)"/g)].map(m => [m[1], m[2]]));
     const box = /\[(\d+),(\d+)\]\[(\d+),(\d+)\]/.exec(attrs.bounds ?? '');
@@ -108,7 +124,13 @@ export async function pickFromDownloads(names) {
  * appear over the page whenever it meets a server for the first time; tests
  * that are not about them answer Not now.
  */
-export async function dismissFirstRunOffers() {
+export async function dismissFirstRunOffers({ waitMs = 0 } = {}) {
+  // Right after signing in, an offer can still be on its way: look for it a little while.
+  const until = Date.now() + waitMs;
+  while (!screenNodes().some(n => /contacts on this phone|notifications on this phone/i.test(n.text))) {
+    if (Date.now() >= until) return;
+    await sleep(1000);
+  }
   for (let i = 0; i < 3; i++) {
     const nodes = screenNodes();
     if (!nodes.some(n => /contacts on this phone|notifications on this phone/i.test(n.text))) return;
@@ -126,8 +148,20 @@ export async function openApp({ email = 'admin@example.com', password = 'local-d
     adb('shell', 'am', 'force-stop', PACKAGE);
     adb('shell', 'am', 'start', '-n', `${PACKAGE}/.MainActivity`);
   }
-  const device = (await android.devices()).find(d => d.serial() === serial);
+  // An open device handle keeps the test process running: close every one this call does not return.
+  const devices = await android.devices();
+  const device = devices.find(d => d.serial() === serial);
+  await Promise.all(devices.filter(d => d !== device).map(d => d.close().catch(() => {})));
   if (!device) throw new Error(`${serial} not found; run tools/e2e/android.sh up`);
+  try {
+    return await signedInPage(device, { email, password });
+  } catch (error) {
+    await device.close().catch(() => {});
+    throw error;
+  }
+}
+
+async function signedInPage(device, { email, password }) {
   await device.webView({ pkg: PACKAGE }, { timeout: 180_000 });
   // The page may still be on its way to /auth or to the start page (slow
   // emulators), and signing in reloads it, which replaces the WebView's page
@@ -154,7 +188,7 @@ export async function openApp({ email = 'admin@example.com', password = 'local-d
         }
       } else if (path !== '/') {
         await answerSlowDialogs();
-        await dismissFirstRunOffers();
+        await dismissFirstRunOffers({ waitMs: signIns > 0 ? 10_000 : 0 });
         return { device, page: current };
       }
     } catch { /* the target went away mid-check; take the next one */ }
@@ -184,7 +218,16 @@ export function deviceScreenshot(path) {
 export async function touch(page, locator) {
   await answerSlowDialogs();
   await locator.scrollIntoViewIfNeeded();
-  // The page may still be moving (the on-screen keyboard opening): wait until the element stays put.
+  const { x, y } = await screenPoint(page, locator);
+  adb('shell', 'input', 'tap', `${x}`, `${y}`);
+}
+
+/**
+ * Where a page element's centre (moved by `dy` page pixels) is on the screen,
+ * in screen pixels for `adb shell input`, once the element stays put (the
+ * page may still be moving: the on-screen keyboard opening, a scroll ending).
+ */
+export async function screenPoint(page, locator, { dy = 0 } = {}) {
   let box = await locator.boundingBox();
   for (let attempt = 0; attempt < 20; attempt++) {
     await sleep(400);
@@ -194,10 +237,9 @@ export async function touch(page, locator) {
   }
   if (!box) throw new Error('the element is not on screen');
   const ratio = await page.evaluate(() => window.devicePixelRatio);
-  adb('shell', 'uiautomator', 'dump', '/data/local/tmp/unihub-ui.xml');
-  const xml = adb('shell', 'cat', '/data/local/tmp/unihub-ui.xml');
+  const xml = dumpScreen();
   const node = [...xml.matchAll(/<node [^>]*>/g)].map(match => match[0]).find(tag => tag.includes('class="android.webkit.WebView"'));
   const web = node && /bounds="\[(\d+),(\d+)\]/.exec(node);
   if (!web) throw new Error('the WebView is not on screen');
-  adb('shell', 'input', 'tap', `${Math.round(+web[1] + (box.x + box.width / 2) * ratio)}`, `${Math.round(+web[2] + (box.y + box.height / 2) * ratio)}`);
+  return { x: Math.round(+web[1] + (box.x + box.width / 2) * ratio), y: Math.round(+web[2] + (box.y + box.height / 2 + dy) * ratio), ratio };
 }

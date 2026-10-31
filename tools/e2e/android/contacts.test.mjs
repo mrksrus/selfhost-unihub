@@ -95,6 +95,43 @@ async function until(check, what, timeoutMs = 240_000) {
   throw new Error(`timed out waiting for ${what}${last ? `: ${last.message}` : ''}`);
 }
 
+/** Whether the phone's default network is metered (what the app's isActiveNetworkMetered sees). */
+function defaultNetworkMetered() {
+  const dump = adb('shell', 'dumpsys', 'connectivity');
+  const id = /Active default network: (\d+)/.exec(dump)?.[1];
+  const agent = id && dump.split('\n').find(line => line.includes(`NetworkAgentInfo{network{${id}}`));
+  const capabilities = agent && /Capabilities: (\S+)/.exec(agent)?.[1].split('&');
+  return !!capabilities && !capabilities.includes('NOT_METERED');
+}
+
+/**
+ * Makes the phone's network metered and returns how, with its undo; null when
+ * this emulator cannot. First the Wi-Fi marked metered (as Android's Wi-Fi
+ * settings do), else Wi-Fi off so that mobile data is the active network.
+ */
+async function meteredNetwork() {
+  const ways = [];
+  const ssid = /connected to "([^"]+)"/.exec(adb('shell', 'cmd', 'wifi', 'status'))?.[1];
+  if (ssid) {
+    // The current setting (true, false or none) is put back afterwards.
+    const was = new RegExp(`^${ssid};(\\w+)`, 'm').exec(adb('shell', 'cmd', 'netpolicy', 'list', 'wifi-networks'))?.[1] ?? 'none';
+    // Android 15 exits with 255 even when the value is set; the network's own state below is what counts.
+    const mark = value => { try { adb('shell', 'cmd', 'netpolicy', 'set', 'metered-network', ssid, value); } catch { /* checked below */ } };
+    ways.push({ how: `Wi-Fi ${ssid} marked metered`, on: () => mark('true'), off: () => mark(was === 'none' ? 'undefined' : was) });
+  }
+  // A mobile network the phone is connected to (requests name CELLULAR too, without one).
+  if (/NetworkAgentInfo\{.*Transports: CELLULAR/.test(adb('shell', 'dumpsys', 'connectivity'))) {
+    ways.push({ how: 'Wi-Fi off, mobile data on', on: () => adb('shell', 'svc', 'wifi', 'disable'), off: () => adb('shell', 'svc', 'wifi', 'enable') });
+  }
+  for (const way of ways) {
+    way.on();
+    for (let i = 0; i < 15 && !defaultNetworkMetered(); i++) await sleep(2000);
+    if (defaultNetworkMetered()) return way;
+    way.off();
+  }
+  return null;
+}
+
 /** Contacts on the phone for the signed-in admin, as Android's Settings → Add account → UniHub turns them on. */
 async function contactsOn() {
   adb('shell', 'pm', 'grant', PACKAGE, 'android.permission.READ_CONTACTS');
@@ -251,16 +288,23 @@ test('[26-10] a photo set in UniHub reaches the phone, and one set on the phone 
   assert.equal((await contact(eve.id)).version, eveVersion, "the phone's photo was sent once");
 });
 
-test('[26-10] a photo set on the phone for a contact UniHub merged away reaches the survivor; on a metered network the copy waits', { timeout: 1_200_000 }, async () => {
+test('[26-10] a photo set on the phone for a contact UniHub merged away waits on a metered network, then reaches the survivor', { timeout: 1_200_000 }, async t => {
+  await openApp().then(({ device }) => device.close());
   await contactsOn();
+  // On an unmetered network the photo would be sent before the merge, and the
+  // copy's way into the survivor (intoSurvivor) would not run at all.
+  const metered = await meteredNetwork();
+  if (!metered) {
+    t.skip('needs a metered network on the emulator: neither marking its Wi-Fi metered nor mobile data worked');
+    return;
+  }
+  console.log(`metered network: ${metered.how}`);
   const body = number => ({ name: { given: 'Fay', family: tag }, emails: [v(`fay.${run}@example.com`)], phones: [v(number)] });
-  const keep = await create(body('+15550600'));
-  const away = await create(body('+15550601'));
-  await until(() => rawsFor(keep.id).length === 1 && rawsFor(away.id).length === 1, 'both copies on the phone');
-  // With mobile data the deferral is checked too: without Wi-Fi it is the active, metered network.
-  const mobileData = adb('shell', 'dumpsys', 'connectivity').includes('CELLULAR');
-  if (mobileData) adb('shell', 'svc', 'wifi', 'disable');
+  let keep, away;
   try {
+    keep = await create(body('+15550600'));
+    away = await create(body('+15550601'));
+    await until(() => rawsFor(keep.id).length === 1 && rawsFor(away.id).length === 1, 'both copies on the phone');
     // A picture set on the copy and held on the phone before the merge, so no
     // sync the merge sets off can find the copy unchanged and remove it; on a
     // metered network it is not sent to the contact being merged away.
@@ -270,14 +314,13 @@ test('[26-10] a photo set on the phone for a contact UniHub merged away reaches 
     const versions = { [keep.id]: (await contact(keep.id)).version, [away.id]: (await contact(away.id)).version };
     adb('logcat', '-c');
     await api('POST', '/api/contacts/merges', { contact_ids: [keep.id, away.id], survivor_id: keep.id, versions });
-    if (mobileData) {
-      await until(() => adb('shell', 'logcat -d -s UniHubContacts').includes('stays on the phone until its new photo is sent'), 'the copy waiting for its photo');
-      assert.equal(rawsFor(away.id).length, 1, 'the copy stays while its photo cannot be sent');
-      assert.equal((await contact(keep.id)).photo, null);
-    }
+    await until(() => adb('shell', 'logcat -d -s UniHubContacts').includes('stays on the phone until its new photo is sent'), 'the copy waiting for its photo');
+    assert.equal(rawsFor(away.id).length, 1, 'the copy stays while its photo cannot be sent');
+    assert.equal((await contact(keep.id)).photo, null);
   } finally {
-    if (mobileData) adb('shell', 'svc', 'wifi', 'enable');
+    metered.off();
   }
+  for (let i = 0; i < 30 && defaultNetworkMetered(); i++) await sleep(2000);
   await until(async () => (await contact(keep.id)).photo !== null, "the merged-away copy's photo on the survivor");
   await until(() => rawsFor(away.id).length === 0, 'the merged-away copy gone from the phone');
   await until(() => { const raw = rawsFor(keep.id)[0]; return raw && of(dataOf(raw._id), 'photo').length === 1; }, "the survivor's copy with the photo");

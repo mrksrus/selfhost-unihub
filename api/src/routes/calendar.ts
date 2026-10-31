@@ -52,7 +52,7 @@ type CalendarRecordRow = RowDataPacket & CalendarCalendar;
 type EventRow = RowDataPacket & CalendarEvent;
 type SubtaskRow = RowDataPacket & CalendarSubtask;
 type CountRow = RowDataPacket & { count: number };
-type PushResult = Record<string, unknown> & { error?: string; status?: number; scope?: string };
+type PushResult = Record<string, unknown> & { error?: string; status?: number; scope?: string; pending?: 'creating' | 'removing'; sourceKept?: boolean };
 
 const {
   CALENDAR_PROVIDER_DEFAULT_CAPABILITIES,
@@ -77,8 +77,14 @@ const {
   getCalendarSubtaskIdFromReq,
   serializeCalendarSubtask,
   MAIL_CONNECTED_SQL,
+  resolveCalendarDefaults,
+  calendarWriteBlock,
+  takesUndatedTasks,
 } = require('../services/calendar') as typeof import('../services/calendar');
+const taskOrder = require('../services/task-order') as typeof import('../services/task-order');
+const { attachMoveState, movePending, eventChanged, writebackIdentity, withEventLock, fenceTaskLocks, fencedWrite } = require('../services/calendar-move-state') as typeof import('../services/calendar-move-state');
 const calendarSync = require('../services/calendar-sync') as typeof import('../services/calendar-sync');
+const calendarMove = require('../services/calendar-move') as typeof import('../services/calendar-move');
 const calendarAccounts = require('../services/calendar-accounts') as typeof import('../services/calendar-accounts');
 
 const has = (body: Record<string, unknown>, key: string) => Object.prototype.hasOwnProperty.call(body, key);
@@ -96,6 +102,23 @@ function isRemoteProvider(provider: string | undefined) {
   return calendarSync.REMOTE_PROVIDERS.has(provider!);
 }
 
+// A change that writes to an item's server copy, link or calendar holds the
+// item's lock from its first read to its local write
+// (calendar-move-state.ts): an edit, a move or a deletion running meanwhile
+// would act on what this one is changing. `when` limits it to such changes.
+function oneChangeAtATime<B, R>(failure: string, handler: (req: Request, userId: string | null, body: B) => Promise<R>,
+  when: (body: B) => boolean = () => true) {
+  return async (req: Request, userId: string | null, body: B) => {
+    const id = userId ? getCalendarEventIdFromReq(req) : null;
+    if (!userId || !id || !when(body)) return handler(req, userId, body);
+    try {
+      return await withEventLock(userId, id, () => handler(req, userId, body));
+    } catch (error) {
+      return clientError(error, failure);
+    }
+  };
+}
+
 // Write an event change to its calendar server before it is saved locally.
 // body says which fields changed; values holds them normalized.
 async function pushEventChanges(userId: string, event: CalendarEvent, body: Input, values: Partial<CalendarEvent>): Promise<PushResult> {
@@ -106,12 +129,14 @@ async function pushEventChanges(userId: string, event: CalendarEvent, body: Inpu
   try {
     const moving = has(body, 'calendar_id') && body.calendar_id && body.calendar_id !== event.calendar_id;
     if (moving) {
-      const target = await loadCalendarAccountRow(userId, body.calendar_id!);
-      if (target && isRemoteProvider(target.provider) && (body.is_todo_only ?? event.is_todo_only)) {
-        return { error: 'ToDos without a date cannot be saved to a server calendar.', status: 400 };
-      }
-      return (await calendarSync.pushEventMove({ userId, event, targetCalendarId: body.calendar_id!, changes })) || {};
+      // The same move as POST …/move (services/calendar-move.ts); the new
+      // copy carries the fields changed with it.
+      if (has(body, 'is_todo_only')) changes.is_todo_only = !!body.is_todo_only;
+      if (has(body, 'recurrence')) changes.recurrence = body.recurrence || null;
+      return { ...await calendarMove.moveEvent(userId, event.id, body.calendar_id!, { changes }) };
     }
+    // While its new copy is being created, an edit would be lost with the old one.
+    if (Object.keys(changes).length || body.is_todo_only === true) await calendarMove.assertNotMoving(userId, event.id);
     if (body.is_todo_only === true && event.calendar_id_remote) {
       return { error: 'ToDos without a date cannot be saved to a server calendar.', status: 400 };
     }
@@ -334,12 +359,23 @@ export = {
          ORDER BY a.created_at ASC, c.created_at ASC`,
         [userId, userId]
       );
-      const calendars = rows.map((row) => ({
-        ...serializeCalendarCalendar(row),
-        account_provider: row.provider,
-        account_display_name: row.account_display_name || null,
-        account_email: row.account_email || null,
-      }));
+      // Where new items go and what each calendar can take, from the
+      // server's rules (contracts/tasks.ts CalendarChoiceFields).
+      const defaults = await resolveCalendarDefaults(userId);
+      const choices = new Map(defaults.choices.map(choice => [choice.id, choice]));
+      const calendars = rows.map((row) => {
+        const choice = choices.get(row.id);
+        return {
+          ...serializeCalendarCalendar(row),
+          account_provider: row.provider,
+          account_display_name: row.account_display_name || null,
+          account_email: row.account_email || null,
+          default_for_tasks: row.id === defaults.taskListId,
+          default_for_events: row.id === defaults.calendarId,
+          write_block: choice ? calendarWriteBlock(choice) : 'read_only',
+          takes_undated_tasks: choice ? takesUndatedTasks(choice) : false,
+        };
+      });
       return { calendars };
     } catch (error) {
       console.error('Get calendars error:', error);
@@ -550,11 +586,11 @@ export = {
       const eventIds = rows.map((row) => row.id);
       const subtasksByEventId = await getCalendarSubtasksForEvents(userId, eventIds);
       const attendeesByEventId = await getCalendarAttendeesForEvents(userId, eventIds);
-      const events = rows.map((row) => serializeCalendarEvent(
+      const events = await attachMoveState(userId, await taskOrder.attachRanks(userId, rows.map((row) => serializeCalendarEvent(
         row,
         subtasksByEventId.get(row.id) || [],
         attendeesByEventId.get(row.id) || []
-      ));
+      ))));
       return { events };
     } catch (error) {
       console.error('Get events error:', error);
@@ -598,60 +634,70 @@ export = {
         else if (remoteTarget.provider === 'ics' || remoteTarget.read_only) return { error: 'This calendar is read-only.', status: 403, code: 'CALENDAR_READ_ONLY' };
         else if (!remoteTarget.is_active) return { error: 'Sync is paused for this calendar account, so events cannot be added to it.', status: 409, code: 'CALENDAR_SYNC_PAUSED' };
       } else {
-        const ensured = await ensureDefaultLocalCalendarForUser(userId);
-        calendarId = ensured.calendarId;
+        // Without a calendar (older apps, the new task dialog before 0.27):
+        // the person's default task list, which takes tasks without a date.
+        calendarId = (await resolveCalendarDefaults(userId)).taskListId;
       }
 
       const eventId = crypto.randomUUID();
-      const connection = await db.getConnection();
-      try {
-        await connection.beginTransaction();
-        await connection.execute(
-          `INSERT INTO calendar_events
-            (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only,
-             source_email_id, source_email_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            eventId,
-            userId,
-            calendarId,
-            title.trim(),
-            description || null,
-            start,
-            end,
-            !!all_day,
-            location?.trim() || null,
-            color || '#2563eb',
-            recurrence || null,
-            reminder_minutes ?? null,
-            reminders ? JSON.stringify(reminders) : null,
-            !!is_todo_only,
-            sourceEmail ? String(source_email_id) : null,
-            sourceEmail ? JSON.stringify(sourceEmail) : null,
-          ]
-        );
-        if (Array.isArray(body.attendees)) {
-          await replaceEventAttendees(userId, eventId, body.attendees, connection);
-        }
-
-        await (require('../services/notifications') as typeof import('../services/notifications')).enqueueCalendarNotification({ userId, eventId }, connection);
-        await connection.commit();
-      } catch (error) {
-        await connection.rollback();
-        throw error;
-      } finally {
-        connection.release();
-      }
-      if (remoteTarget) {
-        const [created] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+      // A copy for a server is created holding the new item's lock, taken
+      // before its row is visible: a move or edit of it waits until the copy
+      // is linked, or the row is gone again (calendar-move-state.ts).
+      const create = async () => {
+        const connection = await db.getConnection();
         try {
-          await calendarSync.pushCreatedEvent({ userId, event: created[0] });
+          await connection.beginTransaction();
+          await fenceTaskLocks(connection);
+          await connection.execute(
+            `INSERT INTO calendar_events
+              (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only,
+               source_email_id, source_email_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              eventId,
+              userId,
+              calendarId,
+              title.trim(),
+              description || null,
+              start,
+              end,
+              !!all_day,
+              location?.trim() || null,
+              color || '#2563eb',
+              recurrence || null,
+              reminder_minutes ?? null,
+              reminders ? JSON.stringify(reminders) : null,
+              !!is_todo_only,
+              sourceEmail ? String(source_email_id) : null,
+              sourceEmail ? JSON.stringify(sourceEmail) : null,
+            ]
+          );
+          if (Array.isArray(body.attendees)) {
+            await replaceEventAttendees(userId, eventId, body.attendees, connection);
+          }
+
+          await (require('../services/notifications') as typeof import('../services/notifications')).enqueueCalendarNotification({ userId, eventId }, connection);
+          await connection.commit();
         } catch (error) {
-          // Nothing is kept that the server did not accept.
-          await db.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
-          return calendarSync.calendarErrorResponse(error, 'Could not save the event to the calendar server');
+          await connection.rollback();
+          throw error;
+        } finally {
+          connection.release();
         }
-      }
+        if (remoteTarget) {
+          const [created] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+          try {
+            await calendarSync.pushCreatedEvent({ userId, event: created[0] });
+          } catch (error) {
+            // Nothing is kept that the server did not accept.
+            await fencedWrite(cleanup => cleanup.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]));
+            return calendarSync.calendarErrorResponse(error, 'Could not save the event to the calendar server');
+          }
+        }
+        return null;
+      };
+      const refused = remoteTarget ? await withEventLock(userId, eventId, create) : await create();
+      if (refused) return refused;
       const event = await getCalendarEventWithSubtasks(userId, eventId);
       return { event };
     } catch (error) {
@@ -673,16 +719,21 @@ export = {
     }
   },
 
-  'PUT /api/calendar/events/:id': async (req: Request, userId: string | null, body: Input) => {
+  'PUT /api/calendar/events/:id': oneChangeAtATime('Failed to update event', async (req: Request, userId: string | null, body: Input) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
       const id = getCalendarEventIdFromReq(req)!;
       if (!id) return { error: 'Invalid event id', status: 400 };
 
+      // The calendar and server copy the writeback decision below rests on,
+      // read first: the local write is refused if either changed meanwhile
+      // (a second line behind the item's lock, which a sync does not take).
+      const decidedFor = await writebackIdentity(db, userId, id);
       const [events] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
       if (events.length === 0) return { error: 'Event not found', status: 404 };
       const currentEvent = events[0];
+      if ((currentEvent.calendar_id || null) !== decidedFor.calendarId) return clientError(eventChanged(), 'Failed to update event');
       const currentCalendar = currentEvent.calendar_id ? await loadCalendarAccountRow(userId, currentEvent.calendar_id) : null;
       currentEvent.calendar_id_remote = isRemoteProvider(currentCalendar?.provider);
       const updates = [];
@@ -757,10 +808,9 @@ export = {
           }
           updates.push('calendar_id = NULL');
         } else {
+          // Another calendar: moved by pushEventChanges below, not here.
           const [calRows] = await db.execute<CalendarRecordRow[]>('SELECT id FROM calendar_calendars WHERE id = ? AND user_id = ?', [body.calendar_id, userId]);
           if (calRows.length === 0) return { error: 'Invalid calendar_id', status: 400 };
-          updates.push('calendar_id = ?');
-          params.push(body.calendar_id);
         }
       }
       // The link to the email the task came from: null removes it (and the
@@ -778,6 +828,13 @@ export = {
         }
       }
 
+      // A date or time changed here returns the task to its date's place
+      // (D31); one arriving from the server keeps its hand rank. The identity
+      // is read first: a synced series' time change replaces the rows.
+      const dateChanged = (startProvided && resolvedStart !== toMysqlDatetime(currentEvent.start_time))
+        || (has(body, 'is_todo_only') && !!body.is_todo_only !== !!currentEvent.is_todo_only);
+      const orderIdentity = dateChanged ? await taskOrder.identityOf(db, userId, id) : null;
+
       const writeback = await pushEventChanges(userId, currentEvent, body, {
         title: body.title?.trim(),
         description: body.description || null,
@@ -792,15 +849,28 @@ export = {
 
       // Changing the time of a whole series replaces its occurrences, and
       // with them the edited id: then there is no local row left to update.
-      const updatedEvent = await applyLocalEventUpdate(userId, id, { sets: updates, params }, body.attendees);
-      return { event: updatedEvent, ...(updatedEvent ? {} : { replaced: true }), ...(writeback.scope ? { scope: writeback.scope } : {}) };
+      // No move runs meanwhile (the item's lock); should one have, the
+      // write is refused under the row lock. A move this request started
+      // changes the identity itself and carries the fields.
+      const startedMove = has(body, 'calendar_id') && !!body.calendar_id && body.calendar_id !== currentEvent.calendar_id;
+      const fieldsOfMove = !startedMove && ['title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'reminders', 'reminder_minutes', 'is_todo_only', 'recurrence', 'calendar_id'].some(key => has(body, key));
+      const identity = startedMove ? null : { ...decidedFor, objectId: typeof writeback.objectId === 'string' ? writeback.objectId : decidedFor.objectId };
+      let updatedEvent = await applyLocalEventUpdate(userId, id, { sets: updates, params }, body.attendees, { fieldsOfMove, identity });
+      if (dateChanged) {
+        await taskOrder.clearRank(db, userId, id, orderIdentity);
+        if (updatedEvent) updatedEvent = await getCalendarEventWithSubtasks(userId, id);
+      }
+      // A move a calendar server has not confirmed yet finishes in the background.
+      const moved = writeback.pending ? { pending: writeback.pending, status: 202 } : {};
+      return { event: updatedEvent, ...(updatedEvent ? {} : { replaced: true }), ...(writeback.scope ? { scope: writeback.scope } : {}),
+        ...(writeback.sourceKept ? { source_kept: true } : {}), ...moved };
     } catch (error) {
       console.error('Update event error:', error);
       return clientError(error, 'Failed to update event');
     }
-  },
+  }),
 
-  'PUT /api/calendar/events/:id/todo-status': async (req: Request, userId: string | null, body: Input) => {
+  'PUT /api/calendar/events/:id/todo-status': oneChangeAtATime('Failed to update todo status', async (req: Request, userId: string | null, body: Input) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
@@ -812,6 +882,8 @@ export = {
       }
 
       const { todo_status, start_time, end_time } = body;
+      // Set when the time changes: what its writeback decision rests on.
+      let timeDecidedFor: import('../services/calendar-move-state').WritebackIdentity | null = null;
       if (!['done', 'changed', 'time_moved', 'cancelled', null].includes(todo_status!)) {
         return { error: 'Invalid todo_status', status: 400 };
       }
@@ -857,18 +929,38 @@ export = {
         }
 
         if (movedStart && movedEnd) {
+          timeDecidedFor = await writebackIdentity(db, userId, id);
           const [[current]] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
+          if ((current.calendar_id || null) !== timeDecidedFor.calendarId) return clientError(eventChanged(), 'Failed to update todo status');
+          const orderIdentity = await taskOrder.identityOf(db, userId, id);
           const writeback = await pushEventChanges(userId, current, { start_time: movedStart, end_time: movedEnd },
             { start_time: movedStart, end_time: movedEnd });
           if (writeback.error) return writeback;
+          if (typeof writeback.objectId === 'string') timeDecidedFor.objectId = writeback.objectId;
+          // "Move to another time" returns the task to its new date's place (D31).
+          if (movedStart !== toMysqlDatetime(current.start_time)) await taskOrder.clearRank(db, userId, id, orderIdentity);
           updates.push('start_time = ?', 'end_time = ?');
           params.push(movedStart, movedEnd);
         }
       }
 
-      const updateQuery = `UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`;
+      // A new time is refused while a move's new copy is being created, and
+      // when the calendar or server copy it was written back for changed
+      // meanwhile (a move finished): checked in the same statement.
+      const timeMoved = !!timeDecidedFor;
+      const updateQuery = `UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id = ?${timeMoved
+        ? ` AND NOT EXISTS (SELECT 1 FROM calendar_event_moves m WHERE m.event_id = calendar_events.id AND m.state = 'creating' AND m.target_calendar_id IS NOT NULL)
+           AND calendar_id <=> ? AND (SELECT r.remote_object_id FROM calendar_event_external_refs r WHERE r.event_id = calendar_events.id LIMIT 1) <=> ?` : ''}`;
       params.push(id, userId);
-      await db.execute(updateQuery, params);
+      if (timeDecidedFor) params.push(timeDecidedFor.calendarId, timeDecidedFor.objectId);
+      // Fenced by the item's lock, which a time move holds (calendar-move-state.ts).
+      const [written] = timeMoved
+        ? await fencedWrite(connection => connection.execute<ResultSetHeader>(updateQuery, params))
+        : await db.execute<ResultSetHeader>(updateQuery, params);
+      if (timeMoved && !written.affectedRows) {
+        const [moving] = await db.execute<RowDataPacket[]>("SELECT id FROM calendar_event_moves WHERE event_id = ? AND state = 'creating'", [id]);
+        return clientError(moving.length ? movePending() : eventChanged(), 'Failed to update todo status');
+      }
 
       const updatedEvent = await getCalendarEventWithSubtasks(userId, id);
       return { event: updatedEvent };
@@ -876,7 +968,7 @@ export = {
       console.error('Update todo status error:', error);
       return clientError(error, 'Failed to update todo status');
     }
-  },
+  }, body => body?.todo_status === 'time_moved' && !!(body.start_time || body.end_time)),
 
   'PUT /api/calendar/events/:id/rsvp': async (req: Request, userId: string | null, body: Input) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
@@ -1099,7 +1191,7 @@ export = {
     }
   },
 
-  'DELETE /api/calendar/events/:id': async (req: Request, userId: string | null) => {
+  'DELETE /api/calendar/events/:id': oneChangeAtATime('Failed to delete event', async (req: Request, userId: string | null) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
@@ -1109,15 +1201,16 @@ export = {
       if (!events.length) return { message: 'Event deleted' };
       const scope = new URL(req.url, 'http://localhost').searchParams.get('scope');
       try {
+        await calendarMove.assertNotMoving(userId, id);
         await calendarSync.pushEventDelete({ userId, event: events[0], scope: scope === 'series' ? 'series' : 'occurrence' });
       } catch (error) {
         return calendarSync.calendarErrorResponse(error, 'Could not delete the event on the calendar server');
       }
-      await db.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
+      await fencedWrite(connection => connection.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]));
       return { message: 'Event deleted' };
     } catch (error) {
       console.error('Delete event error:', error);
-      return { error: 'Failed to delete event', status: 500 };
+      return clientError(error, 'Failed to delete event');
     }
-  },
+  }),
 };
