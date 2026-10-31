@@ -47,7 +47,7 @@ import * as calendarSync from './calendar-sync';
 // Removing a calendar or account ends the moves that need it; a move still
 // removing an old copy outlives its task and its new calendar.
 
-type MoveState = 'creating' | 'removing' | 'cancelled';
+type MoveState = 'creating' | 'removing';
 interface MoveRow extends RowDataPacket {
   id: string;
   user_id: string;
@@ -62,7 +62,7 @@ interface MoveRow extends RowDataPacket {
   state: MoveState;
   attempts: number;
 }
-interface MoveOutcome { pending?: 'creating' | 'removing'; sourceKept?: boolean }
+interface MoveOutcome { pending?: MoveState; sourceKept?: boolean }
 /** The new server copy of a moved event, stored or about to be. */
 interface NewCopy { account: SyncAccount; calendar: SyncCalendar; timeZone: string; object: { id?: string; href: string; etag: string | null; ics: string } }
 type Attempt = { copy: NewCopy } | { refused: unknown } | { wait: unknown };
@@ -98,14 +98,10 @@ async function lockMovedAway(connection: SqlExecutor, objectId: string) {
   return rows.some(row => row.state === 'removing');
 }
 
-/**
- * In a sync's transaction: the move whose new copy is this object (its
- * calendar and UID), locked. A 'creating' one links it to the moved row; a
- * 'cancelled' one means the copy is never imported (its cleanup removes it).
- */
-async function lockMoveOfCopy(connection: SqlExecutor, calendarId: string, uid: string) {
+/** In a sync's transaction: the open move whose new copy is this object (its calendar and UID), locked. */
+async function lockCreatingMove(connection: SqlExecutor, calendarId: string, uid: string) {
   const [rows] = await connection.execute<MoveRow[]>('SELECT * FROM calendar_event_moves WHERE target_calendar_id = ? AND target_uid = ? FOR UPDATE', [calendarId, uid]);
-  return rows.find(row => row.state === 'creating' || row.state === 'cancelled') ?? null;
+  return rows.find(row => row.state === 'creating') ?? null;
 }
 
 async function loadMove(executor: SqlExecutor, moveId: string, lock = false) {
@@ -312,38 +308,7 @@ async function advance(moveId: string): Promise<MoveOutcome> {
     if (committed) publishCalendarChanged(move.user_id, null, 'local');
     move = await loadMove(db, moveId);
   }
-  if (move?.state === 'cancelled') return cleanUpCancelled(move);
   return move?.state === 'removing' ? removeOldCopy(move) : {};
-}
-
-/**
- * A cancelled move's cleanup: no copy under its UID may stay at the target.
- * Under the target account's sync lock, so no sync that read such a copy
- * imports it after the journal row is gone.
- */
-async function cleanUpCancelled(move: MoveRow): Promise<MoveOutcome> {
-  const target = move.target_calendar_id && move.target_href ? await calendarSync.loadCalendarContext(move.user_id, move.target_calendar_id) : null;
-  if (!target) {
-    await closeMove(move.id);
-    return {};
-  }
-  let failure: unknown = null;
-  const outcome = await calendarSync.withAccountLock(target.account.id, async () => {
-    try {
-      await calendarSync.withWriteContext(target, async ctx => {
-        const url = calendarSync.objectUrl(ctx.account, { href: move.target_href! });
-        const found = await caldav.getCalendarObject({ url, ...ctx.login });
-        if (found && ical.objectUid(found.ics) === move.target_uid) {
-          // Only the version just read; without one, nothing is deleted and it waits.
-          if (!found.etag) throw new Error('The calendar server reported no version of the copy');
-          await caldav.deleteCalendarObject({ url, etag: found.etag, ...ctx.login });
-        }
-      });
-      await closeMove(move.id);
-    } catch (error) { failure = error; }
-  }, REMOVE_LOCK_WAIT_SECONDS);
-  if ('skipped' in (outcome || {}) || failure) await postpone(move, failure ?? new Error('A sync of the calendar was running'));
-  return {};
 }
 
 // One run per move in this process: a retry joins the run going on.
@@ -596,11 +561,12 @@ async function moveTask(userId: string, eventId: string, input: unknown): Promis
 /**
  * DELETE /api/calendar/events/:id/move (contracts/tasks.ts): ends a move
  * whose new copy is not confirmed. The item stays where it is and is free at
- * once; the journal row keeps the copy's UID as a cleanup intent, so a copy
- * the server stored after all is removed and never imported. A move that is
- * only removing an old copy is not cancelled: the item is in its new list.
- * Not a destructive action (F13): nothing of the person's is removed, only
- * UniHub's own unconfirmed copy.
+ * once, and the journal row goes. Nothing is deleted at any server: if the
+ * new calendar received the copy after all (an answer lost, a late write), it
+ * shows there with the next sync as that calendar's own item, a visible
+ * duplicate the person can delete. A move only removing an old copy is not
+ * cancelled: the item is in its new list. Not a destructive action (F13):
+ * nothing is removed.
  */
 async function cancelMove(userId: string, eventId: string): Promise<TaskMoveCancelResponse> {
   if (!ID_PATTERN.test(eventId)) throw notFound('TASK_NOT_FOUND', 'Task not found');
@@ -614,14 +580,10 @@ async function cancelMove(userId: string, eventId: string): Promise<TaskMoveCanc
     cancelled = await withTransaction(async connection => {
       const locked = await loadMove(connection, open.id, true);
       if (locked?.state !== 'creating') return false;
-      if (!locked.target_href) await connection.execute('DELETE FROM calendar_event_moves WHERE id = ?', [open.id]);
-      else await connection.execute("UPDATE calendar_event_moves SET state = 'cancelled', event_id = NULL, attempts = 0, last_error = NULL, next_attempt_at = UTC_TIMESTAMP() WHERE id = ?", [open.id]);
+      await connection.execute('DELETE FROM calendar_event_moves WHERE id = ?', [open.id]);
       return true;
     });
-    if (cancelled) {
-      publishCalendarChanged(userId, null, 'local');
-      void runMove(open.id).catch(error => log.warn('calendar', 'Cleaning up a cancelled move failed', { move: open.id, reason: describe(error) }));
-    }
+    if (cancelled) publishCalendarChanged(userId, null, 'local');
   }
   const event = await getCalendarEventWithSubtasks(userId, eventId);
   return { event: event as TaskMoveCancelResponse['event'], cancelled };
@@ -640,7 +602,7 @@ export {
   resumeDueMoves,
   movedAwayObjects,
   lockMovedAway,
-  lockMoveOfCopy,
+  lockCreatingMove,
   commitMove,
 };
 export type { MoveOutcome };

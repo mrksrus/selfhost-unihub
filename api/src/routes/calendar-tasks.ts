@@ -46,8 +46,10 @@ export = defineRoutes({
   } },
 
   // Cancelling a move whose new copy is not confirmed: the item stays in its
-  // old list. No destructive policy (F13): nothing of the person's goes, only
-  // UniHub's own unconfirmed copy at the new server.
+  // old list, and nothing is deleted at any server. If the new calendar got
+  // the copy anyway, it appears there as its own item after the next sync;
+  // the person deletes it if they don't want it. No destructive policy (F13):
+  // nothing is removed.
   'DELETE /api/calendar/events/:id/move': { ...taskRoute, handler: async (req: Request, userId: string) => {
     try {
       const answer: TaskMoveCancelResponse = await cancelMove(userId, req.params.id);

@@ -43,4 +43,28 @@ async function refuseWhileMoving(connection: SqlExecutor, eventId: string) {
   if (rows.length) throw movePending();
 }
 
-export { attachMoveState, refuseWhileMoving, movePending };
+const eventChanged = () => conflict('CALENDAR_EVENT_CHANGED',
+  'This item moved to another calendar or changed in the meantime. It has been refreshed; please try again.');
+
+/** What an edit's writeback decision rests on: the item's calendar and its server copy. */
+interface WritebackIdentity { calendarId: string | null; objectId: string | null }
+
+async function writebackIdentity(executor: SqlExecutor, userId: string, eventId: string): Promise<WritebackIdentity> {
+  const [rows] = await executor.execute<RowDataPacket[]>(
+    `SELECT e.calendar_id, (SELECT r.remote_object_id FROM calendar_event_external_refs r WHERE r.event_id = e.id AND r.user_id = e.user_id LIMIT 1) AS object_id
+     FROM calendar_events e WHERE e.id = ? AND e.user_id = ?`, [eventId, userId]);
+  return { calendarId: rows[0]?.calendar_id ?? null, objectId: rows[0]?.object_id ?? null };
+}
+
+/**
+ * Inside a transaction that holds the event's row lock: refuses a local
+ * write whose writeback decision (provider or UniHub only) was made for
+ * another calendar or server copy, as when a move finished meanwhile.
+ */
+async function refuseIfMoved(connection: SqlExecutor, userId: string, eventId: string, expected: WritebackIdentity) {
+  const now = await writebackIdentity(connection, userId, eventId);
+  if (now.calendarId !== expected.calendarId || now.objectId !== expected.objectId) throw eventChanged();
+}
+
+export { attachMoveState, refuseWhileMoving, refuseIfMoved, writebackIdentity, movePending, eventChanged };
+export type { WritebackIdentity };
