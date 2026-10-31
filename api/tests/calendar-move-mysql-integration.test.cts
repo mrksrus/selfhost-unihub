@@ -1459,6 +1459,37 @@ test('moving a task between lists and calendars: one copy, the same row, through
     }
   });
 
+  await t.test('a restore that marks the calendar as a mail account\'s (so it would log in as that mail account) ends the move', async () => {
+    const [[account]] = await pool.query<RowDataPacket[]>('SELECT account_email, provider_config, mail_account_id, encrypted_password FROM calendar_accounts WHERE id = ?', [accountId]);
+    // A mail account with the calendar's address and a login of its own; the calendar, connected on its own, does not use it.
+    const mailId = crypto.randomUUID();
+    await pool.execute(`INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active, username, encrypted_password)
+      VALUES (?, ?, ?, 'custom', 'sync', TRUE, 'mail-login-current', ?)`, [mailId, ids.owner, account.account_email, encrypt('synthetic-mail-password')]);
+    const logins: (string | null)[] = []; const put = caldav.putCalendarObject;
+    caldav.putCalendarObject = (opts: FixtureValue) => { logins.push(opts.username ?? null); return put(opts); };
+    try {
+      // In the archive the calendar was the mail account's (its mark; the link itself is never archived).
+      await pool.execute("UPDATE calendar_accounts SET provider_config = JSON_SET(provider_config, '$.mailLinked', TRUE) WHERE id = ?", [accountId]);
+      const archive = await archiveCalendar();
+      await pool.execute('UPDATE calendar_accounts SET provider_config = ? WHERE id = ?', [account.provider_config, accountId]);
+      const task = await localTask('Moved with the calendar login');
+      faults.put = () => 'lose';
+      await owner('POST', `/calendar/events/${task}/move`, { calendar_id: work }, 202);
+      faults.put = undefined;
+      assert.deepEqual(logins, ['owner']);
+      await restoreCalendar(archive, 'replace');
+      assert.equal((await journal(task)).length, 0, 'the move ended with the restore');
+      await resume();
+      assert.deepEqual(logins, ['owner'], 'nothing written as the mail account');
+      assert.deepEqual((await rowsTitled('Moved with the calendar login')).map(row => [row.id, row.calendar_id]), [[task, inbox]]);
+    } finally {
+      caldav.putCalendarObject = put;
+      await pool.execute('UPDATE calendar_accounts SET provider_config = ?, mail_account_id = ?, encrypted_password = ? WHERE id = ?',
+        [account.provider_config, account.mail_account_id, account.encrypted_password, accountId]);
+      await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mailId]);
+    }
+  });
+
   await t.test('a move holding the task when a calendar restore begins writes nothing', async () => {
     const task = await localTask('Moved as a restore begins');
     // The move holds the task's lock and stops before it is admitted.

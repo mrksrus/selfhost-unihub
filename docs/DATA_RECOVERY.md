@@ -82,9 +82,13 @@ before and after it writes accounts and calendars, derived as the move's
 requests derive it: the new copy's address and the old copy's address, each
 resolved against its account's server (so an absolute collection address does
 not hide a changed server), the collection the new copy is to be in, the kind
-of account, and the login name as the requests choose it (a linked mail
+of account, the login name as the requests choose it (a linked mail
 account's login, else the username, else the account's address; never the
-password). An account restored to another server or login counts too.
+password), what would make the requests choose another login (the link to a
+mail account, the marks that make an account look for its mail account by
+address, and that address), and where the password may be sent (the
+credential scope). An account restored to another server, login or mail link
+counts too.
 A change holding a task when a calendar restore begins
 writes nothing more (`409 RESTORE_IN_PROGRESS`).
 

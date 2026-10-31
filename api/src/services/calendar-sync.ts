@@ -196,18 +196,24 @@ async function resolveLogin(account: Account, relinked = false): Promise<{ usern
 /**
  * Where and as whom requests of these accounts go, read on executor (a
  * restore's own transaction sees what it wrote): the kind of account, its
- * server (base_url, which every stored address is resolved against) and its
- * login name as resolveLogin derives it. Never a password.
+ * server (base_url, which every stored address is resolved against), its
+ * login name as resolveLogin derives it, and what makes resolveLogin choose
+ * another one: the link to a mail account, the marks that make it look for a
+ * mail account by address (wasMailCalendar, mailLinked) and that address; and
+ * where its password may go (accountCredentialScope). Never a password.
  */
 async function requestIdentities(executor: SqlExecutor, userId: string, accountIds: readonly string[]) {
-  const identities = new Map<string, { provider: string; base_url: string | null; login: string | null }>();
+  const identities = new Map<string, { provider: string; base_url: string | null; login: string | null; decidedBy: string }>();
   if (!accountIds.length) return identities;
-  const [rows] = await executor.execute<(RowDataPacket & Parameters<typeof loginName>[0] & { id: string; provider: string; base_url: string | null })[]>(
-    `SELECT ca.id, ca.provider, ca.base_url, ca.mail_account_id, ca.username, ca.account_email, m.id AS mail_id, ${LOGIN_MAIL_USERNAME} AS mail_username
+  const [rows] = await executor.execute<(RowDataPacket & Parameters<typeof loginName>[0] & { id: string; provider: string; base_url: string | null; discovery_url: string | null; provider_config: unknown })[]>(
+    `SELECT ca.id, ca.provider, ca.base_url, ca.discovery_url, ca.provider_config, ca.mail_account_id, ca.username, ca.account_email, m.id AS mail_id, ${LOGIN_MAIL_USERNAME} AS mail_username
      FROM calendar_accounts ca ${LOGIN_MAIL_JOIN} WHERE ca.user_id = ? AND ca.id IN (${accountIds.map(() => '?').join(', ')})`, [userId, ...accountIds]);
   for (const row of rows) {
-    identities.set(String(row.id), { provider: row.provider, base_url: row.base_url ?? null,
-      login: loginName(row) ?? null });
+    const marked = ((jsonValue(row.provider_config, {}) || {}) as AccountConfig).mailLinked === true;
+    let scope: string | null = null;
+    try { scope = row.base_url ? JSON.stringify(caldav.accountCredentialScope(row)) : null; } catch { scope = `unresolved ${row.discovery_url} ${row.base_url}`; }
+    identities.set(String(row.id), { provider: row.provider, base_url: row.base_url ?? null, login: loginName(row) ?? null,
+      decidedBy: JSON.stringify([row.mail_account_id ?? null, wasMailCalendar(row), marked, row.account_email?.toLowerCase() ?? null, scope]) });
   }
   return identities;
 }

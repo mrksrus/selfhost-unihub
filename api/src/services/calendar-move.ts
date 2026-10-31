@@ -637,8 +637,9 @@ async function assertNotMoving(userId: string, eventId: string) {
  * requests derive it: its new copy's fixed address and its old copy's stored
  * one, each resolved against its account's server (calendarSync.objectUrl,
  * so an absolute collection address cannot hide a changed server), with the
- * kind of account and the login name (calendarSync.requestIdentities, the
- * rule resolveLogin uses). A UniHub list is written nowhere.
+ * kind of account, the login name (calendarSync.requestIdentities, the
+ * rule resolveLogin uses) and what would make resolveLogin choose another
+ * login or send the password elsewhere. A UniHub list is written nowhere.
  */
 async function moveDestinations(executor: SqlExecutor, userId: string) {
   const [rows] = await executor.execute<RowDataPacket[]>(
@@ -661,7 +662,7 @@ async function moveDestinations(executor: SqlExecutor, userId: string) {
     if (!account) return accountId ? 'gone' : null;
     if (!calendarSync.REMOTE_PROVIDERS.has(account.provider)) return [account.provider];
     return [account.provider, resolved(account.base_url, href) ?? `no address at ${account.base_url}`,
-      collection === undefined ? null : resolved(account.base_url, collection), account.login];
+      collection === undefined ? null : resolved(account.base_url, collection), account.login, account.decidedBy];
   };
   return new Map(rows.map(row => [String(row.id), JSON.stringify({
     target: side(row.target_account_id, row.target_href, row.target_collection), source: side(row.source_account_id, row.source_href),
