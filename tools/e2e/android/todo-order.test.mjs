@@ -206,7 +206,7 @@ const SECTION_DROP_BUG = 'app bug (0.27.0 stream C, 8e189d2): a task dropped out
   + 'end of its own section and stored there (SortableList has one DndContext per section with closestCenter, so the nearest '
   + 'row of the section, its last, becomes the drop target); D31 says it goes back to its place';
 
-test('[27-02] a Today task dropped in Later goes back to its place in Today goes back to its place in Today', { timeout: 900_000 }, async t => {
+test('[27-02] a Today task dropped in Later goes back to its place in Today', { timeout: 900_000 }, async t => {
   const { device, page } = await openApp();
   const timeZone = await page.evaluate(async () => (await (await fetch('/api/auth/me')).json()).user?.timezone ?? null);
   // Today is the person's day: too close to its end, the tasks would turn into tomorrow's mid-test.
