@@ -38,6 +38,8 @@ export function writeRefusal(error: unknown): WriteRefusal | null {
     case 'CALENDAR_RECURRING_MOVE': return { title: 'Repeating events stay in their calendar', description: error.message };
     // The server copy changed, or the server reports no versions: the lists are fetched again before another try.
     case 'CALDAV_CONFLICT': return { title: 'Changed on the calendar server', description: error.message, reload: true };
+    // The item moved to another calendar or changed while the dialog was open: its lists are fetched again, the draft stays.
+    case 'CALENDAR_EVENT_CHANGED': return { title: 'Changed in the meantime', description: error.message, reload: true };
     case 'ORDER_STALE': return { title: 'The list changed in the meantime', description: 'It has been reloaded. Try again.', reload: true };
     case WRITE_TIMEOUT: return { title: 'Could not confirm the change', description: 'The server has not answered. The list is being reloaded.', reload: true };
     default: return null;

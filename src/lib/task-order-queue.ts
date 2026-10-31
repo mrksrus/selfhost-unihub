@@ -140,14 +140,28 @@ export function writeTaskRanks(client: QueryClient, ranks: Record<string, number
 }
 
 /**
- * Writes a task as the server answered it into every cached list that holds
- * it, with the changes still pending laid over it: a tick or an edit shows
- * at once, whatever ordering writes are still in flight.
+ * Writes the fields of a task an answer confirmed into every cached list
+ * that holds it, with the changes still pending laid over it: a tick or an
+ * edit shows at once, whatever ordering writes are still in flight. Only the
+ * fields the request was about: an answer that arrives late must not put an
+ * older state of the rest (subtasks confirmed meanwhile) over a newer one.
  */
-export function writeTaskEvent(client: QueryClient, event: CalendarEvent) {
+export function writeTaskFields(client: QueryClient, id: string, fields: Partial<CalendarEvent>) {
   const writes = writesFor(client);
   client.setQueriesData<EventLists>(EVENT_LISTS, events => events && applyOrderChanges(
-    events.map(known => known.id === event.id ? { ...known, ...event } : known), writes.changes));
+    events.map(known => known.id === id ? { ...known, ...fields } : known), writes.changes));
+}
+
+/** The fields of an answered task that a kind of request confirms. */
+export function confirmedFields<K extends keyof CalendarEvent>(event: CalendarEvent, keys: readonly K[]): Partial<CalendarEvent> {
+  const fields: Partial<CalendarEvent> = {};
+  for (const key of keys) if (key in event) fields[key] = event[key];
+  return fields;
+}
+
+/** A whole task as the server answered it (a fresh single-event read), laid over the lists that hold it. */
+export function writeTaskEvent(client: QueryClient, event: CalendarEvent) {
+  writeTaskFields(client, event.id, event);
 }
 
 /** Changes a task's subtasks in every cached list that holds it, as the server confirmed them. */

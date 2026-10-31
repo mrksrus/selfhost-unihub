@@ -6,7 +6,7 @@ import {
 } from '@/lib/calendar-api';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { useSessionScope } from '@/lib/session-scope';
-import { MOVE_DEADLINE_MS, cancelledMoveNotice, queueTaskWrite, writeTaskEvent } from '@/lib/task-order-queue';
+import { MOVE_DEADLINE_MS, cancelledMoveNotice, confirmedFields, queueTaskWrite, writeTaskFields } from '@/lib/task-order-queue';
 
 export type EventInput = Partial<CalendarEvent> & { title: string };
 
@@ -61,10 +61,10 @@ export function useEventActions() {
   // its calendar), in the same queue as the task writes it would race.
   const cancelMove = useSessionMutation({
     mutationFn: ({ id }: { id: string; from?: string; to?: string }) => queueTaskWrite(client, scope, { kind: 'move', id }, signal => calendarApi.cancelMove(id, signal), MOVE_DEADLINE_MS),
-    onSuccess: (result: TaskMoveCancelled, { from, to }) => {
-      if (result.event) writeTaskEvent(client, result.event);
+    onSuccess: (result: TaskMoveCancelled, { id, from, to }) => {
+      if (result.event) writeTaskFields(client, id, confirmedFields(result.event, ['calendar_id', 'move_pending', 'updated_at']));
       if (result.cancelled) toast({ title: 'Move cancelled', description: cancelledMoveNotice('event', from, to) });
-      else { refresh(); toast({ title: 'Nothing to cancel', description: 'The event is in its new calendar already.' }); }
+      else { refresh(); toast({ title: 'Nothing to cancel', description: 'No move was waiting on the calendar server.' }); }
     },
     onError: failed('Could not cancel the move'),
   });

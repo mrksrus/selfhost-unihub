@@ -12,7 +12,7 @@ import { useEventActions } from '@/hooks/use-event-actions';
 import { EventDialog } from '@/components/calendar/EventDialog';
 import { SortableList, DragHandle } from '@/components/ui/sortable-list';
 import { api } from '@/lib/api';
-import { calendarApi, calendarQueryKeys, normalizeCalendar, type CalendarCalendar, type CalendarEvent, type TaskMovePending } from '@/lib/calendar-api';
+import { calendarApi, calendarQueryKeys, normalizeCalendar, type CalendarCalendar, type CalendarEvent, type CalendarSubtask, type TaskMovePending } from '@/lib/calendar-api';
 import { SessionScopeContext } from '@/lib/session-scope';
 import { MOVE_DEADLINE_MS, WRITE_DEADLINE_MS } from '@/lib/task-order-queue';
 import { defaultTaskList, listRefusal, neighboursAt, optimisticRanks, orderTasks, rankBetween, taskSection } from '@/lib/tasks';
@@ -939,17 +939,27 @@ describe('a move not confirmed yet', () => {
   const markers = (section: HTMLElement) => within(section).queryAllByRole('status', { hidden: true }).map(status => status.textContent).filter(text => text?.startsWith('Moving'));
 
   it('is marked on the row from the server\'s field, blocks the other changes, and can be cancelled from the menu', async () => {
-    serverEvents = [{ ...undated[0], move_pending: creating }, { ...undated[1], move_pending: removing }, undated[2]];
+    serverEvents = [{ ...undated[0], move_pending: creating, subtasks: pair('Pay rent') }, { ...undated[1], move_pending: removing }, undated[2]];
     vi.mocked(api.delete).mockResolvedValueOnce({ data: { event: { ...undated[0], move_pending: null }, cancelled: true } });
     mount(<TodoPage />);
     const section = await screen.findByRole('region', { name: 'No date' });
     // Only the copy still to confirm is marked; the old copy still to remove ('removing') is a task in its new list already.
     expect(markers(section)).toEqual(['Moving to Archive…']);
-    expect(within(section).getByRole('button', { name: 'Mark Pay rent done' })).toBeDisabled();
-    expect(within(section).getByRole('button', { name: 'Mark Call Sam done' })).toBeEnabled();
+    // What stays in UniHub keeps working: the done state, the subtasks, the order.
+    expect(within(section).getByRole('button', { name: 'Mark Pay rent done' })).toBeEnabled();
+    expect(within(section).getByRole('checkbox', { name: 's0' })).toBeEnabled();
+    expect(within(section).getByRole('button', { name: 'Rename s0' })).toBeInTheDocument();
+    expect(within(section).getByRole('button', { name: 'Reorder s0' })).toBeInTheDocument();
     const menu = await openMenu('Pay rent');
-    expect(within(menu).getByRole('menuitem', { name: 'Still being moved to Archive' })).toHaveAttribute('aria-disabled', 'true');
-    for (const name of ['Edit', 'Move to another list', 'Cancel task']) expect(within(menu).getByRole('menuitem', { name })).toHaveAttribute('aria-disabled', 'true');
+    const reason = within(menu).getByRole('menuitem', { name: 'Still being moved to Archive' });
+    expect(reason).toHaveAttribute('aria-disabled', 'true');
+    // What would reach the calendar server is greyed out, each pointing at the reason.
+    for (const name of ['Edit', 'Move to another list']) {
+      const item = within(menu).getByRole('menuitem', { name });
+      expect(item).toHaveAttribute('aria-disabled', 'true');
+      expect(item).toHaveAttribute('aria-describedby', reason.id);
+    }
+    for (const name of ['Move down', 'Cancel task']) expect(within(menu).getByRole('menuitem', { name })).not.toHaveAttribute('aria-disabled');
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Cancel move' }));
     await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/calendar/events/Pay%20rent/move', undefined, { signal: expect.any(AbortSignal) }));
     await waitFor(() => expect(state.toast).toHaveBeenCalledWith({ title: 'Move cancelled', description: cancelledNotice }));
@@ -969,12 +979,15 @@ describe('a move not confirmed yet', () => {
     expect(within(menu).getByRole('menuitem', { name: 'Edit' })).toHaveAttribute('aria-disabled', 'true');
   });
 
-  it('says when there was nothing to cancel, and gives up on a cancellation without an answer', async () => {
-    vi.mocked(api.delete).mockResolvedValueOnce({ data: { event: null, cancelled: false } });
-    await probeMount();
+  it('says when there was nothing to cancel without claiming where the task is, and gives up on a cancellation without an answer', async () => {
+    // Nothing to cancel, and the answer shows the task still in its old list: no claim about the new one.
+    vi.mocked(api.delete).mockResolvedValueOnce({ data: { event: { ...undated[0], move_pending: null }, cancelled: false } });
+    const { client } = await probeMount();
     let fetched = listCalls();
     act(() => probeActions.cancelMove.mutate({ id: 'Pay rent', from: 'Home', to: 'Archive' }));
-    await waitFor(() => expect(state.toast).toHaveBeenCalledWith({ title: 'Nothing to cancel', description: 'The task is in its new list already.' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith({ title: 'Nothing to cancel', description: 'No move was waiting on the calendar server.' }));
+    expect(state.toast).not.toHaveBeenCalledWith(expect.objectContaining({ description: expect.stringMatching(/Archive|new list/) }));
+    expect(client.getQueryData<CalendarEvent[]>(probeKey)![0].calendar_id).toBe('list-home');
     await waitFor(() => expect(listCalls()).toBeGreaterThan(fetched));
 
     const never = deferred<never>();
@@ -1022,5 +1035,65 @@ describe('a move not confirmed yet', () => {
     fireEvent.click(within(eventDialog).getByRole('button', { name: 'Cancel move' }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(state.toast).toHaveBeenLastCalledWith({ title: 'Move cancelled', description: "The event stays in Home. If Work received a copy anyway, it will show up there; delete it if you don't want it." });
+  });
+});
+
+describe('answers of the other writes while the queue is busy', () => {
+  it('merges an added subtask a refetch already holds instead of adding it twice', async () => {
+    const hold = deferred<{ data: { ranks: Record<string, number> } }>(), answer = deferred<{ data: { subtask: CalendarSubtask } }>();
+    vi.mocked(api.put).mockReturnValueOnce(hold.promise as never);
+    vi.mocked(api.post).mockReturnValueOnce(answer.promise as never);
+    const { client } = await probeMount();
+    act(() => probeActions.placeTask(serverEvents, 'Plan holiday', 1, undatedSection));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
+    act(() => probeActions.addSubtask.mutate({ eventId: 'Pay rent', title: 'Pack bag' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1));
+    const subtask = { ...pair('Pay rent')[0], id: 'new-sub', title: 'Pack bag' };
+    serverEvents = serverEvents.map(entry => entry.id === 'Pay rent' ? { ...entry, subtasks: [subtask] } : entry);
+    await act(async () => { await client.refetchQueries({ queryKey: probeKey }); });
+    expect(client.getQueryData<CalendarEvent[]>(probeKey)![0].subtasks.map(entry => entry.id)).toEqual(['new-sub']);
+    await act(async () => { answer.resolve({ data: { subtask } }); });
+    expect(client.getQueryData<CalendarEvent[]>(probeKey)![0].subtasks.map(entry => entry.id)).toEqual(['new-sub']);
+    await act(async () => { hold.resolve({ data: { ranks: { 'Plan holiday': 150 } } }); });
+  });
+
+  it('lets a late tick answer confirm the status only, not an older set of subtasks', async () => {
+    const hold = deferred<{ data: { ranks: Record<string, number> } }>(), tick = deferred<{ data: { event: CalendarEvent } }>();
+    vi.mocked(api.put).mockReturnValueOnce(hold.promise as never).mockReturnValueOnce(tick.promise as never);
+    const subtask = { ...pair('Pay rent')[0], id: 'new-sub', title: 'Pack bag' };
+    vi.mocked(api.post).mockResolvedValueOnce({ data: { subtask } });
+    const { client } = await probeMount();
+    const payRent = () => client.getQueryData<CalendarEvent[]>(probeKey)![0];
+    act(() => probeActions.placeTask(serverEvents, 'Plan holiday', 1, undatedSection));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
+    act(() => probeActions.setStatus.mutate({ id: 'Pay rent', todo_status: 'done' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2));
+    // The tick was stored with no subtasks; its answer waits on the network while a subtask is confirmed.
+    const tickAnswer = { ...serverEvents[0], todo_status: 'done' as const, done_at: iso(0) };
+    act(() => probeActions.addSubtask.mutate({ eventId: 'Pay rent', title: 'Pack bag' }));
+    await waitFor(() => expect(payRent().subtasks).toHaveLength(1));
+    await act(async () => { tick.resolve({ data: { event: tickAnswer } }); });
+    expect(payRent().todo_status).toBe('done');
+    expect(payRent().subtasks.map(entry => entry.id)).toEqual(['new-sub']);
+    await act(async () => { hold.resolve({ data: { ranks: { 'Plan holiday': 150 } } }); });
+  });
+});
+
+describe('an item that moved or changed while its dialog was open', () => {
+  it('says so, keeps the draft for another try and fetches the lists again', async () => {
+    const changed = 'This item moved to another calendar or changed in the meantime. It has been refreshed; please try again.';
+    vi.mocked(api.put).mockResolvedValueOnce({ error: changed, status: 409, code: 'CALENDAR_EVENT_CHANGED' });
+    const { client } = mount(<TodoPage />);
+    await screen.findByRole('region', { name: 'No date' });
+    fireEvent.click(within(await openMenu('Pay rent')).getByRole('menuitem', { name: 'Edit' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Edit task' });
+    fireEvent.change(within(dialog).getByLabelText('Title'), { target: { value: 'Pay rent and bills' } });
+    const fetched = listCalls();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith({ title: 'Changed in the meantime', description: changed }));
+    expect(state.toast).not.toHaveBeenCalledWith(expect.objectContaining({ variant: 'destructive' }));
+    expect(within(screen.getByRole('dialog', { name: 'Edit task' })).getByLabelText('Title')).toHaveValue('Pay rent and bills');
+    await waitFor(() => expect(listCalls()).toBeGreaterThan(fetched));
+    expect(client.getQueryData<CalendarEvent[]>(probeKey)![0].title).toBe('Pay rent');
   });
 });

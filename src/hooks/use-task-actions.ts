@@ -4,9 +4,15 @@ import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { calendarApi, writeRefusal, type CalendarCalendar, type CalendarEvent, type CalendarSubtask, type NewCalendarEvent, type TaskMove, type TaskMoveCancelled } from '@/lib/calendar-api';
 import { useSessionScope } from '@/lib/session-scope';
 import { neighboursAt } from '@/lib/tasks';
-import { MOVE_DEADLINE_MS, cancelledMoveNotice, queueTaskWrite, refreshTasksWhenIdle, writeTaskEvent, writeTaskRanks, writeTaskSubtasks } from '@/lib/task-order-queue';
+import { MOVE_DEADLINE_MS, cancelledMoveNotice, confirmedFields, queueTaskWrite, refreshTasksWhenIdle, writeTaskFields, writeTaskRanks, writeTaskSubtasks } from '@/lib/task-order-queue';
 
 export type NewTask = NewCalendarEvent;
+
+// The fields a status answer confirms (a tick, a cancellation, a new time), and the ones a move answer confirms.
+const STATUS_FIELDS = ['todo_status', 'done_at', 'updated_at', 'sort_rank', 'sort_key', 'hand_ordered'] as const;
+const MOVE_FIELDS = ['calendar_id', 'move_pending', 'updated_at'] as const;
+const mergeSubtask = (subtasks: readonly CalendarSubtask[], subtask: CalendarSubtask) =>
+  subtasks.some(known => known.id === subtask.id) ? subtasks.map(known => known.id === subtask.id ? { ...known, ...subtask } : known) : [...subtasks, subtask];
 
 /**
  * Where a task goes: between the two tasks shown next to it, either null at a
@@ -57,15 +63,19 @@ export function useTaskActions() {
       await calendarApi.updateEvent(id, update);
       return calendarApi.updateTodoStatus(id, { todo_status: 'changed' });
     },
-    onSuccess: event => { writeTaskEvent(client, event); refresh(); toast({ title: 'Task updated' }); },
+    onSuccess: (event, { id, update }) => {
+      writeTaskFields(client, id, confirmedFields(event, [...Object.keys(update) as (keyof CalendarEvent)[], ...STATUS_FIELDS]));
+      refresh();
+      toast({ title: 'Task updated' });
+    },
     onError: failed('Could not update the task'),
   });
 
   const setStatus = useSessionMutation({
     mutationFn: ({ id, todo_status, start_time, end_time }: { id: string; todo_status: CalendarEvent['todo_status']; start_time?: string; end_time?: string }) =>
       calendarApi.updateTodoStatus(id, { todo_status, start_time, end_time }),
-    onSuccess: (event, { todo_status }) => {
-      writeTaskEvent(client, event);
+    onSuccess: (event, { id, todo_status }) => {
+      writeTaskFields(client, id, confirmedFields(event, [...STATUS_FIELDS, 'start_time', 'end_time']));
       refresh();
       if (todo_status === 'done') toast({ title: 'Task done' });
       else if (todo_status === 'cancelled') toast({ title: 'Task cancelled' });
@@ -111,9 +121,9 @@ export function useTaskActions() {
   const moveToList = useSessionMutation({
     mutationFn: ({ id, calendarId }: { id: string; calendarId: string; list?: CalendarCalendar }) =>
       queueTaskWrite(client, scope, { kind: 'move', id }, signal => calendarApi.moveTask(id, calendarId, signal), MOVE_DEADLINE_MS),
-    onSuccess: (result: TaskMove, { list }) => {
+    onSuccess: (result: TaskMove, { id, list }) => {
       // The answer carries the task as it is now: in its new list, or still in the old one with its move marked (move_pending).
-      if (result.event) writeTaskEvent(client, result.event);
+      if (result.event) writeTaskFields(client, id, confirmedFields(result.event, MOVE_FIELDS));
       if (result.pending === 'creating') toast({ title: 'Moving…', description: 'The calendar server has not confirmed yet. UniHub finishes this in the background.' });
       else toast({ title: list ? `Task moved to ${list.name}` : 'Task moved',
         ...(result.sourceKept ? { description: 'Its old copy was changed in another app meanwhile, so it stays in the old calendar too.' } : {}) });
@@ -130,24 +140,26 @@ export function useTaskActions() {
    */
   const cancelMove = useSessionMutation({
     mutationFn: ({ id }: { id: string; from?: string; to?: string }) => queueTaskWrite(client, scope, { kind: 'move', id }, signal => calendarApi.cancelMove(id, signal), MOVE_DEADLINE_MS),
-    onSuccess: (result: TaskMoveCancelled, { from, to }) => {
-      if (result.event) writeTaskEvent(client, result.event);
+    onSuccess: (result: TaskMoveCancelled, { id, from, to }) => {
+      if (result.event) writeTaskFields(client, id, confirmedFields(result.event, MOVE_FIELDS));
       if (result.cancelled) toast({ title: 'Move cancelled', description: cancelledMoveNotice('task', from, to) });
-      else { refresh(); toast({ title: 'Nothing to cancel', description: 'The task is in its new list already.' }); }
+      // Where the task is now comes from the lists, not from this answer.
+      else { refresh(); toast({ title: 'Nothing to cancel', description: 'No move was waiting on the calendar server.' }); }
     },
     onError: failed('Could not cancel the move'),
   });
 
   const addSubtask = useSessionMutation({
     mutationFn: ({ eventId, title }: { eventId: string; title: string }) => calendarApi.createSubtask(eventId, { title }),
-    onSuccess: (subtask, { eventId }) => { writeTaskSubtasks(client, eventId, subtasks => [...subtasks, subtask]); refresh(); },
+    // A list fetched meanwhile may hold the new subtask already: merged by id, never appended twice.
+    onSuccess: (subtask, { eventId }) => { writeTaskSubtasks(client, eventId, subtasks => mergeSubtask(subtasks, subtask)); refresh(); },
     onError: failed('Could not add the subtask'),
   });
 
   const updateSubtask = useSessionMutation({
     mutationFn: ({ eventId, subtaskId, update }: { eventId: string; subtaskId: string; update: Partial<Pick<CalendarSubtask, 'title' | 'is_done' | 'position'>> }) =>
       calendarApi.updateSubtask(eventId, subtaskId, update),
-    onSuccess: (subtask, { eventId }) => { writeTaskSubtasks(client, eventId, subtasks => subtasks.map(known => known.id === subtask.id ? { ...known, ...subtask } : known)); refresh(); },
+    onSuccess: (subtask, { eventId }) => { writeTaskSubtasks(client, eventId, subtasks => mergeSubtask(subtasks, subtask)); refresh(); },
     onError: failed('Could not update the subtask'),
   });
 
