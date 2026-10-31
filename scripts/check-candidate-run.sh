@@ -13,6 +13,11 @@
 #
 # Exit 0: proven. Exit 1: not proven, with the reason. Needs GH_TOKEN (actions:
 # read) and GITHUB_REPOSITORY.
+#
+# The job log is fetched with curl, not gh: logs hold terminal colour codes,
+# which newer gh refuses to print. The API answers with a redirect to a
+# short-lived storage link; curl follows it (-L) and does not send the token
+# to that other host.
 set -euo pipefail
 
 tag="${1:?usage: check-candidate-run.sh <tag> <digest> <tested-run label>}" digest="${2:?digest}" label="${3-}"
@@ -31,7 +36,10 @@ read -r job conclusion <<< "$jobs"
 [ "$conclusion" = success ] || no "the publish job of run $run concluded '$conclusion'"
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
-gh api "repos/$repo/actions/jobs/$job/logs" > "$log" || no "the log of publish job $job cannot be read"
+curl -fsSL --proto '=https' --proto-redir '=https' --max-time 120 -o "$log" \
+  -H "Authorization: Bearer ${GH_TOKEN:?}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' \
+  "${GITHUB_API_URL:-https://api.github.com}/repos/$repo/actions/jobs/$job/logs" || no "the log of publish job $job cannot be read"
+[ -s "$log" ] || no "the log of publish job $job is empty"
 # The read-back line: "<timestamp> <tag> names <digest>".
 awk -v tag="$tag" -v digest="$digest" '{ sub(/\r$/, "") } NF == 4 && $2 == tag && $3 == "names" && $4 == digest { found = 1 } END { exit !found }' "$log" \
   || no "publish job $job of run $run did not read back $tag as $digest"
