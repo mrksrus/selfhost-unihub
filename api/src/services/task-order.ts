@@ -22,6 +22,14 @@ import { publishCalendarChanged } from './realtime';
 // that is empty. A restore gives events new ids and sets order_key to the
 // archived task's key, so date-rank offsets and ties come back unchanged.
 //
+// A key is `<base>` or `<base>~<suffix>`, and the date-rank offset comes
+// from the base alone. A restored copy kept beside its original gets the
+// base with a fixed-width counter (`~000001`, ...): it ranks exactly like the
+// original and follows it, and copies restored together keep the archive's
+// order (counters are given in key order). A synced task's suffix names its
+// calendar (server and href), so the same UID in two calendars is ordered
+// the same way on every device and after every restore.
+//
 // Hand ranks are UniHub's own overlay (F2 `local`), kept in task_order and
 // never written to a calendar server (D32). A row is keyed by the item's
 // identity, not by the derived event row: a local task by its event id, a
@@ -47,11 +55,14 @@ interface TaskIdentity {
   calendarId: string | null;
   uid: string | null;
   recurrenceId: string;
+  // A synced item's calendar as the server knows it (account server and
+  // calendar href), stable over restores; '' for a local one.
+  source?: string;
 }
 
 const hash = (text: string) => crypto.createHash('sha256').update(text, 'utf8').digest('hex');
 
-function identityFor(eventId: string, remote: { calendarId: string; uid: string; recurrenceId: string } | null): TaskIdentity {
+function identityFor(eventId: string, remote: { calendarId: string; uid: string; recurrenceId: string; source?: string } | null): TaskIdentity {
   if (!remote) return { eventId, key: hash(`event\n${eventId}`), calendarId: null, uid: null, recurrenceId: '' };
   return { eventId, key: hash(`remote\n${remote.calendarId}\n${remote.uid}\n${remote.recurrenceId}`), ...remote };
 }
@@ -70,14 +81,27 @@ function millis(value: unknown) {
   return Number.isNaN(ms) ? null : ms;
 }
 
-/** A task's stable key: its provider identity when synced, else its order key (empty: its event id). */
-function sortKey(row: Pick<RankedRow, 'id' | 'order_key'>, identity?: Pick<TaskIdentity, 'uid' | 'recurrenceId'> | null) {
-  return identity?.uid ? hash(`key\n${identity.uid}\n${identity.recurrenceId}`) : String(row.order_key || row.id);
+const KEY_SUFFIX = '~';
+const COPY_COUNTER_DIGITS = 6;
+/** The part of an order key before its suffix: what the date-rank offset comes from. */
+const keyBase = (key: string) => key.split(KEY_SUFFIX, 1)[0];
+/** The key of the n-th copy of a task with this base; fixed width, so plain string order is numeric order. */
+const copyKey = (base: string, n: number) => `${base}${KEY_SUFFIX}${String(n).padStart(COPY_COUNTER_DIGITS, '0')}`;
+/** The copy counter of a key with this base, or 0 for the base itself (and for anything else). */
+function copyNumber(key: string, base: string) {
+  const match = key.startsWith(base + KEY_SUFFIX) ? /^(\d+)$/.exec(key.slice(base.length + 1)) : null;
+  return match ? Number(match[1]) : 0;
 }
 
-function dateRank(row: RankedRow, identity?: Pick<TaskIdentity, 'uid' | 'recurrenceId'> | null) {
+/** A task's stable key (see the header): its provider identity when synced, else its order key (empty: its event id). */
+function sortKey(row: Pick<RankedRow, 'id' | 'order_key'>, identity?: Pick<TaskIdentity, 'uid' | 'recurrenceId' | 'source'> | null) {
+  if (identity?.uid) return `${hash(`key\n${identity.uid}\n${identity.recurrenceId}`)}${KEY_SUFFIX}${hash(`source\n${identity.source ?? ''}`).slice(0, 16)}`;
+  return String(row.order_key || row.id);
+}
+
+function dateRank(row: RankedRow, identity?: Pick<TaskIdentity, 'uid' | 'recurrenceId' | 'source'> | null) {
   const ms = millis(Number(row.is_todo_only) ? row.created_at : row.start_time) ?? millis(row.created_at) ?? 0;
-  const offset = parseInt(hash(`rank\n${sortKey(row, identity)}`).slice(0, 8), 16) % ID_OFFSET_SPAN;
+  const offset = parseInt(hash(`rank\n${keyBase(sortKey(row, identity))}`).slice(0, 8), 16) % ID_OFFSET_SPAN;
   return Math.floor(ms / 1000) * RANK_SCALE + offset;
 }
 
@@ -92,15 +116,19 @@ async function identities(userId: string, eventIds: readonly string[], executor:
   for (let index = 0; index < eventIds.length; index += CHUNK) {
     const chunk = eventIds.slice(index, index + CHUNK);
     const [rows] = await executor.execute<RowDataPacket[]>(
-      `SELECT e.id, o.calendar_id AS object_calendar_id, o.uid, r.recurrence_id
+      `SELECT e.id, o.calendar_id AS object_calendar_id, o.uid, r.recurrence_id,
+              c.external_id AS calendar_href, COALESCE(a.base_url, a.discovery_url, '') AS account_server
        FROM calendar_events e
        LEFT JOIN calendar_event_external_refs r ON r.event_id = e.id AND r.user_id = e.user_id
        LEFT JOIN calendar_remote_objects o ON o.id = r.remote_object_id AND o.user_id = e.user_id
+       LEFT JOIN calendar_calendars c ON c.id = o.calendar_id
+       LEFT JOIN calendar_accounts a ON a.id = c.account_id
        WHERE e.user_id = ? AND e.id IN (${chunk.map(() => '?').join(', ')})`,
       [userId, ...chunk]
     );
     for (const row of rows) {
-      const remote = row.uid && row.object_calendar_id ? { calendarId: String(row.object_calendar_id), uid: String(row.uid), recurrenceId: String(row.recurrence_id ?? '') } : null;
+      const remote = row.uid && row.object_calendar_id ? { calendarId: String(row.object_calendar_id), uid: String(row.uid), recurrenceId: String(row.recurrence_id ?? ''),
+        source: `${row.account_server ?? ''}\n${row.calendar_href ?? ''}` } : null;
       result.set(String(row.id), identityFor(String(row.id), remote));
     }
   }
@@ -295,5 +323,5 @@ async function sweepRemoteRanks(executor: SqlExecutor, userId: string, calendarI
   }
 }
 
-export { place, attachRanks, identities, identityOf, clearRank, rekey, sweepRemoteRanks, itemKey, dateRank, sortKey, compareRanked, RANK_SCALE };
+export { place, attachRanks, identities, identityOf, clearRank, rekey, sweepRemoteRanks, itemKey, dateRank, sortKey, compareRanked, keyBase, copyKey, copyNumber, RANK_SCALE };
 export type { TaskIdentity };

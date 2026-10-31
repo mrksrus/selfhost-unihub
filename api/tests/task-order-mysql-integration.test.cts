@@ -623,4 +623,44 @@ test('task order and calendar defaults: owner-scoped, gated, kept over re-sync a
     assert.ok(restored.every(event => !saved.some(source => source.id === event.id)), 'the restored tasks have new ids');
     assert.equal(await orderRows(tiedId), (backup.data.task_order as FixtureValue[]).length, 'only the archived hand places, no rows for the tie');
   });
+
+  await t.test('a copy kept beside its original gets its own key: a fixed order that survives the next restore', async () => {
+    const desk = await localCalendar(ids.owner, 'Desk');
+    const original = await task(ids.owner, desk, 'Archived copy', { createdMs: Date.UTC(2026, 9, 4, 8) });
+    const backup = await runtime('services/backup').buildBackupForUser(ids.owner, { sections: ['calendar'] });
+    await owner('PUT', `/calendar/events/${original}`, { title: 'Destination original' });
+    const kept = await runtime('services/backup').importBackupForUser(ids.owner, structuredClone(backup), { mode: 'apply', sections: ['calendar'], conflict_mode: 'keep_both', startAccountSync: () => {} });
+    assert.equal(kept.valid, true, JSON.stringify(kept.errors));
+    const [[copy]] = await pool.query<RowDataPacket[]>("SELECT id FROM calendar_events WHERE user_id = ? AND title = 'Archived copy'", [ids.owner]);
+    await owner('PUT', `/calendar/events/${copy.id}`, { calendar_id: desk });
+    const listOf = async (request: FixtureValue, calendarId: string) => (await order(request)).filter(event => event.calendar_id === calendarId);
+    const together = await listOf(owner, desk);
+    assert.deepEqual(together.map(event => event.title), ['Destination original', 'Archived copy'], 'the original first, then its copy');
+    assert.equal(together[0].sort_rank, together[1].sort_rank, 'a copy ranks like its original');
+    assert.notEqual(together[0].sort_key, together[1].sort_key, 'but has its own key');
+    assert.ok(together[1].sort_key.startsWith(`${together[0].sort_key}~`));
+
+    // The next backup and restore under new ids keeps that order.
+    const again = await runtime('services/backup').buildBackupForUser(ids.owner, { sections: ['calendar'] });
+    const laterId = crypto.randomUUID();
+    await pool.execute<ResultSetHeader>('INSERT INTO users (id,email,password_hash,full_name) VALUES (?,?,?,?)', [laterId, 'later@example.test', passwordHash, 'later']);
+    const restored = await runtime('services/backup').importBackupForUser(laterId, again, { mode: 'apply', sections: ['calendar'], startAccountSync: () => {} });
+    assert.equal(restored.valid, true, JSON.stringify(restored.errors));
+    const later = await signIn('later');
+    const [[laterDesk]] = await pool.query<RowDataPacket[]>("SELECT id FROM calendar_calendars WHERE user_id = ? AND name = 'Desk'", [laterId]);
+    assert.deepEqual((await listOf(later, laterDesk.id)).map(event => [event.title, event.sort_rank, event.sort_key]),
+      together.map(event => [event.title, event.sort_rank, event.sort_key]));
+
+    // Copies restored together keep the archive's order, ties included, and
+    // follow their originals.
+    const [tieLists] = await pool.query<RowDataPacket[]>("SELECT id FROM calendar_calendars WHERE user_id = ? AND name = 'Ties' ORDER BY created_at, id", [ids.owner]);
+    assert.equal(tieLists.length, 2);
+    const ties = await Promise.all(tieLists.map(list => listOf(owner, list.id)));
+    for (const list of ties) assert.deepEqual(list.map(event => event.title), ['Nine', 'Twenty-seven']);
+    const all = (await order()).filter(event => tieLists.some(list => list.id === event.calendar_id));
+    assert.equal(new Set(all.map(event => event.sort_rank)).size, 1, 'four tasks of one rank');
+    assert.equal(new Set(all.map(event => event.sort_key)).size, 4, 'four keys');
+    assert.deepEqual(all.map(event => [event.title, tieLists.findIndex(list => list.id === event.calendar_id) === 0 ? 'original' : 'copy']),
+      [['Nine', 'original'], ['Nine', 'copy'], ['Twenty-seven', 'original'], ['Twenty-seven', 'copy']]);
+  });
 });

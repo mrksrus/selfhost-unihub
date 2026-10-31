@@ -634,7 +634,8 @@ async function createTaskOrderAndMoves(connection: SqlExecutor) {
   // copy outlives its task and its new calendar (event_id, target_calendar_id
   // become NULL), so the old copy never comes back. target_ics is the object
   // every attempt sends, under the UID fixed before the first; source_etag
-  // is the old copy as the move found it, the only version it may delete.
+  // is the old copy as the move found it, the only version it may delete. A
+  // cancelled move keeps its UID until no copy under it is left at the target.
   // Branch databases made an earlier shape of it, which nothing wrote to.
   const [journal] = await connection.execute<RowDataPacket[]>("SHOW TABLES LIKE 'calendar_event_moves'");
   if (journal.length && !await hasColumn(connection, 'calendar_event_moves', 'source_etag')) {
@@ -652,7 +653,7 @@ async function createTaskOrderAndMoves(connection: SqlExecutor) {
     target_href TEXT NULL,
     target_etag VARCHAR(255) NULL,
     target_ics MEDIUMTEXT NULL,
-    state ENUM('creating', 'removing') NOT NULL,
+    state ENUM('creating', 'removing', 'cancelled') NOT NULL,
     attempts INT NOT NULL DEFAULT 0,
     last_error VARCHAR(255) NULL,
     next_attempt_at DATETIME NULL,
@@ -667,6 +668,10 @@ async function createTaskOrderAndMoves(connection: SqlExecutor) {
     FOREIGN KEY (source_object_id) REFERENCES calendar_remote_objects(id) ON DELETE CASCADE,
     FOREIGN KEY (target_calendar_id) REFERENCES calendar_calendars(id) ON DELETE SET NULL
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  const [state] = await connection.execute<RowDataPacket[]>("SHOW COLUMNS FROM calendar_event_moves WHERE Field = 'state'");
+  if (!/'cancelled'/.test(String(state[0]?.Type))) {
+    await connection.execute("ALTER TABLE calendar_event_moves MODIFY state ENUM('creating', 'removing', 'cancelled') NOT NULL");
+  }
 }
 
 async function addPushTransport(connection: SqlExecutor) {

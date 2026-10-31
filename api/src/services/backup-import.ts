@@ -16,7 +16,7 @@ import { pauseMailRestore, restoreMailEngineEvidence } from './backup-mail-engin
 import { isModuleEnabled } from './module-settings';
 import { SETTINGS, referenceKeys, restorableValue } from './settings';
 import { normalizeSignature } from './mail-signature';
-import { itemKey } from './task-order';
+import { copyKey, copyNumber, itemKey, keyBase } from './task-order';
 import {
   isFileRangeSource,
   normalizeMysqlDateTime,
@@ -84,11 +84,40 @@ function sourceEmailJson(value: unknown) {
 
 const SETTING_KEYS = new Set(Object.keys(SETTINGS.user));
 
-// The archived task's order key (its own, or its id before 0.27), kept on the
-// restored event unless it is the event's id anyway (services/task-order.ts).
+// The archived task's order key: its own, or its id before 0.27.
+const archivedOrderKey = (row: BackupRow) => typeof row.order_key === 'string' && row.order_key ? row.order_key : String(row.id);
+
+// Kept on the restored event unless it is the event's id anyway (services/task-order.ts).
 function restoredOrderKey(row: BackupRow, targetId: string) {
-  const key = typeof row.order_key === 'string' && row.order_key ? row.order_key : String(row.id);
+  const key = archivedOrderKey(row);
   return key === targetId ? null : key;
+}
+
+// Distinct tasks must not share a key, or they tie for good. A restored task
+// whose key another of the person's tasks already has (a copy kept beside its
+// original) gets the key's base with the next copy counter. Counters are
+// given in key order, so copies restored together keep the archive's order,
+// and each follows the tasks that held its base before.
+async function separateCopyKeys(connection: SqlExecutor, userId: string, written: readonly { row: BackupRow; targetId: string }[]) {
+  const shared: { key: string; targetId: string }[] = [];
+  for (const { row, targetId } of written) {
+    const key = archivedOrderKey(row);
+    const [others] = await connection.execute<RowDataPacket[]>(
+      'SELECT id FROM calendar_events WHERE user_id = ? AND id <> ? AND (order_key = ? OR (order_key IS NULL AND id = ?)) LIMIT 1', [userId, targetId, key, key]);
+    if (others.length) shared.push({ key, targetId });
+  }
+  const byBase = new Map<string, typeof shared>();
+  for (const entry of shared) byBase.set(keyBase(entry.key), [...(byBase.get(keyBase(entry.key)) || []), entry]);
+  for (const [base, entries] of byBase) {
+    const [rows] = await connection.execute<RowDataPacket[]>("SELECT order_key FROM calendar_events WHERE user_id = ? AND order_key LIKE ? ESCAPE '\\\\'",
+      [userId, `${base.replace(/[\\%_]/g, '\\$&')}~%`]);
+    let next = Math.max(0, ...rows.map(row => copyNumber(String(row.order_key), base))) + 1;
+    entries.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : a.targetId < b.targetId ? -1 : 1));
+    for (const entry of entries) {
+      await connection.execute('UPDATE calendar_events SET order_key = ? WHERE id = ? AND user_id = ?', [copyKey(base, next), entry.targetId, userId]);
+      next += 1;
+    }
+  }
 }
 // Settings that name a record restored later in the run, by the section
 // whose id map remaps them: each is held back and written after it.
@@ -472,6 +501,8 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         writtenCalendarEvents.push({ row, targetId: targetEventId });
         if (sourceEmailId(row.source_email_id)) eventsWithSourceEmail.set(targetEventId, row.source_email_id);
       }
+
+      await separateCopyKeys(connection, userId, writtenCalendarEvents);
 
       for (const subtask of data.calendar_event_subtasks || []) {
         await checkRestoreCancelled();

@@ -77,7 +77,10 @@ test('moving a task between lists and calendars: one copy, the same row, through
 
   // --- The calendar server: two calendars of one account ---------------------
   const remote = { version: 1, objects: new Map<string, { etag: string; ics: string }>(), writes: [] as string[][] };
-  const faults: { put?: (path: string) => 'store-then-lose' | 'lose' | 'refuse' | void; remove?: (path: string) => 'fail' | void } = {};
+  const faults: { put?: (path: string) => 'store-then-lose' | 'lose' | 'refuse' | void; remove?: (path: string) => 'fail' | void; get?: () => 'fail' | void } = {};
+  // A point where a sync or a request stops until the test lets it go on.
+  const hold = () => { let reached!: () => void; let release!: () => void; const at = new Promise<void>(resolve => { reached = resolve; }); const go = new Promise<void>(resolve => { release = resolve; }); return { at, go, reached, release }; };
+  const gates: { fetch?: { path: string } & ReturnType<typeof hold>; timeZone?: ReturnType<typeof hold> } = {};
   let etags = 0;
   const pathOf = (url: string) => decodeURIComponent(new URL(url).pathname);
   const store = (objectPath: string, ics: string) => { remote.objects.set(objectPath, { etag: `"e${++etags}"`, ics }); remote.version += 1; };
@@ -89,10 +92,16 @@ test('moving a task between lists and calendars: one copy, the same row, through
   ];
   caldav.listCalendarObjects = async ({ calendarUrl }: FixtureValue) => [...remote.objects].filter(([objectPath]) => objectPath.startsWith(pathOf(calendarUrl)))
     .map(([href, object]) => ({ href, url: `${BASE}${href}`, etag: object.etag }));
-  caldav.fetchCalendarObjects = async ({ objects }: FixtureValue) => objects.filter((item: FixtureValue) => remote.objects.has(item.href))
-    .map((item: FixtureValue) => ({ href: item.href, etag: remote.objects.get(item.href)!.etag, ics: remote.objects.get(item.href)!.ics }));
+  caldav.fetchCalendarObjects = async ({ objects }: FixtureValue) => {
+    const read = objects.filter((item: FixtureValue) => remote.objects.has(item.href))
+      .map((item: FixtureValue) => ({ href: item.href, etag: remote.objects.get(item.href)!.etag, ics: remote.objects.get(item.href)!.ics }));
+    const gate = gates.fetch;
+    if (gate && objects.some((item: FixtureValue) => item.href === gate.path)) { gates.fetch = undefined; gate.reached(); await gate.go; }
+    return read;
+  };
   caldav.resourceGone = async ({ url, kind }: FixtureValue) => kind === 'calendar' ? ![WORK, PRIVATE].includes(pathOf(url)) : !remote.objects.has(pathOf(url));
   caldav.getCalendarObject = async ({ url }: FixtureValue) => {
+    if (faults.get?.() === 'fail') throw davError('read ETIMEDOUT', {});
     const object = remote.objects.get(pathOf(url));
     return object ? { ...object } : null;
   };
@@ -127,6 +136,12 @@ test('moving a task between lists and calendars: one copy, the same row, through
     ids[name] = crypto.randomUUID();
     await pool.execute<ResultSetHeader>('INSERT INTO users (id,email,password_hash,full_name) VALUES (?,?,?,?)', [ids[name], `${name}@example.test`, passwordHash, name]);
   }
+  const execute = pool.execute.bind(pool);
+  (pool as FixtureValue).execute = async (sql: string, params?: FixtureValue) => {
+    const gate = gates.timeZone;
+    if (gate && String(sql).startsWith('SELECT timezone FROM users')) { gates.timeZone = undefined; gate.reached(); await gate.go; }
+    return execute(sql, params);
+  };
   const { handleRequest } = runtime('request-handler');
   server = http.createServer((req, res) => handleRequest(req, res).catch((error: FixtureValue) => res.destroy(error)));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -535,6 +550,288 @@ test('moving a task between lists and calendars: one copy, the same row, through
     await calendarSync.runCalendarSyncPass();
     await assertOnce(title, bank, work);
     assert.equal((await journal()).length, 0);
+  });
+
+  await t.test('an occurrence sharing its server object with others is not moved, nor an object of several items', async () => {
+    clock += DAY;
+    const component = (uid: string, title: string, startMs: number) => ['BEGIN:VEVENT', `UID:${uid}`, 'DTSTAMP:20261001T000000Z', `RECURRENCE-ID:${icsDate(startMs)}`,
+      `DTSTART:${icsDate(startMs)}`, `DTEND:${icsDate(startMs + 3600000)}`, `SUMMARY:${title}`, 'END:VEVENT'];
+    const uid = `detached-${clock}@example.test`;
+    // Two detached occurrences of one series, no RRULE: one server object.
+    store(`${WORK}detached.ics`, ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//UniHub test//EN', ...component(uid, 'Detached first', clock),
+      ...component(uid, 'Detached second', clock + DAY), 'END:VCALENDAR', ''].join('\r\n'));
+    await sync();
+    const [first] = await rowsTitled('Detached first');
+    const [second] = await rowsTitled('Detached second');
+    assert.ok(first && second, 'both occurrences are rows');
+    remote.writes.length = 0;
+    assert.equal((await owner('POST', `/calendar/events/${first.id}/move`, { calendar_id: errands }, 400)).code, 'CALENDAR_RECURRING_MOVE');
+    // An event and a to-do in one object.
+    store(`${WORK}compound.ics`, ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//UniHub test//EN', 'BEGIN:VEVENT', 'UID:compound@example.test', 'DTSTAMP:20261001T000000Z',
+      `DTSTART:${icsDate(clock)}`, `DTEND:${icsDate(clock + 3600000)}`, 'SUMMARY:Compound event', 'END:VEVENT',
+      'BEGIN:VTODO', 'UID:compound-todo@example.test', 'DTSTAMP:20261001T000000Z', 'SUMMARY:Compound to-do', 'END:VTODO', 'END:VCALENDAR', ''].join('\r\n'));
+    await sync();
+    const [compound] = await rowsTitled('Compound event');
+    assert.equal((await owner('POST', `/calendar/events/${compound.id}/move`, { calendar_id: privateCalendar }, 400)).code, 'CALENDAR_MOVE_UNSUPPORTED');
+    assert.deepEqual(remote.writes, []);
+    await sync(true);
+    assert.deepEqual([(await rowsTitled('Detached first'))[0]?.id, (await rowsTitled('Detached second'))[0]?.id], [first.id, second.id], 'both occurrences stay');
+    assert.equal(copiesOf('Detached second').length, 1);
+    assert.equal((await journal()).length, 0);
+  });
+
+  await t.test('an old copy stored without its version is read again first; a newer version is never deleted', async () => {
+    const title = 'Annual review';
+    const review = await serverTask(title);
+    const [oldPath] = copiesOf(title);
+    const started = remote.objects.get(oldPath)!.etag;
+    await pool.execute('UPDATE calendar_remote_objects SET etag = NULL WHERE href = ?', [oldPath]);
+    faults.put = () => 'lose';
+    await owner('POST', `/calendar/events/${review}/move`, { calendar_id: privateCalendar }, 202);
+    faults.put = undefined;
+    assert.equal((await journal(review))[0].source_etag, started, 'the version read from the server');
+    // Edited elsewhere while the move waits, and read by a sync.
+    store(oldPath, eventIcs('annual@example.test', `${title} (edited)`, clock));
+    await sync();
+    await resume();
+    assert.equal(copiesOf(`${title} (edited)`).length, 1, 'the newer version stays at the server');
+    await sync();
+    assert.deepEqual((await rowsTitled(`${title} (edited)`)).map(row => row.calendar_id), [work]);
+    assert.deepEqual((await rowsTitled(title)).map(row => [row.id, row.calendar_id]), [[review, privateCalendar]]);
+    assert.equal((await journal()).length, 0);
+
+    // Without a version and changed at the server already: refused, read again.
+    const draft = await serverTask('Budget draft');
+    const [draftPath] = copiesOf('Budget draft');
+    await pool.execute('UPDATE calendar_remote_objects SET etag = NULL WHERE href = ?', [draftPath]);
+    store(draftPath, eventIcs('budget@example.test', 'Budget draft (edited)', clock));
+    remote.writes.length = 0;
+    assert.equal((await owner('POST', `/calendar/events/${draft}/move`, { calendar_id: errands }, 409)).code, 'CALDAV_CONFLICT');
+    assert.deepEqual(remote.writes, []);
+    assert.equal((await journal()).length, 0);
+    await sync();
+    assert.deepEqual((await rowsTitled('Budget draft (edited)')).map(row => [row.id, row.calendar_id]), [[draft, work]], 'the sync read the change into the same row');
+  });
+
+  await t.test('a sync that read the old copy before the move removed it does not bring it back', async () => {
+    const title = 'Quarterly plan';
+    const plan = await serverTask(title);
+    const [oldPath] = copiesOf(title);
+    faults.put = () => 'lose';
+    await owner('POST', `/calendar/events/${plan}/move`, { calendar_id: privateCalendar }, 202);
+    faults.put = undefined;
+    // A sync downloads the old copy again and stops before storing it.
+    await pool.execute('UPDATE calendar_remote_objects SET etag = NULL WHERE href = ?', [oldPath]);
+    remote.version += 1;
+    gates.fetch = { path: oldPath, ...hold() };
+    const gate = gates.fetch;
+    const running = sync();
+    await gate.at;
+    // The move goes on meanwhile: the copy is created, the old one waits for the sync.
+    await resume();
+    assert.equal((await journal(plan))[0]?.state, 'removing');
+    assert.equal(copiesOf(title).length, 2, 'not removed while the sync runs');
+    gate.release();
+    await running;
+    assert.deepEqual((await rowsTitled(title)).map(row => [row.id, row.calendar_id]), [[plan, privateCalendar]], 'the stopped sync added no row');
+    await resume();
+    await assertOnce(title, plan, privateCalendar);
+    await sync(); await expandAll();
+    await assertOnce(title, plan, privateCalendar);
+    assert.equal((await journal()).length, 0);
+  });
+
+  await t.test('two moves of one task at once: the later one starts from where the first left it', async () => {
+    const title = 'Book venue';
+    const venue = await serverTask(title);
+    // The second request stops before it is admitted; the first finishes meanwhile.
+    gates.timeZone = hold();
+    const gate = gates.timeZone;
+    const second = owner('POST', `/calendar/events/${venue}/move`, { calendar_id: privateCalendar });
+    await gate.at;
+    await owner('POST', `/calendar/events/${venue}/move`, { calendar_id: errands });
+    await assertOnce(title, venue, errands, { copies: 0 });
+    gate.release();
+    const answer = await second;
+    assert.equal(answer.event.calendar_id, privateCalendar);
+    await assertOnce(title, venue, privateCalendar);
+    await sync(); await expandAll();
+    await assertOnce(title, venue, privateCalendar);
+    assert.equal((await journal()).length, 0);
+  });
+
+  await t.test('a move whose new copy stays unconfirmed for days ends only when the server shows the copy absent', async () => {
+    // Stored, the answer lost, and no answer since: found and adopted.
+    const ship = await localTask('Ship samples');
+    faults.put = () => 'store-then-lose';
+    await owner('POST', `/calendar/events/${ship}/move`, { calendar_id: work }, 202);
+    faults.put = () => 'lose';
+    await pool.execute('UPDATE calendar_event_moves SET attempts = 71 WHERE event_id = ?', [ship]);
+    await resume();
+    await assertOnce('Ship samples', ship, work);
+    // Never stored: absent, so the move ends and the task stays.
+    const toner = await localTask('Order toner');
+    await owner('POST', `/calendar/events/${toner}/move`, { calendar_id: work }, 202);
+    await pool.execute('UPDATE calendar_event_moves SET attempts = 71 WHERE event_id = ?', [toner]);
+    // The look fails too: it keeps waiting under the same UID.
+    faults.get = () => 'fail';
+    await resume();
+    const [waiting] = await journal(toner);
+    assert.equal(waiting?.state, 'creating', 'kept while the outcome is unknown');
+    faults.get = undefined;
+    await resume();
+    faults.put = undefined;
+    assert.equal((await journal(toner)).length, 0);
+    await assertOnce('Order toner', toner, inbox, { copies: 0 });
+    assert.equal((await owner('GET', `/calendar/events/${toner}`)).event.calendar_id, inbox);
+  });
+
+  await t.test('a retry of a waiting move with other fields is refused, the same fields resume it', async () => {
+    const title = 'Plan picnic';
+    const picnic = await localTask(title);
+    faults.put = () => 'store-then-lose';
+    await owner('PUT', `/calendar/events/${picnic}`, { calendar_id: work, title }, 202);
+    faults.put = undefined;
+    assert.equal((await owner('PUT', `/calendar/events/${picnic}`, { calendar_id: work, title: `${title} (renamed)` }, 409)).code, 'CALENDAR_MOVE_PENDING');
+    assert.equal((await rowsTitled(`${title} (renamed)`)).length, 0);
+    await owner('PUT', `/calendar/events/${picnic}`, { calendar_id: work, title });
+    await assertOnce(title, picnic, work);
+    await sync(true);
+    await assertOnce(title, picnic, work);
+  });
+
+  await t.test('an edit saved in the same second as a move starts is kept: the move starts over from it', async () => {
+    // Near the start of a second, so the edit and the read share its timestamp.
+    await new Promise(resolve => setTimeout(resolve, 1050 - Date.now() % 1000));
+    const task = await localTask('Snapshot before edit');
+    gates.timeZone = hold();
+    const gate = gates.timeZone;
+    const moving = owner('POST', `/calendar/events/${task}/move`, { calendar_id: work });
+    await gate.at;
+    await owner('PUT', `/calendar/events/${task}`, { title: 'Accepted concurrent edit' });
+    gate.release();
+    const moved = await moving;
+    assert.equal(moved.event.title, 'Accepted concurrent edit');
+    await assertOnce('Accepted concurrent edit', task, work);
+    assert.equal(copiesOf('Snapshot before edit').length, 0);
+    await sync(); await expandAll();
+    await assertOnce('Accepted concurrent edit', task, work);
+  });
+
+  await t.test('a retry is compared with the copy being created, not with a row a sync changed meanwhile', async () => {
+    const task = await serverTask('Frozen old title');
+    const [sourcePath] = copiesOf('Frozen old title');
+    faults.put = () => 'lose';
+    await owner('POST', `/calendar/events/${task}/move`, { calendar_id: privateCalendar }, 202);
+    faults.put = undefined;
+    // Changed at the old server while the copy waits, and read by a sync.
+    store(sourcePath, remote.objects.get(sourcePath)!.ics.replace('SUMMARY:Frozen old title', 'SUMMARY:Fresh synced title'));
+    await sync();
+    assert.equal((await owner('GET', `/calendar/events/${task}`)).event.title, 'Fresh synced title');
+    // The copy will not have that title: refused, not "saved".
+    assert.equal((await owner('PUT', `/calendar/events/${task}`, { calendar_id: privateCalendar, title: 'Fresh synced title' }, 409)).code, 'CALENDAR_MOVE_PENDING');
+    // The frozen title resumes it; the change made elsewhere is kept in the old calendar.
+    await owner('PUT', `/calendar/events/${task}`, { calendar_id: privateCalendar, title: 'Frozen old title' });
+    await sync(); await expandAll();
+    assert.deepEqual((await rowsTitled('Frozen old title')).map(row => [row.id, row.calendar_id]), [[task, privateCalendar]]);
+    assert.deepEqual((await rowsTitled('Fresh synced title')).map(row => row.calendar_id), [work]);
+    assert.equal((await journal()).length, 0);
+  });
+
+  await t.test('a move that never resolves shows on the task and can be cancelled; its copy is removed and never imported', async () => {
+    const title = 'Unavailable destination';
+    const task = await localTask(title);
+    faults.put = () => 'store-then-lose';
+    await owner('POST', `/calendar/events/${task}/move`, { calendar_id: work }, 202);
+    faults.put = () => 'lose'; faults.get = () => 'fail';
+    await pool.execute('UPDATE calendar_event_moves SET attempts = 200 WHERE event_id = ?', [task]);
+    await resume();
+    assert.equal((await owner('DELETE', `/calendar/events/${task}`, undefined, 409)).code, 'CALENDAR_MOVE_PENDING');
+    // Shown on the task, online and in the offline snapshot.
+    const shown = (await owner('GET', `/calendar/events/${task}`)).event.move_pending;
+    assert.deepEqual({ ...shown, since: typeof shown.since }, { state: 'creating', target_calendar_id: work, attempts: 201, since: 'string' });
+    const { events } = await owner('GET', '/calendar/events?include_todos=true&include_done=true');
+    assert.equal(events.find((event: FixtureValue) => event.id === task).move_pending.state, 'creating');
+    assert.equal(events.filter((event: FixtureValue) => event.move_pending).length, 1);
+    const snapshot = await runtime('services/offline').createOfflineSnapshot(ids.owner);
+    assert.equal((snapshot.events as FixtureValue[]).find(event => event.id === task).move_pending.state, 'creating');
+    // Owner only, behind the module switch.
+    assert.equal((await stranger('DELETE', `/calendar/events/${task}/move`, undefined, 404)).code, 'TASK_NOT_FOUND');
+    await setUserModules(ids.owner, { modules: { calendar: { enabled: false } } });
+    assert.equal((await owner('DELETE', `/calendar/events/${task}/move`, undefined, 403)).code, 'MODULE_DISABLED');
+    await setUserModules(ids.owner, { modules: { calendar: { enabled: true } } });
+    const cancelled = await owner('DELETE', `/calendar/events/${task}/move`);
+    assert.deepEqual([cancelled.cancelled, cancelled.event.calendar_id, cancelled.event.move_pending], [true, inbox, null]);
+    assert.equal((await owner('DELETE', `/calendar/events/${task}/move`)).cancelled, false, 'nothing left to cancel');
+    // The copy the server did store is never imported, and goes once the server answers.
+    await sync();
+    assert.deepEqual((await rowsTitled(title)).map(row => [row.id, row.calendar_id]), [[task, inbox]]);
+    assert.equal(copiesOf(title).length, 1);
+    faults.put = undefined; faults.get = undefined;
+    await resume();
+    assert.equal(copiesOf(title).length, 0);
+    assert.equal((await journal()).length, 0);
+    // Free again: edited, and moved anew.
+    await owner('PUT', `/calendar/events/${task}`, { title: `${title} (edited)` });
+    await owner('POST', `/calendar/events/${task}/move`, { calendar_id: work });
+    await assertOnce(`${title} (edited)`, task, work);
+    // A move only removing an old copy is not cancelled: the task is in its new list.
+    const fixing = await serverTask('Already moved');
+    const [oldPath] = copiesOf('Already moved');
+    faults.remove = objectPath => objectPath === oldPath ? 'fail' : undefined;
+    await owner('POST', `/calendar/events/${fixing}/move`, { calendar_id: errands }, 202);
+    faults.remove = undefined;
+    assert.equal((await owner('GET', `/calendar/events/${fixing}`)).event.move_pending.state, 'removing');
+    const notCancelled = await owner('DELETE', `/calendar/events/${fixing}/move`);
+    assert.deepEqual([notCancelled.cancelled, notCancelled.event.calendar_id], [false, errands]);
+    await resume();
+    await assertOnce('Already moved', fixing, errands, { copies: 0 });
+  });
+
+  await t.test('a move starting while a sync stores the same server copy does not fail the sync', async () => {
+    const title = 'Lock order';
+    const task = await serverTask(title);
+    const [href] = copiesOf(title);
+    gates.timeZone = hold();
+    const timeGate = gates.timeZone;
+    const moving = owner('POST', `/calendar/events/${task}/move`, { calendar_id: privateCalendar }).then((value: FixtureValue) => ({ ok: true, value }), (error: FixtureValue) => ({ ok: false, error }));
+    await timeGate.at;
+    // The sync stops after writing the server copy; the move's admission after locking the row.
+    const objectGate = hold(); const eventGate = hold(); let objectOnce = true; let eventOnce = true; const errors: string[] = [];
+    const getConnection = pool.getConnection.bind(pool);
+    (pool as FixtureValue).getConnection = async () => {
+      const cx = await getConnection(); const call = cx.execute.bind(cx);
+      (cx as FixtureValue).execute = async (sql: string, params: FixtureValue) => {
+        try {
+          const result = await call(sql, params);
+          if (objectOnce && sql.includes('INSERT INTO calendar_remote_objects')) { objectOnce = false; objectGate.reached(); await objectGate.go; }
+          if (eventOnce && /^SELECT (\*|calendar_id, updated_at) FROM calendar_events WHERE id = \? AND user_id = \? FOR UPDATE/.test(sql)) { eventOnce = false; eventGate.reached(); await eventGate.go; }
+          return result;
+        } catch (error) { errors.push((error as FixtureValue).code); throw error; }
+      };
+      const release = cx.release.bind(cx);
+      (cx as FixtureValue).release = () => { (cx as FixtureValue).execute = call; (cx as FixtureValue).release = release; release(); };
+      return cx;
+    };
+    try {
+      store(href, remote.objects.get(href)!.ics);
+      const syncing = sync().then((value: FixtureValue) => ({ ok: true, value }), (error: FixtureValue) => ({ ok: false, error }));
+      await objectGate.at;
+      timeGate.release();
+      await Promise.race([eventGate.at, new Promise(resolve => setTimeout(resolve, 1000))]);
+      eventGate.release();
+      await new Promise(resolve => setTimeout(resolve, 50));
+      objectGate.release();
+      const synced = await syncing;
+      assert.equal(synced.ok, true, `the sync finished (${JSON.stringify(errors)})`);
+      const moved = await moving;
+      assert.equal(moved.ok, true, String((moved as FixtureValue).error));
+      assert.equal((moved as FixtureValue).value.event.calendar_id, privateCalendar);
+    } finally { (pool as FixtureValue).getConnection = getConnection; }
+    await resume();
+    await assertOnce(title, task, privateCalendar);
+    await sync();
+    await assertOnce(title, task, privateCalendar);
   });
 
   await t.test('removing the calendar ends a move that needs it', async () => {

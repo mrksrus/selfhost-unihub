@@ -19,7 +19,9 @@ export interface TaskRankFields {
    * The tiebreak for equal ranks: order by sort_rank, then sort_key (plain
    * string comparison, not locale-aware). Unlike the id it survives a sync
    * that rebuilds the row and a restore that renews ids, so ties keep their
-   * order. Never derive it on the client.
+   * order. Opaque: it may carry a suffix after `~` (a restored copy, or a
+   * synced task's calendar), and two tasks never share one. Never derive it
+   * on the client.
    */
   sort_key: string;
   /** The task was placed by hand; a date changed in UniHub clears it. */
@@ -69,6 +71,22 @@ export interface SourceEmailDto {
  * An event or task as GET /api/calendar/events and the event routes answer.
  * Every event carries its rank; ToDo and Today order open tasks by it.
  */
+/**
+ * A move of this item to another calendar that a calendar server has not
+ * finished. 'creating': the new server has not confirmed the copy; the item
+ * stays in its old list, edits and deletion answer 409 CALENDAR_MOVE_PENDING,
+ * and DELETE …/move cancels it. 'removing': the item is in its new list
+ * (target_calendar_id) and only the old copy is still to be removed; nothing
+ * waits on the person and it cannot be cancelled. `since` is when the move
+ * began; `attempts` counts failed tries at the server.
+ */
+export interface TaskMovePending {
+  state: 'creating' | 'removing';
+  target_calendar_id: string | null;
+  since: string;
+  attempts: number;
+}
+
 export interface CalendarEventDto extends TaskRankFields {
   id: string;
   user_id: string;
@@ -92,6 +110,8 @@ export interface CalendarEventDto extends TaskRankFields {
   source_email: SourceEmailDto | null;
   subtasks: CalendarSubtaskDto[];
   attendees: CalendarAttendeeDto[];
+  /** A move to another calendar not finished yet, else null (also in the offline snapshot). */
+  move_pending: TaskMovePending | null;
 }
 
 /**
@@ -144,6 +164,19 @@ export interface TaskMoveResponse {
   event: CalendarEventDto | null;
   pending?: 'creating' | 'removing';
   source_kept?: boolean;
+}
+
+/**
+ * DELETE /api/calendar/events/:id/move: cancel a move whose new copy is not
+ * confirmed yet ('creating'). The item stays in its old list and can be
+ * edited, deleted or moved again at once; a copy the new server stored after
+ * all is removed from there in the background and never shown. `cancelled`
+ * false: nothing to cancel (no move, or one already 'removing', whose item is
+ * in its new list). 404 TASK_NOT_FOUND when the item is not this person's.
+ */
+export interface TaskMoveCancelResponse {
+  event: CalendarEventDto | null;
+  cancelled: boolean;
 }
 
 /**
