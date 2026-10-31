@@ -5,11 +5,13 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
-## 0.27.1 Follow-up fix for the Android app
+## 0.27.1 Follow-up fixes
 
 No database upgrade and no configuration change. Going back to 0.27.0 is
 possible.
 
+- **Server.** Several changes saved at the same moment can no longer leave
+  UniHub waiting forever for a database connection; nothing to do.
 - **Android app.** Install 0.27.1's app when it is offered: "Open in app"
   from UniHub's page then always asks to connect to that server, also in the
   first minutes after the phone has started. The window is 0.27.1, 0.27.0,

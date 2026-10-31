@@ -8,9 +8,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.27.1
 
-A fix for the Android app. No database upgrade; install the new Android app
-when it is offered (see
-[Upgrading](docs/UPGRADING.md#0271-follow-up-fix-for-the-android-app)).
+Fixes for the Android app and for many changes saved at once. No database
+upgrade; install the new Android app when it is offered (see
+[Upgrading](docs/UPGRADING.md#0271-follow-up-fixes)).
 
 ### Fixed
 
@@ -22,6 +22,12 @@ when it is offered (see
   screen forgot the link. The question now stays until you answer it, also
   when Android rebuilds the screen for another reason, and a link you already
   answered is not asked again. Needs the new app.
+- **Many changes at the same moment no longer stop the server.** When
+  several calendar items or tasks were saved at once, each change could wait
+  for a second database connection while holding its first one; with enough
+  of them, they waited for each other forever and UniHub stopped answering
+  until it was restarted. A change now does its check on the connection it
+  already holds.
 
 ## 0.27.0
 
