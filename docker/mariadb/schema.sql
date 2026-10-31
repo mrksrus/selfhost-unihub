@@ -211,7 +211,7 @@ CREATE TABLE `calendar_event_moves` (
   `target_href` text DEFAULT NULL,
   `target_etag` varchar(255) DEFAULT NULL,
   `target_ics` mediumtext DEFAULT NULL,
-  `state` enum('creating','removing') NOT NULL,
+  `state` enum('creating','removing','cancelled') NOT NULL,
   `attempts` int(11) NOT NULL DEFAULT 0,
   `last_error` varchar(255) DEFAULT NULL,
   `next_attempt_at` datetime DEFAULT NULL,

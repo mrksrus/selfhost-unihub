@@ -14,6 +14,7 @@ test('calendar detail resolves one owned event with its children and hides other
     if (sql.includes('FROM task_order WHERE user_id = ?')) return [[]];
     // The order identities (task-order.ts): no server copy here.
     if (sql.includes('LEFT JOIN calendar_remote_objects o')) { assert.match(sql, /WHERE e\.user_id = \?/); return [[]]; }
+    if (sql.includes('FROM calendar_event_moves')) { assert.match(sql, /WHERE user_id = \?/); return [[]]; }
     assert.match(sql, /WHERE (id|event_id) = \? AND user_id = \?/);
     const owned = params[0] === 'target' && params[1] === 'owner';
     if (!owned) return [[]];
@@ -84,6 +85,7 @@ test('removing the calendar of a synced event is refused; a local event can stil
     if (sql.includes('FROM task_order WHERE user_id = ?')) return [[]];
     // The order identities (task-order.ts): no server copy here.
     if (sql.includes('LEFT JOIN calendar_remote_objects o')) { assert.match(sql, /WHERE e\.user_id = \?/); return [[]]; }
+    if (sql.includes('FROM calendar_event_moves')) { assert.match(sql, /WHERE user_id = \?/); return [[]]; }
     assert.match(sql, /WHERE (id|event_id|c\.id) = \? AND (c\.)?user_id = \?/);
     if (params[1] !== 'owner') return [[]];
     if (sql.includes('FROM calendar_events')) return [[{ id: 'target', user_id: 'owner', calendar_id: state.calendar_id, title: 'Synced', start_time: '2026-10-20 10:00:00', end_time: '2026-10-20 11:00:00' }]];

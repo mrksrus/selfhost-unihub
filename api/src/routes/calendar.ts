@@ -82,6 +82,7 @@ const {
   takesUndatedTasks,
 } = require('../services/calendar') as typeof import('../services/calendar');
 const taskOrder = require('../services/task-order') as typeof import('../services/task-order');
+const { attachMoveState, movePending } = require('../services/calendar-move-state') as typeof import('../services/calendar-move-state');
 const calendarSync = require('../services/calendar-sync') as typeof import('../services/calendar-sync');
 const calendarMove = require('../services/calendar-move') as typeof import('../services/calendar-move');
 const calendarAccounts = require('../services/calendar-accounts') as typeof import('../services/calendar-accounts');
@@ -568,11 +569,11 @@ export = {
       const eventIds = rows.map((row) => row.id);
       const subtasksByEventId = await getCalendarSubtasksForEvents(userId, eventIds);
       const attendeesByEventId = await getCalendarAttendeesForEvents(userId, eventIds);
-      const events = await taskOrder.attachRanks(userId, rows.map((row) => serializeCalendarEvent(
+      const events = await attachMoveState(userId, await taskOrder.attachRanks(userId, rows.map((row) => serializeCalendarEvent(
         row,
         subtasksByEventId.get(row.id) || [],
         attendeesByEventId.get(row.id) || []
-      )));
+      ))));
       return { events };
     } catch (error) {
       console.error('Get events error:', error);
@@ -817,7 +818,11 @@ export = {
 
       // Changing the time of a whole series replaces its occurrences, and
       // with them the edited id: then there is no local row left to update.
-      let updatedEvent = await applyLocalEventUpdate(userId, id, { sets: updates, params }, body.attendees);
+      // An edit that raced a move's start is refused under the row lock (a
+      // move this request started carries the fields itself).
+      const startedMove = has(body, 'calendar_id') && !!body.calendar_id && body.calendar_id !== currentEvent.calendar_id;
+      const fieldsOfMove = !startedMove && ['title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'reminders', 'reminder_minutes', 'is_todo_only', 'recurrence'].some(key => has(body, key));
+      let updatedEvent = await applyLocalEventUpdate(userId, id, { sets: updates, params }, body.attendees, { fieldsOfMove });
       if (dateChanged) {
         await taskOrder.clearRank(db, userId, id, orderIdentity);
         if (updatedEvent) updatedEvent = await getCalendarEventWithSubtasks(userId, id);
@@ -901,9 +906,14 @@ export = {
         }
       }
 
-      const updateQuery = `UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`;
+      // A new time is refused while a move's new copy is being created (the
+      // move is admitted under this row's lock, so the check is atomic).
+      const timeMoved = updates.includes('start_time = ?');
+      const updateQuery = `UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id = ?${timeMoved
+        ? " AND NOT EXISTS (SELECT 1 FROM calendar_event_moves m WHERE m.event_id = calendar_events.id AND m.state = 'creating' AND m.target_calendar_id IS NOT NULL)" : ''}`;
       params.push(id, userId);
-      await db.execute(updateQuery, params);
+      const [written] = await db.execute<ResultSetHeader>(updateQuery, params);
+      if (timeMoved && !written.affectedRows) return clientError(movePending(), 'Failed to update todo status');
 
       const updatedEvent = await getCalendarEventWithSubtasks(userId, id);
       return { event: updatedEvent };

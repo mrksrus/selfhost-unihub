@@ -17,6 +17,7 @@ import {
   safeJsonParse,
 } from './calendar';
 import { attachRanks } from './task-order';
+import { attachMoveState } from './calendar-move-state';
 
 interface Section { columns: string; table: string; order: string; filter?: string; limit?: number }
 interface OfflineMail extends Record<string, unknown> {
@@ -108,7 +109,8 @@ async function collectOfflineSnapshot(connection: SqlExecutor, userId: string) {
   // Each event carries its rank (sort_rank, hand_ordered), so ToDo offline
   // shows the saved order; a snapshot from before 0.27 has none and the app
   // falls back to date order.
-  const events = await attachRanks(userId, data.events.map(row => serializeCalendarEvent(row, subtasks.get(row.id) || [], attendees.get(row.id) || [])), connection);
+  // A move not finished yet shows as such offline too (move_pending).
+  const events = await attachMoveState(userId, await attachRanks(userId, data.events.map(row => serializeCalendarEvent(row, subtasks.get(row.id) || [], attendees.get(row.id) || [])), connection), connection);
   let attachmentRows: Record<string, unknown>[] = [];
   if (data.emails.length) {
     const section = { columns: 'id email_id filename content_type size_bytes' };

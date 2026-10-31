@@ -19,6 +19,7 @@ import { decrypt } from '../security/encryption';
 import { canRunModule } from './access-policy';
 import { publishCalendarChanged } from './realtime';
 import { sweepRemoteRanks } from './task-order';
+import { isDeadlock, DEADLOCK_RETRIES } from './transactions';
 import * as caldav from './caldav';
 import * as ical from './calendar-ical';
 import {
@@ -388,19 +389,23 @@ async function applyObject(ctx: Context, calendar: Calendar, object: ObjectRecor
 
 // A stopped sync commits nothing more: the stop is checked again before the
 // commit, after the transaction's own queries.
+// Its work only touches the database, so a deadlock victim runs it again.
 async function inTransaction<T>(ctx: Pick<Context, 'signal'>, work: (connection: PoolConnection) => Promise<T>) {
-  const connection = await db.getConnection();
-  try {
-    await connection.beginTransaction();
-    const result = await work(connection);
-    ctx.signal?.throwIfAborted();
-    await connection.commit();
-    return result;
-  } catch (error) {
-    await connection.rollback();
-    throw error;
-  } finally {
-    connection.release();
+  for (let attempt = 1; ; attempt += 1) {
+    const connection = await db.getConnection();
+    try {
+      await connection.beginTransaction();
+      const result = await work(connection);
+      ctx.signal?.throwIfAborted();
+      await connection.commit();
+      return result;
+    } catch (error) {
+      await connection.rollback();
+      if (!isDeadlock(error) || attempt > DEADLOCK_RETRIES) throw error;
+    } finally {
+      connection.release();
+    }
+    await new Promise(resolve => setTimeout(resolve, 20 * attempt));
   }
 }
 
@@ -602,7 +607,9 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
     const uid = known ? null : ical.objectUid(item.ics);
     const result = await inTransaction(ctx, async connection => {
       if (known && await moves().lockMovedAway(connection, String(known.id))) return null;
-      const move = uid ? await moves().lockCreatingMove(connection, calendar.id, uid) : null;
+      const move = uid ? await moves().lockMoveOfCopy(connection, calendar.id, uid) : null;
+      // The copy of a cancelled move is never imported; its cleanup removes it.
+      if (move?.state === 'cancelled') return null;
       const object = await storeObject(connection, ctx.account, calendar, { id: known?.id, href: item.href, etag: item.etag, ics: item.ics });
       if (move && await moves().commitMove(connection, move, { account: ctx.account, calendar, object, timeZone: ctx.timeZone })) return { object, created: [] };
       return { object, created: await applyObjectRows(connection, ctx, calendar, object, expanded) };

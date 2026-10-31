@@ -1,7 +1,7 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { ApiError, SqlExecutor } from '../types';
 import type { CalendarEvent } from '../types/calendar';
-import type { TaskMoveResponse } from '../contracts/tasks';
+import type { TaskMoveCancelResponse, TaskMoveResponse } from '../contracts/tasks';
 import type { SyncAccount, SyncCalendar, SyncTarget } from './calendar-sync';
 import crypto from 'node:crypto';
 import { db } from '../state';
@@ -12,6 +12,7 @@ import { canRunModule } from './access-policy';
 import { publishCalendarChanged } from './realtime';
 import { identityOf, rekey } from './task-order';
 import { getCalendarEventWithSubtasks } from './calendar';
+import { movePending } from './calendar-move-state';
 import * as caldav from './caldav';
 import * as ical from './calendar-ical';
 import * as calendarSync from './calendar-sync';
@@ -46,7 +47,7 @@ import * as calendarSync from './calendar-sync';
 // Removing a calendar or account ends the moves that need it; a move still
 // removing an old copy outlives its task and its new calendar.
 
-type MoveState = 'creating' | 'removing';
+type MoveState = 'creating' | 'removing' | 'cancelled';
 interface MoveRow extends RowDataPacket {
   id: string;
   user_id: string;
@@ -61,7 +62,7 @@ interface MoveRow extends RowDataPacket {
   state: MoveState;
   attempts: number;
 }
-interface MoveOutcome { pending?: MoveState; sourceKept?: boolean }
+interface MoveOutcome { pending?: 'creating' | 'removing'; sourceKept?: boolean }
 /** The new server copy of a moved event, stored or about to be. */
 interface NewCopy { account: SyncAccount; calendar: SyncCalendar; timeZone: string; object: { id?: string; href: string; etag: string | null; ics: string } }
 type Attempt = { copy: NewCopy } | { refused: unknown } | { wait: unknown };
@@ -74,8 +75,6 @@ const GIVE_UP_ATTEMPTS = 72;
 const MOVES_PER_PASS = 20;
 const ID_PATTERN = /^[0-9a-f-]{36}$/i;
 
-const movePending = () => conflict('CALENDAR_MOVE_PENDING',
-  'This item is still being moved to another calendar. UniHub finishes the move when the calendar server answers; try again then.');
 const recurringMove = () => badRequest('CALENDAR_RECURRING_MOVE', 'Recurring events cannot be moved to another calendar.');
 
 // --- The journal, as the sync sees it ----------------------------------------
@@ -99,10 +98,14 @@ async function lockMovedAway(connection: SqlExecutor, objectId: string) {
   return rows.some(row => row.state === 'removing');
 }
 
-/** In a sync's transaction: the open move whose new copy is this object (its calendar and UID), locked. */
-async function lockCreatingMove(connection: SqlExecutor, calendarId: string, uid: string) {
+/**
+ * In a sync's transaction: the move whose new copy is this object (its
+ * calendar and UID), locked. A 'creating' one links it to the moved row; a
+ * 'cancelled' one means the copy is never imported (its cleanup removes it).
+ */
+async function lockMoveOfCopy(connection: SqlExecutor, calendarId: string, uid: string) {
   const [rows] = await connection.execute<MoveRow[]>('SELECT * FROM calendar_event_moves WHERE target_calendar_id = ? AND target_uid = ? FOR UPDATE', [calendarId, uid]);
-  return rows.find(row => row.state === 'creating') ?? null;
+  return rows.find(row => row.state === 'creating' || row.state === 'cancelled') ?? null;
 }
 
 async function loadMove(executor: SqlExecutor, moveId: string, lock = false) {
@@ -309,7 +312,38 @@ async function advance(moveId: string): Promise<MoveOutcome> {
     if (committed) publishCalendarChanged(move.user_id, null, 'local');
     move = await loadMove(db, moveId);
   }
+  if (move?.state === 'cancelled') return cleanUpCancelled(move);
   return move?.state === 'removing' ? removeOldCopy(move) : {};
+}
+
+/**
+ * A cancelled move's cleanup: no copy under its UID may stay at the target.
+ * Under the target account's sync lock, so no sync that read such a copy
+ * imports it after the journal row is gone.
+ */
+async function cleanUpCancelled(move: MoveRow): Promise<MoveOutcome> {
+  const target = move.target_calendar_id && move.target_href ? await calendarSync.loadCalendarContext(move.user_id, move.target_calendar_id) : null;
+  if (!target) {
+    await closeMove(move.id);
+    return {};
+  }
+  let failure: unknown = null;
+  const outcome = await calendarSync.withAccountLock(target.account.id, async () => {
+    try {
+      await calendarSync.withWriteContext(target, async ctx => {
+        const url = calendarSync.objectUrl(ctx.account, { href: move.target_href! });
+        const found = await caldav.getCalendarObject({ url, ...ctx.login });
+        if (found && ical.objectUid(found.ics) === move.target_uid) {
+          // Only the version just read; without one, nothing is deleted and it waits.
+          if (!found.etag) throw new Error('The calendar server reported no version of the copy');
+          await caldav.deleteCalendarObject({ url, etag: found.etag, ...ctx.login });
+        }
+      });
+      await closeMove(move.id);
+    } catch (error) { failure = error; }
+  }, REMOVE_LOCK_WAIT_SECONDS);
+  if ('skipped' in (outcome || {}) || failure) await postpone(move, failure ?? new Error('A sync of the calendar was running'));
+  return {};
 }
 
 // One run per move in this process: a retry joins the run going on.
@@ -372,17 +406,49 @@ function unmovableShape(ics: unknown) {
   return null;
 }
 
-// Whether a same-target retry carries field changes of its own: the copy
-// being created holds the fields of the first request.
-function changesFields(event: CalendarEvent, changes: Partial<CalendarEvent>) {
-  if (!Object.keys(changes).length) return false;
-  const merged = { ...event, ...changes };
-  return JSON.stringify(calendarSync.eventFields(event)) !== JSON.stringify(calendarSync.eventFields(merged))
-    || !!Number(merged.is_todo_only) !== !!Number(event.is_todo_only)
-    || (merged.recurrence || null) !== (event.recurrence || null);
+type ProviderFields = ReturnType<typeof normalFields>;
+// The fields a server copy carries, compared after the same normalising.
+function normalFields(fields: ReturnType<typeof calendarSync.eventFields>) {
+  return {
+    title: String(fields.title ?? '').trim(), description: fields.description || null, location: fields.location || null,
+    allDay: !!fields.allDay, startMs: fields.startMs, endMs: fields.endMs,
+    reminders: [...(fields.reminders || [])].map(Number).sort((a, b) => a - b),
+  };
+}
+// Which copy fields a request's changes set.
+const FIELDS_OF: Record<string, (keyof ProviderFields)[]> = {
+  title: ['title'], description: ['description'], location: ['location'], start_time: ['startMs'], end_time: ['endMs'], all_day: ['allDay'],
+  reminders: ['reminders'], reminder_minutes: ['reminders'],
+};
+
+// The fields of the copy a move is creating, from the object every attempt sends.
+function frozenFields(ics: string, timeZone: string): ProviderFields | null {
+  try {
+    const [occurrence] = ical.expandCalendarObject(ics, { windowStartMs: Date.UTC(1000, 0, 1), windowEndMs: Date.UTC(9999, 0, 1), userTimeZone: timeZone }).occurrences;
+    return occurrence ? normalFields({ ...occurrence, reminders: occurrence.reminders }) : null;
+  } catch { return null; }
 }
 
-const millis = (value: unknown) => value == null ? null : new Date(value as string).getTime();
+/**
+ * Whether a same-target retry asks for values the copy being created will
+ * not have. Only the fields the request sets count, compared with the frozen
+ * copy, not with the row (a sync of the old copy may have changed it).
+ */
+async function retryChanges(event: CalendarEvent, changes: Partial<CalendarEvent>, move: MoveRow, target: { remote: SyncTarget | null }) {
+  const keys = Object.keys(changes);
+  if (!keys.length) return false;
+  if (('is_todo_only' in changes && Number(changes.is_todo_only)) || ('recurrence' in changes && changes.recurrence)) return true;
+  if (!move.target_ics || !target.remote) return keys.some(key => FIELDS_OF[key]);
+  const frozen = frozenFields(move.target_ics, await calendarSync.resolveTimeZone(target.remote.account));
+  if (!frozen) return true;
+  const asked = normalFields(calendarSync.eventFields({ ...event, ...changes }));
+  return keys.flatMap(key => FIELDS_OF[key] ?? []).some(field => JSON.stringify(asked[field]) !== JSON.stringify(frozen[field]));
+}
+
+// What a move freezes of a row: the copy's fields, its kind and its calendar.
+const frozenView = (row: CalendarEvent) => JSON.stringify({
+  fields: normalFields(calendarSync.eventFields(row)), todo: !!Number(row.is_todo_only), recurrence: row.recurrence || null, calendar: row.calendar_id || null,
+});
 // The event, its calendar or its server link changed after this request read them.
 const STALE = Symbol('stale');
 
@@ -412,7 +478,7 @@ async function admitMove(userId: string, eventId: string, targetCalendarId: stri
   // with it would be lost with the copy being created, so they wait.
   const open = await openMove(userId, eventId);
   if (open) {
-    if (open.target_calendar_id !== targetCalendarId || changesFields(event, changes)) throw movePending();
+    if (open.target_calendar_id !== targetCalendarId || await retryChanges(event, changes, open, target)) throw movePending();
     return runMove(open.id);
   }
   if (event.calendar_id === targetCalendarId) return {};
@@ -473,19 +539,18 @@ async function admitMove(userId: string, eventId: string, targetCalendarId: stri
   let admitted: 'local' | 'journal' | typeof STALE;
   try {
     admitted = await withTransaction(async connection => {
-      // What this request read must still hold, under the event's lock: its
-      // calendar, its row, its server link and that link's version, and no
-      // move of it begun meanwhile.
-      const [[current]] = await connection.execute<RowDataPacket[]>('SELECT calendar_id, updated_at FROM calendar_events WHERE id = ? AND user_id = ? FOR UPDATE', [eventId, userId]);
+      // What this request read must still hold, under lock: the old copy's
+      // version, the values the move freezes, the server link, and no move of
+      // it begun meanwhile. Locked in the sync's order: server copy, then row.
+      if (sourceObjectId) {
+        const [objects] = await connection.execute<RowDataPacket[]>('SELECT etag FROM calendar_remote_objects WHERE id = ? FOR UPDATE', [sourceObjectId]);
+        if (!objects.length || (objects[0].etag ?? null) !== (link!.object.etag ?? null)) return STALE;
+      }
+      const [[current]] = await connection.execute<(RowDataPacket & CalendarEvent)[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ? FOR UPDATE', [eventId, userId]);
       if (!current) throw notFound('TASK_NOT_FOUND', 'Task not found');
-      const [links] = await connection.execute<RowDataPacket[]>(
-        `SELECT r.remote_object_id, o.etag FROM calendar_event_external_refs r LEFT JOIN calendar_remote_objects o ON o.id = r.remote_object_id
-         WHERE r.event_id = ? AND r.user_id = ? FOR UPDATE`, [eventId, userId]);
+      const [links] = await connection.execute<RowDataPacket[]>('SELECT remote_object_id FROM calendar_event_external_refs WHERE event_id = ? AND user_id = ? FOR UPDATE', [eventId, userId]);
       const [begun] = await connection.execute<RowDataPacket[]>("SELECT id FROM calendar_event_moves WHERE event_id = ? AND state = 'creating' FOR UPDATE", [eventId]);
-      const linked = links[0] ? { id: links[0].remote_object_id ?? null, etag: links[0].etag ?? null } : null;
-      const moved = (current.calendar_id || null) !== (event.calendar_id || null) || millis(current.updated_at) !== millis(event.updated_at) || begun.length > 0;
-      const relinked = (linked?.id ?? null) !== sourceObjectId || (link ? linked?.etag !== link.object.etag : links.length > 0);
-      if (moved || relinked) return STALE;
+      if (frozenView(current) !== frozenView(event) || begun.length > 0 || (links[0]?.remote_object_id ?? null) !== sourceObjectId || links.length > 1) return STALE;
       if (!target.remote && !sourceObjectId) {
         // Between UniHub lists: only the list changes.
         await connection.execute(
@@ -528,6 +593,40 @@ async function moveTask(userId: string, eventId: string, input: unknown): Promis
   return { event: event as TaskMoveResponse['event'], ...(outcome.pending ? { pending: outcome.pending } : {}), ...(outcome.sourceKept ? { source_kept: true as const } : {}) };
 }
 
+/**
+ * DELETE /api/calendar/events/:id/move (contracts/tasks.ts): ends a move
+ * whose new copy is not confirmed. The item stays where it is and is free at
+ * once; the journal row keeps the copy's UID as a cleanup intent, so a copy
+ * the server stored after all is removed and never imported. A move that is
+ * only removing an old copy is not cancelled: the item is in its new list.
+ * Not a destructive action (F13): nothing of the person's is removed, only
+ * UniHub's own unconfirmed copy.
+ */
+async function cancelMove(userId: string, eventId: string): Promise<TaskMoveCancelResponse> {
+  if (!ID_PATTERN.test(eventId)) throw notFound('TASK_NOT_FOUND', 'Task not found');
+  const [[owned]] = await db.execute<RowDataPacket[]>('SELECT id FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+  if (!owned) throw notFound('TASK_NOT_FOUND', 'Task not found');
+  const open = await openMove(userId, eventId);
+  let cancelled = false;
+  if (open) {
+    // An attempt going on finishes first (bounded by the request timeout), so its outcome is known.
+    await inProgress.get(open.id)?.catch(() => undefined);
+    cancelled = await withTransaction(async connection => {
+      const locked = await loadMove(connection, open.id, true);
+      if (locked?.state !== 'creating') return false;
+      if (!locked.target_href) await connection.execute('DELETE FROM calendar_event_moves WHERE id = ?', [open.id]);
+      else await connection.execute("UPDATE calendar_event_moves SET state = 'cancelled', event_id = NULL, attempts = 0, last_error = NULL, next_attempt_at = UTC_TIMESTAMP() WHERE id = ?", [open.id]);
+      return true;
+    });
+    if (cancelled) {
+      publishCalendarChanged(userId, null, 'local');
+      void runMove(open.id).catch(error => log.warn('calendar', 'Cleaning up a cancelled move failed', { move: open.id, reason: describe(error) }));
+    }
+  }
+  const event = await getCalendarEventWithSubtasks(userId, eventId);
+  return { event: event as TaskMoveCancelResponse['event'], cancelled };
+}
+
 /** Refuses an edit or deletion while the item's new copy is being created: it would be lost or come back. */
 async function assertNotMoving(userId: string, eventId: string) {
   if (await openMove(userId, eventId)) throw movePending();
@@ -536,11 +635,12 @@ async function assertNotMoving(userId: string, eventId: string) {
 export {
   moveEvent,
   moveTask,
+  cancelMove,
   assertNotMoving,
   resumeDueMoves,
   movedAwayObjects,
   lockMovedAway,
-  lockCreatingMove,
+  lockMoveOfCopy,
   commitMove,
 };
 export type { MoveOutcome };
