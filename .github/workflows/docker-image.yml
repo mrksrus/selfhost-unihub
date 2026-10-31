@@ -1016,13 +1016,21 @@ jobs:
           node-version: ${{ steps.node.outputs.version }}
 
       # Through the public API, which lists the artifacts of every attempt.
+      # Each part into a directory of its own name (download-artifact puts a
+      # single match straight into its path, which would hide its attempt).
       - name: Fetch the evidence parts of every attempt
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: unihub-release-evidence-*
-          path: evidence-parts
-          run-id: ${{ github.run_id }}
-          github-token: ${{ github.token }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir evidence-parts
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.name | startswith("unihub-release-evidence-")) | select(.expired | not) | "\(.id) \(.name)"' |
+          while read -r id name; do
+            echo "Fetching $name"
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "$RUNNER_TEMP/part.zip"
+            mkdir "evidence-parts/$name"
+            unzip -q "$RUNNER_TEMP/part.zip" -d "evidence-parts/$name"
+          done
 
       # The bundle an earlier attempt kept, whose parts were deleted then. None
       # in a first attempt; without it a re-run's parts must be complete alone.

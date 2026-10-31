@@ -40,9 +40,13 @@ for (const [part, entry] of Object.entries(previous?.parts ?? {})) {
   const kept = (entry.files ?? []).filter(file => fs.existsSync(path.join(previousDir!, file)));
   if (entry.attempt && kept.length) offer(part, { attempt: entry.attempt, dir: previousDir!, files: kept });
 }
-for (const name of fs.existsSync(partsDir) ? fs.readdirSync(partsDir) : []) {
-  const match = /^unihub-release-evidence-(.+)-attempt(\d+)$/.exec(name);
-  if (match) offer(match[1], { attempt: Number(match[2]), dir: path.join(partsDir, name), files: files(path.join(partsDir, name)) });
+// Anything else in <parts> means the parts were not laid out per upload, so no
+// part's attempt can be trusted.
+const unexpected: string[] = [];
+for (const entry of fs.existsSync(partsDir) ? fs.readdirSync(partsDir, { withFileTypes: true }) : []) {
+  const match = /^unihub-release-evidence-(.+)-attempt(\d+)$/.exec(entry.name);
+  if (match && entry.isDirectory()) offer(match[1], { attempt: Number(match[2]), dir: path.join(partsDir, entry.name), files: files(path.join(partsDir, entry.name)) });
+  else unexpected.push(entry.name);
 }
 
 fs.mkdirSync(out, { recursive: true });
@@ -60,7 +64,8 @@ for (const [part, rule] of Object.entries(expected)) {
   else if (!entry.files.includes(rule.file)) entry.problem = `missing ${rule.file}`;
   else if (!rule.passed(readJson(path.join(latest.get(part)!.dir, rule.file)))) entry.problem = `${rule.file} does not record a pass`;
 }
-const problems = Object.entries(parts).filter(([, entry]) => entry.problem).map(([part, entry]) => `${part}: ${entry.problem}`);
+const problems = [...Object.entries(parts).filter(([, entry]) => entry.problem).map(([part, entry]) => `${part}: ${entry.problem}`),
+  ...unexpected.map(name => `${partsDir}: unexpected entry ${name} (each part must be a directory named after its upload)`)];
 const complete = problems.length === 0;
 fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify({ run: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT, complete, parts }, null, 2) + '\n');
 
