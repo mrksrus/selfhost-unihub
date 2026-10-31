@@ -4,7 +4,7 @@ import {
   type Announcements, type DragEndEvent, type DragStartEvent, type Modifier, type ScreenReaderInstructions, type UniqueIdentifier,
 } from '@dnd-kit/core';
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import { CSS, getEventCoordinates } from '@dnd-kit/utilities';
+import { CSS } from '@dnd-kit/utilities';
 import { GripVertical } from 'lucide-react';
 import { useMediaQuery } from '@/hooks/use-mobile';
 import { cn } from '@/lib/utils';
@@ -64,6 +64,32 @@ const INSTRUCTIONS: ScreenReaderInstructions = {
   draggable: 'Press Space to pick up, the arrow keys to move, Space to drop, Escape to cancel.',
 };
 
+/** The input a pointer drag started with, so only its own events are followed. */
+type DragInput = { kind: 'mouse' } | { kind: 'pointer'; id: number } | { kind: 'touch'; id: number };
+const isTouch = (event: Event): event is TouchEvent => typeof TouchEvent !== 'undefined' && event instanceof TouchEvent;
+const isPointer = (event: Event): event is PointerEvent => typeof PointerEvent !== 'undefined' && event instanceof PointerEvent;
+function inputOf(event: Event): DragInput | null {
+  if (isTouch(event)) { const touch = event.changedTouches[0]; return touch ? { kind: 'touch', id: touch.identifier } : null; }
+  if (isPointer(event)) return { kind: 'pointer', id: event.pointerId };
+  if (event instanceof MouseEvent) return { kind: 'mouse' };
+  return null;
+}
+/** Where the drag's input is in this event; null when the event is another input's (a second finger, another pointer). */
+function placeOf(event: Event, input: DragInput): { x: number; y: number } | null {
+  if (input.kind === 'touch') {
+    if (!isTouch(event)) return null;
+    // A touch that ends is listed in changedTouches only.
+    const touch = [...Array.from(event.changedTouches), ...Array.from(event.touches)].find(entry => entry.identifier === input.id);
+    return touch ? { x: touch.clientX, y: touch.clientY } : null;
+  }
+  if (input.kind === 'pointer') return isPointer(event) && event.pointerId === input.id ? { x: event.clientX, y: event.clientY } : null;
+  return event instanceof MouseEvent && !isTouch(event) ? { x: event.clientX, y: event.clientY } : null;
+}
+// The moves and the release of each kind of input; touchcancel and pointercancel end a drag that dnd-kit cancels anyway.
+const INPUT_EVENTS: Record<DragInput['kind'], readonly string[]> = {
+  mouse: ['mousemove', 'mouseup'], pointer: ['pointermove', 'pointerup'], touch: ['touchmove', 'touchend'],
+};
+
 // Rows move up and down only. The list is the only sortable context the drag
 // knows, so a row can never land in another list; a drop outside the list's
 // own bounds is cancelled instead (droppedOutside), as the nearest row of the
@@ -80,20 +106,24 @@ export function SortableList<T>({ items, getId, getName, label, onReorder, disab
   );
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
   const list = useRef<HTMLElement | null>(null);
-  // Where the pointer is during a pointer drag, in viewport coordinates: from
-  // the press that started it, then every move on the window. The dragged
-  // row's own box cannot tell (dnd-kit pins its x and scales it to the row it
-  // is over). A keyboard drag has no pointer and stays within the list anyway.
+  // Where the input that started a pointer drag is, in viewport coordinates:
+  // from the press that started it, through its moves on the window, to the
+  // release (captured before dnd-kit ends the drag, as the release may be the
+  // first event outside). Only that input counts: the same mouse, the same
+  // pointer id, or the same touch by its identifier. The dragged row's own
+  // box cannot tell (dnd-kit pins its x and scales it to the row it is over).
+  // A keyboard drag has no pointer and stays within the list anyway.
   const pointer = useRef<{ x: number; y: number } | null>(null);
   const stopTracking = useRef<() => void>(() => {});
   const trackPointer = ({ activatorEvent }: DragStartEvent) => {
     stopTracking.current();
-    pointer.current = activatorEvent ? getEventCoordinates(activatorEvent) : null;
-    if (!pointer.current) return;
-    const follow = (event: Event) => { pointer.current = getEventCoordinates(event) ?? pointer.current; };
-    const moves = ['pointermove', 'mousemove', 'touchmove'] as const;
-    for (const move of moves) window.addEventListener(move, follow, { capture: true, passive: true });
-    stopTracking.current = () => { for (const move of moves) window.removeEventListener(move, follow, { capture: true }); stopTracking.current = () => {}; };
+    const input = activatorEvent ? inputOf(activatorEvent) : null;
+    pointer.current = input && activatorEvent ? placeOf(activatorEvent, input) : null;
+    if (!input || !pointer.current) return;
+    const follow = (event: Event) => { pointer.current = placeOf(event, input) ?? pointer.current; };
+    const names = INPUT_EVENTS[input.kind];
+    for (const name of names) window.addEventListener(name, follow, { capture: true, passive: true });
+    stopTracking.current = () => { for (const name of names) window.removeEventListener(name, follow, { capture: true }); stopTracking.current = () => {}; };
   };
   useEffect(() => () => stopTracking.current(), []);
   /**

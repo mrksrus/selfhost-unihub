@@ -219,6 +219,22 @@ test('[27-01] a task moved to another time goes back to its date order', { sessi
   }
 });
 
+/**
+ * A mouse drag by a handle that proves it picked the row up (the announcement)
+ * before it moves on, so the drop's announcement afterwards is this drag's own,
+ * not an earlier drag's that the live region still holds.
+ */
+async function announcedMouseDrag(browser: { mouse: { move: (x: number, y: number) => Promise<void>; down: () => Promise<void>; up: () => Promise<void> } }, screen: Screen, name: string, from: { x: number; y: number }, to: { x: number; y: number }, steps = 12) {
+  await browser.mouse.move(from.x, from.y);
+  await browser.mouse.down();
+  await browser.mouse.move(from.x, from.y + 8);
+  await expect(screen.getByRole('status').filter({ hasText: `Picked up ${name},` })).toHaveCount(1);
+  for (let step = 1; step <= steps; step++) {
+    await browser.mouse.move(Math.round(from.x + (to.x - from.x) * step / steps), Math.round(from.y + (to.y - from.y) * step / steps));
+  }
+  await browser.mouse.up();
+}
+
 // D31: a drag stays within its section. A task dropped on another section (or
 // outside its own list) goes back to its place, nothing is stored; a drop at
 // the bottom edge of its own section still places it last. With the real
@@ -262,7 +278,7 @@ test('[27-02] a task dropped on another section goes back to its place; at its o
     const into = await centreOf(screen.getByRole('region', 'Later').getByRole('heading', 'Later'));
     await todayRow(`${prefix} Today 1`).hover();
     const from = await centreOf(handle(screen, `${prefix} Today 1`));
-    await mouseDrag(browser, from, { x: from.x, y: into.y });
+    await announcedMouseDrag(browser, screen, `${prefix} Today 1`, from, { x: from.x, y: into.y });
     await expect(screen.getByRole('status').filter({ hasText: `Dropped outside Today. ${prefix} Today 1 is back at position` })).toHaveCount(1);
     await new Promise(resolve => setTimeout(resolve, 1500));
     expect(await sectionOrder('Today')).toEqual([`${prefix} Today 1`, `${prefix} Today 2`]);
@@ -275,7 +291,7 @@ test('[27-02] a task dropped on another section goes back to its place; at its o
     if (await targetOf(browser) === 'desktop') {
       await todayRow(`${prefix} Today 1`).hover();
       const grip = await centreOf(handle(screen, `${prefix} Today 1`));
-      await mouseDrag(browser, grip, { x: box.x + box.width + 150, y: grip.y + 60 });
+      await announcedMouseDrag(browser, screen, `${prefix} Today 1`, grip, { x: box.x + box.width + 150, y: grip.y + 60 });
       await expect(screen.getByRole('status').filter({ hasText: `Dropped outside Today. ${prefix} Today 1 is back at position` })).toHaveCount(1);
       await new Promise(resolve => setTimeout(resolve, 1500));
       expect(await sectionOrder('Today')).toEqual([`${prefix} Today 1`, `${prefix} Today 2`]);
