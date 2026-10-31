@@ -1409,6 +1409,56 @@ test('moving a task between lists and calendars: one copy, the same row, through
     await sync();
   });
 
+  await t.test('a restore that points the account at another server ends the move although the calendar has an absolute address', async () => {
+    // The collection address is absolute (unchanged by the account's server); the move's own address is not.
+    await pool.execute('UPDATE calendar_calendars SET external_id = ? WHERE id = ?', [`${BASE}${WORK}`, work]);
+    try {
+      const archive = await archiveCalendar();
+      await pointAccountAt(homeUrl.replace(new URL(homeUrl).origin, OTHER_ORIGIN));
+      const task = await localTask('Moved under an absolute collection');
+      await writesWithOrigins(async origins => {
+        faults.put = () => 'lose';
+        await owner('POST', `/calendar/events/${task}/move`, { calendar_id: work }, 202);
+        faults.put = undefined;
+        assert.deepEqual(origins, [['put', OTHER_ORIGIN]]);
+        assert.ok(!(await journal(task))[0].target_href.startsWith('http'), 'the move keeps an address relative to the server');
+        await restoreCalendar(archive, 'replace');
+        assert.equal((await journal(task)).length, 0, 'the move ended with the restore');
+        await resume();
+        assert.deepEqual(origins, [['put', OTHER_ORIGIN]], 'nothing written at the restored server');
+      });
+      assert.deepEqual((await rowsTitled('Moved under an absolute collection')).map(row => [row.id, row.calendar_id]), [[task, inbox]]);
+    } finally {
+      await pointAccountAt(homeUrl);
+      await pool.execute('UPDATE calendar_calendars SET external_id = ? WHERE id = ?', [WORK, work]);
+    }
+  });
+
+  await t.test('a restore that changes the login a move writes with (an address standing in for a username) ends the move', async () => {
+    const [[account]] = await pool.query<RowDataPacket[]>('SELECT username, account_email FROM calendar_accounts WHERE id = ?', [accountId]);
+    // Without a username the account logs in with its address.
+    await pool.execute("UPDATE calendar_accounts SET username = NULL, account_email = 'previous@example.test' WHERE id = ?", [accountId]);
+    const logins: (string | null)[] = []; const put = caldav.putCalendarObject;
+    caldav.putCalendarObject = (opts: FixtureValue) => { logins.push(opts.username ?? null); return put(opts); };
+    try {
+      const archive = await archiveCalendar();
+      await pool.execute("UPDATE calendar_accounts SET account_email = 'current@example.test' WHERE id = ?", [accountId]);
+      const task = await localTask('Moved with the current login');
+      faults.put = () => 'lose';
+      await owner('POST', `/calendar/events/${task}/move`, { calendar_id: work }, 202);
+      faults.put = undefined;
+      assert.deepEqual(logins, ['current@example.test']);
+      await restoreCalendar(archive, 'replace');
+      assert.equal((await journal(task)).length, 0, 'the move ended with the restore');
+      await resume();
+      assert.deepEqual(logins, ['current@example.test'], 'nothing written with the restored login');
+      assert.deepEqual((await rowsTitled('Moved with the current login')).map(row => [row.id, row.calendar_id]), [[task, inbox]]);
+    } finally {
+      caldav.putCalendarObject = put;
+      await pool.execute('UPDATE calendar_accounts SET username = ?, account_email = ? WHERE id = ?', [account.username, account.account_email, accountId]);
+    }
+  });
+
   await t.test('a move holding the task when a calendar restore begins writes nothing', async () => {
     const task = await localTask('Moved as a restore begins');
     // The move holds the task's lock and stops before it is admitted.

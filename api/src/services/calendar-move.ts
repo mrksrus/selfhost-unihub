@@ -633,31 +633,48 @@ async function assertNotMoving(userId: string, eventId: string) {
 // --- A restore ------------------------------------------------------------------
 
 /**
- * Where a move's writes to each of the person's calendars go: the server
- * collection (its address resolved against the account's server, as
- * calendar-sync.ts does for every request, and as a move's fixed address is),
- * the kind of account and the login it is written with. A UniHub list goes
- * nowhere.
+ * Where and as whom each of the person's moves writes, derived as its
+ * requests derive it: its new copy's fixed address and its old copy's stored
+ * one, each resolved against its account's server (calendarSync.objectUrl,
+ * so an absolute collection address cannot hide a changed server), with the
+ * kind of account and the login name (calendarSync.requestIdentities, the
+ * rule resolveLogin uses). A UniHub list is written nowhere.
  */
 async function moveDestinations(executor: SqlExecutor, userId: string) {
   const [rows] = await executor.execute<RowDataPacket[]>(
-    `SELECT c.id, c.external_id, a.provider, a.base_url, a.discovery_url, a.username FROM calendar_calendars c
-     JOIN calendar_accounts a ON a.id = c.account_id AND a.user_id = c.user_id WHERE c.user_id = ?`, [userId]);
-  const where = (row: RowDataPacket) => {
-    if (!calendarSync.REMOTE_PROVIDERS.has(row.provider)) return null;
-    try {
-      return calendarSync.calendarUrl({ base_url: row.base_url } as SyncAccount, { external_id: row.external_id } as SyncCalendar);
-    } catch { return `unresolved ${row.base_url} ${row.external_id}`; }
+    `SELECT m.id, m.target_href, tc.account_id AS target_account_id, tc.external_id AS target_collection, sc.account_id AS source_account_id, o.href AS source_href
+     FROM calendar_event_moves m
+     LEFT JOIN calendar_calendars tc ON tc.id = m.target_calendar_id AND tc.user_id = m.user_id
+     LEFT JOIN calendar_calendars sc ON sc.id = m.source_calendar_id AND sc.user_id = m.user_id
+     LEFT JOIN calendar_remote_objects o ON o.id = m.source_object_id AND o.user_id = m.user_id
+     WHERE m.user_id = ?`, [userId]);
+  const accounts = await calendarSync.requestIdentities(executor, userId,
+    [...new Set(rows.flatMap(row => [row.target_account_id, row.source_account_id]).filter(Boolean).map(String))]);
+  const resolved = (base: string | null, href: string | null) => {
+    if (!href) return null;
+    try { return calendarSync.objectUrl({ base_url: base } as SyncAccount, { href }); } catch { return `unresolved ${base} ${href}`; }
   };
-  return new Map(rows.map(row => [String(row.id), JSON.stringify([row.provider, where(row), row.discovery_url ?? null, row.username ?? null])]));
+  // The address written (or removed), and for the new copy the collection
+  // it is to be in: a calendar pointed at another collection is elsewhere too.
+  const side = (accountId: string | null, href: string | null, collection?: string | null) => {
+    const account = accountId ? accounts.get(String(accountId)) : null;
+    if (!account) return accountId ? 'gone' : null;
+    if (!calendarSync.REMOTE_PROVIDERS.has(account.provider)) return [account.provider];
+    return [account.provider, resolved(account.base_url, href) ?? `no address at ${account.base_url}`,
+      collection === undefined ? null : resolved(account.base_url, collection), account.login];
+  };
+  return new Map(rows.map(row => [String(row.id), JSON.stringify({
+    target: side(row.target_account_id, row.target_href, row.target_collection), source: side(row.source_account_id, row.source_href),
+  })]));
 }
 
 /**
  * At the start of a calendar restore's transaction, before it writes any
  * account or calendar: the person's moves are locked until it commits (a move
  * committing meanwhile is waited for, and its result is what the restore
- * finds; none starts), and where each calendar's writes go is noted, for
- * settleMovesForRestore to compare with what the restore leaves.
+ * finds; none starts), and where and as whom each move writes is noted
+ * (moveDestinations), for settleMovesForRestore to compare with what the
+ * restore leaves.
  */
 async function lockMovesForRestore(connection: SqlExecutor, userId: string) {
   await connection.execute('SELECT id FROM calendar_event_moves WHERE user_id = ? FOR UPDATE', [userId]);
@@ -670,11 +687,11 @@ async function lockMovesForRestore(connection: SqlExecutor, userId: string) {
  * - An item the restore wrote over is as the archive has it, so a move still
  *   creating its new copy must not go on with what it froze before (the copy
  *   would bring the overwritten fields back).
- * - A move one of whose calendars the restore pointed elsewhere (another
- *   server, collection, kind of account or login: an account's server among
- *   them, which every fixed address of a move is resolved against) would
- *   write its copy, or remove the old one, at the wrong place. It ends,
- *   whatever its state.
+ * - A move whose writes the restore pointed elsewhere (its new copy's or old
+ *   copy's address resolving to another server, the new calendar at another
+ *   collection, another kind of account or another login) would write its
+ *   copy, or remove the old one, at the wrong place or as someone else. It
+ *   ends, whatever its state.
  * Ending is the cancel's (cancelMove): nothing is deleted at any server, and
  * a copy a server took after all shows with its next sync, once, as its
  * calendar's own item; an old copy a move was removing is kept and shows the
@@ -692,7 +709,7 @@ async function settleMovesForRestore(connection: SqlExecutor, userId: string, { 
   const [rows] = await connection.execute<MoveRow[]>('SELECT * FROM calendar_event_moves WHERE user_id = ? FOR UPDATE', [userId]);
   let ended = 0;
   for (const move of rows) {
-    const relocated = [move.source_calendar_id, move.target_calendar_id].some(id => !!id && before.destinations.get(id) !== destinations.get(id));
+    const relocated = before.destinations.get(move.id) !== destinations.get(move.id);
     const overwritten = !!move.event_id && overwrittenEventIds.has(move.event_id);
     if (!relocated && !(overwritten && move.state === 'creating')) continue;
     await connection.execute('DELETE FROM calendar_event_moves WHERE id = ?', [move.id]);

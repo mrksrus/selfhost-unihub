@@ -77,10 +77,14 @@ only removing an old copy had already moved the task: the restore matches it
 where it now is, so the removal goes on, and a row an older archive brings
 back in the old calendar goes with the removed copy. A move whose calendar
 (old or new) the restore points elsewhere ends without deleting anything,
-whatever its state: the restore compares where each calendar's writes go
-before and after it writes accounts and calendars (the kind of account, the
-collection's address resolved against the account's server, the discovery
-address and the login), so an account restored to another server counts too.
+whatever its state: the restore compares where and as whom each move writes,
+before and after it writes accounts and calendars, derived as the move's
+requests derive it: the new copy's address and the old copy's address, each
+resolved against its account's server (so an absolute collection address does
+not hide a changed server), the collection the new copy is to be in, the kind
+of account, and the login name as the requests choose it (a linked mail
+account's login, else the username, else the account's address; never the
+password). An account restored to another server or login counts too.
 A change holding a task when a calendar restore begins
 writes nothing more (`409 RESTORE_IN_PROGRESS`).
 
