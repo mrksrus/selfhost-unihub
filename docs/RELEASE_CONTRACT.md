@@ -58,9 +58,10 @@ timers, each alone, and every other file) start together.
 `unihub-release-evidence` (with a `manifest.json` naming each part's attempt
 and files), also after a failure, and checks that every part is present and
 records a pass (`scripts/collect-release-evidence.mts`). Each part is
-uploaded per attempt, so re-running failed jobs replaces the parts they re-ran
-and keeps the others; the parts are kept up to 7 days and deleted once the
-complete evidence is kept. `publish` needs every test job and that check, and
+uploaded per attempt, so re-running jobs replaces the parts they re-ran and
+keeps the others, from their uploads or from the bundle an earlier attempt
+kept; the parts are kept up to 7 days and deleted once the complete evidence
+is kept. `publish` needs every test job and that check, and
 re-tags the tested digest without building (a carbon copy, so every tag names
 that digest, as `promote` does for the release tags). `promote`, `publish` and
 `prune-candidates.yml` share the `ghcr-tags` concurrency group, so they never

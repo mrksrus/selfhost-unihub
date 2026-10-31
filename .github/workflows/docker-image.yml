@@ -986,9 +986,10 @@ jobs:
   # Gathers the evidence of the test jobs into one artifact, also after a
   # failure, and checks that it is complete; publish needs that check. Each
   # part is uploaded per attempt (unihub-release-evidence-<part>-attempt<n>):
-  # a re-run of failed jobs replaces the parts it re-ran and keeps the rest
-  # from earlier attempts (scripts/collect-release-evidence.mts). The parts
-  # are deleted only once the complete evidence is kept.
+  # a re-run replaces the parts it re-ran and keeps the rest from earlier
+  # attempts, as parts or, once deleted, from the bundle an earlier attempt
+  # kept (scripts/collect-release-evidence.mts). The parts are deleted only
+  # once the complete evidence is kept.
   evidence:
     needs: [build, container, android-16-servers]
     if: ${{ always() && needs.build.result == 'success' }}
@@ -1023,9 +1024,20 @@ jobs:
           run-id: ${{ github.run_id }}
           github-token: ${{ github.token }}
 
+      # The bundle an earlier attempt kept, whose parts were deleted then. None
+      # in a first attempt; without it a re-run's parts must be complete alone.
+      - name: Fetch the evidence an earlier attempt kept
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unihub-release-evidence
+          path: evidence-previous
+          run-id: ${{ github.run_id }}
+          github-token: ${{ github.token }}
+
       - name: Gather and check the release evidence
         id: collect
-        run: node scripts/collect-release-evidence.mts --parts evidence-parts --out release-evidence
+        run: node scripts/collect-release-evidence.mts --parts evidence-parts --previous evidence-previous --out release-evidence
 
       # Replaces the bundle an earlier attempt kept.
       - name: Keep the release evidence
