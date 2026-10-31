@@ -41,7 +41,10 @@ database upgrade; back up first (see
   state, subtasks, linked email and place in your order. When the calendar
   server has not confirmed yet, it says "Moving…" and UniHub finishes in the
   background; until then the task stays where it was, and the move can be
-  cancelled. If the item changed on the server meanwhile, the move is refused,
+  cancelled. Restoring a backup with Replace that brings the task back as it
+  was ends its unfinished move as a cancel would, and changes to calendar
+  items wait while a calendar restore runs. If the item changed on the server
+  meanwhile, the move is refused,
   the item is refreshed, and moving it again works. Recurring events still
   cannot be moved.
 - **Default task list and calendar.** Settings → General → "New tasks go to"
