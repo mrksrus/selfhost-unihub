@@ -201,11 +201,6 @@ function minutesLeftToday(timeZone) {
   return 24 * 60 - (hour * 60 + minute);
 }
 
-// Remove when fixed; the test then also checks the place.
-const SECTION_DROP_BUG = 'app bug (0.27.0 stream C, 8e189d2): a task dropped outside its section is not put back but moved to the '
-  + 'end of its own section and stored there (SortableList has one DndContext per section with closestCenter, so the nearest '
-  + 'row of the section, its last, becomes the drop target); D31 says it goes back to its place';
-
 test('[27-02] a Today task dropped in Later goes back to its place in Today', { timeout: 900_000 }, async t => {
   const { device, page } = await openApp();
   const timeZone = await page.evaluate(async () => (await (await fetch('/api/auth/me')).json()).user?.timezone ?? null);
@@ -241,11 +236,6 @@ test('[27-02] a Today task dropped in Later goes back to its place in Today', { 
       assert.deepEqual([...shownToday].sort(), today, 'both tasks are still in Today');
       const { event } = ok(await pageApi(page, 'GET', `/api/calendar/events/${tasks[0].id}`), 'read the dragged task');
       assert.equal(new Date(event.start_time).getTime(), new Date(tasks[0].start_time).getTime(), 'its date is unchanged');
-      if (SECTION_DROP_BUG) {
-        console.log(`Today after the drop: ${shownToday.join(', ')}`);
-        t.skip(SECTION_DROP_BUG);
-        return;
-      }
       assert.deepEqual(shownToday, today, 'Today keeps its tasks in their order');
       assert.deepEqual(await storedOrder(page, tasks), storedBefore, 'the server order is unchanged');
     });
