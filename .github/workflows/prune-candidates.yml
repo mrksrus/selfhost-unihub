@@ -94,7 +94,7 @@ jobs:
           versions="/users/$OWNER/packages/container/$PACKAGE/versions"
           cutoff="$(date -u -d "$MIN_AGE_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ)"
           gh api --paginate "$versions?per_page=100" \
-            --jq '.[] | {id, name, updated_at, tags: .metadata.container.tags}' | jq -s . > versions.json
+            --jq '.[] | {id, name, created_at, updated_at, tags: .metadata.container.tags}' | jq -s . > versions.json
           echo "Versions: $(jq length versions.json)"
 
           # Every image a release tag names, and every image inside it.
@@ -123,9 +123,9 @@ jobs:
 
           jq -r --arg cutoff "$cutoff" '.[] | select((.tags | length) > 0)
             | select(all(.tags[]; startswith("candidate-"))) | select(.updated_at < $cutoff)
-            | "\(.id) \(.name)"' versions.json > old.txt
+            | "\(.id) \(.name) \(.created_at) \(.updated_at)"' versions.json > old.txt
           echo "Candidate-only images older than $cutoff: $(wc -l < old.txt)"
-          while read -r id digest; do
+          while read -r id digest created updated; do
             check_releasing
             if [ -n "$releasing" ]; then
               echo "A release run started ($releasing); stopping before $id."
@@ -142,10 +142,10 @@ jobs:
               reason='a release names it'
             fi
             if [ -n "$reason" ]; then
-              echo "keep   $id $digest ($tags): $reason"
+              echo "keep   $id $digest created $created updated $updated ($tags): $reason"
               continue
             fi
-            echo "delete $id $digest ($tags)"
+            echo "delete $id $digest created $created updated $updated ($tags)"
             if [ "$DRY_RUN" != true ]; then
               gh api -X DELETE "$versions/$id"
             fi
