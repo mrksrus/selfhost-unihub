@@ -66,6 +66,20 @@ settings section the calendar references `default_task_list_id` and
 account map). The move journal `calendar_event_moves` is installation state
 and never archived. Older archives restore without an order.
 
+A calendar restore settles the destination's unfinished moves of tasks in
+its own transaction, which holds the person's moves from its start (none
+commits or starts meanwhile). A move whose task the restore writes over
+(Replace) while its new copy is still being created ends as a cancel does:
+the task is as archived, nothing is deleted at any server, and a copy a
+server took after all shows once with the next sync, as that calendar's own
+item. Keep existing and Keep both leave the task, and its move goes on. A move
+only removing an old copy had already moved the task: the restore matches it
+where it now is, so the removal goes on, and a row an older archive brings
+back in the old calendar goes with the removed copy. A move whose calendar
+the restore points at another account or server collection ends without
+deleting anything. A change holding a task when a calendar restore begins
+writes nothing more (`409 RESTORE_IN_PROGRESS`).
+
 A synced task's order is removed only on evidence that the provider deleted
 it: a verified deletion of its server object. An object or occurrence that
 leaves the sync window (the expansion is bounded) keeps its order and gets

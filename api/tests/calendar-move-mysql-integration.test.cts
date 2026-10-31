@@ -1092,7 +1092,7 @@ test('moving a task between lists and calendars: one copy, the same row, through
 
   await t.test('a deletion that waited for the task is refused when a calendar restore began meanwhile', async () => {
     const task = await serverTask('Deleted during restore');
-    // An edit holds the task, after its server write.
+    // An edit holds the task, after its server write (applied to the row too).
     const gate = hold(); const original = calendarSync.pushEventUpdate; let once = true;
     calendarSync.pushEventUpdate = async (opts: FixtureValue) => {
       const answer = await original(opts);
@@ -1101,13 +1101,16 @@ test('moving a task between lists and calendars: one copy, the same row, through
     };
     const restoreId = crypto.randomUUID();
     try {
-      const editing = owner('PUT', `/calendar/events/${task}`, { title: 'Edited before restore' });
+      const editing = owner('PUT', `/calendar/events/${task}`, { title: 'Edited before restore' }, null);
       await gate.at;
       const deleting = owner('DELETE', `/calendar/events/${task}`, undefined, null);
       await lockWaiters(1);
       await pool.execute("INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', ?)", [restoreId, ids.owner, JSON.stringify(['calendar'])]);
       gate.release();
-      await editing;
+      // Its last local write is refused once the restore has begun (the
+      // server copy, and the row from it, already hold the new title).
+      const edited = await editing;
+      assert.deepEqual([edited.status, edited.body.code], [409, 'RESTORE_IN_PROGRESS']);
       const deleted = await deleting;
       assert.deepEqual([deleted.status, deleted.body.code], [409, 'RESTORE_IN_PROGRESS']);
     } finally {
@@ -1244,6 +1247,125 @@ test('moving a task between lists and calendars: one copy, the same row, through
       await assertOnce(title, task, privateNow);
       assert.equal(copiesOf('Older applied fields').length, 0);
     }
+  });
+
+  // A calendar restore through the real restore service (an empty archive
+  // of calendar data the test just exported, so nothing else changes).
+  const archiveCalendar = () => runtime('services/backup-export').buildBackupForUser(ids.owner, { sections: ['calendar'] });
+  async function restoreCalendar(archive: FixtureValue, conflictMode: 'replace' | 'keep_existing' | 'keep_both') {
+    const result = await runtime('services/backup-import').importBackupForUser(ids.owner, archive, { mode: 'apply', sections: ['calendar'], conflict_mode: conflictMode, startAccountSync: () => {} });
+    assert.equal(result.valid, true, JSON.stringify(result.errors));
+    // The restored account row is the archived one: the test's server again.
+    await pool.execute("UPDATE calendar_accounts SET is_active = TRUE, sync_status = 'ok' WHERE id = ?", [accountId]);
+    return result;
+  }
+
+  await t.test('a Replace restore ends a move it overtakes: the task is as archived, nothing is deleted, a copy that arrived shows once', async () => {
+    for (const fault of ['lose', 'store-then-lose'] as const) {
+      const archived = `Archived title ${fault}`;
+      const renamed = `Renamed before restore ${fault}`;
+      const task = await localTask(archived);
+      const before = await kept(task);
+      const archive = await archiveCalendar();
+      await owner('PUT', `/calendar/events/${task}`, { title: renamed });
+      faults.put = () => fault;
+      await owner('POST', `/calendar/events/${task}/move`, { calendar_id: work }, 202);
+      faults.put = undefined;
+      assert.equal((await journal(task))[0].state, 'creating');
+      await restoreCalendar(archive, 'replace');
+      assert.equal((await journal(task)).length, 0, 'the move ended with the restore');
+      assert.equal((await owner('GET', `/calendar/events/${task}`)).event.move_pending, null);
+      // Nothing goes on: no write to a server, and the archived task stays where it was.
+      remote.writes.length = 0;
+      await resume();
+      await sync();
+      assert.deepEqual(remote.writes.filter(([kind]) => kind !== 'get'), []);
+      assert.deepEqual((await rowsTitled(archived)).map(row => [row.id, row.calendar_id]), [[task, inbox]]);
+      assert.deepEqual(await kept(task), before);
+      // A copy the server took after all is Work's own event, once; nothing deleted it.
+      const late = await rowsTitled(renamed);
+      if (fault === 'store-then-lose') {
+        assert.deepEqual([late.length, late[0]?.calendar_id, late[0]?.id !== task, copiesOf(renamed).length], [1, work, true, 1]);
+        await sync();
+        assert.equal((await rowsTitled(renamed)).length, 1);
+        remote.objects.delete(copiesOf(renamed)[0]); remote.version += 1;
+        await sync();
+      } else {
+        assert.deepEqual([late.length, copiesOf(renamed).length], [0, 0]);
+      }
+    }
+  });
+
+  await t.test('Keep existing and Keep both restores leave the task and its move: the move finishes with what it froze', async () => {
+    for (const mode of ['keep_existing', 'keep_both'] as const) {
+      const archived = `Archived ${mode}`;
+      const current = `Destination ${mode}`;
+      const task = await localTask(archived);
+      const archive = await archiveCalendar();
+      await owner('PUT', `/calendar/events/${task}`, { title: current });
+      faults.put = () => 'lose';
+      await owner('POST', `/calendar/events/${task}/move`, { calendar_id: work }, 202);
+      faults.put = undefined;
+      await restoreCalendar(archive, mode);
+      assert.equal((await journal(task))[0]?.state, 'creating');
+      await resume();
+      await assertOnce(current, task, work);
+      assert.equal((await journal(task)).length, 0);
+      // Keep both adds the archived task beside it: a row of its own, in a restored list, with no move.
+      const copies = await rowsTitled(archived);
+      if (mode === 'keep_both') {
+        assert.deepEqual([copies.length, copies[0]?.id !== task, ![inbox, work].includes(copies[0]?.calendar_id), (await journal(copies[0]?.id)).length], [1, true, true, 0]);
+      } else assert.deepEqual(copies, []);
+    }
+  });
+
+  await t.test('a Replace restore and a move only removing an old copy: the old copy still goes, and the task stays once, where the move took it', async () => {
+    for (const archivedWhere of ['after the move', 'before the move']) {
+      const title = `Old copy ${archivedWhere}`;
+      const task = await serverTask(title);
+      const before = await kept(task);
+      const [source] = copiesOf(title);
+      const early = archivedWhere === 'before the move' ? await archiveCalendar() : null;
+      faults.remove = () => 'fail';
+      await owner('POST', `/calendar/events/${task}/move`, { calendar_id: errands }, 202);
+      faults.remove = undefined;
+      assert.equal((await journal(task))[0].state, 'removing');
+      await restoreCalendar(early ?? await archiveCalendar(), 'replace');
+      // Written over where the move took it (after), or restored as a
+      // separate row in Work linked to the old copy (before): the move goes on.
+      assert.equal((await journal(task))[0]?.state, 'removing');
+      await resume();
+      await sync(); await expandAll();
+      assert.equal(remote.objects.has(source), false);
+      // The row the archive brought back for the removed copy goes with it: no second task.
+      await assertOnce(title, task, errands, { copies: 0 });
+      assert.deepEqual(await kept(task), before);
+      assert.equal((await journal(task)).length, 0);
+    }
+  });
+
+  await t.test('a move holding the task when a calendar restore begins writes nothing', async () => {
+    const task = await localTask('Moved as a restore begins');
+    // The move holds the task's lock and stops before it is admitted.
+    gates.timeZone = hold();
+    const gate = gates.timeZone;
+    const restoreId = crypto.randomUUID();
+    remote.writes.length = 0;
+    try {
+      const moving = owner('POST', `/calendar/events/${task}/move`, { calendar_id: work }, null);
+      await gate.at;
+      await pool.execute("INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', ?)", [restoreId, ids.owner, JSON.stringify(['calendar'])]);
+      gate.release();
+      const answer = await moving;
+      assert.deepEqual([answer.status, answer.body.code], [409, 'RESTORE_IN_PROGRESS']);
+      assert.deepEqual(remote.writes, []);
+      assert.equal((await journal(task)).length, 0);
+    } finally {
+      gate.release();
+      await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restoreId]);
+    }
+    await owner('POST', `/calendar/events/${task}/move`, { calendar_id: work });
+    await assertOnce('Moved as a restore begins', task, work);
   });
 
   // Last: on a build whose locks share the main pool, this one stalls the API.

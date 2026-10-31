@@ -630,7 +630,56 @@ async function assertNotMoving(userId: string, eventId: string) {
   if (await openMove(userId, eventId)) throw movePending();
 }
 
+// --- A restore ------------------------------------------------------------------
+
+/**
+ * At the start of a calendar restore's transaction: the person's moves are
+ * locked until it commits. A move committing meanwhile is waited for (and
+ * its result is what the restore finds), and none starts.
+ */
+async function lockMovesForRestore(connection: SqlExecutor, userId: string) {
+  await connection.execute('SELECT id FROM calendar_event_moves WHERE user_id = ? FOR UPDATE', [userId]);
+}
+
+/**
+ * In a restore's transaction, once its events are written: the moves the
+ * restore overtook end. An item the restore wrote over is as the archive has
+ * it, so a move still creating its new copy must not go on with what it froze
+ * before (the copy would bring the overwritten fields back). A move whose
+ * calendar the restore pointed at another account or server collection would
+ * write to the wrong place. Ending is the cancel's (cancelMove): nothing is
+ * deleted at any server, and a copy a server took after all shows with its
+ * next sync, once, as its calendar's own item.
+ *
+ * A move only removing an old copy had already moved the item in UniHub. A
+ * restore matches an item in the calendar it is in, so one it wrote over is
+ * where the move took it, as the archive has it, and the old copy is still
+ * removed; an archive from before the move restores a separate row in the old
+ * calendar, linked to the old copy, which is gone with that removal. Only where
+ * the restore re-pointed a calendar of the move does the removal end: the old
+ * copy is kept and shows with the next sync as its calendar's own item.
+ * Returns how many moves ended.
+ */
+async function settleMovesForRestore(connection: SqlExecutor, userId: string, { overwrittenEventIds, relocatedCalendarIds }: { overwrittenEventIds: ReadonlySet<string>; relocatedCalendarIds: ReadonlySet<string> }) {
+  const [rows] = await connection.execute<MoveRow[]>('SELECT * FROM calendar_event_moves WHERE user_id = ? FOR UPDATE', [userId]);
+  let ended = 0;
+  for (const move of rows) {
+    const relocated = [move.source_calendar_id, move.target_calendar_id].some(id => !!id && relocatedCalendarIds.has(id));
+    const overwritten = !!move.event_id && overwrittenEventIds.has(move.event_id);
+    if (!relocated && !(overwritten && move.state === 'creating')) continue;
+    await connection.execute('DELETE FROM calendar_event_moves WHERE id = ?', [move.id]);
+    if (move.state === 'removing' && move.source_object_id) {
+      await connection.execute('UPDATE calendar_remote_objects SET etag = NULL WHERE id = ? AND user_id = ?', [move.source_object_id, userId]);
+      await connection.execute('UPDATE calendar_calendars SET remote_ctag = NULL WHERE id = ? AND user_id = ?', [move.source_calendar_id, userId]);
+    }
+    ended += 1;
+  }
+  return ended;
+}
+
 export {
+  lockMovesForRestore,
+  settleMovesForRestore,
   moveEvent,
   moveTask,
   cancelMove,
