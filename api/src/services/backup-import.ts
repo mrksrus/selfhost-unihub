@@ -16,7 +16,7 @@ import { pauseMailRestore, restoreMailEngineEvidence } from './backup-mail-engin
 import { isModuleEnabled } from './module-settings';
 import { SETTINGS, referenceKeys, restorableValue } from './settings';
 import { normalizeSignature } from './mail-signature';
-import { copyKey, copyNumber, itemKey, keyBase } from './task-order';
+import { copyKey, copyNumber, isOrderKey, itemKey, keyBase } from './task-order';
 import {
   isFileRangeSource,
   normalizeMysqlDateTime,
@@ -84,34 +84,40 @@ function sourceEmailJson(value: unknown) {
 
 const SETTING_KEYS = new Set(Object.keys(SETTINGS.user));
 
-// The archived task's order key: its own, or its id before 0.27.
-const archivedOrderKey = (row: BackupRow) => typeof row.order_key === 'string' && row.order_key ? row.order_key : String(row.id);
+// The archived task's order key: its own, or its id before 0.27 (an id that
+// is no valid key, which UniHub never writes, leaves the new id as the key).
+function archivedOrderKey(row: BackupRow) {
+  if (typeof row.order_key === 'string' && row.order_key) return row.order_key;
+  return isOrderKey(String(row.id)) ? String(row.id) : null;
+}
 
 // Kept on the restored event unless it is the event's id anyway (services/task-order.ts).
 function restoredOrderKey(row: BackupRow, targetId: string) {
   const key = archivedOrderKey(row);
-  return key === targetId ? null : key;
+  return key === null || key === targetId ? null : key;
 }
 
-// Distinct tasks must not share a key, or they tie for good. A restored task
-// whose key another of the person's tasks already has (a copy kept beside its
-// original) gets the key's base with the next copy counter. Counters are
-// given in key order, so copies restored together keep the archive's order,
-// and each follows the tasks that held its base before.
+// Distinct tasks must not share a key, or they tie for good. When a restored
+// task's key is already another of the person's tasks' (a copy kept beside
+// its original), every restored task of that key base is renumbered: in the
+// archive's key order, after every key of that base the person already has.
+// So the restored group keeps its own order and follows the tasks there
+// before it.
 async function separateCopyKeys(connection: SqlExecutor, userId: string, written: readonly { row: BackupRow; targetId: string }[]) {
-  const shared: { key: string; targetId: string }[] = [];
+  const restored = new Set(written.map(entry => entry.targetId));
+  const groups = new Map<string, { key: string; targetId: string }[]>();
   for (const { row, targetId } of written) {
     const key = archivedOrderKey(row);
-    const [others] = await connection.execute<RowDataPacket[]>(
-      'SELECT id FROM calendar_events WHERE user_id = ? AND id <> ? AND (order_key = ? OR (order_key IS NULL AND id = ?)) LIMIT 1', [userId, targetId, key, key]);
-    if (others.length) shared.push({ key, targetId });
+    if (key !== null) groups.set(keyBase(key), [...(groups.get(keyBase(key)) || []), { key, targetId }]);
   }
-  const byBase = new Map<string, typeof shared>();
-  for (const entry of shared) byBase.set(keyBase(entry.key), [...(byBase.get(keyBase(entry.key)) || []), entry]);
-  for (const [base, entries] of byBase) {
-    const [rows] = await connection.execute<RowDataPacket[]>("SELECT order_key FROM calendar_events WHERE user_id = ? AND order_key LIKE ? ESCAPE '\\\\'",
-      [userId, `${base.replace(/[\\%_]/g, '\\$&')}~%`]);
-    let next = Math.max(0, ...rows.map(row => copyNumber(String(row.order_key), base))) + 1;
+  for (const [base, entries] of groups) {
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      "SELECT id, COALESCE(order_key, id) AS order_key FROM calendar_events WHERE user_id = ? AND (id = ? OR order_key = ? OR order_key LIKE ? ESCAPE '\\\\')",
+      [userId, base, base, `${base.replace(/[\\%_]/g, '\\$&')}~%`]);
+    const held = rows.filter(row => !restored.has(String(row.id))).map(row => String(row.order_key));
+    const keys = entries.map(entry => entry.key);
+    if (new Set(keys).size === keys.length && !keys.some(key => held.includes(key))) continue;
+    let next = Math.max(0, ...held.map(key => copyNumber(key, base))) + 1;
     entries.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : a.targetId < b.targetId ? -1 : 1));
     for (const entry of entries) {
       await connection.execute('UPDATE calendar_events SET order_key = ? WHERE id = ? AND user_id = ?', [copyKey(base, next), entry.targetId, userId]);

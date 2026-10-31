@@ -7,6 +7,7 @@ import { validateRestoreRows } from './backup-ownership';
 import { AUDIO_HEADER_BYTES, identifyRecordingAudio } from './recording-audio';
 import { archiveCarriesStep, validateBackupVersionFields } from './backup-format';
 import { countContactConflicts } from './backup-contacts';
+import { isOrderKey } from './task-order';
 import {
   ACCOUNT_ONLY_TABLES,
   CONTENT_FILE_POLICIES,
@@ -69,7 +70,7 @@ function carriedField(table: string, column: string, version: number) {
 // a synced one by its calendar, UID and recurrence id (never both).
 function validateTaskOrder(data: BackupPayload['data'] | undefined) {
   const keys = (Array.isArray(data?.calendar_events) ? data.calendar_events as Record<string, unknown>[] : [])
-    .some(event => event?.order_key != null && (typeof event.order_key !== 'string' || !event.order_key || event.order_key.length > 64));
+    .some(event => event?.order_key != null && (typeof event.order_key !== 'string' || !isOrderKey(event.order_key)));
   const keyErrors = keys ? ['Backup has an invalid task order key'] : [];
   const rows = data?.task_order;
   if (rows === undefined) return keyErrors;

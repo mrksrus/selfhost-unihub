@@ -47,3 +47,27 @@ test('copy keys share their base: the same rank as the original, after it, in co
   assert.notEqual(synced('https://dav.example.test\n/a/'), synced('https://dav.example.test\n/b/'));
   assert.equal(dateRank(row(base), { uid: 'shared@example.test', recurrenceId: '', source: 'x' }), dateRank(row(base), { uid: 'shared@example.test', recurrenceId: '', source: 'y' }));
 });
+
+test('copy counters keep numeric order past six digits; malformed or overlong keys are no keys', () => {
+  const { copyKey, copyNumber, isOrderKey } = require('../dist/src/services/task-order') as typeof import('../src/services/task-order');
+  const base = '7f0c2c4e-0000-4000-8000-000000000001';
+  const counters = [1, 9, 10, 99, 100, 999999, 1000000, 123456789];
+  const keys = counters.map(n => copyKey(base, n));
+  assert.deepEqual([...keys].sort(), keys);
+  assert.deepEqual(keys.map(key => copyNumber(key, base)), counters);
+  assert.ok(keys.every(isOrderKey) && keys.every(key => key.length <= 64));
+  for (const bad of ['a'.repeat(37), `${base}~`, `${base}~01`, `${base}~21`, `${base}~3010`, `${base}~11~11`, '']) assert.equal(isOrderKey(bad), false, bad);
+  assert.throws(() => copyKey(base, 1_000_000_000));
+});
+
+test('a calendar source is canonical: one CalDAV calendar however its address is spelled, a feed only as a hash', () => {
+  const { calendarSource } = require('../dist/src/services/task-order') as typeof import('../src/services/task-order');
+  const server = 'https://DAV.example.test/dav/calendars/person/';
+  const caldav = (href: string) => calendarSource({ provider: 'caldav', href, server });
+  assert.equal(caldav('/dav/calendars/person/work/'), caldav('https://dav.example.test/dav/calendars/person/work'));
+  assert.equal(caldav('work/'), caldav('/dav/calendars/person/work/'));
+  assert.notEqual(caldav('/dav/calendars/person/work/'), caldav('/dav/calendars/person/home/'));
+  const feed = (url: string) => calendarSource({ provider: 'ics', href: 'ics', server: 'https://feeds.example.test', feedUrl: url });
+  assert.notEqual(feed('https://feeds.example.test/a.ics?token=synthetic-a'), feed('https://feeds.example.test/b.ics?token=synthetic-b'));
+  assert.doesNotMatch(feed('https://feeds.example.test/a.ics?token=synthetic-a'), /token|feeds/);
+});

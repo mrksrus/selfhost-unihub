@@ -142,10 +142,13 @@ by hand is ordered by its date with a small tiebreak, and equal ranks by a
 key, both from the task's order key (its id when empty). A restored UniHub
 task gets a new id but keeps the archived task's key (an archive before 0.27:
 its archived id), so the order comes back exactly as saved, ties included,
-also on another installation. A restored task whose key another of the
-person's tasks already has (a copy kept beside its original) gets the key
-with a copy counter (`<key>~000001`, ...): it ranks like the original,
-follows it, and copies restored together keep the archive's order. A synced task's key comes from its UID and
+also on another installation. When a restored task's key is already
+another of the person's tasks' (a copy kept beside its original), every
+restored task of that key's base gets a copy counter (`<base>~11`, `~12`, ...
+`~210`: the digit count, then the digits), in the archive's order and after
+the keys already there: a copy ranks like its original and follows it. An
+order key is an id of at most 36 characters, optionally with such a counter;
+an archive with any other key is refused before anything is restored. A synced task's key comes from its UID and
 recurrence id. Every row must name a task
 (or a calendar) of the same archive. The settings section may carry
 `default_task_list_id` and `default_calendar_id`, which are remapped with the

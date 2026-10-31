@@ -5,6 +5,7 @@ import { db } from '../state';
 import { badRequest, conflict, notFound } from '../http/errors';
 import { withTransaction } from './transactions';
 import { publishCalendarChanged } from './realtime';
+import { decrypt } from '../security/encryption';
 
 // The one owner of the hand order of tasks (0.27, D31, D32).
 //
@@ -24,11 +25,14 @@ import { publishCalendarChanged } from './realtime';
 //
 // A key is `<base>` or `<base>~<suffix>`, and the date-rank offset comes
 // from the base alone. A restored copy kept beside its original gets the
-// base with a fixed-width counter (`~000001`, ...): it ranks exactly like the
-// original and follows it, and copies restored together keep the archive's
-// order (counters are given in key order). A synced task's suffix names its
-// calendar (server and href), so the same UID in two calendars is ordered
-// the same way on every device and after every restore.
+// base with a copy counter, written as its digit count and its digits
+// (`~11`, `~12`, ... `~210`), so plain string order is counter order: it
+// ranks exactly like the original and follows it, and copies restored
+// together keep the archive's order. A local base is at most 36 characters
+// (an id). A synced task's suffix names its calendar (the canonical CalDAV
+// address, or a hash of the subscription's feed address), so the same UID in
+// two calendars is ordered the same way on every device and after every
+// restore.
 //
 // Hand ranks are UniHub's own overlay (F2 `local`), kept in task_order and
 // never written to a calendar server (D32). A row is keyed by the item's
@@ -82,15 +86,40 @@ function millis(value: unknown) {
 }
 
 const KEY_SUFFIX = '~';
-const COPY_COUNTER_DIGITS = 6;
+const MAX_COPY = 999_999_999;
+/** A stored local order key: a base of up to 36 id characters, optionally with a copy counter. */
+const ORDER_KEY_PATTERN = /^[0-9A-Za-z-]{1,36}(~([1-9])([1-9][0-9]*))?$/;
+function isOrderKey(value: string) {
+  const match = ORDER_KEY_PATTERN.exec(value);
+  return !!match && (!match[1] || Number(match[2]) === match[3].length);
+}
 /** The part of an order key before its suffix: what the date-rank offset comes from. */
 const keyBase = (key: string) => key.split(KEY_SUFFIX, 1)[0];
-/** The key of the n-th copy of a task with this base; fixed width, so plain string order is numeric order. */
-const copyKey = (base: string, n: number) => `${base}${KEY_SUFFIX}${String(n).padStart(COPY_COUNTER_DIGITS, '0')}`;
+/** The key of the n-th copy of a task with this base: `~` + digit count + digits, so string order is numeric order. */
+function copyKey(base: string, n: number) {
+  if (!Number.isSafeInteger(n) || n < 1 || n > MAX_COPY) throw new Error('Too many copies of one task');
+  return `${base}${KEY_SUFFIX}${String(n).length}${n}`;
+}
 /** The copy counter of a key with this base, or 0 for the base itself (and for anything else). */
 function copyNumber(key: string, base: string) {
-  const match = key.startsWith(base + KEY_SUFFIX) ? /^(\d+)$/.exec(key.slice(base.length + 1)) : null;
-  return match ? Number(match[1]) : 0;
+  if (!key.startsWith(base + KEY_SUFFIX) || !isOrderKey(key)) return 0;
+  return Number(key.slice(base.length + 2));
+}
+
+/**
+ * Where a synced calendar lives, stable over syncs and restores and without
+ * secrets: a CalDAV calendar's address resolved against its account and
+ * normalised (origin and path, one trailing slash), a subscription's feed
+ * address only as a hash (it may hold an access token).
+ */
+function calendarSource({ provider, href, server, feedUrl }: { provider: string; href: string; server: string; feedUrl?: string | null }) {
+  if (provider === 'ics') return `ics\n${hash(`feed\n${feedUrl ?? server}`)}`;
+  try {
+    const url = new URL(href, server || undefined);
+    return `caldav\n${url.origin}${url.pathname.replace(/\/+$/, '')}/`;
+  } catch {
+    return `caldav\n${server}\n${href}`;
+  }
 }
 
 /** A task's stable key (see the header): its provider identity when synced, else its order key (empty: its event id). */
@@ -113,11 +142,23 @@ function dateRank(row: RankedRow, identity?: Pick<TaskIdentity, 'uid' | 'recurre
  */
 async function identities(userId: string, eventIds: readonly string[], executor: SqlExecutor = db): Promise<Map<string, TaskIdentity>> {
   const result = new Map<string, TaskIdentity>();
+  // One decryption per subscription and call.
+  const sources = new Map<string, string>();
+  const sourceOf = (row: RowDataPacket) => {
+    const cacheKey = `${row.account_id}\n${row.calendar_href ?? ''}`;
+    if (!sources.has(cacheKey)) {
+      let feedUrl: string | null = null;
+      if (row.feed_secret) { try { feedUrl = decrypt(String(row.feed_secret)); } catch { feedUrl = null; } }
+      sources.set(cacheKey, calendarSource({ provider: String(row.provider ?? ''), href: String(row.calendar_href ?? ''), server: String(row.account_server ?? ''), feedUrl }));
+    }
+    return sources.get(cacheKey)!;
+  };
   for (let index = 0; index < eventIds.length; index += CHUNK) {
     const chunk = eventIds.slice(index, index + CHUNK);
     const [rows] = await executor.execute<RowDataPacket[]>(
-      `SELECT e.id, o.calendar_id AS object_calendar_id, o.uid, r.recurrence_id,
-              c.external_id AS calendar_href, COALESCE(a.base_url, a.discovery_url, '') AS account_server
+      `SELECT e.id, o.calendar_id AS object_calendar_id, o.uid, r.recurrence_id, a.id AS account_id, a.provider,
+              c.external_id AS calendar_href, COALESCE(a.base_url, a.discovery_url, '') AS account_server,
+              CASE WHEN a.provider = 'ics' THEN a.encrypted_password END AS feed_secret
        FROM calendar_events e
        LEFT JOIN calendar_event_external_refs r ON r.event_id = e.id AND r.user_id = e.user_id
        LEFT JOIN calendar_remote_objects o ON o.id = r.remote_object_id AND o.user_id = e.user_id
@@ -128,7 +169,7 @@ async function identities(userId: string, eventIds: readonly string[], executor:
     );
     for (const row of rows) {
       const remote = row.uid && row.object_calendar_id ? { calendarId: String(row.object_calendar_id), uid: String(row.uid), recurrenceId: String(row.recurrence_id ?? ''),
-        source: `${row.account_server ?? ''}\n${row.calendar_href ?? ''}` } : null;
+        source: sourceOf(row) } : null;
       result.set(String(row.id), identityFor(String(row.id), remote));
     }
   }
@@ -323,5 +364,5 @@ async function sweepRemoteRanks(executor: SqlExecutor, userId: string, calendarI
   }
 }
 
-export { place, attachRanks, identities, identityOf, clearRank, rekey, sweepRemoteRanks, itemKey, dateRank, sortKey, compareRanked, keyBase, copyKey, copyNumber, RANK_SCALE };
+export { place, attachRanks, identities, identityOf, clearRank, rekey, sweepRemoteRanks, itemKey, dateRank, sortKey, compareRanked, keyBase, copyKey, copyNumber, isOrderKey, calendarSource, RANK_SCALE };
 export type { TaskIdentity };

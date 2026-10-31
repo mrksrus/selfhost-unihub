@@ -663,4 +663,66 @@ test('task order and calendar defaults: owner-scoped, gated, kept over re-sync a
     assert.deepEqual(all.map(event => [event.title, tieLists.findIndex(list => list.id === event.calendar_id) === 0 ? 'original' : 'copy']),
       [['Nine', 'original'], ['Nine', 'copy'], ['Twenty-seven', 'original'], ['Twenty-seven', 'copy']]);
   });
+
+  await t.test('a restored original and its copy keep their order when only one of them collides', async () => {
+    const pots = await localCalendar(ids.owner, 'Pots');
+    const plant = await task(ids.owner, pots, 'Plant', { createdMs: Date.UTC(2026, 9, 5, 8) });
+    const restoreKeepBoth = async () => {
+      const backup = await runtime('services/backup').buildBackupForUser(ids.owner, { sections: ['calendar'] });
+      const result = await runtime('services/backup').importBackupForUser(ids.owner, backup, { mode: 'apply', sections: ['calendar'], conflict_mode: 'keep_both', startAccountSync: () => {} });
+      assert.equal(result.valid, true, JSON.stringify(result.errors));
+    };
+    await restoreKeepBoth();
+    const [[copy]] = await pool.query<RowDataPacket[]>("SELECT id FROM calendar_events WHERE user_id = ? AND title = 'Plant' AND id <> ?", [ids.owner, plant]);
+    await owner('PUT', `/calendar/events/${copy.id}`, { title: 'Plant (copy)' });
+    // The archive holds the original and its copy; the copy is then deleted here.
+    const backup = await runtime('services/backup').buildBackupForUser(ids.owner, { sections: ['calendar'] });
+    await owner('DELETE', `/calendar/events/${copy.id}`);
+    const result = await runtime('services/backup').importBackupForUser(ids.owner, backup, { mode: 'apply', sections: ['calendar'], conflict_mode: 'keep_both', startAccountSync: () => {} });
+    assert.equal(result.valid, true, JSON.stringify(result.errors));
+    const plants = (await order()).filter(event => String(event.title).startsWith('Plant'));
+    assert.equal(new Set(plants.map(event => event.sort_rank)).size, 1);
+    assert.deepEqual(plants.map(event => event.id === plant ? 'original here' : event.title), ['original here', 'Plant', 'Plant (copy)']);
+  });
+
+  await t.test('two subscriptions on one host give the same UID different keys, without their addresses', async () => {
+    const start = Date.now() + 5 * DAY;
+    const made: string[] = [];
+    for (const feed of ['https://feeds.example.test/a.ics?token=synthetic-a', 'https://feeds.example.test/b.ics?token=synthetic-b']) {
+      const accountId = crypto.randomUUID(), calendarId = crypto.randomUUID(), objectId = crypto.randomUUID(), eventId = crypto.randomUUID();
+      await pool.execute("INSERT INTO calendar_accounts (id, user_id, provider, display_name, discovery_url, encrypted_password, is_active) VALUES (?, ?, 'ics', 'Feed', 'https://feeds.example.test', ?, TRUE)",
+        [accountId, ids.owner, encrypt(feed)]);
+      await pool.execute("INSERT INTO calendar_calendars (id, user_id, account_id, name, external_id, read_only, auto_todo_enabled) VALUES (?, ?, ?, 'Feed', 'ics', TRUE, TRUE)", [calendarId, ids.owner, accountId]);
+      await pool.execute("INSERT INTO calendar_remote_objects (id, user_id, account_id, calendar_id, href, href_hash, uid, ics) VALUES (?, ?, ?, ?, 'ics', ?, 'same@example.test', 'BEGIN:VCALENDAR')",
+        [objectId, ids.owner, accountId, calendarId, crypto.createHash('sha256').update('ics').digest('hex')]);
+      await pool.execute('INSERT INTO calendar_events (id, user_id, calendar_id, title, start_time, end_time) VALUES (?, ?, ?, ?, ?, ?)',
+        [eventId, ids.owner, calendarId, 'Holiday', sqlTime(start), sqlTime(start + 3600000)]);
+      await pool.execute("INSERT INTO calendar_event_external_refs (id, user_id, event_id, calendar_id, account_id, provider, external_event_id, remote_object_id) VALUES (?, ?, ?, ?, ?, 'ics', ?, ?)",
+        [crypto.randomUUID(), ids.owner, eventId, calendarId, accountId, `${objectId}|`, objectId]);
+      made.push(accountId);
+    }
+    const holidays = (await order()).filter(event => event.title === 'Holiday');
+    assert.equal(holidays.length, 2);
+    assert.equal(holidays[0].sort_rank, holidays[1].sort_rank, 'one UID, one rank');
+    assert.notEqual(holidays[0].sort_key, holidays[1].sort_key, 'but a key per subscription');
+    assert.ok(holidays.every(event => !/feeds|token|synthetic/.test(event.sort_key)));
+    await pool.execute('DELETE e FROM calendar_events e JOIN calendar_calendars c ON c.id = e.calendar_id WHERE c.account_id IN (?, ?)', made);
+    await pool.execute('DELETE FROM calendar_accounts WHERE id IN (?, ?)', made);
+  });
+
+  await t.test('an order key the column cannot hold is refused before the restore writes anything', async () => {
+    const odd = await localCalendar(ids.owner, 'Odd');
+    const eventId = await task(ids.owner, odd, 'Odd key', { createdMs: Date.UTC(2026, 9, 6, 8) });
+    await pool.execute('UPDATE calendar_events SET order_key = ? WHERE id = ?', ['a'.repeat(64), eventId]);
+    const backup = await runtime('services/backup').buildBackupForUser(ids.owner, { sections: ['calendar'] });
+    const count = async () => Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [ids.owner]))[0][0].n);
+    const before = await count();
+    for (const mode of ['dry-run', 'apply']) {
+      const result = await runtime('services/backup').importBackupForUser(ids.owner, structuredClone(backup), { mode, sections: ['calendar'], conflict_mode: 'keep_both', startAccountSync: () => {} });
+      assert.equal(result.valid, false, mode);
+      assert.match(result.errors.join('\n'), /invalid task order key/);
+    }
+    assert.equal(await count(), before, 'nothing was written');
+    await pool.execute('DELETE FROM calendar_events WHERE id = ?', [eventId]);
+  });
 });
