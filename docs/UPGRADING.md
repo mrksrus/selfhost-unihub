@@ -10,8 +10,12 @@ version-specific upgrade guidance. Preserve existing data and keys when upgradin
 No database upgrade and no configuration change. Going back to 0.27.0 is
 possible.
 
-- **Server.** Several changes saved at the same moment can no longer leave
-  UniHub waiting forever for a database connection; nothing to do.
+- **Server.** Saving calendar items or tasks, marking, starring or moving
+  mail, disconnecting or deleting a mail account, and committing a contacts
+  import each held a database connection while waiting for a second one.
+  With as many of them at the same moment as the server has connections (50),
+  they waited for each other forever and UniHub stopped answering until it
+  was restarted. They now use the connection they hold; nothing to do.
 - **Android app.** Install 0.27.1's app when it is offered: "Open in app"
   from UniHub's page then always asks to connect to that server, also in the
   first minutes after the phone has started. The window is 0.27.1, 0.27.0,

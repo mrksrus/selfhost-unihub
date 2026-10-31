@@ -22,11 +22,12 @@ upgrade; install the new Android app when it is offered (see
   screen forgot the link. The question now stays until you answer it, also
   when Android rebuilds the screen for another reason, and a link you already
   answered is not asked again. Needs the new app.
-- **Many changes at the same moment no longer stop the server.** When
-  several calendar items or tasks were saved at once, each change could wait
-  for a second database connection while holding its first one; with enough
-  of them, they waited for each other forever and UniHub stopped answering
-  until it was restarted. A change now does its check on the connection it
+- **Many changes at the same moment no longer stop the server.** Saving a
+  calendar item or task, marking, starring or moving mail, disconnecting or
+  deleting a mail account, and committing a contacts import each waited for a
+  second database connection while holding its first one. With enough of them
+  at once, they waited for each other forever and UniHub stopped answering
+  until it was restarted. Each now does its checks on the connection it
   already holds.
 
 ## 0.27.0
