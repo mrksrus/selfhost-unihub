@@ -97,6 +97,15 @@ export async function editObject(collection: string, who: Who, summary: string, 
   }
 }
 
+/** A new calendar collection for events, as another client would make one. Remove it with deleteObject. */
+export async function makeCalendar(url: string, who: Who, name: string) {
+  const escaped = name.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const res = await dav('MKCALENDAR', url, who, '<?xml version="1.0"?><C:mkcalendar xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:set><D:prop>'
+    + `<D:displayname>${escaped}</D:displayname><C:supported-calendar-component-set><C:comp name="VEVENT"/></C:supported-calendar-component-set>`
+    + '</D:prop></D:set></C:mkcalendar>', { 'Content-Type': 'application/xml' });
+  if (res.status !== 201) throw new Error(`CalDAV MKCALENDAR: ${res.status}`);
+}
+
 export async function deleteObject(url: string, who: Who) {
   const res = await dav('DELETE', url, who);
   if (![200, 204, 404].includes(res.status)) throw new Error(`CalDAV DELETE: ${res.status}`);

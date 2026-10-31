@@ -83,9 +83,11 @@ describe('pages', () => {
     const moved = reorder(pages, ['calendar', 'mail', 'todo', 'contacts', 'recordings', 'music', 'today']);
     const put = vi.spyOn(api, 'put').mockResolvedValue({ data: { modules: defaults, pages: moved } });
     renderWithClient(<ModuleSettings />, defaults, '/', pages);
-    expect(screen.getByRole('button', { name: 'Move Mail up' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Move Today down' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Move Mail down' }));
+    // Every page has a drag handle; the menu keeps Move up and Move down for the keyboard, disabled at the ends.
+    expect(screen.getByRole('button', { name: 'Reorder Mail' })).toBeInTheDocument();
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions for Mail' }), { button: 0, ctrlKey: false });
+    expect(await screen.findByRole('menuitem', { name: 'Move up' })).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move down' }));
     await waitFor(() => expect(put).toHaveBeenCalledWith('/modules', { page_order: ['calendar', 'mail', 'todo', 'contacts', 'recordings', 'music', 'today'] }));
     await waitFor(() => expect(screen.getAllByRole('heading', { level: 3 }).slice(0, 3).map(heading => heading.textContent))
       .toEqual(['Calendar', 'Mail', 'ToDo']));
@@ -103,7 +105,8 @@ describe('pages', () => {
   it('puts rows back when the order is not saved', async () => {
     vi.spyOn(api, 'put').mockResolvedValue({ error: 'Page order must list every page once', status: 400 });
     renderWithClient(<ModuleSettings />, defaults, '/', defaultPages(defaults));
-    fireEvent.click(screen.getByRole('button', { name: 'Move Contacts up' }));
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions for Contacts' }), { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Move up' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Page order must list every page once');
     expect(screen.getAllByRole('heading', { level: 3 }).slice(0, 7).map(heading => heading.textContent))
       .toEqual(['Mail', 'Calendar', 'ToDo', 'Contacts', 'Recordings', 'Music', 'Today']);

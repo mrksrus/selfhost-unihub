@@ -1,9 +1,27 @@
 import { format, parseISO, type Locale } from 'date-fns';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import type { QueryClient } from '@tanstack/react-query';
-import { api } from '@/lib/api';
+import { api, type ApiResponse } from '@/lib/api';
+import type { CalendarChoiceFields, CalendarWriteBlock, TaskMoveRequest, TaskMoveResponse, TaskPositionRequest, TaskPositionResponse, TaskRankFields } from '../../api/src/contracts/tasks';
+
+export type { CalendarWriteBlock, TaskPositionRequest, TaskPositionResponse } from '../../api/src/contracts/tasks';
+
+/** The answer of a move (contracts/tasks.ts TaskMoveResponse) with the event normalized for the browser. */
+export interface TaskMove { event: CalendarEvent | null; pending?: TaskMoveResponse['pending']; sourceKept?: boolean }
 
 export type TodoStatus = 'done' | 'changed' | 'time_moved' | 'cancelled' | null;
+
+/** A refused request with the server's error code, so a caller can tell a stale list (ORDER_STALE) from a failure. */
+export class CalendarRequestError extends Error {
+  code: string | null;
+  status: number | null;
+  constructor(response: ApiResponse<unknown>, fallback: string) {
+    super(response.error || fallback);
+    this.name = 'CalendarRequestError';
+    this.code = typeof response.code === 'string' ? response.code : null;
+    this.status = typeof response.status === 'number' ? response.status : null;
+  }
+}
 export type CalendarRsvpStatus = 'needsAction' | 'accepted' | 'tentative' | 'declined';
 export type CalendarProvider = 'local' | 'caldav' | 'ics';
 export type CalendarSyncStatus = 'pending' | 'syncing' | 'ok' | 'error' | 'paused' | null;
@@ -79,7 +97,13 @@ export const browserTimeZone = () => {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined; } catch { return undefined; }
 };
 
-export interface CalendarCalendar {
+/**
+ * A calendar (a "list" in ToDo). The choice fields (where new items go and
+ * what a calendar can take) come from the server (contracts/tasks.ts); an
+ * answer from an older server lacks them and gets the fallback in
+ * `normalizeCalendar`.
+ */
+export interface CalendarCalendar extends CalendarChoiceFields {
   id: string;
   user_id: string;
   account_id: string;
@@ -98,7 +122,29 @@ export interface CalendarCalendar {
   updated_at: string;
 }
 
-export interface CalendarEvent {
+/** The calendar as the server lists it; the choice fields may be missing from an older server. */
+type CalendarCalendarRow = Omit<CalendarCalendar, keyof CalendarChoiceFields> & Partial<CalendarChoiceFields>;
+
+/**
+ * Fills the choice fields an older server leaves out, from the rules it
+ * applies anyway: a subscription or a read-only calendar takes nothing new,
+ * and only UniHub's own lists hold tasks without a date. Nothing is marked as
+ * a default then; the chooser falls back to the first list that qualifies.
+ */
+export function normalizeCalendar(calendar: CalendarCalendarRow): CalendarCalendar {
+  const provider = calendar.account_provider ?? 'local';
+  const write_block: CalendarWriteBlock | null = calendar.write_block !== undefined ? calendar.write_block
+    : provider === 'ics' || calendar.read_only ? 'read_only' : null;
+  return {
+    ...calendar,
+    write_block,
+    takes_undated_tasks: calendar.takes_undated_tasks ?? (provider === 'local' && !write_block),
+    default_for_tasks: calendar.default_for_tasks ?? false,
+    default_for_events: calendar.default_for_events ?? false,
+  };
+}
+
+export interface CalendarEvent extends Partial<TaskRankFields> {
   id: string;
   user_id: string;
   calendar_id: string | null;
@@ -302,9 +348,9 @@ export const calendarApi = {
   },
 
   async fetchCalendars(signal?: AbortSignal): Promise<CalendarCalendar[]> {
-    const response = await api.get<{ calendars: CalendarCalendar[] }>('/calendar/calendars', { signal });
+    const response = await api.get<{ calendars: CalendarCalendarRow[] }>('/calendar/calendars', { signal });
     if (response.error) throw new Error(response.error);
-    return response.data?.calendars || [];
+    return (response.data?.calendars || []).map(normalizeCalendar);
   },
 
   async createCalendar(payload: {
@@ -317,20 +363,50 @@ export const calendarApi = {
     read_only?: boolean;
     is_primary?: boolean;
   }): Promise<CalendarCalendar> {
-    const response = await api.post<{ calendar: CalendarCalendar }>('/calendar/calendars', payload);
+    const response = await api.post<{ calendar: CalendarCalendarRow }>('/calendar/calendars', payload);
     if (response.error) throw new Error(response.error);
     if (!response.data?.calendar) throw new Error('Calendar response missing');
-    return response.data.calendar;
+    return normalizeCalendar(response.data.calendar);
   },
 
   async updateCalendar(
     id: string,
     payload: Partial<Pick<CalendarCalendar, 'name' | 'color' | 'is_visible' | 'auto_todo_enabled' | 'read_only' | 'is_primary'>>
   ): Promise<CalendarCalendar> {
-    const response = await api.put<{ calendar: CalendarCalendar }>(`/calendar/calendars/${id}`, payload);
+    const response = await api.put<{ calendar: CalendarCalendarRow }>(`/calendar/calendars/${id}`, payload);
     if (response.error) throw new Error(response.error);
     if (!response.data?.calendar) throw new Error('Calendar response missing');
-    return response.data.calendar;
+    return normalizeCalendar(response.data.calendar);
+  },
+
+  /**
+   * Places a task between the two it is shown next to (`after` above, `before`
+   * below; null at a section's end). The answer holds the rank the server
+   * stored for it, and for any tasks it had to spread apart. A neighbour that
+   * is gone or no longer adjacent is refused with ORDER_STALE: reload the list
+   * instead of guessing (contracts/tasks.ts).
+   */
+  async setTaskPosition(id: string, position: TaskPositionRequest): Promise<TaskPositionResponse> {
+    const response = await api.put<TaskPositionResponse>(`/calendar/events/${encodeURIComponent(id)}/position`, position);
+    if (response.error || !response.data?.ranks) throw new CalendarRequestError(response, 'Could not reorder the task');
+    return { ranks: response.data.ranks };
+  },
+
+  /**
+   * Moves a task (or event) to another list or calendar. `pending` means a
+   * calendar server has not confirmed yet and UniHub finishes the move in the
+   * background: 'creating', the task shows in its new list once it has;
+   * 'removing', it is there already and only the old copy waits. `sourceKept`:
+   * the old copy was changed elsewhere and stays in its old calendar too.
+   */
+  async moveTask(id: string, calendarId: string): Promise<TaskMove> {
+    const body: TaskMoveRequest = { calendar_id: calendarId };
+    const response = await api.post<TaskMoveResponse>(`/calendar/events/${encodeURIComponent(id)}/move`, body);
+    if (response.error) throw new CalendarRequestError(response, 'Could not move the task');
+    const event = response.data?.event ?? null;
+    const pending = response.data?.pending;
+    if (!event && !pending) throw new Error('Event response missing');
+    return { event: event ? normalizeEvent(event) : null, ...(pending ? { pending } : {}), ...(response.data?.source_kept ? { sourceKept: true } : {}) };
   },
 
   async deleteCalendar(id: string): Promise<void> {

@@ -34,7 +34,7 @@ names, kernels and paths are not recorded.
 config and runs these checks against it in Chromium.
 
 **Reference screens.** Each screen is captured in Dark Default and Light Default,
-twenty-four pictures in all, compared with zero tolerance:
+thirty-four pictures in all, compared with zero tolerance:
 
 | Picture | Viewport | Steps |
 | --- | --- | --- |
@@ -46,6 +46,9 @@ twenty-four pictures in all, compared with zero tolerance:
 | `contact-detail-wide-*`, `contact-detail-phone-*` | Wide, Phone | Contacts, the fixture contact that holds every kind of field (name parts, nickname, organisation, labelled numbers and addresses, dates, web, messaging, related people, categories, notes, kept import details). Since 0.26.0 (P-29, D29). |
 | `contact-editor-wide-*`, `contact-editor-phone-*` | Wide, Phone | The same contact's editor: a dialog on Wide, the whole screen on Phone. |
 | `merge-review-wide-*`, `merge-review-phone-*` | Wide, Phone | Possible duplicates, "Review and merge" on the group that needs a choice: side by side with the result column on Wide, stacked with chips on Phone. |
+| `todo-drag-wide-*`, `todo-drag-phone-*` | Wide, Phone | ToDo, the rich task picked up with the keyboard (Space on its ≡ handle): the row lifted with its description, email and subtasks, the handle pressed. Since 0.27.0 (P-29, D31). |
+| `new-task-wide-*`, `new-task-phone-*` | Wide, Phone | ToDo, New task with the List chooser open: the lists grouped by account, the default preselected, the server calendar greyed out with "Tasks without a date stay in UniHub", a list not shown in ToDo marked. Since 0.27.0. |
+| `settings-pages-wide-*` | Wide | Settings → Pages and modules: a handle and a menu per page row. Since 0.27.0. |
 
 **Behaviour checks.** These run against the same build and the same data.
 

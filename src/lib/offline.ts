@@ -352,7 +352,10 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
       if(params.get('range_end')&&Date.parse(text(row.start_time))>Date.parse(params.get('range_end')!))return false;
       return true;
     });
-    return {data:{events:events.sort((a,b)=>Date.parse(text(a.start_time))-Date.parse(text(b.start_time))).map(withSourceEmail)}};
+    // The snapshot carries each task's rank (sort_rank, 0.27); pages order by
+    // it. Rows of an older snapshot have none and fall back to date order.
+    const rank=(row:Row)=>typeof row.sort_rank==='number'?row.sort_rank:Date.parse(text(row.start_time));
+    return {data:{events:events.sort((a,b)=>rank(a)-rank(b)||Date.parse(text(a.start_time))-Date.parse(text(b.start_time))).map(withSourceEmail)}};
   }
   if(path === '/mail/accounts') return {data:{accounts:snapshot.mailAccounts.map(row=>({...row,unread_count:snapshot.emails.filter(email=>viewAccount(email)===row.id&&!truthy(email.is_read)&&!hiddenSnoozed(snapshot,email)).length}))}};
   if(path === '/mail/emails') {

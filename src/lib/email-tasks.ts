@@ -1,5 +1,6 @@
 import { formatEventTime, type CalendarCalendar, type CalendarEvent } from '@/lib/calendar-api';
 import type { Email } from '@/lib/mail-api';
+import { defaultTaskList } from '@/lib/tasks';
 
 /** The email a task was made from, as the task remembers it. */
 export interface SourceEmail {
@@ -46,10 +47,11 @@ const LAST_LIST_KEY = 'email-task-list';
 export function rememberTaskList(id: string) {
   try { localStorage.setItem(LAST_LIST_KEY, id); } catch { /* Storage may be unavailable. */ }
 }
+/** The list to start with: the last one used on this device (P-10), else the default task list the server marks, else the first. */
 export function rememberedTaskList(lists: CalendarCalendar[]) {
   let id: string | null = null;
   try { id = localStorage.getItem(LAST_LIST_KEY); } catch { /* Storage may be unavailable. */ }
-  return lists.find(list => list.id === id)?.id ?? lists[0]?.id ?? '';
+  return lists.find(list => list.id === id)?.id ?? defaultTaskList(lists)?.id ?? lists[0]?.id ?? '';
 }
 
 /** Day keys ("2026-10-13") for the quick date choices, in the user's time zone. */

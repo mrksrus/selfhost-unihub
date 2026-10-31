@@ -13,7 +13,7 @@ import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { calendarApi, calendarQueryKeys, formatEventTime, type CalendarEvent } from '@/lib/calendar-api';
 import { useTaskActions } from '@/hooks/use-task-actions';
 import { formatListDate } from '@/components/mail/mail-page-model';
-import { isOverdue, taskWhen } from '@/lib/tasks';
+import { isOverdue, orderTasks, taskWhen } from '@/lib/tasks';
 import type { ReactNode } from 'react';
 
 type EmailSummary = {
@@ -100,11 +100,12 @@ const Dashboard = () => {
 
   const todayEvents = (todayEventsQuery.data ?? []).slice().sort((a, b) => Number(b.all_day) - Number(a.all_day) || a.start_time.localeCompare(b.start_time));
   const nextEvents = (weekQuery.data ?? []).filter(event => !todayEvents.some(today => today.id === event.id)).slice(0, 5);
-  const activeTasks = (taskEventsQuery.data ?? [])
-    .filter((event) => event.todo_status !== 'done' && event.todo_status !== 'cancelled')
-    .sort((a, b) => Number(a.is_todo_only) - Number(b.is_todo_only) || a.start_time.localeCompare(b.start_time));
+  // Overdue first, then dated, then undated tasks, each in the person's own
+  // order (the same rank ToDo uses, which is the date order until a task is
+  // placed by hand).
+  const activeTasks = orderTasks((taskEventsQuery.data ?? []).filter((event) => event.todo_status !== 'done' && event.todo_status !== 'cancelled'));
   const overdueTasks = activeTasks.filter(task => isOverdue(task));
-  const shownTasks = [...overdueTasks, ...activeTasks.filter(task => !overdueTasks.includes(task))].slice(0, 6);
+  const shownTasks = [...overdueTasks, ...activeTasks.filter(task => !overdueTasks.includes(task) && !task.is_todo_only), ...activeTasks.filter(task => task.is_todo_only)].slice(0, 6);
   const unread = unreadEmailsQuery.data;
   const current = todayEvents.find(event => !event.all_day && new Date(event.end_time) > now);
 

@@ -459,6 +459,13 @@ async function putCalendarObject({ url, ics, etag, username, password, credentia
   return { etag: result.headers.etag || await readObjectEtag(url, login).catch(() => null) };
 }
 
+// One object by its address, or null when the server has none there.
+async function getCalendarObject({ url, username, password, credentialScope, signal }: Login & { url: string }) {
+  const result = await davRequest(url, { ...auth({ username, password, credentialScope, signal }), method: 'GET', accept: 'text/calendar', acceptStatuses: [404, 410] });
+  if (result.status === 404 || result.status === 410) return null;
+  return { etag: result.headers.etag || null, ics: result.text };
+}
+
 async function deleteCalendarObject({ url, etag, username, password, credentialScope, signal }: Login & { url: string; etag?: string | null }) {
   const result = await davRequest(url, {
     ...auth({ username, password, credentialScope, signal }), method: 'DELETE', accept: '*/*',
@@ -505,6 +512,7 @@ export {
   fetchCalendarObjects,
   resourceGone,
   putCalendarObject,
+  getCalendarObject,
   deleteCalendarObject,
   normalizeIcsFeedUrl,
   fetchIcsFeed,

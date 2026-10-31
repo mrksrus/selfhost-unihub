@@ -170,3 +170,53 @@ export async function recipientChips(screen: Screen, field: 'To' | 'Cc' | 'Bcc')
 export function attachedFile(screen: Screen, filename: string) {
   return screen.getByRole('button', new RegExp(`^${escape(filename)},`)).or(screen.getByRole('dialog').getByText(filename, { exact: true })).first();
 }
+
+export interface ViewportPoint { x: number; y: number }
+
+/** The centre of a node in viewport pixels, once it is in view. */
+export async function centreOf(target: { scrollIntoView: () => Promise<void>; boundingBox: () => Promise<{ x: number; y: number; width: number; height: number } | null> }): Promise<ViewportPoint> {
+  await target.scrollIntoView();
+  const box = await target.boundingBox();
+  if (!box) throw new Error('The node has no box to touch');
+  return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
+}
+
+/**
+ * A finger that lands on `from`, holds still for `hold` ms, then slides to
+ * `to` and lifts: the long press that picks up a ≡ handle (0.27). The touch
+ * events are dispatched in the page (Touch and TouchEvent on the elements
+ * under the finger), so the app's sensors see the same hold, moves and lift a
+ * phone sends; the browser's own scroll decision is covered by `screen.swipe`,
+ * which is a real touch gesture.
+ */
+export async function longPressDrag(browser: unknown, from: ViewportPoint, to: ViewportPoint, { hold = 400, steps = 10 }: { hold?: number; steps?: number } = {}) {
+  await (browser as { evaluate: <R, A>(fn: (arg: A) => Promise<R>, arg: A) => Promise<R> }).evaluate(async ({ from, to, hold, steps }: { from: ViewportPoint; to: ViewportPoint; hold: number; steps: number }) => {
+    const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    const at = (point: ViewportPoint) => document.elementFromPoint(point.x, point.y) ?? document.body;
+    const touch = (target: Element, point: ViewportPoint) => new Touch({ identifier: 7, target, clientX: point.x, clientY: point.y, pageX: point.x + window.scrollX, pageY: point.y + window.scrollY, radiusX: 2, radiusY: 2, force: 1 });
+    const send = (target: Element, type: string, point: ViewportPoint, lifted = false) => {
+      const finger = touch(target, point);
+      target.dispatchEvent(new TouchEvent(type, { touches: lifted ? [] : [finger], targetTouches: lifted ? [] : [finger], changedTouches: [finger], bubbles: true, cancelable: true, composed: true }));
+    };
+    const start = at(from);
+    send(start, 'touchstart', from);
+    await wait(hold);
+    for (let step = 1; step <= steps; step++) {
+      const point = { x: Math.round(from.x + (to.x - from.x) * step / steps), y: Math.round(from.y + (to.y - from.y) * step / steps) };
+      send(start, 'touchmove', point);
+      await wait(30);
+    }
+    await wait(60);
+    send(start, 'touchend', to, true);
+  }, { from, to, hold, steps });
+}
+
+/** Drags with the mouse from one point to another in small steps, as a hand does (a drag sensor needs movement before the drop). */
+export async function mouseDrag(browser: { mouse: { move: (x: number, y: number) => Promise<void>; down: () => Promise<void>; up: () => Promise<void> } }, from: ViewportPoint, to: ViewportPoint, steps = 12) {
+  await browser.mouse.move(from.x, from.y);
+  await browser.mouse.down();
+  for (let step = 1; step <= steps; step++) {
+    await browser.mouse.move(Math.round(from.x + (to.x - from.x) * step / steps), Math.round(from.y + (to.y - from.y) * step / steps));
+  }
+  await browser.mouse.up();
+}

@@ -71,6 +71,22 @@ export interface SourceEmailDto {
  * An event or task as GET /api/calendar/events and the event routes answer.
  * Every event carries its rank; ToDo and Today order open tasks by it.
  */
+/**
+ * A move of this item to another calendar that a calendar server has not
+ * finished. 'creating': the new server has not confirmed the copy; the item
+ * stays in its old list, edits and deletion answer 409 CALENDAR_MOVE_PENDING,
+ * and DELETE …/move cancels it. 'removing': the item is in its new list
+ * (target_calendar_id) and only the old copy is still to be removed; nothing
+ * waits on the person and it cannot be cancelled. `since` is when the move
+ * began; `attempts` counts failed tries at the server.
+ */
+export interface TaskMovePending {
+  state: 'creating' | 'removing';
+  target_calendar_id: string | null;
+  since: string;
+  attempts: number;
+}
+
 export interface CalendarEventDto extends TaskRankFields {
   id: string;
   user_id: string;
@@ -94,6 +110,8 @@ export interface CalendarEventDto extends TaskRankFields {
   source_email: SourceEmailDto | null;
   subtasks: CalendarSubtaskDto[];
   attendees: CalendarAttendeeDto[];
+  /** A move to another calendar not finished yet, else null (also in the offline snapshot). */
+  move_pending: TaskMovePending | null;
 }
 
 /**
@@ -124,13 +142,46 @@ export interface TaskMoveRequest {
 
 /**
  * The moved task. `pending` says a calendar server has not confirmed the
- * move yet (status 202): UniHub finishes it in the background, and the task
- * shows in its new list once the server stored it ('creating') or still has
- * an old copy to remove ('removing').
+ * move yet (status 202): UniHub finishes it in the background. 'creating':
+ * the new server has not confirmed the copy; the task stays in its old list
+ * until it has, and edits and deletion answer 409 CALENDAR_MOVE_PENDING
+ * meanwhile (moving it to the same list again retries at once). 'removing':
+ * the task is in its new list; the old copy is still to be removed from the
+ * old server and does not show meanwhile. `source_kept`: the old copy was
+ * changed elsewhere since, so it was kept there and shows as an event of its
+ * own after the next sync.
+ *
+ * Errors: 404 TASK_NOT_FOUND or CALENDAR_NOT_FOUND (not this person's),
+ * 400 CALENDAR_TODO_REMOTE (a task without a date to a server calendar),
+ * 400 CALENDAR_RECURRING_MOVE, 403 CALENDAR_READ_ONLY, 409
+ * CALENDAR_SYNC_PAUSED, 409 CALENDAR_SYNC_PENDING, 409
+ * CALENDAR_MOVE_PENDING (moving to another list while a move is open), 409
+ * CALENDAR_EVENT_CHANGED (another change of the task, an edit or a move,
+ * was still being saved after 25 s, two more already wait for it, or too
+ * many changes run at once; changes of one task run one after another),
+ * 409 CALDAV_CONFLICT, the login errors of the calendar accounts (409
+ * MAIL_ACCOUNT_DISCONNECTED, CALDAV_NO_PASSWORD, MAIL_CALENDAR_UNLINKED),
+ * 422 CALDAV_AUTH_FAILED or CALDAV_FORBIDDEN, 502 CALDAV_SERVER_ERROR.
  */
 export interface TaskMoveResponse {
   event: CalendarEventDto | null;
   pending?: 'creating' | 'removing';
+  source_kept?: boolean;
+}
+
+/**
+ * DELETE /api/calendar/events/:id/move: cancel a move whose new copy is not
+ * confirmed yet ('creating'). The item stays in its old list and can be
+ * edited, deleted or moved again at once. Nothing is deleted at any server:
+ * if the new calendar received the copy anyway, it appears there as its own
+ * item after the next sync; the person deletes it if they don't want it.
+ * `cancelled` false: nothing to cancel (no move, or one already 'removing',
+ * whose item is in its new list). 404 TASK_NOT_FOUND when the item is not
+ * this person's.
+ */
+export interface TaskMoveCancelResponse {
+  event: CalendarEventDto | null;
+  cancelled: boolean;
 }
 
 /**

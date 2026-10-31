@@ -85,9 +85,7 @@ test('a linked calendar waits while its mail account is disconnected and changes
   assert.ok(writes.every(([sql]) => !/encrypted_password\s*=|is_active\s*=\s*FALSE/.test(sql)), 'No login or switch of the calendar is changed');
 
   await assert.rejects(sync.pushCreatedEvent({ userId: 'owner', event: event as FixtureValue }), error => (error as FixtureValue).status === 409 && (error as FixtureValue).code === 'MAIL_ACCOUNT_DISCONNECTED');
-  await assert.rejects(sync.pushEventMove({ userId: 'owner', event: { ...event, calendar_id: 'source' } as FixtureValue, targetCalendarId: 'target', changes: {} }),
-    error => (error as FixtureValue).code === 'MAIL_ACCOUNT_DISCONNECTED');
-  assert.ok(writes.every(([sql]) => !/calendar_event_external_refs|INSERT INTO/.test(sql)), 'The move is refused before the target is touched');
+  // A move is refused before either calendar is touched (calendar-move-mysql-integration.test.cts).
 });
 
 test('a calendar without a login of its own is not synced, and a restored mail calendar finds its mail account first', async t => {
