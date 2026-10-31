@@ -629,9 +629,9 @@ async function createTaskOrderAndMoves(connection: SqlExecutor) {
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
   if (!await hasColumn(connection, 'calendar_events', 'order_key')) await connection.execute('ALTER TABLE calendar_events ADD COLUMN order_key VARCHAR(64) NULL');
   // The move journal (services/calendar-move.ts): one open move per task.
-  // Removing the source calendar (or its account) ends the move; so does
-  // removing the source's server copy. A move still removing the old copy
-  // outlives its task and its new calendar (event_id, target_calendar_id
+  // Removing either calendar (or its account) or the task ends the move; so
+  // does removing the source's server copy. A move still removing the old
+  // copy outlives its task and its new calendar (event_id, target_calendar_id
   // become NULL), so the old copy never comes back. target_ics is the object
   // every attempt sends, under the UID fixed before the first; source_etag
   // is the old copy as the move found it, the only version it may delete.

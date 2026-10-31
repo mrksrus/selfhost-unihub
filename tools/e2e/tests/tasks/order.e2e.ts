@@ -218,3 +218,77 @@ test('[27-01] a task moved to another time goes back to its date order', { sessi
     await removeAll(browser, tasks);
   }
 });
+
+// D31: a drag stays within its section. A task dropped on another section (or
+// outside its own list) goes back to its place, nothing is stored; a drop at
+// the bottom edge of its own section still places it last. With the real
+// pointer (the mouse sensor) on every target; the touch sensor shares the
+// drop rule. (Found by the Android e2e on a real finger, 8e189d2.)
+test('[27-02] a task dropped on another section goes back to its place; at its own section\'s edge it is placed', { session: 'admin', timeout: 240_000 }, async ({ app, screen, browser }) => {
+  const prefix = `Section ${runId()}`;
+  await app.open('/todo');
+  const { user } = ok(await pageApi<{ user: { timezone: string | null } }>(browser, 'GET', '/api/auth/me'), 'who am I');
+  // Today is the person's day: too close to its end, the tasks would turn into tomorrow's mid-test.
+  const [hour, minute] = new Intl.DateTimeFormat('en-GB', { timeZone: user.timezone ?? undefined, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date()).split(':').map(Number);
+  test.skip(24 * 60 - (hour * 60 + minute) < 40, 'less than 40 minutes of today left');
+  const at = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
+  const tasks: Task[] = [];
+  for (const [title, start, end] of [[`${prefix} Today 1`, at(10), at(130)], [`${prefix} Today 2`, at(11), at(131)], [`${prefix} Later 1`, at(3 * 1440), at(3 * 1440 + 30)], [`${prefix} Later 2`, at(3 * 1440 + 60), at(3 * 1440 + 90)]]) {
+    const { event } = ok(await pageApi<{ event: Task }>(browser, 'POST', '/api/calendar/events', { title, is_todo_only: false, start_time: start, end_time: end, reminders: null }), `create ${title}`);
+    tasks.push(event);
+  }
+  const pattern = new RegExp(`${prefix} (Today|Later) \\d`);
+  const sectionOrder = async (name: string) => {
+    const titles: string[] = [];
+    for (const item of await screen.getByRole('region', name).getByRole('listitem').filter({ hasText: prefix }).all()) titles.push(((await item.textContent()) ?? '').match(pattern)?.[0] ?? '');
+    return titles;
+  };
+  const stored = async () => {
+    const { events } = ok(await pageApi<{ events: Task[] }>(browser, 'GET', '/api/calendar/events?include_todos=true'), 'list');
+    return tasks.map(task => events.find(event => event.id === task.id)).map(event => [event?.sort_rank ?? null, event?.hand_ordered ?? null]);
+  };
+  try {
+    await app.open('/todo');
+    const todayRow = (title: string) => screen.getByRole('region', 'Today').getByRole('listitem').filter({ hasText: title });
+    const laterRow = (title: string) => screen.getByRole('region', 'Later').getByRole('listitem').filter({ hasText: title });
+    await expect(laterRow(`${prefix} Later 2`)).toBeVisible();
+    expect(await sectionOrder('Today')).toEqual([`${prefix} Today 1`, `${prefix} Today 2`]);
+    expect(await sectionOrder('Later')).toEqual([`${prefix} Later 1`, `${prefix} Later 2`]);
+    const before = await stored();
+
+    // Today 1 dragged down and let go on the Later section (its heading, right
+    // below Today's list): back to its place, nothing stored. The drop point is
+    // measured first, so the scroll that brings it into view cannot move the handle after it was measured.
+    const into = await centreOf(screen.getByRole('region', 'Later').getByRole('heading', 'Later'));
+    await todayRow(`${prefix} Today 1`).hover();
+    const from = await centreOf(handle(screen, `${prefix} Today 1`));
+    await mouseDrag(browser, from, { x: from.x, y: into.y });
+    await expect(screen.getByRole('status').filter({ hasText: `Dropped outside Today. ${prefix} Today 1 is back at position` })).toHaveCount(1);
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    expect(await sectionOrder('Today')).toEqual([`${prefix} Today 1`, `${prefix} Today 2`]);
+    expect(await sectionOrder('Later')).toEqual([`${prefix} Later 1`, `${prefix} Later 2`]);
+    expect(await stored()).toEqual(before);
+
+    const box = await screen.getByRole('region', 'Today').getByRole('list').first().boundingBox();
+    if (!box) throw new Error('the Today list has no box');
+    // Let go beside the list (room for that on the wide layout only): back as well, although the row itself only moves up and down.
+    if (await targetOf(browser) === 'desktop') {
+      await todayRow(`${prefix} Today 1`).hover();
+      const grip = await centreOf(handle(screen, `${prefix} Today 1`));
+      await mouseDrag(browser, grip, { x: box.x + box.width + 150, y: grip.y + 60 });
+      await expect(screen.getByRole('status').filter({ hasText: `Dropped outside Today. ${prefix} Today 1 is back at position` })).toHaveCount(1);
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      expect(await sectionOrder('Today')).toEqual([`${prefix} Today 1`, `${prefix} Today 2`]);
+      expect(await stored()).toEqual(before);
+    }
+
+    // Let go just inside the bottom edge of Today: placed last there.
+    await todayRow(`${prefix} Today 1`).hover();
+    const again = await centreOf(handle(screen, `${prefix} Today 1`));
+    await mouseDrag(browser, again, { x: again.x, y: box.y + box.height - 6 });
+    await expect.poll(() => sectionOrder('Today')).toEqual([`${prefix} Today 2`, `${prefix} Today 1`]);
+    await expect.poll(async () => (await stored())[0][1], { timeout: 15_000 }).toBe(true);
+  } finally {
+    await removeAll(browser, tasks);
+  }
+});

@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useMemo, useRef, useState, type FormEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import { Loader2, Repeat } from 'lucide-react';
@@ -21,7 +21,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { SourceEmailBlock } from '@/components/todo/SourceEmail';
 import { useSourceEmailUnlink } from '@/hooks/use-source-email-unlink';
 import { selectUserSetting, userSettingsQueryOptions } from '@/lib/settings-api';
-import { defaultEventCalendar } from '@/lib/tasks';
+import { defaultEventCalendar, movingTo } from '@/lib/tasks';
 import { ListChooser } from '@/components/todo/ListChooser';
 
 /** What the dialog shows: a new event (optionally on a day) or an existing one. */
@@ -64,6 +64,11 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
   const [form, setForm] = useState(emptyForm);
   const [formTarget, setFormTarget] = useState<EventDialogTarget>(null);
   const [pendingScope, setPendingScope] = useState<PendingScope | null>(null);
+  // A calendar change a server has not confirmed yet (202 'creating'): the
+  // dialog says so instead of closing. Each opening is numbered, so a late
+  // answer from an earlier opening changes nothing here.
+  const [movePending, setMovePending] = useState<string | null>(null);
+  const opening = useRef(0);
   const editing = target?.kind === 'edit' ? target.event : null;
   const defaultReminder = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('default_event_reminder') }).data;
 
@@ -90,6 +95,9 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
   // an empty form first. Later calendar refreshes do not reset what was typed.
   if (target !== formTarget) {
     setFormTarget(target);
+    // An event opened while its move waits for the calendar server shows that state, with the move's cancellation.
+    setMovePending(target?.kind === 'edit' ? movingTo(target.event, calendars) : null);
+    opening.current += 1;
     // A new event starts in the calendar the server marks as the default (Settings → General, else UniHub's choice).
     if (target) setForm(formFor(target, timezone, defaultEventCalendar(calendars)?.id || '', defaultReminder === undefined ? 0 : defaultReminder));
   }
@@ -109,8 +117,15 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
   });
 
   const save = (scope?: RecurrenceScope) => {
-    if (editing) actions.update.mutate({ id: editing.id, event: payload(), scope }, { onSuccess: onClose });
-    else actions.create.mutate(payload(), { onSuccess: onClose });
+    if (editing) {
+      const submitted = { id: editing.id, opening: opening.current, calendarName: calendarById.get(form.calendar_id)?.name ?? 'its new calendar' };
+      actions.update.mutate({ id: editing.id, event: payload(), scope }, {
+        onSuccess: result => {
+          if (submitted.opening !== opening.current || formTarget?.kind !== 'edit' || formTarget.event.id !== submitted.id) return;
+          if (result.pending === 'creating') setMovePending(submitted.calendarName); else onClose();
+        },
+      });
+    } else actions.create.mutate(payload(), { onSuccess: onClose });
   };
 
   const submit = (event: FormEvent) => {
@@ -141,6 +156,13 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
   };
 
   const saving = actions.create.isPending || actions.update.isPending;
+  const cancelMove = () => {
+    if (!editing) return;
+    const submitted = { id: editing.id, opening: opening.current };
+    actions.cancelMove.mutate({ id: editing.id, from: calendarById.get(editing.calendar_id ?? '')?.name, to: movePending ?? undefined }, {
+      onSuccess: () => { if (submitted.opening === opening.current && formTarget?.kind === 'edit' && formTarget.event.id === submitted.id) onClose(); },
+    });
+  };
 
   return <>
     <Dialog open={!!target} onOpenChange={open => { if (!open) onClose(); }}>
@@ -167,6 +189,20 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
           <SourceEmailBlock source={editing.source_email} timezone={timezone} unlinking={unlink.isPending}
             onUnlink={readOnly ? undefined : () => unlink.mutate(editing, { onSuccess: () => setUnlinkedId(editing.id) })} />
         )}
+        {movePending ? (
+          <div className="space-y-4">
+            <p className="flex items-center gap-2 text-sm" role="status">
+              <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin motion-reduce:animate-none" />
+              Moving… UniHub finishes this in the background and the event shows in {movePending} once the calendar server has stored it. Until then it stays where it was.
+            </p>
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button type="button" variant="outline" disabled={actions.cancelMove.isPending} onClick={cancelMove}>
+                {actions.cancelMove.isPending && <Loader2 aria-hidden="true" className="animate-spin" />}Cancel move
+              </Button>
+              <Button type="button" onClick={onClose}>Close</Button>
+            </DialogFooter>
+          </div>
+        ) : (
         <form onSubmit={submit} className="space-y-4">
           <fieldset disabled={readOnly} className="min-w-0 space-y-4">
             <div className="space-y-2">
@@ -236,6 +272,7 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
             )}
           </DialogFooter>
         </form>
+        )}
       </DialogContent>
     </Dialog>
 

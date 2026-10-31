@@ -332,7 +332,7 @@ class ApiClient {
     }
   }
 
-  async post<T>(endpoint: string, body?: unknown, options: Pick<ApiRequestInit, 'headers'> = {}): Promise<ApiResponse<T>> {
+  async post<T>(endpoint: string, body?: unknown, options: Pick<ApiRequestInit, 'headers' | 'signal'> = {}): Promise<ApiResponse<T>> {
     return this.request<T>(endpoint, {
       ...options,
       method: 'POST',
@@ -340,7 +340,7 @@ class ApiClient {
     });
   }
 
-  async put<T>(endpoint: string, body?: unknown, options: Pick<ApiRequestInit, 'headers'> = {}): Promise<ApiResponse<T>> {
+  async put<T>(endpoint: string, body?: unknown, options: Pick<ApiRequestInit, 'headers' | 'signal'> = {}): Promise<ApiResponse<T>> {
     return this.request<T>(endpoint, {
       ...options,
       method: 'PUT',
@@ -348,8 +348,8 @@ class ApiClient {
     });
   }
 
-  async delete<T>(endpoint: string, body?: unknown): Promise<ApiResponse<T>> {
-    return this.request<T>(endpoint, { method: 'DELETE', body: body === undefined ? undefined : JSON.stringify(body) });
+  async delete<T>(endpoint: string, body?: unknown, options: Pick<ApiRequestInit, 'signal'> = {}): Promise<ApiResponse<T>> {
+    return this.request<T>(endpoint, { ...options, method: 'DELETE', body: body === undefined ? undefined : JSON.stringify(body) });
   }
 }
 

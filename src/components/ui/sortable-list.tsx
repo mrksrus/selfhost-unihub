@@ -1,10 +1,10 @@
-import { forwardRef, useCallback, useMemo, useRef, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from 'react';
+import { forwardRef, useCallback, useEffect, useMemo, useRef, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from 'react';
 import {
   DndContext, KeyboardSensor, MouseSensor, TouchSensor, closestCenter, useSensor, useSensors,
-  type Announcements, type DragEndEvent, type Modifier, type ScreenReaderInstructions, type UniqueIdentifier,
+  type Announcements, type DragEndEvent, type DragStartEvent, type Modifier, type ScreenReaderInstructions, type UniqueIdentifier,
 } from '@dnd-kit/core';
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+import { CSS, getEventCoordinates } from '@dnd-kit/utilities';
 import { GripVertical } from 'lucide-react';
 import { useMediaQuery } from '@/hooks/use-mobile';
 import { cn } from '@/lib/utils';
@@ -64,8 +64,10 @@ const INSTRUCTIONS: ScreenReaderInstructions = {
   draggable: 'Press Space to pick up, the arrow keys to move, Space to drop, Escape to cancel.',
 };
 
-// Rows move up and down only; the drop stays in the row's own list because
-// the list is the only sortable context the drag knows.
+// Rows move up and down only. The list is the only sortable context the drag
+// knows, so a row can never land in another list; a drop outside the list's
+// own bounds is cancelled instead (droppedOutside), as the nearest row of the
+// list would otherwise take it.
 const verticalOnly: Modifier = ({ transform }) => ({ ...transform, x: 0 });
 
 /** A list whose rows a person reorders by handle, mouse, touch or keyboard. */
@@ -77,6 +79,37 @@ export function SortableList<T>({ items, getId, getName, label, onReorder, disab
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
+  const list = useRef<HTMLElement | null>(null);
+  // Where the pointer is during a pointer drag, in viewport coordinates: from
+  // the press that started it, then every move on the window. The dragged
+  // row's own box cannot tell (dnd-kit pins its x and scales it to the row it
+  // is over). A keyboard drag has no pointer and stays within the list anyway.
+  const pointer = useRef<{ x: number; y: number } | null>(null);
+  const stopTracking = useRef<() => void>(() => {});
+  const trackPointer = ({ activatorEvent }: DragStartEvent) => {
+    stopTracking.current();
+    pointer.current = activatorEvent ? getEventCoordinates(activatorEvent) : null;
+    if (!pointer.current) return;
+    const follow = (event: Event) => { pointer.current = getEventCoordinates(event) ?? pointer.current; };
+    const moves = ['pointermove', 'mousemove', 'touchmove'] as const;
+    for (const move of moves) window.addEventListener(move, follow, { capture: true, passive: true });
+    stopTracking.current = () => { for (const move of moves) window.removeEventListener(move, follow, { capture: true }); stopTracking.current = () => {}; };
+  };
+  useEffect(() => () => stopTracking.current(), []);
+  /**
+   * Whether the pointer let go outside this list (over another section, its
+   * heading, beside it, or nothing): then the drop changes nothing and the
+   * row goes back (D31: a drag stays within its section).
+   */
+  const droppedOutside = () => {
+    stopTracking.current();
+    const at = pointer.current;
+    const bounds = list.current?.getBoundingClientRect();
+    if (!at || !bounds) return false;
+    return at.x < bounds.left || at.x > bounds.right || at.y < bounds.top || at.y > bounds.bottom;
+  };
+  // Read by the announcement of the drop, which dnd-kit makes right after onDragEnd.
+  const outside = useRef(false);
   const position = useCallback((id: UniqueIdentifier) => ids.indexOf(String(id)) + 1, [ids]);
   const nameOf = useCallback((id: UniqueIdentifier) => {
     const item = items.find(entry => getId(entry) === String(id));
@@ -96,14 +129,18 @@ export function SortableList<T>({ items, getId, getName, label, onReorder, disab
       moved.current = true;
       return `${nameOf(active.id)} moved to position ${position(over.id)} of ${ids.length} in ${label}.`;
     },
-    onDragEnd: ({ active, over }) => over && over.id !== active.id
-      ? `${nameOf(active.id)} dropped at position ${position(over.id)} of ${ids.length} in ${label}.`
-      : `${nameOf(active.id)} stays at position ${position(active.id)} of ${ids.length} in ${label}.`,
+    onDragEnd: ({ active, over }) => {
+      if (outside.current) return `Dropped outside ${label}. ${nameOf(active.id)} is back at position ${position(active.id)} of ${ids.length} in ${label}.`;
+      return over && over.id !== active.id
+        ? `${nameOf(active.id)} dropped at position ${position(over.id)} of ${ids.length} in ${label}.`
+        : `${nameOf(active.id)} stays at position ${position(active.id)} of ${ids.length} in ${label}.`;
+    },
     onDragCancel: ({ active }) => `Reordering cancelled. ${nameOf(active.id)} is back at position ${position(active.id)} of ${ids.length} in ${label}.`,
   }), [nameOf, position, ids.length, label]);
 
   const onDragEnd = ({ active, over }: DragEndEvent) => {
-    if (!over || over.id === active.id) return;
+    outside.current = droppedOutside();
+    if (!over || over.id === active.id || outside.current) return;
     const from = ids.indexOf(String(active.id));
     const to = ids.indexOf(String(over.id));
     if (from === -1 || to === -1) return;
@@ -114,9 +151,9 @@ export function SortableList<T>({ items, getId, getName, label, onReorder, disab
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} modifiers={[verticalOnly]}
       accessibility={{ announcements, screenReaderInstructions: INSTRUCTIONS }}
-      onDragEnd={onDragEnd}>
+      onDragStart={trackPointer} onDragEnd={onDragEnd} onDragCancel={() => stopTracking.current()}>
       <SortableContext items={ids} strategy={verticalListSortingStrategy} disabled={disabled}>
-        <Tag className={className} aria-label={ariaLabel}>
+        <Tag ref={list as never} className={className} aria-label={ariaLabel}>
           {items.map((item, index) => (
             <SortableItem key={ids[index]} id={ids[index]} disabled={disabled} reducedMotion={reducedMotion}>
               {row => children(item, row, index)}
