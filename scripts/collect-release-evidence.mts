@@ -4,7 +4,7 @@
 //   node scripts/collect-release-evidence.mts --parts <dir> --out <dir> [--previous <dir>]
 //
 // <parts> holds one directory per uploaded part, named
-// unihub-release-evidence-<part>-attempt<n>; --previous is the bundle an
+// unihub-evidence-part-<part>-attempt<n>; --previous is the bundle an
 // earlier attempt of the run kept (its manifest.json names each part's attempt
 // and files; the parts themselves are deleted once a complete bundle is kept).
 // A part re-run in a later attempt replaces that part; parts not re-run keep
@@ -44,7 +44,7 @@ for (const [part, entry] of Object.entries(previous?.parts ?? {})) {
 // part's attempt can be trusted.
 const unexpected: string[] = [];
 for (const entry of fs.existsSync(partsDir) ? fs.readdirSync(partsDir, { withFileTypes: true }) : []) {
-  const match = /^unihub-release-evidence-(.+)-attempt(\d+)$/.exec(entry.name);
+  const match = /^unihub-evidence-part-(.+)-attempt(\d+)$/.exec(entry.name);
   if (match && entry.isDirectory()) offer(match[1], { attempt: Number(match[2]), dir: path.join(partsDir, entry.name), files: files(path.join(partsDir, entry.name)) });
   else unexpected.push(entry.name);
 }

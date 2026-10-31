@@ -21,8 +21,8 @@ exactly the released content (a direct push, or `main` moved after the
 pull request's run), the release run builds and runs every check itself
 before publishing. The release run's summary names the published digest and the run
 that tested it (the image's `io.github.mrksrus.unihub.tested-run` label);
-that run holds the release evidence (`unihub-release-evidence`, kept 30 days,
-and the emulator logs). Record what the release needs from it with the
+that run holds the release evidence (`unihub-release-evidence-attempt<n>` of
+its newest complete attempt, kept 30 days, and the emulator logs). Record what the release needs from it with the
 release.
 
 The workflows name every third-party action by its full commit SHA (the
@@ -36,10 +36,13 @@ run reports `npm audit` findings for shipped dependencies without blocking.
 `prune-candidates.yml` deletes, monthly, `candidate-*` images (run tags
 included) older than 30 days that no release adopted. It keeps any image a
 release tag or `latest` names, directly or inside an index (releases up to
-0.26.0 are an index around their tested image), and the candidate of a push
-whose run has not ended, and it reads each image's tags again just before
-deleting it; it needs the package to grant this repository
-the Admin role, and a manual run lists without deleting by default.
+0.26.0 are an index around their tested image). It does nothing while a push,
+release tag or manual run of `docker-image.yml` has not ended, checked before
+it starts and before each deletion, reads each image's tags again just before
+deleting it, and stops at any error. It holds up no release: no job of
+`docker-image.yml` shares its concurrency group. It needs the package to grant
+this repository the Admin role; a manual run lists without deleting by
+default, and only a dry run may look at candidates younger than 30 days.
 
 Feature details stay in their own documents; this page lists what must be
 shown before publishing and how.
@@ -54,21 +57,25 @@ pairings over four emulators, `--part k/4`) and `e2e` (one job per target;
 desktop in three: the scheduled-send and snooze files, which wait on server
 timers, each alone, and every other file) start together.
 
-`evidence` gathers the evidence of `container` and the four server parts into
-`unihub-release-evidence` (with a `manifest.json` naming each part's attempt
-and files), also after a failure, and checks that every part is present and
-records a pass (`scripts/collect-release-evidence.mts`). Each part is
-uploaded per attempt, so re-running jobs replaces the parts they re-ran and
-keeps the others, from their uploads or from the bundle an earlier attempt
-kept; the parts are kept up to 7 days and deleted once the complete evidence
-is kept. `publish` needs every test job and that check, and
-re-tags the tested digest without building (a carbon copy, so every tag names
-that digest, as `promote` does for the release tags). `promote`, `publish` and
-`prune-candidates.yml` share the `ghcr-tags` concurrency group, so they never
-run at the same time. GitHub keeps at most one job of a group waiting: when
-three arrive at once, the oldest waiting one is cancelled. A cancelled
-`publish` keeps nothing, and the next merge then builds and tests anew; it
-never publishes anything else.
+`evidence` gathers the evidence of `container` and the four server parts and
+checks that every part is present and records a pass
+(`scripts/collect-release-evidence.mts`); `publish` needs that check. Each
+part is uploaded per attempt (`unihub-evidence-part-<part>-attempt<n>`, kept
+up to 7 days), so re-running jobs replaces the parts they re-ran and keeps the
+others, from their uploads or from the bundle an earlier attempt kept. Only
+complete evidence is stored, as `unihub-release-evidence-attempt<n>` (30 days,
+with a `manifest.json` naming each part's attempt and files); only after that
+upload is listed are the parts and earlier bundles deleted
+(`scripts/release-evidence.sh`), and not for a pull request from a fork, whose
+token cannot delete (its parts expire). A failed listing or download fails the
+job. An incomplete attempt stores and deletes nothing: an earlier complete
+bundle stays, and its parts stay for a re-run.
+
+`publish` re-tags the tested digest without building (a carbon copy, so every
+tag names that digest, as `promote` does for the release tags), then reads
+every tag it wrote back from the registry and fails loudly unless each names
+the tested digest and the digest still resolves (`scripts/verify-image-tags.sh`);
+`promote` does the same for the release tags. Neither waits for a lock.
 
 Between jobs only small artifacts travel (the Android app and the support
 window's earlier apps, kept a day; the release-signed app is also kept 14 days
@@ -174,8 +181,8 @@ own MariaDB server, uploads, `ENCRYPTION_KEY`, `BACKUP_MASTER_KEY` and
    arrive.
 
 With `UNIHUB_RECOVERY_EVIDENCE=<file>` it writes the image ID, archive hash,
-restored row counts and the commands the peers saw. CI keeps it as the
-`unihub-release-evidence` artifact.
+restored row counts and the commands the peers saw. CI keeps it in the
+release evidence (`unihub-release-evidence-attempt<n>`).
 
 The frozen old-archive tests in `api/tests/` (0.9.23 and 0.10.3 exports) stay
 part of `test:ci`. When the stored data or backup format changes, also restore
@@ -276,8 +283,8 @@ as working.
 
 Report, for the exact commit and image:
 
-- the CI run and its result for each step above, the image digest and the
-  `unihub-release-evidence` artifact;
+- the CI run and its result for each step above, the image digest and its
+  newest `unihub-release-evidence-attempt<n>` artifact;
 - the Android table printed by each emulator job, and the real-server
   tables of the four `android-16-servers` parts;
 - anything verified outside CI (a real phone, a real mail provider), named as

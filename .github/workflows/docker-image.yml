@@ -36,11 +36,6 @@ jobs:
   promote:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    # Every job that writes lasting tags, and prune-candidates.yml, takes
-    # turns: a prune never deletes an image while a release adopts it.
-    concurrency:
-      group: ghcr-tags
-      cancel-in-progress: false
     timeout-minutes: 10
     permissions:
       contents: read
@@ -111,11 +106,15 @@ jobs:
           # A carbon copy: each tag names the tested digest itself, not a new
           # index around it.
           docker buildx imagetools create --prefer-index=false "${args[@]}" "$REGISTRY/$IMAGE_NAME@$DIGEST"
-          while IFS= read -r tag; do
-            [ -n "$tag" ] || continue
-            [ "$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}')" = "$DIGEST" ] || { echo "$tag does not name $DIGEST" >&2; exit 1; }
-          done <<< "$IMAGE_TAGS"
           echo "- Published as: $(tr '\n' ' ' <<< "$IMAGE_TAGS")" >> "$GITHUB_STEP_SUMMARY"
+
+      # Read back from the registry: a lost or wrong release tag fails here, never silently.
+      - name: Verify the published tags
+        if: steps.candidate.outputs.found == 'true'
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.candidate.outputs.digest }}
+        run: bash scripts/verify-image-tags.sh "$IMAGE" <<< "$IMAGE_TAGS"
 
   # Pull requests and manual runs skip promote; a push builds and tests only
   # when no tested image exists for its content (or promote could not look).
@@ -303,6 +302,9 @@ jobs:
 
       - name: Build the image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        env:
+          # The build summary stays; its record artifact (kept 90 days) is not needed.
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
           context: .
           file: ./Dockerfile
@@ -529,7 +531,9 @@ jobs:
             return "$code"
           }
           check --image unihub:ci
-          for version in $(node -p 'require("./android/support-window.json").releases.slice(1).map(release => release.version).join(" ")'); do
+          versions="$(node -p 'require("./android/support-window.json").releases.slice(1).map(release => release.version).join(" ")')"
+          [ -n "$versions" ] || { echo "No earlier release in android/support-window.json" >&2; exit 1; }
+          for version in $versions; do
             check --image unihub:ci --old "$version" --new dist
           done
 
@@ -537,7 +541,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: unihub-release-evidence-container-attempt${{ github.run_attempt }}
+          name: unihub-evidence-part-container-attempt${{ github.run_attempt }}
           path: release-evidence/
           if-no-files-found: ignore
           # Until evidence below gathered the run's complete evidence; longer
@@ -760,7 +764,9 @@ jobs:
         run: |
           if [ -n "$IMAGE" ]; then docker pull --quiet "$IMAGE" && docker tag "$IMAGE" unihub:ci
           else docker build --quiet --tag unihub:ci .; fi
-          for version in $(node -p 'require("./android/support-window.json").releases.slice(1).map(release => release.version).join(" ")'); do
+          versions="$(node -p 'require("./android/support-window.json").releases.slice(1).map(release => release.version).join(" ")')"
+          [ -n "$versions" ] || { echo "No earlier release in android/support-window.json" >&2; exit 1; }
+          for version in $versions; do
             docker pull --quiet "$REGISTRY/$IMAGE_NAME:$version"
           done
 
@@ -785,7 +791,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: unihub-release-evidence-android-server-${{ matrix.part }}-attempt${{ github.run_attempt }}
+          name: unihub-evidence-part-android-server-${{ matrix.part }}-attempt${{ github.run_attempt }}
           path: release-evidence/
           if-no-files-found: ignore
           retention-days: 7
@@ -983,13 +989,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Gathers the evidence of the test jobs into one artifact, also after a
-  # failure, and checks that it is complete; publish needs that check. Each
-  # part is uploaded per attempt (unihub-release-evidence-<part>-attempt<n>):
-  # a re-run replaces the parts it re-ran and keeps the rest from earlier
-  # attempts, as parts or, once deleted, from the bundle an earlier attempt
-  # kept (scripts/collect-release-evidence.mts). The parts are deleted only
-  # once the complete evidence is kept.
+  # Gathers the evidence of the test jobs into one bundle and checks that it
+  # is complete; publish needs that check. Each part is uploaded per attempt
+  # (unihub-evidence-part-<part>-attempt<n>, 7 days): a re-run replaces the
+  # parts it re-ran and keeps the rest, from their uploads or from the bundle
+  # an earlier attempt kept (scripts/collect-release-evidence.mts). Only a
+  # complete bundle is stored, under this attempt's name
+  # (unihub-release-evidence-attempt<n>, 30 days); after it is stored, the
+  # parts and earlier bundles are deleted (scripts/release-evidence.sh). An
+  # incomplete attempt stores nothing and deletes nothing: its parts stay for
+  # a re-run, and an earlier complete bundle stays as it was.
   evidence:
     needs: [build, container, android-16-servers]
     if: ${{ always() && needs.build.result == 'success' }}
@@ -997,7 +1006,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      # Reads the parts of every attempt of this run; deletes them when done.
+      # Reads the artifacts of every attempt; deletes the parts once the bundle
+      # is stored. A pull request from a fork gets a read-only token: it skips
+      # the deleting, and the parts expire.
       actions: write
     steps:
       - name: Checkout repository
@@ -1015,59 +1026,27 @@ jobs:
         with:
           node-version: ${{ steps.node.outputs.version }}
 
-      # Through the public API, which lists the artifacts of every attempt.
-      # Each part into a directory of its own name (download-artifact puts a
-      # single match straight into its path, which would hide its attempt).
-      - name: Fetch the evidence parts of every attempt
+      - name: Fetch the evidence of every attempt
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir evidence-parts
-          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
-            --jq '.artifacts[] | select(.name | startswith("unihub-release-evidence-")) | select(.expired | not) | "\(.id) \(.name)"' |
-          while read -r id name; do
-            echo "Fetching $name"
-            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "$RUNNER_TEMP/part.zip"
-            mkdir "evidence-parts/$name"
-            unzip -q "$RUNNER_TEMP/part.zip" -d "evidence-parts/$name"
-          done
-
-      # The bundle an earlier attempt kept, whose parts were deleted then. None
-      # in a first attempt; without it a re-run's parts must be complete alone.
-      - name: Fetch the evidence an earlier attempt kept
-        continue-on-error: true
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: unihub-release-evidence
-          path: evidence-previous
-          run-id: ${{ github.run_id }}
-          github-token: ${{ github.token }}
+        run: bash scripts/release-evidence.sh fetch evidence-parts evidence-earlier
 
       - name: Gather and check the release evidence
-        id: collect
-        run: node scripts/collect-release-evidence.mts --parts evidence-parts --previous evidence-previous --out release-evidence
+        run: node scripts/collect-release-evidence.mts --parts evidence-parts --previous evidence-earlier --out release-evidence
 
-      # Replaces the bundle an earlier attempt kept.
       - name: Keep the release evidence
-        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: unihub-release-evidence
+          name: unihub-release-evidence-attempt${{ github.run_attempt }}
           path: release-evidence/
-          if-no-files-found: ignore
-          overwrite: true
+          if-no-files-found: error
           retention-days: 30
 
-      - name: Delete the evidence parts
+      - name: Delete the parts and earlier bundles
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
-            --jq '.artifacts[] | select(.name | startswith("unihub-release-evidence-")) | "\(.id) \(.name)"' |
-          while read -r id name; do
-            echo "Deleting $name"
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"
-          done
+        run: bash scripts/release-evidence.sh clean
 
   # Every test job passed: the tested digest gets its lasting tags. Nothing is
   # built here.
@@ -1081,9 +1060,6 @@ jobs:
         && needs.android-16-servers.result == 'success' && needs.e2e.result == 'success'
         && needs.evidence.result == 'success' }}
     runs-on: ubuntu-latest
-    concurrency:
-      group: ghcr-tags
-      cancel-in-progress: false
     timeout-minutes: 10
     permissions:
       contents: read
@@ -1111,8 +1087,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # A carbon copy (--prefer-index=false): each tag must then name exactly
-      # the tested digest, not a new index around it.
+      # A carbon copy (--prefer-index=false): each tag names the tested digest
+      # itself, not a new index around it (checked below).
       - name: Publish the tested image
         if: env.PUBLISHING == 'true'
         env:
@@ -1123,10 +1099,7 @@ jobs:
             [ -n "$tag" ] && args+=(--tag "$tag")
           done <<< "$IMAGE_TAGS"
           docker buildx imagetools create --prefer-index=false "${args[@]}" "$IMAGE"
-          while IFS= read -r tag; do
-            [ -n "$tag" ] || continue
-            [ "$REGISTRY/$IMAGE_NAME@$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}')" = "$IMAGE" ] || { echo "$tag does not name $IMAGE" >&2; exit 1; }
-          done <<< "$IMAGE_TAGS"
+          printf '%s\n' "$IMAGE_TAGS" >> "$RUNNER_TEMP/written-tags"
           {
             echo "### Published the tested image"
             echo "- Image: \`$IMAGE\`"
@@ -1147,5 +1120,12 @@ jobs:
           fi
           candidate="$REGISTRY/$IMAGE_NAME:candidate-$TREE"
           docker buildx imagetools create --prefer-index=false --tag "$candidate" "$IMAGE"
-          [ "$REGISTRY/$IMAGE_NAME@$(docker buildx imagetools inspect "$candidate" --format '{{.Manifest.Digest}}')" = "$IMAGE" ] || { echo "$candidate does not name $IMAGE" >&2; exit 1; }
+          echo "$candidate" >> "$RUNNER_TEMP/written-tags"
           echo "### Kept the tested image as \`$candidate\` ($IMAGE)" >> "$GITHUB_STEP_SUMMARY"
+
+      # Read back from the registry: a lost or wrong tag fails here, never silently.
+      - name: Verify the tags written
+        if: env.PUBLISHING == 'true' || env.KEEPING == 'true'
+        run: |
+          if [ ! -s "$RUNNER_TEMP/written-tags" ]; then echo "No tag was written."; exit 0; fi
+          bash scripts/verify-image-tags.sh "$IMAGE" < "$RUNNER_TEMP/written-tags"
