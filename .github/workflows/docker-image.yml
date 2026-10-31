@@ -40,6 +40,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # The run that tested a candidate, and its publish job's log.
+      actions: read
     outputs:
       # Whether a tested image exists for this content. If it does and
       # publishing it fails, this run fails instead of building anew.
@@ -65,9 +67,15 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # The candidate tag is resolved once to its digest, and that digest is
-      # published, so a later push of the tag cannot change what goes out.
+      # published, so a later push of the tag cannot change what goes out. The
+      # tag alone proves nothing (a failed publish could leave it behind): the
+      # run named by the image's tested-run label must have published and read
+      # back exactly this tag and digest (scripts/check-candidate-run.sh), or
+      # the full build and tests run.
       - name: Find the image a pull request tested
         id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           tree="$(git rev-parse 'HEAD^{tree}')"
           candidate="$REGISTRY/$IMAGE_NAME:candidate-$tree"
@@ -77,6 +85,11 @@ jobs:
             exit 0
           fi
           run="$(docker buildx imagetools inspect "$REGISTRY/$IMAGE_NAME@$digest" --format '{{index .Image.Config.Labels "io.github.mrksrus.unihub.tested-run"}}' 2>/dev/null || true)"
+          if ! bash scripts/check-candidate-run.sh "$candidate" "$digest" "$run"; then
+            echo "$candidate ($digest) is not proven tested; the full build and tests run."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           {
             echo "found=true"
             echo "digest=$digest"
@@ -261,6 +274,7 @@ jobs:
       # <registry>/<name>@<digest>, or empty when this run cannot push (a pull
       # request from a fork): the test jobs then build the same commit themselves.
       image: ${{ steps.push.outputs.image }}
+      run-tag: ${{ steps.push.outputs.run-tag }}
       tree: ${{ steps.push.outputs.tree }}
       signing: ${{ steps.app.outputs.signing }}
     steps:
@@ -378,6 +392,7 @@ jobs:
           digest="$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}')"
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "No digest for $tag" >&2; exit 1; }
           echo "image=$REGISTRY/$IMAGE_NAME@$digest" >> "$GITHUB_OUTPUT"
+          echo "run-tag=$tag" >> "$GITHUB_OUTPUT"
           {
             echo "### Image under test"
             echo "- \`$REGISTRY/$IMAGE_NAME@$digest\` ($tag)"
@@ -1091,8 +1106,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Before any lasting tag: the run tag must still name the tested digest.
+      - name: Read back the image under test
+        if: env.PUBLISHING == 'true' || env.KEEPING == 'true'
+        env:
+          RUN_TAG: ${{ needs.build.outputs.run-tag }}
+        run: bash scripts/verify-image-tags.sh "$IMAGE" <<< "$RUN_TAG"
+
       # A carbon copy (--prefer-index=false): each tag names the tested digest
-      # itself, not a new index around it (checked below).
+      # itself, not a new index around it (read back below).
       - name: Publish the tested image
         if: env.PUBLISHING == 'true'
         env:
@@ -1103,7 +1125,7 @@ jobs:
             [ -n "$tag" ] && args+=(--tag "$tag")
           done <<< "$IMAGE_TAGS"
           docker buildx imagetools create --prefer-index=false "${args[@]}" "$IMAGE"
-          printf '%s\n' "$IMAGE_TAGS" >> "$RUNNER_TEMP/written-tags"
+          bash scripts/verify-image-tags.sh "$IMAGE" <<< "$IMAGE_TAGS"
           {
             echo "### Published the tested image"
             echo "- Image: \`$IMAGE\`"
@@ -1111,7 +1133,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Kept for the release that merges exactly this content (promote above).
-      # Only with the release-signed app: a published image must carry it.
+      # Only with the release-signed app: a published image must carry it. The
+      # last write of the run, after every check; promote also confirms that
+      # this job succeeded and read the tag back (scripts/check-candidate-run.sh).
       - name: Keep the tested image for its release
         if: env.KEEPING == 'true'
         env:
@@ -1124,12 +1148,5 @@ jobs:
           fi
           candidate="$REGISTRY/$IMAGE_NAME:candidate-$TREE"
           docker buildx imagetools create --prefer-index=false --tag "$candidate" "$IMAGE"
-          echo "$candidate" >> "$RUNNER_TEMP/written-tags"
+          bash scripts/verify-image-tags.sh "$IMAGE" <<< "$candidate"
           echo "### Kept the tested image as \`$candidate\` ($IMAGE)" >> "$GITHUB_STEP_SUMMARY"
-
-      # Read back from the registry: a lost or wrong tag fails here, never silently.
-      - name: Verify the tags written
-        if: env.PUBLISHING == 'true' || env.KEEPING == 'true'
-        run: |
-          if [ ! -s "$RUNNER_TEMP/written-tags" ]; then echo "No tag was written."; exit 0; fi
-          bash scripts/verify-image-tags.sh "$IMAGE" < "$RUNNER_TEMP/written-tags"

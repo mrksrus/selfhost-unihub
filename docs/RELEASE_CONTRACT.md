@@ -37,8 +37,9 @@ run reports `npm audit` findings for shipped dependencies without blocking.
 included) older than 30 days that no release adopted. It keeps any image a
 release tag or `latest` names, directly or inside an index (releases up to
 0.26.0 are an index around their tested image). It does nothing while a push,
-release tag or manual run of `docker-image.yml` has not ended, checked before
-it starts and before each deletion, reads each image's tags again just before
+release tag or manual run of `docker-image.yml` has not ended (asked of the
+server per event and status, every page read), checked before it starts and
+before each deletion, reads each image's tags again just before
 deleting it, and stops at any error. It holds up no release: no job of
 `docker-image.yml` shares its concurrency group. It needs the package to grant
 this repository the Admin role; a manual run lists without deleting by
@@ -71,11 +72,18 @@ token cannot delete (its parts expire). A failed listing or download fails the
 job. An incomplete attempt stores and deletes nothing: an earlier complete
 bundle stays, and its parts stay for a re-run.
 
-`publish` re-tags the tested digest without building (a carbon copy, so every
-tag names that digest, as `promote` does for the release tags), then reads
-every tag it wrote back from the registry and fails loudly unless each names
-the tested digest and the digest still resolves (`scripts/verify-image-tags.sh`);
-`promote` does the same for the release tags. Neither waits for a lock.
+`publish` first reads the run tag back and checks that it still names the
+tested digest, then re-tags that digest without building (a carbon copy, so
+every tag names it), and reads every tag it wrote back from the registry,
+failing loudly unless each names the tested digest and the digest still
+resolves (`scripts/verify-image-tags.sh`). On a pull request,
+`candidate-<tree>` is the run's very last write. `promote` does not take the
+tag as proof: the image's `tested-run` label must name a run of this workflow
+whose latest `publish` job concluded success and whose log shows the
+read-back of exactly that tag and digest (`scripts/check-candidate-run.sh`).
+Otherwise (a failed publish, an older candidate, an expired log, any API
+error) the release run builds and tests itself. `promote` reads its release
+tags back the same way. Neither job waits for a lock.
 
 Between jobs only small artifacts travel (the Android app and the support
 window's earlier apps, kept a day; the release-signed app is also kept 14 days

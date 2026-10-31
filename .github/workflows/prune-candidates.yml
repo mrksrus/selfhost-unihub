@@ -71,17 +71,20 @@ jobs:
           fi
 
           # Sets $releasing to the runs of docker-image.yml that may adopt a
-          # candidate (pushes to main, release tags, manual runs) and have not
-          # ended. Called as a plain command, so a failed query stops the job.
+          # candidate and have not ended: pushes to main and release tags
+          # (event push) and manual runs (workflow_dispatch). Filtered by the
+          # server, every page read; called as a plain command, so a failed
+          # query stops the job.
           check_releasing() {
-            local status found
+            local event status found
             releasing=
-            for status in requested queued pending waiting in_progress; do
-              found="$(gh api "repos/$REPO/actions/workflows/docker-image.yml/runs?status=$status&per_page=100" \
-                --jq '[.workflow_runs[] | select(.event != "pull_request") | "\(.id) \(.event) \(.head_branch)"] | join(", ")')" \
-                || { echo "Cannot read the runs of docker-image.yml" >&2; exit 1; }
-              releasing="$releasing${releasing:+, }$found"
-              releasing="${releasing%, }"
+            for event in push workflow_dispatch; do
+              for status in requested queued pending waiting in_progress; do
+                found="$(gh api --paginate "repos/$REPO/actions/workflows/docker-image.yml/runs?event=$event&status=$status&per_page=100" \
+                  --jq '.workflow_runs[] | "\(.id) \(.event) \(.head_branch)"')" \
+                  || { echo "Cannot read the $status $event runs of docker-image.yml" >&2; exit 1; }
+                if [ -n "$found" ]; then releasing="$releasing${releasing:+, }$(paste -sd, - <<< "$found")"; fi
+              done
             done
             return 0
           }
