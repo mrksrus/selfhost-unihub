@@ -79,12 +79,16 @@ const eventBusy = () => conflict('CALENDAR_EVENT_CHANGED',
 // change waits out the one before it; more than two waiting are refused.
 const EVENT_LOCK_WAIT_SECONDS = 25;
 const WAITERS_PER_ITEM = 2;
-const heldEventLocks = new AsyncLocalStorage<{ key: string; held: boolean; lease: Lease }[]>();
+const heldEventLocks = new AsyncLocalStorage<{ key: string; userId: string; held: boolean; lease: Lease }[]>();
 
 // A change that waited may find the Calendar module turned off or a calendar
 // restore begun meanwhile: the request boundary's checks, made again.
 async function assertStillAdmitted(userId: string) {
   if (!await isModuleEnabled(userId, 'calendar')) throw forbidden('MODULE_DISABLED', 'This module is disabled. Enable it in Settings.');
+  await assertNoCalendarRestore(userId);
+}
+
+async function assertNoCalendarRestore(userId: string) {
   if ((await getActiveRestoreSections(userId)).has('calendar')) {
     throw conflict('RESTORE_IN_PROGRESS', 'Restore in progress for calendar. This section is temporarily read-only.');
   }
@@ -105,7 +109,7 @@ async function underEventLock<T>(userId: string, eventId: string, fn: () => Prom
   // Background work never shares it: a sync a request set off runs beside it.
   if (request && outer.some(lock => lock.key === key && lock.held)) return { value: await fn() };
   return withNamedLock('calendar-event', key, lease => {
-    const lock = { key, held: true, lease };
+    const lock = { key, userId, held: true, lease };
     return heldEventLocks.run([...outer, lock], async () => {
       // Work left running past the end (none should be) takes the lock again itself.
       try {
@@ -120,13 +124,17 @@ async function underEventLock<T>(userId: string, eventId: string, fn: () => Prom
  * Before a write to a server, and inside the transaction of a local write,
  * of work holding items' locks: refuses (409 CALENDAR_EVENT_CHANGED) when
  * one of them was lost meanwhile, as its connection's session ended, so the
- * work writes nothing more after another change may have taken the lock.
+ * work writes nothing more after another change may have taken the lock;
+ * and (409 RESTORE_IN_PROGRESS) once a calendar restore of the person has
+ * begun, which may write over the item (a move it overtakes ends there).
  * Nothing to check outside such work (a sync, a test calling a service).
  */
 async function fenceTaskLocks(executor: SqlExecutor = db) {
-  for (const lock of heldEventLocks.getStore() ?? []) {
-    if (lock.held && !await stillHeld(executor, lock.lease)) throw eventChanged();
+  const held = (heldEventLocks.getStore() ?? []).filter(lock => lock.held);
+  for (const lock of held) {
+    if (!await stillHeld(executor, lock.lease)) throw eventChanged();
   }
+  for (const userId of new Set(held.map(lock => lock.userId))) await assertNoCalendarRestore(userId);
 }
 
 /** A local write of work holding items' locks, in a transaction fenced by them. */

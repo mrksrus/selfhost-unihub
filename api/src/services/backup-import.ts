@@ -17,6 +17,7 @@ import { isModuleEnabled } from './module-settings';
 import { SETTINGS, referenceKeys, restorableValue } from './settings';
 import { normalizeSignature } from './mail-signature';
 import { copyKey, copyNumber, itemKey, keyBase } from './task-order';
+import { lockMovesForRestore, settleMovesForRestore } from './calendar-move';
 import {
   isFileRangeSource,
   normalizeMysqlDateTime,
@@ -366,6 +367,12 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         photoFiles, sourceVersion: scopedBackup.source_backup_version }));
 
       await reportRestoreProgress('calendar', 55);
+      // Moves of tasks (calendar-move.ts): held until this commits, and those
+      // the restore overtakes end below.
+      const restoresCalendarContent = scopedBackup.import_sections.includes('calendar') && !accountOnly.has('calendar');
+      if (restoresCalendarContent) await lockMovesForRestore(connection, userId);
+      const overwrittenEventIds = new Set<string>();
+      const relocatedCalendarIds = new Set<string>();
       for (const account of data.calendar_accounts || []) {
         await checkRestoreCancelled();
         const row = overwriteUserId(account, userId);
@@ -455,6 +462,10 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         calendarIdMap.set(row.id, targetCalendarId);
         if (!shouldWriteExisting(existingCalendarId, targetCalendarId, conflictMode)) continue;
         writtenCalendarIds.add(targetCalendarId);
+        if (existingCalendarId === targetCalendarId) {
+          const [[before]] = await connection.execute<RowDataPacket[]>('SELECT account_id, external_id FROM calendar_calendars WHERE id = ? AND user_id = ?', [targetCalendarId, userId]);
+          if (before && (before.account_id !== targetAccountId || (before.external_id ?? null) !== (row.external_id || null))) relocatedCalendarIds.add(targetCalendarId);
+        }
         const calendarName = targetCalendarId !== existingCalendarId && conflictMode === 'keep_both' && existingCalendarId
           ? `${row.name || 'Calendar'} (Restored)`
           : row.name || 'Calendar';
@@ -491,6 +502,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         calendarEventIdMap.set(row.id, targetEventId);
         claimedCalendarEventIds.add(targetEventId);
         if (!shouldWriteExisting(existingEventId, targetEventId, conflictMode)) continue;
+        if (existingEventId === targetEventId) overwrittenEventIds.add(targetEventId);
         // created_at and the order key too (0.27): a task without a date is
         // ordered by when it was made, and ties by the archived task's key.
         await writeOwnedRow(connection, userId, 'calendar_events',
@@ -564,6 +576,8 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
           ['event_id', 'calendar_id', 'provider', 'external_etag', 'external_updated_at', 'last_synced_at']
         );
       }
+
+      if (restoresCalendarContent) await settleMovesForRestore(connection, userId, { overwrittenEventIds, relocatedCalendarIds });
 
       // The hand order (0.27): a local task's row follows its restored event,
       // a synced one its calendar; the key is computed again from them. A

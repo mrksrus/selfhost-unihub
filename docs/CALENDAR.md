@@ -385,8 +385,10 @@ are then rebuilt from the server's answer, so the server stays the authority.
   (`services/named-locks.ts`): `CALENDAR_EVENT_LOCKS` (10) for items and
   `CALENDAR_SYNC_LOCKS` (8) for account syncs, beside the main pool of 50; the
   comment there says how to size them. A request that waited checks the
-  Calendar module and a running restore again; a sync leaves a copy it may
-  not adopt yet for its next run. A lock whose database session ended (a
+  Calendar module and a running restore again, and every server write and
+  local write of a change checks for a calendar restore begun since; a sync
+  leaves a copy it may not adopt yet for its next run. A restore that writes
+  over a task ends its unfinished move (docs/DATA_RECOVERY.md). A lock whose database session ended (a
   killed or broken connection) is lost: every server write and the local
   write of the change holding it check it first, so that change writes
   nothing more and answers 409, and the change that took the lock since

@@ -651,9 +651,10 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       if (move && await moves().commitMove(connection, move, { account: ctx.account, calendar, object, timeZone: ctx.timeZone })) return { object, created: [] };
       return { object, created: await applyObjectRows(connection, ctx, calendar, object, expanded) };
     });
-    // A lock lost before the commit (its session ended) defers it as well.
+    // A lock lost before the commit (its session ended), or a calendar
+    // restore begun meanwhile, defers it as well.
     const adopt = () => tryEventLock(adopting!.userId, adopting!.eventId, () => apply(adopting!.eventId))
-      .catch(error => { if ((error as ApiError)?.code === 'CALENDAR_EVENT_CHANGED') return null; throw error; });
+      .catch(error => { if (['CALENDAR_EVENT_CHANGED', 'RESTORE_IN_PROGRESS'].includes((error as ApiError)?.code as string)) return null; throw error; });
     const result = adopting ? (await adopt())?.value ?? DEFERRED : await apply(null);
     if (result === DEFERRED) {
       deferred += 1;
