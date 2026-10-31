@@ -13,9 +13,9 @@ import { isSectionRestoreActive, getActiveRestoreSectionsByUser } from './restor
 // per-cause message keep their own two checks as well.
 const sectionOf = (moduleId: string) => MODULE_CATALOG.find(module => module.id === moduleId)?.recoverySection ?? moduleId;
 
-async function canRunModule(userId: string, moduleId: string, { background = false } = {}) {
-  if (await isSectionRestoreActive(userId, sectionOf(moduleId))) return false;
-  return background ? isModuleBackgroundEnabled(userId, moduleId) : isModuleEnabled(userId, moduleId);
+async function canRunModule(userId: string, moduleId: string, { background = false, executor = db }: { background?: boolean; executor?: SqlExecutor } = {}) {
+  if (await isSectionRestoreActive(userId, sectionOf(moduleId), executor)) return false;
+  return background ? isModuleBackgroundEnabled(userId, moduleId, executor) : isModuleEnabled(userId, moduleId, executor);
 }
 
 // For workers that scan every user in one pass: per user, the modules whose

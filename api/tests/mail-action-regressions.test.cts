@@ -44,6 +44,8 @@ test('HTTP flag acceptance commits while a provider lock is held, without waitin
     return { beginTransaction: async () => {}, commit: async () => { committed++; }, rollback: async () => {}, release: () => {},
       execute: async (sql: string, args: FixtureValue) => {
         if (sql.includes('FROM emails e')) return [[{ id: 'e', user_id: 'owner', mail_account_id: 'busy', sync_mode: 'download' }]];
+        // The module and restore checks inside the transaction use its connection.
+        if (sql.includes('FROM backup_restore_jobs') || sql.includes('FROM user_settings')) return [[]];
         if (sql.includes('UPDATE emails')) return [{ affectedRows: 1 }];
         assert.fail(`Unexpected query ${sql}`);
       } };

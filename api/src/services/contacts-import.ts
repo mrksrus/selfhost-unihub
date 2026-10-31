@@ -537,9 +537,9 @@ async function setFailed(userId: string, id: string, error: { code: string; mess
 }
 
 /** Contacts module and restore lock, before every chunk (a restore may start mid-import). */
-async function commitBlocked(userId: string) {
-  if (!await isModuleEnabled(userId, 'contacts')) return { code: 'MODULE_DISABLED', message: 'The Contacts module was turned off. Turn it on and import again to continue.' };
-  if ((await getActiveRestoreSections(userId)).has('contacts')) return { code: 'RESTORE_IN_PROGRESS', message: 'A restore of contacts is running. Import again when it has finished.' };
+async function commitBlocked(userId: string, executor: SqlExecutor = db) {
+  if (!await isModuleEnabled(userId, 'contacts', executor)) return { code: 'MODULE_DISABLED', message: 'The Contacts module was turned off. Turn it on and import again to continue.' };
+  if ((await getActiveRestoreSections(userId, executor)).has('contacts')) return { code: 'RESTORE_IN_PROGRESS', message: 'A restore of contacts is running. Import again when it has finished.' };
   return null;
 }
 
@@ -615,7 +615,7 @@ async function runCommit(userId: string, id: string) {
         if (!locked || locked.status !== 'committing') return 'stop';
         const state = parseResult(locked.result)!;
         if (state.next !== start) return 'again';
-        stopped = await commitBlocked(userId);
+        stopped = await commitBlocked(userId, cx);
         if (stopped) return 'blocked';
         for (let at = start; at < end; at++) {
           const group = staged.groups[at];

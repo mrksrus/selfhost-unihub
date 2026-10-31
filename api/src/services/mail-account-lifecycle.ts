@@ -50,8 +50,8 @@ async function purgePreview(userId: string, accountId: string, executor: SqlExec
   const calendarAccounts = Number(calendar.calendar_accounts) || 0;
   // Purging also removes the linked calendar: Calendar data changes only while
   // that module is on and no calendar restore is writing it.
-  const calendarOff = calendarAccounts > 0 && !await isModuleEnabled(userId, 'calendar');
-  const calendarRestoring = calendarAccounts > 0 && await isSectionRestoreActive(userId, 'calendar');
+  const calendarOff = calendarAccounts > 0 && !await isModuleEnabled(userId, 'calendar', executor);
+  const calendarRestoring = calendarAccounts > 0 && await isSectionRestoreActive(userId, 'calendar', executor);
   const reason = enabled(account.is_active) && !disconnecting ? 'Disconnect this account before permanently removing its retained mail.'
     : calendarOff ? 'This account has a linked calendar and Calendar is turned off. Turn Calendar on to delete it with the account.'
     : calendarRestoring ? 'Calendar restore is in progress. Try again when it has finished.'
@@ -74,7 +74,7 @@ async function disconnectAccount(userId: string, accountId: string, { req = null
       await connection.beginTransaction();
       const [[account]] = await connection.execute<RowDataPacket[]>('SELECT id, disconnected_at FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
       if (!account) throw fail('Account not found', 404);
-      if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore is in progress');
+      if (await isSectionRestoreActive(userId, 'mail', connection)) throw fail('Mail restore is in progress');
       // Recorded with the change; disconnecting again changes nothing worth a record.
       if (!account.disconnected_at) {
         await recordAudit({ action: 'mail.account_disconnected', actorId: userId, targetUserId: userId, req, details: { mail_account: accountId } }, connection);
@@ -98,7 +98,7 @@ async function disconnectAccount(userId: string, accountId: string, { req = null
       for (const row of linkedCalendars) stopCalendarAccountWork(row.id);
       // Read again: a restored calendar a sync linked after the read above is
       // stopped too (a sync linking it later reads the disconnected account).
-      await stopLinkedCalendarWork(userId, accountId).catch((error: Error) => console.error('[MAIL] Could not stop linked calendar work:', error.message));
+      await stopLinkedCalendarWork(userId, accountId, connection).catch((error: Error) => console.error('[MAIL] Could not stop linked calendar work:', error.message));
       return { message: 'Account disconnected. Retained mail and operation history are still available.', disconnected: true, retained_mail: true };
     } catch (error) { await connection.rollback(); throw error; }
     finally { connection.release(); }
@@ -155,7 +155,7 @@ async function purgeAccount(userId: string, accountId: string, confirmation: unk
       [linkedCalendars] = await connection.execute<IdRow[]>('SELECT id FROM calendar_accounts WHERE mail_account_id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
       preview = await purgePreview(userId, accountId, connection);
       if (preview.blocked) throw fail(preview.reason);
-      if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore is in progress');
+      if (await isSectionRestoreActive(userId, 'mail', connection)) throw fail('Mail restore is in progress');
       [attachments] = await connection.execute<(RowDataPacket & { storage_path: string })[]>(`SELECT a.storage_path FROM email_attachments a
         JOIN emails e ON e.id = a.email_id AND e.user_id = a.user_id WHERE e.mail_account_id = ? AND e.user_id = ?`, [accountId, userId]);
       rawPaths = messages.map(row => row.raw_storage_path);

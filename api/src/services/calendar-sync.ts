@@ -282,9 +282,9 @@ function stopAllCalendarWork() {
 const runningCalendarWorkCount = () => accountWork.size;
 // After a mail disconnect committed: its calendars are read again, so one a
 // sync linked meanwhile is stopped too, and open views show the new status.
-async function stopLinkedCalendarWork(userId: string, mailAccountId: string) {
+async function stopLinkedCalendarWork(userId: string, mailAccountId: string, executor: SqlExecutor = db) {
   // Only CalDAV accounts use the mail login; a subscription is not stopped.
-  const [rows] = await db.execute<(RowDataPacket & { id: string })[]>("SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? AND provider = 'caldav'", [userId, mailAccountId]);
+  const [rows] = await executor.execute<(RowDataPacket & { id: string })[]>("SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? AND provider = 'caldav'", [userId, mailAccountId]);
   for (const row of rows) {
     stopCalendarAccountWork(row.id);
     publishCalendarChanged(userId, row.id, 'status');

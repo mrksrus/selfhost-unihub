@@ -12,8 +12,10 @@ function normalizeSections(value: unknown) {
   return new Set(normalizeBackupSections(source));
 }
 
-async function getActiveRestoreSections(userId: string) {
-  const [rows] = await db.execute<(RowDataPacket & { requested_sections: unknown })[]>(
+// A caller holding a connection passes it: a second one taken from the pool
+// while it is held can wait for ever once the pool is full.
+async function getActiveRestoreSections(userId: string, executor: SqlExecutor = db) {
+  const [rows] = await executor.execute<(RowDataPacket & { requested_sections: unknown })[]>(
     `SELECT requested_sections
      FROM backup_restore_jobs
      WHERE user_id = ? AND status IN ('queued', 'running', 'cancelling')
@@ -24,8 +26,8 @@ async function getActiveRestoreSections(userId: string) {
   return rows.length ? normalizeSections(rows[0].requested_sections) : new Set<string>();
 }
 
-async function isSectionRestoreActive(userId: string, section: string) {
-  const sections = await getActiveRestoreSections(userId);
+async function isSectionRestoreActive(userId: string, section: string, executor: SqlExecutor = db) {
+  const sections = await getActiveRestoreSections(userId, executor);
   return sections.has(section);
 }
 

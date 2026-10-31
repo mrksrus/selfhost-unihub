@@ -1062,7 +1062,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
       commitAttempted = true;
       await connection.commit();
       // Photo files the restored contacts replaced, and written ones no row took.
-      await releasePhotoFiles(userId, [...releasedPhotos, ...createdPhotos])
+      await releasePhotoFiles(userId, [...releasedPhotos, ...createdPhotos], connection)
         .catch(error => log.warn('backup', 'Contact photo files a restore no longer uses stay until the sweep', {}, error));
       if (startMailAccountIds.length || startCalendarAccountIds.length) {
         startAccountSync(userId, { mailAccountIds: startMailAccountIds, calendarAccountIds: startCalendarAccountIds });
