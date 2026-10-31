@@ -53,9 +53,10 @@ function coldStartFromLink() {
 }
 
 /** Changes the font size, which Android applies by recreating the activity. */
-async function recreate(scale) {
+async function recreate() {
   const created = () => (adb('logcat', '-d', '-b', 'events').match(/[aw]m_on_create_called: \[\d+,io\.github\.mrksrus\.unihub\.MainActivity/g) ?? []).length;
   const before = created();
+  const scale = adb('shell', 'settings', 'get', 'system', 'font_scale').trim() === '1.15' ? '1.0' : '1.15';
   adb('shell', 'settings', 'put', 'system', 'font_scale', scale);
   for (let i = 0; i < 30 && created() === before; i++) await sleep(1000);
   assert.ok(created() > before, 'Android recreated the activity');
@@ -97,10 +98,10 @@ test('[B-33] the question to connect survives Android recreating the app, and an
     adb('logcat', '-c', '-b', 'events');
     coldStartFromLink();
     await screenUntil('the question to connect', questionShown);
-    await recreate('1.15');
+    await recreate();
     await screenUntil('the question again after the recreation', questionShown);
     await cancelQuestion();
-    await recreate('1.0');
+    await recreate();
     assert.equal(questionShown(screenNodes()), false, 'Cancel was the answer: the recreated app does not ask again');
   });
 });
