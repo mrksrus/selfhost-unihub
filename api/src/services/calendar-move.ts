@@ -12,7 +12,7 @@ import { canRunModule } from './access-policy';
 import { publishCalendarChanged } from './realtime';
 import { identityOf, rekey } from './task-order';
 import { getCalendarEventWithSubtasks } from './calendar';
-import { movePending, withEventLock, tryEventLock } from './calendar-move-state';
+import { movePending, withEventLock, tryEventLock, fenceTaskLocks } from './calendar-move-state';
 import * as caldav from './caldav';
 import * as ical from './calendar-ical';
 import * as calendarSync from './calendar-sync';
@@ -134,6 +134,8 @@ const closeMove = (moveId: string) => db.execute('DELETE FROM calendar_event_mov
  */
 async function commitMove(connection: SqlExecutor, move: MoveRow, copy: NewCopy | null) {
   if (move.state !== 'creating') return false;
+  // Every write of a move holds the item's lock, fenced by it (calendar-move-state.ts).
+  await fenceTaskLocks(connection);
   const userId = move.user_id;
   const [events] = move.event_id && move.target_calendar_id
     ? await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_events WHERE id = ? AND user_id = ? FOR UPDATE', [move.event_id, userId])
@@ -206,6 +208,7 @@ async function createCopy(move: MoveRow): Promise<NewCopy | null> {
   // is settled by looking: absent, the move ends and the item stays; present,
   // it is adopted. Unknown, it keeps waiting with the same UID.
   const settle = Number(move.attempts) + 1 >= GIVE_UP_ATTEMPTS;
+  await fenceTaskLocks();
   let attempt: Attempt;
   try {
     attempt = await calendarSync.withWriteContext(target, async (ctx): Promise<Attempt> => {
@@ -279,6 +282,7 @@ async function removeOldCopy(move: MoveRow): Promise<MoveOutcome> {
       return { sourceKept: true };
     };
     if (!current.source_etag) return keep();
+    await fenceTaskLocks();
     try {
       await calendarSync.withWriteContext(source, async ctx => {
         calendarSync.assertWritable(source);
@@ -515,6 +519,7 @@ async function admitMove(userId: string, eventId: string, targetCalendarId: stri
   let admitted: 'local' | 'journal' | typeof STALE;
   try {
     admitted = await withTransaction(async connection => {
+      await fenceTaskLocks(connection);
       // What this request read must still hold, under lock: the old copy's
       // version, the values the move freezes, the server link, and no move of
       // it begun meanwhile. Locked in the sync's order: server copy, then row.
@@ -589,6 +594,7 @@ async function cancelMove(userId: string, eventId: string): Promise<TaskMoveCanc
     // An attempt going on finishes first (bounded by the request timeout), so its outcome is known.
     await inProgress.get(open.id)?.catch(() => undefined);
     return withTransaction(async connection => {
+      await fenceTaskLocks(connection);
       const locked = await loadMove(connection, open.id, true);
       if (locked?.state !== 'creating') return false;
       await connection.execute('DELETE FROM calendar_event_moves WHERE id = ?', [open.id]);

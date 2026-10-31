@@ -1,5 +1,6 @@
 import mysql from 'mysql2/promise';
 import type { Pool, RowDataPacket } from 'mysql2/promise';
+import type { SqlExecutor } from '../types';
 import { getDb } from '../state';
 
 /**
@@ -12,12 +13,16 @@ import { getDb } from '../state';
  * `maxWaiters` waiting in this process, a lock is refused at once instead of
  * waiting for a connection.
  */
-const SHARES = {
-  // One change of a calendar item (calendar-move-state.ts), holders and waiters.
-  'calendar-event': 10,
-  // One sync of a calendar account (calendar-sync.ts); a move's removal of an old copy waits for it briefly.
-  'calendar-sync': 8,
-} as const;
+// The connections each kind may hold, holders and waiters together.
+// Sizing: every holder's work also uses the main pool (50), so the shares
+// together stay well below it, leaving room for requests without a lock; a
+// share is large enough when at the busiest time few changes are refused
+// (409 CALENDAR_EVENT_CHANGED, or a sync skipped as busy). Not measured yet.
+// One change of a calendar item (calendar-move-state.ts).
+const CALENDAR_EVENT_LOCKS = 10;
+// One sync of a calendar account (calendar-sync.ts); a move's removal of an old copy waits for it briefly.
+const CALENDAR_SYNC_LOCKS = 8;
+const SHARES = { 'calendar-event': CALENDAR_EVENT_LOCKS, 'calendar-sync': CALENDAR_SYNC_LOCKS } as const;
 type LockKind = keyof typeof SHARES;
 
 const inUse = new Map<LockKind, number>();
@@ -52,11 +57,26 @@ function lockPool(): Pool {
 }
 
 /**
+ * A held lock. MariaDB lets go of a lock when its session ends (a killed or
+ * broken connection) while the work holding it goes on: before each write
+ * the work checks the lease (`stillHeld`), so after such a loss it writes
+ * nothing more, and a change that has taken the lock since stands.
+ */
+interface Lease { readonly kind: LockKind; readonly name: string; readonly session: number; lost: boolean }
+
+/** Whether the lease still holds its lock, read on executor (the write's own transaction where there is one). */
+async function stillHeld(executor: SqlExecutor, lease: Lease) {
+  if (lease.lost) return false;
+  const [rows] = await executor.execute<RowDataPacket[]>(`SELECT IS_USED_LOCK(${lockName(lease.kind)}) AS holder`, [lease.name]);
+  return Number(rows[0]?.holder) === lease.session;
+}
+
+/**
  * Runs fn holding the lock `kind:name`. Answers null without running fn when
  * the lock stays taken for waitSeconds, when the kind's share of lock
  * connections is in use, or when name already has maxWaiters waiting here.
  */
-async function withNamedLock<T>(kind: LockKind, name: string, fn: () => Promise<T>, { waitSeconds = 0, maxWaiters = Infinity }: { waitSeconds?: number; maxWaiters?: number } = {}): Promise<{ value: T } | null> {
+async function withNamedLock<T>(kind: LockKind, name: string, fn: (lease: Lease) => Promise<T>, { waitSeconds = 0, maxWaiters = Infinity }: { waitSeconds?: number; maxWaiters?: number } = {}): Promise<{ value: T } | null> {
   const key = `${kind}:${name}`;
   const used = inUse.get(kind) ?? 0;
   const others = contenders.get(key) ?? 0;
@@ -64,7 +84,10 @@ async function withNamedLock<T>(kind: LockKind, name: string, fn: () => Promise<
   inUse.set(kind, used + 1);
   contenders.set(key, others + 1);
   let connection: Awaited<ReturnType<Pool['getConnection']>> | null = null;
-  let locked = false;
+  let lease: Lease | null = null;
+  // The session ending is noted at once, so the next check fails without a query.
+  const lose = () => { if (lease) lease.lost = true; };
+  const session = () => (connection as unknown as { connection?: NodeJS.EventEmitter } | null)?.connection;
   try {
     try {
       connection = await lockPool().getConnection();
@@ -72,18 +95,22 @@ async function withNamedLock<T>(kind: LockKind, name: string, fn: () => Promise<
       if ((error as Error)?.message === 'No connections available.') return null;
       throw error;
     }
-    const [rows] = await connection.execute<RowDataPacket[]>(`SELECT GET_LOCK(${lockName(kind)}, ?) AS acquired`, [name, waitSeconds]);
-    locked = Number(rows[0]?.acquired) === 1;
-    if (!locked) return null;
-    return { value: await fn() };
+    session()?.on('error', lose).on('end', lose);
+    const [rows] = await connection.execute<RowDataPacket[]>(`SELECT GET_LOCK(${lockName(kind)}, ?) AS acquired, CONNECTION_ID() AS session`, [name, waitSeconds]);
+    if (Number(rows[0]?.acquired) !== 1) return null;
+    lease = { kind, name, session: Number(rows[0].session), lost: false };
+    return { value: await fn(lease) };
   } finally {
-    if (locked) await connection!.execute(`SELECT RELEASE_LOCK(${lockName(kind)})`, [name]).catch(() => {});
-    connection?.release();
+    session()?.off('error', lose).off('end', lose);
+    let reusable = !lease?.lost;
+    if (lease && !lease.lost) await connection!.execute(`SELECT RELEASE_LOCK(${lockName(kind)})`, [name]).catch(() => { reusable = false; });
+    // A connection that lost its session (or its lock) is not handed out again.
+    if (reusable) connection?.release(); else connection?.destroy();
     inUse.set(kind, (inUse.get(kind) ?? 1) - 1);
     const left = (contenders.get(key) ?? 1) - 1;
     if (left) contenders.set(key, left); else contenders.delete(key);
   }
 }
 
-export { withNamedLock };
-export type { LockKind };
+export { withNamedLock, stillHeld };
+export type { LockKind, Lease };

@@ -82,7 +82,7 @@ const {
   takesUndatedTasks,
 } = require('../services/calendar') as typeof import('../services/calendar');
 const taskOrder = require('../services/task-order') as typeof import('../services/task-order');
-const { attachMoveState, movePending, eventChanged, writebackIdentity, withEventLock } = require('../services/calendar-move-state') as typeof import('../services/calendar-move-state');
+const { attachMoveState, movePending, eventChanged, writebackIdentity, withEventLock, fenceTaskLocks, fencedWrite } = require('../services/calendar-move-state') as typeof import('../services/calendar-move-state');
 const calendarSync = require('../services/calendar-sync') as typeof import('../services/calendar-sync');
 const calendarMove = require('../services/calendar-move') as typeof import('../services/calendar-move');
 const calendarAccounts = require('../services/calendar-accounts') as typeof import('../services/calendar-accounts');
@@ -647,6 +647,7 @@ export = {
         const connection = await db.getConnection();
         try {
           await connection.beginTransaction();
+          await fenceTaskLocks(connection);
           await connection.execute(
             `INSERT INTO calendar_events
               (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only,
@@ -689,7 +690,7 @@ export = {
             await calendarSync.pushCreatedEvent({ userId, event: created[0] });
           } catch (error) {
             // Nothing is kept that the server did not accept.
-            await db.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+            await fencedWrite(cleanup => cleanup.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]));
             return calendarSync.calendarErrorResponse(error, 'Could not save the event to the calendar server');
           }
         }
@@ -952,7 +953,10 @@ export = {
            AND calendar_id <=> ? AND (SELECT r.remote_object_id FROM calendar_event_external_refs r WHERE r.event_id = calendar_events.id LIMIT 1) <=> ?` : ''}`;
       params.push(id, userId);
       if (timeDecidedFor) params.push(timeDecidedFor.calendarId, timeDecidedFor.objectId);
-      const [written] = await db.execute<ResultSetHeader>(updateQuery, params);
+      // Fenced by the item's lock, which a time move holds (calendar-move-state.ts).
+      const [written] = timeMoved
+        ? await fencedWrite(connection => connection.execute<ResultSetHeader>(updateQuery, params))
+        : await db.execute<ResultSetHeader>(updateQuery, params);
       if (timeMoved && !written.affectedRows) {
         const [moving] = await db.execute<RowDataPacket[]>("SELECT id FROM calendar_event_moves WHERE event_id = ? AND state = 'creating'", [id]);
         return clientError(moving.length ? movePending() : eventChanged(), 'Failed to update todo status');
@@ -1202,11 +1206,11 @@ export = {
       } catch (error) {
         return calendarSync.calendarErrorResponse(error, 'Could not delete the event on the calendar server');
       }
-      await db.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
+      await fencedWrite(connection => connection.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]));
       return { message: 'Event deleted' };
     } catch (error) {
       console.error('Delete event error:', error);
-      return { error: 'Failed to delete event', status: 500 };
+      return clientError(error, 'Failed to delete event');
     }
   }),
 };

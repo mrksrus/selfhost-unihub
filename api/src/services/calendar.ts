@@ -8,7 +8,7 @@ import { db } from '../state';
 import { getCalendarEventIdFromPath, getCalendarSubtaskIdFromPath } from '../../calendar-route-utils';
 import { sourceEmailPresentSql, presentSourceEmail } from './email-tasks';
 import { attachRanks } from './task-order';
-import { attachMoveState, refuseWhileMoving, refuseIfMoved } from './calendar-move-state';
+import { attachMoveState, refuseWhileMoving, refuseIfMoved, fenceTaskLocks } from './calendar-move-state';
 import type { WritebackIdentity } from './calendar-move-state';
 
 const CALENDAR_PROVIDER_DEFAULT_CAPABILITIES = {
@@ -373,6 +373,7 @@ async function applyLocalEventUpdate(userId: string, eventId: string, { sets, pa
       await connection.rollback();
       return null;
     }
+    await fenceTaskLocks(connection);
     if (fieldsOfMove) await refuseWhileMoving(connection, eventId);
     if (identity) await refuseIfMoved(connection, userId, eventId, identity);
     if (sets.length > 0) {

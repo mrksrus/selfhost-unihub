@@ -1117,6 +1117,83 @@ test('moving a task between lists and calendars: one copy, the same row, through
     await assertOnce('Edited before restore', task, work);
   });
 
+  await t.test('a sync that found a task\'s server copy gone does not delete the task a move took to a list meanwhile', async () => {
+    const title = 'Vanished while moved';
+    const task = await serverTask(title);
+    const before = await kept(task);
+    // Deleted at the server; the sync confirms it and stops after reading which events were linked.
+    remote.objects.delete(copiesOf(title)[0]); remote.version += 1;
+    const gate = hold(); const getConnection = pool.getConnection.bind(pool); let once = true;
+    (pool as FixtureValue).getConnection = async () => {
+      const connection = await getConnection(); const execute = connection.execute.bind(connection); const release = connection.release.bind(connection);
+      (connection as FixtureValue).execute = async (sql: string, params?: FixtureValue) => {
+        const result = await execute(sql, params);
+        if (once && String(sql).startsWith('SELECT event_id FROM calendar_event_external_refs WHERE account_id = ? AND remote_object_id IN')) { once = false; gate.reached(); await gate.go; }
+        return result;
+      };
+      (connection as FixtureValue).release = () => { (connection as FixtureValue).execute = execute; (connection as FixtureValue).release = release; release(); };
+      return connection;
+    };
+    try {
+      const syncing = sync();
+      await gate.at;
+      const moving = owner('POST', `/calendar/events/${task}/move`, { calendar_id: errands }, null);
+      // Until the move waits for the server copy's row (or 3 s, where nothing makes it wait).
+      for (const until = Date.now() + 3000; Date.now() < until; await new Promise(resolve => setTimeout(resolve, 20))) {
+        const [[row]] = await pool.query<RowDataPacket[]>(`SELECT COUNT(*) AS waiting FROM information_schema.PROCESSLIST
+          WHERE ID <> CONNECTION_ID() AND INFO LIKE 'SELECT etag FROM calendar_remote_objects WHERE id = % FOR UPDATE'`);
+        if (Number(row.waiting) > 0) break;
+      }
+      gate.release();
+      await syncing;
+      const moved = await moving;
+      // Either order is right, never a mix: removed before the move (which
+      // then finds no task), or moved first and kept with all it holds.
+      if (moved.status === 404) {
+        assert.equal(moved.body.code, 'TASK_NOT_FOUND');
+        assert.deepEqual(await rowsTitled(title), []);
+      } else {
+        assert.ok([200, 202].includes(moved.status), JSON.stringify(moved));
+        assert.deepEqual((await rowsTitled(title)).map(row => [row.id, row.calendar_id]), [[task, errands]]);
+        assert.deepEqual(await kept(task), before);
+      }
+    } finally { (pool as FixtureValue).getConnection = getConnection; gate.release(); }
+    await sync();
+    assert.ok((await rowsTitled(title)).every(row => row.calendar_id === errands));
+  });
+
+  await t.test('an edit whose task lock was lost (its session ended) writes nothing more; the edit that took the lock since stands', async () => {
+    for (const where of ['server', 'local']) {
+      const task = where === 'server' ? await serverTask('Lease at the server') : await localTask('Lease in a list', inbox, { done: false });
+      // The first edit holds the lock: before its server write, or (a list) before its local write.
+      const gate = hold(); const original = calendarSync.pushEventUpdate; let once = true;
+      calendarSync.pushEventUpdate = async (opts: FixtureValue) => {
+        const pause = async () => { if (once && opts.event.id === task) { once = false; gate.reached(); await gate.go; } };
+        if (where === 'server') await pause();
+        const answer = await original(opts);
+        if (where === 'local') await pause();
+        return answer;
+      };
+      try {
+        const older = owner('PUT', `/calendar/events/${task}`, { title: `Older ${where} value` }, null);
+        await gate.at;
+        const [[lock]] = await pool.query<RowDataPacket[]>("SELECT IS_USED_LOCK(SHA2(CONCAT(DATABASE(), ':calendar-event:', ?), 256)) AS holder", [`${ids.owner}:${task}`]);
+        assert.ok(lock.holder, 'the first edit holds the lock');
+        await pool.query(`KILL CONNECTION ${Number(lock.holder)}`);
+        assert.equal((await owner('PUT', `/calendar/events/${task}`, { title: `Newer ${where} value` })).event.title, `Newer ${where} value`);
+        const writes = remote.writes.length;
+        gate.release();
+        const answer = await older;
+        assert.deepEqual([answer.status, answer.body.code], [409, 'CALENDAR_EVENT_CHANGED']);
+        assert.equal(remote.writes.length, writes, 'nothing more written to the server');
+      } finally { calendarSync.pushEventUpdate = original; gate.release(); }
+      await expandAll();
+      assert.equal((await owner('GET', `/calendar/events/${task}`)).event.title, `Newer ${where} value`);
+      assert.equal(copiesOf(`Older ${where} value`).length, 0);
+      if (where === 'server') await assertOnce(`Newer ${where} value`, task, work);
+    }
+  });
+
   // Last: on a build whose locks share the main pool, this one stalls the API.
   await t.test('fifty edits of different tasks at once finish or are refused at once, and other requests still answer', async () => {
     const tasks = [];

@@ -21,7 +21,7 @@ import { publishCalendarChanged } from './realtime';
 import { sweepRemoteRanks } from './task-order';
 import { isDeadlock, DEADLOCK_RETRIES } from './transactions';
 import { withNamedLock } from './named-locks';
-import { tryEventLock } from './calendar-move-state';
+import { tryEventLock, fenceTaskLocks } from './calendar-move-state';
 import * as caldav from './caldav';
 import * as ical from './calendar-ical';
 import {
@@ -387,7 +387,15 @@ async function applyObject(ctx: Context, calendar: Calendar, object: ObjectRecor
     return [];
   }
   // The old copy of a moved event is never applied again (calendar-move.ts).
-  return inTransaction(ctx, async connection => await moves().lockMovedAway(connection, object.id) ? [] : applyObjectRows(connection, ctx, calendar, object, expanded));
+  return inTransaction(ctx, async connection => {
+    await fenceTaskLocks(connection);
+    // Read before this transaction (the daily expansion): applied only while
+    // it is still stored, so an object removed meanwhile (a deletion, a moved
+    // event's old copy) does not come back as new rows.
+    const [live] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_remote_objects WHERE id = ? FOR UPDATE', [object.id]);
+    if (!live.length || await moves().lockMovedAway(connection, object.id)) return [];
+    return applyObjectRows(connection, ctx, calendar, object, expanded);
+  });
 }
 
 // A stopped sync commits nothing more: the stop is checked again before the
@@ -475,14 +483,22 @@ async function applyObjectRows(connection: PoolConnection, ctx: Context, calenda
 
 // outsideWindow: objects the server still has, removed only because none of
 // their occurrences is inside the sync window; their order is kept.
+// The events removed are those linked to the objects when they are removed,
+// not when they were found gone: the objects, any move of their events and
+// the links are locked first (in the order a move takes them), so a move
+// committing meanwhile is waited for and its event, now linked elsewhere or
+// to nothing, stays.
 async function removeObjects(ctx: Context, objectIds: string[], outsideWindow: ReadonlySet<string> = new Set()) {
   if (!objectIds.length) return;
   await inTransaction(ctx, async connection => {
+    await fenceTaskLocks(connection);
     for (let index = 0; index < objectIds.length; index += 200) {
       const chunk = objectIds.slice(index, index + 200);
       const placeholders = chunk.map(() => '?').join(', ');
+      await connection.execute(`SELECT id FROM calendar_remote_objects WHERE account_id = ? AND id IN (${placeholders}) FOR UPDATE`, [ctx.account.id, ...chunk]);
+      await connection.execute(`SELECT id FROM calendar_event_moves WHERE source_object_id IN (${placeholders}) FOR UPDATE`, chunk);
       const [refs] = await connection.execute<RowDataPacket[]>(
-        `SELECT event_id FROM calendar_event_external_refs WHERE account_id = ? AND remote_object_id IN (${placeholders})`,
+        `SELECT event_id FROM calendar_event_external_refs WHERE account_id = ? AND remote_object_id IN (${placeholders}) FOR UPDATE`,
         [ctx.account.id, ...chunk]
       );
       const eventIds = refs.map(ref => ref.event_id);
@@ -622,7 +638,10 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       if (move && await moves().commitMove(connection, move, { account: ctx.account, calendar, object, timeZone: ctx.timeZone })) return { object, created: [] };
       return { object, created: await applyObjectRows(connection, ctx, calendar, object, expanded) };
     });
-    const result = adopting ? (await tryEventLock(adopting.userId, adopting.eventId, () => apply(adopting.eventId)))?.value ?? DEFERRED : await apply(null);
+    // A lock lost before the commit (its session ended) defers it as well.
+    const adopt = () => tryEventLock(adopting!.userId, adopting!.eventId, () => apply(adopting!.eventId))
+      .catch(error => { if ((error as ApiError)?.code === 'CALENDAR_EVENT_CHANGED') return null; throw error; });
+    const result = adopting ? (await adopt())?.value ?? DEFERRED : await apply(null);
     if (result === DEFERRED) {
       deferred += 1;
       continue;
@@ -657,22 +676,23 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
   if (expandAll && !unreadable) {
     // Rows from before 0.17 are only dropped once every object was read, as
     // an unreadable one may be what replaces them.
+    // Found and removed in one transaction, the links locked: an event
+    // linked elsewhere meanwhile stays.
     ctx.signal?.throwIfAborted();
-    const [orphans] = await db.execute<RowDataPacket[]>(
-      `SELECT r.event_id FROM calendar_event_external_refs r
-       LEFT JOIN calendar_remote_objects o ON o.id = r.remote_object_id
-       WHERE r.account_id = ? AND r.calendar_id = ? AND o.id IS NULL`,
-      [ctx.account.id, calendar.id]
-    );
-    if (orphans.length) {
+    ctx.stats.removedEvents += await inTransaction(ctx, async connection => {
+      const [orphans] = await connection.execute<RowDataPacket[]>(
+        `SELECT r.event_id FROM calendar_event_external_refs r
+         LEFT JOIN calendar_remote_objects o ON o.id = r.remote_object_id
+         WHERE r.account_id = ? AND r.calendar_id = ? AND o.id IS NULL FOR UPDATE`,
+        [ctx.account.id, calendar.id]
+      );
       const ids = orphans.map(row => row.event_id);
       for (let index = 0; index < ids.length; index += 200) {
         const chunk = ids.slice(index, index + 200);
-        ctx.signal?.throwIfAborted();
-        await db.execute(`DELETE FROM calendar_events WHERE user_id = ? AND id IN (${chunk.map(() => '?').join(', ')})`, [ctx.account.user_id, ...chunk]);
+        await connection.execute(`DELETE FROM calendar_events WHERE user_id = ? AND id IN (${chunk.map(() => '?').join(', ')})`, [ctx.account.user_id, ...chunk]);
       }
-      ctx.stats.removedEvents += ids.length;
-    }
+      return ids.length;
+    });
   }
   return unreadable;
 }
@@ -1060,14 +1080,20 @@ async function pushCreatedEvent({ userId, event, calendarId = event.calendar_id 
     const { uid, ics } = ical.createEventIcs(eventFields(event), { userTimeZone: ctx.timeZone });
     const collection = calendarUrl(ctx.account, ctx.calendar);
     const url = new URL(`${encodeURIComponent(uid)}.ics`, collection.endsWith('/') ? collection : `${collection}/`).toString();
+    // Every write of a change holding the item's lock is fenced by it (calendar-move-state.ts).
+    await fenceTaskLocks();
     const { etag } = await caldav.putCalendarObject({ url, ics, etag: null, ...ctx.login }).catch(error => handleConflict(ctx, error));
-    const object = await storeObject(db, ctx.account, ctx.calendar, { href: caldav.canonicalHref(url), etag, ics });
-    await db.execute(
-      `INSERT INTO calendar_event_external_refs
-        (id, user_id, event_id, calendar_id, account_id, provider, external_event_id, external_etag, remote_object_id, recurrence_id, last_synced_at)
-       VALUES (?, ?, ?, ?, ?, 'caldav', ?, ?, ?, NULL, UTC_TIMESTAMP())`,
-      [crypto.randomUUID(), userId, event.id, ctx.calendar.id, ctx.account.id, externalEventId(object.id, ''), etag || null, object.id]
-    );
+    const object = await inTransaction({}, async connection => {
+      await fenceTaskLocks(connection);
+      const stored = await storeObject(connection, ctx.account, ctx.calendar, { href: caldav.canonicalHref(url), etag, ics });
+      await connection.execute(
+        `INSERT INTO calendar_event_external_refs
+          (id, user_id, event_id, calendar_id, account_id, provider, external_event_id, external_etag, remote_object_id, recurrence_id, last_synced_at)
+         VALUES (?, ?, ?, ?, ?, 'caldav', ?, ?, ?, NULL, UTC_TIMESTAMP())`,
+        [crypto.randomUUID(), userId, event.id, ctx.calendar.id, ctx.account.id, externalEventId(stored.id, ''), etag || null, stored.id]
+      );
+      return stored;
+    });
     publishCalendarChanged(userId, ctx.account.id, 'local');
     return { objectId: object.id };
   });
@@ -1100,8 +1126,10 @@ async function pushEventUpdate({ userId, event, changes, scope }: EventInput & {
     const ics = ical.updateEventIcs(link.object.ics, fields, {
       recurrenceId: link.recurrenceId, scope: effectiveScope, previousStartMs: parseDatetimeToMillis(event.start_time), userTimeZone: ctx.timeZone,
     });
+    await fenceTaskLocks();
     const { etag } = await caldav.putCalendarObject({ url: objectUrl(ctx.account, link.object), ics, etag: link.object.etag, ...ctx.login })
       .catch(error => handleConflict(ctx, error));
+    await fenceTaskLocks();
     const object = await storeObject(db, ctx.account, ctx.calendar, { id: link.object.id, href: link.object.href, etag, ics });
     await applyObject(rebuildContext(ctx), ctx.calendar, object);
     publishCalendarChanged(userId, ctx.account.id, 'local');
@@ -1126,13 +1154,16 @@ async function pushEventDelete({ userId, event, scope }: EventInput & { scope?: 
     if (recurring && link.recurrenceId && scope !== 'series') {
       const ics = ical.removeOccurrenceIcs(link.object.ics, link.recurrenceId, { userTimeZone: ctx.timeZone });
       if (ics) {
+        await fenceTaskLocks();
         const { etag } = await caldav.putCalendarObject({ url, ics, etag: link.object.etag, ...ctx.login }).catch(error => handleConflict(ctx, error));
+        await fenceTaskLocks();
         const object = await storeObject(db, ctx.account, ctx.calendar, { id: link.object.id, href: link.object.href, etag, ics });
         await applyObject(rebuildContext(ctx), ctx.calendar, object);
         publishCalendarChanged(userId, ctx.account.id, 'local');
         return { scope: 'occurrence' };
       }
     }
+    await fenceTaskLocks();
     await caldav.deleteCalendarObject({ url, etag: link.object.etag, ...ctx.login }).catch(error => handleConflict(ctx, error));
     await removeObjects(rebuildContext(ctx), [link.object.id]);
     publishCalendarChanged(userId, ctx.account.id, 'local');

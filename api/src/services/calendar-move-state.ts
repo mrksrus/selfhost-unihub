@@ -6,7 +6,9 @@ import { db } from '../state';
 import { conflict, forbidden } from '../http/errors';
 import { isModuleEnabled } from './module-settings';
 import { getActiveRestoreSections } from './restore-locks';
-import { withNamedLock } from './named-locks';
+import { withNamedLock, stillHeld } from './named-locks';
+import type { Lease } from './named-locks';
+import { withTransaction } from './transactions';
 
 const CHUNK = 500;
 const iso = (value: unknown) => value instanceof Date ? value.toISOString() : String(value ?? '');
@@ -77,7 +79,7 @@ const eventBusy = () => conflict('CALENDAR_EVENT_CHANGED',
 // change waits out the one before it; more than two waiting are refused.
 const EVENT_LOCK_WAIT_SECONDS = 25;
 const WAITERS_PER_ITEM = 2;
-const heldEventLocks = new AsyncLocalStorage<{ key: string; held: boolean }[]>();
+const heldEventLocks = new AsyncLocalStorage<{ key: string; held: boolean; lease: Lease }[]>();
 
 // A change that waited may find the Calendar module turned off or a calendar
 // restore begun meanwhile: the request boundary's checks, made again.
@@ -102,14 +104,37 @@ async function underEventLock<T>(userId: string, eventId: string, fn: () => Prom
   const outer = heldEventLocks.getStore() ?? [];
   // Background work never shares it: a sync a request set off runs beside it.
   if (request && outer.some(lock => lock.key === key && lock.held)) return { value: await fn() };
-  const lock = { key, held: true };
-  return withNamedLock('calendar-event', key, () => heldEventLocks.run([...outer, lock], async () => {
-    // Work left running past the end (none should be) takes the lock again itself.
-    try {
-      if (request) await assertStillAdmitted(userId);
-      return await fn();
-    } finally { lock.held = false; }
-  }), { waitSeconds, maxWaiters: WAITERS_PER_ITEM });
+  return withNamedLock('calendar-event', key, lease => {
+    const lock = { key, held: true, lease };
+    return heldEventLocks.run([...outer, lock], async () => {
+      // Work left running past the end (none should be) takes the lock again itself.
+      try {
+        if (request) await assertStillAdmitted(userId);
+        return await fn();
+      } finally { lock.held = false; }
+    });
+  }, { waitSeconds, maxWaiters: WAITERS_PER_ITEM });
+}
+
+/**
+ * Before a write to a server, and inside the transaction of a local write,
+ * of work holding items' locks: refuses (409 CALENDAR_EVENT_CHANGED) when
+ * one of them was lost meanwhile, as its connection's session ended, so the
+ * work writes nothing more after another change may have taken the lock.
+ * Nothing to check outside such work (a sync, a test calling a service).
+ */
+async function fenceTaskLocks(executor: SqlExecutor = db) {
+  for (const lock of heldEventLocks.getStore() ?? []) {
+    if (lock.held && !await stillHeld(executor, lock.lease)) throw eventChanged();
+  }
+}
+
+/** A local write of work holding items' locks, in a transaction fenced by them. */
+async function fencedWrite<T>(write: (connection: SqlExecutor) => Promise<T>): Promise<T> {
+  return withTransaction(async connection => {
+    await fenceTaskLocks(connection);
+    return write(connection);
+  });
 }
 
 /** For a request: waits up to 25 s for the change going on, then answers 409 CALENDAR_EVENT_CHANGED. */
@@ -124,5 +149,5 @@ async function tryEventLock<T>(userId: string, eventId: string, fn: () => Promis
   return underEventLock(userId, eventId, fn, { waitSeconds: 0, request: false });
 }
 
-export { attachMoveState, refuseWhileMoving, refuseIfMoved, writebackIdentity, movePending, eventChanged, withEventLock, tryEventLock };
+export { attachMoveState, refuseWhileMoving, refuseIfMoved, writebackIdentity, movePending, eventChanged, withEventLock, tryEventLock, fenceTaskLocks, fencedWrite };
 export type { WritebackIdentity };
