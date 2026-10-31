@@ -235,6 +235,15 @@ test('moving a task between lists and calendars: one copy, the same row, through
   const rowsTitled = async (title: string) => (await pool.query<RowDataPacket[]>('SELECT id, calendar_id FROM calendar_events WHERE user_id = ? AND title = ?', [ids.owner, title]))[0];
   const journal = async (eventId?: string) => (await pool.query<RowDataPacket[]>(
     `SELECT * FROM calendar_event_moves WHERE user_id = ?${eventId ? ' AND event_id = ?' : ''}`, eventId ? [ids.owner, eventId] : [ids.owner]))[0];
+  // Until `count` requests wait for an item's lock (calendar-move-state.ts);
+  // gives up after 3 s, as where nothing waits the requests run on anyway.
+  async function lockWaiters(count: number) {
+    for (const until = Date.now() + 3000; Date.now() < until; await new Promise(resolve => setTimeout(resolve, 20))) {
+      const [[row]] = await pool.query<RowDataPacket[]>(`SELECT COUNT(*) AS waiting FROM information_schema.PROCESSLIST
+        WHERE ID <> CONNECTION_ID() AND INFO LIKE '%GET_LOCK%' AND INFO LIKE '%:calendar-event:%'`);
+      if (Number(row.waiting) >= count) return;
+    }
+  }
   // Due now, as the sync pass would find it later.
   const resume = async () => {
     await pool.execute('UPDATE calendar_event_moves SET next_attempt_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND');
@@ -644,16 +653,16 @@ test('moving a task between lists and calendars: one copy, the same row, through
   await t.test('two moves of one task at once: the later one starts from where the first left it', async () => {
     const title = 'Book venue';
     const venue = await serverTask(title);
-    // The second request stops before it is admitted; the first finishes meanwhile.
+    // The first request stops while it is admitted; the second waits for it.
     gates.timeZone = hold();
     const gate = gates.timeZone;
-    const second = owner('POST', `/calendar/events/${venue}/move`, { calendar_id: privateCalendar });
+    const first = owner('POST', `/calendar/events/${venue}/move`, { calendar_id: errands });
     await gate.at;
-    await owner('POST', `/calendar/events/${venue}/move`, { calendar_id: errands });
-    await assertOnce(title, venue, errands, { copies: 0 });
+    const second = owner('POST', `/calendar/events/${venue}/move`, { calendar_id: privateCalendar });
+    await lockWaiters(1);
     gate.release();
-    const answer = await second;
-    assert.equal(answer.event.calendar_id, privateCalendar);
+    assert.equal((await first).event.calendar_id, errands);
+    assert.equal((await second).event.calendar_id, privateCalendar);
     await assertOnce(title, venue, privateCalendar);
     await sync(); await expandAll();
     await assertOnce(title, venue, privateCalendar);
@@ -708,18 +717,19 @@ test('moving a task between lists and calendars: one copy, the same row, through
     await assertOnce(title, picnic, work);
   });
 
-  await t.test('an edit saved in the same second as a move starts is kept: the move starts over from it', async () => {
-    // Near the start of a second, so the edit and the read share its timestamp.
+  await t.test('an edit sent while a move starts waits for it and goes to the new copy', async () => {
+    // Near the start of a second, so the edit and the move's read share its timestamp.
     await new Promise(resolve => setTimeout(resolve, 1050 - Date.now() % 1000));
     const task = await localTask('Snapshot before edit');
     gates.timeZone = hold();
     const gate = gates.timeZone;
     const moving = owner('POST', `/calendar/events/${task}/move`, { calendar_id: work });
     await gate.at;
-    await owner('PUT', `/calendar/events/${task}`, { title: 'Accepted concurrent edit' });
+    const editing = owner('PUT', `/calendar/events/${task}`, { title: 'Accepted concurrent edit' });
+    await lockWaiters(1);
     gate.release();
-    const moved = await moving;
-    assert.equal(moved.event.title, 'Accepted concurrent edit');
+    assert.equal((await moving).event.calendar_id, work);
+    assert.equal((await editing).event.title, 'Accepted concurrent edit');
     await assertOnce('Accepted concurrent edit', task, work);
     assert.equal(copiesOf('Snapshot before edit').length, 0);
     await sync(); await expandAll();
@@ -862,7 +872,7 @@ test('moving a task between lists and calendars: one copy, the same row, through
     await assertOnce(title, task, privateCalendar);
   });
 
-  await t.test('an edit decided for a UniHub list is refused when the move finished before it was written', async () => {
+  await t.test('an edit decided for a UniHub list is written before a move sent meanwhile, which carries it', async () => {
     for (const via of ['dialog', 'time']) {
       const title = via === 'dialog' ? 'Copy before late local write' : 'Time changed after move';
       const task = await localTask(title, inbox, { done: false });
@@ -876,25 +886,107 @@ test('moving a task between lists and calendars: one copy, the same row, through
       };
       const start = new Date(new Date(before.start_time).getTime() + DAY).toISOString();
       const editing = via === 'dialog'
-        ? owner('PUT', `/calendar/events/${task}`, { title: 'Accepted late local write' }, 409)
-        : owner('PUT', `/calendar/events/${task}/todo-status`, { todo_status: 'time_moved', start_time: start }, 409);
+        ? owner('PUT', `/calendar/events/${task}`, { title: 'Accepted late local write' })
+        : owner('PUT', `/calendar/events/${task}/todo-status`, { todo_status: 'time_moved', start_time: start });
       try {
         await gate.at;
-        await owner('POST', `/calendar/events/${task}/move`, { calendar_id: work });
+        const moving = owner('POST', `/calendar/events/${task}/move`, { calendar_id: work });
+        await lockWaiters(1);
         gate.release();
-        assert.equal((await editing).code, 'CALENDAR_EVENT_CHANGED');
-      } finally { calendarSync.pushEventUpdate = original; }
-      await expandAll();
-      const kept = (await owner('GET', `/calendar/events/${task}`)).event;
-      assert.deepEqual([kept.title, kept.start_time, kept.calendar_id], [title, before.start_time, work], 'what the server copy holds');
-      // Asked again, the edit goes to the server copy.
-      if (via === 'dialog') await owner('PUT', `/calendar/events/${task}`, { title: 'Accepted late local write' });
-      else await owner('PUT', `/calendar/events/${task}/todo-status`, { todo_status: 'time_moved', start_time: start });
+        await editing;
+        assert.equal((await moving).event.calendar_id, work);
+      } finally { calendarSync.pushEventUpdate = original; gate.release(); }
       await expandAll();
       const saved = (await owner('GET', `/calendar/events/${task}`)).event;
-      if (via === 'dialog') await assertOnce('Accepted late local write', task, work);
-      else assert.equal(new Date(saved.start_time).getTime(), new Date(start).getTime());
+      if (via === 'dialog') {
+        await assertOnce('Accepted late local write', task, work);
+        assert.equal(copiesOf(title).length, 0);
+      } else {
+        await assertOnce(title, task, work);
+        assert.equal(new Date(saved.start_time).getTime(), new Date(start).getTime());
+      }
     }
+  });
+
+  await t.test('an edit that read the item before a move into a UniHub list finishes first, at the server copy it read', async () => {
+    const task = await serverTask('Context before move');
+    const [source] = copiesOf('Context before move');
+    // The edit stops between reading the calendar and reading the server copy.
+    const gate = hold(); const execute = pool.execute.bind(pool); let once = true;
+    (pool as FixtureValue).execute = async (sql: string, params?: FixtureValue) => {
+      if (once && String(sql).includes('SELECT r.external_event_id, r.recurrence_id') && params?.[0] === task) { once = false; gate.reached(); await gate.go; }
+      return execute(sql, params);
+    };
+    try {
+      const editing = owner('PUT', `/calendar/events/${task}`, { title: 'Edited before move' });
+      await gate.at;
+      const moving = owner('POST', `/calendar/events/${task}/move`, { calendar_id: errands });
+      await lockWaiters(1);
+      gate.release();
+      assert.equal((await editing).event.title, 'Edited before move');
+      assert.equal((await moving).event.calendar_id, errands);
+    } finally { (pool as FixtureValue).execute = execute; gate.release(); }
+    assert.equal(remote.objects.has(source), false);
+    await assertOnce('Edited before move', task, errands, { copies: 0 });
+    // Nothing at the old server brings it back.
+    await sync(); await expandAll();
+    await assertOnce('Edited before move', task, errands, { copies: 0 });
+  });
+
+  await t.test('two edits of a server task at once: the later one is what a move takes along', async () => {
+    const task = await serverTask('Before two edits');
+    // The first edit has written to the server and stops before its local write.
+    const gate = hold(); const original = calendarSync.pushEventUpdate; let first = true;
+    calendarSync.pushEventUpdate = async (opts: FixtureValue) => {
+      const answer = await original(opts);
+      if (opts.event.id === task && first) { first = false; gate.reached(); await gate.go; }
+      return answer;
+    };
+    try {
+      const older = owner('PUT', `/calendar/events/${task}`, { title: 'Older accepted value' });
+      await gate.at;
+      const newer = owner('PUT', `/calendar/events/${task}`, { title: 'Newer accepted value' });
+      await lockWaiters(1);
+      gate.release();
+      assert.equal((await older).event.title, 'Older accepted value');
+      assert.equal((await newer).event.title, 'Newer accepted value');
+    } finally { calendarSync.pushEventUpdate = original; gate.release(); }
+    await assertOnce('Newer accepted value', task, work);
+    await owner('POST', `/calendar/events/${task}/move`, { calendar_id: privateCalendar });
+    await expandAll();
+    await assertOnce('Newer accepted value', task, privateCalendar);
+    assert.equal(copiesOf('Older accepted value').length, 0);
+  });
+
+  await t.test('a dialog move with fields, a move and an edit of one task at once run one after another; nothing is lost', async () => {
+    const task = await localTask('Before three changes');
+    const before = await kept(task);
+    // The dialog's move has finished and stops before the dialog's local write.
+    const gate = hold(); const original = calendarMove.moveEvent; let once = true;
+    calendarMove.moveEvent = async (...args: FixtureValue[]) => {
+      const answer = await original(...args);
+      if (args[1] === task && once) { once = false; gate.reached(); await gate.go; }
+      return answer;
+    };
+    try {
+      const dialog = owner('PUT', `/calendar/events/${task}`, { calendar_id: work, title: 'Dialog accepted value' });
+      await gate.at;
+      const moving = owner('POST', `/calendar/events/${task}/move`, { calendar_id: privateCalendar });
+      const editing = owner('PUT', `/calendar/events/${task}`, { title: 'Later edit' });
+      await lockWaiters(2);
+      gate.release();
+      const [saved, moved, edited] = await Promise.all([dialog, moving, editing]);
+      assert.deepEqual([saved.event.title, saved.event.calendar_id], ['Dialog accepted value', work]);
+      assert.equal(moved.event.calendar_id, privateCalendar);
+      assert.equal(edited.event.title, 'Later edit');
+    } finally { calendarMove.moveEvent = original; gate.release(); }
+    // The move and the edit ran in either order: the edit is in the copy at Private.
+    await assertOnce('Later edit', task, privateCalendar);
+    await sync(); await expandAll();
+    await assertOnce('Later edit', task, privateCalendar);
+    assert.deepEqual([copiesOf('Dialog accepted value').length, copiesOf('Before three changes').length], [0, 0]);
+    assert.deepEqual(await kept(task), before);
+    assert.equal((await journal(task)).length, 0);
   });
 
   await t.test('a task is not detached from its list while its move is creating the copy', async () => {

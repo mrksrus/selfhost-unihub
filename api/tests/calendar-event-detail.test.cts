@@ -54,8 +54,10 @@ function eventUpdateHarness(t: import('node:test').TestContext, execute: (sql: s
   stub(paths[2], legacyTable({ 'PUT /api/calendar/events/:id': routes['PUT /api/calendar/events/:id'] }));
   stub(paths[3], { isModuleEnabled: async () => true });
   stub(paths[4], { getActiveRestoreSections: async () => new Set<FixtureValue>() });
-  const connection = { execute, async beginTransaction() {}, async commit() {}, async rollback() {}, release() {} };
-  setDb({ execute, getConnection: async () => connection } as FixtureValue);
+  // The item's lock (calendar-move-state.ts) is always free here.
+  const answer = (sql: string, params: FixtureValue) => /^SELECT (GET|RELEASE)_LOCK\(/.test(sql) ? Promise.resolve([[{ acquired: 1 }]]) : execute(sql, params);
+  const connection = { execute: answer, async beginTransaction() {}, async commit() {}, async rollback() {}, release() {} };
+  setDb({ execute: answer, getConnection: async () => connection } as FixtureValue);
   const { handleRequest } = require(paths[0]) as typeof import('../src/request-handler');
   const { EventEmitter } = require('node:events') as typeof import('node:events');
   const { PassThrough } = require('node:stream') as typeof import('node:stream');

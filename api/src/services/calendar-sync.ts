@@ -604,6 +604,9 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
     // A new object may be the copy an interrupted move created: it is linked
     // to the moved event instead of becoming a second one. The journal is
     // locked first, so a move committing at the same time is waited for.
+    // This commit does not take the item's lock (calendar-move-state.ts) as
+    // it runs under the sync lock; none is needed: while the copy is being
+    // created, edits are refused and no other move is admitted.
     const uid = known ? null : ical.objectUid(item.ics);
     const result = await inTransaction(ctx, async connection => {
       if (known && await moves().lockMovedAway(connection, String(known.id))) return null;

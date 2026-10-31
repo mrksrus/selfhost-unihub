@@ -368,9 +368,17 @@ are then rebuilt from the server's answer, so the server stays the authority.
 - **Conflicts.** If the event changed on the server meanwhile (HTTP 412), the
   edit is refused with a message, nothing is overwritten, and the account syncs
   at once.
-- **Moving.** A single event moves between calendars and accounts by creating
-  it in the target before deleting it from the source. Recurring events cannot
-  be moved.
+- **Moving.** A single event or task moves between calendars, accounts and
+  UniHub lists by creating it in the target before deleting it from the
+  source (`services/calendar-move.ts`, journalled in `calendar_event_moves`):
+  the row, its done state, subtasks and hand place stay. A move a server has
+  not confirmed shows as `move_pending` and finishes in the background, or can
+  be cancelled; edits wait for it (`409 CALENDAR_MOVE_PENDING`). Recurring
+  events cannot be moved.
+- **One change at a time.** Edits, time moves, deletions, moves and their
+  cancel of one item run one after another (a lock per item, held from the
+  first read to the local write); a change waits up to 25 seconds for the one
+  before it, then answers `409 CALENDAR_EVENT_CHANGED` to try again.
 - **Read-only.** ICS subscriptions and calendars marked read-only reject
   changes with `403 CALENDAR_READ_ONLY`; the event dialog shows them read-only.
 - **Not yet synced.** Events imported before 0.17 have no server copy until the

@@ -12,7 +12,7 @@ import { canRunModule } from './access-policy';
 import { publishCalendarChanged } from './realtime';
 import { identityOf, rekey } from './task-order';
 import { getCalendarEventWithSubtasks } from './calendar';
-import { movePending } from './calendar-move-state';
+import { movePending, withEventLock, withEventLockIfFree } from './calendar-move-state';
 import * as caldav from './caldav';
 import * as ical from './calendar-ical';
 import * as calendarSync from './calendar-sync';
@@ -324,7 +324,7 @@ function runMove(moveId: string): Promise<MoveOutcome> {
 /** For the sync pass: moves whose next attempt is due. Paused with the Calendar module and during a calendar restore. */
 async function resumeDueMoves(signal?: AbortSignal) {
   const [rows] = await db.execute<RowDataPacket[]>(
-    `SELECT id, user_id FROM calendar_event_moves WHERE next_attempt_at IS NULL OR next_attempt_at <= UTC_TIMESTAMP()
+    `SELECT id, user_id, event_id FROM calendar_event_moves WHERE next_attempt_at IS NULL OR next_attempt_at <= UTC_TIMESTAMP()
      ORDER BY next_attempt_at ASC LIMIT ${MOVES_PER_PASS}`
   );
   let resumed = 0;
@@ -335,8 +335,11 @@ async function resumeDueMoves(signal?: AbortSignal) {
       continue;
     }
     try {
-      await runMove(row.id);
-      resumed += 1;
+      // A request changing the item now finishes first; this move waits for the next pass.
+      const ran = row.event_id
+        ? await withEventLockIfFree(row.user_id, row.event_id, async () => { await runMove(row.id); return true; })
+        : (await runMove(row.id), true);
+      if (ran) resumed += 1;
     } catch (error) {
       log.warn('calendar', 'A move could not finish', { move: row.id, reason: describe(error) });
     }
@@ -425,13 +428,16 @@ const STALE = Symbol('stale');
  * the background.
  */
 async function moveEvent(userId: string, eventId: string, targetCalendarId: string, { changes = {} }: { changes?: Partial<CalendarEvent> } = {}): Promise<MoveOutcome> {
-  // A request that read the item before another one moved or changed it
-  // starts over from what is there now.
-  for (let round = 1; ; round += 1) {
-    const outcome = await admitMove(userId, eventId, targetCalendarId, changes);
-    if (outcome !== STALE) return outcome;
-    if (round === 3) throw movePending();
-  }
+  // From the first read to the commit, no edit or other move of the item
+  // runs meanwhile (the item's lock); a sync changing it in between makes
+  // the admission start over from what is there now.
+  return withEventLock(userId, eventId, async () => {
+    for (let round = 1; ; round += 1) {
+      const outcome = await admitMove(userId, eventId, targetCalendarId, changes);
+      if (outcome !== STALE) return outcome;
+      if (round === 3) throw movePending();
+    }
+  });
 }
 
 async function admitMove(userId: string, eventId: string, targetCalendarId: string, changes: Partial<CalendarEvent>): Promise<MoveOutcome | typeof STALE> {
@@ -572,19 +578,19 @@ async function cancelMove(userId: string, eventId: string): Promise<TaskMoveCanc
   if (!ID_PATTERN.test(eventId)) throw notFound('TASK_NOT_FOUND', 'Task not found');
   const [[owned]] = await db.execute<RowDataPacket[]>('SELECT id FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
   if (!owned) throw notFound('TASK_NOT_FOUND', 'Task not found');
-  const open = await openMove(userId, eventId);
-  let cancelled = false;
-  if (open) {
+  const cancelled = await withEventLock(userId, eventId, async () => {
+    const open = await openMove(userId, eventId);
+    if (!open) return false;
     // An attempt going on finishes first (bounded by the request timeout), so its outcome is known.
     await inProgress.get(open.id)?.catch(() => undefined);
-    cancelled = await withTransaction(async connection => {
+    return withTransaction(async connection => {
       const locked = await loadMove(connection, open.id, true);
       if (locked?.state !== 'creating') return false;
       await connection.execute('DELETE FROM calendar_event_moves WHERE id = ?', [open.id]);
       return true;
     });
-    if (cancelled) publishCalendarChanged(userId, null, 'local');
-  }
+  });
+  if (cancelled) publishCalendarChanged(userId, null, 'local');
   const event = await getCalendarEventWithSubtasks(userId, eventId);
   return { event: event as TaskMoveCancelResponse['event'], cancelled };
 }

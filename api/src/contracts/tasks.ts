@@ -156,7 +156,9 @@ export interface TaskMoveRequest {
  * 400 CALENDAR_RECURRING_MOVE, 403 CALENDAR_READ_ONLY, 409
  * CALENDAR_SYNC_PAUSED, 409 CALENDAR_SYNC_PENDING, 409
  * CALENDAR_MOVE_PENDING (moving to another list while a move is open), 409
- * CALDAV_CONFLICT, the login errors of the calendar accounts (409
+ * CALENDAR_EVENT_CHANGED (another change of the task, an edit or a move,
+ * was still being saved after 25 s; changes of one task run one after
+ * another, and this one waits that long), 409 CALDAV_CONFLICT, the login errors of the calendar accounts (409
  * MAIL_ACCOUNT_DISCONNECTED, CALDAV_NO_PASSWORD, MAIL_CALENDAR_UNLINKED),
  * 422 CALDAV_AUTH_FAILED or CALDAV_FORBIDDEN, 502 CALDAV_SERVER_ERROR.
  */
