@@ -219,6 +219,45 @@ describe('the sortable list', () => {
     } finally { restore(); }
   });
 
+  // A pointer drag on the handle: pressed, moved past the 4 px that start a drag, let go.
+  const pointerDrag = (handle: HTMLElement, from: { x: number; y: number }, to: { x: number; y: number }) => {
+    fireEvent.mouseDown(handle, { clientX: from.x, clientY: from.y, button: 0 });
+    fireEvent.mouseMove(document, { clientX: from.x, clientY: from.y + 6 });
+    fireEvent.mouseMove(document, { clientX: to.x, clientY: to.y });
+    fireEvent.mouseUp(document, { clientX: to.x, clientY: to.y });
+  };
+
+  it('puts a row back when the pointer lets go outside the list, and still places it last at the list\'s bottom edge', async () => {
+    // The list is three rows of 50 px; a dragged row's box follows its transform.
+    const original = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function () {
+      const element = this as HTMLElement;
+      const row = element.closest('li');
+      if (!row) return { x: 0, y: 0, top: 0, left: 0, width: 400, height: 150, right: 400, bottom: 150, toJSON() { return this; } } as DOMRect;
+      const index = row.parentElement ? Array.from(row.parentElement.children).indexOf(row) : 0;
+      const shift = Number(/translate3d\([^,]*,\s*(-?[\d.]+)px/.exec(row.style.transform ?? '')?.[1] ?? 0);
+      const top = index * 50 + shift;
+      return { x: 0, y: top, top, left: 0, width: 400, height: 50, right: 400, bottom: top + 50, toJSON() { return this; } } as DOMRect;
+    };
+    const onReorder = vi.fn();
+    try {
+      const names = ['Pay rent', 'Call Sam', 'Plan holiday'];
+      render(
+        <SortableList items={names} getId={name => name} getName={name => name} label="No date" onReorder={onReorder}>
+          {(name, row) => <li key={name} ref={row.setNodeRef} style={row.style}>{name}<DragHandle {...row.handle} label={`Reorder ${name}`} /></li>}
+        </SortableList>,
+      );
+      // Taken hold of at the first row's middle, let go 200 px below the list (another section): nothing.
+      pointerDrag(screen.getByRole('button', { name: 'Reorder Pay rent' }), { x: 380, y: 25 }, { x: 380, y: 350 });
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Dropped outside No date. Pay rent is back at position 1 of 3 in No date.'));
+      expect(onReorder).not.toHaveBeenCalled();
+      // Let go just inside the bottom edge: last.
+      pointerDrag(screen.getByRole('button', { name: 'Reorder Pay rent' }), { x: 380, y: 25 }, { x: 380, y: 145 });
+      await waitFor(() => expect(onReorder).toHaveBeenCalledTimes(1));
+      expect(onReorder.mock.calls[0][0]).toMatchObject({ item: 'Pay rent', from: 0, to: 2, after: 'Plan holiday', before: null });
+    } finally { Element.prototype.getBoundingClientRect = original; }
+  });
+
   it('cancels with Escape and leaves the order alone', async () => {
     const restore = measured();
     try {
