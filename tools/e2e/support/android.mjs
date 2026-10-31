@@ -14,10 +14,26 @@ export function adb(...args) {
   return execFileSync(`${SDK}/platform-tools/adb`, ['-s', serial, ...args], { encoding: 'utf8', timeout: 120_000 });
 }
 
+/**
+ * Android's view hierarchy as uiautomator's XML. On a slow emulator the dump
+ * is sometimes killed (exit 137) after or before writing the file: retry.
+ */
+export function dumpScreen() {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      adb('shell', 'uiautomator', 'dump', '/data/local/tmp/unihub-ui.xml');
+      break;
+    } catch (error) {
+      if (/dumped to/.test(String(error.stdout ?? ''))) break;
+      if (attempt >= 3) throw error;
+    }
+  }
+  return adb('shell', 'cat', '/data/local/tmp/unihub-ui.xml');
+}
+
 /** Android's on-screen nodes: text, description and centre. */
 export function screenNodes() {
-  adb('shell', 'uiautomator', 'dump', '/data/local/tmp/unihub-ui.xml');
-  const xml = adb('shell', 'cat', '/data/local/tmp/unihub-ui.xml');
+  const xml = dumpScreen();
   return [...xml.matchAll(/<node [^>]*>/g)].map(match => {
     const attrs = Object.fromEntries([...match[0].matchAll(/([\w-]+)="([^"]*)"/g)].map(m => [m[1], m[2]]));
     const box = /\[(\d+),(\d+)\]\[(\d+),(\d+)\]/.exec(attrs.bounds ?? '');
@@ -184,7 +200,16 @@ export function deviceScreenshot(path) {
 export async function touch(page, locator) {
   await answerSlowDialogs();
   await locator.scrollIntoViewIfNeeded();
-  // The page may still be moving (the on-screen keyboard opening): wait until the element stays put.
+  const { x, y } = await screenPoint(page, locator);
+  adb('shell', 'input', 'tap', `${x}`, `${y}`);
+}
+
+/**
+ * Where a page element's centre (moved by `dy` page pixels) is on the screen,
+ * in screen pixels for `adb shell input`, once the element stays put (the
+ * page may still be moving: the on-screen keyboard opening, a scroll ending).
+ */
+export async function screenPoint(page, locator, { dy = 0 } = {}) {
   let box = await locator.boundingBox();
   for (let attempt = 0; attempt < 20; attempt++) {
     await sleep(400);
@@ -194,10 +219,9 @@ export async function touch(page, locator) {
   }
   if (!box) throw new Error('the element is not on screen');
   const ratio = await page.evaluate(() => window.devicePixelRatio);
-  adb('shell', 'uiautomator', 'dump', '/data/local/tmp/unihub-ui.xml');
-  const xml = adb('shell', 'cat', '/data/local/tmp/unihub-ui.xml');
+  const xml = dumpScreen();
   const node = [...xml.matchAll(/<node [^>]*>/g)].map(match => match[0]).find(tag => tag.includes('class="android.webkit.WebView"'));
   const web = node && /bounds="\[(\d+),(\d+)\]/.exec(node);
   if (!web) throw new Error('the WebView is not on screen');
-  adb('shell', 'input', 'tap', `${Math.round(+web[1] + (box.x + box.width / 2) * ratio)}`, `${Math.round(+web[2] + (box.y + box.height / 2) * ratio)}`);
+  return { x: Math.round(+web[1] + (box.x + box.width / 2) * ratio), y: Math.round(+web[2] + (box.y + box.height / 2 + dy) * ratio), ratio };
 }
