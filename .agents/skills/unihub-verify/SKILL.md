@@ -48,7 +48,7 @@ These are currently manual gates. Missing evidence blocks release even when
 CI is green. Before tagging, run real-phone/provider checks relevant to the
 change and label their evidence separately.
 
-Run the whole end-to-end suite on the candidate (`npm test` and `npm run android` in `tools/e2e`, plus `npm run test:providers` when real provider accounts are configured) and attach the results to the pull request; until CI runs it, it is a local gate.
+The full database suite (`test:ci`) and the whole web end-to-end suite (desktop, phone and android-app targets, against the candidate image) run in CI on the candidate's draft pull request (PROJECT-PREFERENCES P-34); their CI results are the evidence. Locally, run focused database tests, the Android emulator flows (`npm run android` in `tools/e2e`) and `npm run test:providers` when real provider accounts are configured, and attach those results to the pull request; they are local gates.
 
 When the version changes, update `android/support-window.json` first (this
 version and the three releases before it), or the Android window check fails.

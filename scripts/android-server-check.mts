@@ -3,7 +3,7 @@
 // accessibility tree (uiautomator), as a person would use it, and every step
 // is confirmed on the server through its API.
 //
-//   node scripts/android-server-check.mts --window <dir> --candidate-apk <apk> --candidate-image <image>
+//   node scripts/android-server-check.mts --window <dir> --candidate-apk <apk> --candidate-image <image> [--part <k>/<n>]
 //   node scripts/android-server-check.mts --local <url> --apk <apk> [--label <name>]
 //
 // CI (the first form) needs Docker, the disposable MariaDB service (MYSQL_TEST_*)
@@ -14,6 +14,8 @@
 // - the candidate app against the candidate server;
 // - the candidate app against each earlier server release in the window;
 // - each earlier app in the window against the candidate server.
+// --part k/n runs every n-th of these pairings from the k-th on, so CI splits
+// them over n emulators; the parts together run every pairing once.
 // The second form runs the candidate pairing against a server that is
 // already running (tools/e2e/stack.sh), for development; its admin account
 // comes from UNIHUB_ANDROID_ADMIN (email:password). Its file steps plant a
@@ -733,6 +735,11 @@ function stopServer(name: string) {
 
 // ---------------------------------------------------------------- main
 
+const partArgument = argument('--part') ?? '1/1';
+const partMatch = /^(\d+)\/(\d+)$/.exec(partArgument);
+const part = { index: Number(partMatch?.[1]), count: Number(partMatch?.[2]) };
+if (!partMatch || part.index < 1 || part.index > part.count) throw new Error(`--part must be <k>/<n> with 1 <= k <= n, not ${partArgument}`);
+const partLabel = part.count > 1 ? `, part ${part.index} of ${part.count}` : '';
 const evidence = path.resolve(argument('--evidence') || process.env.UNIHUB_ANDROID_EVIDENCE || path.join(os.tmpdir(), 'unihub-android-server'));
 fs.mkdirSync(evidence, { recursive: true });
 const rows: { app: string; server: string; steps: Step[]; error?: string }[] = [];
@@ -774,7 +781,7 @@ if (localServer) {
   }
 } else {
   const windowDir = argument('--window'), candidateApk = argument('--candidate-apk'), candidateImage = argument('--candidate-image');
-  if (!windowDir || !candidateApk || !candidateImage) throw new Error('usage: --window <dir> --candidate-apk <apk> --candidate-image <image>');
+  if (!windowDir || !candidateApk || !candidateImage) throw new Error('usage: --window <dir> --candidate-apk <apk> --candidate-image <image> [--part <k>/<n>]');
   const support = JSON.parse(fs.readFileSync(path.join(repo, 'android/support-window.json'), 'utf8')) as { releases: { version: string; shell: string }[] };
   const [current, ...earlier] = support.releases;
   const repository = process.env.UNIHUB_IMAGE_REPOSITORY || 'ghcr.io/mrksrus/selfhost-unihub';
@@ -784,11 +791,14 @@ if (localServer) {
     const apk = path.join(windowDir, item.version, 'unihub.apk');
     // Only the window's own record (broken or unavailable, with its reason) excuses an app;
     // a supported app missing from --window fails the check.
-    if (item.shell !== 'supported') rows.push({ app: item.version, server: current.version, steps: [], error: `not run: app ${item.shell} in android/support-window.json` });
+    // Reported by the first part only, so the parts together report each once.
+    if (item.shell !== 'supported') { if (part.index === 1) rows.push({ app: item.version, server: current.version, steps: [], error: `not run: app ${item.shell} in android/support-window.json` }); }
     else if (fs.existsSync(apk)) pairings.push({ app: item.version, apk, server: current.version, image: candidateImage });
-    else rows.push({ app: item.version, server: current.version, steps: [], error: `supported app not collected: ${apk} is missing` });
+    else if (part.index === 1) rows.push({ app: item.version, server: current.version, steps: [], error: `supported app not collected: ${apk} is missing` });
   }
-  for (const pairing of pairings) {
+  const mine = pairings.filter((_, index) => index % part.count === part.index - 1);
+  if (part.count > 1) log(`Part ${part.index} of ${part.count}: ${mine.length} of ${pairings.length} pairings`);
+  for (const pairing of mine) {
     const name = `unihub-android-${process.env.GITHUB_RUN_ID || 'local'}-${pairing.app}-${pairing.server}`.replace(/\./g, '-');
     log(`Pairing: ${pairing.app} app with the ${pairing.server} server (${pairing.image})`);
     try {
@@ -815,7 +825,7 @@ const mark = (step?: Step) => !step ? '-' : step.notOffered ? '·' : step.ok ? '
 const result = (row: typeof rows[number]) => row.error ? (row.error.startsWith('not run') ? 'not-run' : 'FAILED')
   : row.steps.length !== STEP_NAMES.length || row.steps.some(item => !item.ok && !item.known) ? 'FAILED'
   : row.steps.some(item => item.known) ? 'known' : 'ok';
-console.log(`\nAndroid ${release} (API ${sdkLevel}), WebView ${webView.version}: apps against real servers`);
+console.log(`\nAndroid ${release} (API ${sdkLevel}), WebView ${webView.version}: apps against real servers${partLabel}`);
 console.log(`App      Server   Result   ${STEP_NAMES.map((_, index) => index + 1).join(' ')}   Detail`);
 for (const row of rows) {
   if (result(row) === 'FAILED') failed = true;
@@ -827,9 +837,10 @@ console.log(`Flows: ${STEP_NAMES.map((name, index) => `${index + 1} ${name}`).jo
 const notes = [...new Set(rows.flatMap(row => row.steps.map(item => item.known).filter(Boolean)))];
 for (const note of notes) console.log(`k = known failure, recorded in KNOWN: ${note}`);
 if (rows.some(row => row.steps.some(item => item.notOffered))) console.log(`· = not offered: the file steps need an app and a server from ${FILE_ACTIONS_FROM}.`);
-fs.writeFileSync(path.join(evidence, `android-${sdkLevel}.json`), JSON.stringify({ android: release, api: sdkLevel, webView: webView.version, rows }, null, 2));
+fs.writeFileSync(path.join(evidence, `android-${sdkLevel}${part.count > 1 ? `-part${part.index}of${part.count}` : ''}.json`),
+  JSON.stringify({ android: release, api: sdkLevel, webView: webView.version, part: partArgument, passed: !failed, rows }, null, 2));
 if (process.env.GITHUB_STEP_SUMMARY) {
-  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, [`### Android ${release} (API ${sdkLevel}, WebView ${webView.version}) against real servers`, '',
+  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, [`### Android ${release} (API ${sdkLevel}, WebView ${webView.version}) against real servers${partLabel}`, '',
     `| App | Server | Result | ${STEP_NAMES.join(' | ')} |`, `| --- | --- | --- | ${STEP_NAMES.map(() => '---').join(' | ')} |`,
     ...rows.map(row => `| ${row.app} | ${row.server} | ${result(row)} | ${STEP_NAMES.map(name => mark(row.steps.find(entry => entry.name === name))).join(' | ')} |`),
     '', ...notes.map(note => `k = known failure: ${note}`),

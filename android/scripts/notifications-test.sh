@@ -16,7 +16,7 @@
 # sent again is not shown twice, one sent with the app in the background
 # arrives, an update of the app reconnects, signing out stops the connection
 # and removes what was shown, signing in again resumes it, and turning it off
-# (from the page, and with the ongoing notification's action) unregisters. CI runs it on every emulator after contacts-test.sh
+# (from the page, and with the ongoing notification's action) unregisters. CI runs it on every emulator
 # (.github/workflows/docker-image.yml).
 set -euo pipefail
 
@@ -180,6 +180,8 @@ stub_pid=$!
 
 fail() {
   echo "Notifications test failed: $1" >&2
+  echo "On screen (text, package, bounds):" >&2
+  screen | grep -o '<node [^>]*>' | sed -n 's/.* text="\([^"]\+\)".* package="\([^"]*\)".* bounds="\([^"]*\)".*/  \1 | \2 | \3/p' >&2 || true
   curl -s "$control/state" >&2 || true
   echo >&2
   adb logcat -d -s UniHubNotifications UniHubSession >&2 || true
@@ -219,15 +221,41 @@ where() { # the centre of the first element showing this text (any case), or not
 
 tap_text() { adb shell input tap $(where "$1"); }
 
-# A silent notification may show its actions only when expanded (Android 10):
-# pull it down, unless the action is already in view.
+# The centre of the action nearest below a notification's text, or nothing:
+# the shade can hold Android's own actions of the same name (Android 16's
+# notification cooldown offers "Turn off" on a new phone).
+action_below() { # notification text, action text
+  screen | grep -o '<node [^>]*>' \
+    | sed -n 's/.* text="\([^"]*\)".* bounds="\[\([0-9]*\),\([0-9]*\)\]\[\([0-9]*\),\([0-9]*\)\]".*/\2 \3 \4 \5 \1/p' \
+    | awk -v note="$1" -v action="$2" '
+      { text = $0; sub(/^[0-9]+ [0-9]+ [0-9]+ [0-9]+ /, "", text) }
+      tolower(text) == tolower(note) && top == "" { top = $2 }
+      tolower(text) == tolower(action) { x[++n] = int(($1 + $3) / 2); y[n] = int(($2 + $4) / 2) }
+      END { if (top == "") exit; for (i = 1; i <= n; i++) if (y[i] > top && (best == "" || y[i] < y[best])) best = i; if (best != "") print x[best], y[best] }'
+}
+
+# A silent notification may show its actions only when expanded (Android 10,
+# and Android 16 under another notification): pull it down, unless its action
+# is already in view.
 expand_notification() { # notification text, action text
   local x y
-  screen | grep -i -o "text=\"$2\"" >/dev/null && return 0
+  [[ -n "$(action_below "$1" "$2")" ]] && return 0
   read -r x y <<<"$(where "$1")"
   adb shell input swipe "$x" "$y" "$x" $((y + 250)) 300
   sleep 1
 }
+
+tap_action_below() { # notification text, action text
+  local point=
+  for _ in $(seq 1 20); do
+    point="$(action_below "$1" "$2")"
+    [[ -n "$point" ]] && break
+    sleep 1
+  done
+  [[ -n "$point" ]] || fail "no \"$2\" below \"$1\" (on screen: $(screen | grep -o 'text="[^"]\+"' | tr '\n' ' '))"
+  adb shell input tap $point
+}
+
 
 # Awake and past any lock screen (Android 10 keeps a swipe one after a PIN is removed).
 locked_screen() { adb shell dumpsys window 2>/dev/null | tr -d '\r' | contains 'isKeyguardShowing=true' || adb shell dumpsys window 2>/dev/null | tr -d '\r' | contains 'mDreamingLockscreen=true'; }
@@ -275,6 +303,10 @@ adb install "$apk" >/dev/null
 # system dialogs.
 if (( sdk >= 33 )); then adb shell pm grant "$package" android.permission.POST_NOTIFICATIONS; fi
 adb shell dumpsys deviceidle whitelist +"$package" >/dev/null
+# Android 15 on lowers alert sounds after a burst of notifications, which this
+# test sends, and then puts its own notice, with a "Turn off" of its own, over
+# UniHub's notification in the shade. It changes only sounds; off here.
+if (( sdk >= 35 )); then adb shell settings put system notification_cooldown_enabled 0; fi
 adb logcat -c -b all
 adb shell cmd statusbar collapse >/dev/null 2>&1 || true
 unlock
@@ -399,7 +431,7 @@ echo "The ongoing notification's Turn off does the same"
 adb shell cmd statusbar expand-notifications
 sleep 1
 expand_notification 'Connected to 10.0.2.2' 'Turn off'
-tap_text 'Turn off'
+tap_action_below 'Connected to 10.0.2.2' 'Turn off'
 wait_for "unsubscribed.length === $((turned_off + 1))" 'Turn off did not unregister'
 expect_stopped 'Turn off'
 adb shell cmd statusbar collapse

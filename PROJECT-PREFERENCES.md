@@ -604,8 +604,8 @@ the commit without building or testing again. Only when the released content
 differs from what was tested does the release run build and test it itself.
 The broken Android 17 emulator step stays off until a working image ships.
 
-Evidence: `.github/workflows/docker-image.yml` (`promote` job, "Keep the
-tested image for its release"), `docs/RELEASE_CONTRACT.md`.
+Evidence: `.github/workflows/docker-image.yml` (`promote` job; `publish`
+job, "Keep the tested image for its release"), `docs/RELEASE_CONTRACT.md`.
 
 #### P-27 A new pinned picture needs approval only for a change of design
 
@@ -693,6 +693,19 @@ Accepted, 2026-10-28 (maintainer, for 0.25.0). Removing a mail account
 together with its mail is a first-class choice when disconnecting it, and it
 removes only UniHub's copy; the provider keeps its mail. The dialog says so
 plainly and asks for the typed address.
+
+#### P-34 The full database and web e2e suites run in CI, not on this hardware
+
+Accepted, 2026-10-30 (maintainer, approved, with the parallel CI jobs).
+Refines P-28's local proof for this project's hardware.
+
+On this project's hardware, the full database suite and the full web e2e
+suite run in CI on the candidate's draft pull request; locally, agents run
+focused database tests, the Android emulator and real-provider tests. The
+release contract's database promise is the CI step `test:ci`.
+
+Evidence: `.github/workflows/docker-image.yml` (`api-tests` and `e2e` jobs),
+`docs/RELEASE_CONTRACT.md`, `.agents/skills/unihub-verify/SKILL.md`.
 
 ## Open decisions and conflicts
 
