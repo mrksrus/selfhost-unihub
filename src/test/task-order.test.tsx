@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import TodoPage from '@/pages/TodoPage';
@@ -12,7 +12,7 @@ import { useEventActions } from '@/hooks/use-event-actions';
 import { EventDialog } from '@/components/calendar/EventDialog';
 import { SortableList, DragHandle } from '@/components/ui/sortable-list';
 import { api } from '@/lib/api';
-import { calendarQueryKeys, normalizeCalendar, type CalendarCalendar, type CalendarEvent } from '@/lib/calendar-api';
+import { calendarApi, calendarQueryKeys, normalizeCalendar, type CalendarCalendar, type CalendarEvent } from '@/lib/calendar-api';
 import { defaultTaskList, listRefusal, neighboursAt, optimisticRanks, orderTasks, rankBetween } from '@/lib/tasks';
 import { userSettingsAnswer, savedSettingsAnswer } from './settings-fixtures';
 
@@ -83,7 +83,8 @@ beforeEach(() => {
   });
   vi.mocked(api.post).mockResolvedValue({ data: { event: undated[0] } });
 });
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+// resetAllMocks also drops answers queued with mockReturnValueOnce that a test did not consume; beforeEach sets the implementations again.
+afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
 describe('the order of tasks', () => {
   it('follows the rank, then the server\'s sort_key (the id only without one), and gives an answer without ranks its date order', () => {
@@ -132,22 +133,30 @@ describe('the order of tasks', () => {
     expect(state.toast).not.toHaveBeenCalled();
   });
 
-  it('puts a task back when the server refuses, and reloads the list when it changed meanwhile', async () => {
-    vi.mocked(api.put).mockResolvedValueOnce({ error: 'Database unavailable', status: 500 });
+  it('says so when the server refuses and fetches the list again, which puts the task back; a list that changed meanwhile is reloaded', async () => {
+    const answer = deferred<{ error: string; status: number }>();
+    vi.mocked(api.put).mockReturnValueOnce(answer.promise as never);
     mount(<TodoPage />);
     const section = await screen.findByRole('region', { name: 'No date' });
     const titles = () => within(section).getAllByRole('listitem').map(item => item.querySelector('p')!.textContent);
+    const listCalls = () => vi.mocked(api.get).mock.calls.filter(call => String(call[0]).startsWith('/calendar/events')).length;
+    let before = listCalls();
     fireEvent.click(within(await openMenu('Call Sam')).getByRole('menuitem', { name: 'Move up' }));
-    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not move the task', description: 'Database unavailable', variant: 'destructive' })));
-    expect(titles()).toEqual(['Pay rent', 'Call Sam', 'Plan holiday']);
+    await waitFor(() => expect(titles()).toEqual(['Call Sam', 'Pay rent', 'Plan holiday']));
+    expect(listCalls()).toBe(before);
+    await act(async () => { answer.resolve({ error: 'Database unavailable', status: 500 }); });
+    expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not move the task', description: 'Database unavailable', variant: 'destructive' }));
+    // Nothing is guessed back: the server's answer to the refresh holds the order.
+    await waitFor(() => expect(listCalls()).toBe(before + 1));
+    await waitFor(() => expect(titles()).toEqual(['Pay rent', 'Call Sam', 'Plan holiday']));
 
     vi.mocked(api.put).mockResolvedValueOnce({ error: 'The list changed in the meantime. It has been reloaded; try again.', status: 409, code: 'ORDER_STALE' });
-    const listCalls = () => vi.mocked(api.get).mock.calls.filter(call => String(call[0]).startsWith('/calendar/events')).length;
-    const before = listCalls();
+    before = listCalls();
     fireEvent.click(within(await openMenu('Call Sam')).getByRole('menuitem', { name: 'Move down' }));
-    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'The list changed in the meantime' })));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith({ title: 'The list changed in the meantime', description: 'It has been reloaded. Try again.' }));
     await waitFor(() => expect(listCalls()).toBeGreaterThan(before));
-    expect(titles()).toEqual(['Pay rent', 'Call Sam', 'Plan holiday']);
+    await waitFor(() => expect(titles()).toEqual(['Pay rent', 'Call Sam', 'Plan holiday']));
+    expect(state.toast).toHaveBeenCalledTimes(2);
   });
 
   it('keeps done tasks without handles and menus', async () => {
@@ -225,7 +234,7 @@ describe('the sortable list', () => {
 });
 
 describe('placements that overlap', () => {
-  it('lets a newer move of the same task win over an older answer or failure, and ends at the server\'s ranks', async () => {
+  it('sends the next placement once the first has answered, shows the newer place throughout and ends at the server\'s ranks', async () => {
     const first = deferred<{ data?: { ranks: Record<string, number> }; error?: string; status?: number }>();
     const second = deferred<{ data: { ranks: Record<string, number> } }>();
     vi.mocked(api.put).mockReturnValueOnce(first.promise as never).mockReturnValueOnce(second.promise as never);
@@ -233,22 +242,31 @@ describe('placements that overlap', () => {
     const section = await screen.findByRole('region', { name: 'No date' });
     const titles = () => within(section).getAllByRole('listitem').map(item => item.querySelector('p')!.textContent);
     const cached = (id: string) => client.getQueriesData<CalendarEvent[]>({ queryKey: calendarQueryKeys.all }).flatMap(([, events]) => events ?? []).find(event => event.id === id)!;
+    const listCalls = () => vi.mocked(api.get).mock.calls.filter(call => String(call[0]).startsWith('/calendar/events')).length;
+    const fetched = listCalls();
     // Plan holiday moves up once (to the middle), then up again (to the top) before the first answer.
     fireEvent.click(within(await openMenu('Plan holiday')).getByRole('menuitem', { name: 'Move up' }));
     await waitFor(() => expect(titles()).toEqual(['Pay rent', 'Plan holiday', 'Call Sam']));
     fireEvent.click(within(await openMenu('Plan holiday')).getByRole('menuitem', { name: 'Move up' }));
     await waitFor(() => expect(titles()).toEqual(['Plan holiday', 'Pay rent', 'Call Sam']));
-    expect(api.put).toHaveBeenCalledTimes(2);
-    // The second answer arrives first: the server put it at 50.
+    // The second request waits for the first: only one is in flight.
+    expect(api.put).toHaveBeenCalledTimes(1);
+    // The first answer (rank 150, the middle) arrives: the newer place stays shown, and the second request goes out.
+    serverRank('Plan holiday', 150);
+    await act(async () => { first.resolve({ data: { ranks: { 'Plan holiday': 150 } } }); });
+    expect(titles()).toEqual(['Plan holiday', 'Pay rent', 'Call Sam']);
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2));
+    expect(api.put).toHaveBeenLastCalledWith('/calendar/events/Plan%20holiday/position', { after: null, before: 'Pay rent' });
+    expect(listCalls()).toBe(fetched);
     serverRank('Plan holiday', 50);
     await act(async () => { second.resolve({ data: { ranks: { 'Plan holiday': 50 } } }); });
     expect(cached('Plan holiday').sort_rank).toBe(50);
-    // The first, older answer (rank 150) arrives late and changes nothing.
-    await act(async () => { first.resolve({ data: { ranks: { 'Plan holiday': 150 } } }); });
-    await waitFor(() => expect(cached('Plan holiday').sort_rank).toBe(50));
-    expect(titles()).toEqual(['Plan holiday', 'Pay rent', 'Call Sam']);
+    // The queue is empty: one refresh, and the order is the server's.
+    await waitFor(() => expect(listCalls()).toBe(fetched + 1));
+    await waitFor(() => expect(titles()).toEqual(['Plan holiday', 'Pay rent', 'Call Sam']));
 
-    // The same with an older failure: its rollback is skipped.
+    // The same with a failure of the first: nothing is put back by guessing,
+    // the second still goes out, and the refresh after it holds the server's order.
     const third = deferred<{ error: string; status: number }>();
     const fourth = deferred<{ data: { ranks: Record<string, number> } }>();
     vi.mocked(api.put).mockReturnValueOnce(third.promise as never).mockReturnValueOnce(fourth.promise as never);
@@ -256,11 +274,15 @@ describe('placements that overlap', () => {
     await waitFor(() => expect(titles()).toEqual(['Pay rent', 'Plan holiday', 'Call Sam']));
     fireEvent.click(within(await openMenu('Plan holiday')).getByRole('menuitem', { name: 'Move down' }));
     await waitFor(() => expect(titles()).toEqual(['Pay rent', 'Call Sam', 'Plan holiday']));
+    expect(api.put).toHaveBeenCalledTimes(3);
+    await act(async () => { third.resolve({ error: 'Database unavailable', status: 500 }); });
+    expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not move the task' }));
+    expect(titles()).toEqual(['Pay rent', 'Call Sam', 'Plan holiday']);
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(4));
     serverRank('Plan holiday', 400);
     await act(async () => { fourth.resolve({ data: { ranks: { 'Plan holiday': 400 } } }); });
-    await act(async () => { third.resolve({ error: 'Database unavailable', status: 500 }); });
-    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not move the task' })));
     await waitFor(() => expect(cached('Plan holiday').sort_rank).toBe(400));
+    await waitFor(() => expect(listCalls()).toBe(fetched + 2));
     expect(titles()).toEqual(['Pay rent', 'Call Sam', 'Plan holiday']);
   });
 
@@ -306,7 +328,7 @@ describe('placements that overlap', () => {
     await waitFor(() => expect(titles()).toEqual(['a', 'z', 'c']));
   });
 
-  it('puts back only the subtask order when a reorder fails, keeping what changed meanwhile', async () => {
+  it('keeps what changed meanwhile when a subtask reorder fails, and the refresh restores the order', async () => {
     const parent = task('Car service', { is_todo_only: true, sort_rank: 100, subtasks: [
       { id: 's0', event_id: 'Car service', user_id: 'owner', title: 'Call the garage', is_done: false, position: 0, created_at: iso(-hour), updated_at: iso(-hour) },
       { id: 's1', event_id: 'Car service', user_id: 'owner', title: 'Book a slot', is_done: false, position: 1, created_at: iso(-hour), updated_at: iso(-hour) },
@@ -324,6 +346,8 @@ describe('placements that overlap', () => {
     client.setQueryData<CalendarEvent[]>(key, events => events!.map(event => event.id === 'Call Sam' ? { ...event, title: 'Call Sam back', sort_rank: 5 } : event));
     serverEvents = serverEvents.map(event => event.id === 'Call Sam' ? { ...event, title: 'Call Sam back', sort_rank: 5 } : event);
     await act(async () => { answer.resolve({ error: 'Database unavailable', status: 500 }); });
+    expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not reorder the subtasks' }));
+    // The server's answer to the refresh holds the order; what changed meanwhile is in it too.
     await waitFor(() => expect(subtaskTitles()).toEqual(['Call the garage', 'Book a slot']));
     expect(client.getQueryData<CalendarEvent[]>(key)!.find(event => event.id === 'Call Sam')).toMatchObject({ title: 'Call Sam back', sort_rank: 5 });
   });
@@ -610,5 +634,205 @@ describe('the query cache after a reorder', () => {
       const today = client.getQueryData<CalendarEvent[]>(calendarQueryKeys.list({ includeTodos: true, includeDone: false, respectAutoTodo: true }))!;
       expect(today.find(t => t.id === 'Plan holiday')).toMatchObject({ sort_rank: 150, hand_ordered: true });
     });
+  });
+});
+
+// The hook alone, with the page's list query: the scenarios of the second
+// review round, which need two or three writes pending at once.
+let probeActions: TaskActions;
+const probeKey = calendarQueryKeys.list({ includeTodos: true, respectAutoTodo: true });
+function ProbeHost() {
+  probeActions = useTaskActions();
+  useQuery({ queryKey: probeKey, queryFn: ({ signal }) => calendarApi.fetchEvents({ includeTodos: true, respectAutoTodo: true }, signal) });
+  return null;
+}
+async function probeMount() {
+  const mounted = mount(<ProbeHost />);
+  await waitFor(() => expect(mounted.client.getQueryData(probeKey)).toBeDefined());
+  return mounted;
+}
+const pair = (eventId: string) => ['s0', 's1'].map((id, position) => ({ id, event_id: eventId, user_id: 'owner', title: id, is_done: false, position, created_at: iso(-hour), updated_at: iso(-hour) }));
+const listCalls = () => vi.mocked(api.get).mock.calls.filter(call => String(call[0]).startsWith('/calendar/events')).length;
+
+describe('ordering writes in one queue', () => {
+  it('sends an older placement\'s answer no later than a newer one: a neighbour placed again keeps its newer place', async () => {
+    serverEvents = ['a', 'b', 'c'].map(id => task(id, { is_todo_only: true, sort_rank: 100, sort_key: id }));
+    const first = deferred<{ data: { ranks: Record<string, number> } }>(), second = deferred<{ data: { ranks: Record<string, number> } }>();
+    vi.mocked(api.put).mockReturnValueOnce(first.promise as never).mockReturnValueOnce(second.promise as never);
+    const { client } = await probeMount();
+    const shown = () => orderTasks(client.getQueryData<CalendarEvent[]>(probeKey)!).map(event => event.id);
+    const rank = (id: string) => client.getQueryData<CalendarEvent[]>(probeKey)!.find(event => event.id === id)!.sort_rank;
+    // c between a and b, then b to the top: the second waits for the first.
+    act(() => probeActions.placeTask(serverEvents, 'c', 1));
+    await waitFor(() => expect(shown()).toEqual(['a', 'c', 'b']));
+    act(() => probeActions.placeTask(orderTasks(client.getQueryData<CalendarEvent[]>(probeKey)!), 'b', 0));
+    await waitFor(() => expect(shown()).toEqual(['b', 'a', 'c']));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
+    // The first answer spread the tied three, b last among them: b stays at the top it was given since.
+    await act(async () => { first.resolve({ data: { ranks: { a: 32768, c: 65536, b: 98304 } } }); });
+    expect(shown()).toEqual(['b', 'a', 'c']);
+    expect([rank('a'), rank('c')]).toEqual([32768, 65536]);
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2));
+    expect(api.put).toHaveBeenLastCalledWith('/calendar/events/b/position', { after: null, before: 'a' });
+    const fetched = listCalls();
+    serverEvents = serverEvents.map(event => ({ ...event, sort_rank: { a: 32768, b: 0, c: 65536 }[event.id] }));
+    await act(async () => { second.resolve({ data: { ranks: { b: 0 } } }); });
+    expect(rank('b')).toBe(0);
+    await waitFor(() => expect(listCalls()).toBe(fetched + 1));
+    expect(shown()).toEqual(['b', 'a', 'c']);
+  });
+
+  it('holds every other refresh until the queue is empty, and a move waits its turn behind a placement and a subtask order', async () => {
+    serverEvents = [...undated.map((entry, index) => index === 0 ? { ...entry, subtasks: pair(entry.id) } : entry), task('Archive me', { is_todo_only: true, sort_rank: 400 })];
+    const placeAnswer = deferred<{ data: { ranks: Record<string, number> } }>(), subtaskAnswer = deferred<{ data: { subtasks: [] } }>(), moveAnswer = deferred<{ data: { event: CalendarEvent | null; pending?: string } }>();
+    vi.mocked(api.put).mockReturnValueOnce(placeAnswer.promise as never);
+    vi.mocked(api.post).mockReturnValueOnce(subtaskAnswer.promise as never).mockReturnValueOnce(moveAnswer.promise as never);
+    const { client } = await probeMount();
+    const data = () => client.getQueryData<CalendarEvent[]>(probeKey)!;
+    const fetched = listCalls();
+    act(() => probeActions.placeTask(serverEvents, 'Plan holiday', 1));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
+    act(() => probeActions.reorderSubtasks.mutate({ eventId: 'Pay rent', subtaskIds: ['s1', 's0'] }));
+    act(() => probeActions.moveToList.mutate({ id: 'Archive me', calendarId: 'list-archive' }));
+    await waitFor(() => expect(data()[0].subtasks.map(subtask => subtask.id)).toEqual(['s1', 's0']));
+    expect(api.post).not.toHaveBeenCalled();
+    // A tick answered meanwhile: its refresh waits, so the pending order is not fetched away.
+    act(() => probeActions.setStatus.mutate({ id: 'Call Sam', todo_status: 'done' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith({ title: 'Task done' }));
+    expect(listCalls()).toBe(fetched);
+    expect(data().find(event => event.id === 'Plan holiday')!.sort_rank).toBe(150);
+    expect(data()[0].subtasks.map(subtask => subtask.id)).toEqual(['s1', 's0']);
+    serverEvents = serverEvents.map(event => event.id === 'Plan holiday' ? { ...event, sort_rank: 150 } : event);
+    await act(async () => { placeAnswer.resolve({ data: { ranks: { 'Plan holiday': 150 } } }); });
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1));
+    expect(api.post).toHaveBeenLastCalledWith('/calendar/events/Pay rent/subtasks/reorder', { subtask_ids: ['s1', 's0'] });
+    expect(listCalls()).toBe(fetched);
+    serverEvents = serverEvents.map(event => event.id === 'Pay rent' ? { ...event, subtasks: [...event.subtasks].reverse() } : event);
+    await act(async () => { subtaskAnswer.resolve({ data: { subtasks: [] } }); });
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(2));
+    expect(api.post).toHaveBeenLastCalledWith('/calendar/events/Archive%20me/move', { calendar_id: 'list-archive' });
+    expect(listCalls()).toBe(fetched);
+    serverEvents = serverEvents.filter(event => event.id !== 'Archive me');
+    await act(async () => { moveAnswer.resolve({ data: { event: task('Archive me', { calendar_id: 'list-archive' }), pending: 'removing' } }); });
+    // The queue is empty: one refresh, with everything the server holds.
+    await waitFor(() => expect(listCalls()).toBe(fetched + 1));
+    await waitFor(() => expect(orderTasks(data()).map(event => event.id)).toEqual(['Pay rent', 'Plan holiday', 'Call Sam']));
+    expect(data()[0].subtasks.map(subtask => subtask.id)).toEqual(['s1', 's0']);
+  });
+
+  it('lays a pending subtask order over a list fetched meanwhile, and keeps a checkbox confirmed meanwhile when the reorder fails', async () => {
+    serverEvents = undated.map((entry, index) => index === 0 ? { ...entry, subtasks: pair(entry.id) } : entry);
+    const answer = deferred<{ error: string; status: number }>();
+    vi.mocked(api.post).mockReturnValueOnce(answer.promise as never);
+    const { client } = await probeMount();
+    const subtasks = () => client.getQueryData<CalendarEvent[]>(probeKey)![0].subtasks.map(subtask => [subtask.id, subtask.is_done]);
+    act(() => probeActions.reorderSubtasks.mutate({ eventId: 'Pay rent', subtaskIds: ['s1', 's0'] }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(subtasks()).toEqual([['s1', false], ['s0', false]]));
+    // A fetch for another reason (a live-update hint, a tick's refresh elsewhere) brings s0 ticked: the pending order stays on top.
+    serverEvents = serverEvents.map(entry => entry.id === 'Pay rent' ? { ...entry, subtasks: entry.subtasks.map(subtask => subtask.id === 's0' ? { ...subtask, is_done: true } : subtask) } : entry);
+    await act(async () => { await client.refetchQueries({ queryKey: probeKey }); });
+    expect(subtasks()).toEqual([['s1', false], ['s0', true]]);
+    // The reorder fails: nothing from before it is put back, so the tick stays; the refresh then holds the server's order.
+    const fetched = listCalls();
+    await act(async () => { answer.resolve({ error: 'Could not reorder', status: 500 }); });
+    expect(subtasks().find(([id]) => id === 's0')).toEqual(['s0', true]);
+    await waitFor(() => expect(listCalls()).toBe(fetched + 1));
+    await waitFor(() => expect(subtasks()).toEqual([['s0', true], ['s1', false]]));
+  });
+
+  it('keeps a newer placement of the same task while another write still delays the refresh', async () => {
+    serverEvents = undated.map((entry, index) => index === 0 ? { ...entry, subtasks: pair(entry.id) } : entry);
+    const first = deferred<{ data: { ranks: Record<string, number> } }>(), second = deferred<{ data: { ranks: Record<string, number> } }>(), hold = deferred<{ data: { subtasks: [] } }>();
+    vi.mocked(api.put).mockReturnValueOnce(first.promise as never).mockReturnValueOnce(second.promise as never);
+    vi.mocked(api.post).mockReturnValueOnce(hold.promise as never);
+    const { client } = await probeMount();
+    const shown = () => orderTasks(client.getQueryData<CalendarEvent[]>(probeKey)!).map(event => event.id);
+    const rank = () => client.getQueryData<CalendarEvent[]>(probeKey)!.find(event => event.id === 'Plan holiday')!.sort_rank;
+    act(() => probeActions.placeTask(serverEvents, 'Plan holiday', 1));
+    await waitFor(() => expect(shown()).toEqual(['Pay rent', 'Plan holiday', 'Call Sam']));
+    act(() => probeActions.placeTask(orderTasks(client.getQueryData<CalendarEvent[]>(probeKey)!), 'Plan holiday', 0));
+    await waitFor(() => expect(shown()).toEqual(['Plan holiday', 'Pay rent', 'Call Sam']));
+    act(() => probeActions.reorderSubtasks.mutate({ eventId: 'Pay rent', subtaskIds: ['s1', 's0'] }));
+    await waitFor(() => expect(client.getQueryData<CalendarEvent[]>(probeKey)![0].subtasks[0].id).toBe('s1'));
+    expect(api.put).toHaveBeenCalledTimes(1);
+    const fetched = listCalls();
+    await act(async () => { first.resolve({ data: { ranks: { 'Plan holiday': 150 } } }); });
+    // The older answer (the middle) is in the cache, with the newer place laid over it.
+    expect(shown()).toEqual(['Plan holiday', 'Pay rent', 'Call Sam']);
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2));
+    await act(async () => { second.resolve({ data: { ranks: { 'Plan holiday': 50 } } }); });
+    expect(rank()).toBe(50);
+    expect(shown()).toEqual(['Plan holiday', 'Pay rent', 'Call Sam']);
+    // The subtask order is still pending, so no refresh could have repaired anything.
+    expect(listCalls()).toBe(fetched);
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1));
+    await act(async () => { hold.resolve({ data: { subtasks: [] } }); });
+    await waitFor(() => expect(listCalls()).toBe(fetched + 1));
+  });
+});
+
+describe('a move the server refuses with a reason', () => {
+  const chooseArchive = async (dialog: HTMLElement) => {
+    fireEvent.click(within(dialog).getByRole('combobox', { name: 'New list' }));
+    fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /Archive/ }));
+  };
+  it('says the reason plainly, keeps the dialog and the cache, and reloads the list after a conflict on the calendar server', async () => {
+    const unsupported = 'This item shares its calendar entry with other items, so it cannot be moved on its own.';
+    const changed = 'The event was changed on the calendar server in the meantime. It is being refreshed; please review it and try again.';
+    const recurring = 'Recurring events cannot be moved to another calendar.';
+    vi.mocked(api.post)
+      .mockResolvedValueOnce({ error: unsupported, status: 400, code: 'CALENDAR_MOVE_UNSUPPORTED' })
+      .mockResolvedValueOnce({ error: changed, status: 409, code: 'CALDAV_CONFLICT' })
+      .mockResolvedValueOnce({ error: recurring, status: 400, code: 'CALENDAR_RECURRING_MOVE' });
+    const { client } = mount(<TodoPage />);
+    await screen.findByRole('region', { name: 'No date' });
+    const before = client.getQueryData<CalendarEvent[]>(probeKey)!;
+    fireEvent.click(within(await openMenu('Pay rent')).getByRole('menuitem', { name: 'Move to another list' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Move to another list' });
+    await chooseArchive(dialog);
+    let fetched = listCalls();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move' }));
+    await waitFor(() => expect(state.toast).toHaveBeenLastCalledWith({ title: 'This item cannot be moved on its own', description: unsupported }));
+    expect(screen.getByRole('dialog', { name: 'Move to another list' })).toBeInTheDocument();
+    expect(client.getQueryData<CalendarEvent[]>(probeKey)).toBe(before);
+    // The queue is empty after the refusal: one refresh, as after any write.
+    await waitFor(() => expect(listCalls()).toBe(fetched + 1));
+
+    fetched = listCalls();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move' }));
+    await waitFor(() => expect(state.toast).toHaveBeenLastCalledWith({ title: 'Changed on the calendar server', description: changed }));
+    await waitFor(() => expect(listCalls()).toBeGreaterThan(fetched));
+    expect(screen.getByRole('dialog', { name: 'Move to another list' })).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move' }));
+    await waitFor(() => expect(state.toast).toHaveBeenLastCalledWith({ title: 'Repeating events stay in their calendar', description: recurring }));
+    expect(state.toast).not.toHaveBeenCalledWith(expect.objectContaining({ variant: 'destructive' }));
+    expect(screen.getByRole('dialog', { name: 'Move to another list' })).toBeInTheDocument();
+  });
+
+  it('keeps the event dialog open with what was typed when the server copy changed, and reloads', async () => {
+    const changed = 'The event was changed on the calendar server in the meantime. It is being refreshed; please review it and try again.';
+    vi.mocked(api.put).mockResolvedValueOnce({ error: changed, status: 409, code: 'CALDAV_CONFLICT' });
+    const event = task('Dentist', { calendar_id: 'cal-work' });
+    const onClose = vi.fn();
+    function Host() {
+      const actions = useEventActions();
+      const target = useMemo(() => ({ kind: 'edit' as const, event }), []);
+      return <EventDialog target={target} onClose={onClose} calendars={lists} accounts={[{ id: 'local', provider: 'local' }, { id: 'caldav', provider: 'caldav' }] as never} actions={actions} timezone="UTC" />;
+    }
+    const { client } = mount(<Host />);
+    client.setQueryData(probeKey, [event]);
+    const dialog = await screen.findByRole('dialog', { name: 'Edit event' });
+    fireEvent.change(within(dialog).getByLabelText('Title'), { target: { value: 'Dentist, new time' } });
+    fireEvent.click(within(dialog).getByRole('combobox', { name: 'Calendar' }));
+    fireEvent.click(await screen.findByRole('option', { name: /Home/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith({ title: 'Changed on the calendar server', description: changed }));
+    expect(within(dialog).getByLabelText('Title')).toHaveValue('Dentist, new time');
+    expect(onClose).not.toHaveBeenCalled();
+    expect(client.getQueryState(probeKey)?.isInvalidated).toBe(true);
+    expect(client.getQueryData(probeKey)).toEqual([event]);
   });
 });

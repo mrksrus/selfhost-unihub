@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
 import {
-  MOVE_PENDING_NOTICE, calendarApi, invalidateCalendarQueries, isMovePending,
+  calendarApi, invalidateCalendarQueries, writeRefusal,
   type CalendarEvent, type CalendarRsvpStatus, type RecurrenceScope,
 } from '@/lib/calendar-api';
 
@@ -12,8 +12,14 @@ export function useEventActions() {
   const client = useQueryClient();
   const { toast } = useToast();
   const refresh = () => { void invalidateCalendarQueries(client); };
-  // An item still being moved refuses writes until the calendar server answers; that is a wait, not a failure.
-  const failed = (title: string) => (error: Error) => toast(isMovePending(error) ? MOVE_PENDING_NOTICE : { title, description: error.message, variant: 'destructive' });
+  // A write the server refused with a reason (still being moved, changed on
+  // the server, not movable on its own) is a plain notice, not a failure; a
+  // reason that needs the current lists reloads them first.
+  const failed = (title: string) => (error: Error) => {
+    const refusal = writeRefusal(error);
+    if (refusal?.reload) refresh();
+    toast(refusal ? { title: refusal.title, description: refusal.description } : { title, description: error.message, variant: 'destructive' });
+  };
 
   const create = useMutation({
     mutationFn: (event: EventInput) => calendarApi.createEvent(event),

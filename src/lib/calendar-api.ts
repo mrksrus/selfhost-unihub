@@ -11,6 +11,29 @@ export interface TaskMove { event: CalendarEvent | null; pending?: TaskMoveRespo
 
 /** A write refused because the item is still being moved to another calendar (409 CALENDAR_MOVE_PENDING). */
 export const isMovePending = (error: unknown) => error instanceof CalendarRequestError && error.code === 'CALENDAR_MOVE_PENDING';
+
+/** What a refused write tells the person; `reload` when the lists must be fetched again first. */
+export interface WriteRefusal { title: string; description: string; reload?: boolean }
+
+/**
+ * A write the server refused for a reason the person can act on, by its
+ * error code (api/src/services/calendar-move.ts, task-order.ts), as a plain
+ * notice rather than a failure: the row and the cache stay as they are.
+ * Null for anything else.
+ */
+export function writeRefusal(error: unknown): WriteRefusal | null {
+  if (!(error instanceof CalendarRequestError)) return null;
+  switch (error.code) {
+    case 'CALENDAR_MOVE_PENDING': return MOVE_PENDING_NOTICE;
+    // A shared calendar entry (several components in one object) or a repeating event: the server says which.
+    case 'CALENDAR_MOVE_UNSUPPORTED': return { title: 'This item cannot be moved on its own', description: error.message };
+    case 'CALENDAR_RECURRING_MOVE': return { title: 'Repeating events stay in their calendar', description: error.message };
+    // The server copy changed, or the server reports no versions: the lists are fetched again before another try.
+    case 'CALDAV_CONFLICT': return { title: 'Changed on the calendar server', description: error.message, reload: true };
+    case 'ORDER_STALE': return { title: 'The list changed in the meantime', description: 'It has been reloaded. Try again.', reload: true };
+    default: return null;
+  }
+}
 /** What to say then, instead of a failure: the row and the cache stay as they are. */
 export const MOVE_PENDING_NOTICE = { title: 'Still being moved to another list', description: 'UniHub finishes the move when the calendar server answers. Try again in a moment.' } as const;
 

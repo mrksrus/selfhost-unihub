@@ -1,9 +1,9 @@
-import { useRef } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
-import { CalendarRequestError, MOVE_PENDING_NOTICE, calendarApi, calendarQueryKeys, invalidateCalendarQueries, isMovePending, type CalendarCalendar, type CalendarEvent, type CalendarSubtask, type NewCalendarEvent, type TaskMove } from '@/lib/calendar-api';
-import { neighboursAt, optimisticRanks } from '@/lib/tasks';
+import { calendarApi, writeRefusal, type CalendarCalendar, type CalendarEvent, type CalendarSubtask, type NewCalendarEvent, type TaskMove } from '@/lib/calendar-api';
+import { neighboursAt } from '@/lib/tasks';
+import { queueTaskWrite, refreshTasksWhenIdle, writeTaskRanks } from '@/lib/task-order-queue';
 
 export type NewTask = NewCalendarEvent;
 
@@ -13,21 +13,27 @@ export type NewTask = NewCalendarEvent;
  */
 export interface TaskPlacement { id: string; after: CalendarEvent | null; before: CalendarEvent | null; order: readonly CalendarEvent[] }
 
-type RankFields = Pick<CalendarEvent, 'sort_rank' | 'hand_ordered'>;
-
-type EventLists = CalendarEvent[] | undefined;
-const EVENT_LISTS = { queryKey: calendarQueryKeys.all };
-
 /**
  * Every change to a task, with its feedback. Tasks are calendar events, so the
  * same writes and invalidation apply wherever tasks are shown (ToDo, Today).
+ *
+ * Ordering writes (placements, subtask orders, moves) go through one queue
+ * per session (task-order-queue.ts): the change shows at once, one request is
+ * in flight at a time, nothing is rolled back, and the lists are fetched
+ * again once the queue is empty. Every refresh here waits for that moment.
  */
 export function useTaskActions() {
   const client = useQueryClient();
   const { toast } = useToast();
-  const refresh = () => { void invalidateCalendarQueries(client); };
-  // A task still being moved refuses writes until the calendar server answers; that is a wait, not a failure.
-  const failed = (title: string) => (error: Error) => toast(isMovePending(error) ? MOVE_PENDING_NOTICE : { title, description: error.message, variant: 'destructive' });
+  const refresh = () => refreshTasksWhenIdle(client);
+  // A write the server refused with a reason (still being moved, changed on
+  // the server, a stale list) is a plain notice, not a failure; a reason that
+  // needs the current lists reloads them first.
+  const failed = (title: string) => (error: Error) => {
+    const refusal = writeRefusal(error);
+    if (refusal?.reload) refresh();
+    toast(refusal ? { title: refusal.title, description: refusal.description } : { title, description: error.message, variant: 'destructive' });
+  };
 
   const create = useMutation({
     mutationFn: (task: NewTask) => calendarApi.createEvent(task),
@@ -57,65 +63,19 @@ export function useTaskActions() {
     onError: failed('Could not update the task'),
   });
 
-  // Writes the same rank fields into every cached event list (ToDo, Today,
-  // the calendar's ranges), so a task moved on one page is in place on the others.
-  const writeRanks = (ranks: Record<string, number>, handOrdered?: boolean) => {
-    client.setQueriesData<EventLists>(EVENT_LISTS, events => events?.map(event => (
-      ranks[event.id] === undefined ? event : { ...event, sort_rank: ranks[event.id], ...(handOrdered === undefined ? {} : { hand_ordered: handOrdered }) }
-    )));
-  };
-  const writeRankFields = (fields: Record<string, RankFields>) => {
-    client.setQueriesData<EventLists>(EVENT_LISTS, events => events?.map(event => fields[event.id] ? { ...event, ...fields[event.id] } : event));
-  };
-  const cachedEvents = () => client.getQueriesData<EventLists>(EVENT_LISTS).flatMap(([, events]) => events ?? []);
-
-  // Placements of one task are ordered: an answer or a failure of an older
-  // placement, arriving after a newer one started, changes nothing. Once no
-  // placement is in flight the lists are fetched again, so the cache ends at
-  // what the server holds, whatever the optimistic view was.
-  const placeGeneration = useRef(new Map<string, number>());
-  const inFlight = useRef(0);
-  const settleRanks = () => {
-    inFlight.current -= 1;
-    if (inFlight.current === 0) void client.invalidateQueries(EVENT_LISTS);
-  };
-
   /**
    * Places a task between its new neighbours: shown at once in the requested
-   * order, then the server's rank replaces it. A failure puts the moved task
-   * back and says so; a list that changed meanwhile (ORDER_STALE) is reloaded
-   * instead of guessed. An answer that arrives after an account switch
-   * changes nothing (useSessionMutation).
+   * order, then the server's ranks replace it. A failure says so, and the
+   * refresh after the queue puts the task back where the server has it; a
+   * list that changed meanwhile (ORDER_STALE) is reloaded instead of guessed.
+   * An answer that arrives after an account switch changes nothing
+   * (useSessionMutation).
    */
   const place = useSessionMutation({
-    mutationFn: ({ id, after, before }: TaskPlacement) => calendarApi.setTaskPosition(id, { after: after?.id ?? null, before: before?.id ?? null }),
-    onMutate: async ({ id, order }) => {
-      await client.cancelQueries(EVENT_LISTS);
-      const generation = (placeGeneration.current.get(id) ?? 0) + 1;
-      placeGeneration.current.set(id, generation);
-      inFlight.current += 1;
-      const ranks = optimisticRanks(order, id);
-      // What the changed tasks showed before, for a rollback of this placement only.
-      const previous: Record<string, RankFields> = {};
-      for (const event of cachedEvents()) if (ranks[event.id] !== undefined && !previous[event.id]) previous[event.id] = { sort_rank: event.sort_rank, hand_ordered: event.hand_ordered };
-      writeRankFields(Object.fromEntries(Object.keys(ranks).map(taskId => [taskId, { sort_rank: ranks[taskId], hand_ordered: taskId === id ? true : previous[taskId]?.hand_ordered }])));
-      return { generation, previous };
-    },
-    onSuccess: ({ ranks }, { id }, context) => {
-      if (context.generation !== placeGeneration.current.get(id)) return;
-      writeRanks(ranks, true);
-    },
-    onError: (error: Error, { id }, context) => {
-      const superseded = !context || context.generation !== placeGeneration.current.get(id);
-      if (!superseded) writeRankFields(context.previous);
-      if (error instanceof CalendarRequestError && error.code === 'ORDER_STALE') {
-        refresh();
-        toast({ title: 'The list changed in the meantime', description: 'It has been reloaded. Try again.' });
-        return;
-      }
-      failed('Could not move the task')(error);
-    },
-    onSettled: settleRanks,
+    mutationFn: ({ id, after, before, order }: TaskPlacement) => queueTaskWrite(client, { kind: 'place', id, order: order.map(task => task.id) },
+      () => calendarApi.setTaskPosition(id, { after: after?.id ?? null, before: before?.id ?? null })),
+    onSuccess: ({ ranks }) => writeTaskRanks(client, ranks),
+    onError: failed('Could not move the task'),
   });
 
   /** Moves a task to `index` within the section it is shown in. */
@@ -135,11 +95,11 @@ export function useTaskActions() {
     placeTask(section, taskId, to);
   };
 
-  /** Moves a task to another list or calendar; the list is refreshed from the server's answer. */
+  /** Moves a task to another list or calendar; the lists are fetched again once the queue is empty. */
   const moveToList = useSessionMutation({
-    mutationFn: ({ id, calendarId }: { id: string; calendarId: string; list?: CalendarCalendar }) => calendarApi.moveTask(id, calendarId),
+    mutationFn: ({ id, calendarId }: { id: string; calendarId: string; list?: CalendarCalendar }) =>
+      queueTaskWrite(client, { kind: 'move', id }, () => calendarApi.moveTask(id, calendarId)),
     onSuccess: (result: TaskMove, { list }) => {
-      refresh();
       if (result.pending === 'creating') toast({ title: 'Moving…', description: 'The calendar server has not confirmed yet. UniHub finishes this in the background.' });
       else toast({ title: list ? `Task moved to ${list.name}` : 'Task moved',
         ...(result.sourceKept ? { description: 'Its old copy was changed in another app meanwhile, so it stays in the old calendar too.' } : {}) });
@@ -166,33 +126,11 @@ export function useTaskActions() {
     onError: failed('Could not delete the subtask'),
   });
 
-  // The new order shows at once; the server's answer replaces it. A failure
-  // puts back that task's subtask order only, nothing else that changed
-  // meanwhile; a reorder started later for the same task wins over an older one.
-  const subtaskGeneration = useRef(new Map<string, number>());
+  /** The new order of a task's subtasks shows at once; the refresh after the queue holds the server's. */
   const reorderSubtasks = useSessionMutation({
-    mutationFn: ({ eventId, subtaskIds }: { eventId: string; subtaskIds: string[] }) => calendarApi.reorderSubtasks(eventId, subtaskIds),
-    onMutate: async ({ eventId, subtaskIds }) => {
-      await client.cancelQueries(EVENT_LISTS);
-      const generation = (subtaskGeneration.current.get(eventId) ?? 0) + 1;
-      subtaskGeneration.current.set(eventId, generation);
-      inFlight.current += 1;
-      const previous = cachedEvents().find(event => event.id === eventId)?.subtasks ?? null;
-      client.setQueriesData<EventLists>(EVENT_LISTS, events => events?.map(event => event.id !== eventId ? event : {
-        ...event,
-        subtasks: subtaskIds.map(id => event.subtasks.find(subtask => subtask.id === id)).filter((subtask): subtask is CalendarSubtask => !!subtask)
-          .map((subtask, position) => ({ ...subtask, position })),
-      }));
-      return { generation, previous };
-    },
-    onError: (error: Error, { eventId }, context) => {
-      if (context?.previous && context.generation === subtaskGeneration.current.get(eventId)) {
-        const previous = context.previous;
-        client.setQueriesData<EventLists>(EVENT_LISTS, events => events?.map(event => event.id === eventId ? { ...event, subtasks: previous } : event));
-      }
-      failed('Could not reorder the subtasks')(error);
-    },
-    onSettled: settleRanks,
+    mutationFn: ({ eventId, subtaskIds }: { eventId: string; subtaskIds: string[] }) =>
+      queueTaskWrite(client, { kind: 'subtasks', eventId, ids: subtaskIds }, () => calendarApi.reorderSubtasks(eventId, subtaskIds)),
+    onError: failed('Could not reorder the subtasks'),
   });
 
   /** Moves one subtask up (-1) or down (1). */
