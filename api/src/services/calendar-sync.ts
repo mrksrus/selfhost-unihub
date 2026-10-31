@@ -391,10 +391,18 @@ async function applyObject(ctx: Context, calendar: Calendar, object: ObjectRecor
     await fenceTaskLocks(connection);
     // Read before this transaction (the daily expansion): applied only while
     // it is still stored, so an object removed meanwhile (a deletion, a moved
-    // event's old copy) does not come back as new rows.
-    const [live] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_remote_objects WHERE id = ? FOR UPDATE', [object.id]);
+    // event's old copy) does not come back as new rows, and as it is stored
+    // now: one an edit wrote meanwhile is applied in its new version, never
+    // the old one over it.
+    const [live] = await connection.execute<ObjectRecord[]>('SELECT id, href, etag, ics FROM calendar_remote_objects WHERE id = ? FOR UPDATE', [object.id]);
     if (!live.length || await moves().lockMovedAway(connection, object.id)) return [];
-    return applyObjectRows(connection, ctx, calendar, object, expanded);
+    if (live[0].ics === object.ics && (live[0].etag ?? null) === (object.etag ?? null)) return applyObjectRows(connection, ctx, calendar, object, expanded);
+    const current = expandObject(ctx, live[0].ics);
+    if (!current) {
+      ctx.stats.unreadable += 1;
+      return [];
+    }
+    return applyObjectRows(connection, ctx, calendar, live[0], current);
   });
 }
 
@@ -634,6 +642,11 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       if (known && await moves().lockMovedAway(connection, String(known.id))) return null;
       const move = uid ? await moves().lockCreatingMove(connection, calendar.id, uid) : null;
       if (move?.event_id && move.event_id !== heldEventId) return DEFERRED;
+      // The stored copy changed after this sync read it (an edit's new
+      // version, or removed by a deletion): what was downloaded may be older,
+      // so it is left for the next sync, which lists the calendar again.
+      const [current] = await connection.execute<RowDataPacket[]>('SELECT etag FROM calendar_remote_objects WHERE calendar_id = ? AND href_hash = ? FOR UPDATE', [calendar.id, hrefHash(item.href)]);
+      if (current.length !== (known ? 1 : 0) || (current[0]?.etag ?? null) !== (known?.etag ?? null)) return DEFERRED;
       const object = await storeObject(connection, ctx.account, calendar, { id: known?.id, href: item.href, etag: item.etag, ics: item.ics });
       if (move && await moves().commitMove(connection, move, { account: ctx.account, calendar, object, timeZone: ctx.timeZone })) return { object, created: [] };
       return { object, created: await applyObjectRows(connection, ctx, calendar, object, expanded) };

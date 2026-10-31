@@ -1194,6 +1194,58 @@ test('moving a task between lists and calendars: one copy, the same row, through
     }
   });
 
+  await t.test('a daily expansion that read a server copy before an edit keeps the edit; a later move takes it along', async () => {
+    const task = await serverTask('Before the daily expansion');
+    // Private as the server lists it now (an earlier step removed it from UniHub).
+    const privateNow = await calendarId('Private');
+    // The expansion has read the stored copies and stops before applying them.
+    const gate = hold(); const execute = pool.execute.bind(pool); let once = true;
+    (pool as FixtureValue).execute = async (sql: string, params?: FixtureValue) => {
+      const result = await execute(sql, params);
+      if (once && String(sql).startsWith('SELECT id, href, etag, ics FROM calendar_remote_objects WHERE id IN')) { once = false; gate.reached(); await gate.go; }
+      return result;
+    };
+    try {
+      const expanding = expandAll();
+      await gate.at;
+      assert.equal((await owner('PUT', `/calendar/events/${task}`, { title: 'Edited during the expansion' })).event.title, 'Edited during the expansion');
+      gate.release();
+      await expanding;
+    } finally { (pool as FixtureValue).execute = execute; gate.release(); }
+    assert.equal((await owner('GET', `/calendar/events/${task}`)).event.title, 'Edited during the expansion');
+    await owner('POST', `/calendar/events/${task}/move`, { calendar_id: privateNow });
+    await assertOnce('Edited during the expansion', task, privateNow);
+    assert.equal(copiesOf('Before the daily expansion').length, 0);
+    await expandAll();
+    await assertOnce('Edited during the expansion', task, privateNow);
+  });
+
+  await t.test('a row applied from an older version of its server copy is not moved; it is refreshed first', async () => {
+    for (const noted of ['an older version', 'no version']) {
+      const title = noted === 'no version' ? 'Current with no version noted' : 'Current at the server';
+      const task = await serverTask(title);
+      const privateNow = await calendarId('Private');
+      // As if older fields had been applied over it, noted as from an older
+      // version, or (a link from before versions were noted) not noted.
+      await pool.execute("UPDATE calendar_events SET title = 'Older applied fields' WHERE id = ?", [task]);
+      await pool.execute('UPDATE calendar_event_external_refs SET external_etag = ? WHERE event_id = ?', [noted === 'no version' ? null : '"older"', task]);
+      remote.writes.length = 0;
+      const refused = await owner('POST', `/calendar/events/${task}/move`, { calendar_id: privateNow }, 409);
+      assert.equal(refused.code, 'CALDAV_CONFLICT');
+      assert.deepEqual(remote.writes, [], 'nothing written to either server');
+      assert.equal((await journal(task)).length, 0);
+      // The refresh the refusal started (or the next sync) applies the server's version again.
+      for (const until = Date.now() + 5000; Date.now() < until; await new Promise(resolve => setTimeout(resolve, 50))) {
+        if ((await owner('GET', `/calendar/events/${task}`)).event.title === title) break;
+      }
+      await sync();
+      assert.equal((await owner('GET', `/calendar/events/${task}`)).event.title, title);
+      await owner('POST', `/calendar/events/${task}/move`, { calendar_id: privateNow });
+      await assertOnce(title, task, privateNow);
+      assert.equal(copiesOf('Older applied fields').length, 0);
+    }
+  });
+
   // Last: on a build whose locks share the main pool, this one stalls the API.
   await t.test('fifty edits of different tasks at once finish or are refused at once, and other requests still answer', async () => {
     const tasks = [];

@@ -390,7 +390,15 @@ are then rebuilt from the server's answer, so the server stays the authority.
   killed or broken connection) is lost: every server write and the local
   write of the change holding it check it first, so that change writes
   nothing more and answers 409, and the change that took the lock since
-  stands.
+  stands. Known limit: an account sync's lock is not checked that way. A
+  sync whose lock session ended can run beside the next one and write what it
+  read before, for example an old copy a move removed or an older calendar
+  tag; the next sync repairs both.
+- **A move copies the version it deletes.** Every sync and edit that applies
+  a server copy to its row notes the copy's version (ETag) on the link. A move
+  whose row was applied from another version than the one it would delete is
+  refused with `409 CALDAV_CONFLICT`, and the row is refreshed from the server
+  first.
 - **Read-only.** ICS subscriptions and calendars marked read-only reject
   changes with `403 CALENDAR_READ_ONLY`; the event dialog shows them read-only.
 - **Not yet synced.** Events imported before 0.17 have no server copy until the

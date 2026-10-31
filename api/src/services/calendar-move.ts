@@ -428,6 +428,8 @@ const frozenView = (row: CalendarEvent) => JSON.stringify({
 });
 // The event, its calendar or its server link changed after this request read them.
 const STALE = Symbol('stale');
+// The row was applied from another version of its server copy than the one the move would delete.
+const DRIFTED = Symbol('drifted');
 
 /**
  * Moves an owned event or task to another owned calendar or list. `changes`
@@ -515,8 +517,9 @@ async function admitMove(userId: string, eventId: string, targetCalendarId: stri
     const collection = calendarSync.calendarUrl(target.remote.account, target.remote.calendar);
     href = caldav.canonicalHref(new URL(`${encodeURIComponent(uid)}.ics`, collection.endsWith('/') ? collection : `${collection}/`).toString());
   }
+  const sourceTimeZone = sourceObjectId ? await calendarSync.resolveTimeZone(source!.remote!.account) : null;
   const moveId = crypto.randomUUID();
-  let admitted: 'local' | 'journal' | typeof STALE;
+  let admitted: 'local' | 'journal' | typeof STALE | typeof DRIFTED;
   try {
     admitted = await withTransaction(async connection => {
       await fenceTaskLocks(connection);
@@ -529,9 +532,18 @@ async function admitMove(userId: string, eventId: string, targetCalendarId: stri
       }
       const [[current]] = await connection.execute<(RowDataPacket & CalendarEvent)[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ? FOR UPDATE', [eventId, userId]);
       if (!current) throw notFound('TASK_NOT_FOUND', 'Task not found');
-      const [links] = await connection.execute<RowDataPacket[]>('SELECT remote_object_id FROM calendar_event_external_refs WHERE event_id = ? AND user_id = ? FOR UPDATE', [eventId, userId]);
+      const [links] = await connection.execute<RowDataPacket[]>('SELECT remote_object_id, external_etag FROM calendar_event_external_refs WHERE event_id = ? AND user_id = ? FOR UPDATE', [eventId, userId]);
       const [begun] = await connection.execute<RowDataPacket[]>("SELECT id FROM calendar_event_moves WHERE event_id = ? AND state = 'creating' FOR UPDATE", [eventId]);
       if (frozenView(current) !== frozenView(event) || begun.length > 0 || (links[0]?.remote_object_id ?? null) !== sourceObjectId || links.length > 1) return STALE;
+      // The row must hold the version the move deletes: a row applied from an
+      // older one (every apply notes its version on the link) would reach the
+      // new calendar with older fields while the newer ones are deleted.
+      // Links from before versions were noted compare the fields instead.
+      if (sourceObjectId) {
+        const derivedFrom = links[0]?.external_etag ?? null;
+        if (derivedFrom !== null ? derivedFrom !== sourceEtag
+          : JSON.stringify(frozenFields(link!.object.ics, sourceTimeZone!)) !== JSON.stringify(normalFields(calendarSync.eventFields(current)))) return DRIFTED;
+      }
       if (!target.remote && !sourceObjectId) {
         // Between UniHub lists: only the list changes.
         await connection.execute(
@@ -556,6 +568,13 @@ async function admitMove(userId: string, eventId: string, targetCalendarId: stri
     throw error;
   }
   if (admitted === STALE) return STALE;
+  if (admitted === DRIFTED) {
+    // The next sync downloads the old copy again and applies it to the row.
+    await db.execute('UPDATE calendar_remote_objects SET etag = NULL WHERE id = ?', [sourceObjectId]);
+    await db.execute('UPDATE calendar_calendars SET remote_ctag = NULL WHERE id = ?', [source!.id]);
+    calendarSync.syncCalendarAccountInBackground(source!.remote!.account.id, { userId, reason: 'conflict' });
+    throw conflict('CALDAV_CONFLICT', 'The event was changed on the calendar server in the meantime. It is being refreshed; please review it and try again.');
+  }
   if (admitted === 'local') {
     publishCalendarChanged(userId, null, 'local');
     return {};
