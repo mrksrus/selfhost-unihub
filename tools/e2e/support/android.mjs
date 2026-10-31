@@ -124,7 +124,13 @@ export async function pickFromDownloads(names) {
  * appear over the page whenever it meets a server for the first time; tests
  * that are not about them answer Not now.
  */
-export async function dismissFirstRunOffers() {
+export async function dismissFirstRunOffers({ waitMs = 0 } = {}) {
+  // Right after signing in, an offer can still be on its way: look for it a little while.
+  const until = Date.now() + waitMs;
+  while (!screenNodes().some(n => /contacts on this phone|notifications on this phone/i.test(n.text))) {
+    if (Date.now() >= until) return;
+    await sleep(1000);
+  }
   for (let i = 0; i < 3; i++) {
     const nodes = screenNodes();
     if (!nodes.some(n => /contacts on this phone|notifications on this phone/i.test(n.text))) return;
@@ -142,8 +148,20 @@ export async function openApp({ email = 'admin@example.com', password = 'local-d
     adb('shell', 'am', 'force-stop', PACKAGE);
     adb('shell', 'am', 'start', '-n', `${PACKAGE}/.MainActivity`);
   }
-  const device = (await android.devices()).find(d => d.serial() === serial);
+  // An open device handle keeps the test process running: close every one this call does not return.
+  const devices = await android.devices();
+  const device = devices.find(d => d.serial() === serial);
+  await Promise.all(devices.filter(d => d !== device).map(d => d.close().catch(() => {})));
   if (!device) throw new Error(`${serial} not found; run tools/e2e/android.sh up`);
+  try {
+    return await signedInPage(device, { email, password });
+  } catch (error) {
+    await device.close().catch(() => {});
+    throw error;
+  }
+}
+
+async function signedInPage(device, { email, password }) {
   await device.webView({ pkg: PACKAGE }, { timeout: 180_000 });
   // The page may still be on its way to /auth or to the start page (slow
   // emulators), and signing in reloads it, which replaces the WebView's page
@@ -170,7 +188,7 @@ export async function openApp({ email = 'admin@example.com', password = 'local-d
         }
       } else if (path !== '/') {
         await answerSlowDialogs();
-        await dismissFirstRunOffers();
+        await dismissFirstRunOffers({ waitMs: signIns > 0 ? 10_000 : 0 });
         return { device, page: current };
       }
     } catch { /* the target went away mid-check; take the next one */ }
