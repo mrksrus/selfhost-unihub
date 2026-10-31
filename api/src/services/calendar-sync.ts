@@ -152,11 +152,21 @@ interface LoginLink extends RowDataPacket {
   mail_password: string | null;
   mail_connected: number | string | null;
 }
+// The login name of a calendar account's requests (resolveLogin), from its
+// row joined with its mail account (LOGIN_MAIL_JOIN): a linked mail
+// account's login, or its own username or, without one, its address.
+const LOGIN_MAIL_JOIN = 'LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id';
+const LOGIN_MAIL_USERNAME = "COALESCE(NULLIF(m.username, ''), m.email_address)";
+function loginName(link: { mail_account_id?: string | null; mail_id?: string | null; mail_username?: string | null; username?: string | null; account_email?: string | null }) {
+  if (link.mail_account_id && link.mail_id) return link.mail_username;
+  return link.username || link.account_email;
+}
+
 async function resolveLogin(account: Account, relinked = false): Promise<{ username: string | null | undefined; encryptedPassword: string }> {
   const [[link]] = await db.execute<LoginLink[]>(`SELECT ca.provider, ca.provider_config, ca.account_email, ca.username, ca.encrypted_password, ca.mail_account_id,
-      m.id AS mail_id, COALESCE(NULLIF(m.username, ''), m.email_address) AS mail_username, m.encrypted_password AS mail_password,
+      m.id AS mail_id, ${LOGIN_MAIL_USERNAME} AS mail_username, m.encrypted_password AS mail_password,
       (${MAIL_CONNECTED_SQL}) AS mail_connected
-    FROM calendar_accounts ca LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
+    FROM calendar_accounts ca ${LOGIN_MAIL_JOIN}
     WHERE ca.id = ? AND ca.user_id = ?`, [account.id, account.user_id]);
   if (!link) throw syncError('Calendar account not found', 404, 'CALENDAR_ACCOUNT_NOT_FOUND');
   const current: Account = { ...account, provider: link.provider, provider_config: link.provider_config, account_email: link.account_email,
@@ -176,11 +186,36 @@ async function resolveLogin(account: Account, relinked = false): Promise<{ usern
     if (mailExists) throw syncError(MAIL_HAS_OTHER_CALENDAR_MESSAGE, 409, 'MAIL_CALENDAR_UNLINKED');
     if (marked) throw syncError(MAIL_CALENDAR_UNLINKED_MESSAGE, 409, 'MAIL_CALENDAR_UNLINKED');
     if (!current.encrypted_password) throw syncError(NO_PASSWORD_MESSAGE, 409, 'CALDAV_NO_PASSWORD');
-    return { username: current.username || current.account_email, encryptedPassword: current.encrypted_password };
+    return { username: loginName({ username: current.username, account_email: current.account_email }), encryptedPassword: current.encrypted_password };
   }
   if (!Number(link.mail_connected)) throw syncError(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED');
   // MAIL_CONNECTED_SQL requires a stored mail password.
-  return { username: link.mail_username, encryptedPassword: link.mail_password! };
+  return { username: loginName(link), encryptedPassword: link.mail_password! };
+}
+
+/**
+ * Where and as whom requests of these accounts go, read on executor (a
+ * restore's own transaction sees what it wrote): the kind of account, its
+ * server (base_url, which every stored address is resolved against), its
+ * login name as resolveLogin derives it, and what makes resolveLogin choose
+ * another one: the link to a mail account, the marks that make it look for a
+ * mail account by address (wasMailCalendar, mailLinked) and that address; and
+ * where its password may go (accountCredentialScope). Never a password.
+ */
+async function requestIdentities(executor: SqlExecutor, userId: string, accountIds: readonly string[]) {
+  const identities = new Map<string, { provider: string; base_url: string | null; login: string | null; decidedBy: string }>();
+  if (!accountIds.length) return identities;
+  const [rows] = await executor.execute<(RowDataPacket & Parameters<typeof loginName>[0] & { id: string; provider: string; base_url: string | null; discovery_url: string | null; provider_config: unknown })[]>(
+    `SELECT ca.id, ca.provider, ca.base_url, ca.discovery_url, ca.provider_config, ca.mail_account_id, ca.username, ca.account_email, m.id AS mail_id, ${LOGIN_MAIL_USERNAME} AS mail_username
+     FROM calendar_accounts ca ${LOGIN_MAIL_JOIN} WHERE ca.user_id = ? AND ca.id IN (${accountIds.map(() => '?').join(', ')})`, [userId, ...accountIds]);
+  for (const row of rows) {
+    const marked = ((jsonValue(row.provider_config, {}) || {}) as AccountConfig).mailLinked === true;
+    let scope: string | null = null;
+    try { scope = row.base_url ? JSON.stringify(caldav.accountCredentialScope(row)) : null; } catch { scope = `unresolved ${row.discovery_url} ${row.base_url}`; }
+    identities.set(String(row.id), { provider: row.provider, base_url: row.base_url ?? null, login: loginName(row) ?? null,
+      decidedBy: JSON.stringify([row.mail_account_id ?? null, wasMailCalendar(row), marked, row.account_email?.toLowerCase() ?? null, scope]) });
+  }
+  return identities;
 }
 
 async function accountLogin(account: Account, signal?: AbortSignal) {
@@ -1197,6 +1232,7 @@ function calendarErrorResponse(error: unknown, fallback: string) {
 }
 
 export {
+  requestIdentities,
   MAIL_DISCONNECTED_MESSAGE,
   runningCalendarWorkCount,
   syncLinkedCalendars,

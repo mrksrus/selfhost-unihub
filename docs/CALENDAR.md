@@ -388,7 +388,11 @@ are then rebuilt from the server's answer, so the server stays the authority.
   Calendar module and a running restore again, and every server write and
   local write of a change checks for a calendar restore begun since; a sync
   leaves a copy it may not adopt yet for its next run. A restore that writes
-  over a task ends its unfinished move (docs/DATA_RECOVERY.md). A lock whose database session ended (a
+  over a task ends a move of it still creating its new copy; a move already
+  removing the old copy goes on. Separately, a restore that points a move's
+  calendar or its account elsewhere (another server, collection or login)
+  ends that move, whatever its state, without deleting anything
+  (docs/DATA_RECOVERY.md). A lock whose database session ended (a
   killed or broken connection) is lost: every server write and the local
   write of the change holding it check it first, so that change writes
   nothing more and answers 409, and the change that took the lock since

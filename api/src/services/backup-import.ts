@@ -376,9 +376,8 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
       // Moves of tasks (calendar-move.ts): held until this commits, and those
       // the restore overtakes end below.
       const restoresCalendarContent = scopedBackup.import_sections.includes('calendar') && !accountOnly.has('calendar');
-      if (restoresCalendarContent) await lockMovesForRestore(connection, userId);
+      const movesBefore = restoresCalendarContent ? await lockMovesForRestore(connection, userId) : null;
       const overwrittenEventIds = new Set<string>();
-      const relocatedCalendarIds = new Set<string>();
       for (const account of data.calendar_accounts || []) {
         await checkRestoreCancelled();
         const row = overwriteUserId(account, userId);
@@ -468,10 +467,6 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         calendarIdMap.set(row.id, targetCalendarId);
         if (!shouldWriteExisting(existingCalendarId, targetCalendarId, conflictMode)) continue;
         writtenCalendarIds.add(targetCalendarId);
-        if (existingCalendarId === targetCalendarId) {
-          const [[before]] = await connection.execute<RowDataPacket[]>('SELECT account_id, external_id FROM calendar_calendars WHERE id = ? AND user_id = ?', [targetCalendarId, userId]);
-          if (before && (before.account_id !== targetAccountId || (before.external_id ?? null) !== (row.external_id || null))) relocatedCalendarIds.add(targetCalendarId);
-        }
         const calendarName = targetCalendarId !== existingCalendarId && conflictMode === 'keep_both' && existingCalendarId
           ? `${row.name || 'Calendar'} (Restored)`
           : row.name || 'Calendar';
@@ -583,7 +578,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         );
       }
 
-      if (restoresCalendarContent) await settleMovesForRestore(connection, userId, { overwrittenEventIds, relocatedCalendarIds });
+      if (movesBefore) await settleMovesForRestore(connection, userId, { overwrittenEventIds, before: movesBefore });
 
       // The hand order (0.27): a local task's row follows its restored event,
       // a synced one its calendar; the key is computed again from them. A

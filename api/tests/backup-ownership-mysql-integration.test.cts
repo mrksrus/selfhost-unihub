@@ -102,9 +102,12 @@ test('MySQL restores colliding backup IDs without changing another user in every
   await connection.execute(`CREATE TEMPORARY TABLE task_order (user_id CHAR(36) NOT NULL, item_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     calendar_id CHAR(36) NULL, event_id CHAR(36) NULL, remote_uid VARCHAR(500) NULL, recurrence_id VARCHAR(64) NOT NULL DEFAULT '', sort_rank BIGINT NOT NULL,
     updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (user_id, item_key)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-  // 0.27 (upgrade 24): the move journal, which a calendar restore locks and settles (calendar-move.ts).
+  // 0.27 (upgrade 24): the move journal, which a calendar restore locks and
+  // settles (calendar-move.ts), and the server copies (upgrade 12) it reads.
   await connection.execute(`CREATE TEMPORARY TABLE calendar_event_moves (id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, event_id CHAR(36) NULL,
-    source_calendar_id CHAR(36) NULL, source_object_id CHAR(36) NULL, target_calendar_id CHAR(36) NULL, state VARCHAR(16) NOT NULL) ENGINE=InnoDB`);
+    source_calendar_id CHAR(36) NULL, source_object_id CHAR(36) NULL, target_calendar_id CHAR(36) NULL, target_href VARCHAR(2048) NULL, state VARCHAR(16) NOT NULL) ENGINE=InnoDB`);
+  await connection.execute(`CREATE TEMPORARY TABLE calendar_remote_objects (id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, calendar_id CHAR(36) NOT NULL,
+    href VARCHAR(2048) NOT NULL, etag VARCHAR(255) NULL) ENGINE=InnoDB`);
   await connection.execute("ALTER TABLE mail_accounts ADD COLUMN sync_mode VARCHAR(16) NOT NULL DEFAULT 'download', ADD COLUMN sync_status VARCHAR(16) NOT NULL DEFAULT 'idle'");
   await connection.execute('ALTER TABLE mail_accounts ADD COLUMN sync_window_days INT NULL, ADD COLUMN trash_window_days INT NULL DEFAULT 30, ADD COLUMN sync_policy_confirmed_at DATETIME NULL');
   await connection.execute('ALTER TABLE emails ADD COLUMN remote_folder VARCHAR(255) NULL, ADD COLUMN remote_uid BIGINT NULL, ADD COLUMN remote_uidvalidity BIGINT NULL, ADD COLUMN remote_missing BOOLEAN NOT NULL DEFAULT FALSE');
