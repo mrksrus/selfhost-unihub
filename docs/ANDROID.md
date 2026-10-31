@@ -30,7 +30,11 @@ its own connection to the server (no push service; see
 
 - **Open in app** opens `unihub://connect?server=<this server>`. Because any
   website could send such a link, the app asks before switching to a server it
-  is not already using. Without the app installed, the link downloads it.
+  is not already using. The question stays until it is answered, also when
+  Android recreates the activity (for a change an app cannot take itself,
+  such as the theme overlays a phone applies a minute or two after it starts,
+  or after ending the app in the background); an answered link is not asked
+  again (B-33, from the 0.27.1 app). Without the app installed, the link downloads it.
 - Opening the app directly shows a connect screen. The address is checked
   against `GET /api/version` (below) before it is saved: from 0.23.0 a server
   speaking another handshake `protocol`, or whose `minApp` is newer than the
@@ -384,8 +388,12 @@ Develop features in the browser as usual. To try the app:
 
 CI starts the built app on Android emulators (`android/scripts/launch-test.sh`):
 a first start, "Open in app" with the app closed, and a start with a saved
-server whose page reported a theme. It fails on any crash. To run it locally,
-start an emulator and pass the APK.
+server whose page reported a theme. For the candidate app (`--candidate`) the
+question to connect must also come back after a font size change recreates
+the activity. It fails on any crash. To run it locally, start an emulator and
+pass the APK. `tools/e2e/android/connect-link.test.mjs` cold-starts the debug
+app from the link ten times (`UNIHUB_E2E_CONNECT_STARTS`), with and without a
+saved server, and recreates it while the question is open.
 
 `android/scripts/notifications-test.sh` checks notifications against a stub
 server that encrypts like UniHub with its own implementation: the question

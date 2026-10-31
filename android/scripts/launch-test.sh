@@ -2,21 +2,30 @@
 # Starts the built app on a running emulator the way a person does, and fails
 # when it crashes: a first start, "Open in app" (unihub://connect) with the
 # app closed, and a start with a saved server whose page reported a theme.
-# CI runs it on emulators (.github/workflows/docker-image.yml); locally, start
-# an emulator first. The server is a stub page on this machine, which the
-# emulator reaches at 10.0.2.2.
+# With --candidate (the app under test, not an earlier release's), the
+# question must also survive Android recreating the app while it is open
+# (B-33, fixed in 0.27.1). CI runs it on emulators
+# (.github/workflows/docker-image.yml); locally, start an emulator first. The
+# server is a stub page on this machine, which the emulator reaches at 10.0.2.2.
 set -euo pipefail
 
-apk="${1:?usage: launch-test.sh <unihub.apk>}"
+apk="${1:?usage: launch-test.sh <unihub.apk> [--candidate]}"
+candidate="${2:-}"
 package=io.github.mrksrus.unihub
 port=8099
 server="http://10.0.2.2:$port"
 
 work="$(mktemp -d)"
 stub_pid=
+font_scale=
 cleanup() {
   [[ -n "$stub_pid" ]] && kill "$stub_pid" 2>/dev/null || true
+  [[ -n "$font_scale" ]] && restore_font_scale
   rm -rf "$work"
+}
+restore_font_scale() {
+  if [[ "$font_scale" == null ]]; then adb shell settings delete system font_scale >/dev/null 2>&1 || true
+  else adb shell settings put system font_scale "$font_scale" >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
 
@@ -96,6 +105,28 @@ adb logcat -c -b all
 adb shell am start -W -a android.intent.action.VIEW -d "'unihub://connect?server=$server'" >/dev/null
 wait_for_text 'Connect to 10.0.2.2?'
 expect_running 'open in app'
+if [[ "$candidate" == --candidate ]]; then
+  # Android recreates the app for a font size change, as it does for the
+  # theme overlays a phone applies a minute or two after it starts.
+  echo 'Recreated while the question is open: asks again'
+  created() { adb logcat -d -b events | grep -cE "[aw]m_on_create_called: \[[0-9]*,$package.MainActivity" || true; }
+  before="$(created)"
+  font_scale="$(adb shell settings get system font_scale | tr -d '\r')"
+  adb shell settings put system font_scale 1.15
+  for _ in $(seq 1 30); do
+    (( $(created) > before )) && break
+    sleep 1
+  done
+  (( $(created) > before )) || fail 'Android did not recreate the app'
+  # The old activity's question window is gone by then.
+  sleep 3
+  wait_for_text 'Connect to 10.0.2.2?'
+  expect_running 'recreated'
+  restore_font_scale
+  font_scale=
+  sleep 3
+  wait_for_text 'Connect to 10.0.2.2?'
+fi
 bounds="$(screen | grep -o 'resource-id="android:id/button1"[^>]*bounds="[^"]*"' | grep -o 'bounds="[^"]*"' | head -n 1 || true)"
 read -r x1 y1 x2 y2 <<<"$(sed 's/[^0-9]/ /g' <<<"$bounds")"
 [[ -n "${y2:-}" ]] || fail 'no Connect button in the dialog'

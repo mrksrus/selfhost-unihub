@@ -53,11 +53,12 @@ expect_crash() {
 # fd 3: adb and the launch test read standard input.
 while IFS=$'\t' read -r version api expectation apk <&3; do
   [[ "$api" == "$sdk" ]] || continue
-  [[ "$apk" == - ]] && apk="$candidate"
+  flag=
+  [[ "$apk" == - ]] && { apk="$candidate"; flag=--candidate; }
   case "$expectation" in
     launch)
       adb uninstall "$package" >/dev/null 2>&1 || true
-      if bash "$here/launch-test.sh" "$apk"; then record "$version" ok 'starts, connects, starts with the saved server'
+      if bash "$here/launch-test.sh" "$apk" $flag; then record "$version" ok 'starts, connects, starts with the saved server'
       else record "$version" FAILED 'expected to start'; fi ;;
     crash)
       if expect_crash "$apk"; then record "$version" ok 'closes on start, as recorded (known broken)'

@@ -6,6 +6,22 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.27.1
+
+A fix for the Android app. No database upgrade; install the new Android app
+when it is offered.
+
+### Fixed
+
+- **"Open in app" always asks to connect to that server.** Opened from the
+  link while the app was closed, the app sometimes showed its own "Connect to
+  your UniHub" screen instead of the question "Connect to <server>?", most
+  often in the first minutes after the phone had started: Android then
+  applies its theme colours and rebuilds every app's screen, and the rebuilt
+  screen forgot the link. The question now stays until you answer it, also
+  when Android rebuilds the screen for another reason, and a link you already
+  answered is not asked again. Needs the new app.
+
 ## 0.27.0
 
 ToDo and calendar: your own order, and the list you choose. One automatic

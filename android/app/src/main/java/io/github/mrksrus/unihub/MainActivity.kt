@@ -75,6 +75,9 @@ class MainActivity : Activity() {
     private var questionOpen = false
     private var notificationsChecking = false
     private var notificationsCheckedAt = 0L
+    // The server a connect link asks about, until the question is answered.
+    private var connectQuestion: AlertDialog? = null
+    private var connectAsked: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -84,7 +87,8 @@ class MainActivity : Activity() {
         if (saved != null) PageTheme.saved(this)?.let { (dark, background) -> applyTheme(dark, background) }
         val opened = notificationPath(intent, saved)?.takeIf { savedInstanceState == null }
         if (saved != null) showWeb(saved, savedInstanceState, opened) else showConnect()
-        connectRequest(intent)?.takeIf { it != saved && savedInstanceState == null }?.let(::confirmConnect)
+        ConnectLink.toAsk(connectRequest(intent), savedInstanceState != null, savedInstanceState?.getString(STATE_CONNECT_ASKED), saved)
+            ?.let(::confirmConnect)
         if (savedInstanceState == null && intent?.action == ACTION_SHOW_CONTACTS) contactsFromSettings(intent)
     }
 
@@ -111,9 +115,12 @@ class MainActivity : Activity() {
     }
 
     // A link can come from any website, so a new server is always confirmed.
-    // Cancel keeps whatever is open behind the dialog.
+    // Cancel keeps whatever is open behind the dialog. A later link replaces
+    // an open question.
     private fun confirmConnect(requested: String) {
-        AlertDialog.Builder(this)
+        connectQuestion?.dismiss()
+        connectAsked = requested
+        val question = AlertDialog.Builder(this)
             .setTitle(getString(R.string.connect_confirm_title, ServerAddress.host(requested)))
             .setMessage(R.string.connect_confirm_body)
             .setPositiveButton(R.string.connect_confirm_ok) { _, _ ->
@@ -121,7 +128,15 @@ class MainActivity : Activity() {
                 showWeb(requested, null)
             }
             .setNegativeButton(R.string.cancel, null)
-            .show()
+            .create()
+        question.setOnDismissListener {
+            if (connectQuestion === question) {
+                connectQuestion = null
+                connectAsked = null
+            }
+        }
+        connectQuestion = question
+        question.show()
     }
 
     // ── First run: which server ────────────────────────────────────────
@@ -818,6 +833,7 @@ class MainActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         webView?.saveState(outState)
+        connectAsked?.let { outState.putString(STATE_CONNECT_ASKED, it) }
     }
 
     // Leaving the app is when contacts were most likely edited, or the
@@ -844,6 +860,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        // Its window goes with the activity; a recreated one asks again (onSaveInstanceState).
+        connectQuestion?.dismiss()
         destroyWeb()
         finishContacts(null)
         notificationsAnswer?.invoke(answer(error = getString(R.string.notifications_superseded)))
@@ -864,6 +882,7 @@ class MainActivity : Activity() {
         private const val REQUEST_NOTIFICATIONS = 4
         private const val REQUEST_BACKGROUND = 5
         private const val CONTACTS_CHECK_INTERVAL_MS = 15_000L
+        private const val STATE_CONNECT_ASKED = "connectAsked"
         // What the page may ask of WebBridge, announced in the user agent:
         // 1 up to 0.24 (files from the page, downloads, theme, notifications),
         // 2 from 0.25 (fileAction: open with, save, share with a download ticket).
