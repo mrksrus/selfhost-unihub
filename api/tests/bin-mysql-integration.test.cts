@@ -783,9 +783,42 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
       await pool.execute("INSERT INTO task_order (user_id, item_key, calendar_id, remote_uid, recurrence_id, sort_rank) VALUES (?, ?, ?, ?, '', ?)",
         [users.alex, itemKey({ calendar_id: work, remote_uid: uid, recurrence_id: '' }), work, uid, rank]);
     }
+    // A subscription's object goes through the step as well: its feed sync stores the feed's own UID too.
+    const caldavModule = require('../dist/src/services/caldav') as FixtureValue;
+    const [feedAccount, feedUid, feedUrl] = [crypto.randomUUID(), `${crypto.randomUUID()}@example.test`, 'https://feed.example.test/padded.ics'];
+    await pool.execute("INSERT INTO calendar_accounts (id, user_id, display_name, provider, base_url, encrypted_password) VALUES (?, ?, 'Padded feed', 'ics', ?, ?)",
+      [feedAccount, users.alex, feedUrl, encrypt(feedUrl)]);
+    const fetchFeed = caldavModule.fetchIcsFeed;
+    caldavModule.fetchIcsFeed = async () => ({ notModified: false, text: eventIcs(`${feedUid} `, 'Feed padded', clock), etag: null });
+    context.after(async () => {
+      caldavModule.fetchIcsFeed = fetchFeed;
+      await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [feedAccount]);
+    });
+    const feedSync = () => calendarSync.syncCalendarAccount(feedAccount, { userId: users.alex, full: true });
+    await feedSync();
+    const [feedRow] = await rowsTitled('Feed padded');
+    await pool.execute("UPDATE calendar_events SET todo_status = 'done', uid = ? WHERE id = ?", [feedUid, feedRow.id]);
+    await pool.execute('INSERT INTO calendar_event_subtasks (id, event_id, user_id, title, is_done, position) VALUES (?, ?, ?, ?, TRUE, 0)', [crypto.randomUUID(), feedRow.id, users.alex, 'Feed step']);
+    await pool.execute('UPDATE calendar_remote_objects SET uid = ? WHERE account_id = ?', [feedUid, feedAccount]);
+    // Many trimmed UIDs in one calendar.
+    const bulk = Array.from({ length: 40 }, (_, index) => ({ id: crypto.randomUUID(), uid: `bulk-${index}-${crypto.randomUUID()}@example.test` }));
+    for (const object of bulk) {
+      await pool.execute('INSERT INTO calendar_remote_objects (id, user_id, account_id, calendar_id, href, href_hash, uid, ics) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [object.id, users.alex, accountId, work, `${WORK}${object.id}.ics`, sha(`${WORK}${object.id}.ics`), object.uid, eventIcs(`${object.uid} `, 'Bulk padded', clock)]);
+    }
+    context.after(() => pool.execute(`DELETE FROM calendar_remote_objects WHERE id IN (${bulk.map(() => '?').join(', ')})`, bulk.map(object => object.id)));
     // The upgrade: step 25 again, as an installation of 0.27 runs it.
+    const calendarReads = hooks.watch(/FROM calendar_remote_objects WHERE calendar_id = \?/);
     await pool.execute('DELETE FROM schema_migrations WHERE id = 25');
     await runMigrations(pool, MIGRATIONS, BASELINE);
+    // Two calendars have changes (Work and the feed): each one's UIDs are read
+    // once (a page and the empty one after it), not once for every change.
+    assert.ok(calendarReads.count <= 4, `calendar-wide reads: ${calendarReads.count}`);
+    assert.equal(await count(`SELECT COUNT(*) AS n FROM calendar_remote_objects WHERE id IN (${bulk.map(() => '?').join(', ')}) AND RIGHT(uid, 1) = ' '`, bulk.map(object => object.id)), bulk.length);
+    await feedSync();
+    const feedAfter = await rowsTitled('Feed padded');
+    assert.deepEqual(feedAfter.map(row => [row.id, row.uid, row.todo_status]), [[feedRow.id, `${feedUid} `, 'done']], 'the feed\'s task keeps its row and state');
+    assert.deepEqual(await stepsOf(feedRow.id), [['Feed step', true]]);
     const hand = async (title: string) => (await attachRanks(users.alex, (await rowsTitled(title)) as FixtureValue[]))[0];
     // The bin: deleted and restored, the task keeps its own state.
     await call(alex, 'DELETE', `/api/calendar/events/${done.id}`);
