@@ -53,11 +53,16 @@ test('a forbidding installation policy refuses every declared route before any s
   await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider) VALUES (?, ?, 'alex@example.test', 'custom')", [ids.mail, users.alex]);
   await pool.execute("INSERT INTO data_export_jobs (id, user_id) VALUES (?, ?)", [ids.exportJob, users.alex]);
   await pool.execute("INSERT INTO backup_restore_jobs (id, user_id) VALUES (?, ?)", [ids.restoreJob, users.alex]);
+  // A folder only UniHub has: deleting it with server=1 or true would go ahead
+  // (nothing at the provider to refuse it), so a missed refusal changes a table.
+  const folder = 'synthetic-projects';
+  await pool.execute("INSERT INTO mail_folders (user_id, slug, display_name, is_system) VALUES (?, ?, 'Projects', FALSE)", [users.alex, folder]);
   const idFor = (pattern: string) => pattern.startsWith('/api/contacts/') ? ids.contact
     : pattern.startsWith('/api/recordings/') ? ids.recording
       : pattern.startsWith('/api/mail/accounts/') ? ids.mail
         : pattern.startsWith('/api/backup/jobs/') ? ids.exportJob
-          : pattern.startsWith('/api/backup/restore-jobs/') ? ids.restoreJob : crypto.randomUUID();
+          : pattern.startsWith('/api/backup/restore-jobs/') ? ids.restoreJob
+            : pattern.startsWith('/api/mail/folders/') ? folder : crypto.randomUUID();
 
   // Every table but the sessions, whose expiry slides with each request.
   const tables = ((await pool.query<RowDataPacket[]>('SHOW TABLES'))[0]).map(row => String(Object.values(row)[0])).filter(name => name !== 'sessions');
@@ -68,10 +73,14 @@ test('a forbidding installation policy refuses every declared route before any s
     await pool.execute("INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked) VALUES ('installation', '', ?, ?, ?)", [`policy.${key}`, value, locked ? 1 : 0]);
   };
 
-  // Each route, each query variant that adds a policy, each of its policies alone.
+  // Each route, each query variant that adds a policy (every accepted value
+  // of every named parameter), each of its policies alone.
+  const variants = (query: Readonly<Record<string, string | readonly string[]>>) => Object.entries(query).reduce<string[][][]>(
+    (sets, [name, value]) => sets.flatMap(set => (typeof value === 'string' ? [value] : [...value]).map(one => [...set, [name, one]])), [[]])
+    .map(pairs => new URLSearchParams(pairs.map(([name, value]) => [name, value])).toString());
   const cases: { key: string; url: string; policy: keyof typeof POLICIES }[] = [];
   for (const [key, spec] of Object.entries(routes)) {
-    const conditional = [...spec.destructive ?? [], ...spec.requires ?? []].flatMap(entry => typeof entry === 'string' ? [] : [new URLSearchParams(entry.query).toString()]);
+    const conditional = [...spec.destructive ?? [], ...spec.requires ?? []].flatMap(entry => typeof entry === 'string' ? [] : variants(entry.query));
     for (const query of ['', ...conditional]) {
       const [, pattern] = key.split(' ');
       const url = pattern.replace(/:(\w+)/g, () => idFor(pattern)) + (query ? `?${query}` : '');
@@ -80,6 +89,8 @@ test('a forbidding installation policy refuses every declared route before any s
   }
   assert.ok(cases.length >= 25, `${cases.length} cases`);
   assert.ok(cases.some(entry => entry.key === 'DELETE /api/mail/accounts/:id' && entry.policy === 'accounts.reset'), 'the purge variant is walked');
+  assert.deepEqual(cases.filter(entry => entry.key === 'DELETE /api/mail/folders/:slug').map(entry => [entry.url, entry.policy]).sort(),
+    [[`/api/mail/folders/${folder}?server=1`, 'mail.provider_delete'], [`/api/mail/folders/${folder}?server=true`, 'mail.provider_delete']], 'both server spellings are walked');
 
   for (const { key, url, policy } of cases) {
     await forbid(policy);
@@ -96,6 +107,13 @@ test('a forbidding installation policy refuses every declared route before any s
     (SELECT COUNT(*) FROM mail_accounts WHERE id = ?) AS mail, (SELECT COUNT(*) FROM data_export_jobs WHERE id = ?) AS exports,
     (SELECT COUNT(*) FROM backup_restore_jobs WHERE id = ?) AS restores, (SELECT COUNT(*) FROM users WHERE id IN (?, ?, ?)) AS users`, [ids.contact, ids.recording, ids.mail, ids.exportJob, ids.restoreJob, users.alex, users.blair, users.admin]);
   assert.deepEqual({ ...kept }, { contacts: 1, recordings: 1, mail: 1, exports: 1, restores: 1, users: 3 });
+
+  // Forbidding deletion at the provider leaves a folder only UniHub has free
+  // to go: its mail returns to Inbox and nothing is deleted anywhere.
+  await forbid('mail.provider_delete');
+  await call(alex, 'DELETE', `/api/mail/folders/${folder}`);
+  const [[folders]] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS count FROM mail_folders WHERE user_id = ? AND slug = ?', [users.alex, folder]);
+  assert.equal(Number(folders.count), 0);
 
   // Deleting from the bin for good forbidden also forbids deleting data, with that key's reason.
   await forbid('bin.delete');

@@ -32,13 +32,16 @@ interface UploadBody {
 
 // F13: the data-safety policies (services/settings-registry.ts POLICIES) a
 // request of the route is subject to. A policy applies to every request of
-// the route, or only when each named query parameter has the given value (one
-// route, several actions). The boundary resolves them for the signed-in
-// person and refuses a forbidden action with 403 POLICY_FORBIDS before any
-// side effect; assertRouteTable checks that each named key exists and can
-// refuse. A rule that depends on the body (a mail mode, the provider-delete
-// switch) is checked in its service with the same function.
-type PolicyDeclaration = PolicyKey | { policy: PolicyKey; query: Readonly<Record<string, string>> };
+// the route, or only when each named query parameter (its first value, as
+// URLSearchParams.get reads it) is the given value or one of the given values
+// (one route, several actions); a route that reads such a flag takes its
+// values from the same constant, so no spelling it accepts escapes. The
+// boundary resolves them for the signed-in person and refuses a forbidden
+// action with 403 POLICY_FORBIDS before any side effect; assertRouteTable
+// checks that each named key exists and can refuse. A rule that depends on
+// the body (a mail mode, the provider-delete switch) cannot be declared here:
+// its service is to check it with the same function (0.28 C2).
+type PolicyDeclaration = PolicyKey | { policy: PolicyKey; query: Readonly<Record<string, string | readonly string[]>> };
 
 interface RoutePolicy {
   // A module id gates the route behind that module's switch; null is a core route.
@@ -91,6 +94,8 @@ const BODY_KINDS = new Set<string>(['json', 'backup-upload', 'upload', 'none']);
 const CSRF_VALUES = new Set<string>(['token', 'background-header', 'none']);
 const RESPONSE_MODES = new Set<string>(['json', 'stream']);
 const POLICY_FIELDS = ['destructive', 'requires'] as const;
+const isQueryValue = (value: unknown) => typeof value === 'string'
+  || (Array.isArray(value) && value.length > 0 && value.every(item => typeof item === 'string'));
 
 function splitRouteKey(key: string) {
   const space = key.indexOf(' ');
@@ -130,7 +135,7 @@ function defineRoutes<T extends RouteTable>(table: T): T {
       for (const entry of declarations) {
         const conditional = typeof entry === 'object' && entry !== null;
         if (typeof (conditional ? entry.policy : entry) !== 'string') invalid(key, `${field} names policy keys: ${JSON.stringify(entry)}`);
-        if (conditional && (!entry.query || !Object.keys(entry.query).length || !Object.values(entry.query).every(value => typeof value === 'string'))) {
+        if (conditional && (!entry.query || !Object.keys(entry.query).length || !Object.values(entry.query).every(isQueryValue))) {
           invalid(key, `a conditional ${field} policy names its query values`);
         }
       }
@@ -198,7 +203,10 @@ function assertRouteTable(table: RouteTable, { moduleIds, sections = [], restore
 
 function matching(declarations: readonly PolicyDeclaration[] | undefined, query: URLSearchParams): PolicyKey[] {
   return (declarations ?? []).flatMap(entry => typeof entry === 'string' ? [entry]
-    : Object.entries(entry.query).every(([name, value]) => query.get(name) === value) ? [entry.policy] : []);
+    : Object.entries(entry.query).every(([name, value]) => {
+      const sent = query.get(name);
+      return sent !== null && (typeof value === 'string' ? sent === value : value.includes(sent));
+    }) ? [entry.policy] : []);
 }
 
 /** The destructive policies one request of the route is subject to. */

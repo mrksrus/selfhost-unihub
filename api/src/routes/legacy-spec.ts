@@ -4,6 +4,7 @@ import type { RoutePolicy, RouteSpec, RouteTable } from '../http/route';
 import { DEFAULT_BODY_LIMIT, MUTATING_METHODS, defineRoutes } from '../http/route';
 import { getModuleForPath } from '../services/module-catalog';
 import { BACKUP_UPLOAD_MAX_SIZE, MAIL_COMPOSE_REQUEST_MAX_SIZE } from '../config';
+import { SERVER_DELETE_VALUES } from '../services/mail-folder-delete';
 
 // Route files not yet declared with specs export plain handlers; their policy
 // comes from the tables below, which are the lookups request-handler.ts used
@@ -83,12 +84,18 @@ const BACKGROUND_HEADER_CSRF_KEYS: ReadonlySet<string> = new Set([
 // - Deleting an event, a task, a local calendar with its events or a recording
 //   removes it for good, which bin.delete forbids, until these deletes move
 //   items to the bin (0.28 stream B), which drops the key here.
+// - Deleting a mail folder at the provider as well (server=1 or true, as the
+//   route reads it) deletes its mail there and here: mail.provider_delete. A
+//   folder that is only UniHub's returns its mail to Inbox and names none.
 // - The backup routes: creating, restoring and deleting backups.
-// Turning a mail account's linked calendar on or off depends on the body and
-// is checked in its service, as are the mail modes and provider deletion.
+// The rules that depend on the body come with their service checks (0.28
+// C2): the mail mode and the provider-deletion switch of a new or changed
+// mail account (and the deletion worker's recheck), and turning a mail
+// account's linked calendar on or off.
 const POLICIES_BY_ROUTE: Readonly<Record<string, Pick<RoutePolicy, 'destructive' | 'requires'>>> = {
   'POST /api/mail/accounts': { requires: ['accounts.add'] },
   'DELETE /api/mail/accounts/:id': { destructive: ['accounts.remove', { policy: 'accounts.reset', query: { purge: 'true' } }] },
+  'DELETE /api/mail/folders/:slug': { destructive: [{ policy: 'mail.provider_delete', query: { server: SERVER_DELETE_VALUES } }] },
   'POST /api/mail/accounts/:id/backup-export': { requires: ['backup.create'] },
   'POST /api/calendar/accounts': { requires: ['accounts.add'] },
   'DELETE /api/calendar/accounts/:id': { destructive: ['accounts.remove'] },
