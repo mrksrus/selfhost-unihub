@@ -29,6 +29,12 @@ upgrade; install the new Android app when it is offered (see
   at once, they waited for each other forever and UniHub stopped answering
   until it was restarted. Each now does its checks on the connection it
   already holds.
+- **A restore no longer stops the server while many changes wait for it.**
+  Changes accepted just before a restore began could wait for the items it
+  was writing with every database connection, while the restore needed one
+  more to record its progress; nothing answered until those changes gave up
+  after 50 seconds (the database's lock wait timeout). A restore now records its progress and checks for
+  cancellation on connections of their own.
 
 ### Security
 

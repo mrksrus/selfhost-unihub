@@ -15,7 +15,11 @@ possible.
   import each held a database connection while waiting for a second one.
   With as many of them at the same moment as the server has connections (50),
   they waited for each other forever and UniHub stopped answering until it
-  was restarted. They now use the connection they hold; nothing to do.
+  was restarted. They now use the connection they hold. A restore, too,
+  could leave UniHub not answering for up to 50 seconds when many changes
+  accepted just before it waited for the items it was writing; its progress
+  and cancellation checks now have a few connections of their own (four
+  more database connections per API process). Nothing to do.
 - **Android app.** Install 0.27.1's app when it is offered: "Open in app"
   from UniHub's page then always asks to connect to that server, also in the
   first minutes after the phone has started. The window is 0.27.1, 0.27.0,
