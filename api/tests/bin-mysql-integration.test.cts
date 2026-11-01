@@ -386,7 +386,7 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     const task = await serverTask('Review notes');
     server.remote.writes.length = 0;
     await call(alex, 'DELETE', `/api/calendar/events/${task.id}`);
-    assert.deepEqual(server.remote.writes.map(([kind, at]) => [kind, at]), [['delete', task.href]]);
+    assert.deepEqual(server.remote.writes.map(([kind, at]: string[]) => [kind, at]), [['delete', task.href]]);
     assert.match(server.remote.writes[0][2], /^If-Match "e\d+"$/, 'deleted only in the version UniHub has');
     assert.equal(server.copiesOf('Review notes').length, 0, 'deleted at the provider');
     assert.equal((await rowsTitled('Review notes')).length, 0);
