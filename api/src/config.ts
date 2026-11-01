@@ -133,9 +133,14 @@ function parseInstanceBackupConfig(env: NodeJS.ProcessEnv = process.env, others:
     } else {
       // F10: the instance key protects a copy of everything; one leaked
       // secret must not open both the installation and its backups.
+      // The others are used as their text, so the instance key's bytes are
+      // compared with that text's UTF-8 bytes as well as with what the text
+      // decodes to: base64(ENCRYPTION_KEY) is the same key written another way.
+      const sameKey = (other: string) => [other, other.trim()].some(text => text === keyText!.trim()
+        || decoded.equals(Buffer.from(text, 'utf8')) || !!decodeKeyText(text)?.equals(decoded));
       const reused = Object.entries(others ?? {
         JWT_SECRET, ENCRYPTION_KEY, ENCRYPTION_KEY_PREVIOUS, BACKUP_MASTER_KEY: BACKUP_MASTER_KEY_SET,
-      }).filter(([, other]) => other && (other.trim() === keyText!.trim() || decodeKeyText(other)?.equals(decoded))).map(([name]) => name);
+      }).filter(([, other]) => other && sameKey(other)).map(([name]) => name);
       if (reused.length) errors.push(`INSTANCE_BACKUP_KEY must be its own key, not the value of ${reused.join(' or ')}.`);
       else key = decoded;
     }
