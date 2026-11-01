@@ -113,11 +113,6 @@ test('the instance backup is off without a destination and a key, and refuses a 
     for (const secret of [crypto.randomBytes(32).toString('hex'), crypto.randomBytes(36).toString('base64'), crypto.randomBytes(36).toString('base64url'),
       `synthetic text secret ${crypto.randomBytes(12).toString('hex')}`]) {
       const others = { JWT_SECRET: '', ENCRYPTION_KEY: '', ENCRYPTION_KEY_PREVIOUS: '', BACKUP_MASTER_KEY: '', [name]: secret };
-      // The review's case: a 64-digit hex secret read as base64 (48 bytes), written as hex.
-      if (/^[0-9a-f]{64}$/.test(secret)) {
-        const parsed = config.parseInstanceBackupConfig({ INSTANCE_BACKUP_KEY: Buffer.from(secret, 'base64').toString('hex') }, others);
-        assert.match(parsed.errors.join('\n'), new RegExp(`not the value of ${name}\\b`), `${name}: hex of its base64 reading`);
-      }
       for (const reading of config.keyReadings(secret).filter(bytes => bytes.length >= 32)) {
         for (const written of forms(reading)) {
           const parsed = config.parseInstanceBackupConfig({ INSTANCE_BACKUP_KEY: written }, others);
@@ -126,6 +121,22 @@ test('the instance backup is off without a destination and a key, and refuses a 
         }
       }
     }
+  }
+  // The reviews' cases, spelled out rather than taken from keyReadings: the
+  // base64 reading of a 64-digit hex secret, and of a text mixing + and _
+  // (which decodeKeyText accepts), written as hex, for each secret.
+  for (const secret of [crypto.randomBytes(32).toString('hex'), '+_AA'.repeat(16)]) {
+    for (const name of ['JWT_SECRET', 'ENCRYPTION_KEY', 'ENCRYPTION_KEY_PREVIOUS', 'BACKUP_MASTER_KEY']) {
+      const others = { JWT_SECRET: '', ENCRYPTION_KEY: '', ENCRYPTION_KEY_PREVIOUS: '', BACKUP_MASTER_KEY: '', [name]: secret };
+      const parsed = config.parseInstanceBackupConfig({ INSTANCE_BACKUP_KEY: Buffer.from(secret, 'base64').toString('hex') }, others);
+      assert.equal(parsed.key, null, `${name} ${secret.slice(0, 8)}...: hex of its base64 reading`);
+      assert.match(parsed.errors.join('\n'), new RegExp(`not the value of ${name}\\b`));
+    }
+  }
+  // Whatever decodeKeyText accepts as a key, keyReadings reads the same way.
+  for (const text of ['+_AA'.repeat(16), '-/Zz'.repeat(12), crypto.randomBytes(36).toString('base64url'), crypto.randomBytes(32).toString('hex').toUpperCase(), ' QUJD\n']) {
+    const decoded = config.decodeKeyText(text)!;
+    assert.ok(decoded && config.keyReadings(text).some(reading => reading.equals(decoded)), `${text.slice(0, 8)}... reads as it decodes`);
   }
   assert.throws(() => config.assertConfiguration(['INSTANCE_BACKUP_DIR must be its own volume']), /Configuration refused:\n- INSTANCE_BACKUP_DIR/);
 });

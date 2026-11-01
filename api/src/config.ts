@@ -126,29 +126,35 @@ function secretFilesLoaded(): readonly LoadedSecretFile[] {
   return [...loadedSecretFiles.values()];
 }
 
+// The spellings a key is accepted in, in the order a key text is read:
+// hex, then base64, whose decoder takes the base64url letters as well (and
+// so a text mixing both). decodeKeyText and keyReadings share this one rule.
+const KEY_SPELLINGS: readonly { pattern: RegExp; encoding: BufferEncoding }[] = [
+  { pattern: /^(?:[0-9a-f]{2})+$/i, encoding: 'hex' },
+  { pattern: /^[A-Za-z0-9+/_-]+={0,2}$/, encoding: 'base64' },
+];
+
+function spelledKeys(text: string): Buffer[] {
+  return KEY_SPELLINGS.filter(spelling => spelling.pattern.test(text)).map(spelling => Buffer.from(text, spelling.encoding));
+}
+
 /**
  * Every way a secret's text can be taken as key bytes: the text itself (as
- * given and trimmed) and each of hex, base64 and base64url the text is valid
- * for. A key is another secret when any reading of one is a reading of the other.
+ * given and trimmed) and each accepted spelling it is valid for. A key is
+ * another secret when any reading of one is a reading of the other.
  */
 function keyReadings(value: string): Buffer[] {
   const readings: Buffer[] = [];
   for (const text of new Set([value, value.trim()])) {
     if (!text) continue;
-    readings.push(Buffer.from(text, 'utf8'));
-    if (/^[0-9a-f]+$/i.test(text) && text.length % 2 === 0) readings.push(Buffer.from(text, 'hex'));
-    if (/^[A-Za-z0-9+/]+={0,2}$/.test(text)) readings.push(Buffer.from(text, 'base64'));
-    if (/^[A-Za-z0-9_-]+={0,2}$/.test(text)) readings.push(Buffer.from(text, 'base64url'));
+    readings.push(Buffer.from(text, 'utf8'), ...spelledKeys(text));
   }
   return readings.filter(reading => reading.length);
 }
 
 /** 32 random bytes or more, written as hex or base64 (base64url too). */
 function decodeKeyText(value: string): Buffer | null {
-  const text = value.trim();
-  if (/^[0-9a-f]+$/i.test(text) && text.length % 2 === 0) return Buffer.from(text, 'hex');
-  if (/^[A-Za-z0-9+/_-]+={0,2}$/.test(text)) return Buffer.from(text, 'base64');
-  return null;
+  return spelledKeys(value.trim())[0] ?? null;
 }
 
 function parseInstanceBackupConfig(env: NodeJS.ProcessEnv = process.env, others: Record<string, string | undefined> | null = null): InstanceBackupConfig {
