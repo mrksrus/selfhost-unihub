@@ -165,7 +165,10 @@ the empty installation.
 **The drill.** Restore a recent backup on a spare machine or a second Compose
 project now and then, and sign in. The release gate runs the same restore:
 `api/tests/instance-backup-mysql-integration.test.cts` restores into an
-emptied test database and empty storage and compares every table and file.
+emptied test database and empty storage and compares every table and file,
+and [the drill](RELEASE_CONTRACT.md#what-the-instance-backup-drill-proves)
+(`scripts/instance-backup-drill.mts`) runs the restore command of the image
+under test into an empty installation and signs in.
 
 ## Backup versions and restore behavior
 
@@ -287,8 +290,11 @@ Every release also runs the [fresh-install recovery gate](RELEASE_CONTRACT.md#wh
 `npm --prefix api run build && node scripts/recovery-fresh-install.mts --local`
 locally. It exports all supported sections, destroys the source installation,
 imports into a separate database/storage/key set, restarts, compares restored
-files and ownership, and reconnects credentials to controlled provider peers.
-The integration tests below remain required; they do not substitute for that gate.
+files and ownership, and reconnects credentials to test providers, from which
+the provider data the backup left out comes back. The
+[upgrade check](RELEASE_CONTRACT.md#what-the-upgrade-check-proves) restores the
+exports of the three previous releases the same way. The integration tests
+below remain required; they do not substitute for these gates.
 
 Run `npm --prefix api run test:recovery` before releasing a data/recovery change.
 This gate checks connectivity, MariaDB and an empty disposable `_test` database,
