@@ -15,9 +15,11 @@ const sha256 = (bytes: Buffer) => crypto.createHash('sha256').update(bytes).dige
 // made) comes back with the provider address it had. When the provider
 // presents that exact address again (same account, mailbox, UIDVALIDITY and
 // UID), the sync links the restored copy instead of downloading a second one
-// beside it, which no later pass would ever remove. The production backup,
-// restore, metadata scan, body import, presence, history and flags streams
-// and two confirmed prune passes run; only the IMAP wire is a stub.
+// beside it, which no later pass would ever remove; on Gmail also when another
+// label of the message was scanned first. Download mail is never linked: its
+// read, star and filing are UniHub's own. The production backup, restore,
+// metadata scan, body import, presence, history and flags streams and two
+// confirmed prune passes run; only the IMAP wire is a stub.
 test('a restored Sync copy is linked when the provider shows its exact address again', { skip: !process.env.MYSQL_TEST_HOST, timeout: 300000 }, async (t) => {
   const database = process.env.MYSQL_TEST_DATABASE || 'unihub_test';
   assert.match(database, /_test$/, 'Use an empty disposable database ending in _test');
@@ -59,15 +61,23 @@ test('a restored Sync copy is linked when the provider shows its exact address a
     await insert('users', { id: userId, email: `${label}@example.test`, password_hash: 'synthetic-hash' });
     await runtime('services/mail-folders').ensureDefaultMailFoldersForUser(userId);
   }
-  // Each case: a Sync account with one complete message at INBOX UID 71 of
-  // epoch 19, and no live occurrence. The provider later shows UID 71 again,
-  // in the epoch the case names.
-  const cases = [
+  // Each case: an account with one complete message at INBOX UID 71 of epoch
+  // 19, filed locally under Archive, read and starred, with a ToDo made from
+  // it, and no live occurrence. The provider later shows UID 71 again, unread
+  // and unstarred, in the epoch the case names.
+  const cases: FixtureValue[] = [
     { label: 'address', email: {}, providerEpoch: 19, copies: 1, linked: true },
-    { label: 'missing', email: { remote_missing: 1 }, providerEpoch: 19, copies: 1, linked: false },
-    { label: 'unlinked', email: { remote_folder: null, remote_uid: null, remote_uidvalidity: null }, providerEpoch: 19, copies: 1, linked: false },
+    // Missing-marked: prune removes it. Unlinked: the downloaded twin replaces it (local_duplicates).
+    { label: 'missing', email: { remote_missing: 1 }, providerEpoch: 19, copies: 1, linked: false, replaced: true },
+    { label: 'unlinked', email: { remote_folder: null, remote_uid: null, remote_uidvalidity: null }, providerEpoch: 19, copies: 1, linked: false, replaced: true },
     // Another epoch: UID 71 may be another message now, so nothing links.
     { label: 'reset', email: {}, providerEpoch: 20, copies: 2, linked: false },
+    // Download mode: read, star and filing are UniHub's own and stay so; the
+    // restored item never takes a provider occurrence. Also after a restored
+    // Sync account is switched to Download before its first scan, and back.
+    { label: 'download', mode: 'download', email: {}, providerEpoch: 19, copies: 2, linked: false },
+    { label: 'sync-download', finalMode: 'download', email: {}, providerEpoch: 19, copies: 2, linked: false },
+    { label: 'sync-download-sync', toggleBack: true, email: {}, providerEpoch: 19, copies: 1, linked: true },
   ];
   const raws = new Map<string, Buffer>();
   for (const scenario of cases) {
@@ -78,11 +88,12 @@ test('a restored Sync copy is linked when the provider shows its exact address a
     const stored = path.join(directory, 'mail-raw', owner, `${email}.eml`);
     await fs.mkdir(path.dirname(stored), { recursive: true });
     await fs.writeFile(stored, raw);
-    await insert('mail_accounts', { id: account, user_id: owner, email_address: `reappearing-${scenario.label}@example.test`, provider: 'custom', sync_mode: 'sync', imap_host: 'imap.example.test' });
+    await insert('mail_accounts', { id: account, user_id: owner, email_address: `reappearing-${scenario.label}@example.test`, provider: scenario.gmail ? 'gmail' : 'custom',
+      sync_mode: scenario.mode || 'sync', imap_host: 'imap.example.test' });
     await insert('emails', { id: email, user_id: owner, mail_account_id: account, message_id: `<reappearing-${scenario.label}@example.test>`, subject: `Reappearing ${scenario.label}`,
-      from_address: 'sender@example.test', to_addresses: '["reader@example.test"]', body_text: 'Synthetic complete copy', folder: 'inbox', source_folder: 'INBOX',
+      from_address: 'sender@example.test', to_addresses: '["reader@example.test"]', body_text: 'Synthetic complete copy', folder: 'archive', source_folder: 'INBOX',
       received_at: '2026-10-25 12:00:00', raw_storage_path: stored, raw_sha256: sha256(raw), raw_bytes: raw.length, raw_format: 'exact_octets', raw_verified: 1, import_complete: 1,
-      remote_folder: 'INBOX', remote_uid: 71, remote_uidvalidity: 19, imap_uid: 71, imap_uidvalidity: 19, ...scenario.email });
+      is_read: 1, is_starred: 1, remote_folder: 'INBOX', remote_uid: 71, remote_uidvalidity: 19, imap_uid: 71, imap_uidvalidity: 19, ...scenario.email });
   }
 
   const backup = runtime('services/backup');
@@ -97,25 +108,37 @@ test('a restored Sync copy is linked when the provider shows its exact address a
   const policy = runtime('services/mail-sync-policy');
   for (const scenario of cases) {
     const [[account]] = await pool.query<RowDataPacket[]>('SELECT * FROM mail_accounts WHERE user_id = ? AND email_address = ?', [reader, `reappearing-${scenario.label}@example.test`]);
-    await pool.execute('UPDATE mail_accounts SET is_active = TRUE, sync_policy_confirmed_at = UTC_TIMESTAMP() WHERE id = ?', [account.id]);
-    Object.assign(account, { is_active: 1, sync_policy_confirmed_at: new Date() });
-    const [[before]] = await pool.query<RowDataPacket[]>('SELECT id, is_read FROM emails WHERE user_id = ? AND mail_account_id = ?', [reader, account.id]);
+    const mode = scenario.finalMode || scenario.mode || 'sync';
+    if (scenario.toggleBack) await pool.execute("UPDATE mail_accounts SET sync_mode = 'download', sync_policy_confirmed_at = NULL WHERE id = ?", [account.id]);
+    await pool.execute('UPDATE mail_accounts SET is_active = TRUE, sync_mode = ?, sync_policy_confirmed_at = UTC_TIMESTAMP() WHERE id = ?', [mode, account.id]);
+    Object.assign(account, { is_active: 1, sync_mode: mode, sync_policy_confirmed_at: new Date() });
+    const [[before]] = await pool.query<RowDataPacket[]>('SELECT id FROM emails WHERE user_id = ? AND mail_account_id = ?', [reader, account.id]);
+    const task = uuid();
+    await insert('calendar_events', { id: task, user_id: reader, title: 'Synthetic mail task', start_time: '2026-10-25 12:00:00', end_time: '2026-10-25 12:00:00',
+      is_todo_only: 1, source_email_id: before.id, source_email_json: JSON.stringify({ subject: `Reappearing ${scenario.label}` }) });
     const raw = raws.get(scenario.label)!;
-    let fetched = 0;
-    transport.selectMailbox = async () => ({ folder: 'INBOX', uidvalidity: scenario.providerEpoch, uidnext: 72, highestmodseq: null, nomodseq: true, readOnly: true,
-      capabilities: { move: true, condstore: false, uidplus: true, xGmExt1: false } });
+    let fetched = 0, mailboxName = 'INBOX', uid = 71;
+    transport.selectMailbox = async () => ({ folder: mailboxName, uidvalidity: scenario.providerEpoch, uidnext: uid + 1, highestmodseq: null, nomodseq: true, readOnly: true,
+      capabilities: { move: true, condstore: false, uidplus: true, xGmExt1: Boolean(scenario.gmail) } });
     transport.fetchMetadataWindow = async (_connection: unknown, request: FixtureValue) => ({ ...request, complete: true, bytes: 0,
-      items: request.startUid <= 71 && request.endUid >= 71 ? [{ uid: 71, flags: ['\\Seen'], modseq: null, gmailMsgId: null, internalDate: '2026-10-25T12:00:00Z' }] : [] });
+      items: request.startUid <= uid && request.endUid >= uid ? [{ uid, flags: [], modseq: null, gmailMsgId: scenario.gmail ? '123456789' : null, internalDate: '2026-10-25T12:00:00Z' }] : [] });
     transport.fetchRawMessage = async () => { fetched += 1; return { raw }; };
-    const folder = { folderName: 'INBOX', dbFolderName: 'inbox' };
-    const scan = async (stream: string) => { let result; do { result = await engine.scanMailboxSlice({ db: pool, connection: {}, account, folder, stream }); } while (result.more); };
-    await scan('recent');
-    const [[mailbox]] = await pool.query<RowDataPacket[]>('SELECT id FROM mail_remote_mailboxes WHERE mail_account_id = ?', [account.id]);
-    await content.processBodySlice({ db: pool, connection: {}, account, folder, mailboxId: mailbox.id });
-    for (const stream of ['presence', 'history', 'flags']) await scan(stream);
+    const folder = () => ({ folderName: mailboxName, dbFolderName: mailboxName === 'INBOX' ? 'inbox' : 'archive' });
+    const scan = async (stream: string) => { let result; do { result = await engine.scanMailboxSlice({ db: pool, connection: {}, account, folder: folder(), stream }); } while (result.more); };
+    const scanAndImport = async () => {
+      await scan('recent');
+      const [[mailbox]] = await pool.query<RowDataPacket[]>('SELECT id FROM mail_remote_mailboxes WHERE mail_account_id = ? AND BINARY remote_name = BINARY ?', [account.id, mailboxName]);
+      await content.processBodySlice({ db: pool, connection: {}, account, folder: folder(), mailboxId: mailbox.id });
+    };
+    const otherLabel = async () => { mailboxName = 'Other'; uid = 88; await scanAndImport(); mailboxName = 'INBOX'; uid = 71; };
+    if (scenario.otherFirst) await otherLabel();
+    await scanAndImport();
+    // Download accounts run the recent and history streams only (mail-durable-jobs.ts).
+    for (const stream of mode === 'sync' ? ['presence', 'history', 'flags'] : ['history']) await scan(stream);
+    if (scenario.gmail && !scenario.otherFirst) await otherLabel();
     for (let pass = 0; pass < 2; pass++) await policy.runPruneSlice({ account });
 
-    const [copies] = await pool.query<RowDataPacket[]>(`SELECT e.id, e.import_complete, e.raw_storage_path, e.is_read,
+    const [copies] = await pool.query<RowDataPacket[]>(`SELECT e.id, e.import_complete, e.raw_storage_path, e.is_read, e.is_starred, e.folder,
         (SELECT COUNT(*) FROM mail_remote_occurrences o WHERE o.email_id = e.id AND o.presence = 'present') AS live
       FROM emails e WHERE e.user_id = ? AND e.mail_account_id = ?`, [reader, account.id]);
     assert.equal(copies.length, scenario.copies, `${scenario.label}: copies`);
@@ -126,15 +149,25 @@ test('a restored Sync copy is linked when the provider shows its exact address a
     const view = runtime('services/mail-list').mailListView(new URLSearchParams({ account_id: account.id, folder: 'all' }), reader, false);
     const [[visible]] = await pool.query<RowDataPacket[]>(`SELECT COUNT(*) AS n FROM emails WHERE ${view.whereSql}`, view.params);
     assert.equal(Number(visible.n), scenario.copies, `${scenario.label}: visible`);
+    const [[writes]] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM mail_writebacks WHERE user_id = ? AND mail_account_id = ?', [reader, account.id]);
+    assert.equal(Number(writes.n), 0, `${scenario.label}: no provider change is made`);
     const restoredCopy = copies.find(copy => copy.id === before.id);
+    if (!scenario.replaced) {
+      // The restored item keeps its id, local filing and ToDo link.
+      assert.ok(restoredCopy, `${scenario.label}: the restored item stays`);
+      assert.equal(restoredCopy.folder, 'archive', `${scenario.label}: local filing`);
+      const [[todo]] = await pool.query<RowDataPacket[]>('SELECT source_email_id FROM calendar_events WHERE id = ?', [task]);
+      assert.equal(todo.source_email_id, before.id, `${scenario.label}: ToDo link`);
+    }
     if (scenario.linked) {
       // The restored item itself carries the live copy now; nothing was downloaded again.
       assert.ok(restoredCopy, `${scenario.label}: the restored item stays`);
-      assert.equal(Number(restoredCopy.live), 1, `${scenario.label}: linked to the provider's copy`);
-      assert.equal(Number(restoredCopy.is_read), 1, `${scenario.label}: the provider's flags apply`);
-      assert.equal(fetched, 0, `${scenario.label}: no second download`);
+      assert.equal(Number(restoredCopy.live), scenario.labels || 1, `${scenario.label}: linked to the provider's copy`);
+      assert.deepEqual([Number(restoredCopy.is_read), Number(restoredCopy.is_starred)], [0, 0], `${scenario.label}: the provider's flags apply`);
+      assert.equal(fetched, scenario.otherFirst ? 1 : 0, `${scenario.label}: no second download of the restored message`);
     } else if (restoredCopy) {
       assert.equal(Number(restoredCopy.live), 0, `${scenario.label}: the restored item is not taken for the provider's copy`);
+      if (mode === 'download') assert.deepEqual([Number(restoredCopy.is_read), Number(restoredCopy.is_starred)], [1, 1], `${scenario.label}: local read and star stay`);
     }
   }
 });

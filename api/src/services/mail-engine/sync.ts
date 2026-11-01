@@ -176,7 +176,7 @@ async function keptItemAtAddress(executor: SqlExecutor, { userId, accountId, fol
   return rows.length === 1 ? String(rows[0].id) : null;
 }
 
-async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId, folder, epoch, item, gmail, mapped = null, keptLinks = new Set<string>() }: Identity & { folder: Folder; item: Item; gmail: boolean; mapped?: Mapping | null; keptLinks?: Set<string> }) {
+async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId, folder, epoch, item, gmail, sync = false, mapped = null, keptLinks = new Set<string>() }: Identity & { folder: Folder; item: Item; gmail: boolean; sync?: boolean; mapped?: Mapping | null; keptLinks?: Set<string> }) {
   const [known] = await executor.execute<RowDataPacket[]>(`SELECT o.email_id FROM mail_remote_occurrences o
     WHERE o.user_id = ? AND o.mail_account_id = ? AND o.mailbox_id = ? AND o.uidvalidity = ? AND o.uid = ? LIMIT 1`,
   [userId, accountId, mailboxId, epoch, item.uid]);
@@ -197,7 +197,9 @@ async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId,
     }
     return mapped.emailId;
   }
-  const kept = await keptItemAtAddress(executor, { userId, accountId, folder, epoch, uid: item.uid });
+  // Sync only: in Download mode the restored item's read, star and filing are
+  // UniHub's own, and a provider occurrence would let later scans repaint them.
+  const kept = sync ? await keptItemAtAddress(executor, { userId, accountId, folder, epoch, uid: item.uid }) : null;
   if (kept) { keptLinks.add(kept); return kept; }
   const id = crypto.randomUUID();
   // Until its content arrives the message is a conversation of its own; the
@@ -252,7 +254,8 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
       if (!current && !mapped && outsideWindow(account, mailbox, item.internalDate)
         && !await knownGmailMessage(executor, { userId, accountId, gmail, item })) { skipped++; continue; }
       const keptLinks = new Set<string>();
-      const emailId = current?.email_id || await ensureItem(executor, { userId, accountId, mailboxId: mailbox.id, folder, epoch, item, gmail, mapped, keptLinks });
+      const emailId = current?.email_id || await ensureItem(executor, { userId, accountId, mailboxId: mailbox.id, folder, epoch, item, gmail,
+        sync: account.sync_mode === 'sync', mapped, keptLinks });
       // A MOVE destination is the user's own change, not an arrival; nor is a kept copy found again.
       if (!current && !mapped && !keptLinks.has(emailId) && arrivalsAbove !== null && item.uid > arrivalsAbove)
         await (require('../notifications') as typeof import('../notifications')).enqueueMailNotification({ userId, emailId, held: true }, executor);

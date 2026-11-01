@@ -50,9 +50,12 @@ module:
   only) is linked when a scan finds exactly that address again: same account,
   mailbox, UIDVALIDITY and UID, which IMAP never gives to another message.
   The item takes the occurrence and the server's flags, and its content is
-  not downloaded again (`keptItemAtAddress` in `mail-engine/sync.ts`). Drafts,
-  Legacy, cross-filed and missing-marked items are never linked this way, and
-  nothing is matched by Message-ID. An address of an older UIDVALIDITY links
+  not downloaded again (`keptItemAtAddress` in `mail-engine/sync.ts`). Only
+  Sync accounts link this way: in a Download account read, star and filing are
+  UniHub's own, so a restored item stays unlinked there and the server's copy
+  downloads beside it, also after the account is switched to Download before
+  its first scan. Drafts, Legacy, cross-filed and missing-marked items are
+  never linked this way, and nothing is matched by Message-ID. An address of an older UIDVALIDITY links
   nothing: that UID may be another message now.
 - Folder discovery records a mailbox flagged `\All` as `special_use = 'all'`
   on `mail_remote_mailboxes` (the local folder mapping still uses `archive`).
