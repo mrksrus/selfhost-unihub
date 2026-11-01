@@ -91,6 +91,21 @@ test('synced tasks keep their own state through a restore and the first sync, by
     assert.deepEqual(await subtasksOf(upper.id), [['Draft', true], ['Send', false]]);
   });
 
+  await t.test('a task with more subtasks than 500 keeps every one, to its row and back out', async () => {
+    clock += 86400000;
+    const uid = `${crypto.randomUUID()}@example.test`;
+    server.store(`${WORK}long-list.ics`, eventIcs(uid, 'Long list', clock));
+    const steps = Array.from({ length: 501 }, (_, index) => `Step ${index + 1}`);
+    assert.equal(await write([{ userId: users.owner, calendarId: work, uid, recurrenceId: '', state: state('Long list', steps) }]), 1);
+    await sync();
+    const [row] = await rowOf('Long list');
+    const kept = await subtasksOf(row.id);
+    assert.equal(kept.length, 501, 'the 501st as well');
+    assert.deepEqual(kept.at(-1), ['Step 501', false]);
+    // What a backup or the bin takes of the row: every subtask again.
+    assert.equal((await overlays.overlayStateOf(pool, users.owner, row.id))!.subtasks.length, 501);
+  });
+
   await t.test('a recurring task keys each date by its recurrence id; an archive without UIDs matches by title and start', async () => {
     clock += 86400000 * 3;
     const start = clock;

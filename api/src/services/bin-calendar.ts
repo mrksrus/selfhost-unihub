@@ -87,8 +87,13 @@ async function insertRows(cx: SqlExecutor, table: string, columns: readonly stri
 }
 async function freeIds(cx: SqlExecutor, table: string, rows: readonly Stored[]) {
   const ids = rows.map(row => String(row.id)).filter(id => ID_PATTERN.test(id));
-  const [taken] = ids.length ? await cx.execute<RowDataPacket[]>(`SELECT id FROM ${table} WHERE id IN (${placeholders(ids)})`, ids) : [[] as RowDataPacket[]];
-  const used = new Set(taken.map(row => String(row.id)));
+  const used = new Set<string>();
+  // In chunks: a task may have any number of subtasks.
+  for (let start = 0; start < ids.length; start += 500) {
+    const chunk = ids.slice(start, start + 500);
+    const [taken] = await cx.execute<RowDataPacket[]>(`SELECT id FROM ${table} WHERE id IN (${placeholders(chunk)})`, chunk);
+    for (const row of taken) used.add(String(row.id));
+  }
   return rows.map(row => ID_PATTERN.test(String(row.id)) && !used.has(String(row.id)) ? row : { ...row, id: crypto.randomUUID() });
 }
 const itemTypeOf = (event: Stored): BinItemType => Number(event.is_todo_only) || event.todo_status ? 'task' : 'event';

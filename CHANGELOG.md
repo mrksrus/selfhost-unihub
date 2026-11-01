@@ -46,8 +46,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - **A synced task keeps its done state and subtasks through a restore.**
   After restoring a backup, the first sync of a server calendar brought its
   tasks back without the ToDo state, done time, subtasks and source email
-  UniHub had kept for them. They now wait for the task and are added when
-  the sync brings it back. Moving a task between lists and calendars keeps
+  UniHub had kept for them. They now wait for the task, with every subtask
+  however many it has, and are added when the sync brings it back. Moving a task between lists and calendars keeps
   its identity, so a later restore still finds it.
 
 ## 0.27.1

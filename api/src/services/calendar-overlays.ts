@@ -28,7 +28,6 @@ import { db } from '../state';
 const EXACT = 'COLLATE utf8mb4_nopad_bin';
 
 const TODO_STATUSES = new Set(['done', 'changed', 'time_moved', 'cancelled']);
-const SUBTASKS_MAX = 500;
 const TITLE_MAX = 255;
 const DATETIME = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 const ID_PATTERN = /^[0-9a-f-]{36}$/i;
@@ -67,7 +66,11 @@ function json(value: unknown) {
   try { return JSON.parse(value); } catch { return null; }
 }
 
-/** An overlay payload as stored or archived, bounded; null when it holds nothing UniHub keeps. */
+/**
+ * An overlay payload as stored or archived; null when it holds nothing UniHub
+ * keeps. Every subtask is kept, as many as the task has: the app sets no
+ * limit, and an archive's size limit bounds what a restore reads.
+ */
 function parseOverlayState(value: unknown): OverlayState | null {
   const input = json(value) as Record<string, unknown> | null;
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
@@ -76,7 +79,7 @@ function parseOverlayState(value: unknown): OverlayState | null {
   try { doneAt = sqlTime(input.done_at); } catch { doneAt = null; }
   const emailId = typeof input.source_email_id === 'string' && ID_PATTERN.test(input.source_email_id) ? input.source_email_id : null;
   const email = json(input.source_email_json);
-  const subtasks = (Array.isArray(input.subtasks) ? input.subtasks : []).slice(0, SUBTASKS_MAX).flatMap((item, index) => {
+  const subtasks = (Array.isArray(input.subtasks) ? input.subtasks : []).flatMap((item, index) => {
     if (!item || typeof item !== 'object' || typeof (item as OverlaySubtask).title !== 'string') return [];
     const title = Array.from((item as OverlaySubtask).title).slice(0, TITLE_MAX).join('');
     if (!title.trim()) return [];
