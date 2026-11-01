@@ -456,6 +456,39 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     }
   });
 
+  await t.test('a secret rotated during a run makes that run not count; the next one leaves the new file out', async () => {
+    // A projected secret: key -> ..data/key, ..data -> a generation directory
+    // replaced as a whole on rotation, and a hard link of the new generation
+    // among the stored files (an aliased mount).
+    const projected = path.join(scratch, 'projected');
+    write(path.join(projected, 'gen-1', 'key'), `synthetic-generation-1-${crypto.randomBytes(16).toString('hex')}`);
+    fs.symlinkSync('gen-1', path.join(projected, '..data'));
+    fs.symlinkSync('..data/key', path.join(projected, 'key'));
+    process.env.UNIHUB_ROTATING_SECRET_FILE = path.join(projected, 'key');
+    const alias = path.join(rootDirs.attachments, users.alex, 'rotated-alias');
+    try {
+      const before = backupFiles();
+      const rotated = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin, hooks: { afterDump: async () => {
+        write(path.join(projected, 'gen-2', 'key'), `synthetic-generation-2-${crypto.randomBytes(16).toString('hex')}`);
+        fs.linkSync(path.join(projected, 'gen-2', 'key'), alias);
+        fs.symlinkSync('gen-2', path.join(projected, '..data.next'));
+        fs.renameSync(path.join(projected, '..data.next'), path.join(projected, '..data'));
+      } } }))!;
+      assert.equal(rotated.status, 'failed');
+      assert.match(String(rotated.error), /UNIHUB_ROTATING_SECRET_FILE .* changed during the run/);
+      assert.deepEqual(backupFiles(), before, 'nothing published');
+
+      const next = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      assert.equal(next.status, 'succeeded', String(next.error));
+      const copied: string[] = [];
+      await format.scanInstanceBackup(path.join(destination, next.file_name!), key, backup.INSTANCE_BACKUP_ROOTS, { onFile: entry => { copied.push(path.join(uploads, entry.root, entry.path)); return null; } });
+      assert.equal(copied.includes(alias), false, 'the new generation is left out');
+    } finally {
+      delete process.env.UNIHUB_ROTATING_SECRET_FILE;
+      fs.rmSync(alias, { force: true });
+    }
+  });
+
   await t.test('restore into an empty installation: refused while not empty, then the data, the files and no sessions', async () => {
     const database = getDatabaseConfig()!;
     await assert.rejects(restoreInstanceBackup({ file: first.file, key, database }), /is not empty/);

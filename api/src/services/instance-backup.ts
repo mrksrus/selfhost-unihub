@@ -167,23 +167,43 @@ const DEPLOYMENT_FILE = /^\.env(\..*)?$/;
 //
 // The identities are those of the files read at startup (config.ts), which
 // stay even when the name is later replaced or removed, and those the names
-// point at now. A configured file that cannot be checked now refuses the run:
-// the copy cannot otherwise know which file to leave out.
+// point at when the run starts. A configured file that cannot be checked
+// then refuses the run: the copy cannot otherwise know which file to leave
+// out. A secret rotated during the run is not followed: secretsMovedSince
+// sees it at the end, and that run does not count.
+const secretLabel = (secret: { name: string; path: string }) => `${secret.name} (${secret.path})`;
+
+function secretIdentity(file: string) {
+  try {
+    const stat = fs.statSync(file);
+    return `${stat.dev}:${stat.ino}`;
+  } catch {
+    return null;
+  }
+}
+
 function secretIdentities(env: NodeJS.ProcessEnv = process.env) {
   const identities = new Set(secretFilesLoaded().map(file => `${file.dev}:${file.ino}`));
+  const configured = new Map<string, string>();
   const unchecked: string[] = [];
   for (const secret of secretFiles(env)) {
-    try {
-      const stat = fs.statSync(secret.path);
-      identities.add(`${stat.dev}:${stat.ino}`);
-    } catch {
-      unchecked.push(`${secret.name} (${secret.path})`);
+    const identity = secretIdentity(secret.path);
+    if (identity) {
+      identities.add(identity);
+      configured.set(secretLabel(secret), identity);
+    } else {
+      unchecked.push(secretLabel(secret));
     }
   }
   if (unchecked.length) {
     throw new InstanceBackupError(`The backup did not run: ${unchecked.join(', ')} cannot be checked now, so it cannot make sure a key stays out. Put the file back or restart without it.`);
   }
-  return identities;
+  return { identities, configured };
+}
+
+/** The configured secret files that point at another file than when the run started, or at none. */
+function secretsMovedSince(configured: ReadonlyMap<string, string>, env: NodeJS.ProcessEnv = process.env) {
+  return secretFiles(env).filter(secret => secretIdentity(secret.path) !== configured.get(secretLabel(secret))).map(secretLabel);
 }
 
 /** A run of a time-ordered id (UUID version 7): a later run has a larger id, also within one second. */
@@ -300,11 +320,17 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
     const refused = instanceBackupSetupErrors(settings);
     if (refused.length) throw new InstanceBackupError(`The backup did not run: ${refused.join(' ')}`);
     const secrets = secretIdentities();
-    const { bytes, sha256, manifest } = await writeBackup(partialPath, row, settings, controller.signal, hooks, secrets);
+    const { bytes, sha256, manifest } = await writeBackup(partialPath, row, settings, controller.signal, hooks, secrets.identities);
     // Counted only once the whole file reads back with the key.
     const verified = await scanInstanceBackup(partialPath, settings.key, ROOT_NAMES, { signal: controller.signal });
     if (verified.sha256 !== sha256 || verified.header.backup_id !== row.id) throw new InstanceBackupError('The backup did not read back as written.');
     controller.signal.throwIfAborted();
+    // A secret rotated during the run has a new file the copy did not know to
+    // leave out, perhaps reachable under the stored files: the run does not count.
+    const moved = secretsMovedSince(secrets.configured);
+    if (moved.length) {
+      throw new InstanceBackupError(`The backup did not count: ${moved.join(', ')} changed during the run, so the copy may hold the new key. The next run tries again.`);
+    }
     // A link never replaces a file that is already there, unlike a rename.
     await fs.promises.link(partialPath, finalPath).catch((error: NodeJS.ErrnoException) => {
       throw error.code === 'EEXIST' ? new InstanceBackupError(`${name} already exists at INSTANCE_BACKUP_DIR; the backup does not replace it.`) : error;
