@@ -12,8 +12,9 @@ const path = require('node:path') as typeof import('node:path');
 const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
 
 // The stored-file roots are read when the services load: point them at a
-// scratch tree first. The dump connects like the app, through MYSQL_*.
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'unihub-instance-backup-'));
+// scratch tree first (made by the test, so a skipped run leaves nothing).
+// The dump connects like the app, through MYSQL_*.
+const scratch = path.join(os.tmpdir(), `unihub-instance-backup-${crypto.randomUUID()}`);
 const uploads = path.join(scratch, 'uploads');
 const rootDirs = {
   attachments: path.join(uploads, 'attachments'), 'mail-raw': path.join(uploads, 'mail-raw'), recordings: path.join(uploads, 'recordings'),
@@ -40,6 +41,7 @@ const write = (file: string, content: string | Buffer) => { fs.mkdirSync(path.di
 test('the instance backup copies the installation, keeps only verified runs, refuses changed files and restores into an empty installation', {
   skip: !process.env.MYSQL_TEST_HOST, timeout: 300000,
 }, async t => {
+  fs.mkdirSync(scratch, { mode: 0o700 });
   t.after(() => fs.rmSync(scratch, { recursive: true, force: true }));
   const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
   t.after(captureLog(() => {}));
