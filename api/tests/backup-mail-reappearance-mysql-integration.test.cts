@@ -78,11 +78,12 @@ test('a restored Sync copy is linked when the provider shows its exact address a
     { label: 'download', mode: 'download', email: {}, providerEpoch: 19, copies: 2, linked: false },
     { label: 'sync-download', finalMode: 'download', email: {}, providerEpoch: 19, copies: 2, linked: false },
     { label: 'sync-download-sync', toggleBack: true, email: {}, providerEpoch: 19, copies: 1, linked: true },
-    // Gmail: the same X-GM-MSGID under the label Other (UID 88) as well, in
-    // either scan order. One item, the restored one, holds both labels.
+    // Gmail: the same X-GM-MSGID under the label Other (UID 88) as well.
+    // Address first: the restored item takes both labels. Other label first:
+    // that label's scan downloads its own item, which the address then
+    // follows; the restored item stays beside it, unlinked.
     { label: 'gmail-address-first', gmail: true, email: {}, providerEpoch: 19, copies: 1, linked: true, labels: 2 },
-    { label: 'gmail-other-label-first', gmail: true, otherFirst: true, email: {}, providerEpoch: 19, copies: 1, linked: true, labels: 2 },
-    // An item that holds something of its own (here a ToDo made from it) is never folded away.
+    { label: 'gmail-other-label-first', gmail: true, otherFirst: true, email: {}, providerEpoch: 19, copies: 2, linked: false },
     { label: 'gmail-other-label-first-with-task', gmail: true, otherFirst: true, otherTask: true, email: {}, providerEpoch: 19, copies: 2, linked: false },
   ];
   const raws = new Map<string, Buffer>();

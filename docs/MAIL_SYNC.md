@@ -55,16 +55,7 @@ module:
   UniHub's own, so a restored item stays unlinked there and the server's copy
   downloads beside it, also after the account is switched to Download before
   its first scan. Drafts, Legacy, cross-filed and missing-marked items are
-  never linked this way, and nothing is matched by Message-ID. On Gmail
-  another label of the message may be scanned before that address and create
-  a second item with the account's X-GM-MSGID mapping. When the address is
-  then found, the exact address and X-GM-MSGID both prove one message, so the
-  second item folds into the restored one in the same transaction: the
-  restored item keeps its id, filing and links and takes the label
-  occurrences and the mapping (`foldIntoKeptItem`). Only a second item that
-  holds nothing of its own folds: no provider change, ToDo link, snooze,
-  scheduled send, server-deletion or recovery entry, and only occurrences of
-  that X-GM-MSGID. Otherwise both stay.
+  never linked this way, and nothing is matched by Message-ID.
 - An address of an older UIDVALIDITY links nothing: after the server reset
   the mailbox's UIDVALIDITY between the backup and the restore, that UID may
   be another message now. The restored item and the server's copy, downloaded
