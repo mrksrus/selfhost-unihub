@@ -70,9 +70,13 @@ holds a pooled database connection (a transaction, or one taken with
 `getConnection()`), asking the same pool for another fails the test file. As
 many such tasks as the pool has connections would wait for each other for
 ever. Pass the held connection to helpers instead (`executor` parameters);
-`outsideHeldConnection` in `services/transactions.ts` marks the few bounded
-exceptions. Add `--require ./tests/helpers/pool-guard.cts` to a direct
-`node --test` run from `api/` to get the same check.
+work that must not run on it uses the control pool
+(`services/side-pools.ts`, see docs/ARCHITECTURE.md). The hold counts from
+the moment the connection is handed over; a connection a test takes itself
+does not count. When a test wraps `getConnection` with its own function, the
+hold counts only from the connection's first statement. Add
+`--require ./tests/helpers/pool-guard.cts` to a direct `node --test` run from
+`api/` to get the same check.
 
 API modules use ES module syntax and compile to CommonJS. A few conventions
 keep the compiled modules testable:

@@ -15,7 +15,8 @@ const PromisePool = require(path.join(mysqlRoot, 'lib/promise/pool.js')) as { pr
 const PromisePoolConnection = require(path.join(mysqlRoot, 'lib/promise/pool_connection.js')) as { prototype: PoolConnection };
 const appCode = path.resolve(__dirname, '../../dist') + path.sep;
 
-interface Checkout { pool: object; released: boolean; taken: string }
+// Active from the moment the connection is handed over until its release.
+interface Checkout { pool: object; active: boolean; released: boolean; taken: string }
 // A chain, as one task can hold connections of different pools at once.
 interface Holding { checkout: Checkout; outer: Holding | undefined }
 const holding = new AsyncLocalStorage<Holding>();
@@ -25,7 +26,7 @@ const callers = (stack = '') => stack.split('\n').slice(2).join('\n');
 
 function refuseSecond(pool: object, method: string) {
   for (let held = holding.getStore(); held; held = held.outer) {
-    if (held.checkout.released || held.checkout.pool !== pool) continue;
+    if (!held.checkout.active || held.checkout.released || held.checkout.pool !== pool) continue;
     const message = `pool.${method}() while this task holds a connection of the same pool; pass that connection instead.\n` +
       `Connection taken:\n${held.checkout.taken}\nSecond request:\n${callers(new Error().stack)}`;
     violations.push(message);
@@ -44,15 +45,23 @@ pool.getConnection = function (this: typeof pool) {
   const taken = callers(new Error().stack);
   // A pool that refuses rather than waits (the named-lock pool) cannot hang this way.
   const counted = taken.includes(appCode) && this.pool.config.waitForConnections !== false;
+  if (!counted) return getConnection.call(this);
+  const checkout: Checkout = { pool: this, active: false, released: false, taken };
+  // The caller awaits the connection in the context marked here (its promise
+  // cannot set the caller's context later), so from the handover on, a request
+  // of the caller's counts, also before its first statement.
+  holding.enterWith({ checkout, outer: holding.getStore() });
   return getConnection.call(this).then(connection => {
-    if (counted) checkouts.set(connection, { pool: this, released: false, taken });
+    checkout.active = true;
+    checkouts.set(connection, checkout);
     return connection;
-  });
+  }, error => { checkout.released = true; throw error; });
 };
 
-// The connection's first statement marks the task that runs it (the async
-// context cannot be set from inside getConnection's promise); work it awaits
-// or starts afterwards inherits the mark, which release clears.
+// A caller that reaches the pool through a wrapper of its own (a test's
+// getConnection) is not marked above: the connection's first statement marks
+// the task that runs it. Work it awaits or starts afterwards inherits the
+// mark, which release clears.
 const connection = PromisePoolConnection.prototype as unknown as Record<string, (...args: unknown[]) => unknown>;
 for (const method of ['beginTransaction', 'execute', 'query']) {
   const original = connection[method];
