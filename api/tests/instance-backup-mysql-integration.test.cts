@@ -427,7 +427,7 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     }
   });
 
-  await t.test('a destination without hard links publishes by a rename that still never replaces a file', async () => {
+  await t.test('a destination without hard links publishes by a rename once the name is checked to be free', async () => {
     const link = fs.promises.link;
     let refused = 0;
     fs.promises.link = async () => { refused++; throw Object.assign(new Error('synthetic: operation not supported'), { code: 'EOPNOTSUPP' }); };

@@ -366,10 +366,12 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
 const NO_HARD_LINKS = new Set(['EOPNOTSUPP', 'EPERM', 'ENOSYS']);
 
 /**
- * Gives the finished file its name, never over a file already there. A link
- * refuses an existing name, unlike a rename. Where the destination has no
- * hard links, the name is checked to be free and then renamed to: it holds
- * the run id, so no other run writes it.
+ * Gives the finished file its name. A link refuses a name already taken,
+ * unlike a rename. Where the destination has no hard links, the name is
+ * checked to be free and then renamed to: two steps, not one. The run id in
+ * the name keeps other runs off it; a writer other than UniHub creating the
+ * name between the two would have its file replaced, which is why the
+ * destination is UniHub's alone (DATA_RECOVERY.md).
  */
 async function publish(partialPath: string, finalPath: string, name: string) {
   const taken = () => new InstanceBackupError(`${name} already exists at INSTANCE_BACKUP_DIR; the backup does not replace it.`);

@@ -63,7 +63,7 @@ a stolen admin session can neither redirect the backups nor read them.
 
 | Variable | Meaning |
 | --- | --- |
-| `INSTANCE_BACKUP_DIR` | An absolute directory inside the container on a volume or mount of its own (another disk, a NAS share). Unset: the backup is off. Inside `/app/uploads` or a stored-file root: startup refuses it. It must exist and be writable by uid 10001; UniHub never creates it, so a missing mount fails the run instead of filling the container. |
+| `INSTANCE_BACKUP_DIR` | An absolute directory inside the container on a volume or mount of its own (another disk, a NAS share). Unset: the backup is off. Inside `/app/uploads` or a stored-file root: startup refuses it. It must exist and be writable by uid 10001; UniHub never creates it, so a missing mount fails the run instead of filling the container. Nothing else writes there: it is UniHub's alone. |
 | `INSTANCE_BACKUP_KEY` or `INSTANCE_BACKUP_KEY_FILE` | At least 32 random bytes as hex or base64 (`openssl rand -base64 48`). Unset: the backup is off. Shorter, or the value of `JWT_SECRET`, `ENCRYPTION_KEY`, `ENCRYPTION_KEY_PREVIOUS` or `BACKUP_MASTER_KEY`: startup refuses it. Never derived from another key. |
 | `INSTANCE_BACKUP_TIME` | The daily run, `HH:MM` in UTC; default `03:30`. |
 | `INSTANCE_BACKUP_KEEP` | How many succeeded backups stay, 1 to 1000; default 14. |
@@ -93,8 +93,10 @@ Each run is a row of `instance_backups`.
    there (a run that finds one fails and leaves it alone). On a destination
    without hard links (the link fails with `EOPNOTSUPP`, `EPERM` or `ENOSYS`,
    as on some NAS shares, FUSE mounts and FAT) it checks that the name is
-   free and renames the file to it; the name holds the run id, so no other
-   run writes it.
+   free and then renames the file to it. The name holds the run id, so no
+   other run uses it; the check and the rename are two steps, so this relies
+   on the destination being UniHub's alone (anything else that writes there
+   could create the name in between, and could change the backups anyway).
 5. In one transaction it records the run as succeeded with the next
    completion number (`completion_seq`) and marks the oldest succeeded
    backups beyond `INSTANCE_BACKUP_KEEP` removed (`removed_at`), then removes
@@ -140,14 +142,33 @@ a recording being converted or uploaded in chunks, a contact photo being
 written, an unfinished export, backup uploads being received and uploaded
 restore archives), and **no key**. A configured secret file (`NAME_FILE`)
 inside `/app/uploads` or a stored-file root stops the start, also through a
-symbolic link or an aliased path; a secret file found among the stored files
-anyway (a hard link, a second mount), also a file read at the start and
-replaced or removed since, and Compose `.env` files are left out. The files
-read at the start stay open while the server runs, so a stored file never
-takes over their identity. A run that cannot check a configured secret file
-(it was removed) does not run and says which. A run during which a secret
-file was rotated (its name points at another file at the end than at the
-start) does not count and says which; the next run leaves the new file out.
+symbolic link or an aliased path. Compose `.env` files are left out. Beyond
+that the server remembers, by size and SHA-256 and never the bytes, every
+version of each secret file it has read: at its start and at the start and
+end of each run, until it stops. A stored file with the same bytes (a hard
+link, a copy, a second mount of a secret, also of a version rotated away
+since) is left out, and the log names the setting. A run that cannot read a
+configured secret file at its start (it was removed) does not run and says
+which. A run during which a secret file changed (another file or other bytes
+at the end than at the start) does not count and says which; the next run
+knows the new version and leaves it out.
+
+This is a second line of defence for the versions UniHub has seen, not a
+guarantee. A version that comes and goes within one run is never seen: a
+secret rotated to a new version and back again while a backup runs, with a
+hard link of the new version among the stored files, can end up in that
+backup. Whoever can arrange that can read the secret anyway. The setup that
+keeps secrets out:
+
+- keep every `*_FILE` secret outside `/app/uploads` and outside the backup
+  destination; startup refuses the first;
+- Docker and Compose secrets and secrets given as environment variables are
+  fine as they are;
+- on Kubernetes, give UniHub's own secrets a projected volume of their own.
+  A projection shared with something that changes on its own (a rotating
+  service-account token, a certificate) replaces every file in it when that
+  changes, so a long backup sees its secret files change and fails again and
+  again.
 `ENCRYPTION_KEY`,
 `ENCRYPTION_KEY_PREVIOUS`, `BACKUP_MASTER_KEY`, `JWT_SECRET` and the instance
 key stay outside, so no single key opens everything (F10). Keep them in a

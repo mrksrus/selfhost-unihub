@@ -202,9 +202,9 @@ them.
 **The instance backup** copies the database and every stored file, encrypted
 with its own key, to a destination you mount, daily and on "Back up now" in
 Settings > Server settings > Instance backup. Give it a disk or share of its
-own, writable by uid 10001, and set `UNIHUB_INSTANCE_BACKUP_DIR` to where it is
-mounted in the container, together with `UNIHUB_INSTANCE_BACKUP_KEY` (or its
-file):
+own that nothing else writes to, writable by uid 10001, and set
+`UNIHUB_INSTANCE_BACKUP_DIR` to where it is mounted in the container, together
+with `UNIHUB_INSTANCE_BACKUP_KEY` (or its file):
 
 ```yaml
     volumes:
