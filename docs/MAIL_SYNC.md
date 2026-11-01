@@ -50,7 +50,8 @@ module:
   only) is linked when a scan finds exactly that address again: same account,
   mailbox, UIDVALIDITY and UID, which IMAP never gives to another message.
   The item takes the occurrence and the server's flags, and its content is
-  not downloaded again (`keptItemAtAddress` in `mail-engine/sync.ts`). Only
+  not downloaded again (`keptItemAtAddress` in `mail-engine/sync.ts`); an
+  item restored without its content gets it downloaded into the item. Only
   Sync accounts link this way: in a Download account read, star and filing are
   UniHub's own, so a restored item stays unlinked there and the server's copy
   downloads beside it, also after the account is switched to Download before

@@ -259,6 +259,10 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
       // A MOVE destination is the user's own change, not an arrival; nor is a kept copy found again.
       if (!current && !mapped && !keptLinks.has(emailId) && arrivalsAbove !== null && item.uid > arrivalsAbove)
         await (require('../notifications') as typeof import('../notifications')).enqueueMailNotification({ userId, emailId, held: true }, executor);
+      // A kept item restored without its content gets it from this copy: the
+      // body import fills the item itself (its filing and links stay).
+      if (keptLinks.has(emailId)) await executor.execute(`UPDATE emails SET content_state = 'queued'
+        WHERE id = ? AND user_id = ? AND mail_account_id = ? AND import_complete = FALSE`, [emailId, userId, accountId]);
       const revision = Number(current?.observation_revision || 0) + 1;
       if (!Number.isSafeInteger(revision)) throw new RangeError('Observation revision exhausted');
       const occurrence = await repository.upsertOccurrence({ userId, accountId, mailboxId: mailbox.id, epoch,

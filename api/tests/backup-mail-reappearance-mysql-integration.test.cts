@@ -70,6 +70,8 @@ test('a restored Sync copy is linked when the provider shows its exact address a
     // Missing-marked: prune removes it. Unlinked: the downloaded twin replaces it (local_duplicates).
     { label: 'missing', email: { remote_missing: 1 }, providerEpoch: 19, copies: 1, linked: false, replaced: true },
     { label: 'unlinked', email: { remote_folder: null, remote_uid: null, remote_uidvalidity: null }, providerEpoch: 19, copies: 1, linked: false, replaced: true },
+    // Restored without its content: it is linked and its content downloads into it.
+    { label: 'incomplete', email: { raw_storage_path: null, raw_sha256: null, raw_bytes: null, import_complete: 0 }, providerEpoch: 19, copies: 1, linked: true, fetches: 1 },
     // Another epoch: UID 71 may be another message now, so nothing links.
     { label: 'reset', email: {}, providerEpoch: 20, copies: 2, linked: false },
     // Download mode: read, star and filing are UniHub's own and stay so; the
@@ -209,7 +211,7 @@ test('a restored Sync copy is linked when the provider shows its exact address a
       assert.ok(restoredCopy, `${scenario.label}: the restored item stays`);
       assert.equal(Number(restoredCopy.live), scenario.labels || 1, `${scenario.label}: linked to the provider's copy`);
       assert.deepEqual([Number(restoredCopy.is_read), Number(restoredCopy.is_starred)], [0, 0], `${scenario.label}: the provider's flags apply`);
-      assert.equal(fetched, scenario.otherFirst ? 1 : 0, `${scenario.label}: no second download of the restored message`);
+      assert.equal(fetched, scenario.fetches ?? (scenario.otherFirst ? 1 : 0), `${scenario.label}: no second download of the restored message`);
     } else if (restoredCopy) {
       assert.equal(Number(restoredCopy.live), 0, `${scenario.label}: the restored item is not taken for the provider's copy`);
       if (mode === 'download') assert.deepEqual([Number(restoredCopy.is_read), Number(restoredCopy.is_starred)], [1, 1], `${scenario.label}: local read and star stay`);
