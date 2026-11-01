@@ -17,6 +17,7 @@ import { drainProcess } from './services/shutdown';
 import { durableScheduler } from './services/mail-durable-jobs';
 import { expireWorkerLeases } from './services/mail-engine/runtime';
 import { startWorkerOwnership } from './services/worker-owner';
+import { controlPool } from './services/side-pools';
 import { log } from './log';
 
 // Both are logged with their stack, so a container restart has a cause in its
@@ -74,8 +75,10 @@ async function start() {
 
   // Only the process holding the database lock runs the background work
   // (services/worker-owner.ts); another one serves requests and waits.
+  // The lock's session is a control connection (side-pools.ts), never one
+  // the work or the requests need.
   ownership = await startWorkerOwnership({
-    pool: db,
+    pool: controlPool(),
     // The handle exists at once: losing the role stops a start-up still
     // going, and only that one. A failed start-up ends the role (worker-owner.ts).
     onGained: () => {

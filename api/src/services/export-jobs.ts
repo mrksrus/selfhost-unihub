@@ -1,5 +1,5 @@
 import type { RowDataPacket, ExecuteValues } from 'mysql2/promise';
-import type { ApiError, StoredFlag } from '../types';
+import type { ApiError, SqlExecutor, StoredFlag } from '../types';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -12,7 +12,7 @@ import {
   wrapDataKeyForServer,
   protectRecoveryPassword,
 } from './backup-container';
-import { outsideHeldConnection } from './transactions';
+import { controlPool } from './side-pools';
 import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
 
 type CheckCancelled = (() => Promise<unknown>) | null;
@@ -379,8 +379,8 @@ async function updateJob(jobId: string, fields: Record<string, ExecuteValues>) {
   );
 }
 
-async function checkExportCancelled(jobId: string) {
-  const [rows] = await db.execute<ExportRow[]>(
+async function checkExportCancelled(jobId: string, executor: SqlExecutor = db) {
+  const [rows] = await executor.execute<ExportRow[]>(
     'SELECT cancel_requested, status FROM data_export_jobs WHERE id = ? LIMIT 1',
     [jobId]
   );
@@ -415,8 +415,9 @@ async function runDataExportJob(jobId: string) {
     entries = await collectExportEntries(job.user_id, sections, {
       mailAccountId: job.mail_account_id || null,
       portableCredentialKey: dataKey,
-      // Runs while the snapshot read holds its connection; a read on it would not see a later cancellation.
-      checkCancelled: outsideHeldConnection(() => checkExportCancelled(jobId)),
+      // Runs while the snapshot read holds its connection, on which it would
+      // not see a later cancellation: the control pool (side-pools.ts).
+      checkCancelled: () => checkExportCancelled(jobId, controlPool()),
     });
     await checkExportCancelled(jobId);
     await updateJob(jobId!, { phase: 'archiving', progress: 35 });

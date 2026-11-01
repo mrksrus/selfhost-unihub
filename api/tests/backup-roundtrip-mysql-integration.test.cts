@@ -495,7 +495,9 @@ test('production export and restore jobs round-trip every section through encryp
   });
   await t.test('a lost COMMIT acknowledgement preserves the committed restore and every restored file', async () => {
     let injected = false;
-    destination('state').setDb({
+    // The settings of the real pool, so the restore's control pool is a real one too.
+    const double = {
+      pool: (pool as FixtureValue).pool,
       execute: (...args: FixtureValue[]) => pool.execute(...args as [string, FixtureValue]),
       async getConnection() {
         const connection = await pool.getConnection();
@@ -518,13 +520,14 @@ test('production export and restore jobs round-trip every section through encryp
           },
         };
       },
-    });
+    };
+    destination('state').setDb(double);
     try {
       const userId = await newUser('commit-acknowledgement-lost');
       await uploadAndRestore(destination, userId, encrypted);
       assert.equal(injected, true, 'Failure must occur after the restore transaction really commits');
       await assertRestored(destination, userId);
-    } finally { destination('state').setDb(pool); }
+    } finally { destination('state').setDb(pool); await destination('services/side-pools').endSidePools(double); }
   });
   await t.test('repeated complete archives honor keep-existing, replace and keep-both without detaching children', async () => {
     await pool.execute<ResultSetHeader>('UPDATE contacts SET notes = ? WHERE user_id = ?', ['Local edit', encryptedUser]);

@@ -443,6 +443,23 @@ and its return value is the result, so a service can run on a passed-in
 connection or open its own. Callbacks only touch the database; provider
 commands and file writes stay outside.
 
+Database connections come from three pools on the same database. The main
+pool (50, `services/database.ts`) serves requests and background work. A
+task holding one of its connections, in a transaction or after
+`getConnection()`, passes that connection to every helper it waits for and
+never asks the main pool for a second one: mysql2 queues such a request
+without a limit, so as many of them as the pool has connections would wait
+for each other for ever (the tests refuse it, see docs/DEVELOPMENT.md). Two
+small pools are derived from the main one (`services/side-pools.ts`) and
+never compete with it. The named-lock pool (18, `services/named-locks.ts`,
+see docs/CALENDAR.md) holds GET_LOCK sessions and refuses a lock when it is
+full. The control pool (4) serves the work that must reach the database
+while its own transaction holds rows that requests may be waiting for with
+every main connection: a restore's progress writes and cancellation checks,
+an export's cancellation checks during its snapshot read, the shared VAPID
+key read, and the worker owner's lock session. Its users run one at a time
+each per process, so four connections never make one of them wait.
+
 ## Scheduled Jobs
 
 `api/src/services/background-work.ts` holds the periodic work of the API

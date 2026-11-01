@@ -1,11 +1,10 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 
-import { db } from '../state';
 import { encrypt, decrypt } from '../security/encryption';
 import { pushAgent } from './push-transport';
 import { asUtcDate, hash, retryDisposition } from './notification-rules';
-import { outsideHeldConnection } from './transactions';
+import { controlPool } from './side-pools';
 
 // Delivery transports, keyed by the kind of target a delivery row points at
 // (push_subscriptions.transport).
@@ -46,17 +45,19 @@ type PushError = Error & { statusCode?: number };
 
 let keyPromise: Promise<VapidKeys> | null = null;
 async function getVapidKeys(): Promise<VapidKeys> {
-  // Shared by every caller, so read on its own connection (one at a time).
-  if (!keyPromise) keyPromise = outsideHeldConnection(async () => {
-    let [rows] = await db.execute<(RowDataPacket & { public_key: string; encrypted_private_key: string; subject: string })[]>('SELECT public_key, encrypted_private_key, subject FROM notification_config WHERE id = 1');
+  // Shared by every caller, among them the notification pass holding its
+  // connection, so read on the control pool (side-pools.ts).
+  if (!keyPromise) keyPromise = (async () => {
+    const control = controlPool();
+    let [rows] = await control.execute<(RowDataPacket & { public_key: string; encrypted_private_key: string; subject: string })[]>('SELECT public_key, encrypted_private_key, subject FROM notification_config WHERE id = 1');
     if (!rows.length) {
       const webPush = require('web-push') as typeof import('web-push');
       const keys = webPush.generateVAPIDKeys();
-      const [admins] = await db.execute<RowDataPacket[]>("SELECT email FROM users WHERE role = 'admin' ORDER BY created_at LIMIT 1");
+      const [admins] = await control.execute<RowDataPacket[]>("SELECT email FROM users WHERE role = 'admin' ORDER BY created_at LIMIT 1");
       const subject = process.env.WEB_PUSH_SUBJECT || `mailto:${admins[0]?.email || 'notifications@unihub.invalid'}`;
       // Concurrent startups may generate candidates; INSERT IGNORE and reread choose exactly one stable pair.
-      await db.execute('INSERT IGNORE INTO notification_config (id, public_key, encrypted_private_key, subject) VALUES (1, ?, ?, ?)', [keys.publicKey, encrypt(keys.privateKey), subject]);
-      [rows] = await db.execute<(RowDataPacket & { public_key: string; encrypted_private_key: string; subject: string })[]>('SELECT public_key, encrypted_private_key, subject FROM notification_config WHERE id = 1');
+      await control.execute('INSERT IGNORE INTO notification_config (id, public_key, encrypted_private_key, subject) VALUES (1, ?, ?, ?)', [keys.publicKey, encrypt(keys.privateKey), subject]);
+      [rows] = await control.execute<(RowDataPacket & { public_key: string; encrypted_private_key: string; subject: string })[]>('SELECT public_key, encrypted_private_key, subject FROM notification_config WHERE id = 1');
     }
     const privateKey = decrypt(rows[0].encrypted_private_key);
     if (!privateKey) throw new Error('Unable to decrypt persisted Web Push key');

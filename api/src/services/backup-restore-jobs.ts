@@ -19,7 +19,7 @@ import {
   unwrapDataKeyFromServer,
   wrapDataKeyForServer,
 } from './backup-container';
-import { outsideHeldConnection } from './transactions';
+import { controlPool } from './side-pools';
 import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
 import { attachmentsRoot, rawRoot } from './mail-storage';
 import { isAnyDraftSendRunning } from './mail-drafts';
@@ -116,10 +116,10 @@ function serializeRestoreJob(row: RestoreJob) {
   };
 }
 
-async function updateRestoreJob(jobId: string, fields: Record<string, ExecuteValues>) {
+async function updateRestoreJob(jobId: string, fields: Record<string, ExecuteValues>, executor: SqlExecutor = db) {
   const keys = Object.keys(fields);
   if (!keys.length) return;
-  await db.execute(
+  await executor.execute(
     `UPDATE backup_restore_jobs
      SET ${keys.map(key => `${key} = ?`).join(', ')}
      WHERE id = ?`,
@@ -163,8 +163,8 @@ async function cleanupRestoredFiles(job: RestoreJob) {
   )));
 }
 
-async function checkRestoreCancelled(jobId: string) {
-  const [rows] = await db.execute<RestoreJob[]>(
+async function checkRestoreCancelled(jobId: string, executor: SqlExecutor = db) {
+  const [rows] = await executor.execute<RestoreJob[]>(
     'SELECT cancel_requested, status FROM backup_restore_jobs WHERE id = ? LIMIT 1',
     [jobId]
   );
@@ -317,15 +317,17 @@ async function restoreValidatedJob(job: RestoreJob) {
       fileSourcesByPath: parsed.fileSourcesByPath,
       portableCredentialKey: dataKey,
       restoreJobId: job.id,
-      // The import's transaction holds a connection while these run.
-      checkCancelled: outsideHeldConnection(() => checkRestoreCancelled(job.id)),
-      onProgress: outsideHeldConnection(async (phase: string, progress: number) => {
-        await updateRestoreJob(job.id, { phase, progress });
-      }),
-      beforeCommit: outsideHeldConnection(async (connection: SqlExecutor, restoreResult: Record<string, unknown>) => {
+      // These run while the import's transaction holds its connection and
+      // row locks, which requests may wait for with every main connection:
+      // they use the control pool (side-pools.ts).
+      checkCancelled: () => checkRestoreCancelled(job.id, controlPool()),
+      onProgress: async (phase, progress) => {
+        await updateRestoreJob(job.id, { phase, progress }, controlPool());
+      },
+      beforeCommit: async (connection, restoreResult) => {
         // Publishing phase=commit prevents new cancellation requests. Honor a
         // request accepted just before that boundary before marking completion.
-        await checkRestoreCancelled(job.id);
+        await checkRestoreCancelled(job.id, controlPool());
         await connection.execute(
           `UPDATE backup_restore_jobs
            SET status = 'completed',
@@ -337,7 +339,7 @@ async function restoreValidatedJob(job: RestoreJob) {
            WHERE id = ?`,
           [JSON.stringify(restoreResult), job.id]
         );
-      }),
+      },
     });
     if (!result.valid || result.errors?.length) {
       throw new Error(result.errors?.[0] || 'Backup validation failed before restore.');

@@ -1,7 +1,6 @@
-import mysql from 'mysql2/promise';
 import type { Pool, RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
-import { getDb } from '../state';
+import { derivedPool } from './side-pools';
 
 /**
  * Named MariaDB locks (GET_LOCK) held over a piece of work, across processes.
@@ -27,33 +26,14 @@ type LockKind = keyof typeof SHARES;
 
 const inUse = new Map<LockKind, number>();
 const contenders = new Map<string, number>();
-const lockPools = new WeakMap<object, Pool>();
 // The kind is one of SHARES' keys, written into the statement so the process
 // list shows which kind of lock a connection waits for.
 const lockName = (kind: LockKind) => `SHA2(CONCAT(DATABASE(), ':${kind}:', ?), 256)`;
 
-interface ConnectionSettings { host?: string; port?: number; user?: string; password?: string; database?: string; socketPath?: string; ssl?: unknown }
-
-// Derived from the main pool, so tests and scripts that set their own pool
-// get locks on the same database. A test double without connection settings
-// holds its locks itself.
+// Derived from the main pool (side-pools.ts); a test double without connection
+// settings holds its locks itself.
 function lockPool(): Pool {
-  const main = getDb();
-  if (!main) throw new Error('Database pool has not been initialized');
-  const existing = lockPools.get(main);
-  if (existing) return existing;
-  const settings = (main as unknown as { pool?: { config?: { connectionConfig?: ConnectionSettings } } }).pool?.config?.connectionConfig;
-  if (!settings) return main;
-  const size = Object.values(SHARES).reduce((sum, share) => sum + share, 0);
-  const pool = mysql.createPool({
-    host: settings.host, port: settings.port, user: settings.user, password: settings.password, database: settings.database,
-    socketPath: settings.socketPath, ssl: settings.ssl as mysql.PoolOptions['ssl'],
-    connectionLimit: size, maxIdle: size, waitForConnections: false,
-  });
-  // An idle lock connection does not keep the process alive; the work it guards does.
-  (pool as unknown as { pool: NodeJS.EventEmitter }).pool.on('connection', (connection: { stream?: { unref?: () => void } }) => connection.stream?.unref?.());
-  lockPools.set(main, pool);
-  return pool;
+  return derivedPool('locks', { connectionLimit: Object.values(SHARES).reduce((sum, share) => sum + share, 0), waitForConnections: false });
 }
 
 /**

@@ -1,5 +1,4 @@
 import type { Pool, PoolConnection } from 'mysql2/promise';
-import { AsyncLocalStorage } from 'node:async_hooks';
 import type { SqlExecutor } from '../types';
 import { db } from '../state';
 
@@ -30,15 +29,4 @@ async function withTransaction<T>(callback: (connection: SqlExecutor) => T | Pro
   }
 }
 
-// A task holding a connection passes it to everything it waits for; one more
-// from the pool could wait for ever once the pool is full. Work wrapped here
-// may use the pool anyway because only a bounded number of tasks run it (one
-// restore worker, one export worker, one notification pass) or nothing waits
-// for it: a cancellation check that must see later commits, a progress write
-// the transaction must not lock, the process's shared VAPID key read, work the
-// worker owner starts. It runs apart from the caller's async context, where
-// the tests' pool guard (tests/helpers/pool-guard.cts) allows the pool.
-const apart = AsyncLocalStorage.snapshot();
-const outsideHeldConnection = <A extends unknown[], R>(work: (...args: A) => R) => (...args: A): R => apart(work, ...args);
-
-export { withTransaction, isDeadlock, DEADLOCK_RETRIES, outsideHeldConnection };
+export { withTransaction, isDeadlock, DEADLOCK_RETRIES };

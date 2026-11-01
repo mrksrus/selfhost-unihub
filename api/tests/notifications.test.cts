@@ -22,6 +22,8 @@ function loadService(db: FixtureValue, sender: FixtureValue = {}, transports: Fi
       module, exports: module.exports, Date, Buffer, console, process: { env: {} },
       require(name: FixtureValue) {
         if (name === '../state') return { db };
+        // A test double serves the side pools itself, as side-pools.ts does for one.
+        if (name === './side-pools') return { controlPool: () => db };
         if (name === '../security/encryption') return { encrypt: (text: string) => `encrypted:${text}`, decrypt: (text: string) => text?.startsWith('encrypted:') ? text.slice(10) : null };
         if (name === 'web-push') return sender;
         if (name === './notification-transports' && transports) return transports;

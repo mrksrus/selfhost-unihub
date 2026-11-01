@@ -52,7 +52,6 @@ import {
 import { backupFromZipBuffer, backupFromZipFile } from './backup-zip-reader';
 import { restoreContactsSection } from './backup-contacts';
 import { releasePhotoFiles, withContactPhotoLock } from './contact-photos';
-import { outsideHeldConnection } from './transactions';
 import { log } from '../log';
 
 const accountLabel = (row: BackupRow) => row.email_address || row.account_email || row.display_name || row.id;
@@ -254,12 +253,12 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
     const createdPhotos: string[] = [];
     let releasedPhotos: string[] = [];
     const photoNames = new Set((Array.isArray(data.contact_photos) ? data.contact_photos as BackupRow[] : []).flatMap(row => [row.sha256, row.thumb_sha256].map(String)));
-    // Also after a rollback, while the connection is still held: only the
-    // restore worker runs this.
-    const cleanupCreatedFiles = outsideHeldConnection(() => Promise.all([
+    // After a rollback the restore's connection is still held; the photo
+    // references are read on it.
+    const cleanupCreatedFiles = (executor: SqlExecutor = db) => Promise.all([
       ...createdRestorePaths.map(filePath => fs.promises.rm(filePath, { force: true }).catch(() => {})),
-      releasePhotoFiles(userId, createdPhotos).catch(() => {}),
-    ]));
+      releasePhotoFiles(userId, createdPhotos, executor).catch(() => {}),
+    ]);
     let connection;
     let commitAttempted = false;
     try {
@@ -1078,7 +1077,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         // be referenced by committed rows; the restore job reconciles its result.
         (error as ApiError & { backupCommitUncertain?: boolean }).backupCommitUncertain = true;
       } else {
-        await cleanupCreatedFiles();
+        await cleanupCreatedFiles(connection ?? db);
       }
       throw error;
     } finally {
