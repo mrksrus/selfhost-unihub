@@ -333,6 +333,8 @@ async function advance(moveId: string): Promise<MoveOutcome> {
     const copy = move.target_href ? await createCopy(move) : null;
     if (move.target_href && !copy) return { pending: 'creating' };
     const committed = await withTransaction(async connection => {
+      // A restore from the bin: the person first, then the journal and the bin row (bin.ts lockBinOwner).
+      if (move!.bin_item_id) await (require('./bin') as typeof import('./bin')).lockBinOwner(connection, move!.user_id);
       const locked = await loadMove(connection, moveId, true);
       return !!locked && commitMove(connection, locked, copy);
     });

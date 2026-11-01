@@ -61,6 +61,9 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
   const count = async (sql: string, params: unknown[]) => Number(((await pool.query<RowDataPacket[]>(sql, params))[0][0]).n);
   const at = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
   const sha = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
+  // A barrier a hooked statement waits at, and the deadlocks the database reported.
+  const gate = () => { let open!: () => void; const reached = new Promise<void>(resolve => { open = resolve; }); return { open, reached }; };
+  const deadlocks = () => hooks.errors.filter((code: string) => code === 'ER_LOCK_DEADLOCK').length;
 
   await t.test('contacts: one and several, owner scope, photo and identity kept', async () => {
     const casey = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Casey' }, emails: ['casey@example.test'] })).contact;
@@ -426,9 +429,7 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     const item = crypto.randomUUID();
     await binRows(emery, [{ id: item, purgeAfter: '2026-01-01 00:00:00' }]);
     await reCreating(emery, [item]);
-    const gate = () => { let open!: () => void; const reached = new Promise<void>(resolve => { open = resolve; }); return { open, reached }; };
     const [deleteHolds, purgeChose, deleteAtItem, goDelete, goPurge] = [gate(), gate(), gate(), gate(), gate()];
-    const deadlocks = () => hooks.errors.filter((code: string) => code === 'ER_LOCK_DEADLOCK').length;
     const before = deadlocks();
     // The delete holds the item's journal; the purge chooses its candidates;
     // the delete goes on to the item while the purge waits, then the purge goes on.
@@ -452,6 +453,35 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     } finally { hooks.clear(); goDelete.open(); goPurge.open(); }
     assert.equal(deadlocks() - before, 0, 'no deadlock between them');
     assert.equal(await count('SELECT COUNT(*) AS n FROM bin_items WHERE id = ?', [item]), 0);
+  });
+
+  await t.test('a restore and a retention change take the person before the bin rows: neither is a deadlock victim', async () => {
+    const { calendarId: inbox } = await ensureDefaultLocalCalendarForUser(users.alex);
+    const task = (await call(alex, 'POST', '/api/calendar/events', { title: 'Lock order task', start_time: '2026-11-20T09:00:00.000Z', end_time: '2026-11-20T10:00:00.000Z', calendar_id: inbox })).event;
+    await call(alex, 'DELETE', `/api/calendar/events/${task.id}`);
+    const item = (await bin(alex, 'calendar')).find(entry => entry.title === 'Lock order task');
+    const [binHeld, userHeld, goRestore, goRetention] = [gate(), gate(), gate(), gate()];
+    const before = deadlocks();
+    // The restore holds the item; the retention change takes the person; then both go on.
+    hooks.once({ match: /^SELECT \* FROM bin_items WHERE user_id = \? AND restored_at IS NULL AND id IN .*FOR UPDATE/s, params: (values: unknown[]) => values[0] === users.alex && values.includes(item.id),
+      after: async () => { binHeld.open(); await within(goRestore.reached, 5000); } });
+    hooks.once({ match: /^SELECT id FROM users WHERE id = \? FOR UPDATE/, params: (values: unknown[]) => values[0] === users.alex,
+      after: async () => { userHeld.open(); await within(goRetention.reached, 5000); } });
+    try {
+      const restoring = alex.request('POST', `/api/bin/${item.id}/restore`);
+      assert.ok((await within(binHeld.reached, 5000)).done, 'the restore holds the item');
+      const setting = alex.request('PUT', '/api/settings/values', { values: { bin_retention: '90' } });
+      await within(userHeld.reached, 1000);
+      goRestore.open();
+      await new Promise(resolve => setTimeout(resolve, 200));
+      goRetention.open();
+      const replies = await within(Promise.all([restoring, setting]), 30000);
+      assert.ok(replies.done, 'both finish');
+      assert.deepEqual(replies.value!.map((reply: { status: number }) => reply.status), [200, 200]);
+    } finally { hooks.clear(); goRestore.open(); goRetention.open(); }
+    assert.equal(deadlocks() - before, 0, 'no deadlock between them');
+    assert.equal((await pool.query<RowDataPacket[]>('SELECT calendar_id FROM calendar_events WHERE id = ?', [task.id]))[0][0]?.calendar_id, inbox, 'restored');
+    await call(alex, 'PUT', '/api/settings/values', { values: { bin_retention: '30' } });
   });
 
   // --- A CalDAV calendar ------------------------------------------------------

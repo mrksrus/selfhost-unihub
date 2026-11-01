@@ -26,7 +26,7 @@ import { displayName, loadContacts, newUid, replaceContact, uidHash, KEPT_PROPER
 import { contactIdList, findDuplicates, singleFieldConflicts, singleFieldValue } from './contact-duplicates';
 import { valueIdentity as sameValueIdentity } from './contact-keys';
 import { withContactPhotoLock } from './contact-photos';
-import { putInBin, parsePayload } from './bin';
+import { putInBin, parsePayload, lockBinOwner } from './bin';
 import type { BinKind, BinRow } from './bin';
 import type { BinRestored } from '../contracts/bin';
 
@@ -580,6 +580,8 @@ async function listMerges(userId: string, executor: SqlExecutor = db): Promise<M
 }
 
 async function undoLocked(cx: SqlExecutor, userId: string, mergeId: string): Promise<UndoMergeResult> {
+  // The person before the merge's bin rows, as every restore from the bin (bin.ts lockBinOwner).
+  await lockBinOwner(cx, userId);
   const [[merge]] = await cx.execute<MergeRow[]>(`SELECT id, survivor_id, survivor_before, survivor_version_after, undone_at, purge_after <= UTC_TIMESTAMP() AS expired
     FROM contact_merges WHERE id = ? AND user_id = ? FOR UPDATE`, [mergeId, userId]);
   if (!merge) throw notFound('MERGE_NOT_FOUND', 'Merge not found');
@@ -712,6 +714,7 @@ async function moveContactsToBin(userId: string, ids: readonly string[]) {
  * known columns are written, for this person.
  */
 async function restoreContactItems(cx: SqlExecutor, userId: string, group: readonly BinRow[]): Promise<BinRestored[]> {
+  await lockBinOwner(cx, userId);
   const ids = group.map(row => row.id);
   const [items] = await cx.execute<BinRow[]>(
     `SELECT * FROM bin_items WHERE user_id = ? AND restored_at IS NULL AND item_type = 'contact' AND id IN (${placeholders(ids)}) ORDER BY deleted_at, id FOR UPDATE`, [userId, ...ids]);

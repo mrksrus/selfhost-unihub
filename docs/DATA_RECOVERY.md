@@ -124,7 +124,10 @@ writes nothing more (`409 RESTORE_IN_PROGRESS`).
   rows: the person's `users` row (shared; a retention change takes it
   exclusively before it saves, so one saved while the purge runs is either
   seen by it or applied after it), then the items' restore journals, then
-  the items by primary key, as deleting for good and a restore's commit do.
+  the items by primary key. Every restore from the bin takes the same order
+  (`lockBinOwner`): its inserts need the `users` row for their foreign key
+  anyway, so taking it first keeps a restore and a retention change from
+  each holding what the other needs.
   Recording files are removed after the rows, only inside the person's own
   folder and only when no recording uses them. The recordings folder and its
   `bin/` are refused (`RECORDING_FOLDER_UNSAFE`) when a part of the path is a

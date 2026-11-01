@@ -450,6 +450,18 @@ async function lockPersonForRetention(cx: SqlExecutor, userId: string, mode: 'sh
 }
 
 /**
+ * The first lock of every restore from the bin, before its journal and bin
+ * rows: the person's users row, shared. A restore's inserts need it anyway
+ * (their user_id foreign key); taken first, a restore and a retention change
+ * (users row exclusive, then the bin rows) wait for each other instead of
+ * each holding what the other needs. The order everywhere: users row,
+ * restore journal, bin rows.
+ */
+async function lockBinOwner(cx: SqlExecutor, userId: string) {
+  await lockPersonForRetention(cx, userId, 'share');
+}
+
+/**
  * Changes the person's user settings; with bin_retention among them, in one
  * transaction with the new purge times of what is in the bin, under the
  * person's users row, so a purge batch sees either both or neither.
@@ -595,6 +607,7 @@ export {
   binRetention,
   applyBinRetention,
   changeUserSettings,
+  lockBinOwner,
   retentionDays,
   restoreBinItems,
   exportableBinItems,

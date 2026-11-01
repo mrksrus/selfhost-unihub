@@ -698,6 +698,9 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
     const uid = known ? null : ical.objectUid(item.ics);
     const adopting = uid ? await moves().creatingMoveItem(db, calendar.id, uid) : null;
     const apply = (heldEventId: string | null) => inTransaction(ctx, async connection => {
+      // The person first: the open move this object may commit can be a
+      // restore from the bin, whose order is users row, journal, bin rows (bin.ts lockBinOwner).
+      await (require('./bin') as typeof import('./bin')).lockBinOwner(connection, ctx.account.user_id);
       if (known && await moves().lockMovedAway(connection, String(known.id))) return null;
       const move = uid ? await moves().lockCreatingMove(connection, calendar.id, uid) : null;
       if (move?.event_id && move.event_id !== heldEventId) return DEFERRED;

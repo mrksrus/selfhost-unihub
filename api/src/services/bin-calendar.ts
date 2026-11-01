@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import { db } from '../state';
 import { ApiError, conflict, notFound } from '../http/errors';
 import { withTransaction } from './transactions';
-import { putInBin, parsePayload } from './bin';
+import { putInBin, parsePayload, lockBinOwner } from './bin';
 import { UID_EXACT, overlayStateOf, insertOverlays, applyOverlaysToLiveRows } from './calendar-overlays';
 import { fencedWrite } from './calendar-move-state';
 import { itemKey } from './task-order';
@@ -315,6 +315,7 @@ const restoredOf = (row: BinRow, itemId: string, note: string | null, extra: Par
 
 async function restoreGroupWithCalendar(userId: string, group: readonly BinRow[]) {
   const restored = await withTransaction(async cx => {
+    await lockBinOwner(cx, userId);
     const locked = await lockItems(cx, userId, group);
     const calendarRow = locked.find(row => row.item_type === 'calendar');
     if (!calendarRow) throw conflict('BIN_ITEM_CHANGED', 'These items changed in the meantime. Try again.');
@@ -481,6 +482,7 @@ async function restoreSyncedItem(userId: string, row: BinRow, choice: RestoreCho
  * the next sync as an item of its own.
  */
 async function finishServerRestore(connection: SqlExecutor, userId: string, binItemId: string, copy: Copy) {
+  await lockBinOwner(connection, userId);
   const [[item]] = await connection.execute<BinRow[]>('SELECT * FROM bin_items WHERE id = ? AND user_id = ? AND restored_at IS NULL FOR UPDATE', [binItemId, userId]);
   if (!item) return false;
   const payload = parsePayload<SyncedPayload>(item);
