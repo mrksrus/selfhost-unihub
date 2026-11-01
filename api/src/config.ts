@@ -10,23 +10,37 @@ const MAX_SECRET_FILE_BYTES = 64 * 1024;
 
 class SecretConfigError extends Error {}
 
+// The files this process read its secrets from, by identity (device and
+// inode, the file itself and not its name). The instance backup leaves these
+// out even after the name points elsewhere (a replaced or removed file whose
+// old copy survives as a hard link among the stored files).
+interface LoadedSecretFile { name: string; path: string; dev: number; ino: number }
+const loadedSecretFiles = new Map<string, LoadedSecretFile>();
+
 function readSecret(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   const direct = env[name];
   const file = env[`${name}_FILE`];
   if (!file) return direct;
   let value: string;
+  let descriptor: number | null = null;
   try {
-    const stat = fs.statSync(file);
+    // One descriptor for the check and the read, so the identity is that of what was read.
+    descriptor = fs.openSync(file, 'r');
+    const stat = fs.fstatSync(descriptor);
     if (!stat.isFile()) throw new SecretConfigError(`${name}_FILE (${file}) is not a file.`);
     if (stat.size > MAX_SECRET_FILE_BYTES) throw new SecretConfigError(`${name}_FILE (${file}) is larger than a secret can be.`);
-    value = fs.readFileSync(file, 'utf8').replace(/\r?\n$/, '');
+    value = fs.readFileSync(descriptor, 'utf8').replace(/\r?\n$/, '');
+    if (env === process.env) loadedSecretFiles.set(`${name}:${stat.dev}:${stat.ino}`, { name: `${name}_FILE`, path: file, dev: stat.dev, ino: stat.ino });
   } catch (error) {
     if (error instanceof SecretConfigError) throw error;
     const code = (error as NodeJS.ErrnoException).code;
     const uid = typeof process.getuid === 'function' ? process.getuid() : null;
     throw new SecretConfigError(code === 'ENOENT' ? `${name}_FILE (${file}) does not exist.`
       : code === 'EACCES' ? `${name}_FILE (${file}) cannot be read${uid === null ? '' : ` by uid ${uid}, which runs the API`}.`
-        : `${name}_FILE (${file}) cannot be read (${code || 'error'}).`);
+        : code === 'EISDIR' ? `${name}_FILE (${file}) is not a file.`
+          : `${name}_FILE (${file}) cannot be read (${code || 'error'}).`);
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
   }
   if (!value) throw new SecretConfigError(`${name}_FILE (${file}) is empty.`);
   if (direct && direct !== value) throw new SecretConfigError(`${name} and ${name}_FILE are both set and differ; set only one.`);
@@ -105,6 +119,11 @@ interface InstanceBackupConfig {
   missing: ('destination' | 'key')[];
   /** Refused settings: startup stops on them. */
   errors: string[];
+}
+
+/** The secret files read so far (instance-backup.ts leaves them out of a backup). */
+function secretFilesLoaded(): readonly LoadedSecretFile[] {
+  return [...loadedSecretFiles.values()];
 }
 
 /**
@@ -208,9 +227,10 @@ export {
   INSTANCE_BACKUP,
   SecretConfigError,
   readSecret,
+  secretFilesLoaded,
   keyReadings,
   decodeKeyText,
   parseInstanceBackupConfig,
   assertConfiguration,
 };
-export type { InstanceBackupConfig };
+export type { InstanceBackupConfig, LoadedSecretFile };

@@ -39,7 +39,7 @@ const sha = (file: string) => crypto.createHash('sha256').update(fs.readFileSync
 const write = (file: string, content: string | Buffer) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, content); return file; };
 
 test('the instance backup copies the installation, keeps only verified runs, refuses changed files and restores into an empty installation', {
-  skip: !process.env.MYSQL_TEST_HOST, timeout: 300000,
+  skip: !process.env.MYSQL_TEST_HOST, timeout: 900000,
 }, async t => {
   fs.mkdirSync(scratch, { mode: 0o700 });
   t.after(() => fs.rmSync(scratch, { recursive: true, force: true }));
@@ -273,6 +273,8 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     assert.equal(await restoreCommand(['--file', first.file, '--key-file', keyFile, '--verify-only'], () => {}), 0);
   });
 
+  const backupFiles = () => fs.readdirSync(destination).filter(name => name.endsWith('.uhib')).sort();
+
   await t.test('Back up now through the route; retention keeps the newest after each verified success', async () => {
     const names: string[] = [];
     for (let i = 0; i < 2; i++) {
@@ -302,6 +304,35 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     assert.ok(oldest.removed_at, 'its run is marked removed');
     assert.equal(Number((await pool.query<RowDataPacket[]>("SELECT COUNT(*) AS count FROM audit_log WHERE action = 'admin.instance_backup_started'"))[0][0].count), 2);
     assert.match(status.restore_command, /instance-restore\.js --file/);
+  });
+
+  await t.test('a secret file read at the start stays out after it is replaced, and a run refuses when one cannot be checked', async () => {
+    const config = require('../dist/src/config') as typeof import('../src/config');
+    const loaded = write(path.join(scratch, 'secrets', 'loaded.key'), `synthetic-loaded-secret-${crypto.randomBytes(16).toString('hex')}`);
+    process.env.UNIHUB_LOADED_SECRET_FILE = loaded;
+    const link = path.join(rootDirs.attachments, users.alex, 'loaded-secret-link');
+    try {
+      assert.equal(config.readSecret('UNIHUB_LOADED_SECRET'), fs.readFileSync(loaded, 'utf8'));
+      fs.linkSync(loaded, link);
+      // Replaced atomically after it was read: what was read survives only as the link.
+      write(`${loaded}.next`, 'synthetic-rotated-secret');
+      fs.renameSync(`${loaded}.next`, loaded);
+      const replaced = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      assert.equal(replaced.status, 'succeeded', String(replaced.error));
+      const copied: string[] = [];
+      await format.scanInstanceBackup(path.join(destination, replaced.file_name!), key, backup.INSTANCE_BACKUP_ROOTS, { onFile: entry => { copied.push(path.join(uploads, entry.root, entry.path)); return null; } });
+      assert.equal(copied.includes(link), false, 'the file read at the start is left out');
+      // Removed: the run cannot tell which file to leave out, so it does not run.
+      fs.rmSync(loaded);
+      const before = backupFiles();
+      const refused = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      assert.equal(refused.status, 'failed');
+      assert.match(String(refused.error), /UNIHUB_LOADED_SECRET_FILE .* cannot be checked now/);
+      assert.deepEqual(backupFiles(), before);
+    } finally {
+      delete process.env.UNIHUB_LOADED_SECRET_FILE;
+      fs.rmSync(link, { force: true });
+    }
   });
 
   await t.test('restore into an empty installation: refused while not empty, then the data, the files and no sessions', async () => {

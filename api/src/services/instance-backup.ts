@@ -9,7 +9,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import packageJson = require('../../package.json');
 import { db } from '../state';
-import { INSTANCE_BACKUP } from '../config';
+import { INSTANCE_BACKUP, secretFilesLoaded } from '../config';
 import { log } from '../log';
 import { conflict } from '../http/errors';
 import { getDatabaseConfig } from './database-config';
@@ -163,10 +163,24 @@ function instanceBackupSetupErrors(settings = config, env: NodeJS.ProcessEnv = p
 // of one is the same file), and Compose's .env files, a name no writer of
 // the app gives a stored file.
 const DEPLOYMENT_FILE = /^\.env(\..*)?$/;
+//
+// The identities are those of the files read at startup (config.ts), which
+// stay even when the name is later replaced or removed, and those the names
+// point at now. A configured file that cannot be checked now refuses the run:
+// the copy cannot otherwise know which file to leave out.
 function secretIdentities(env: NodeJS.ProcessEnv = process.env) {
-  const identities = new Set<string>();
+  const identities = new Set(secretFilesLoaded().map(file => `${file.dev}:${file.ino}`));
+  const unchecked: string[] = [];
   for (const secret of secretFiles(env)) {
-    try { const stat = fs.statSync(secret.path); identities.add(`${stat.dev}:${stat.ino}`); } catch { /* a missing file stopped the start */ }
+    try {
+      const stat = fs.statSync(secret.path);
+      identities.add(`${stat.dev}:${stat.ino}`);
+    } catch {
+      unchecked.push(`${secret.name} (${secret.path})`);
+    }
+  }
+  if (unchecked.length) {
+    throw new InstanceBackupError(`The backup did not run: ${unchecked.join(', ')} cannot be checked now, so it cannot make sure a key stays out. Put the file back or restart without it.`);
   }
   return identities;
 }
@@ -267,7 +281,11 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
   log.info(LOG, 'Started', { run: row.id, trigger: row.trigger_kind });
   try {
     await checkDestination(settings.dir);
-    const { bytes, sha256, manifest } = await writeBackup(partialPath, row, settings, controller.signal, hooks);
+    // The setup checks of the start, again: secret files can have moved since.
+    const refused = instanceBackupSetupErrors(settings);
+    if (refused.length) throw new InstanceBackupError(`The backup did not run: ${refused.join(' ')}`);
+    const secrets = secretIdentities();
+    const { bytes, sha256, manifest } = await writeBackup(partialPath, row, settings, controller.signal, hooks, secrets);
     // Counted only once the whole file reads back with the key.
     const verified = await scanInstanceBackup(partialPath, settings.key, ROOT_NAMES, { signal: controller.signal });
     if (verified.sha256 !== sha256 || verified.header.backup_id !== row.id) throw new InstanceBackupError('The backup did not read back as written.');
@@ -361,7 +379,7 @@ async function tableCounts() {
   } finally { connection.release(); }
 }
 
-async function writeBackup(partialPath: string, row: RunRow, settings: { key: Buffer }, signal: AbortSignal, hooks: RunHooks) {
+async function writeBackup(partialPath: string, row: RunRow, settings: { key: Buffer }, signal: AbortSignal, hooks: RunHooks, secrets: ReadonlySet<string>) {
   const database = getDatabaseConfig();
   if (!database) throw new InstanceBackupError('The database configuration is missing.');
   const handle = await fs.promises.open(partialPath, 'wx', 0o600);
@@ -422,7 +440,6 @@ async function writeBackup(partialPath: string, row: RunRow, settings: { key: Bu
       index = []; indexBytes = 0;
     };
     const roots = fileRoots();
-    const secrets = secretIdentities();
     let secretsLeftOut = 0;
     for (const root of roots) {
       for await (const relative of walk(root.name, root.dir, signal)) {
