@@ -9,6 +9,7 @@ const os = require('node:os') as typeof import('node:os');
 const path = require('node:path') as typeof import('node:path');
 const { withTestDatabase, startTestApi } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 const { installCalDavFake, insertCalDavAccount, eventIcs, WORK } = require('./helpers/caldav-fake.cts');
+const { installSqlHooks, deadlock, within } = require('./helpers/sql-hooks.cts');
 
 // The bin (0.28 stream B, D13) through the real request handler and MariaDB:
 // per kind, delete -> bin -> restore -> delete for good; a synced CalDAV task
@@ -27,6 +28,7 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
   t.after(captureLog(() => {}));
   const pool = await withTestDatabase(t);
   const api = await startTestApi(t);
+  const hooks = installSqlHooks(pool as FixtureValue);
   const server = installCalDavFake(require('../dist/src/services/caldav'));
   const calendarSync = require('../dist/src/services/calendar-sync') as typeof import('../src/services/calendar-sync');
   const calendarMove = require('../dist/src/services/calendar-move') as typeof import('../src/services/calendar-move');
@@ -309,6 +311,33 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     await call(blair, 'PUT', '/api/settings/values', { values: { bin_retention: '7' } });
     const [{ purge_after: purgeAfter, deleted_at: deletedAt }] = await bin(blair);
     assert.equal(Math.round((Date.parse(purgeAfter) - Date.parse(deletedAt)) / 86400000), 7);
+  });
+
+  await t.test('the purge and a longer retention saved at the same moment: the purge never deletes what the saved retention keeps', async () => {
+    const later = new Date(Date.now() + 31 * 86400000);
+    // Only Alex's item is due, so the pause below comes at their purge.
+    await call(blair, 'POST', '/api/bin/empty', { module: 'contacts' });
+    await call(alex, 'PUT', '/api/settings/values', { values: { bin_retention: '30' } });
+    const jules = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Jules' } })).contact;
+    await call(alex, 'DELETE', `/api/contacts/${jules.id}`);
+    // The purge stops right after it chose what is due; the person extends the retention then.
+    let put!: Promise<FixtureValue>;
+    let savedMeanwhile = false;
+    hooks.once({ match: /FROM bin_items .*module = \?.*purge_after <= \?/s, after: async () => {
+      put = call(alex, 'PUT', '/api/settings/values', { values: { bin_retention: '90' } });
+      savedMeanwhile = (await within(put, 1000)).done;
+    } });
+    await purgeBin({ now: later });
+    hooks.clear();
+    await put;
+    const remains = (await bin(alex, 'contacts')).some(item => item.title === 'Jules');
+    assert.ok(remains || !savedMeanwhile, 'a retention saved before the purge deleted keeps the item');
+    if (remains) {
+      const [{ purge_after: purgeAfter, deleted_at: deletedAt }] = await bin(alex, 'contacts');
+      assert.equal(Math.round((Date.parse(purgeAfter) - Date.parse(deletedAt)) / 86400000), 90);
+    }
+    await call(alex, 'POST', '/api/bin/empty', { module: 'contacts' });
+    await call(alex, 'PUT', '/api/settings/values', { values: { bin_retention: '30' } });
   });
 
   // --- A CalDAV calendar ------------------------------------------------------
