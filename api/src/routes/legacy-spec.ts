@@ -1,6 +1,6 @@
 import type { ServerResponse } from 'node:http';
 import type { RouteRequest, RouteResponse } from '../types';
-import type { DestructiveDeclaration, RouteSpec, RouteTable } from '../http/route';
+import type { RoutePolicy, RouteSpec, RouteTable } from '../http/route';
 import { DEFAULT_BODY_LIMIT, MUTATING_METHODS, defineRoutes } from '../http/route';
 import { getModuleForPath } from '../services/module-catalog';
 import { BACKUP_UPLOAD_MAX_SIZE, MAIL_COMPOSE_REQUEST_MAX_SIZE } from '../config';
@@ -74,12 +74,33 @@ const BACKGROUND_HEADER_CSRF_KEYS: ReadonlySet<string> = new Set([
   'DELETE /api/recordings/uploads/:id',
 ]);
 
-// F13: the data-safety policies of the destructive actions among these
-// routes (http/route.ts). DELETE /api/mail/accounts/:id disconnects an
-// account, or with purge=true deletes the disconnected account with UniHub's
-// copy of its mail (disconnect=true does both in one step).
-const DESTRUCTIVE_BY_ROUTE: Readonly<Record<string, readonly DestructiveDeclaration[]>> = {
-  'DELETE /api/mail/accounts/:id': ['accounts.mail.remove', { policy: 'accounts.mail.purge', query: { purge: 'true' } }],
+// F13: the data-safety policies of these routes (http/route.ts).
+// - DELETE /api/mail/accounts/:id disconnects an account, or with purge=true
+//   deletes the disconnected account with UniHub's copy of its mail
+//   (disconnect=true does both in one step).
+// - Deleting a calendar account removes UniHub's copy only; the provider keeps
+//   its calendars.
+// - Deleting an event, a task, a local calendar with its events or a recording
+//   removes it for good, which bin.delete forbids, until these deletes move
+//   items to the bin (0.28 stream B), which drops the key here.
+// - The backup routes: creating, restoring and deleting backups.
+// Turning a mail account's linked calendar on or off depends on the body and
+// is checked in its service, as are the mail modes and provider deletion.
+const POLICIES_BY_ROUTE: Readonly<Record<string, Pick<RoutePolicy, 'destructive' | 'requires'>>> = {
+  'POST /api/mail/accounts': { requires: ['accounts.add'] },
+  'DELETE /api/mail/accounts/:id': { destructive: ['accounts.remove', { policy: 'accounts.reset', query: { purge: 'true' } }] },
+  'POST /api/mail/accounts/:id/backup-export': { requires: ['backup.create'] },
+  'POST /api/calendar/accounts': { requires: ['accounts.add'] },
+  'DELETE /api/calendar/accounts/:id': { destructive: ['accounts.remove'] },
+  'DELETE /api/calendar/calendars/:id': { destructive: ['bin.delete'] },
+  'DELETE /api/calendar/events/:id': { destructive: ['bin.delete'] },
+  'DELETE /api/recordings/:id': { destructive: ['bin.delete'] },
+  'POST /api/backup/jobs': { requires: ['backup.create'] },
+  'POST /api/backup/import': { requires: ['backup.restore'] },
+  'POST /api/backup/jobs/:id/restore': { requires: ['backup.restore'] },
+  'POST /api/backup/restore-jobs/:id/start': { requires: ['backup.restore'] },
+  'DELETE /api/backup/jobs/:id': { destructive: ['backup.delete'] },
+  'DELETE /api/backup/restore-jobs/:id': { destructive: ['backup.delete'] },
 };
 
 function legacyRouteSpec(key: string, handler: LegacyHandler): RouteSpec {
@@ -91,7 +112,7 @@ function legacyRouteSpec(key: string, handler: LegacyHandler): RouteSpec {
     restoreSection: restoreSectionFor(method, pathname),
     body: { limit: bodyLimitFor(key), kind: (key === 'POST /api/backup/import' ? 'backup-upload' : 'json') as 'backup-upload' | 'json' },
     ...(BACKGROUND_HEADER_CSRF_KEYS.has(key) ? { csrf: 'background-header' as const } : {}),
-    ...(DESTRUCTIVE_BY_ROUTE[key] ? { destructive: DESTRUCTIVE_BY_ROUTE[key] } : {}),
+    ...POLICIES_BY_ROUTE[key],
   };
   // A legacy handler accepts a nullable user id, so it serves either auth level.
   const run = handler as unknown as (req: RouteRequest, userId: string | null, body: unknown, res: ServerResponse) => Promise<RouteResponse | undefined>;
@@ -102,5 +123,5 @@ function legacyRoutes(table: LegacyRouteTable): RouteTable {
   return defineRoutes(Object.fromEntries(Object.entries(table).map(([key, handler]) => [key, legacyRouteSpec(key, handler)])));
 }
 
-export { legacyRoutes, legacyRouteSpec, PUBLIC_ROUTE_KEYS, BODY_LIMIT_BY_ROUTE, RESTORE_SECTION_BY_PATH_PREFIX, BACKGROUND_HEADER_CSRF_KEYS, DESTRUCTIVE_BY_ROUTE, bodyLimitFor };
+export { legacyRoutes, legacyRouteSpec, PUBLIC_ROUTE_KEYS, BODY_LIMIT_BY_ROUTE, RESTORE_SECTION_BY_PATH_PREFIX, BACKGROUND_HEADER_CSRF_KEYS, POLICIES_BY_ROUTE, bodyLimitFor };
 export type { LegacyHandler, LegacyRouteTable };

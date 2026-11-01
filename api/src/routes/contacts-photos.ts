@@ -12,7 +12,7 @@ import { CONTACT_PHOTO_MAX_BYTES, contactPhotoFile, removeContactPhoto, setConta
 // takes the picture as the raw body of any type; the server converts it
 // (services/contact-photos.ts). Reads stay open during a contacts restore;
 // writes are refused. Every route is gated by the Contacts module. Removing
-// a photo deletes it for good, so it names the contacts.delete policy (F13).
+// a photo deletes it for good, so it names the bin.delete policy (F13).
 // A PUT replaces the picture, an edit the person makes on purpose.
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 
@@ -56,7 +56,7 @@ export = defineRoutes({
     } catch (error) { return failed(error, 'Failed to save contact photo'); }
   } },
 
-  'DELETE /api/contacts/:id/photo': { ...writeRoute, destructive: ['contacts.delete'], handler: async (req: Request, userId: string) => {
+  'DELETE /api/contacts/:id/photo': { ...writeRoute, destructive: ['bin.delete'], handler: async (req: Request, userId: string) => {
     try {
       await removeContactPhoto(userId, req.params.id);
       const answer: ContactResponse = { contact: await getContact(userId, req.params.id) };

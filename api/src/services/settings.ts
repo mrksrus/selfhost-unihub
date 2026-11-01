@@ -7,7 +7,7 @@ import type {
   SettingValuesByScope,
   UserSettingValues,
 } from '../contracts/settings';
-import type { EffectivePolicy, PolicyForbidsDetails, PolicyKey, PolicyValues } from '../contracts/policies';
+import type { EffectivePolicy, PolicyForbidsDetails, PolicyKey, PolicySource, PolicyValues } from '../contracts/policies';
 
 import { db } from '../state';
 import { ApiError, badRequest, forbidden, notFound } from '../http/errors';
@@ -272,20 +272,82 @@ async function setUserPreferences(userId: string, input: Record<string, unknown>
   return { preferences: await getUserPreferences(userId) };
 }
 
-// Data-safety policies (F13). A key resolves user -> group policies
-// (strictest wins, from 0.30) -> installation -> default, like the policies
-// on settings, and is stored as policy.<key> in setting_policies.
-//
-// Until the enforcement lands, every key resolves to its registry default:
-// nothing reads a stored policy yet, so every action stays allowed.
-async function resolvePolicy<K extends PolicyKey>(userId: string, key: K, executor: SqlExecutor = db): Promise<EffectivePolicy<K>> {
+// Data-safety policies (F13), stored in setting_policies as policy.<key>. A
+// key resolves user -> group policies -> installation -> default, as the
+// policies on settings do: a locked value stands, and no narrower target
+// changes it; a value of a key with an order is a floor a narrower target
+// can only make stricter; without an order, the narrower target's value
+// replaces an unlocked one. Among one person's groups the strictest value wins.
+// A policy names an action, not a choice of the person, so the user step
+// holds nothing: what a person may choose (the mail mode, including mail in a
+// backup) is checked by the service that takes the choice. Groups arrive in
+// 0.30 as one more level after the installation's.
+const POLICY_PREFIX = 'policy.';
+const isPolicyKey = (key: string): key is PolicyKey => Object.prototype.hasOwnProperty.call(POLICIES, key);
+type PolicyLevel = Map<PolicyKey, Policy[]>;
+
+// The levels from the broadest to the narrowest. A stored value that is no
+// longer valid for its key reads as absent.
+async function loadPolicyLevels(executor: SqlExecutor): Promise<PolicyLevel[]> {
+  const [rows] = await executor.execute<RowDataPacket[]>(`SELECT setting_key, setting_value, locked FROM setting_policies
+    WHERE target_kind = 'installation' AND target_id = '' AND setting_key LIKE 'policy.%'`);
+  const installation: PolicyLevel = new Map();
+  for (const row of rows) {
+    const key = String(row.setting_key).slice(POLICY_PREFIX.length);
+    if (!isPolicyKey(key)) continue;
+    const value = decode(POLICIES[key].kind, String(row.setting_value));
+    if (value !== undefined) installation.set(key, [{ value, locked: !!Number(row.locked) }]);
+  }
+  return [installation];
+}
+
+// The stricter of two values of a key with an order; a value outside the
+// order counts as the least strict.
+const stricterPolicy = (order: readonly string[], a: Value, b: Value) => order.indexOf(String(a)) >= order.indexOf(String(b)) ? a : b;
+
+// The one value of a level with several targets (a person's groups): the
+// strictest along the key's order, else the first that refuses the action.
+function levelPolicy(entry: PolicyEntry, policies: readonly Policy[]): Policy {
+  if (entry.strictness) {
+    const value = policies.map(policy => policy.value).reduce((a, b) => stricterPolicy(entry.strictness!, a, b));
+    return { value, locked: policies.some(policy => policy.locked && policy.value === value) };
+  }
+  return policies.find(policy => entry.refuses.includes(policy.value)) ?? policies[0];
+}
+
+/** A key's value and source from its policies, level by level from the broadest (installation) to the narrowest. */
+function resolvePolicyValue(entry: PolicyEntry, levels: readonly (readonly Policy[] | undefined)[]): { value: Value; source: PolicySource } {
+  let value = entry.default;
+  let source: PolicySource = 'default';
+  for (const policies of levels) {
+    if (!policies?.length) continue;
+    const policy = levelPolicy(entry, policies);
+    value = source === 'policy' && entry.strictness ? stricterPolicy(entry.strictness, value, policy.value) : policy.value;
+    source = 'policy';
+    if (policy.locked) break;
+  }
+  return { value, source };
+}
+
+function effectivePolicy<K extends PolicyKey>(key: K, levels: readonly PolicyLevel[]): EffectivePolicy<K> {
   const entry = POLICIES[key] as unknown as PolicyEntry<PolicyValues[K]>;
-  const value = entry.default;
-  const own = entry.refuses.includes(value);
+  const { value, source } = resolvePolicyValue(entry as PolicyEntry, levels.map(level => level.get(key)));
+  const own = entry.refuses.includes(value as PolicyValues[K]);
   // A key implied by another refuses with its own reason when that one refuses.
-  const implied = !own && entry.impliedBy ? await resolvePolicy(userId, entry.impliedBy, executor) : null;
-  if (implied && !implied.allowed) return { value, source: implied.source, allowed: false, reason: entry.reasons.forbidden ?? implied.reason };
-  return { value, source: 'default', allowed: !own, reason: entry.reasons[String(value)] ?? null };
+  const implied = !own && entry.impliedBy ? effectivePolicy(entry.impliedBy, levels) : null;
+  if (implied && !implied.allowed) return { value: value as PolicyValues[K], source: implied.source, allowed: false, reason: entry.reasons.forbidden ?? implied.reason };
+  return { value: value as PolicyValues[K], source, allowed: !own, reason: entry.reasons[String(value)] ?? null };
+}
+
+/** Every policy key as it applies to the person, from one read of the stored policies. */
+async function resolvePolicies(userId: string, executor: SqlExecutor = db): Promise<{ [K in PolicyKey]: EffectivePolicy<K> }> {
+  const levels = await loadPolicyLevels(executor);
+  return Object.fromEntries((Object.keys(POLICIES) as PolicyKey[]).map(key => [key, effectivePolicy(key, levels)])) as { [K in PolicyKey]: EffectivePolicy<K> };
+}
+
+/** One policy key as it applies to the person, for workers and services. */
+async function resolvePolicy<K extends PolicyKey>(userId: string, key: K, executor: SqlExecutor = db): Promise<EffectivePolicy<K>> {
+  return effectivePolicy(key, await loadPolicyLevels(executor));
 }
 
 // The refusal of an action a policy forbids: 403 POLICY_FORBIDS with the key
@@ -301,11 +363,20 @@ interface PolicyActor {
   adminId?: string;
 }
 
-/** Throws POLICY_FORBIDS when a policy forbids the person the action the key names. */
-async function assertAllowed(userId: string, key: PolicyKey, { adminId }: PolicyActor = {}, executor: SqlExecutor = db): Promise<void> {
+/**
+ * Throws POLICY_FORBIDS for the first of the keys whose policy forbids the
+ * person the action it names; the request boundary passes every key a
+ * route declares, a service or worker the one its action needs.
+ */
+async function assertAllowed(userId: string, keys: PolicyKey | readonly PolicyKey[], { adminId }: PolicyActor = {}, executor: SqlExecutor = db): Promise<void> {
   if (adminId) return;
-  const resolved = await resolvePolicy(userId, key, executor);
-  if (!resolved.allowed) throw policyForbids(key, resolved.reason ?? 'Your administrator does not allow this.');
+  const list = typeof keys === 'string' ? [keys] : keys;
+  if (!list.length) return;
+  const levels = await loadPolicyLevels(executor);
+  for (const key of list) {
+    const resolved = effectivePolicy(key, levels);
+    if (!resolved.allowed) throw policyForbids(key, resolved.reason ?? 'Your administrator does not allow this.');
+  }
 }
 
 const SIGNUP_MODES = ['open', 'approval', 'disabled'] as const;
@@ -331,6 +402,8 @@ export {
   SETTINGS,
   POLICIES,
   resolvePolicy,
+  resolvePolicies,
+  resolvePolicyValue,
   assertAllowed,
   policyForbids,
   getSettings,

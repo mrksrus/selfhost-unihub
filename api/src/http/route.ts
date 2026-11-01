@@ -1,6 +1,7 @@
 import type { ServerResponse } from 'node:http';
 import type { RouteRequest, RouteResponse } from '../types';
 import type { Permission } from '../security/permissions';
+import type { PolicyKey } from '../contracts/policies';
 import { compileRouteMatcher } from './route-matcher';
 import { isPermission } from '../security/permissions';
 
@@ -29,24 +30,15 @@ interface UploadBody {
   mediaType: string;
 }
 
-// F13: the data-safety policies a destructive action is subject to, named by
-// the route that removes or resets the data. 0.28 resolves them through the
-// settings and policies owner (F1) and refuses a forbidden action at the
-// boundary with POLICY_FORBIDS, before any side effect; until then the
-// declaration is checked here and walked by the route policy test.
-const DESTRUCTIVE_POLICIES = [
-  // Removing a mail account: disconnecting it, or deleting the disconnected account.
-  'accounts.mail.remove',
-  // Deleting UniHub's copy of an account's mail; the provider keeps its mail.
-  'accounts.mail.purge',
-  // Deleting contacts, or a contact's photo, for good. 0.28 resolves it: a
-  // delete becomes a bin move.
-  'contacts.delete',
-] as const;
-type DestructivePolicy = typeof DESTRUCTIVE_POLICIES[number];
-// A policy that applies to every request of the route, or only when each
-// named query parameter has the given value (one route, several actions).
-type DestructiveDeclaration = DestructivePolicy | { policy: DestructivePolicy; query: Readonly<Record<string, string>> };
+// F13: the data-safety policies (services/settings-registry.ts POLICIES) a
+// request of the route is subject to. A policy applies to every request of
+// the route, or only when each named query parameter has the given value (one
+// route, several actions). The boundary resolves them for the signed-in
+// person and refuses a forbidden action with 403 POLICY_FORBIDS before any
+// side effect; assertRouteTable checks that each named key exists and can
+// refuse. A rule that depends on the body (a mail mode, the provider-delete
+// switch) is checked in its service with the same function.
+type PolicyDeclaration = PolicyKey | { policy: PolicyKey; query: Readonly<Record<string, string>> };
 
 interface RoutePolicy {
   // A module id gates the route behind that module's switch; null is a core route.
@@ -65,8 +57,14 @@ interface RoutePolicy {
   // 'stream': the handler may write and own the response (SSE); the boundary
   // serializes nothing once headers were sent.
   response?: RouteResponseMode;
-  // F13: the policies of the data this route removes or resets (mutating routes only).
-  destructive?: readonly DestructiveDeclaration[];
+  // F13, mutating 'user' routes only: the policies of the data this route
+  // removes or resets, and those of the other actions a policy can forbid
+  // (adding an account, creating or restoring a backup). The route policy test
+  // keeps every route that removes data either destructive or on its reasoned
+  // list. An administrator's route acts through the admin path, which a
+  // person's policy never stops.
+  destructive?: readonly PolicyDeclaration[];
+  requires?: readonly PolicyDeclaration[];
 }
 // Method signatures so a handler declared with a narrower request or body
 // type (`body: Input`) is accepted; the body stays untrusted at dispatch.
@@ -92,7 +90,7 @@ const AUTH_VALUES = new Set<string>(['public', 'user', 'admin']);
 const BODY_KINDS = new Set<string>(['json', 'backup-upload', 'upload', 'none']);
 const CSRF_VALUES = new Set<string>(['token', 'background-header', 'none']);
 const RESPONSE_MODES = new Set<string>(['json', 'stream']);
-const isDestructivePolicy = (value: unknown): value is DestructivePolicy => DESTRUCTIVE_POLICIES.includes(value as DestructivePolicy);
+const POLICY_FIELDS = ['destructive', 'requires'] as const;
 
 function splitRouteKey(key: string) {
   const space = key.indexOf(' ');
@@ -123,14 +121,17 @@ function defineRoutes<T extends RouteTable>(table: T): T {
     }
     if (spec.csrf !== undefined && !CSRF_VALUES.has(spec.csrf)) invalid(key, `unknown csrf ${String(spec.csrf)}`);
     if (spec.response !== undefined && !RESPONSE_MODES.has(spec.response)) invalid(key, `unknown response ${String(spec.response)}`);
-    if (spec.destructive !== undefined) {
-      if (!MUTATING_METHODS.has(method)) invalid(key, 'only a mutating route is destructive');
-      if (!Array.isArray(spec.destructive) || !spec.destructive.length) invalid(key, 'destructive lists at least one policy');
-      for (const entry of spec.destructive) {
+    for (const field of POLICY_FIELDS) {
+      const declarations = spec[field];
+      if (declarations === undefined) continue;
+      if (!MUTATING_METHODS.has(method)) invalid(key, `only a mutating route declares ${field} policies`);
+      if (spec.auth !== 'user') invalid(key, `only a user route declares ${field} policies`);
+      if (!Array.isArray(declarations) || !declarations.length) invalid(key, `${field} lists at least one policy`);
+      for (const entry of declarations) {
         const conditional = typeof entry === 'object' && entry !== null;
-        if (!isDestructivePolicy(conditional ? entry.policy : entry)) invalid(key, `unknown destructive policy ${JSON.stringify(entry)}`);
+        if (typeof (conditional ? entry.policy : entry) !== 'string') invalid(key, `${field} names policy keys: ${JSON.stringify(entry)}`);
         if (conditional && (!entry.query || !Object.keys(entry.query).length || !Object.values(entry.query).every(value => typeof value === 'string'))) {
-          invalid(key, 'a conditional destructive policy names its query values');
+          invalid(key, `a conditional ${field} policy names its query values`);
         }
       }
     }
@@ -161,13 +162,16 @@ interface RouteTableInvariants {
   // Keys under these prefixes may omit restoreSection: backup routes run the
   // restore, auth routes sign in and out.
   restoreExemptPrefixes?: readonly string[];
+  // The policy keys that can refuse an action (the registry's); a route
+  // declaring any other key is refused.
+  policyKeys?: readonly string[];
 }
 
 // Whole-table rules, checked at startup and by the policy test: an admin route
 // declares auth 'admin', a module route declares its module, a mutating route
-// states its restore section, every section has a write route, and every key
-// resolves through the matcher.
-function assertRouteTable(table: RouteTable, { moduleIds, sections = [], restoreExemptPrefixes = ['/api/backup/', '/api/auth/'] }: RouteTableInvariants) {
+// states its restore section, every section has a write route, every declared
+// policy can refuse, and every key resolves through the matcher.
+function assertRouteTable(table: RouteTable, { moduleIds, sections = [], restoreExemptPrefixes = ['/api/backup/', '/api/auth/'], policyKeys }: RouteTableInvariants) {
   const match = compileRouteMatcher(Object.keys(table));
   for (const section of sections) {
     if (!Object.values(table).some(spec => spec.restoreSection === section)) throw new Error(`Invalid route table: no route writes section ${section}`);
@@ -180,17 +184,32 @@ function assertRouteTable(table: RouteTable, { moduleIds, sections = [], restore
     if (MUTATING_METHODS.has(method) && spec.restoreSection === undefined && !restoreExemptPrefixes.some(prefix => path.startsWith(prefix))) {
       invalid(key, 'a mutating route must declare restoreSection (a section, "*" or null)');
     }
+    if (policyKeys) {
+      for (const entry of [...spec.destructive ?? [], ...spec.requires ?? []]) {
+        const policy = typeof entry === 'string' ? entry : entry.policy;
+        if (!policyKeys.includes(policy)) invalid(key, `unknown policy ${policy}`);
+      }
+    }
     const sample = path.replace(/:(\w+)/g, (_, name) => `sample-${name}`);
     const resolved = match(method, sample);
     if (!resolved || resolved.key !== key) invalid(key, `does not resolve from ${sample}`);
   }
 }
 
-/** The destructive policies one request of the route is subject to. */
-function destructivePolicies(spec: Pick<RoutePolicy, 'destructive'>, query: URLSearchParams): DestructivePolicy[] {
-  return (spec.destructive ?? []).flatMap(entry => typeof entry === 'string' ? [entry]
+function matching(declarations: readonly PolicyDeclaration[] | undefined, query: URLSearchParams): PolicyKey[] {
+  return (declarations ?? []).flatMap(entry => typeof entry === 'string' ? [entry]
     : Object.entries(entry.query).every(([name, value]) => query.get(name) === value) ? [entry.policy] : []);
 }
 
-export { defineRoutes, mergeRouteTables, assertRouteTable, destructivePolicies, DEFAULT_BODY_LIMIT, MUTATING_METHODS, DESTRUCTIVE_POLICIES };
-export type { UploadBody, RouteSpec, RouteTable, RoutePolicy, RouteAuth, RouteBodyKind, RouteCsrf, RouteResponseMode, PublicRouteSpec, UserRouteSpec, DestructivePolicy, DestructiveDeclaration };
+/** The destructive policies one request of the route is subject to. */
+function destructivePolicies(spec: Pick<RoutePolicy, 'destructive'>, query: URLSearchParams): PolicyKey[] {
+  return matching(spec.destructive, query);
+}
+
+/** Every policy one request of the route is subject to, destructive first, each once. */
+function routePolicies(spec: Pick<RoutePolicy, 'destructive' | 'requires'>, query: URLSearchParams): PolicyKey[] {
+  return [...new Set([...matching(spec.destructive, query), ...matching(spec.requires, query)])];
+}
+
+export { defineRoutes, mergeRouteTables, assertRouteTable, destructivePolicies, routePolicies, DEFAULT_BODY_LIMIT, MUTATING_METHODS };
+export type { UploadBody, RouteSpec, RouteTable, RoutePolicy, RouteAuth, RouteBodyKind, RouteCsrf, RouteResponseMode, PublicRouteSpec, UserRouteSpec, PolicyDeclaration };

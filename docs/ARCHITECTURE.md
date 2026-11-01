@@ -69,7 +69,7 @@ and an icon, and that the page loads no inline script.
 | `api/src/http/route.ts` | `RouteSpec`, `defineRoutes`, `mergeRouteTables` and the route-table invariants (see Request Handling) |
 | `api/src/routes/` | Route handlers grouped by feature; `routes/mail.ts` combines `mail-folders`, `mail-accounts`, `mail-drafts` (and send), `mail-messages`, `mail-operations` and `mail-sync`. Every mail route answers a caught error through `routeError` in `mail-route-helpers.ts`: a status-bearing error passes its message, anything else gets the route's fallback with 500. Account fields are parsed by `services/mail-account-input.ts` before anything is tested or stored |
 | `api/src/services/` | Database, mail, calendar, backup creation/encryption/restore workers, recordings, 2FA logic |
-| `api/src/routes/settings.ts`, `api/src/services/settings.ts`, `settings-registry.ts` | The settings registry (F1): every user, mail-account and calendar setting is one typed entry in `settings-registry.ts` (scope, value kind, default, privacy strictness); `settings.ts` resolves user → installation policy → default as `{ value, source, locked, floor }`, validates and stores them (`user_settings`, `mail_account_settings`, `calendar_settings`, `setting_policies`) and owns the sign-up mode. A lint fence keeps the tables to this service. A setting that names another record is typed as a reference and remapped on restore. See [Auth](AUTH_ADMIN_SETTINGS.md) |
+| `api/src/routes/settings.ts`, `api/src/services/settings.ts`, `settings-registry.ts` | The settings registry (F1): every user, mail-account and calendar setting is one typed entry in `settings-registry.ts` (scope, value kind, default, privacy strictness); `settings.ts` resolves user → installation policy → default as `{ value, source, locked, floor }`, validates and stores them (`user_settings`, `mail_account_settings`, `calendar_settings`, `setting_policies`) and owns the sign-up mode. It also resolves the data-safety policies (F13, `policy.<key>` in `setting_policies`): `resolvePolicy`/`resolvePolicies` give `{ value, source, allowed, reason }`, and `assertAllowed` refuses with `POLICY_FORBIDS`; the request boundary calls it for the policies a route declares, a service or worker for a rule it applies itself. A lint fence keeps the tables to this service. A setting that names another record is typed as a reference and remapped on restore. See [Auth](AUTH_ADMIN_SETTINGS.md) |
 | `api/src/services/mail.ts` | Facade re-exporting `mail-host-policy` (host checks, IMAP config), `mail-folders` (folders, sender rules), `mail-durable-jobs` (job executor, scheduler), `mail-sync-control` (sync admission, cancel/stop), `mail-server-delete` and `mail-send` |
 | `api/src/services/backup.ts` | Facade re-exporting `backup-common`, `backup-export`, `backup-validate`, `backup-restore-mapping`, `backup-zip-reader` and `backup-import` |
 | `api/src/services/mail-attachments.ts` | Attachment validation, staging and inline references |
@@ -190,22 +190,29 @@ treatment.
 | `body` | `limit` in bytes (default 16 KiB, `DEFAULT_BODY_LIMIT`) and `kind`: `'json'` (default), `'backup-upload'` (spooled to a file when the content type is an archive), `'upload'` (the raw body of any type, spooled to a private file under `UPLOAD_SPOOL_ROOT`, default `/app/uploads/spool`; the handler receives `{ path, size, contentType, mediaType }`, an empty body is refused with `UPLOAD_EMPTY`, and the file is removed when the handler returns, throws or the client disconnects) or `'none'` (not read). |
 | `csrf` | `'token'` (default: cookie/header pair), `'background-header'` (the service worker's `X-Background-Sync: 1` also passes) or `'none'` (sign-in and sign-up, which issue the token). The bearer-without-cookie rule is global. |
 | `response` | `'json'` (default) or `'stream'`: the handler writes and owns the response and returns nothing; a refusal before that is an ordinary JSON error. `GET /api/events` and `GET /api/notifications/android/stream`. |
-| `destructive` | F13: the data-safety policies of what the route removes or resets (`DESTRUCTIVE_POLICIES`), each for every request or only when named query parameters have given values (`destructivePolicies()` resolves them for a request). Only on `POST`/`PUT`/`DELETE`. Declared so far by `DELETE /api/mail/accounts/:id`: `accounts.mail.remove`, plus `accounts.mail.purge` with `purge=true`; and `contacts.delete` by deleting contacts (one or in bulk), merging them and removing a contact's photo. The boundary does not enforce them yet; the 0.28 policies refuse a forbidden action with `POLICY_FORBIDS` before any side effect. |
+| `destructive` | F13: the data-safety policies (the `policy` entries of `settings-registry.ts`) of what the route removes or resets, each for every request or only when named query parameters have given values (`destructivePolicies()` resolves them for a request). Removing a mail account names `accounts.remove`, plus `accounts.reset` with `purge=true`; a calendar account `accounts.remove`; Settings → Delete data `data.clear` (clearing calendar or mail also `accounts.remove`, mail also `accounts.reset`); deleting one's own account `account.delete`; deleting backups `backup.delete`; deleting contacts, a contact's photo, events, tasks, a local calendar or a recording for good `bin.delete`. Only on `POST`/`PUT`/`DELETE` of `'user'` routes: an administrator acts on a person's data through the admin path, which a person's policy never stops. |
+| `requires` | F13: the policies of the other actions a policy can forbid, declared the same way: adding a mail or calendar account (`accounts.add`), creating a backup (`backup.create`), importing or restoring one (`backup.restore`). A rule that depends on the body (a mail mode, the provider-delete switch, turning a linked calendar on or off) is checked in its service with the same `assertAllowed`. |
 
 `routes/index.ts` merges the files with `mergeRouteTables()` (a duplicate key
 throws) and runs `assertRouteTable()` at startup and in `routes-policy.test.cts`:
 every `/api/admin/` key is `'admin'`, every module key names its module, every
 mutating key states its restore section, every section has a write route, and
-every key resolves through the matcher. `routes-policy.test.cts` also walks the
-production table through the real boundary: 401 for every non-public route
-without a session, 403 for every admin route as a plain user.
+every declared policy can refuse an action, and every key resolves through the
+matcher. `routes-policy.test.cts` also walks the production table through the
+real boundary: 401 for every non-public route without a session, 403 for every
+admin route as a plain user; and it keeps every route that removes data either
+declared `destructive` or on a short list with the reason it is not (a move to
+Trash or the bin, ordinary editing, the admin path).
+`policies-mysql-integration.test.cts` walks every declared policy with that
+policy forbidden for the installation: 403 `POLICY_FORBIDS` for the owner,
+another user and an administrator, and no table changed.
 
 Route files not yet declared with specs (`calendar`, `mail-*` except
 `mail-threads`, `contacts`,
 `recordings`, `backup`) export plain handlers that `routes/legacy-spec.ts`
 wraps with the derived policy (public keys, body limits, `getModuleForPath`,
 a restore-section prefix table, the background-header keys, and the
-destructive policies in `DESTRUCTIVE_BY_ROUTE`);
+data-safety policies in `POLICIES_BY_ROUTE`);
 `route-spec.test.cts` pins that derivation. To add a route, declare it in its
 feature file with `defineRoutes()`; the invariants refuse a missing module,
 restore section or admin level at startup.
@@ -223,7 +230,10 @@ Every request passes through `handleRequest`, in this order:
 5. Refuse a non-admin on an `'admin'` route (403).
 6. Module gate (`spec.module`, 403), then the backup kill switch
    (`DISABLED_BACKUP_ROUTES`, 503), then the restore gate (`spec.restoreSection`,
-   409). A disabled module therefore answers before a body is looked at.
+   409), then the data-safety policies the route declares (`destructive` and
+   `requires`, resolved by `services/settings.ts`; 403 `POLICY_FORBIDS` with
+   `details: { policy, reason }` and the plain reason as `error`). A disabled
+   module or a forbidding policy therefore answers before a body is looked at.
 7. Enforce `spec.body.limit` (413) and parse: chunked JSON with a UTF-8
    decoder (malformed JSON is 400), a backup upload spooled to a file, or no
    body for `kind: 'none'`.

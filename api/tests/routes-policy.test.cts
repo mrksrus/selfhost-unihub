@@ -13,7 +13,8 @@ const auth = require('../dist/src/auth') as typeof import('../src/auth');
 const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
 const { handleRequest } = require('../dist/src/request-handler') as typeof import('../src/request-handler');
 const { MODULE_CATALOG } = require('../dist/src/services/module-catalog') as typeof import('../src/services/module-catalog');
-const { defineRoutes, mergeRouteTables, assertRouteTable, destructivePolicies } = require('../dist/src/http/route') as typeof import('../src/http/route');
+const { defineRoutes, mergeRouteTables, assertRouteTable, destructivePolicies, routePolicies } = require('../dist/src/http/route') as typeof import('../src/http/route');
+const { POLICIES } = require('../dist/src/services/settings') as typeof import('../src/services/settings');
 
 const csrf = 'c'.repeat(64);
 const samplePath = (pattern: string) => pattern.replace(/:(\w+)/g, (_, name) => `sample-${name}`);
@@ -130,29 +131,98 @@ test('CSRF: sign-in and sign-up need no token, exactly the service-worker routes
     'POST /api/recordings/uploads/:id/complete', 'POST /api/recordings/uploads/start']);
 });
 
-// F13: a destructive action names its data-safety policies; 0.28 refuses it
-// at the boundary when a policy forbids it. Removing a mail account and
-// deleting UniHub's copy of its mail are separate policies of one route.
-test('destructive actions name their policies: removing a mail account, and purging its mail only when asked', () => {
-  const destructive = Object.keys(routes).filter(key => routes[key].destructive).sort();
-  assert.deepEqual(destructive, ['DELETE /api/contacts/:id', 'DELETE /api/contacts/:id/photo', 'DELETE /api/mail/accounts/:id', 'POST /api/contacts/bulk-delete',
-    'POST /api/contacts/merges', 'POST /api/contacts/merges/auto']);
-  // Deleting contacts for good; 0.28 turns a delete into a bin move. A merge
-  // puts the merged-away contacts in the bin, from which they go for good
-  // after 30 days; its undo and "Not the same person" remove nothing.
-  // Removing a contact's photo deletes the picture for good.
-  for (const key of ['DELETE /api/contacts/:id', 'DELETE /api/contacts/:id/photo', 'POST /api/contacts/bulk-delete', 'POST /api/contacts/merges', 'POST /api/contacts/merges/auto']) {
-    assert.deepEqual(destructivePolicies(routes[key], new URLSearchParams()), ['contacts.delete'], key);
+// F13: every route that removes or resets data names the data-safety
+// policies the boundary checks before it acts, or is on this list with the
+// reason it removes nothing a policy protects. A data-removing route is any
+// DELETE, and any POST whose path names a removal; a new one fails here until
+// it is declared or listed. The real refusals are walked in
+// policies-mysql-integration.
+const NOT_DESTRUCTIVE: Readonly<Record<string, string>> = {
+  'DELETE /api/auth/sessions/:id': 'signs a device out; no data',
+  'DELETE /api/notifications/subscription': 'a device\'s push channel',
+  'DELETE /api/calendar/events/:id/move': 'cancels a task\'s pending move between lists',
+  'DELETE /api/calendar/events/:id/subtasks/:subtaskId': 'editing a task',
+  'DELETE /api/mail/drafts/:id': 'editing: a draft',
+  'DELETE /api/mail/drafts/:id/schedule': 'cancels a scheduled send; the draft stays',
+  'DELETE /api/mail/emails/:id/snooze': 'ends a snooze',
+  'DELETE /api/mail/sender-rules/:id': 'editing: a sorting rule',
+  'DELETE /api/mail/templates/:id': 'editing: a template',
+  'DELETE /api/mail/folders/:slug': 'mail-client editing: a local folder\'s mail returns to Inbox; with server=true the provider\'s folder goes, as in any mail client',
+  'POST /api/mail/emails/bulk-delete': 'moves messages to Trash',
+  'DELETE /api/recordings/uploads/:id': 'cancels an unfinished upload',
+  'POST /api/contacts/merges': 'the merged-away contacts go to the bin; the undo restores them',
+  'POST /api/contacts/merges/auto': 'the same merge for several groups',
+  'POST /api/contacts/merges/:id/undo': 'restores merged contacts',
+  'DELETE /api/admin/users/:id': 'admin path: role, password and activity log; a person\'s policy never stops an administrator',
+  'POST /api/admin/users/:id/2fa/reset': 'admin path, as above',
+};
+const removesData = (key: string) => {
+  const [method, path] = key.split(' ');
+  return method === 'DELETE' || (method === 'POST' && /delete|clear|purge|reset|remove|empty|merge/.test(path));
+};
+const DESTRUCTIVE = [
+  'DELETE /api/backup/jobs/:id', 'DELETE /api/backup/restore-jobs/:id', 'DELETE /api/calendar/accounts/:id', 'DELETE /api/calendar/calendars/:id',
+  'DELETE /api/calendar/events/:id', 'DELETE /api/contacts/:id', 'DELETE /api/contacts/:id/photo', 'DELETE /api/mail/accounts/:id',
+  'DELETE /api/recordings/:id', 'DELETE /api/settings/account', 'POST /api/contacts/bulk-delete', 'POST /api/settings/clear-calendar',
+  'POST /api/settings/clear-contacts', 'POST /api/settings/clear-mail-accounts', 'POST /api/settings/clear-recordings',
+];
+
+test('every route that removes data declares its policies or is on the reasoned list, and the declared set is pinned', () => {
+  for (const key of Object.keys(routes).filter(removesData)) {
+    assert.ok(routes[key].destructive || NOT_DESTRUCTIVE[key], `${key} removes data: declare its destructive policies or list why not`);
+    assert.ok(!(routes[key].destructive && NOT_DESTRUCTIVE[key]), `${key} is both declared and listed`);
   }
+  for (const key of Object.keys(NOT_DESTRUCTIVE)) assert.ok(key in routes, `${key} is listed but has no route`);
+  assert.deepEqual(Object.keys(routes).filter(key => routes[key].destructive).sort(), DESTRUCTIVE);
+  assert.deepEqual(Object.keys(routes).filter(key => routes[key].requires).sort(), [
+    'POST /api/backup/import', 'POST /api/backup/jobs', 'POST /api/backup/jobs/:id/restore', 'POST /api/backup/restore-jobs/:id/start',
+    'POST /api/calendar/accounts', 'POST /api/mail/accounts', 'POST /api/mail/accounts/:id/backup-export',
+  ]);
+});
+
+test('each destructive route names the policies of what it removes', () => {
+  const none = new URLSearchParams();
+  const expected: Record<string, string[]> = {
+    'DELETE /api/backup/jobs/:id': ['backup.delete'], 'DELETE /api/backup/restore-jobs/:id': ['backup.delete'],
+    'DELETE /api/calendar/accounts/:id': ['accounts.remove'],
+    // Deleting for good until 0.28 moves these items to the bin; a photo is
+    // removed for good even then.
+    'DELETE /api/calendar/calendars/:id': ['bin.delete'], 'DELETE /api/calendar/events/:id': ['bin.delete'], 'DELETE /api/recordings/:id': ['bin.delete'],
+    'DELETE /api/contacts/:id': ['bin.delete'], 'POST /api/contacts/bulk-delete': ['bin.delete'], 'DELETE /api/contacts/:id/photo': ['bin.delete'],
+    'DELETE /api/settings/account': ['account.delete'],
+    'POST /api/settings/clear-contacts': ['data.clear'], 'POST /api/settings/clear-recordings': ['data.clear'],
+    // Clearing calendar or mail removes the module's accounts too.
+    'POST /api/settings/clear-calendar': ['data.clear', 'accounts.remove'],
+    'POST /api/settings/clear-mail-accounts': ['data.clear', 'accounts.remove', 'accounts.reset'],
+    'DELETE /api/mail/accounts/:id': ['accounts.remove'],
+  };
+  for (const key of DESTRUCTIVE) assert.deepEqual(routePolicies(routes[key], none), expected[key], key);
+  // Removing a mail account, and deleting UniHub's copy of its mail only when asked.
   const remove = routes['DELETE /api/mail/accounts/:id'];
-  assert.deepEqual(destructivePolicies(remove, new URLSearchParams()), ['accounts.mail.remove'], 'disconnect');
-  assert.deepEqual(destructivePolicies(remove, new URLSearchParams('purge=true&confirm_purge=x')), ['accounts.mail.remove', 'accounts.mail.purge'], 'purge a disconnected account');
-  assert.deepEqual(destructivePolicies(remove, new URLSearchParams('purge=true&disconnect=true')), ['accounts.mail.remove', 'accounts.mail.purge'], 'disconnect and purge');
-  assert.deepEqual(destructivePolicies(remove, new URLSearchParams('purge=false')), ['accounts.mail.remove']);
+  assert.deepEqual(destructivePolicies(remove, new URLSearchParams('purge=true&confirm_purge=x')), ['accounts.remove', 'accounts.reset'], 'purge a disconnected account');
+  assert.deepEqual(destructivePolicies(remove, new URLSearchParams('purge=true&disconnect=true')), ['accounts.remove', 'accounts.reset'], 'disconnect and purge');
+  assert.deepEqual(destructivePolicies(remove, new URLSearchParams('purge=false')), ['accounts.remove']);
+  assert.deepEqual(routePolicies(routes['POST /api/mail/accounts'], none), ['accounts.add']);
+  assert.deepEqual(routePolicies(routes['POST /api/backup/import'], none), ['backup.restore']);
+});
+
+test('a route declares only keys that can refuse, only on a mutating user route, with named query values', () => {
   const handler = async () => ({});
-  assert.throws(() => defineRoutes({ 'GET /api/things': { auth: 'user', destructive: ['accounts.mail.remove'], handler } }), /only a mutating route/);
-  assert.throws(() => defineRoutes({ 'DELETE /api/things': { auth: 'user', destructive: ['things.remove'], handler } } as FixtureValue), /unknown destructive policy/);
-  assert.throws(() => defineRoutes({ 'DELETE /api/things': { auth: 'user', destructive: [{ policy: 'accounts.mail.purge', query: {} }], handler } }), /names its query values/);
+  const moduleIds = MODULE_CATALOG.map(module => module.id);
+  const policyKeys = Object.entries(POLICIES).filter(([, entry]) => entry.refuses.length).map(([key]) => key);
+  for (const key of [...DESTRUCTIVE, 'POST /api/mail/accounts']) {
+    for (const policy of routePolicies(routes[key], new URLSearchParams('purge=true'))) assert.ok(POLICIES[policy].refuses.length, `${key}: ${policy}`);
+  }
+  assert.ok(!policyKeys.includes('backup.server_retention_days') && !policyKeys.includes('accounts.admin_manage'));
+  assert.throws(() => defineRoutes({ 'GET /api/things': { auth: 'user', destructive: ['accounts.remove'], handler } }), /only a mutating route/);
+  assert.throws(() => defineRoutes({ 'POST /api/things': { auth: 'public', requires: ['accounts.add'], handler } }), /only a user route/);
+  assert.throws(() => defineRoutes({ 'DELETE /api/admin/things': { auth: 'admin', permission: 'users.manage', destructive: ['accounts.remove'], handler } }), /only a user route/);
+  assert.throws(() => defineRoutes({ 'DELETE /api/things': { auth: 'user', destructive: [], handler } }), /lists at least one policy/);
+  assert.throws(() => defineRoutes({ 'DELETE /api/things': { auth: 'user', destructive: [{ policy: 'accounts.reset', query: {} }], handler } }), /names its query values/);
+  assert.throws(() => assertRouteTable(defineRoutes({ 'DELETE /api/things': { auth: 'user', restoreSection: null, destructive: ['things.remove'], handler } } as FixtureValue), { moduleIds, policyKeys }),
+    /unknown policy things.remove/);
+  assert.throws(() => assertRouteTable(defineRoutes({ 'POST /api/things': { auth: 'user', restoreSection: null, requires: ['accounts.admin_manage'], handler } }), { moduleIds, policyKeys }),
+    /unknown policy accounts.admin_manage/);
 });
 
 // Limits declared by converted route files; the derived ones are pinned by route-spec.test.cts.
