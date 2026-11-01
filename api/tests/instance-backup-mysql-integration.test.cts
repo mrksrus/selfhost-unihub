@@ -36,6 +36,7 @@ if (!process.env.UNIHUB_MARIADB_BIN_DIR && spawnSync('mariadb-dump', ['--version
 const { withTestDatabase, startTestApi } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 
 const sha = (file: string) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+type RunOptions = Partial<Parameters<typeof import('../src/services/instance-backup').runInstanceBackup>[0]>;
 const write = (file: string, content: string | Buffer) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, content); return file; };
 
 test('the instance backup copies the installation, keeps only verified runs, refuses changed files and restores into an empty installation', {
@@ -562,32 +563,55 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     }
   });
 
-  await t.test('a run that fails still remembers the secret as it ended, so its copy stays out of the next run', async () => {
-    // A at the start, B (with a copy among the stored files) by the time the
-    // run fails, C before the next run.
-    const secretFile = write(path.join(scratch, 'failing-run', 'key'), `synthetic-a-${crypto.randomBytes(16).toString('hex')}`);
-    process.env.UNIHUB_FAILED_RUN_SECRET_FILE = secretFile;
-    const copy = path.join(rootDirs.attachments, users.alex, 'failed-run-copy');
+  await t.test('however a run ends, it remembers the secret as it ended, so its copy stays out of the next run', async () => {
+    // A at the start, B (with a copy among the stored files) when the run
+    // ends, C before the next run: the copy of B must stay out of that one.
+    const secretFile = path.join(scratch, 'run-exits', 'key');
+    process.env.UNIHUB_RUN_EXIT_SECRET_FILE = secretFile;
+    const copy = path.join(rootDirs.attachments, users.alex, 'run-exit-copy');
     const config = require('../dist/src/config') as typeof import('../src/config');
+    const link = fs.promises.link;
+    let b = Buffer.alloc(0);
+    const rotateToB = () => {
+      b = Buffer.from(`synthetic-b-${crypto.randomBytes(16).toString('hex')}`);
+      fs.writeFileSync(`${secretFile}.next`, b);
+      fs.renameSync(`${secretFile}.next`, secretFile);
+      write(copy, b);
+    };
+    // Each exit: how the run gets to B, and the status it ends with.
+    const exits: [string, string, () => RunOptions][] = [
+      ['the copy fails', 'failed', () => ({ hooks: { afterDump: async () => { rotateToB(); throw new Error('synthetic failure after the rotation'); } } })],
+      ['publication fails', 'failed', () => {
+        fs.promises.link = async () => { rotateToB(); throw Object.assign(new Error('synthetic: permission denied'), { code: 'EACCES' }); };
+        return {};
+      }],
+      ['the run succeeds', 'succeeded', () => {
+        fs.promises.link = async (...args: Parameters<typeof link>) => { rotateToB(); return link(...args); };
+        return {};
+      }],
+    ];
     try {
-      let b: Buffer | null = null;
-      const failed = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin, hooks: { afterDump: async () => {
-        b = Buffer.from(`synthetic-b-${crypto.randomBytes(16).toString('hex')}`);
-        fs.writeFileSync(`${secretFile}.next`, b);
-        fs.renameSync(`${secretFile}.next`, secretFile);
-        write(copy, b);
-        throw new Error('synthetic failure after the rotation');
-      } } }))!;
-      assert.equal(failed.status, 'failed');
-      assert.ok(config.secretGenerationNames(b!.length, crypto.createHash('sha256').update(b!).digest('hex')), 'B is remembered');
-      write(secretFile, `synthetic-c-${crypto.randomBytes(16).toString('hex')}`);
-      const next = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
-      assert.equal(next.status, 'succeeded', String(next.error));
-      const copied: string[] = [];
-      await format.scanInstanceBackup(path.join(destination, next.file_name!), key, backup.INSTANCE_BACKUP_ROOTS, { onFile: entry => { copied.push(path.join(uploads, entry.root, entry.path)); return null; } });
-      assert.equal(copied.includes(copy), false, 'the copy of B is left out');
+      for (const [exit, status, arrange] of exits) {
+        write(secretFile, `synthetic-a-${crypto.randomBytes(16).toString('hex')}`);
+        let ended;
+        try {
+          ended = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin, ...arrange() }))!;
+        } finally {
+          fs.promises.link = link;
+        }
+        assert.equal(ended.status, status, `${exit}: ${String(ended.error)}`);
+        assert.ok(config.secretGenerationNames(b.length, crypto.createHash('sha256').update(b).digest('hex')), `${exit}: B is remembered`);
+        write(secretFile, `synthetic-c-${crypto.randomBytes(16).toString('hex')}`);
+        const next = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+        assert.equal(next.status, 'succeeded', `${exit}: ${String(next.error)}`);
+        const copied: string[] = [];
+        await format.scanInstanceBackup(path.join(destination, next.file_name!), key, backup.INSTANCE_BACKUP_ROOTS, { onFile: entry => { copied.push(path.join(uploads, entry.root, entry.path)); return null; } });
+        assert.equal(copied.includes(copy), false, `${exit}: the copy of B is left out`);
+        fs.rmSync(copy, { force: true });
+      }
     } finally {
-      delete process.env.UNIHUB_FAILED_RUN_SECRET_FILE;
+      fs.promises.link = link;
+      delete process.env.UNIHUB_RUN_EXIT_SECRET_FILE;
       fs.rmSync(copy, { force: true });
     }
   });
