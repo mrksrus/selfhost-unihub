@@ -25,6 +25,10 @@ vi.mock('@/hooks/use-modules', () => ({ useModules: () => ({ isPending: false, i
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() } }));
 
 const hour = 3600_000;
+const minute = 60_000;
+// Fixtures are built from the clock ("today" is an hour ahead), so the clock is fixed: at 10:00 UTC an
+// hour ahead is today, and a test that needs the last hour of the day moves the clock itself.
+const CLOCK = new Date('2026-06-15T10:00:00Z');
 const iso = (offset: number) => new Date(Date.now() + offset).toISOString();
 const task = (id: string, patch: Partial<CalendarEvent>): CalendarEvent => ({
   id, user_id: 'owner', calendar_id: 'list-home', title: id, description: null, start_time: iso(hour), end_time: iso(2 * hour),
@@ -69,6 +73,8 @@ const openMenu = async (task: string) => {
 };
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(CLOCK);
   Element.prototype.scrollIntoView ??= () => {};
   globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
   serverEvents = undated;
@@ -90,7 +96,7 @@ beforeEach(() => {
   vi.mocked(api.post).mockResolvedValue({ data: { event: undated[0] } });
 });
 // resetAllMocks also drops answers queued with mockReturnValueOnce that a test did not consume; beforeEach sets the implementations again.
-afterEach(() => { cleanup(); vi.resetAllMocks(); });
+afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers(); });
 
 describe('the order of tasks', () => {
   it('follows the rank, then the server\'s sort_key (the id only without one), and gives an answer without ranks its date order', () => {
@@ -1018,6 +1024,8 @@ describe('the queue through a session end, a changed section and a missing answe
   });
 
   it('drops a placement once its task is in another section, and the server\'s rank there stands', async () => {
+    // The last hour of the day: an hour ahead is already tomorrow, so "today" is minutes ahead.
+    vi.setSystemTime(new Date('2026-06-15T23:30:00Z'));
     serverEvents = ['a', 'b', 'c'].map((id, index) => task(id, { start_time: iso(48 * hour), end_time: iso(49 * hour), sort_rank: (index + 1) * 100 }));
     serverEvents.push(task('x', { sort_rank: 40 }), task('y', { sort_rank: 60 }));
     const first = deferred<{ error: string; status: number; code: string }>();
@@ -1027,7 +1035,7 @@ describe('the queue through a session end, a changed section and a missing answe
     act(() => probeActions.placeTask(serverEvents.slice(0, 3), 'c', 1, later));
     await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
     // Meanwhile c was given today's date elsewhere and the list was fetched again.
-    serverEvents = serverEvents.map(entry => entry.id === 'c' ? { ...entry, start_time: iso(hour), end_time: iso(2 * hour), sort_rank: 50 } : entry);
+    serverEvents = serverEvents.map(entry => entry.id === 'c' ? { ...entry, start_time: iso(10 * minute), end_time: iso(20 * minute), sort_rank: 50 } : entry);
     await act(async () => { await client.refetchQueries({ queryKey: probeKey }); });
     const data = client.getQueryData<CalendarEvent[]>(probeKey)!;
     expect(data.find(entry => entry.id === 'c')!.sort_rank).toBe(50);
@@ -1053,7 +1061,10 @@ describe('the queue through a session end, a changed section and a missing answe
     vi.mocked(api.put).mockReturnValueOnce(never.promise as never);
     await probeMount();
     // The clock is faked from here (still moving with real time), so the deadline can be reached.
+    // Replaces the file's fixed clock: the same day, advancing with real time so a deadline passes.
+    vi.useRealTimers();
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(CLOCK);
     try {
       act(() => probeActions.placeTask(serverEvents, 'Plan holiday', 1, undatedSection));
       await act(async () => { await vi.advanceTimersByTimeAsync(10); });
@@ -1138,7 +1149,10 @@ describe('a move not confirmed yet', () => {
     const never = deferred<never>();
     vi.mocked(api.delete).mockReturnValueOnce(never.promise as never);
     fetched = listCalls();
+    // Replaces the file's fixed clock: the same day, advancing with real time so a deadline passes.
+    vi.useRealTimers();
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(CLOCK);
     try {
       act(() => probeActions.cancelMove.mutate({ id: 'Pay rent', from: 'Home', to: 'Archive' }));
       await act(async () => { await vi.advanceTimersByTimeAsync(10); });
