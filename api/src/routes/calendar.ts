@@ -648,6 +648,13 @@ export = {
         try {
           await connection.beginTransaction();
           await fenceTaskLocks(connection);
+          // The email stays for the insert: a Gmail merge removing that copy
+          // waits and then names the kept one in this task, or it has
+          // removed it already (mail-sync-policy.ts).
+          if (sourceEmail) {
+            const [still] = await connection.execute<RowDataPacket[]>('SELECT id FROM emails WHERE id = ? AND user_id = ? LOCK IN SHARE MODE', [String(source_email_id), userId]);
+            if (!still.length) { await connection.rollback(); return { error: 'Email not found', status: 404 }; }
+          }
           await connection.execute(
             `INSERT INTO calendar_events
               (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only,
@@ -823,8 +830,10 @@ export = {
           if (refusal) return refusal;
           const sourceEmail = await snapshotSourceEmail(userId, body.source_email_id);
           if (!sourceEmail) return { error: 'Email not found', status: 404 };
-          updates.push('source_email_id = ?', 'source_email_json = ?');
-          params.push(String(body.source_email_id), JSON.stringify(sourceEmail));
+          // Read again where the row is written: a copy a Gmail merge removed
+          // meanwhile leaves no link to a missing email.
+          updates.push('source_email_id = (SELECT linked.id FROM emails linked WHERE linked.id = ? AND linked.user_id = ?)', 'source_email_json = ?');
+          params.push(String(body.source_email_id), userId, JSON.stringify(sourceEmail));
         }
       }
 

@@ -278,6 +278,49 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     assert.equal(((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })) as FixtureValue).local_duplicates, 0);
   });
 
+  // Two copies of one message as imported per label before 0.12: a (older,
+  // holding the Gmail mapping) under INBOX and b under Work.
+  const gmailBoxes = new Map<string, FixtureValue>();
+  let gmailUid = 100;
+  async function gmailCopies(accountId: string, gmailMsgId: string, { a = {}, b = {} }: FixtureValue = {}) {
+    const ids: FixtureValue = {};
+    for (const [key, folder, extra, age] of [['a', 'INBOX', a, 2], ['b', 'Work', b, 1]] as const) {
+      if (!gmailBoxes.has(accountId + folder)) gmailBoxes.set(accountId + folder, await repo.withTransaction((cx) => repo.ensureMailbox({ userId, accountId, folderName: folder, epoch: 9 }, cx), pool));
+      const id = ids[key] = uuid();
+      const row = { import_complete: 1, content_state: 'complete', ...extra };
+      await pool.execute<ResultSetHeader>(`INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,subject,folder,import_complete,content_state,
+          is_draft,snoozed_until,created_at) VALUES (?,?,?,'g@example.test','[]',?,'inbox',?,?,?,?,UTC_TIMESTAMP() - INTERVAL ? DAY)`,
+      [id, userId, accountId, `Held ${gmailMsgId}`, row.import_complete, row.content_state, row.is_draft || 0, row.snoozed_until || null, age]);
+      await repo.withTransaction((cx) => repo.upsertOccurrence({ userId, accountId, mailboxId: gmailBoxes.get(accountId + folder).id, epoch: 9, uid: gmailUid++, emailId: id, gmailMsgId }, cx), pool);
+    }
+    return ids;
+  }
+  const copiesLeft = async (ids: FixtureValue) => (await rows('SELECT id FROM emails WHERE id IN (?, ?)', [ids.a, ids.b])).map(row => row.id === ids.a ? 'a' : 'b').sort();
+
+  await t.test('A task made from a copy the Gmail merge removes meanwhile is refused, not linked to a missing email', async () => {
+    const accountId = await createAccount('gmail-race', { host: 'imap.gmail.com' });
+    const racing = await gmailCopies(accountId, '7106');
+    // The create reads b, then waits while the merge removes b; its insert
+    // then finds b gone. A create that locked b first is moved by the merge.
+    const tasks = require('../dist/src/services/email-tasks') as typeof import('../src/services/email-tasks');
+    const calendarRoutes = require('../dist/src/routes/calendar') as FixtureValue;
+    const snapshot = tasks.snapshotSourceEmail;
+    let reached: () => void = () => {}, release: () => void = () => {};
+    const atSnapshot = new Promise<void>(resolve => { reached = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+    (tasks as FixtureValue).snapshotSourceEmail = async (...args: FixtureValue[]) => { const result = await (snapshot as FixtureValue)(...args); reached(); await gate; return result; };
+    let created: FixtureValue;
+    try {
+      const pending = calendarRoutes['POST /api/calendar/events']({ headers: { host: 'localhost' } }, userId, { title: 'Racing task', is_todo_only: true, source_email_id: racing.b });
+      await atSnapshot;
+      assert.equal((await prune(accountId)).merged, 1);
+      release();
+      created = await pending;
+    } finally { (tasks as FixtureValue).snapshotSourceEmail = snapshot; release(); }
+    assert.deepEqual(await copiesLeft(racing), ['a']);
+    assert.equal(created.status, 404);
+    assert.deepEqual(await rows("SELECT id FROM calendar_events WHERE user_id = ? AND title = 'Racing task'", [userId]), []);
+  });
+
   await t.test('Gmail without a visible All Mail keeps missing mail as archived and warns', async () => {
     const accountId = await createAccount('hidden', { host: 'imap.gmail.com' });
     deliver('INBOX', 1, { gmailMsgId: '7001' }, { gmail: true });
