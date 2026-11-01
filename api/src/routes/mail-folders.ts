@@ -1,7 +1,7 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError, SqlExecutor } from '../types';
 import { folderConnections } from '../services/mail-folder-reconciliation';
-import { deleteMailFolder } from '../services/mail-folder-delete';
+import { deleteMailFolder, SERVER_DELETE_VALUES } from '../services/mail-folder-delete';
 import { folderMembershipSql, membershipCountQuery, unreadMembershipQuery } from '../services/mail-folder-view';
 import { keepsSnoozedInLists } from '../services/mail-snooze';
 import { filingAccountId, folderAcceptsAccount } from '../services/mail-filing';
@@ -286,7 +286,7 @@ export = {
       const slug = normalizeMailFolderSlug(req.params.slug);
       if (!slug) return { error: 'Folder is required', status: 400 };
       const url = new URL(req.url, `http://${req.headers.host}`);
-      const server = ['1', 'true'].includes(url.searchParams.get('server') || '');
+      const server = SERVER_DELETE_VALUES.includes(url.searchParams.get('server') || '');
       const result = await deleteMailFolder({ userId, slug, server });
       return { deleted: true, ...result, folders: await getMailFolderRowsWithCounts(userId) };
     } catch (error) {

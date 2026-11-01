@@ -280,7 +280,8 @@ async function setUserPreferences(userId: string, input: Record<string, unknown>
 // replaces an unlocked one. Among one person's groups the strictest value wins.
 // A policy names an action, not a choice of the person, so the user step
 // holds nothing: what a person may choose (the mail mode, including mail in a
-// backup) is checked by the service that takes the choice. Groups arrive in
+// backup) is for the service that takes the choice to check (0.28 C2; not
+// enforced before). Groups arrive in
 // 0.30 as one more level after the installation's.
 const POLICY_PREFIX = 'policy.';
 const isPolicyKey = (key: string): key is PolicyKey => Object.prototype.hasOwnProperty.call(POLICIES, key);
