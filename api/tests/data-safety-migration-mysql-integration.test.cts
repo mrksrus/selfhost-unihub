@@ -81,13 +81,17 @@ test('upgrade 25 gives every event, calendar and recording its stable identity, 
     assert.deepEqual(dates.map(row => row.at), [modified], `${table} keeps its modification dates`);
   }
 
-  // UIDs compare exactly: two that differ only in case are two items.
+  // UIDs compare exactly: two that differ only in case or a trailing space are two items.
   const upper = await event(alex, errands, 'Upper');
   const lower = await event(alex, errands, 'Lower');
+  const spaced = await event(alex, errands, 'Spaced');
   await pool.execute('UPDATE calendar_events SET uid = ? WHERE id = ?', ['Task@example.test', upper]);
   await pool.execute('UPDATE calendar_events SET uid = ? WHERE id = ?', ['task@example.test', lower]);
+  await pool.execute('UPDATE calendar_events SET uid = ? WHERE id = ?', ['Task@example.test ', spaced]);
   const [exact] = await pool.query<RowDataPacket[]>('SELECT id FROM calendar_events WHERE user_id = ? AND uid = ?', [alex, 'Task@example.test']);
   assert.deepEqual(exact.map(row => row.id), [upper]);
+  const [trailing] = await pool.query<RowDataPacket[]>('SELECT id FROM calendar_events WHERE user_id = ? AND uid = ?', [alex, 'Task@example.test ']);
+  assert.deepEqual(trailing.map(row => row.id), [spaced]);
 
   // Rows made after the upgrade by code that does not name an identity get a new one each.
   const [later, later2] = [await event(alex, errands, 'New task'), await event(alex, errands, 'New task')];

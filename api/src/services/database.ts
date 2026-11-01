@@ -699,7 +699,9 @@ async function createTaskOrderAndMoves(connection: SqlExecutor) {
 // column default), unless the code making it sets one. UIDs compare exactly
 // (RFC 5545 gives them no case rules): Task@example.test is another task
 // than task@example.test, so the columns use a binary collation.
-const UID_COLLATION = 'utf8mb4_bin';
+// Byte for byte and without padding: UIDs that differ in case, accents or a
+// trailing space are different items (utf8mb4_bin would ignore the space).
+const UID_COLLATION = 'utf8mb4_nopad_bin';
 const STABLE_IDENTITIES = [
   { table: 'calendar_events', index: 'idx_events_user_uid', type: `VARCHAR(500) CHARACTER SET utf8mb4 COLLATE ${UID_COLLATION}` },
   { table: 'calendar_calendars', index: 'idx_calendar_calendars_user_uid', type: `CHAR(36) CHARACTER SET utf8mb4 COLLATE ${UID_COLLATION}` },
@@ -719,9 +721,9 @@ async function columnCollation(connection: SqlExecutor, table: string, column: s
 // run already made it, and the identities become required only once every
 // row has one.
 async function addDataSafety(connection: SqlExecutor) {
-  if (!await hasColumn(connection, 'calendar_events', 'uid')) await connection.execute('ALTER TABLE calendar_events ADD COLUMN uid VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL');
-  if (!await hasColumn(connection, 'calendar_calendars', 'uid')) await connection.execute('ALTER TABLE calendar_calendars ADD COLUMN uid CHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL');
-  if (!await hasColumn(connection, 'recordings', 'uid')) await connection.execute('ALTER TABLE recordings ADD COLUMN uid CHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL');
+  if (!await hasColumn(connection, 'calendar_events', 'uid')) await connection.execute('ALTER TABLE calendar_events ADD COLUMN uid VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NULL');
+  if (!await hasColumn(connection, 'calendar_calendars', 'uid')) await connection.execute('ALTER TABLE calendar_calendars ADD COLUMN uid CHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NULL');
+  if (!await hasColumn(connection, 'recordings', 'uid')) await connection.execute('ALTER TABLE recordings ADD COLUMN uid CHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NULL');
   // Filling in the identity is no change of the item: its updated_at stays.
   await connection.execute(`UPDATE calendar_events e
     JOIN calendar_event_external_refs r ON r.event_id = e.id AND r.user_id = e.user_id
@@ -760,7 +762,7 @@ async function addDataSafety(connection: SqlExecutor) {
     user_id CHAR(36) NOT NULL,
     calendar_id CHAR(36) NOT NULL,
     account_identity VARCHAR(500) NOT NULL DEFAULT '',
-    uid VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
+    uid VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NULL,
     recurrence_id VARCHAR(64) NOT NULL DEFAULT '',
     match_kind ENUM('uid', 'shape') NOT NULL,
     shape_title VARCHAR(255) NULL,

@@ -113,16 +113,17 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
     } finally { await pool.execute("DELETE FROM setting_policies WHERE setting_key = 'policy.backup.download_mail'"); }
   });
 
-  await t.test('local tasks: a moved task restores onto itself (B-34), twice into a new person gives no copies, UIDs differing in case stay two', async () => {
+  await t.test('local tasks: a moved task restores onto itself (B-34), twice into a new person gives no copies, UIDs differing in case or a trailing space stay apart', async () => {
     const owner = await newUser('task-owner');
     const errands = await localList(owner, 'Errands');
     const work = await localList(owner, 'Work');
     const moved = uuid();
     await insert('calendar_events', { id: moved, user_id: owner, calendar_id: errands, uid: 'Task@example.test', title: 'Post the letter', start_time: '2030-04-01 09:00:00', end_time: '2030-04-01 09:15:00', is_todo_only: 1 });
     await insert('calendar_events', { id: uuid(), user_id: owner, calendar_id: errands, uid: 'task@example.test', title: 'Water the plants', start_time: '2030-04-02 09:00:00', end_time: '2030-04-02 09:15:00', is_todo_only: 1 });
+    await insert('calendar_events', { id: uuid(), user_id: owner, calendar_id: errands, uid: 'Task@example.test ', title: 'Feed the cat', start_time: '2030-04-03 09:00:00', end_time: '2030-04-03 09:15:00', is_todo_only: 1 });
     await insert('calendar_event_subtasks', { id: uuid(), user_id: owner, event_id: moved, title: 'Buy a stamp', is_done: 0, position: 0 });
     const archive = await backup.buildBackupForUser(owner, { sections: ['calendar'], includeFileData: false });
-    assert.deepEqual(archive.data.calendar_events.map((row: FixtureValue) => row.uid).sort(), ['Task@example.test', 'task@example.test']);
+    assert.deepEqual(archive.data.calendar_events.map((row: FixtureValue) => row.uid).sort(), ['Task@example.test', 'Task@example.test ', 'task@example.test']);
 
     // After the backup the task moves to Work and is renamed.
     await pool.execute('UPDATE calendar_events SET calendar_id = ?, title = ? WHERE id = ?', [work, 'Post the parcel', moved]);
@@ -130,11 +131,11 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
     await restore(owner, archive, 'keep_existing');
     assert.deepEqual((await tasks()).map(row => [row.id, row.uid, row.calendar_id, row.title]).find(row => row[0] === moved), [moved, 'Task@example.test', work, 'Post the parcel'],
       'Keep existing keeps the moved task as it is now');
-    assert.equal((await tasks()).length, 2, 'no copy in the archived list');
+    assert.equal((await tasks()).length, 3, 'no copy in the archived list');
     await restore(owner, archive, 'replace');
     assert.deepEqual((await tasks()).find(row => row.id === moved), { id: moved, uid: 'Task@example.test', calendar_id: errands, title: 'Post the letter' },
       'Replace puts the archived task back, in its archived list');
-    assert.equal((await tasks()).length, 2);
+    assert.equal((await tasks()).length, 3);
     assert.equal((await rows('SELECT COUNT(*) AS n FROM calendar_event_subtasks WHERE event_id = ?', [moved]))[0].n, 1);
 
     // Into a new person, twice: the second restore finds each task by its UID.
@@ -142,13 +143,13 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
     await restore(fresh, archive, 'keep_existing');
     await restore(fresh, archive, 'keep_existing');
     const restored = await rows('SELECT uid, title FROM calendar_events WHERE user_id = ? ORDER BY BINARY uid', [fresh]);
-    assert.deepEqual(restored.map(row => [row.uid, row.title]), [['Task@example.test', 'Post the letter'], ['task@example.test', 'Water the plants']]);
+    assert.deepEqual(restored.map(row => [row.uid, row.title]), [['Task@example.test', 'Post the letter'], ['Task@example.test ', 'Feed the cat'], ['task@example.test', 'Water the plants']]);
     assert.equal((await rows('SELECT COUNT(*) AS n FROM calendar_calendars WHERE user_id = ?', [fresh]))[0].n, 2);
     // Keep both copies them under new UIDs, so a later restore still finds the originals.
     await restore(fresh, archive, 'keep_both');
     const doubled = await rows('SELECT uid FROM calendar_events WHERE user_id = ?', [fresh]);
-    assert.equal(doubled.length, 4);
-    assert.equal(new Set(doubled.map(row => row.uid)).size, 4);
+    assert.equal(doubled.length, 6);
+    assert.equal(new Set(doubled.map(row => row.uid)).size, 6);
   });
 
   await t.test('synced tasks: the state goes onto the live task (Keep existing fills gaps, Replace overwrites) or waits for the sync', async () => {
