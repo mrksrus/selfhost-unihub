@@ -202,6 +202,52 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
     assert.equal(new Set(doubled.map(row => row.uid)).size, 6);
   });
 
+  await t.test('synced tasks: every subtask the app allows comes back, from a schema 7 export and from an archive before it', async () => {
+    const owner = await newUser('checklist-owner');
+    const accountId = uuid(), calendarId = uuid(), taskId = uuid();
+    await insert('calendar_accounts', { id: accountId, user_id: owner, provider: 'caldav', display_name: 'Team', account_email: 'team@example.test', base_url: 'https://dav.example.test/', is_active: 1 });
+    await insert('calendar_calendars', { id: calendarId, user_id: owner, account_id: accountId, name: 'Team', external_id: 'https://dav.example.test/team/', color: '#2244ff', is_visible: 1 });
+    await insert('calendar_events', { id: taskId, user_id: owner, calendar_id: calendarId, uid: 'Checklist@example.test', title: 'Long checklist', start_time: '2030-06-01 10:00:00', end_time: '2030-06-01 11:00:00' });
+    // The app sets no limit on a task's subtasks.
+    const subtasks = Array.from({ length: 501 }, (_, n) => [uuid(), owner, taskId, `Step ${n}`, n % 2, n]);
+    await pool.query('INSERT INTO calendar_event_subtasks (id, user_id, event_id, title, is_done, position) VALUES ?', [subtasks]);
+    const waitingSteps = async (userId: string) => {
+      const [rows] = await pool.query<RowDataPacket[]>('SELECT match_kind, payload FROM calendar_overlay_restores WHERE user_id = ?', [userId]);
+      return rows.map(row => [row.match_kind, (typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload).subtasks.length]);
+    };
+
+    const current = await backup.buildBackupForUser(owner, { sections: ['calendar'], includeFileData: false });
+    const review = backup.validateBackupPayload(current);
+    assert.equal(review.valid, true, JSON.stringify(review.errors));
+    const reader = await newUser('checklist-reader');
+    await restore(reader, current, 'keep_existing');
+    assert.deepEqual(await waitingSteps(reader), [['uid', 501]]);
+
+    // The same task in an archive of 0.27 (schema 6): an event row with its subtasks, no UIDs, no overlays.
+    await pool.execute("UPDATE calendar_accounts SET provider = 'local' WHERE id = ?", [accountId]);
+    let old: FixtureValue;
+    try { old = await backup.buildBackupForUser(owner, { sections: ['calendar'], includeFileData: false }); } finally {
+      await pool.execute("UPDATE calendar_accounts SET provider = 'caldav' WHERE id = ?", [accountId]);
+    }
+    old.version = 6;
+    delete old.contents;
+    delete old.data.calendar_overlay_restores;
+    old.data.calendar_accounts.find((row: FixtureValue) => row.id === accountId).provider = 'caldav';
+    for (const table of ['calendar_events', 'calendar_calendars']) for (const row of old.data[table]) delete row.uid;
+    assert.equal(old.data.calendar_event_subtasks.length, 501);
+    const oldReader = await newUser('checklist-old-reader');
+    const imported = await restore(oldReader, old, 'keep_existing');
+    assert.equal((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [oldReader]))[0][0].n, 0);
+    assert.deepEqual(await waitingSteps(oldReader), [['shape', 501]]);
+    assert.ok(imported.notes.some((note: string) => /1 synced task gets its ToDo state and subtasks back when the calendar syncs/.test(note)), JSON.stringify(imported.notes));
+    // State its conversion cannot store (a title no task can have) refuses the restore by name rather than vanishing.
+    const unstorable = structuredClone(old);
+    unstorable.data.calendar_events[0].title = 'x'.repeat(300);
+    const refused = await backup.importBackupForUser(await newUser('checklist-refused'), unstorable, { mode: 'apply', sections: ['calendar'], conflict_mode: 'keep_existing', startAccountSync: () => {} });
+    assert.equal(refused.valid, false);
+    assert.match(refused.errors.join('\n'), /synced-task state .* \(converted from an archive before data schema 7\)/);
+  });
+
   await t.test('synced tasks: the state goes onto the live task (Keep existing fills gaps, Replace overwrites) or waits for the sync', async () => {
     const owner = await newUser('synced-owner');
     const accountId = uuid(), calendarId = uuid(), taskId = uuid();

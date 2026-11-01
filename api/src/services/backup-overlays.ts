@@ -11,7 +11,6 @@ import crypto from 'node:crypto';
 import { localEventSql, OVERLAY_SHAPE_DAYS, TODO_STATUSES } from './backup-classes';
 import { normalizeMysqlDateTime } from './backup-common';
 
-const MAX_SUBTASKS = 500;
 
 interface OverlayState {
   todo_status: string | null;
@@ -21,7 +20,9 @@ interface OverlayState {
   subtasks: { title: string; is_done: boolean; position: number }[];
 }
 
-// The payload as UniHub wrote it, or null for anything else.
+// The payload as UniHub wrote it, or null for anything else. A task may
+// have any number of subtasks (the app sets no limit); the archive's size
+// limit for data/backup.json bounds them.
 function parseOverlayPayload(value: unknown): OverlayState | null {
   let raw: unknown = value;
   if (typeof value === 'string') { try { raw = JSON.parse(value); } catch { return null; } }
@@ -29,7 +30,7 @@ function parseOverlayPayload(value: unknown): OverlayState | null {
   const input = raw as Record<string, unknown>;
   if (input.todo_status != null && !TODO_STATUSES.has(String(input.todo_status))) return null;
   if (input.source_email_id != null && !/^[0-9a-f-]{36}$/i.test(String(input.source_email_id))) return null;
-  if (input.subtasks !== undefined && (!Array.isArray(input.subtasks) || input.subtasks.length > MAX_SUBTASKS)) return null;
+  if (input.subtasks !== undefined && !Array.isArray(input.subtasks)) return null;
   let sourceEmail: string | null = null;
   if (input.source_email_json != null) {
     try { sourceEmail = JSON.stringify(typeof input.source_email_json === 'string' ? JSON.parse(input.source_email_json) : input.source_email_json); } catch { return null; }
@@ -50,12 +51,12 @@ function validateOverlayRows(data: Record<string, unknown> | undefined): string[
   const calendars = new Set((Array.isArray(data?.calendar_calendars) ? data.calendar_calendars as BackupRow[] : []).map(row => row?.id));
   const errors = new Set<string>();
   for (const row of rows as BackupRow[]) {
-    const valid = row && typeof row === 'object' && calendars.has(row.calendar_id as string)
-      && (row.match_kind === 'uid' ? typeof row.uid === 'string' && row.uid !== '' && row.uid.length <= 500
+    if (!row || typeof row !== 'object' || !calendars.has(row.calendar_id as string)) { errors.add('Backup has a synced-task state that names no calendar of this backup'); continue; }
+    const valid = (row.match_kind === 'uid' ? typeof row.uid === 'string' && row.uid !== '' && row.uid.length <= 500
         : row.match_kind === 'shape' && typeof row.shape_title === 'string' && row.shape_title.length <= 255 && typeof row.shape_start === 'string')
       && (row.recurrence_id == null || (typeof row.recurrence_id === 'string' && row.recurrence_id.length <= 64))
       && parseOverlayPayload(row.payload) !== null;
-    if (!valid) errors.add('Backup has a synced-task state that names no calendar of this backup');
+    if (!valid) errors.add('Backup has a synced-task state in a form UniHub does not write');
   }
   return [...errors];
 }
@@ -108,16 +109,17 @@ async function applyOverlayState(connection: SqlExecutor, userId: string, task: 
 async function restoreOverlays(connection: SqlExecutor, userId: string, rows: readonly BackupRow[], { calendarIds, conflictMode, checkCancelled, now = new Date() }: {
   calendarIds: ReadonlyMap<string, string>; conflictMode: string; checkCancelled?: () => Promise<unknown>; now?: Date;
 }) {
-  const result = { applied: 0, waiting: 0, sourceEmails: { events: new Map<string, string>(), overlays: new Map<string, string>() } };
+  const result = { applied: 0, waiting: 0, unplaced: 0, sourceEmails: { events: new Map<string, string>(), overlays: new Map<string, string>() } };
   for (const row of rows) {
     if (checkCancelled) await checkCancelled();
     const calendarId = calendarIds.get(String(row.calendar_id));
     const state = parseOverlayPayload(row.payload);
-    if (!calendarId || !state) continue;
+    // Validation refused any other payload; a row this restore cannot place is counted for its note, never dropped silently.
+    if (!calendarId || !state) { result.unplaced += 1; continue; }
     // Only a synced calendar receives overlays; the restore never writes one onto a local list.
     const [[calendar]] = await connection.execute<RowDataPacket[]>(`SELECT a.provider FROM calendar_calendars c JOIN calendar_accounts a ON a.id = c.account_id AND a.user_id = c.user_id
       WHERE c.id = ? AND c.user_id = ?`, [calendarId, userId]);
-    if (!calendar || calendar.provider === 'local') continue;
+    if (!calendar || calendar.provider === 'local') { result.unplaced += 1; continue; }
     const recurrenceId = String(row.recurrence_id ?? '');
     const task = await liveTask(connection, userId, calendarId, row, recurrenceId);
     if (task) {

@@ -56,7 +56,7 @@ import { releasePhotoFiles, withContactPhotoLock } from './contact-photos';
 import { log } from '../log';
 import crypto from 'node:crypto';
 import { archivedContents, filterOldArchive } from './backup-classes';
-import { restoreOverlays } from './backup-overlays';
+import { restoreOverlays, validateOverlayRows } from './backup-overlays';
 
 const accountLabel = (row: BackupRow) => row.email_address || row.account_email || row.display_name || row.id;
 
@@ -234,6 +234,15 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
   // Archives before schema 7 lose their mirrored rows here, as a new export
   // leaves them out (backup-classes.ts).
   const oldArchive = validation.valid ? filterOldArchive(backup) : null;
+  // The synced-task state it converted is held to the reader's rules too, so
+  // none is lost on the way: a row UniHub cannot store refuses the restore.
+  if (oldArchive) {
+    const converted = validateOverlayRows(backup.data);
+    if (converted.length) {
+      validation.valid = false;
+      validation.errors.push(...converted.map(error => `${error} (converted from an archive before data schema 7)`));
+    }
+  }
   const scopedBackup = scopeBackupForImport(backup, sections) as RestoreArchive & { import_sections: string[] };
   // Sections that carry only account settings: restored accounts sign in
   // again and download from the provider instead of restoring content.
@@ -611,9 +620,10 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
       // the sync that brings it back (backup-overlays.ts).
       const overlays = restoresCalendarContent
         ? await restoreOverlays(connection, userId, (data.calendar_overlay_restores || []) as BackupRow[], { calendarIds: calendarIdMap, conflictMode, checkCancelled: checkRestoreCancelled })
-        : { applied: 0, waiting: 0, sourceEmails: { events: new Map<string, string>(), overlays: new Map<string, string>() } };
+        : { applied: 0, waiting: 0, unplaced: 0, sourceEmails: { events: new Map<string, string>(), overlays: new Map<string, string>() } };
       for (const [eventId, archivedEmailId] of overlays.sourceEmails.events) eventsWithSourceEmail.set(eventId, archivedEmailId);
       if (overlays.waiting) contents.notes.push(`${overlays.waiting} synced task${overlays.waiting === 1 ? '' : 's'} get${overlays.waiting === 1 ? 's' : ''} its ToDo state and subtasks back when the calendar syncs.`);
+      if (overlays.unplaced) contents.notes.push(`The ToDo state and subtasks of ${overlays.unplaced} synced task${overlays.unplaced === 1 ? '' : 's'} could not be restored: ${overlays.unplaced === 1 ? 'its calendar is' : 'their calendars are'} not a synced calendar here.`);
 
       // The hand order (0.27): a local task's row follows its restored event,
       // a synced one its calendar; the key is computed again from them. A

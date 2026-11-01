@@ -120,9 +120,15 @@ const toMysqlDate = (date: Date) => date.toISOString().slice(0, 19).replace('T',
 const TODO_STATUSES: ReadonlySet<string> = new Set(['done', 'changed', 'time_moved', 'cancelled']);
 
 // UniHub's own state on a task, as an overlay payload; null when there is none.
+// Only what the overlay reader (backup-overlays.ts) accepts, so converting an
+// older archive never writes a state its own restore would refuse.
+const sourceEmailJson = (value: unknown) => {
+  if (value == null) return null;
+  try { return JSON.stringify(typeof value === 'string' ? JSON.parse(value) : value); } catch { return null; }
+};
 function overlayPayload(event: BackupRow, subtasks: readonly BackupRow[]) {
   const state = { todo_status: TODO_STATUSES.has(String(event.todo_status)) ? String(event.todo_status) : null, done_at: event.done_at ?? null,
-    source_email_id: event.source_email_id ?? null, source_email_json: event.source_email_json ?? null,
+    source_email_id: /^[0-9a-f-]{36}$/i.test(String(event.source_email_id ?? '')) ? String(event.source_email_id) : null, source_email_json: sourceEmailJson(event.source_email_json),
     subtasks: subtasks.map(row => ({ title: String(row.title ?? ''), is_done: !!row.is_done, position: Number(row.position) || 0 })) };
   return state.todo_status || state.done_at || state.source_email_id || state.source_email_json || state.subtasks.length ? state : null;
 }
