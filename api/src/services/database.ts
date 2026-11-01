@@ -390,7 +390,7 @@ const MIGRATIONS: readonly Migration[] = [
         if (await columnCollation(connection, table, 'uid') !== UID_COLLATION) throw new Error(`${table}.uid does not compare exactly`);
         if (!await hasIndex(connection, table, index)) throw new Error(`Index ${index} on ${table} is missing`);
       }
-      for (const [table, name] of [['data_export_jobs', 'idx_data_export_jobs_keep_until'], ['bin_items', 'idx_bin_items_due']]) {
+      for (const [table, name] of [['data_export_jobs', 'idx_data_export_jobs_keep_until'], ['bin_items', 'idx_bin_items_due'], ['emails', 'idx_emails_remote_address']]) {
         if (!await hasIndex(connection, table, name)) throw new Error(`Index ${name} on ${table} is missing`);
       }
     },
@@ -753,6 +753,9 @@ async function addDataSafety(connection: SqlExecutor) {
   if (!await hasColumn(connection, 'file_tickets', 'redeemed_at')) await connection.execute('ALTER TABLE file_tickets ADD COLUMN redeemed_at DATETIME NULL');
   // One purge for every user's bin (services/bin.ts).
   if (!await hasIndex(connection, 'bin_items', 'idx_bin_items_due')) await connection.execute('ALTER TABLE bin_items ADD KEY idx_bin_items_due (purge_after)');
+  // A scan looks up a restored Sync item by the exact provider address it
+  // holds (keptItemAtAddress in mail-engine/sync.ts), once per new message.
+  if (!await hasIndex(connection, 'emails', 'idx_emails_remote_address')) await connection.execute('ALTER TABLE emails ADD KEY idx_emails_remote_address (mail_account_id, remote_uidvalidity, remote_uid)');
 
   // The ToDo state and subtasks of a synced task from a restored archive,
   // until the sync that creates the task's row takes them (services/
