@@ -47,7 +47,8 @@ import {
 const LOG = 'INSTANCE BACKUP';
 const EXTENSION = '.uhib';
 const PARTIAL = '.partial';
-const NAME_PATTERN = /^unihub-instance-\d{8}T\d{6}Z-[0-9A-Za-z.+-]{1,32}\.uhib$/;
+// <UTC time>-<version>-<run id>: the run id makes each run's file its own.
+const NAME_PATTERN = /^unihub-instance-\d{8}T\d{6}Z-[0-9A-Za-z.+-]{1,32}-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.uhib$/;
 const MAX_RUN_MS = 12 * 60 * 60 * 1000;
 const MIN_FREE_BYTES = 64 * 1024 * 1024;
 const RUNS_SHOWN = 20;
@@ -185,6 +186,19 @@ function secretIdentities(env: NodeJS.ProcessEnv = process.env) {
   return identities;
 }
 
+/** A run of a time-ordered id (UUID version 7): a later run has a larger id, also within one second. */
+let lastIdMs = 0;
+function timeOrderedId() {
+  const ms = Math.max(Date.now(), lastIdMs + 1);
+  lastIdMs = ms;
+  const bytes = crypto.randomBytes(16);
+  bytes.writeUIntBE(ms, 0, 6);
+  bytes[6] = (bytes[6] & 0x0f) | 0x70;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 // ── Runs ──────────────────────────────────────────────────────────────
 
 interface RunRow extends RowDataPacket {
@@ -228,7 +242,7 @@ async function startInstanceBackup({ trigger, actorId = null, hooks = {} }: { tr
   const settings = config;
   if (!enabled(settings)) throw conflict('INSTANCE_BACKUP_OFF', `The instance backup is off: set ${settings.missing.map(part => part === 'destination' ? 'INSTANCE_BACKUP_DIR' : 'INSTANCE_BACKUP_KEY or INSTANCE_BACKUP_KEY_FILE').join(' and ') || 'a valid configuration'} and restart.`);
   if (current) throw conflict('INSTANCE_BACKUP_RUNNING', 'An instance backup is already running.');
-  const id = crypto.randomUUID();
+  const id = timeOrderedId();
   const abort = new AbortController();
   const slot = { id, abort, done: Promise.resolve<RunRow | null>(null) };
   current = slot;
@@ -270,7 +284,7 @@ function shownError(error: unknown) {
 
 async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: string; key: Buffer }, signal: AbortSignal, hooks: RunHooks) {
   const startedAt = Date.now();
-  const name = `unihub-instance-${timestamp(new Date(iso(row.started_at)!))}-${row.app_version}${EXTENSION}`;
+  const name = `unihub-instance-${timestamp(new Date(iso(row.started_at)!))}-${row.app_version}-${row.id}${EXTENSION}`;
   const finalPath = path.join(settings.dir, name);
   const partialPath = finalPath + PARTIAL;
   const controller = new AbortController();
@@ -279,6 +293,7 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
   const onAbort = () => controller.abort(signal.reason);
   signal.addEventListener('abort', onAbort, { once: true });
   log.info(LOG, 'Started', { run: row.id, trigger: row.trigger_kind });
+  let published = false;
   try {
     await checkDestination(settings.dir);
     // The setup checks of the start, again: secret files can have moved since.
@@ -290,7 +305,12 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
     const verified = await scanInstanceBackup(partialPath, settings.key, ROOT_NAMES, { signal: controller.signal });
     if (verified.sha256 !== sha256 || verified.header.backup_id !== row.id) throw new InstanceBackupError('The backup did not read back as written.');
     controller.signal.throwIfAborted();
-    await fs.promises.rename(partialPath, finalPath);
+    // A link never replaces a file that is already there, unlike a rename.
+    await fs.promises.link(partialPath, finalPath).catch((error: NodeJS.ErrnoException) => {
+      throw error.code === 'EEXIST' ? new InstanceBackupError(`${name} already exists at INSTANCE_BACKUP_DIR; the backup does not replace it.`) : error;
+    });
+    published = true;
+    await fs.promises.rm(partialPath, { force: true });
     await syncDirectory(settings.dir);
     await db.execute(`UPDATE instance_backups SET status = 'succeeded', file_name = ?, size_bytes = ?, sha256 = ?, migration_id = ?, finished_at = UTC_TIMESTAMP()
       WHERE id = ?`, [name, bytes, sha256, manifest.migration_id, row.id]);
@@ -300,8 +320,14 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
     const reason = controller.signal.aborted ? controller.signal.reason : error;
     log.error(LOG, 'Failed', reason, { run: row.id });
     await fs.promises.rm(partialPath, { force: true }).catch(cleanup => log.error(LOG, 'Could not remove a partial backup', cleanup, { run: row.id }));
-    await db.execute(`UPDATE instance_backups SET status = 'failed', error = ?, finished_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'running'`,
-      [shownError(reason), row.id]).catch(update => log.error(LOG, 'Could not record a failed run', update, { run: row.id }));
+    let failedRecorded = false;
+    try {
+      const [failed] = await db.execute<ResultSetHeader>(`UPDATE instance_backups SET status = 'failed', error = ?, finished_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'running'`,
+        [shownError(reason), row.id]);
+      failedRecorded = failed.affectedRows > 0;
+    } catch (update) { log.error(LOG, 'Could not record a failed run', update, { run: row.id }); }
+    // The file of a run that does not count goes too.
+    if (published && failedRecorded) await fs.promises.rm(finalPath, { force: true }).catch(() => {});
   } finally {
     clearTimeout(timer);
     signal.removeEventListener('abort', onAbort);
@@ -548,11 +574,14 @@ async function copyFile(tar: TarWriter, root: { name: string; dir: string }, rel
 
 // ── Retention, recovery, schedule, status ─────────────────────────────
 
+// Newest first by completion, then by the time-ordered run id.
+const KEPT_ORDER = 'ORDER BY finished_at DESC, id DESC';
+
 /** Removes the oldest succeeded backups beyond the kept count; runs only after a verified success. */
 async function applyRetention(settings: { dir: string | null; keep: number } = config) {
   if (!settings.dir) return 0;
   const [rows] = await db.execute<RunRow[]>(`SELECT id, file_name FROM instance_backups WHERE status = 'succeeded' AND removed_at IS NULL
-    ORDER BY started_at DESC, id DESC`);
+    ${KEPT_ORDER}`);
   let removed = 0;
   for (const row of rows.slice(settings.keep)) {
     if (row.file_name && NAME_PATTERN.test(row.file_name)) await fs.promises.rm(path.join(settings.dir, row.file_name), { force: true });
@@ -611,7 +640,7 @@ async function getInstanceBackupStatus(now = new Date()): Promise<InstanceBackup
   const [rows] = await db.execute<RunRow[]>(`SELECT b.*, u.email AS actor_email FROM instance_backups b LEFT JOIN users u ON u.id = b.actor_id
     ORDER BY b.started_at DESC, b.id DESC LIMIT ${RUNS_SHOWN}`);
   const [[success]] = await db.execute<RunRow[]>(`SELECT b.*, u.email AS actor_email FROM instance_backups b LEFT JOIN users u ON u.id = b.actor_id
-    WHERE b.status = 'succeeded' ORDER BY b.started_at DESC, b.id DESC LIMIT 1`);
+    WHERE b.status = 'succeeded' ORDER BY b.finished_at DESC, b.id DESC LIMIT 1`);
   const [[kept]] = await db.execute<RowDataPacket[]>(`SELECT COUNT(*) AS count, COALESCE(SUM(size_bytes), 0) AS bytes FROM instance_backups
     WHERE status = 'succeeded' AND removed_at IS NULL`);
   const [[running]] = await db.execute<RowDataPacket[]>("SELECT COUNT(*) AS count FROM instance_backups WHERE status = 'running'");

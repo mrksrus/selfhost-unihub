@@ -223,7 +223,8 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     assert.deepEqual(during, { removal: 'deferred', messageKept: true, photoDelete: 200, photoRows: 0, photoFilesKept: [true, true] }, 'removals after the dump wait at the gate');
     assert.equal(fs.existsSync(removedDuringCopy), false, 'the queued removal ran once the copy ended');
     assert.ok(photoFiles.every(file => !fs.existsSync(file)), 'the queued photo release checked the references again and removed them');
-    assert.match(run!.file_name!, /^unihub-instance-\d{8}T\d{6}Z-[0-9.]+\.uhib$/);
+    assert.equal(run!.file_name, `unihub-instance-${run!.file_name!.slice(16, 32)}-${run!.app_version}-${run!.id}.uhib`, 'time, version and run id');
+    assert.match(run!.file_name!, /^unihub-instance-\d{8}T\d{6}Z-/);
     assert.deepEqual(fs.readdirSync(destination), [run!.file_name]);
     const file = path.join(destination, run!.file_name!);
     assert.equal(sha(file), run!.sha256);
@@ -304,6 +305,46 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     assert.ok(oldest.removed_at, 'its run is marked removed');
     assert.equal(Number((await pool.query<RowDataPacket[]>("SELECT COUNT(*) AS count FROM audit_log WHERE action = 'admin.instance_backup_started'"))[0][0].count), 2);
     assert.match(status.restore_command, /instance-restore\.js --file/);
+  });
+
+  await t.test('each run writes a file of its own, never over another, and retention keeps the latest', async () => {
+    backup.useInstanceBackupConfig({ ...settings, keep: 1 });
+    try {
+      // Back to back, also within one second.
+      const a = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      const b = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      assert.deepEqual([a.status, b.status], ['succeeded', 'succeeded'], String(a.error || b.error));
+      assert.ok(a.file_name!.includes(a.id) && b.file_name!.includes(b.id) && a.file_name !== b.file_name, 'each name holds its run id');
+      assert.ok(b.id > a.id, 'run ids follow the order of the runs');
+      const [kept] = await pool.query<RowDataPacket[]>("SELECT id FROM instance_backups WHERE status = 'succeeded' AND removed_at IS NULL");
+      assert.deepEqual([kept.map(row => row.id), backupFiles()], [[b.id], [b.file_name]], 'the latest run and its file are kept');
+
+      // A file already at the name is never replaced.
+      let planted = '';
+      const c = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin, hooks: { afterDump: async () => {
+        const partial = fs.readdirSync(destination).find(name => name.endsWith('.partial'))!;
+        planted = path.join(destination, partial.slice(0, -'.partial'.length));
+        fs.writeFileSync(planted, 'synthetic file that is not this run');
+      } } }))!;
+      assert.equal(c.status, 'failed');
+      assert.match(String(c.error), /already exists/);
+      assert.equal(fs.readFileSync(planted, 'utf8'), 'synthetic file that is not this run');
+      assert.deepEqual(fs.readdirSync(destination).filter(name => name.endsWith('.partial')), []);
+      fs.rmSync(planted);
+      assert.deepEqual(backupFiles(), [b.file_name]);
+
+      // Runs finished in the same second: the later run stays.
+      backup.useInstanceBackupConfig({ ...settings, keep: 3 });
+      const d = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      const e = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      assert.deepEqual([d.status, e.status], ['succeeded', 'succeeded']);
+      await pool.query("UPDATE instance_backups SET started_at = '2030-01-01 00:00:00', finished_at = '2030-01-01 00:00:00' WHERE id IN (?, ?, ?)", [b.id, d.id, e.id]);
+      assert.equal(await backup.applyRetention({ dir: destination, keep: 1 }), 2);
+      const [latest] = await pool.query<RowDataPacket[]>("SELECT id FROM instance_backups WHERE status = 'succeeded' AND removed_at IS NULL");
+      assert.deepEqual([latest.map(row => row.id), backupFiles()], [[e.id], [e.file_name]]);
+    } finally {
+      backup.useInstanceBackupConfig(settings);
+    }
   });
 
   await t.test('a secret file read at the start stays out after it is replaced, and a run refuses when one cannot be checked', async () => {
