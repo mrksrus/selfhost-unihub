@@ -62,6 +62,9 @@ export default function DeleteDataSettings() {
   const accountPolicy = usePolicy('account.delete');
 
   const remove = useMutation({
+    // D41 (open): whether deleting one's own account asks for the password
+    // again. Until decided, DELETE /settings/account sends no body; the
+    // confirmation would then take the password and pass it here.
     mutationFn: async (entry: Target) => {
       const response = entry.method === 'delete' ? await api.delete<{ message?: string }>(entry.path) : await api.post<{ message?: string }>(entry.path);
       if (response.error) throw new Error(response.error);

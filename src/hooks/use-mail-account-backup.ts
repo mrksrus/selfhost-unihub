@@ -1,6 +1,8 @@
 import { skipToken, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { downloadBackup, type BackupJob } from '@/lib/backup-api';
+import { prepareBackupDownload, type BackupJob } from '@/lib/backup-api';
+import { downloadTicket } from '@/lib/platform';
+import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { getBackupDownloadAction } from '@/lib/backup';
 import { jobPollInterval } from '@/lib/job-polling';
 
@@ -37,8 +39,13 @@ export function useMailAccountBackup(accountId: string) {
     },
   });
   const current = jobId ? job.data ?? null : null;
-  // Through a download ticket (F9): the app fetches it without the session cookie.
-  const download = useMutation({ mutationFn: async () => { if (current) await downloadBackup(current, 'unihub-mail-backup'); }, retry: false });
+  // Through a download ticket (F9): the app fetches it without the session
+  // cookie. A ticket answered after the session ended starts nothing.
+  const download = useSessionMutation({
+    mutationFn: async () => (current ? prepareBackupDownload(current, 'unihub-mail-backup') : null),
+    retry: false,
+    onSuccess: ticket => { if (ticket) downloadTicket(ticket); },
+  });
   return {
     job: current,
     start: () => start.mutate(),

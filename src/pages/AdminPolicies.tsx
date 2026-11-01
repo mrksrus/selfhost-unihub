@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSecretMutation } from '@/hooks/use-secret-mutation';
 import { useAuth } from '@/contexts/useAuth';
 import { useToast } from '@/hooks/use-toast';
 import { adminPoliciesQueryKey, fetchAdminPolicies, saveAdminPolicies, type AdminPolicy } from '@/lib/admin-api';
@@ -88,7 +89,8 @@ const AdminPolicies = () => {
   const [confirming, setConfirming] = useState(false);
   const query = useQuery({ queryKey: adminPoliciesQueryKey, queryFn: ({ signal }) => fetchAdminPolicies(signal), enabled: user?.role === 'admin' });
 
-  const save = useMutation({
+  // The password is a variable of the request: useSecretMutation drops it as soon as the server answers.
+  const save = useSecretMutation({
     mutationFn: (currentPassword: string) => saveAdminPolicies(draft, currentPassword),
     onSuccess: answer => {
       client.setQueryData(adminPoliciesQueryKey, answer);

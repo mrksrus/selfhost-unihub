@@ -52,8 +52,8 @@ upgrade; back up first.
   and what it leaves out, and the backups on this server with when the server
   removes them. The review of a backup to restore lists what it holds, what
   was left out with counts and the server's notes, also for old archives.
-- **Backup downloads use a download ticket.** The Android app's download
-  manager fetches the archive without the session cookie.
+- **Backup downloads use a single-use download ticket** instead of a link
+  that needs the session, the first use of the file-ticket boundary (F9).
 
 ## 0.27.1
 

@@ -1,7 +1,6 @@
 import { api } from '@/lib/api';
 import { unwrap } from '@/lib/api-error';
 import { createFileTicket } from '@/lib/file-tickets-api';
-import { downloadTicket } from '@/lib/platform';
 export { getBackupDownloadAction, type BackupDownloadAction } from '@/lib/backup';
 import type {
   BackupCapabilities, BackupCreateRequest, BackupImportResult, BackupJob, BackupJobResponse, BackupJobsResponse, BackupSectionId,
@@ -98,11 +97,14 @@ export const backupFileName = (job: Pick<BackupJob, 'id' | 'encryption_enabled'>
   `${prefix}-${job.id}.${job.encryption_enabled ? 'unihub-backup' : 'zip'}`;
 
 /**
- * Downloads a ready backup through a download ticket: the Android app's
- * download manager fetches the ticket URL without the session cookie, and the
- * browser saves it as a file. Rejects when no ticket could be made.
+ * Asks for the download ticket of a ready backup: the answer goes to
+ * `downloadTicket` (src/lib/platform.ts), which hands the URL to the browser
+ * or the app's download manager without the session cookie. The dispatch
+ * stays with the caller so a ticket answered after the session ended
+ * (useSessionMutation's guarded onSuccess) starts no download. Rejects when
+ * no ticket could be made.
  */
-export async function downloadBackup(job: Pick<BackupJob, 'id' | 'encryption_enabled'>, prefix?: string) {
+export async function prepareBackupDownload(job: Pick<BackupJob, 'id' | 'encryption_enabled'>, prefix?: string): Promise<{ url: string; filename: string }> {
   const ticket = await createFileTicket({ kind: 'backup-archive', id: job.id });
-  downloadTicket({ url: ticket.url, filename: ticket.filename || backupFileName(job, prefix) });
+  return { url: ticket.url, filename: ticket.filename || backupFileName(job, prefix) };
 }

@@ -2,6 +2,7 @@ import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { ToastAction } from '@/components/ui/toast';
 import { useToast } from '@/hooks/use-toast';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
+import { useSessionScope } from '@/lib/session-scope';
 import { binApi, invalidateBinQueries, type BinModule, type BinRestoreResponse } from '@/lib/bin-api';
 import { invalidateCalendarQueries } from '@/lib/calendar-api';
 import { invalidateContactQueries } from '@/lib/contacts-api';
@@ -37,6 +38,7 @@ function restoredNotice(result: BinRestoreResponse) {
 export function useBinActions(module?: BinModule) {
   const client = useQueryClient();
   const { toast } = useToast();
+  const scope = useSessionScope();
   const failed = (title: string) => (error: Error) => toast({ title, description: error.message, variant: 'destructive' });
 
   const restore = useSessionMutation({
@@ -60,8 +62,11 @@ export function useBinActions(module?: BinModule) {
   /**
    * The notice after a delete: what went to the bin and one Undo, which
    * restores the same items. Pass the ids the delete route answered with.
+   * A delete answered after the session ended names nothing: the caller's
+   * callbacks may run unguarded (plain useMutation), so the check is here.
    */
   const movedToBin = (what: string, binItemIds: string[], target: BinModule | undefined = module) => {
+    if (scope.ended) return;
     void invalidateBinQueries(client);
     toast({
       title: 'Moved to the bin',

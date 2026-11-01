@@ -1,17 +1,23 @@
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactElement } from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { BinView } from '@/components/bin/BinView';
 import BinSettings from '@/components/settings/BinSettings';
 import Contacts from '@/pages/Contacts';
+import Recordings from '@/pages/Recordings';
+import { SessionQueryProvider } from '@/components/SessionQueryProvider';
+import { AuthContext, type AuthContextType } from '@/contexts/auth-context';
 import type { BinItem } from '@/lib/bin-api';
 import { contact } from './contact-fixtures';
 import { userSettingsAnswer } from './settings-fixtures';
-import { mountSignedIn, policiesAnswer, stubBrowserApis } from './helpers/data-safety';
+import { OWNER, mountSignedIn, policiesAnswer, stubBrowserApis } from './helpers/data-safety';
 
 const state = vi.hoisted(() => ({ toast: vi.fn() }));
-vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }) }));
+vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }), clearToasts: vi.fn() }));
+vi.mock('@/hooks/use-audio-capture', () => ({ useAudioCapture: () => ({ state: 'idle', supported: true, start: vi.fn(), stop: vi.fn() }) }));
+vi.mock('@/hooks/use-recording-uploads', () => ({ useStoredRecordings: () => ({ recordings: [], progress: {}, available: true }), closeUploadNotices: vi.fn(), kickRecordingUploads: vi.fn(), pageUploadRequest: vi.fn(), stopRecordingUploads: vi.fn() }));
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn(), getBlob: vi.fn(), postBlob: vi.fn(), uploadBlob: vi.fn(), getDownloadUrl: (path: string) => `/api${path}` } }));
 
 const item = (id: string, fields: Partial<BinItem>): BinItem => ({
@@ -108,6 +114,30 @@ describe('the bin', () => {
     const notice = state.toast.mock.calls.find(call => call[0].title === 'Moved to the bin')![0] as { action: ReactElement<{ onClick: () => void }> };
     notice.action.props.onClick();
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/bin/restore', { ids: ['bin-ada'] }));
+  });
+
+  it('a delete answered after the session ended names nothing: no notice, no Undo', async () => {
+    answerGets([]);
+    const recording = { id: 'rec-a', title: 'Private title of the previous account', recorded_at: '2026-06-03T10:00:00.000Z', duration_seconds: 10, size_bytes: 100, source: 'imported', category: 'none', tags: [], metadata: {}, description: null };
+    const gets = vi.mocked(api.get).getMockImplementation()!;
+    vi.mocked(api.get).mockImplementation(async (path: string, ...rest: unknown[]) => path.startsWith('/recordings') ? { data: { recordings: [recording] } } : (gets as (p: string, ...r: unknown[]) => Promise<unknown>)(path, ...rest) as never);
+    let answer!: (value: unknown) => void;
+    vi.mocked(api.delete).mockImplementation(() => new Promise(resolve => { answer = resolve; }) as never);
+    const mounted = render(
+      <AuthContext.Provider value={{ user: OWNER, isOffline: false } as unknown as AuthContextType}>
+        <SessionQueryProvider privateSession><MemoryRouter><Recordings /></MemoryRouter></SessionQueryProvider>
+      </AuthContext.Provider>,
+    );
+    fireEvent.pointerDown(await screen.findByRole('button', { name: 'More actions for Private title of the previous account' }), { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/recordings/rec-a'));
+    // The session ends (an account switch) before the server answers.
+    mounted.unmount();
+    state.toast.mockClear();
+    await act(async () => answer({ data: { bin_item_ids: ['bin-rec-a'] } }));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(state.toast).not.toHaveBeenCalled();
   });
 
   it('Settings → Bin saves the retention as a user setting', async () => {

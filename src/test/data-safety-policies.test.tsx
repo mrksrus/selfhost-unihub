@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
 import DeleteDataSettings from '@/components/settings/DeleteDataSettings';
 import { MailAccountModeSettings } from '@/components/mail/MailAccountModeSettings';
+import { MailCalendarSettings } from '@/components/mail/MailCalendarSettings';
+import type { MailAccount } from '@/lib/mail-api';
 import { mountSignedIn, policiesAnswer, stubBrowserApis } from './helpers/data-safety';
 
 const state = vi.hoisted(() => ({ toast: vi.fn() }));
@@ -65,6 +67,35 @@ describe('policy greying', () => {
     expect(screen.getByRole('checkbox')).toBeDisabled();
     expect(screen.getByText(DELETE_REASON)).toBeInTheDocument();
     expect(onModeChange).not.toHaveBeenCalled();
+  });
+
+  it('the linked calendar of a mail account follows accounts.remove and accounts.add', async () => {
+    const REMOVE = 'Your administrator does not allow removing accounts.';
+    const ADD = 'Your administrator does not allow adding accounts.';
+    const account = { id: 'mail-a', email_address: 'a@example.com', provider: 'custom', is_active: true } as MailAccount;
+    let link = { enabled: true, account: { id: 'cal-a', provider: 'caldav', is_active: true, sync_status: 'ok', last_synced_at: null, provider_config: {} }, calendars: [], event_count: 3, provider: null };
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/policies/effective') return policiesAnswer({ 'accounts.remove': { value: 'forbidden', reason: REMOVE }, 'accounts.add': { value: 'forbidden', reason: ADD } });
+      if (path === '/mail/accounts/mail-a/calendar') return { data: { calendar: link } };
+      throw new Error(`unexpected GET ${path}`);
+    });
+    // Turning the calendar off removes a calendar account.
+    const on = mountSignedIn(<MailCalendarSettings account={account} />);
+    const toggle = await screen.findByRole('switch', { name: 'Calendar' });
+    await waitFor(() => expect(toggle).toBeDisabled());
+    expect(toggle).toBeChecked();
+    expect(screen.getByText(REMOVE)).toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    on.unmount();
+    // Turning it on adds one.
+    link = { ...link, enabled: false, account: null as never, event_count: 0 };
+    mountSignedIn(<MailCalendarSettings account={account} />);
+    const connect = await screen.findByRole('button', { name: 'Connect calendar' });
+    await waitFor(() => expect(connect).toBeDisabled());
+    expect(screen.getByRole('switch', { name: 'Calendar' })).toBeDisabled();
+    expect(screen.getByText(ADD)).toBeInTheDocument();
+    expect(api.post).not.toHaveBeenCalled();
   });
 
   it('a preset for new accounts selects the mode and locks the choice; an existing account keeps its mode', async () => {

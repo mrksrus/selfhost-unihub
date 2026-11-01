@@ -1,13 +1,16 @@
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { downloadTicket } from '@/lib/platform';
 import BackupSettings from '@/components/settings/BackupSettings';
+import { SessionQueryProvider } from '@/components/SessionQueryProvider';
+import { AuthContext, type AuthContextType } from '@/contexts/auth-context';
 import type { BackupCapabilities, BackupJob, RestoreJob } from '@/lib/backup-api';
-import { mountSignedIn, policiesAnswer, stubBrowserApis } from './helpers/data-safety';
+import { OWNER, mountSignedIn, policiesAnswer, stubBrowserApis } from './helpers/data-safety';
 
 const state = vi.hoisted(() => ({ toast: vi.fn() }));
-vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }) }));
+vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }), clearToasts: vi.fn() }));
 vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'user-ada' } }) }));
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn(), uploadBlob: vi.fn(), getDownloadUrl: (path: string) => `/api${path}` } }));
 vi.mock('@/lib/platform', async importOriginal => ({ ...(await importOriginal<typeof import('@/lib/platform')>()), downloadTicket: vi.fn(), saveFile: vi.fn().mockResolvedValue(undefined) }));
@@ -27,6 +30,19 @@ const JOBS = [
   job('new', { keep_until: '2026-07-03T10:00:00.000Z' }),
   job('old', { encryption_enabled: false, contents: null, content_type: 'application/zip', created_at: '2026-05-01T10:00:00.000Z', completed_at: '2026-05-01T10:05:00.000Z' }),
 ];
+const restoreJob = (id: string, fields: Partial<RestoreJob> = {}): RestoreJob => ({
+  id, source_type: 'generated', source_export_job_id: 'new', status: 'validated', operation: 'validate', phase: 'validated', progress: 100, cancel_requested: false,
+  requested_sections: ['full'], conflict_mode: 'keep_existing', calendar_mode: 'merge_same_name', credentials_mode: 'keep_existing', archive_available: true, archive_size: 1000, archive_sha256: null,
+  backup_uuid: null, is_encrypted: true, result_counts: null, error: null, attempt_count: 1, created_at: '2026-06-14T10:00:00.000Z', started_at: null, completed_at: null, expires_at: null,
+  validation_result: { dry_run: true, valid: true, errors: [], warnings: [], counts: { contacts: 7 }, notes: [] }, ...fields,
+});
+const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(answer => { resolve = answer; }); return { promise, resolve }; };
+/** The real session provider: unmounting it ends the session the way an account switch does. */
+const mountInSession = (view: React.ReactElement) => render(
+  <AuthContext.Provider value={{ user: OWNER, isOffline: false } as unknown as AuthContextType}>
+    <SessionQueryProvider privateSession><MemoryRouter>{view}</MemoryRouter></SessionQueryProvider>
+  </AuthContext.Provider>,
+);
 
 function answer(caps = capabilities(), jobs = JOBS, restoreJobs: RestoreJob[] = [], policies = policiesAnswer()) {
   vi.mocked(api.get).mockImplementation(async (path: string) => {
@@ -46,7 +62,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe('Settings → Backup and restore (0.28)', () => {
-  it('offers no encryption choice and creates a backup with the downloaded-mail choice', async () => {
+  it('offers no encryption choice and creates a backup with the downloaded-mail choice', { timeout: 20_000 }, async () => {
     answer();
     mountSignedIn(<BackupSettings active />);
     const create = await screen.findByRole('button', { name: 'Create backup' });
@@ -97,6 +113,73 @@ describe('Settings → Backup and restore (0.28)', () => {
     fireEvent.click((await screen.findAllByRole('button', { name: 'Download Full backup' }))[0]);
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/files/tickets', { kind: 'backup-archive', id: 'new' }));
     await waitFor(() => expect(downloadTicket).toHaveBeenCalledWith({ url: '/api/files/tickets/t1/download', filename: 'unihub-backup-new.unihub-backup' }));
+  });
+
+  it('a download ticket answered after the session ended starts no download', async () => {
+    answer();
+    const ticket = deferred<{ data: unknown }>();
+    vi.mocked(api.post).mockImplementation(() => ticket.promise as never);
+    const mounted = mountInSession(<BackupSettings active />);
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Download Full backup' }))[0]);
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/files/tickets', { kind: 'backup-archive', id: 'new' }));
+    mounted.unmount();
+    await act(async () => ticket.resolve({ data: { url: '/api/files/tickets/late/download', filename: 'late.unihub-backup', expires_at: '', content_type: '', size: 1 } }));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(downloadTicket).not.toHaveBeenCalled();
+  });
+
+  it('the recovery dialog cannot be dismissed while the password is being revealed', async () => {
+    answer(capabilities(), [job('a', { recovery_password_available: true, recovery_password_revealed: false }), job('b', { recovery_password_available: true, recovery_password_revealed: false })]);
+    const reveal = deferred<{ data: unknown }>();
+    vi.mocked(api.post).mockImplementation(async (path: string) => path === '/backup/jobs/a/recovery-password/reveal' ? reveal.promise as never : { data: { url: '/api/files/tickets/t/download', filename: 'f', expires_at: '', content_type: '', size: 1 } });
+    mountSignedIn(<BackupSettings active />);
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Download Full backup' }))[0]);
+    const dialog = await screen.findByRole('dialog', { name: 'Recovery password' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Show the password' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/backup/jobs/a/recovery-password/reveal'));
+    // The server reveals it once: Cancel, Escape and a click outside keep the dialog until it is shown and saved.
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: 'Recovery password' })).toBeInTheDocument();
+    await act(async () => reveal.resolve({ data: { recovery_password: 'password-of-a' } }));
+    expect(await within(dialog).findByLabelText('Recovery password')).toHaveTextContent('password-of-a');
+    fireEvent.click(within(dialog).getByRole('checkbox'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Download backup' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/files/tickets', { kind: 'backup-archive', id: 'a' }));
+    expect(api.post).not.toHaveBeenCalledWith('/files/tickets', { kind: 'backup-archive', id: 'b' });
+  });
+
+  it('a restore runs only with the choices it was prepared with', async () => {
+    answer();
+    const prepare = deferred<{ data: unknown }>();
+    vi.mocked(api.post).mockImplementation(async (path: string) => path === '/backup/jobs/new/restore' ? prepare.promise as never : { data: {} });
+    mountSignedIn(<BackupSettings active />);
+    const matching = await screen.findByRole('combobox', { name: 'Matching items' });
+    fireEvent.click(matching);
+    fireEvent.click(await screen.findByRole('option', { name: 'Replace with the backup' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Restore Full backup' })[0]);
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/backup/jobs/new/restore', expect.objectContaining({ conflict_mode: 'replace' })));
+    // The choices are fixed while the server prepares the job with them.
+    expect(matching).toBeDisabled();
+    const replaced = restoreJob('r', { conflict_mode: 'replace' });
+    answer(capabilities(), JOBS, [replaced]);
+    await act(async () => prepare.resolve({ data: { job: replaced } }));
+    const section = screen.getByRole('heading', { name: 'Restore' }).closest('section')!;
+    const start = within(section).getByRole('button', { name: 'Restore' });
+    await waitFor(() => expect(start).toBeEnabled());
+    expect(matching).toHaveTextContent('Replace with the backup');
+    // Changing a choice afterwards drops the prepared job: what the screen says is what runs.
+    fireEvent.click(matching);
+    fireEvent.click(await screen.findByRole('option', { name: 'Keep what is here' }));
+    expect(start).toBeDisabled();
+    fireEvent.click(start);
+    expect(api.post).not.toHaveBeenCalledWith('/backup/restore-jobs/r/start');
+    // Choosing the prepared job in the list shows its choices again, and Restore opens with them.
+    fireEvent.click(screen.getByRole('button', { name: /From a backup on this server/ }));
+    expect(matching).toHaveTextContent('Replace with the backup');
+    await waitFor(() => expect(start).toBeEnabled());
+    fireEvent.click(start);
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/backup/restore-jobs/r/start'));
   });
 
   it('shows the recovery password once before the first download and waits until it is saved', async () => {

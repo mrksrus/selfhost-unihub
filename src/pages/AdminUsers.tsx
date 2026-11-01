@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom';
 import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog';
 import { useAuth } from '@/contexts/useAuth';
 import { adminUsersQueryKey, deleteAdminUser, fetchAdminUsers, resetUserTwoFactor, setUserActive, setUserPassword, setUserRole, type AdminUser } from '@/lib/admin-api';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSecretMutation } from '@/hooks/use-secret-mutation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -39,7 +40,7 @@ const AdminUsers = () => {
     enabled: user?.role === 'admin',
   });
   
-  const deleteUser = useMutation({
+  const deleteUser = useSecretMutation({
     mutationFn: ({ userId, currentPassword }: { userId: string; currentPassword: string }) => deleteAdminUser(userId, currentPassword),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: adminUsersQueryKey });
@@ -51,7 +52,7 @@ const AdminUsers = () => {
     },
   });
 
-  const updateUserRole = useMutation({
+  const updateUserRole = useSecretMutation({
     mutationFn: ({ userId, role, currentPassword }: { userId: string; role: 'user' | 'admin'; currentPassword: string }) => setUserRole(userId, role, currentPassword),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: adminUsersQueryKey });
@@ -64,7 +65,7 @@ const AdminUsers = () => {
     },
   });
   
-  const toggleUserActive = useMutation({
+  const toggleUserActive = useSecretMutation({
     mutationFn: ({ userId, is_active, currentPassword }: { userId: string; is_active: boolean; currentPassword?: string }) => setUserActive(userId, is_active, currentPassword),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: adminUsersQueryKey });
@@ -76,7 +77,7 @@ const AdminUsers = () => {
     },
   });
   
-  const resetTwoFactor = useMutation({
+  const resetTwoFactor = useSecretMutation({
     mutationFn: ({ user, currentPassword }: { user: UserRow; currentPassword: string }) => resetUserTwoFactor(user.id, currentPassword),
     // Report on the submitted user; the dialog may have been reopened for someone else meanwhile.
     onSuccess: (_data, { user }) => {

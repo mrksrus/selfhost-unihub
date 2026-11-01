@@ -1,13 +1,15 @@
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useNavigate, type NavigateFunction } from 'react-router-dom';
 import { api } from '@/lib/api';
 import AdminPolicies from '@/pages/AdminPolicies';
 import AdminInstanceBackup from '@/pages/AdminInstanceBackup';
 import AdminUserDetail from '@/pages/AdminUserDetail';
+import { AdminMailAccountDialog } from '@/components/admin/AdminAccountDialogs';
 import type { AdminPoliciesResponse } from '@/lib/admin-api';
 import type { InstanceBackupStatus } from '@/lib/instance-backup-api';
 import { DEFAULT_POLICY_VALUES, POLICY_KEYS } from '@/lib/policies-api';
-import { ADMIN, mountSignedIn, policiesAnswer, stubBrowserApis } from './helpers/data-safety';
+import { ADMIN, mountSignedIn, policiesAnswer, stubBrowserApis, testClient } from './helpers/data-safety';
 
 const state = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }) }));
@@ -28,7 +30,8 @@ const instanceStatus = (fields: Partial<InstanceBackupStatus> = {}): InstanceBac
   kept: { count: 0, bytes: 0 }, running: false, runs: [], ...fields,
 });
 const USERS = [{ id: 'user-admin', email: 'admin@example.com', full_name: 'Avery Admin', role: 'admin', is_active: true, created_at: '2026-01-01T00:00:00.000Z' },
-  { id: 'user-alex', email: 'alex@example.com', full_name: 'Alex Example', role: 'user', is_active: true, created_at: '2026-01-02T00:00:00.000Z' }];
+  { id: 'user-alex', email: 'alex@example.com', full_name: 'Alex Example', role: 'user', is_active: true, created_at: '2026-01-02T00:00:00.000Z' },
+  { id: 'user-blair', email: 'blair@example.com', full_name: 'Blair Example', role: 'user', is_active: true, created_at: '2026-01-03T00:00:00.000Z' }];
 const MAIL_ACCOUNT = { id: 'm1', email_address: 'alex@mail.example.com', display_name: null, provider: 'custom', sync_mode: 'sync', delete_emails_on_server: false, is_active: true, sync_status: 'ok', last_synced_at: null, disconnected_at: null };
 
 beforeEach(() => {
@@ -40,6 +43,8 @@ beforeEach(() => {
     if (path === '/admin/users') return { data: { users: USERS } };
     if (path === '/admin/users/user-alex/accounts') return { data: { user_id: 'user-alex', mail_accounts: [MAIL_ACCOUNT], calendar_accounts: [] } };
     if (path === '/admin/users/user-alex/backups') return { data: { jobs: [] } };
+    if (path === '/admin/users/user-blair/accounts') return { data: { user_id: 'user-blair', mail_accounts: [], calendar_accounts: [] } };
+    if (path === '/admin/users/user-blair/backups') return { data: { jobs: [] } };
     throw new Error(`unexpected GET ${path}`);
   });
   vi.mocked(api.put).mockImplementation(async (path: string, body: unknown) => {
@@ -79,6 +84,20 @@ describe('Server settings → Policies', () => {
     await waitFor(() => expect(screen.queryByRole('region', { name: 'Unsaved changes' })).not.toBeInTheDocument());
     expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Policies saved' }));
   });
+
+  it('the administrator\'s password leaves the mutation cache once the save is answered', { timeout: 20_000 }, async () => {
+    const client = testClient();
+    mountSignedIn(<AdminPolicies />, { user: ADMIN, client });
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Creating backups' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Not allowed' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes…' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    const variables = () => client.getMutationCache().getAll().map(mutation => JSON.stringify(mutation.state.variables ?? null));
+    await waitFor(() => expect(variables().join(' ')).not.toContain('admin-pw'));
+  });
 });
 
 describe('Server settings → Instance backup', () => {
@@ -105,6 +124,29 @@ describe('Server settings → Instance backup', () => {
 });
 
 describe('Admin → Users → a person', () => {
+  it('a confirmation opened for one person closes when the page moves to another', async () => {
+    let navigate!: NavigateFunction;
+    function Page() { navigate = useNavigate(); return <AdminUserDetail />; }
+    mountSignedIn(<Page />, { user: ADMIN, path: '/admin/users/user-alex', routePath: '/admin/users/:id' });
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Delete all' }))[0]);
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Delete all contacts of Alex Example?');
+    await act(async () => navigate('/admin/users/user-blair'));
+    await screen.findByText(/Users · Blair Example/);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(api.post).not.toHaveBeenCalled();
+  });
+
+  it('sends the ports the administrator edited and leaves the rest of the account untouched', () => {
+    const submitted = vi.fn();
+    mountSignedIn(<AdminMailAccountDialog account={MAIL_ACCOUNT as never} open onClose={() => {}} pending={false} onSubmit={submitted} />);
+    fireEvent.change(screen.getByLabelText('IMAP port'), { target: { value: '1993' } });
+    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(submitted).toHaveBeenCalledWith(expect.objectContaining({ imap_port: 1993 }), 'admin-pw');
+    const change = submitted.mock.calls[0][0] as Record<string, unknown>;
+    for (const key of ['smtp_port', 'imap_host', 'smtp_host', 'username', 'encrypted_password']) expect(change).not.toHaveProperty(key);
+  });
+
   it('removes a mail account with its mail after the administrator\'s password, and adds one with the person\'s fields', async () => {
     mountSignedIn(<AdminUserDetail />, { user: ADMIN, path: '/admin/users/user-alex', routePath: '/admin/users/:id' });
     await screen.findByText('alex@mail.example.com');

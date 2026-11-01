@@ -7,10 +7,10 @@ import { usePolicy } from '@/hooks/use-policies';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { useSessionScope } from '@/lib/session-scope';
 import {
-  BACKUP_ACTIVE, RESTORE_ACTIVE, backupApi, backupQueryKeys, downloadBackup, getBackupDownloadAction,
+  BACKUP_ACTIVE, RESTORE_ACTIVE, backupApi, backupQueryKeys, getBackupDownloadAction, prepareBackupDownload,
   type BackupContents, type BackupDataClass, type BackupImportResult, type BackupJob, type BackupSectionId, type CalendarMode, type ConflictMode, type CredentialsMode, type RestoreJob, type RestoreOptions,
 } from '@/lib/backup-api';
-import { copyText, saveFile } from '@/lib/platform';
+import { copyText, downloadTicket, saveFile } from '@/lib/platform';
 import { jobPollInterval } from '@/lib/job-polling';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -60,6 +60,12 @@ const capitalise = (text: string) => text.charAt(0).toUpperCase() + text.slice(1
 
 const NO_JOBS: BackupJob[] = [];
 const NO_RESTORES: RestoreJob[] = [];
+
+// A restore job is prepared with the three choices and runs with them: the
+// screen shows the prepared job's choices, and Restore opens only while the
+// choices on the screen are the job's.
+const sameOptions = (a: RestoreOptions, b: RestoreOptions) => a.conflict_mode === b.conflict_mode && a.calendar_mode === b.calendar_mode && a.credentials_mode === b.credentials_mode;
+const jobOptions = (job: RestoreJob): RestoreOptions => ({ conflict_mode: job.conflict_mode as ConflictMode, calendar_mode: job.calendar_mode as CalendarMode, credentials_mode: job.credentials_mode as CredentialsMode });
 
 const BACKUP_STATUS: Record<BackupJob['status'], string> = { queued: 'Waiting', running: 'Creating', cancelling: 'Stopping', cancelled: 'Stopped', ready: 'Ready', failed: 'Failed' };
 const RESTORE_STATUS: Record<RestoreJob['status'], string> = {
@@ -147,13 +153,18 @@ export default function BackupSettings({ active }: { active: boolean }) {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importSelection, setImportSelection] = useState<'full' | string[]>('full');
   const [options, setOptions] = useState<RestoreOptions>({ conflict_mode: 'keep_existing', calendar_mode: 'merge_same_name', credentials_mode: 'keep_existing' });
+  // The choices at the moment a preparation answers; a job prepared with others is not taken up.
+  const optionsNow = useRef(options);
+  optionsNow.current = options;
   const [selectedRestoreJobId, setSelectedRestoreJobId] = useState<string | null>(null);
   const [restorePassword, setRestorePassword] = useState('');
   const [shownResult, setShownResult] = useState<BackupImportResult | null>(null);
   const completedRestores = useRef(new Set<string>());
   const selectedRestoreJob = restoreJobs.find(job => job.id === selectedRestoreJobId) ?? null;
+  const preparedAsChosen = !!selectedRestoreJob && sameOptions(jobOptions(selectedRestoreJob), options);
   const resetReview = () => { setSelectedRestoreJobId(null); setShownResult(null); };
   const changeOption = <K extends keyof RestoreOptions>(key: K, value: RestoreOptions[K]) => { setOptions(current => ({ ...current, [key]: value })); resetReview(); };
+  const selectRestoreJob = (job: RestoreJob) => { setSelectedRestoreJobId(job.id); setOptions(jobOptions(job)); setShownResult(job.validation_result || job.result_counts); };
 
   useEffect(() => {
     if (selectedRestoreJob?.validation_result) setShownResult(selectedRestoreJob.validation_result);
@@ -165,10 +176,15 @@ export default function BackupSettings({ active }: { active: boolean }) {
     }
   }, [selectedRestoreJob, restoreJobs, queryClient]);
 
-  // Recovery password, shown once before the first download.
+  // Recovery password, shown once before the first download. The server
+  // reveals it once: the dialog cannot be dismissed while the reveal runs, and
+  // an answer is shown only for the backup it was asked for.
   const [recoveryJob, setRecoveryJob] = useState<BackupJob | null>(null);
+  const recoveryJobNow = useRef<BackupJob | null>(null);
   const [recoveryPassword, setRecoveryPassword] = useState<string | null>(null);
   const [recoverySaved, setRecoverySaved] = useState(false);
+  const openRecovery = (job: BackupJob) => { recoveryJobNow.current = job; setRecoveryJob(job); setRecoveryPassword(null); setRecoverySaved(false); };
+  const closeRecovery = () => { recoveryJobNow.current = null; setRecoveryJob(null); setRecoveryPassword(null); setRecoverySaved(false); };
 
   const create = useSessionMutation({
     mutationFn: () => backupApi.create({ sections: exportSelection === 'full' ? 'full' : exportSelection as BackupSectionId[], include_download_mail: downloadMailOn }),
@@ -177,21 +193,31 @@ export default function BackupSettings({ active }: { active: boolean }) {
   });
   const cancel = useSessionMutation({ mutationFn: (job: BackupJob) => backupApi.cancel(job.id), onSuccess: refreshJobs, onError: failed('Could not stop the backup') });
   const remove = useSessionMutation({ mutationFn: (job: BackupJob) => backupApi.delete(job.id), onSuccess: () => { refreshJobs(); toast({ title: 'Backup deleted' }); }, onError: failed('Could not delete the backup') });
-  const download = useSessionMutation({ mutationFn: (job: BackupJob) => downloadBackup(job), onError: failed('Could not download the backup') });
+  // The ticket is fetched in the request and handed to the browser or the app
+  // only in the session-guarded callback: a late answer starts no download.
+  const download = useSessionMutation({ mutationFn: (job: BackupJob) => prepareBackupDownload(job), onSuccess: ticket => downloadTicket(ticket), onError: failed('Could not download the backup') });
   const reveal = useSessionMutation({
     mutationFn: (job: BackupJob) => backupApi.revealRecoveryPassword(job.id),
-    onSuccess: password => { setRecoveryPassword(password); refreshJobs(); },
+    onSuccess: (password, job) => { refreshJobs(); if (recoveryJobNow.current?.id === job.id) setRecoveryPassword(password); },
     onError: failed('Could not show the recovery password'),
   });
+  const prepared = (job: RestoreJob, chosen: RestoreOptions) => {
+    refreshRestores();
+    // The choices changed while the server prepared: the job stays in the list below, unselected.
+    if (!sameOptions(chosen, optionsNow.current)) return false;
+    setSelectedRestoreJobId(job.id); setShownResult(null);
+    return true;
+  };
   const restoreStored = useSessionMutation({
-    mutationFn: (job: BackupJob) => backupApi.restoreStored(job.id, job.requested_sections.length ? job.requested_sections : 'full', options),
-    onSuccess: job => { setSelectedRestoreJobId(job.id); setShownResult(null); refreshRestores(); toast({ title: 'Checking the backup', description: 'Restore becomes available once the check passes.' }); },
+    mutationFn: ({ job, options: chosen }: { job: BackupJob; options: RestoreOptions }) => backupApi.restoreStored(job.id, job.requested_sections.length ? job.requested_sections : 'full', chosen),
+    onSuccess: (job, { options: chosen }) => { if (prepared(job, chosen)) toast({ title: 'Checking the backup', description: 'Restore becomes available once the check passes.' }); },
     onError: failed('Could not prepare the restore'),
   });
   const upload = useSessionMutation({
-    mutationFn: (file: File) => backupApi.upload(file, importSelection === 'full' ? 'full' : importSelection as BackupSectionId[], options),
-    onSuccess: job => {
-      setSelectedRestoreJobId(job.id); setShownResult(null); setRestorePassword(''); refreshRestores();
+    mutationFn: ({ file, options: chosen }: { file: File; options: RestoreOptions }) => backupApi.upload(file, importSelection === 'full' ? 'full' : importSelection as BackupSectionId[], chosen),
+    onSuccess: (job, { options: chosen }) => {
+      if (!prepared(job, chosen)) return;
+      setRestorePassword('');
       toast(job.status === 'awaiting_password'
         ? { title: 'Recovery password needed', description: 'Enter the recovery password of this backup to check it.' }
         : { title: 'Backup uploaded', description: 'It is checked in the background.' });
@@ -217,7 +243,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
 
   const openDownload = (job: BackupJob) => {
     const action = getBackupDownloadAction(job);
-    if (action === 'reveal_password') { setRecoveryJob(job); setRecoveryPassword(null); setRecoverySaved(false); return; }
+    if (action === 'reveal_password') { openRecovery(job); return; }
     if (action === 'missing_password_metadata') {
       toast({ title: 'Recovery password unavailable', description: 'This backup is missing its recovery-password record. Create a new backup.', variant: 'destructive' });
       return;
@@ -230,7 +256,8 @@ export default function BackupSettings({ active }: { active: boolean }) {
     saveFile(blob, `unihub-backup-${recoveryJob.id}-recovery-password.txt`).then(() => { if (!scope.ended) setRecoverySaved(true); })
       .catch(() => toast({ title: 'Could not save the file', variant: 'destructive' }));
   };
-  const closeRecovery = () => { setRecoveryJob(null); setRecoveryPassword(null); setRecoverySaved(false); };
+  // While the reveal runs, or until the shown password is saved, the dialog stays.
+  const recoveryStays = reveal.isPending || (!!recoveryPassword && !recoverySaved);
 
   // What the chosen backup will hold, for the ledger under the choice.
   const chosen = exportSelection === 'full' ? exportSections.map(section => section.id) : exportSelection;
@@ -242,6 +269,8 @@ export default function BackupSettings({ active }: { active: boolean }) {
   ].filter((entry): entry is string => !!entry);
   const retentionText = retentionPolicy.value ? `The server keeps each backup ${retentionPolicy.value} days, then removes it.` : 'The server keeps them until you delete them.';
   const busy = create.isPending || upload.isPending || unlock.isPending;
+  // The restore choices are fixed while the server prepares a job with them.
+  const preparing = upload.isPending || restoreStored.isPending;
 
   return (<>
     <div className="mb-8 space-y-3">
@@ -322,8 +351,8 @@ export default function BackupSettings({ active }: { active: boolean }) {
                 <div className="flex shrink-0 items-center gap-1 touch:gap-3">
                   {job.status === 'ready' && <>
                     <Button variant="outline" size="sm" onClick={() => openDownload(job)} disabled={download.isPending} aria-label={`Download ${title}`}><Download aria-hidden="true" />Download</Button>
-                    <Button variant="outline" size="sm" className="hidden sm:inline-flex" onClick={() => restoreStored.mutate(job)} aria-label={`Restore ${title}`}
-                      disabled={!available || busy || restoreStored.isPending || !!restorePolicy.lock} title={restorePolicy.lock}><RotateCcw aria-hidden="true" />Restore</Button>
+                    <Button variant="outline" size="sm" className="hidden sm:inline-flex" onClick={() => restoreStored.mutate({ job, options })} aria-label={`Restore ${title}`}
+                      disabled={!available || busy || preparing || !!restorePolicy.lock} title={restorePolicy.lock}><RotateCcw aria-hidden="true" />Restore</Button>
                   </>}
                   {running && <Button variant="outline" size="sm" onClick={() => cancel.mutate(job)} disabled={job.status === 'cancelling'}><Square aria-hidden="true" />Stop</Button>}
                   {!running && (
@@ -332,7 +361,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                         <Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label={`More actions for ${title}`}><MoreHorizontal aria-hidden="true" /></Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        {job.status === 'ready' && <PolicyMenuItem className="sm:hidden" lock={restorePolicy.lock} disabled={!available || busy} onClick={() => restoreStored.mutate(job)}>Restore</PolicyMenuItem>}
+                        {job.status === 'ready' && <PolicyMenuItem className="sm:hidden" lock={restorePolicy.lock} disabled={!available || busy || preparing} onClick={() => restoreStored.mutate({ job, options })}>Restore</PolicyMenuItem>}
                         <PolicyMenuItem lock={deletePolicy.lock} className="text-destructive focus:text-destructive" onClick={() => remove.mutate(job)}>Delete</PolicyMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
@@ -353,13 +382,13 @@ export default function BackupSettings({ active }: { active: boolean }) {
           onChange={event => { setImportFile(event.target.files?.[0] || null); resetReview(); setRestorePassword(''); }} />
       </SettingsRow>
       <SettingsRow stack label="What to restore" description="Chosen sections restore only that data from the same backup.">
-        <SectionChips sections={importSections} value={importSelection} onChange={next => { setImportSelection(next); resetReview(); }} disabled={!available || busy || !!restorePolicy.lock} allLabel="Everything" />
+        <SectionChips sections={importSections} value={importSelection} onChange={next => { setImportSelection(next); resetReview(); }} disabled={!available || busy || preparing || !!restorePolicy.lock} allLabel="Everything" />
       </SettingsRow>
       <SettingsRow stack label="When something already exists">
         <div className="grid w-full gap-3 sm:grid-cols-3">
           <div className="space-y-1.5">
             <Label htmlFor="restore-conflicts">Matching items</Label>
-            <Select value={options.conflict_mode} onValueChange={value => changeOption('conflict_mode', value as ConflictMode)} disabled={!!restorePolicy.lock}>
+            <Select value={options.conflict_mode} onValueChange={value => changeOption('conflict_mode', value as ConflictMode)} disabled={preparing || !!restorePolicy.lock}>
               <SelectTrigger id="restore-conflicts"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="keep_existing">Keep what is here</SelectItem>
@@ -370,7 +399,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="restore-calendars">Local calendars</Label>
-            <Select value={options.calendar_mode} onValueChange={value => changeOption('calendar_mode', value as CalendarMode)} disabled={!!restorePolicy.lock}>
+            <Select value={options.calendar_mode} onValueChange={value => changeOption('calendar_mode', value as CalendarMode)} disabled={preparing || !!restorePolicy.lock}>
               <SelectTrigger id="restore-calendars"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="merge_same_name">Merge by name</SelectItem>
@@ -380,7 +409,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="restore-credentials">Account sign-ins</Label>
-            <Select value={options.credentials_mode} onValueChange={value => changeOption('credentials_mode', value as CredentialsMode)} disabled={!!restorePolicy.lock}>
+            <Select value={options.credentials_mode} onValueChange={value => changeOption('credentials_mode', value as CredentialsMode)} disabled={preparing || !!restorePolicy.lock}>
               <SelectTrigger id="restore-credentials"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="keep_existing">Keep the current ones</SelectItem>
@@ -392,11 +421,11 @@ export default function BackupSettings({ active }: { active: boolean }) {
       </SettingsRow>
       <SettingsBlock className="space-y-4">
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => importFile && upload.mutate(importFile)} disabled={!available || busy || !importFile || !!restorePolicy.lock}>
+          <Button variant="outline" onClick={() => importFile && upload.mutate({ file: importFile, options })} disabled={!available || busy || preparing || !importFile || !!restorePolicy.lock}>
             {upload.isPending ? <Loader2 aria-hidden="true" className="animate-spin" /> : <Upload aria-hidden="true" />}Upload and check
           </Button>
-          <Button onClick={() => selectedRestoreJob && startRestore.mutate(selectedRestoreJob)}
-            disabled={!available || busy || startRestore.isPending || selectedRestoreJob?.status !== 'validated' || !!restorePolicy.lock}>
+          <Button onClick={() => selectedRestoreJob && preparedAsChosen && startRestore.mutate(selectedRestoreJob)}
+            disabled={!available || busy || startRestore.isPending || selectedRestoreJob?.status !== 'validated' || !preparedAsChosen || !!restorePolicy.lock}>
             <Play aria-hidden="true" />Restore
           </Button>
         </div>
@@ -460,7 +489,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
             <div key={job.id} className={cn('space-y-2 py-4', selectedRestoreJobId === job.id && '-mx-3 rounded-md bg-muted/40 px-3')}>
               <div className="flex items-start gap-3">
                 <button type="button" className="min-w-0 flex-1 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-pressed={selectedRestoreJobId === job.id} onClick={() => { setSelectedRestoreJobId(job.id); setShownResult(job.validation_result || job.result_counts); }}>
+                  aria-pressed={selectedRestoreJobId === job.id} onClick={() => selectRestoreJob(job)}>
                   <p className="text-sm font-medium">{title}</p>
                   <p className="text-xs text-muted-foreground">{meta}</p>
                   {job.error && <p className="text-xs text-destructive">{job.error}</p>}
@@ -487,9 +516,9 @@ export default function BackupSettings({ active }: { active: boolean }) {
         })}
     </SettingsSection>
 
-    <Dialog open={!!recoveryJob} onOpenChange={open => { if (!open && !(recoveryPassword && !recoverySaved)) closeRecovery(); }}>
-      <DialogContent onEscapeKeyDown={event => { if (recoveryPassword && !recoverySaved) event.preventDefault(); }}
-        onPointerDownOutside={event => { if (recoveryPassword && !recoverySaved) event.preventDefault(); }}>
+    <Dialog open={!!recoveryJob} onOpenChange={open => { if (!open && !recoveryStays) closeRecovery(); }}>
+      <DialogContent onEscapeKeyDown={event => { if (recoveryStays) event.preventDefault(); }}
+        onPointerDownOutside={event => { if (recoveryStays) event.preventDefault(); }}>
         <DialogHeader>
           <DialogTitle>Recovery password</DialogTitle>
           <DialogDescription>
@@ -518,7 +547,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
           </div>
         ) : (
           <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={closeRecovery}>Cancel</Button>
+            <Button variant="outline" onClick={closeRecovery} disabled={reveal.isPending}>Cancel</Button>
             <Button onClick={() => recoveryJob && reveal.mutate(recoveryJob)} disabled={reveal.isPending}>
               {reveal.isPending && <Loader2 aria-hidden="true" className="animate-spin" />}Show the password
             </Button>

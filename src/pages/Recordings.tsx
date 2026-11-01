@@ -20,6 +20,7 @@ import { useAuth } from '@/contexts/useAuth';
 import { useBinActions } from '@/hooks/use-bin-actions';
 import { BinView } from '@/components/bin/BinView';
 import { useToast } from '@/hooks/use-toast';
+import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { Button } from '@/components/ui/button';
 import { buttonVariants } from '@/components/ui/button-variants';
 import { Input } from '@/components/ui/input';
@@ -282,9 +283,10 @@ const Recordings = () => {
     },
   });
 
-  const deleteRecording = useMutation({
+  const deleteRecording = useSessionMutation({
     mutationFn: ({ id }: { id: string; title: string }) => recordingsApi.delete(id),
     // The recording waits in the bin with its file; the notice offers Undo.
+    // Session-bound: an answer after an account switch names no title.
     onSuccess: (binItemIds, { title }) => {
       queryClient.invalidateQueries({ queryKey: recordingsQueryKeys.all });
       setDeleteTarget(null);

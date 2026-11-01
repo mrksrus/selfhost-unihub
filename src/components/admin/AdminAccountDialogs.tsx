@@ -36,20 +36,26 @@ export function AdminMailAccountDialog({ account, open, onClose, pending, onSubm
   onSubmit: (fields: Partial<MailFields>, currentPassword: string) => void;
 }) {
   const [fields, setFields] = useState<MailFields>(emptyMail);
+  // The server fields the administrator typed into; the others stay as they are on the account.
+  const [edited, setEdited] = useState<Set<keyof MailFields>>(() => new Set());
   const [adminPassword, setAdminPassword] = useState('');
   useEffect(() => {
-    if (!open) return;
     setAdminPassword('');
-    setFields(account ? { ...emptyMail(), email_address: account.email_address, display_name: account.display_name ?? '', sync_mode: account.sync_mode, delete_emails_on_server: account.delete_emails_on_server } : emptyMail());
+    setEdited(new Set());
+    setFields(open && account ? { ...emptyMail(), email_address: account.email_address, display_name: account.display_name ?? '', sync_mode: account.sync_mode, delete_emails_on_server: account.delete_emails_on_server } : emptyMail());
   }, [open, account]);
-  const set = <K extends keyof MailFields>(key: K, value: MailFields[K]) => setFields(current => ({ ...current, [key]: value }));
+  const set = <K extends keyof MailFields>(key: K, value: MailFields[K]) => {
+    setFields(current => ({ ...current, [key]: value }));
+    setEdited(current => new Set(current).add(key));
+  };
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!adminPassword) return;
     if (account) {
       const change: Partial<MailFields> = { display_name: fields.display_name, sync_mode: fields.sync_mode, delete_emails_on_server: fields.sync_mode === 'download' && fields.delete_emails_on_server };
       if (fields.encrypted_password) change.encrypted_password = fields.encrypted_password;
-      for (const key of ['username', 'imap_host', 'smtp_host'] as const) if (fields[key]) change[key] = fields[key];
+      for (const key of ['username', 'imap_host', 'smtp_host'] as const) if (edited.has(key) && fields[key]) change[key] = fields[key];
+      for (const key of ['imap_port', 'smtp_port'] as const) if (edited.has(key) && fields[key]) change[key] = fields[key];
       onSubmit(change, adminPassword);
     } else {
       onSubmit({ ...fields, username: fields.username || fields.email_address, delete_emails_on_server: fields.sync_mode === 'download' && fields.delete_emails_on_server }, adminPassword);
@@ -105,9 +111,8 @@ export function AdminCalendarAccountDialog({ account, open, onClose, pending, on
   const [fields, setFields] = useState<CalendarFields>(emptyCalendar);
   const [adminPassword, setAdminPassword] = useState('');
   useEffect(() => {
-    if (!open) return;
     setAdminPassword('');
-    setFields(account ? { ...emptyCalendar(), provider: account.provider === 'ics' ? 'ics' : 'caldav', account_email: account.account_email ?? '', display_name: account.display_name ?? '' } : emptyCalendar());
+    setFields(open && account ? { ...emptyCalendar(), provider: account.provider === 'ics' ? 'ics' : 'caldav', account_email: account.account_email ?? '', display_name: account.display_name ?? '' } : emptyCalendar());
   }, [open, account]);
   const set = <K extends keyof CalendarFields>(key: K, value: CalendarFields[K]) => setFields(current => ({ ...current, [key]: value }));
   const submit = (event: FormEvent) => {
