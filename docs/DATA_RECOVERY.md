@@ -87,13 +87,20 @@ Each run is a row of `instance_backups`.
    `unihub-instance-<UTC time>-<version>-<run id>.uhib.partial`, encrypted as
    it is written. Nothing is staged in `/tmp` or elsewhere.
 3. It opens the gate again, writes the manifest and seals the file.
-4. It reads the whole file back with the key and checks every hash. Only then
+4. It reads the whole file back with the key and checks every hash, and
+   checks that no configured secret file changed during the run. Only then
    is it published as `.uhib`, with a link that never replaces a file already
-   there (a run that finds one fails and leaves it alone).
-5. In one transaction it records the run as succeeded and marks the oldest
-   succeeded backups beyond `INSTANCE_BACKUP_KEEP` removed (`removed_at`;
-   newest first by completion time, then by run id), then removes their
-   files. The run counts as running until those are gone.
+   there (a run that finds one fails and leaves it alone). On a destination
+   without hard links (the link fails with `EOPNOTSUPP`, `EPERM` or `ENOSYS`,
+   as on some NAS shares, FUSE mounts and FAT) it checks that the name is
+   free and renames the file to it; the name holds the run id, so no other
+   run writes it.
+5. In one transaction it records the run as succeeded with the next
+   completion number (`completion_seq`) and marks the oldest succeeded
+   backups beyond `INSTANCE_BACKUP_KEEP` removed (`removed_at`), then removes
+   their files. Newest means the higher completion number, never a time, so
+   a clock set back does not make retention remove the latest backup. The run
+   counts as running until those files are gone.
 
 A failed run (no space, a missing mount, a dump error, a stop) removes its
 partial file and records the reason; it never counts, and nothing is removed
@@ -110,7 +117,14 @@ deletion, contact photos, mail attachments and the raw file a re-import
 replaces are queued and run, in order, when the copy ends, and the contact
 sweeps skip their turn. A removal never waits at the gate (its caller may hold
 a lock a queued removal needs): until the queue has drained, a new one joins
-it. Files added during the copy may be in the backup without a row;
+it. The queue lives in the server's memory. If the server stops while a
+backup runs, the removals queued so far never run, and their files stay on
+the disk as orphans, never a row without its file: the files of a deleted
+person or a removed mail account, mail files Sync-mode pruning or a folder
+deletion gave up, deleted attachments, the raw file a re-import replaced and
+released contact photos. The contact-photo sweep removes those photos later;
+the others stay in their storage roots, with no row referring to them, and
+are copied by later backups. Files added during the copy may be in the backup without a row;
 they are harmless. A file that changes while it is read (stored files are
 written once, so this is rare) is marked in the index and left out by a
 restore. For a very large installation a volume snapshot stays the faster
@@ -128,9 +142,12 @@ restore archives), and **no key**. A configured secret file (`NAME_FILE`)
 inside `/app/uploads` or a stored-file root stops the start, also through a
 symbolic link or an aliased path; a secret file found among the stored files
 anyway (a hard link, a second mount), also a file read at the start and
-replaced or removed since, and Compose `.env` files are left out. A run that
-cannot check a configured secret file (it was removed) does not run and says
-which.
+replaced or removed since, and Compose `.env` files are left out. The files
+read at the start stay open while the server runs, so a stored file never
+takes over their identity. A run that cannot check a configured secret file
+(it was removed) does not run and says which. A run during which a secret
+file was rotated (its name points at another file at the end than at the
+start) does not count and says which; the next run leaves the new file out.
 `ENCRYPTION_KEY`,
 `ENCRYPTION_KEY_PREVIOUS`, `BACKUP_MASTER_KEY`, `JWT_SECRET` and the instance
 key stay outside, so no single key opens everything (F10). Keep them in a

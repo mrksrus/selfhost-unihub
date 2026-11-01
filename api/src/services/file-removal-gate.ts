@@ -16,6 +16,11 @@ import { log } from '../log';
 // that stops with removals queued leaves those files behind as orphans, never
 // a row without its file. A removal the gate let through (now or from the
 // queue) runs the gated removals it calls itself at once: they are part of it.
+//
+// The usual shape: commit the deletion of the rows first, then, holding no
+// transaction or lock, `await fileRemovalGate.run(() => removeTheFiles())`.
+// The answer is the removal's result, or 'deferred' when it was queued; a
+// caller reports the rows as deleted either way.
 type Removal = () => Promise<unknown>;
 
 let closedBy = 0;

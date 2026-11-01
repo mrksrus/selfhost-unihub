@@ -20,7 +20,7 @@ upgrade; back up first.
   encrypted, daily at `INSTANCE_BACKUP_TIME` (03:30 UTC) and on "Back up
   now", keeping the newest `INSTANCE_BACKUP_KEEP` (14). A backup counts only
   after it has been read back whole with the key; a failed one leaves no
-  file. Without the settings it is off and the server runs as before. The
+  file, and none replaces another (also on a share without hard links). Without the settings it is off and the server runs as before. The
   backup holds none of the installation's keys; keep them in a password
   manager. There is no download from the web page.
 - **Restore command.** `node /app/api/src/instance-restore.js --file
