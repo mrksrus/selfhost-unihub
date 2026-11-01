@@ -10,23 +10,37 @@ const MAX_SECRET_FILE_BYTES = 64 * 1024;
 
 class SecretConfigError extends Error {}
 
+// The files this process read its secrets from, by identity (device and
+// inode, the file itself and not its name). The instance backup leaves these
+// out even after the name points elsewhere (a replaced or removed file whose
+// old copy survives as a hard link among the stored files).
+interface LoadedSecretFile { name: string; path: string; dev: number; ino: number }
+const loadedSecretFiles = new Map<string, LoadedSecretFile>();
+
 function readSecret(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   const direct = env[name];
   const file = env[`${name}_FILE`];
   if (!file) return direct;
   let value: string;
+  let descriptor: number | null = null;
   try {
-    const stat = fs.statSync(file);
+    // One descriptor for the check and the read, so the identity is that of what was read.
+    descriptor = fs.openSync(file, 'r');
+    const stat = fs.fstatSync(descriptor);
     if (!stat.isFile()) throw new SecretConfigError(`${name}_FILE (${file}) is not a file.`);
     if (stat.size > MAX_SECRET_FILE_BYTES) throw new SecretConfigError(`${name}_FILE (${file}) is larger than a secret can be.`);
-    value = fs.readFileSync(file, 'utf8').replace(/\r?\n$/, '');
+    value = fs.readFileSync(descriptor, 'utf8').replace(/\r?\n$/, '');
+    if (env === process.env) loadedSecretFiles.set(`${name}:${stat.dev}:${stat.ino}`, { name: `${name}_FILE`, path: file, dev: stat.dev, ino: stat.ino });
   } catch (error) {
     if (error instanceof SecretConfigError) throw error;
     const code = (error as NodeJS.ErrnoException).code;
     const uid = typeof process.getuid === 'function' ? process.getuid() : null;
     throw new SecretConfigError(code === 'ENOENT' ? `${name}_FILE (${file}) does not exist.`
       : code === 'EACCES' ? `${name}_FILE (${file}) cannot be read${uid === null ? '' : ` by uid ${uid}, which runs the API`}.`
-        : `${name}_FILE (${file}) cannot be read (${code || 'error'}).`);
+        : code === 'EISDIR' ? `${name}_FILE (${file}) is not a file.`
+          : `${name}_FILE (${file}) cannot be read (${code || 'error'}).`);
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
   }
   if (!value) throw new SecretConfigError(`${name}_FILE (${file}) is empty.`);
   if (direct && direct !== value) throw new SecretConfigError(`${name} and ${name}_FILE are both set and differ; set only one.`);
@@ -107,6 +121,28 @@ interface InstanceBackupConfig {
   errors: string[];
 }
 
+/** The secret files read so far (instance-backup.ts leaves them out of a backup). */
+function secretFilesLoaded(): readonly LoadedSecretFile[] {
+  return [...loadedSecretFiles.values()];
+}
+
+/**
+ * Every way a secret's text can be taken as key bytes: the text itself (as
+ * given and trimmed) and each of hex, base64 and base64url the text is valid
+ * for. A key is another secret when any reading of one is a reading of the other.
+ */
+function keyReadings(value: string): Buffer[] {
+  const readings: Buffer[] = [];
+  for (const text of new Set([value, value.trim()])) {
+    if (!text) continue;
+    readings.push(Buffer.from(text, 'utf8'));
+    if (/^[0-9a-f]+$/i.test(text) && text.length % 2 === 0) readings.push(Buffer.from(text, 'hex'));
+    if (/^[A-Za-z0-9+/]+={0,2}$/.test(text)) readings.push(Buffer.from(text, 'base64'));
+    if (/^[A-Za-z0-9_-]+={0,2}$/.test(text)) readings.push(Buffer.from(text, 'base64url'));
+  }
+  return readings.filter(reading => reading.length);
+}
+
 /** 32 random bytes or more, written as hex or base64 (base64url too). */
 function decodeKeyText(value: string): Buffer | null {
   const text = value.trim();
@@ -133,11 +169,11 @@ function parseInstanceBackupConfig(env: NodeJS.ProcessEnv = process.env, others:
     } else {
       // F10: the instance key protects a copy of everything; one leaked
       // secret must not open both the installation and its backups.
-      // The others are used as their text, so the instance key's bytes are
-      // compared with that text's UTF-8 bytes as well as with what the text
-      // decodes to: base64(ENCRYPTION_KEY) is the same key written another way.
-      const sameKey = (other: string) => [other, other.trim()].some(text => text === keyText!.trim()
-        || decoded.equals(Buffer.from(text, 'utf8')) || !!decodeKeyText(text)?.equals(decoded));
+      // A key written another way is the same key: base64(ENCRYPTION_KEY),
+      // or a hex secret's base64 reading written as hex. Every reading of the
+      // instance key is compared with every reading of each other secret.
+      const mine = [decoded, ...keyReadings(keyText)];
+      const sameKey = (other: string) => keyReadings(other).some(theirs => mine.some(reading => reading.equals(theirs)));
       const reused = Object.entries(others ?? {
         JWT_SECRET, ENCRYPTION_KEY, ENCRYPTION_KEY_PREVIOUS, BACKUP_MASTER_KEY: BACKUP_MASTER_KEY_SET,
       }).filter(([, other]) => other && sameKey(other)).map(([name]) => name);
@@ -191,8 +227,10 @@ export {
   INSTANCE_BACKUP,
   SecretConfigError,
   readSecret,
+  secretFilesLoaded,
+  keyReadings,
   decodeKeyText,
   parseInstanceBackupConfig,
   assertConfiguration,
 };
-export type { InstanceBackupConfig };
+export type { InstanceBackupConfig, LoadedSecretFile };

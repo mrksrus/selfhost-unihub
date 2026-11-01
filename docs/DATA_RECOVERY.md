@@ -79,17 +79,21 @@ permission `server.settings`, activity-log entry `admin.instance_backup_started`
 Each run is a row of `instance_backups`.
 
 1. It checks the destination and its free space (about the last backup's size,
-   or the database's before the first, plus 64 MiB).
+   or the database's before the first, plus 64 MiB), and again the start's
+   checks of the secret files (see what is in the file).
 2. It closes the file removal gate (`file-removal-gate.ts`), then streams
    `mariadb-dump --single-transaction --routines --triggers --hex-blob` (one
    consistent snapshot) and then the stored files into
-   `unihub-instance-<UTC time>-<version>.uhib.partial`, encrypted as it is
-   written. Nothing is staged in `/tmp` or elsewhere.
+   `unihub-instance-<UTC time>-<version>-<run id>.uhib.partial`, encrypted as
+   it is written. Nothing is staged in `/tmp` or elsewhere.
 3. It opens the gate again, writes the manifest and seals the file.
 4. It reads the whole file back with the key and checks every hash. Only then
-   is it renamed to `.uhib` and the run recorded as succeeded.
-5. It removes the oldest succeeded backups beyond `INSTANCE_BACKUP_KEEP`
-   (`removed_at` on their rows).
+   is it published as `.uhib`, with a link that never replaces a file already
+   there (a run that finds one fails and leaves it alone).
+5. In one transaction it records the run as succeeded and marks the oldest
+   succeeded backups beyond `INSTANCE_BACKUP_KEEP` removed (`removed_at`;
+   newest first by completion time, then by run id), then removes their
+   files. The run counts as running until those are gone.
 
 A failed run (no space, a missing mount, a dump error, a stop) removes its
 partial file and records the reason; it never counts, and nothing is removed
@@ -102,8 +106,11 @@ day's time; "Back up now" runs one at once.
 file whose row is deleted after the dump is still needed by the backup, so
 file removals pass through the gate: while it is closed, removals by user
 deletion, removing a mail account with its mail, Sync-mode pruning and folder
-deletion are queued and run when the copy ends, and the contact sweeps skip
-their turn. Files added during the copy may be in the backup without a row;
+deletion, contact photos, mail attachments and the raw file a re-import
+replaces are queued and run, in order, when the copy ends, and the contact
+sweeps skip their turn. A removal never waits at the gate (its caller may hold
+a lock a queued removal needs): until the queue has drained, a new one joins
+it. Files added during the copy may be in the backup without a row;
 they are harmless. A file that changes while it is read (stored files are
 written once, so this is rare) is marked in the index and left out by a
 restore. For a very large installation a volume snapshot stays the faster
@@ -120,7 +127,10 @@ written, an unfinished export, backup uploads being received and uploaded
 restore archives), and **no key**. A configured secret file (`NAME_FILE`)
 inside `/app/uploads` or a stored-file root stops the start, also through a
 symbolic link or an aliased path; a secret file found among the stored files
-anyway (a hard link, a second mount) and Compose `.env` files are left out.
+anyway (a hard link, a second mount), also a file read at the start and
+replaced or removed since, and Compose `.env` files are left out. A run that
+cannot check a configured secret file (it was removed) does not run and says
+which.
 `ENCRYPTION_KEY`,
 `ENCRYPTION_KEY_PREVIOUS`, `BACKUP_MASTER_KEY`, `JWT_SECRET` and the instance
 key stay outside, so no single key opens everything (F10). Keep them in a
@@ -150,7 +160,7 @@ volume and uploads volume, the old installation's `ENCRYPTION_KEY` and
 docker compose up -d unihub-db          # the database only, not the app
 docker compose run --rm --no-deps unihub \
   node /app/api/src/instance-restore.js \
-  --file /backup/unihub-instance-20261101T033000Z-0.28.0.uhib \
+  --file /backup/unihub-instance-20261101T033000Z-0.28.0-019a3d6e-1f40-7000-8000-000000000000.uhib \
   --key-file /run/secrets/unihub_instance_backup_key
 docker compose up -d                    # the app migrates an older backup on start
 ```

@@ -39,7 +39,7 @@ const sha = (file: string) => crypto.createHash('sha256').update(fs.readFileSync
 const write = (file: string, content: string | Buffer) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, content); return file; };
 
 test('the instance backup copies the installation, keeps only verified runs, refuses changed files and restores into an empty installation', {
-  skip: !process.env.MYSQL_TEST_HOST, timeout: 300000,
+  skip: !process.env.MYSQL_TEST_HOST, timeout: 900000,
 }, async t => {
   fs.mkdirSync(scratch, { mode: 0o700 });
   t.after(() => fs.rmSync(scratch, { recursive: true, force: true }));
@@ -223,7 +223,8 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     assert.deepEqual(during, { removal: 'deferred', messageKept: true, photoDelete: 200, photoRows: 0, photoFilesKept: [true, true] }, 'removals after the dump wait at the gate');
     assert.equal(fs.existsSync(removedDuringCopy), false, 'the queued removal ran once the copy ended');
     assert.ok(photoFiles.every(file => !fs.existsSync(file)), 'the queued photo release checked the references again and removed them');
-    assert.match(run!.file_name!, /^unihub-instance-\d{8}T\d{6}Z-[0-9.]+\.uhib$/);
+    assert.equal(run!.file_name, `unihub-instance-${run!.file_name!.slice(16, 32)}-${run!.app_version}-${run!.id}.uhib`, 'time, version and run id');
+    assert.match(run!.file_name!, /^unihub-instance-\d{8}T\d{6}Z-/);
     assert.deepEqual(fs.readdirSync(destination), [run!.file_name]);
     const file = path.join(destination, run!.file_name!);
     assert.equal(sha(file), run!.sha256);
@@ -273,6 +274,23 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     assert.equal(await restoreCommand(['--file', first.file, '--key-file', keyFile, '--verify-only'], () => {}), 0);
   });
 
+  const backupFiles = () => fs.readdirSync(destination).filter(name => name.endsWith('.uhib')).sort();
+  // The completion contract: once the status says nothing runs, the run's
+  // row, the kept count and the files at the destination agree.
+  async function finished() {
+    for (let wait = 0; ; wait++) {
+      const status = (await admin.request('GET', '/api/admin/instance-backup')).body as FixtureValue;
+      if (!status.running) {
+        assert.notEqual(status.last_run?.status, 'running', 'not running, yet the last run still runs');
+        assert.ok(status.kept.count <= status.keep, `${status.kept.count} kept, ${status.keep} to keep`);
+        assert.equal(backupFiles().length, status.kept.count, 'files at the destination');
+        return status;
+      }
+      assert.ok(wait < 600, 'the run finishes');
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
   await t.test('Back up now through the route; retention keeps the newest after each verified success', async () => {
     const names: string[] = [];
     for (let i = 0; i < 2; i++) {
@@ -284,13 +302,7 @@ test('the instance backup copies the installation, keeps only verified runs, ref
       assert.equal((started.body.run as FixtureValue).actor_email, 'admin@example.test');
       const again = await admin.request('POST', '/api/admin/instance-backup/run', {});
       assert.deepEqual([again.status, again.body.code], [409, 'INSTANCE_BACKUP_RUNNING']);
-      let status: FixtureValue;
-      for (let wait = 0; ; wait++) {
-        status = (await admin.request('GET', '/api/admin/instance-backup')).body;
-        if (!status.running) break;
-        assert.ok(wait < 600, 'the run finishes');
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
+      const status = await finished();
       assert.equal(status.last_run.status, 'succeeded', JSON.stringify(status.last_run));
       names.push(status.last_run.file_name);
     }
@@ -302,6 +314,108 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     assert.ok(oldest.removed_at, 'its run is marked removed');
     assert.equal(Number((await pool.query<RowDataPacket[]>("SELECT COUNT(*) AS count FROM audit_log WHERE action = 'admin.instance_backup_started'"))[0][0].count), 2);
     assert.match(status.restore_command, /instance-restore\.js --file/);
+  });
+
+  await t.test('the status is one snapshot, and a run is running until its retention has removed the old files', async () => {
+    backup.useInstanceBackupConfig({ ...settings, keep: 1 });
+    const holder = await pool.getConnection();
+    try {
+      // Hold the kept runs' rows: the next run's retention has to wait for them.
+      await holder.beginTransaction();
+      const [held] = await holder.query<RowDataPacket[]>("SELECT id FROM instance_backups WHERE status = 'succeeded' AND removed_at IS NULL");
+      assert.ok(held.length >= 1);
+      await holder.query(`SELECT id FROM instance_backups WHERE id IN (${held.map(() => '?').join(', ')}) FOR UPDATE`, held.map(row => row.id));
+      const started = await admin.request('POST', '/api/admin/instance-backup/run');
+      assert.equal(started.status, 202, JSON.stringify(started.body));
+      for (let wait = 0; ; wait++) {
+        // The test user sees its own threads (INNODB_TRX needs PROCESS): the run's locking read is executing, blocked by the holder.
+        const [[waiting]] = await holder.query<RowDataPacket[]>(
+          "SELECT COUNT(*) AS count FROM information_schema.PROCESSLIST WHERE ID <> CONNECTION_ID() AND INFO LIKE '%instance_backups%' AND INFO LIKE '%FOR UPDATE%'");
+        if (Number(waiting.count) > 0) break;
+        assert.ok(wait < 600, 'the run reaches its retention');
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      const during = (await admin.request('GET', '/api/admin/instance-backup')).body as FixtureValue;
+      assert.deepEqual({ running: during.running, refused: (await admin.request('POST', '/api/admin/instance-backup/run')).body.code },
+        { running: true, refused: 'INSTANCE_BACKUP_RUNNING' }, `while retention waits: ${JSON.stringify({ last: during.last_run?.status, kept: during.kept })}`);
+      await holder.commit();
+    } finally {
+      await holder.rollback().catch(() => {});
+      holder.release();
+    }
+    const after = await finished();
+    assert.equal(after.last_run.status, 'succeeded');
+    assert.deepEqual([after.kept.count, backupFiles()], [1, [after.last_run.file_name]]);
+    backup.useInstanceBackupConfig(settings);
+  });
+
+  await t.test('each run writes a file of its own, never over another, and retention keeps the latest', async () => {
+    backup.useInstanceBackupConfig({ ...settings, keep: 1 });
+    try {
+      // Back to back, also within one second.
+      const a = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      const b = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      assert.deepEqual([a.status, b.status], ['succeeded', 'succeeded'], String(a.error || b.error));
+      assert.ok(a.file_name!.includes(a.id) && b.file_name!.includes(b.id) && a.file_name !== b.file_name, 'each name holds its run id');
+      assert.ok(b.id > a.id, 'run ids follow the order of the runs');
+      const [kept] = await pool.query<RowDataPacket[]>("SELECT id FROM instance_backups WHERE status = 'succeeded' AND removed_at IS NULL");
+      assert.deepEqual([kept.map(row => row.id), backupFiles()], [[b.id], [b.file_name]], 'the latest run and its file are kept');
+
+      // A file already at the name is never replaced.
+      let planted = '';
+      const c = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin, hooks: { afterDump: async () => {
+        const partial = fs.readdirSync(destination).find(name => name.endsWith('.partial'))!;
+        planted = path.join(destination, partial.slice(0, -'.partial'.length));
+        fs.writeFileSync(planted, 'synthetic file that is not this run');
+      } } }))!;
+      assert.equal(c.status, 'failed');
+      assert.match(String(c.error), /already exists/);
+      assert.equal(fs.readFileSync(planted, 'utf8'), 'synthetic file that is not this run');
+      assert.deepEqual(fs.readdirSync(destination).filter(name => name.endsWith('.partial')), []);
+      fs.rmSync(planted);
+      assert.deepEqual(backupFiles(), [b.file_name]);
+
+      // Runs finished in the same second: the later run stays.
+      backup.useInstanceBackupConfig({ ...settings, keep: 3 });
+      const d = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      const e = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      assert.deepEqual([d.status, e.status], ['succeeded', 'succeeded']);
+      await pool.query("UPDATE instance_backups SET started_at = '2030-01-01 00:00:00', finished_at = '2030-01-01 00:00:00' WHERE id IN (?, ?, ?)", [b.id, d.id, e.id]);
+      assert.equal(await backup.applyRetention({ dir: destination, keep: 1 }), 2);
+      const [latest] = await pool.query<RowDataPacket[]>("SELECT id FROM instance_backups WHERE status = 'succeeded' AND removed_at IS NULL");
+      assert.deepEqual([latest.map(row => row.id), backupFiles()], [[e.id], [e.file_name]]);
+    } finally {
+      backup.useInstanceBackupConfig(settings);
+    }
+  });
+
+  await t.test('a secret file read at the start stays out after it is replaced, and a run refuses when one cannot be checked', async () => {
+    const config = require('../dist/src/config') as typeof import('../src/config');
+    const loaded = write(path.join(scratch, 'secrets', 'loaded.key'), `synthetic-loaded-secret-${crypto.randomBytes(16).toString('hex')}`);
+    process.env.UNIHUB_LOADED_SECRET_FILE = loaded;
+    const link = path.join(rootDirs.attachments, users.alex, 'loaded-secret-link');
+    try {
+      assert.equal(config.readSecret('UNIHUB_LOADED_SECRET'), fs.readFileSync(loaded, 'utf8'));
+      fs.linkSync(loaded, link);
+      // Replaced atomically after it was read: what was read survives only as the link.
+      write(`${loaded}.next`, 'synthetic-rotated-secret');
+      fs.renameSync(`${loaded}.next`, loaded);
+      const replaced = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      assert.equal(replaced.status, 'succeeded', String(replaced.error));
+      const copied: string[] = [];
+      await format.scanInstanceBackup(path.join(destination, replaced.file_name!), key, backup.INSTANCE_BACKUP_ROOTS, { onFile: entry => { copied.push(path.join(uploads, entry.root, entry.path)); return null; } });
+      assert.equal(copied.includes(link), false, 'the file read at the start is left out');
+      // Removed: the run cannot tell which file to leave out, so it does not run.
+      fs.rmSync(loaded);
+      const before = backupFiles();
+      const refused = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      assert.equal(refused.status, 'failed');
+      assert.match(String(refused.error), /UNIHUB_LOADED_SECRET_FILE .* cannot be checked now/);
+      assert.deepEqual(backupFiles(), before);
+    } finally {
+      delete process.env.UNIHUB_LOADED_SECRET_FILE;
+      fs.rmSync(link, { force: true });
+    }
   });
 
   await t.test('restore into an empty installation: refused while not empty, then the data, the files and no sessions', async () => {
