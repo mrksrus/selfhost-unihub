@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import { api } from '@/lib/api';
-import { downloadTicket } from '@/lib/platform';
+import { copyText, downloadTicket, saveFile } from '@/lib/platform';
 import BackupSettings from '@/components/settings/BackupSettings';
 import { SessionQueryProvider } from '@/components/SessionQueryProvider';
 import { AuthContext, type AuthContextType } from '@/contexts/auth-context';
@@ -13,7 +13,7 @@ const state = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }), clearToasts: vi.fn() }));
 vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'user-ada' } }) }));
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn(), uploadBlob: vi.fn(), getDownloadUrl: (path: string) => `/api${path}` } }));
-vi.mock('@/lib/platform', async importOriginal => ({ ...(await importOriginal<typeof import('@/lib/platform')>()), downloadTicket: vi.fn(), saveFile: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('@/lib/platform', async importOriginal => ({ ...(await importOriginal<typeof import('@/lib/platform')>()), downloadTicket: vi.fn(), saveFile: vi.fn().mockResolvedValue(undefined), copyText: vi.fn().mockResolvedValue(true) }));
 // The reveal's deadline, shortened: the real one waits 20 seconds.
 vi.mock('@/lib/backup-api', async importOriginal => {
   const actual = await importOriginal<typeof import('@/lib/backup-api')>();
@@ -267,6 +267,36 @@ describe('Settings → Backup and restore (0.28)', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Recovery password' })).not.toBeInTheDocument());
     // The list is honest about the backup whose password never reached the person.
     expect(await screen.findByText(/Its recovery password was not received/, {}, { timeout: 10_000 })).toBeInTheDocument();
+  });
+
+  it('a file save that finishes after its dialog closed acknowledges nothing for the next backup', { timeout: 20_000 }, async () => {
+    answer(capabilities(), [job('a', { recovery_password_available: true, recovery_password_revealed: false }), job('b', { recovery_password_available: true, recovery_password_revealed: false })]);
+    vi.mocked(api.post).mockImplementation(async (path: string) => ({ data: { recovery_password: path.includes('/jobs/a/') ? 'password-of-a' : 'password-of-b' } }));
+    const save = deferred<void>();
+    vi.mocked(saveFile).mockReturnValueOnce(save.promise);
+    vi.mocked(copyText).mockResolvedValue(true);
+    mountSignedIn(<BackupSettings active />);
+    // A: reveal, start a save that stays pending (the app's bridge can take long), copy, close.
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Download Full backup' }, { timeout: 10_000 }))[0]);
+    let dialog = await screen.findByRole('dialog', { name: 'Recovery password' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Show the password' }));
+    await within(dialog).findByText('password-of-a');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save as file' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Copy' }));
+    await waitFor(() => expect(within(dialog).getByRole('checkbox')).toBeChecked());
+    fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' }).find(button => button.textContent === 'Close')!);
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Recovery password' })).not.toBeInTheDocument());
+    // B: revealed, not yet saved. A's save finishing now must not count for B.
+    fireEvent.click(screen.getAllByRole('button', { name: 'Download Full backup' })[1]);
+    dialog = await screen.findByRole('dialog', { name: 'Recovery password' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Show the password' }));
+    await within(dialog).findByText('password-of-b');
+    expect(within(dialog).getByRole('checkbox')).not.toBeChecked();
+    await act(async () => save.resolve());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(within(dialog).getByRole('checkbox')).not.toBeChecked();
+    expect(within(dialog).getByRole('button', { name: 'Download backup' })).toBeDisabled();
+    expect(vi.mocked(saveFile).mock.calls.map(call => call[1])).toEqual(['unihub-backup-a-recovery-password.txt']);
   });
 
   it('shows the recovery password once before the first download and waits until it is saved', { timeout: 20_000 }, async () => {

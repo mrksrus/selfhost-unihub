@@ -79,6 +79,9 @@ export function restoreRefusal(code: string | undefined, fallback: string) {
     case 'CALENDAR_READ_ONLY': return 'That calendar is read-only or a subscription: nothing can be added to it. Choose another.';
     case 'CALENDAR_SYNC_BUSY': return 'The calendar is syncing right now. Try again shortly.';
     case 'RECORDING_FOLDER_UNSAFE': return 'The recordings folder on the server is not safe to write to. Ask your administrator.';
+    // Stream B adds a code for an item whose earlier restore to its calendar server is still being
+    // confirmed; its sentence goes here once the code is named: "This item is still being created on
+    // the calendar server from an earlier restore. Wait for the server to confirm it."
     default: return fallback;
   }
 }

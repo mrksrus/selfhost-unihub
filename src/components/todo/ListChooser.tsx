@@ -59,10 +59,13 @@ export function ListChooser({ id, calendars, value, onChange, undated = false, u
               const note = reason ?? (forTask && !calendar.auto_todo_enabled ? 'Not shown in ToDo' : null);
               return (
                 <SelectItem key={calendar.id} value={calendar.id} disabled={!!reason} textValue={calendar.name}>
-                  <span className="flex items-center gap-2">
-                    <span aria-hidden="true" className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: calendar.color }} />
-                    <span>{calendar.name}</span>
-                    {note && <span className="text-xs text-muted-foreground">{note}</span>}
+                  {/* The dot stays beside the first line; a long name wraps within the popup, and the note follows it. */}
+                  <span className="flex min-w-0 items-start gap-2">
+                    <span aria-hidden="true" className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: calendar.color }} />
+                    <span className="min-w-0 break-words">
+                      {calendar.name}
+                      {note && <span className="ml-2 text-xs text-muted-foreground">{note}</span>}
+                    </span>
                   </span>
                 </SelectItem>
               );

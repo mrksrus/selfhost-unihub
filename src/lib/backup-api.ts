@@ -121,10 +121,6 @@ export class RevealAlreadyShown extends Error {
   constructor(message = 'The recovery password was already shown.') { super(message); this.name = 'RevealAlreadyShown'; }
 }
 
-/** The answer could not be read as the API's JSON: a proxy or a cut connection, not the server's refusal. */
-const undecodable = (response: { error?: string; status?: number; code?: string }) =>
-  response.code === undefined && /not JSON|invalid JSON/i.test(response.error ?? '');
-
 /**
  * The reveal with a deadline and a classified outcome (see above). The
  * deadline wins on its own: the request is told to stop, and whether or not
@@ -140,9 +136,12 @@ export async function revealRecoveryPasswordOnce(id: string, waitMs = REVEAL_WAI
       if (typeof response.data?.recovery_password === 'string') return response.data.recovery_password;
       throw new RevealUncertain(false, 'the answer held no password');
     }
+    // Only the API's own JSON refusal before showing the password is a refusal. The rest is
+    // uncertain, by the answer's shape and not its words: no status (the request never got an
+    // answer), an answer the client could not read (a proxy's page, a cut body), a 2xx without a
+    // password, or 5xx and 408 (the server may have committed before failing).
+    if (response.status === undefined || response.undecodable || response.status < 400 || response.status >= 500 || response.status === 408) throw new RevealUncertain(false, response.error);
     if (response.status === 410) throw new RevealAlreadyShown(response.error);
-    // No status: the request never got an answer. 5xx or 408: the server may have committed before failing.
-    if (response.status === undefined || response.status >= 500 || response.status === 408 || undecodable(response)) throw new RevealUncertain(false, response.error);
     throw new ApiError(response);
   } catch (error) {
     if (controller.signal.aborted) throw new RevealUncertain(true);

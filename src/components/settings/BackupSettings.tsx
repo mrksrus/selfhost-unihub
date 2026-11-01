@@ -198,14 +198,18 @@ export default function BackupSettings({ active }: { active: boolean }) {
   // (useSecretMutation).
   const [recoveryJob, setRecoveryJob] = useState<BackupJob | null>(null);
   const recoveryJobNow = useRef<BackupJob | null>(null);
+  // Counts up on every open and close: a Save or Copy that finishes after its dialog closed, or
+  // after another backup's opened, acknowledges nothing.
+  const recoveryOpening = useRef(0);
+  const inThisOpening = () => { const opening = recoveryOpening.current; return () => !scope.ended && recoveryOpening.current === opening; };
   const [recoveryPassword, setRecoveryPassword] = useState<string | null>(null);
   const [recoverySaved, setRecoverySaved] = useState(false);
   const [revealProblem, setRevealProblem] = useState<{ kind: 'uncertain' | 'already_shown' | 'refused'; message: string } | null>(null);
   // Backups whose password the person never received in this page: the server counts it as shown, and
   // only this page knows the person did not see it. The list says so while the page is open.
   const [passwordLost, setPasswordLost] = useState<Set<string>>(() => new Set());
-  const openRecovery = (job: BackupJob) => { recoveryJobNow.current = job; setRecoveryJob(job); setRecoveryPassword(null); setRecoverySaved(false); setRevealProblem(null); };
-  const closeRecovery = () => { recoveryJobNow.current = null; setRecoveryJob(null); setRecoveryPassword(null); setRecoverySaved(false); setRevealProblem(null); };
+  const openRecovery = (job: BackupJob) => { recoveryOpening.current++; recoveryJobNow.current = job; setRecoveryJob(job); setRecoveryPassword(null); setRecoverySaved(false); setRevealProblem(null); };
+  const closeRecovery = () => { recoveryOpening.current++; recoveryJobNow.current = null; setRecoveryJob(null); setRecoveryPassword(null); setRecoverySaved(false); setRevealProblem(null); };
 
   const create = useSessionMutation({
     mutationFn: () => backupApi.create({ sections: exportSelection === 'full' ? 'full' : exportSelection as BackupSectionId[], include_download_mail: downloadMailOn }),
@@ -284,9 +288,15 @@ export default function BackupSettings({ active }: { active: boolean }) {
   };
   const saveRecoveryFile = () => {
     if (!recoveryJob || !recoveryPassword) return;
+    const stillThis = inThisOpening();
     const blob = new Blob([`UniHub backup: ${recoveryJob.id}\nRecovery password: ${recoveryPassword}\n`], { type: 'text/plain;charset=utf-8' });
-    saveFile(blob, `unihub-backup-${recoveryJob.id}-recovery-password.txt`).then(() => { if (!scope.ended) setRecoverySaved(true); })
-      .catch(() => toast({ title: 'Could not save the file', variant: 'destructive' }));
+    saveFile(blob, `unihub-backup-${recoveryJob.id}-recovery-password.txt`).then(() => { if (stillThis()) setRecoverySaved(true); })
+      .catch(() => { if (stillThis()) toast({ title: 'Could not save the file', variant: 'destructive' }); });
+  };
+  const copyRecoveryPassword = () => {
+    if (!recoveryPassword) return;
+    const stillThis = inThisOpening();
+    void copyText(recoveryPassword).then(copied => { if (stillThis()) { setRecoverySaved(copied); toast({ title: copied ? 'Copied' : 'Could not copy', variant: copied ? undefined : 'destructive' }); } });
   };
   // While the reveal runs, or until the shown password is saved, the dialog stays.
   const recoveryStays = reveal.isPending || (!!recoveryPassword && !recoverySaved);
@@ -591,7 +601,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
           <div className="space-y-3">
             <p className="select-all break-all rounded-md border border-border bg-muted/40 p-3 font-mono text-sm" aria-label="Recovery password">{recoveryPassword}</p>
             <div className="flex flex-wrap gap-2">
-              <Button variant="outline" size="sm" onClick={() => void copyText(recoveryPassword).then(copied => { if (!scope.ended) { setRecoverySaved(copied); toast({ title: copied ? 'Copied' : 'Could not copy', variant: copied ? undefined : 'destructive' }); } })}>
+              <Button variant="outline" size="sm" onClick={copyRecoveryPassword}>
                 <Copy aria-hidden="true" />Copy
               </Button>
               <Button variant="outline" size="sm" onClick={saveRecoveryFile}><Download aria-hidden="true" />Save as file</Button>

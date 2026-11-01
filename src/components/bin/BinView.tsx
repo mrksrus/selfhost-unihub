@@ -1,4 +1,4 @@
-import { useContext, useId, useState } from 'react';
+import { useContext, useEffect, useId, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { CalendarDays, CalendarRange, CheckCircle2, CloudOff, Loader2, Mic, MoreHorizontal, Trash2, UserRound } from 'lucide-react';
@@ -59,7 +59,11 @@ function wrongKind(calendar: CalendarCalendar, kind: DestinationAsk['kind']) {
  * (BIN_RESTORE_NEEDS_LIST). The person's calendars and lists, with the ones
  * that cannot take the items greyed out and saying why.
  */
-function DestinationDialog({ ask, titles, pending, onClose, onChoose }: { ask: DestinationAsk | null; titles: string[]; pending: boolean; onClose: () => void; onChoose: (calendarId: string) => void }) {
+function DestinationDialog({ ask, titles, pending, onClose, onChoose, returnFocus }: {
+  ask: DestinationAsk | null; titles: string[]; pending: boolean; onClose: () => void; onChoose: (calendarId: string) => void;
+  /** Where focus goes when the dialog closes: the control that opened it, or the list when its row is gone. */
+  returnFocus: () => void;
+}) {
   const id = useId();
   const [chosen, setChosen] = useState('');
   const open = !!ask;
@@ -68,7 +72,7 @@ function DestinationDialog({ ask, titles, pending, onClose, onChoose }: { ask: D
   const what = titles.length === 1 ? titles[0] : `${titles.length} items`;
   return (
     <Dialog open={open} onOpenChange={next => { if (!next && !pending) { setChosen(''); onClose(); } }}>
-      <DialogContent>
+      <DialogContent onCloseAutoFocus={event => { event.preventDefault(); returnFocus(); }}>
         <DialogHeader>
           <DialogTitle>Where should {titles.length === 1 ? 'it' : 'they'} go?</DialogTitle>
           <DialogDescription>
@@ -108,18 +112,32 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
   const actions = useBinActions(module, { onDestinationAsked: setAsk });
   const deletePolicy = usePolicy('bin.delete');
   const [confirm, setConfirm] = useState<Confirm | null>(null);
+  // The Restore button that opened the destination dialog, and the list to fall back to.
+  const opener = useRef<HTMLElement | null>(null);
+  const list = useRef<HTMLUListElement | null>(null);
+  const returnFocus = () => {
+    const target = opener.current?.isConnected ? opener.current : list.current?.querySelector<HTMLElement>('button') ?? list.current;
+    target?.focus();
+  };
+  // An ask names only items still in the bin: one restored or deleted elsewhere since (a refetch
+  // dropped it) is left out, and an ask with nothing left closes.
+  const items = query.data?.items;
+  const liveAsk = ask && items ? { ...ask, ids: ask.ids.filter(id => items.some(item => item.id === id)) } : ask;
+  const askEmpty = !!liveAsk && liveAsk.ids.length === 0;
+  useEffect(() => { if (askEmpty) setAsk(null); }, [askEmpty]);
 
   if (isOffline) return <EmptyState icon={CloudOff} title="The bin needs a connection" description="Deleted items are kept on the server, not in the offline copy." />;
   if (query.isLoading) return <LoadingState label="Loading the bin…" />;
   if (query.error) return <ErrorState title="Could not load the bin" error={query.error} onRetry={() => void query.refetch()} retrying={query.isFetching} />;
-  const { items, retention } = query.data!;
-  const groups = groupBinItems(items);
-  const askedTitles = ask ? ask.ids.map(id => items.find(item => item.id === id)?.title || 'an item') : [];
+  const { items: binItems, retention } = query.data!;
+  const groups = groupBinItems(binItems);
+  const shownAsk = liveAsk && liveAsk.ids.length > 0 ? liveAsk : null;
+  const askedTitles = shownAsk ? shownAsk.ids.map(id => { const item = binItems.find(entry => entry.id === id); return item?.title || `an ${KINDS[item?.item_type ?? 'event']}`; }) : [];
   const moduleLabel = (id: BinModule) => BIN_MODULES.find(entry => entry.id === id)?.label ?? id;
 
   const confirmEmpty = () => setConfirm({
     title: module ? `Empty the ${moduleLabel(module).toLowerCase()} bin?` : 'Empty the bin?',
-    description: `${plural(items.length, 'item')} ${items.length === 1 ? 'is' : 'are'} deleted for good. Nothing can be restored afterwards.`,
+    description: `${plural(binItems.length, 'item')} ${binItems.length === 1 ? 'is' : 'are'} deleted for good. Nothing can be restored afterwards.`,
     action: 'Delete for good', run: () => actions.empty.mutate(module),
   });
   const confirmDelete = (group: BinItem[]) => setConfirm({
@@ -139,12 +157,12 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
           {deletePolicy.lock && <PolicyNote reason={deletePolicy.lock} />}
         </div>
         <Button variant="outline" size="sm" className="shrink-0 text-destructive hover:text-destructive" onClick={confirmEmpty}
-          disabled={!!deletePolicy.lock || items.length === 0 || actions.empty.isPending}>Empty bin</Button>
+          disabled={!!deletePolicy.lock || binItems.length === 0 || actions.empty.isPending}>Empty bin</Button>
       </div>
       {groups.length === 0 ? (
         <EmptyState icon={Trash2} title="The bin is empty" description={module ? `Deleted ${moduleLabel(module).toLowerCase()} items wait here before they are gone for good.` : 'Deleted contacts, events, tasks and recordings wait here before they are gone for good.'} />
       ) : (
-        <ul aria-label="Deleted items" className="-mx-2 divide-y divide-border">
+        <ul ref={list} tabIndex={-1} aria-label="Deleted items" className="-mx-2 divide-y divide-border outline-none">
           {groups.map(group => {
             const lead = group[0];
             const Icon = ICONS[lead.item_type];
@@ -162,7 +180,7 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
                 </div>
                 <div className="flex shrink-0 items-center gap-1 touch:gap-3">
                   <Button variant="outline" size="sm" aria-label={`Restore ${name}`} disabled={actions.restore.isPending}
-                    onClick={() => actions.restore.mutate({ ids, modules: [...new Set(group.map(item => item.module))] })}>Restore</Button>
+                    onClick={event => { opener.current = event.currentTarget; actions.restore.mutate({ ids, modules: [...new Set(group.map(item => item.module))] }); }}>Restore</Button>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label={`More actions for ${name}`}><MoreHorizontal aria-hidden="true" /></Button>
@@ -178,8 +196,13 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
         </ul>
       )}
 
-      <DestinationDialog ask={ask} titles={askedTitles} pending={actions.restore.isPending} onClose={() => setAsk(null)}
-        onChoose={calendarId => { if (ask) { actions.restore.mutate({ ids: ask.ids, modules: ask.modules, calendarId }); setAsk(null); } }} />
+      <DestinationDialog ask={shownAsk} titles={askedTitles} pending={actions.restore.isPending} onClose={() => setAsk(null)} returnFocus={returnFocus}
+        onChoose={calendarId => {
+          // Only the items still in the bin at this moment are sent.
+          const ids = shownAsk ? shownAsk.ids.filter(id => binItems.some(item => item.id === id)) : [];
+          if (ids.length) actions.restore.mutate({ ids, modules: shownAsk?.modules, calendarId });
+          setAsk(null);
+        }} />
 
       <AlertDialog open={!!confirm} onOpenChange={open => { if (!open) setConfirm(null); }}>
         <AlertDialogContent>

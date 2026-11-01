@@ -12,7 +12,7 @@ import { AuthContext, type AuthContextType } from '@/contexts/auth-context';
 import type { BinItem } from '@/lib/bin-api';
 import { contact } from './contact-fixtures';
 import { userSettingsAnswer } from './settings-fixtures';
-import { OWNER, mountSignedIn, policiesAnswer, stubBrowserApis } from './helpers/data-safety';
+import { OWNER, mountSignedIn, policiesAnswer, stubBrowserApis, testClient } from './helpers/data-safety';
 
 const state = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }), clearToasts: vi.fn() }));
@@ -183,6 +183,51 @@ describe('the bin', () => {
     fireEvent.click(screen.getByRole('option', { name: /Inbox/ }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Restore there' }));
     await waitFor(() => expect(api.post).toHaveBeenLastCalledWith('/bin/restore', { ids: ['bin-local-task'], calendar_id: 'cal-inbox' }));
+  });
+
+  it('a destination ask closes when its item left the bin meanwhile, and a late ask for a gone item never opens', { timeout: 20_000 }, async () => {
+    const client = testClient();
+    let bin = ITEMS;
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path.startsWith('/bin')) return { data: { items: bin, retention: '30' } };
+      if (path === '/policies/effective') return policiesAnswer();
+      if (path === '/calendar/calendars') return { data: { calendars: CALENDARS } };
+      return { data: {} };
+    });
+    vi.mocked(api.post).mockResolvedValueOnce(refused('bin-task', 'BIN_RESTORE_NEEDS_CALENDAR'));
+    mountSignedIn(<BinView module="calendar" />, { client });
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore Reply to Grace' }, { timeout: 10_000 }));
+    await screen.findByRole('dialog', { name: 'Where should it go?' });
+    // Another tab restored the task: the refetched bin no longer has it, and the ask has nothing to offer.
+    bin = ITEMS.filter(item => item.id !== 'bin-task');
+    await act(async () => { await client.invalidateQueries({ queryKey: ['bin'] }); });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Where should it go?' })).not.toBeInTheDocument(), { timeout: 10_000 });
+    // A destination answer that arrives after its item left the bin opens nothing and sends nothing.
+    bin = ITEMS;
+    await act(async () => { await client.invalidateQueries({ queryKey: ['bin'] }); });
+    let late!: (value: unknown) => void;
+    vi.mocked(api.post).mockImplementationOnce(() => new Promise(resolve => { late = resolve; }) as never);
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore Reply to Grace' }, { timeout: 10_000 }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(2));
+    bin = ITEMS.filter(item => item.id !== 'bin-task');
+    await act(async () => { await client.invalidateQueries({ queryKey: ['bin'] }); });
+    await act(async () => late(refused('bin-task', 'BIN_RESTORE_NEEDS_CALENDAR')));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(screen.queryByRole('dialog', { name: 'Where should it go?' })).not.toBeInTheDocument();
+    expect(api.post).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancelling the destination dialog with the keyboard returns focus to the Restore button that opened it', { timeout: 20_000 }, async () => {
+    answerGets(ITEMS);
+    vi.mocked(api.post).mockResolvedValueOnce(refused('bin-task', 'BIN_RESTORE_NEEDS_CALENDAR'));
+    mountSignedIn(<BinView module="calendar" />);
+    const restore = await screen.findByRole('button', { name: 'Restore Reply to Grace' }, { timeout: 10_000 });
+    restore.focus();
+    fireEvent.click(restore);
+    const dialog = await screen.findByRole('dialog', { name: 'Where should it go?' });
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Where should it go?' })).not.toBeInTheDocument());
+    await waitFor(() => expect(document.activeElement).toBe(restore));
   });
 
   it('says plainly when the chosen calendar is not the person\'s', { timeout: 20_000 }, async () => {
