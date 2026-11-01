@@ -6,6 +6,37 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.28.0
+
+Data safety: encrypted backups that hold only your own data, a bin for what
+you delete, and rules an administrator can set. One automatic database
+upgrade; back up first.
+
+### Added
+
+- **Instance backup.** With a destination (`INSTANCE_BACKUP_DIR`, a mount of
+  its own) and its own key (`INSTANCE_BACKUP_KEY` or `_FILE`) set, UniHub
+  backs up the whole installation, the database and every stored file,
+  encrypted, daily at `INSTANCE_BACKUP_TIME` (03:30 UTC) and on "Back up
+  now", keeping the newest `INSTANCE_BACKUP_KEEP` (14). A backup counts only
+  after it has been read back whole with the key; a failed one leaves no
+  file. Without the settings it is off and the server runs as before. The
+  backup holds none of the installation's keys; keep them in a password
+  manager. There is no download from the web page.
+- **Restore command.** `node /app/api/src/instance-restore.js --file
+  <backup> --key-file <key>` restores an instance backup into an empty
+  installation and signs everyone out; `--verify-only` checks a backup with
+  the key ([Data recovery](docs/DATA_RECOVERY.md#instance-backup)).
+- **Secrets as files.** Every secret can be a file, `NAME_FILE`, for example a
+  Compose secret; `docker-compose.yml` shows how. Setting both with different
+  values, or an unreadable file, stops the start with a message naming the
+  setting.
+
+### Changed
+
+- Startup refuses an instance backup key shorter than 32 bytes or equal to
+  another secret, and a backup destination inside the stored files.
+
 ## 0.27.1
 
 Fixes for the Android app and for many changes saved at once. No database
