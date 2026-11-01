@@ -331,10 +331,7 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
     if (moved.length) {
       throw new InstanceBackupError(`The backup did not count: ${moved.join(', ')} changed during the run, so the copy may hold the new key. The next run tries again.`);
     }
-    // A link never replaces a file that is already there, unlike a rename.
-    await fs.promises.link(partialPath, finalPath).catch((error: NodeJS.ErrnoException) => {
-      throw error.code === 'EEXIST' ? new InstanceBackupError(`${name} already exists at INSTANCE_BACKUP_DIR; the backup does not replace it.`) : error;
-    });
+    await publish(partialPath, finalPath, name);
     published = true;
     await fs.promises.rm(partialPath, { force: true });
     await syncDirectory(settings.dir);
@@ -360,6 +357,33 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
     signal.removeEventListener('abort', onAbort);
   }
   return readRun(row.id).catch(() => null);
+}
+
+// Filesystems without hard links (some NAS shares, FUSE mounts, FAT) answer
+// a link with one of these.
+const NO_HARD_LINKS = new Set(['EOPNOTSUPP', 'EPERM', 'ENOSYS']);
+
+/**
+ * Gives the finished file its name, never over a file already there. A link
+ * refuses an existing name, unlike a rename. Where the destination has no
+ * hard links, the name is checked to be free and then renamed to: it holds
+ * the run id, so no other run writes it.
+ */
+async function publish(partialPath: string, finalPath: string, name: string) {
+  const taken = () => new InstanceBackupError(`${name} already exists at INSTANCE_BACKUP_DIR; the backup does not replace it.`);
+  try {
+    await fs.promises.link(partialPath, finalPath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EEXIST') throw taken();
+    if (!code || !NO_HARD_LINKS.has(code)) throw error;
+    const free = await fs.promises.lstat(finalPath).then(() => false, (missing: NodeJS.ErrnoException) => {
+      if (missing.code === 'ENOENT') return true;
+      throw missing;
+    });
+    if (!free) throw taken();
+    await fs.promises.rename(partialPath, finalPath);
+  }
 }
 
 async function checkDestination(dir: string) {

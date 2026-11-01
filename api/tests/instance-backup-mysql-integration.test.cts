@@ -427,6 +427,32 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     }
   });
 
+  await t.test('a destination without hard links publishes by a rename that still never replaces a file', async () => {
+    const link = fs.promises.link;
+    let refused = 0;
+    fs.promises.link = async () => { refused++; throw Object.assign(new Error('synthetic: operation not supported'), { code: 'EOPNOTSUPP' }); };
+    try {
+      const run = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      assert.equal(run.status, 'succeeded', String(run.error));
+      assert.ok(refused > 0, 'the link was tried');
+      assert.ok(backupFiles().includes(run.file_name!));
+      assert.deepEqual(fs.readdirSync(destination).filter(name => name.endsWith('.partial')), []);
+      assert.equal(sha(path.join(destination, run.file_name!)), run.sha256);
+
+      let planted = '';
+      const clash = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin, hooks: { afterDump: async () => {
+        const partial = fs.readdirSync(destination).find(name => name.endsWith('.partial'))!;
+        planted = write(path.join(destination, partial.slice(0, -'.partial'.length)), 'synthetic file that is not this run');
+      } } }))!;
+      assert.equal(clash.status, 'failed');
+      assert.match(String(clash.error), /already exists/);
+      assert.equal(fs.readFileSync(planted, 'utf8'), 'synthetic file that is not this run');
+      fs.rmSync(planted);
+    } finally {
+      fs.promises.link = link;
+    }
+  });
+
   await t.test('a secret file read at the start stays out after it is replaced, and a run refuses when one cannot be checked', async () => {
     const config = require('../dist/src/config') as typeof import('../src/config');
     const loaded = write(path.join(scratch, 'secrets', 'loaded.key'), `synthetic-loaded-secret-${crypto.randomBytes(16).toString('hex')}`);
