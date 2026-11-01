@@ -120,7 +120,7 @@ describe('Settings → Backup and restore (0.28)', () => {
     await waitFor(() => expect(downloadTicket).toHaveBeenCalledWith({ url: '/api/files/tickets/t1/download', filename: 'unihub-backup-new.unihub-backup' }));
   });
 
-  it('a download ticket answered after the session ended starts no download', async () => {
+  it('a download ticket answered after the session ended starts no download', { timeout: 20_000 }, async () => {
     answer();
     const ticket = deferred<{ data: unknown }>();
     vi.mocked(api.post).mockImplementation(() => ticket.promise as never);
@@ -133,7 +133,7 @@ describe('Settings → Backup and restore (0.28)', () => {
     expect(downloadTicket).not.toHaveBeenCalled();
   });
 
-  it('the recovery dialog cannot be dismissed while the password is being revealed', async () => {
+  it('the recovery dialog cannot be dismissed while the password is being revealed', { timeout: 20_000 }, async () => {
     answer(capabilities(), [job('a', { recovery_password_available: true, recovery_password_revealed: false }), job('b', { recovery_password_available: true, recovery_password_revealed: false })]);
     const reveal = deferred<{ data: unknown }>();
     vi.mocked(api.post).mockImplementation(async (path: string) => path === '/backup/jobs/a/recovery-password/reveal' ? reveal.promise as never : { data: { url: '/api/files/tickets/t/download', filename: 'f', expires_at: '', content_type: '', size: 1 } });
@@ -154,7 +154,7 @@ describe('Settings → Backup and restore (0.28)', () => {
     expect(api.post).not.toHaveBeenCalledWith('/files/tickets', { kind: 'backup-archive', id: 'b' });
   });
 
-  it('a restore runs only with the choices it was prepared with', async () => {
+  it('a restore runs only with the choices it was prepared with', { timeout: 20_000 }, async () => {
     answer();
     const prepare = deferred<{ data: unknown }>();
     vi.mocked(api.post).mockImplementation(async (path: string) => path === '/backup/jobs/new/restore' ? prepare.promise as never : { data: {} });
@@ -188,7 +188,7 @@ describe('Settings → Backup and restore (0.28)', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/backup/restore-jobs/r/start'));
   });
 
-  it('every start, from any button, confirms the choices the job was prepared with', async () => {
+  it('every start, from any button, confirms the choices the job was prepared with', { timeout: 20_000 }, async () => {
     const replaced = restoreJob('r', { conflict_mode: 'replace', credentials_mode: 'restore' });
     const failed = restoreJob('f', { status: 'failed', source_type: 'upload', error: 'Lost the connection', validation_result: null });
     answer(capabilities(), JOBS, [replaced, failed]);

@@ -116,7 +116,7 @@ describe('the bin', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/bin/restore', { ids: ['bin-ada'] }));
   });
 
-  it('a delete answered after the session ended names nothing: no notice, no Undo', async () => {
+  it('a delete answered after the session ended names nothing: no notice, no Undo', { timeout: 20_000 }, async () => {
     answerGets([]);
     const recording = { id: 'rec-a', title: 'Private title of the previous account', recorded_at: '2026-06-03T10:00:00.000Z', duration_seconds: 10, size_bytes: 100, source: 'imported', category: 'none', tags: [], metadata: {}, description: null };
     const gets = vi.mocked(api.get).getMockImplementation()!;

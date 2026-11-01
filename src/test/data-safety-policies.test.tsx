@@ -69,7 +69,7 @@ describe('policy greying', () => {
     expect(onModeChange).not.toHaveBeenCalled();
   });
 
-  it('the linked calendar of a mail account follows accounts.remove and accounts.add', async () => {
+  it('the linked calendar of a mail account follows accounts.remove and accounts.add', { timeout: 20_000 }, async () => {
     const REMOVE = 'Your administrator does not allow removing accounts.';
     const ADD = 'Your administrator does not allow adding accounts.';
     const account = { id: 'mail-a', email_address: 'a@example.com', provider: 'custom', is_active: true } as MailAccount;

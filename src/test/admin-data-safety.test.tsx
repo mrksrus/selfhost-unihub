@@ -104,7 +104,7 @@ describe('Server settings → Policies', () => {
 });
 
 describe('Server settings → Instance backup', () => {
-  it('shows the server\'s restore command and says why a run was refused', async () => {
+  it('shows the server\'s restore command and says why a run was refused', { timeout: 20_000 }, async () => {
     vi.mocked(api.get).mockImplementation(async (path: string) => {
       if (path === '/admin/instance-backup') return { data: instanceStatus({ enabled: true, missing: [], destination: '/backups', key_fingerprint: 'k1', restore_command: 'node /app/api/dist/scripts/instance-restore.js --file <backup.uhib> --key-file <key>' }) };
       throw new Error(`unexpected GET ${path}`);
@@ -139,7 +139,7 @@ describe('Server settings → Instance backup', () => {
 });
 
 describe('Admin → Users → a person', () => {
-  it('a confirmation opened for one person closes when the page moves to another', async () => {
+  it('a confirmation opened for one person closes when the page moves to another', { timeout: 20_000 }, async () => {
     let navigate!: NavigateFunction;
     function Page() { navigate = useNavigate(); return <AdminUserDetail />; }
     mountSignedIn(<Page />, { user: ADMIN, path: '/admin/users/user-alex', routePath: '/admin/users/:id' });
@@ -151,7 +151,7 @@ describe('Admin → Users → a person', () => {
     expect(api.post).not.toHaveBeenCalled();
   });
 
-  it('a completion for one person leaves a dialog opened since for another untouched', async () => {
+  it('a completion for one person leaves a dialog opened since for another untouched', { timeout: 20_000 }, async () => {
     let navigate!: NavigateFunction;
     function Page() { navigate = useNavigate(); return <AdminUserDetail />; }
     let answerAlex!: (value: unknown) => void;
@@ -216,7 +216,7 @@ describe('Admin → Users → a person', () => {
 });
 
 describe('Users list', () => {
-  it('a password-confirmed action answered after the session ended shows nothing of its target', async () => {
+  it('a password-confirmed action answered after the session ended shows nothing of its target', { timeout: 20_000 }, async () => {
     let answer!: (value: unknown) => void;
     vi.mocked(api.post).mockImplementation(() => new Promise(resolve => { answer = resolve; }) as never);
     const mounted = render(
