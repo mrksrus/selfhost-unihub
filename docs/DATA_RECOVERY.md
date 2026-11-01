@@ -155,7 +155,15 @@ writes nothing more (`409 RESTORE_IN_PROGRESS`).
   also gives synced UIDs that 0.27 stored trimmed the server's own back, from
   each object's stored ICS (`calendar-uid-upgrade.ts`): the object's rows,
   and the hand order and open moves of its calendar unless another object
-  there could own them. The restore writes it with
+  there could own them. The pass is one-time and linear: seconds when few
+  UIDs need it, but a calendar where nearly every task's UID needs repair
+  can make the 0.28 upgrade take minutes per 100,000 objects (about 13 in a
+  synthetic benchmark); the server finishes starting afterwards. Meanwhile
+  `/health` does not answer, so Docker marks the container unhealthy after
+  its 360-second start period, but nothing restarts it for that unless a
+  tool that restarts unhealthy containers runs. A stop during the pass
+  rolls the pass back, and the next start runs step 25 again. The restore
+  writes it with
   `insertOverlays` and applies those whose rows exist with
   `applyOverlaysToLiveRows`; the sync that creates a row takes the rest. It
   goes with its calendar and never applies to another person's calendar.
