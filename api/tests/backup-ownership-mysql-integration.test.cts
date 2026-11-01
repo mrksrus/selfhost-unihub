@@ -132,6 +132,15 @@ test('MySQL restores colliding backup IDs without changing another user in every
   await connection.execute(`CREATE TEMPORARY TABLE contact_photos (contact_id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, sha256 CHAR(64) NOT NULL,
     width SMALLINT UNSIGNED NOT NULL, height SMALLINT UNSIGNED NOT NULL, bytes INT UNSIGNED NOT NULL, thumb_sha256 CHAR(64) NOT NULL, source VARCHAR(16) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
   await connection.execute('CREATE TEMPORARY TABLE contact_duplicate_dismissals (contact_a CHAR(36) NOT NULL, contact_b CHAR(36) NOT NULL, user_id CHAR(36) NOT NULL, PRIMARY KEY (contact_a, contact_b)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+  // 0.28 (upgrade 25): stable identities, compared byte for byte, and the
+  // synced-task state a restore leaves for the sync.
+  await connection.execute('ALTER TABLE calendar_calendars ADD COLUMN uid CHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT uuid()');
+  await connection.execute('ALTER TABLE calendar_events ADD COLUMN uid VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT uuid()');
+  await connection.execute('ALTER TABLE recordings ADD COLUMN uid CHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT uuid()');
+  await connection.execute(`CREATE TEMPORARY TABLE calendar_overlay_restores (id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, calendar_id CHAR(36) NOT NULL,
+    account_identity VARCHAR(500) NOT NULL DEFAULT '', uid VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL, recurrence_id VARCHAR(64) NOT NULL DEFAULT '',
+    match_kind ENUM('uid','shape') NOT NULL, shape_title VARCHAR(255) NULL, shape_start DATETIME NULL, payload LONGTEXT NOT NULL,
+    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP, expires_at DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
   // A restored draft loses its schedule (0.24); the restore clears it on this connection.
   await connection.execute(`CREATE TEMPORARY TABLE mail_scheduled_sends (
     id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, email_id CHAR(36) NOT NULL,
@@ -162,7 +171,7 @@ test('MySQL restores colliding backup IDs without changing another user in every
       const userId = crypto.randomUUID();
       await connection.execute<ResultSetHeader>('INSERT INTO users (id,email,password_hash) VALUES (?, ?, ?)', [userId, userId + '@example.test', 'synthetic-hash']);
       const result = await importBackupForUser(userId, structuredClone(backup), { mode: 'apply', conflict_mode: conflictMode });
-      assert.equal(result.valid, true);
+      assert.equal(result.valid, true, JSON.stringify(result.errors));
       await assertVictimUnchanged();
       const restored = Object.fromEntries(await Promise.all(tables.map(async table => [table, await rowsFor(table, userId)])));
       for (const table of tables) {
@@ -200,13 +209,18 @@ test('MySQL restores colliding backup IDs without changing another user in every
       // Deliberate same-owner matching retains conflict semantics on a repeat
       // restore; a second copy must keep its children attached to that copy.
       const ownBackup = structuredClone(backup);
-      ownBackup.data = { user: backup.data.user, ...restored };
+      // The restored rows as a schema 1 archive: only the fields that schema has (a later schema's field is refused).
+      const archived = (table: string, rows: FixtureValue[]) => {
+        const fields = new Set(backup.data[table].flatMap((item: FixtureValue) => Object.keys(item)));
+        return rows.map(item => Object.fromEntries(Object.entries(item).filter(([field]) => fields.has(field))));
+      };
+      ownBackup.data = { user: backup.data.user, ...Object.fromEntries(tables.map(table => [table, archived(table, restored[table])])) };
       ownBackup.files[0].id = row('recordings').id;
       ownBackup.data.contacts[0].notes = 'Changed note';
       ownBackup.data.emails[0].body_text = 'Changed body';
       ownBackup.data.recordings[0].title = 'Changed recording';
       const repeated = await importBackupForUser(userId, ownBackup, { mode: 'apply', conflict_mode: conflictMode });
-      assert.equal(repeated.valid, true);
+      assert.equal(repeated.valid, true, JSON.stringify(repeated.errors));
       await assertVictimUnchanged();
       const contacts = await rowsFor('contacts', userId);
       const emails = await rowsFor('emails', userId);

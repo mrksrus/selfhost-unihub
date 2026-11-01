@@ -154,8 +154,8 @@ test('contacts recovery: frozen 0.25.1 archive, schema 5 round trip with photos,
   const zip = path.join(scratch, 'v5.zip');
   await writeZip(await backup.buildBackupArchiveEntriesForUser(owner, 'contacts'), zip);
   const v5 = await backup.backupFromZipFile(zip);
-  // The current writer (schema 6 since 0.27.0); contacts are written as in schema 5.
-  assert.equal(v5.backup.version, 6);
+  // The current writer (schema 7 since 0.28.0); contacts are written as in schema 5.
+  assert.equal(v5.backup.version, 7);
   // One pair of files although two contacts share the picture.
   assert.deepEqual(v5.backup.files.map((file: FixtureValue) => file.id).sort(), [annPhoto.etag, (await rows('contact_photos', owner))[0].thumb_sha256].sort());
   assert.ok(v5.backup.files.every((file: FixtureValue) => file.kind === 'contact_photo' && file.sha256 === file.id));

@@ -60,8 +60,10 @@ test('a restore whose rows requests wait for with every other connection still f
     };
     await call('POST', '/auth/signin', { email: 'restorer@example.test', password });
     const contact = (await call('POST', '/contacts', { first_name: 'Archived', last_name: 'Person' })).body.contact;
-    const exported = (await call('POST', '/backup/jobs', { sections: ['contacts'], encrypt: false })).body.job;
+    const exported = (await call('POST', '/backup/jobs', { sections: ['contacts'] })).body.job;
     assert.equal((await until(15000, async () => (await call('GET', `/backup/jobs/${exported.id}`)).body.job.status, status => status === 'ready')), 'ready');
+    // Every archive is encrypted; its first download follows the password reveal. The server key unlocks it here.
+    assert.equal((await call('POST', `/backup/jobs/${exported.id}/recovery-password/reveal`, {})).status, 200);
     const archive = (await call('GET', `/backup/jobs/${exported.id}/download`, undefined, true)).body;
     jobId = (await call('POST', '/backup/import?sections=contacts&conflict_mode=replace', archive)).body.job.id as string;
     assert.equal((await until(15000, async () => (await jobStatus()).status, status => status === 'validated')), 'validated');

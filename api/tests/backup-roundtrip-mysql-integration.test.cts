@@ -34,7 +34,7 @@ async function waitFor(read: FixtureValue, wanted: FixtureValue, description: Fi
   assert.fail(`${description} timed out: ${JSON.stringify(current)}`);
 }
 
-test('production export and restore jobs round-trip every section through encrypted and legacy archives', {
+test('production export and restore jobs round-trip what a backup holds through encrypted and legacy archives', {
   skip: !process.env.MYSQL_TEST_HOST,
   timeout: 240000,
 }, async (t) => {
@@ -206,10 +206,17 @@ test('production export and restore jobs round-trip every section through encryp
   await insert('calendar_accounts', { id: calendarAccountId, user_id: sourceUser, provider: 'caldav', display_name: 'Roundtrip calendar', account_email: 'calendar@example.test', username: 'calendar-user', discovery_url: 'https://8.8.8.8/dav/', base_url: 'https://8.8.8.8/dav/', encrypted_password: sourceCrypto.encrypt('synthetic-calendar-password'), encrypted_access_token: sourceCrypto.encrypt('synthetic-access-token'), encrypted_refresh_token: sourceCrypto.encrypt('synthetic-refresh-token'), is_active: 1 });
   await insert('calendar_calendars', { id: calendarId, user_id: sourceUser, account_id: calendarAccountId, name: 'Research Calendar', external_id: 'https://8.8.8.8/dav/calendar/', color: '#2244ff', is_visible: 1 });
   await insert('calendar_settings', { calendar_id: calendarId, user_id: sourceUser, setting_key: 'notify_enabled', setting_value: 'false' });
-  await insert('calendar_events', { id: eventId, user_id: sourceUser, calendar_id: calendarId, title: 'Roundtrip event', description: 'Preserve Grüße\nSecond line', start_time: '2030-02-03 10:00:00', end_time: '2030-02-03 11:00:00', recurrence: 'FREQ=WEEKLY;COUNT=3', reminders: JSON.stringify([10, 60]), reminder_minutes: 10, todo_status: 'todo', location: 'Vienna' });
+  await insert('calendar_events', { id: eventId, user_id: sourceUser, calendar_id: calendarId, uid: 'Roundtrip-Event@example.test', title: 'Roundtrip event', description: 'Preserve Grüße\nSecond line', start_time: '2030-02-03 10:00:00', end_time: '2030-02-03 11:00:00', recurrence: 'FREQ=WEEKLY;COUNT=3', reminders: JSON.stringify([10, 60]), reminder_minutes: 10, todo_status: 'done', done_at: '2030-02-03 12:00:00', location: 'Vienna' });
   await insert('calendar_event_subtasks', { id: uuid(), user_id: sourceUser, event_id: eventId, title: 'Keep this task', is_done: 1, position: 2 });
   await insert('calendar_event_attendees', { id: uuid(), user_id: sourceUser, event_id: eventId, email: 'attendee@example.test', display_name: 'Attendee', response_status: 'accepted' });
   await insert('calendar_event_external_refs', { id: uuid(), user_id: sourceUser, event_id: eventId, calendar_id: calendarId, account_id: calendarAccountId, provider: 'caldav', external_event_id: 'event.ics', external_etag: 'etag-one' });
+  // A task list only UniHub holds, with a task, its subtask and an attendee.
+  const localAccountId = uuid(), localCalendarId = uuid(), localEventId = uuid();
+  await insert('calendar_accounts', { id: localAccountId, user_id: sourceUser, provider: 'local', display_name: 'UniHub', is_active: 1 });
+  await insert('calendar_calendars', { id: localCalendarId, user_id: sourceUser, account_id: localAccountId, name: 'Errands', color: '#22c55e', is_visible: 1 });
+  await insert('calendar_events', { id: localEventId, user_id: sourceUser, calendar_id: localCalendarId, title: 'Local errand', description: 'Only UniHub has this', start_time: '2030-02-04 09:00:00', end_time: '2030-02-04 09:30:00', todo_status: 'changed', location: 'Graz' });
+  await insert('calendar_event_subtasks', { id: uuid(), user_id: sourceUser, event_id: localEventId, title: 'Buy stamps', is_done: 0, position: 0 });
+  await insert('calendar_event_attendees', { id: uuid(), user_id: sourceUser, event_id: localEventId, email: 'helper@example.test', display_name: 'Helper', response_status: 'needs-action' });
   const tagId = uuid();
   const audioByTitle = new Map();
   await insert('recording_tags', { id: tagId, user_id: sourceUser, name: 'Research', color: '#2244ff' });
@@ -225,32 +232,63 @@ test('production export and restore jobs round-trip every section through encryp
     await insert('recording_transcription_jobs', { id: uuid(), user_id: sourceUser, recording_id: recordingId, status: 'completed', provider: 'synthetic', model: 'test', language: 'de', transcript_text: 'Saved Grüße transcript ' + index, created_at: '2030-01-01 11:00:00', updated_at: '2030-01-01 11:01:00' });
   }
   const original = await snapshot(sourceUser);
-  const pendingSource = original.emails.find((row: FixtureValue) => row.mail_account_id);
+  // What a user backup holds (data classes, 0.28): all of the above except
+  // the provider's copies. The Sync account's server mail goes with its files,
+  // scores, recovery history and provider evidence (its folder reconciliation
+  // marker stays, so moves are not replayed), and the CalDAV event with
+  // its children; that task's UniHub state travels as an overlay instead.
+  const syncAccounts = new Set(original.mail_accounts.filter((row: FixtureValue) => row.sync_mode === 'sync').map((row: FixtureValue) => row.id));
+  const keptEmails = new Set(original.emails.filter((row: FixtureValue) => !syncAccounts.has(row.mail_account_id)).map((row: FixtureValue) => row.id));
+  const keptEvents = new Set(original.calendar_events.filter((row: FixtureValue) => row.calendar_id !== calendarId).map((row: FixtureValue) => row.id));
+  const kept: typeof original = { ...original,
+    emails: original.emails.filter((row: FixtureValue) => keptEmails.has(row.id)),
+    ...Object.fromEntries(['email_attachments', 'mail_email_scores', 'mail_folder_recovery_items'].map(table => [table, original[table].filter((row: FixtureValue) => keptEmails.has(row.email_id))])),
+    calendar_events: original.calendar_events.filter((row: FixtureValue) => keptEvents.has(row.id)),
+    ...Object.fromEntries(['calendar_event_subtasks', 'calendar_event_attendees'].map(table => [table, original[table].filter((row: FixtureValue) => keptEvents.has(row.event_id))])),
+    calendar_event_external_refs: [],
+  };
+  for (const table of ['emails', 'email_attachments', 'mail_email_scores', 'calendar_events', 'calendar_event_subtasks']) {
+    assert.ok(kept[table].length > 0 && kept[table].length < original[table].length, `${table}: the fixture has rows on both sides of the rule`);
+  }
+  assert.equal(kept.mail_folder_recovery_items.length, 1);
+  const pendingSource = kept.emails.find((row: FixtureValue) => row.mail_account_id);
   const sourceWritebackId = uuid();
   await insert('mail_writebacks', { id: sourceWritebackId, user_id: sourceUser, mail_account_id: pendingSource.mail_account_id,
     email_id: pendingSource.id, action: 'read', target_value: '1', base_value: '0', remote_folder: 'INBOX', remote_uid: 1, remote_uidvalidity: 1 });
 
   const unrelated = await snapshot(unrelatedUser);
   const exportJobs = source('services/export-jobs');
-  async function exportArchive(encrypted: FixtureValue) {
-    const started = await exportJobs.startDataExportJob(sourceUser, { sections: 'full', encrypt: encrypted });
+  async function exportArchive() {
+    // An older client's encrypt: false no longer gives an unencrypted archive.
+    const started = await exportJobs.startDataExportJob(sourceUser, { sections: 'full', encrypt: false });
     const ready = await waitFor(() => exportJobs.getDataExportJob(sourceUser, started.id), (job: FixtureValue) => job?.status === 'ready', 'Export');
     const bytes = await fs.readFile(ready.file_path);
     assert.equal(bytes.length, Number(ready.file_size)); assert.equal(sha256(bytes), ready.file_sha256);
     assert.ok(ready.file_path.startsWith(sourceRoot + path.sep));
-    let password = null;
-    if (encrypted) {
-      const [[key]] = await pool.execute<RowDataPacket[]>('SELECT recovery_password_ciphertext FROM backup_archive_keys WHERE backup_uuid = ? AND user_id = ?', [ready.backup_uuid, sourceUser]);
-      password = source('services/backup-container').revealProtectedRecoveryPassword(key.recovery_password_ciphertext, ready.backup_uuid);
-      assert.equal(bytes.includes(Buffer.from('synthetic-mail-password-0')), false);
-    }
+    assert.equal(Number(ready.encryption_enabled), 1);
+    assert.ok(ready.file_path.endsWith('.unihub-backup'));
+    assert.ok(ready.keep_until === null || ready.keep_until instanceof Date || typeof ready.keep_until === 'string');
+    const [[key]] = await pool.execute<RowDataPacket[]>('SELECT recovery_password_ciphertext FROM backup_archive_keys WHERE backup_uuid = ? AND user_id = ?', [ready.backup_uuid, sourceUser]);
+    const password = source('services/backup-container').revealProtectedRecoveryPassword(key.recovery_password_ciphertext, ready.backup_uuid);
+    assert.equal(bytes.includes(Buffer.from('synthetic-mail-password-0')), false);
+    // The data JSON was staged beside the archive, not in the system temporary directory.
+    assert.deepEqual((await fs.readdir(path.join(sourceRoot, 'backups', sourceUser))).filter(name => name.endsWith('.partial')), []);
     return { ...ready, bytes, password };
   }
-  const encrypted = await exportArchive(true);
-  const legacy = await exportArchive(false);
-  const legacyParsed = await source('services/backup').backupFromZipFile(legacy.file_path);
-  // Mail and recording files, and the two files of one contact photo.
-  assert.equal(legacyParsed.manifest.file_count, 13);
+  const encrypted = await exportArchive();
+  const contents = exportJobs.serializeJob(await exportJobs.getDataExportJob(sourceUser, encrypted.id)).contents;
+  // The job says what the archive holds and what it left out, with counts.
+  assert.deepEqual(contents.left_out.map((item: FixtureValue) => [item.what, item.count]),
+    [['CalDAV and subscription events', 1], ['Sync-mode mail', original.emails.length - kept.emails.length]]);
+  assert.deepEqual([...contents.included].sort(), ['config', 'local', 'local-by-policy']);
+  // A ZIP as releases before 0.28 could write without encryption; the readers still import it.
+  const legacyPath = path.join(directory, 'legacy.zip');
+  await exportJobs.writeZip(await source('services/backup').buildBackupArchiveEntriesForUser(sourceUser, 'full', { workDirectory: directory }), legacyPath);
+  const legacy = { bytes: await fs.readFile(legacyPath), password: null };
+  const legacyParsed = await source('services/backup').backupFromZipFile(legacyPath);
+  // The kept mail's raw messages and attachments, the recordings, and the two files of one contact photo.
+  assert.equal(legacyParsed.manifest.file_count, 9);
+  assert.equal(legacyParsed.backup.data.calendar_overlay_restores.length, 1, 'The CalDAV task\'s UniHub state');
   assert.deepEqual(legacyParsed.manifest.missing_files, []);
   assert.equal(legacyParsed.backup.data.contacts.length, 2, 'Other users must not appear in an export');
   assert.deepEqual(await snapshot(sourceUser), original, 'Export must not mutate source rows');
@@ -277,11 +315,9 @@ test('production export and restore jobs round-trip every section through encryp
       const failed = await waitFor(() => exportJobs.getDataExportJob(sourceUser, started.id), (job: FixtureValue) => job?.status === 'failed', 'Missing selected file rejection', { allowFailure: true });
       assert.match(failed.error, /referenced file.*missing|missing.*referenced file/i);
       assert.equal(failed.file_path, null);
-      const partial = await exportJobs.startDataExportJob(sourceUser, { sections: ['contacts'], encrypt: false });
+      const partial = await exportJobs.startDataExportJob(sourceUser, { sections: ['contacts'] });
       const ready = await waitFor(() => exportJobs.getDataExportJob(sourceUser, partial.id), (job: FixtureValue) => job?.status === 'ready', 'Unrelated contacts export');
-      const parsed = await source('services/backup').backupFromZipFile(ready.file_path);
-      assert.equal(parsed.backup.data.contacts.length, original.contacts.length);
-      assert.equal(parsed.backup.data.recordings, undefined);
+      assert.deepEqual(exportJobs.serializeJob(await exportJobs.getDataExportJob(sourceUser, partial.id)).requested_sections, ['contacts']);
     } finally { await fs.rename(heldPath, originalPath); }
   });
 
@@ -326,7 +362,7 @@ test('production export and restore jobs round-trip every section through encryp
     const [jobs] = await pool.execute<RowDataPacket[]>('SELECT state, lease_owner, lease_until FROM mail_engine_jobs WHERE user_id = ?', [userId]);
     assert.ok(jobs.every((job) => !['queued', 'running', 'error'].includes(job.state) && job.lease_owner == null && job.lease_until == null));
     for (const table of TABLES) {
-      assert.equal(restored[table].length, original[table].length, `${table}: preserve every row`);
+      assert.equal(restored[table].length, kept[table].length, `${table}: restore every row the backup holds`);
       for (const row of restored[table]) {
         if (!['mail_folder_remote_boxes', 'mail_folder_rule_overrides'].includes(table)) assert.equal(row.user_id, userId);
         if (row.id) assert.ok(!original[table].some((item: FixtureValue) => item.id === row.id), `${table}: new owner receives fresh IDs`);
@@ -335,7 +371,7 @@ test('production export and restore jobs round-trip every section through encryp
     const compare = (table: string, fields: FixtureValue) => {
       const select = (row: FixtureValue) => Object.fromEntries(fields.map((field: FixtureValue) => [field, row[field]]));
       const order = (rows: FixtureValue) => rows.map(select).sort((a: FixtureValue, b: FixtureValue) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-      assert.deepEqual(order(restored[table]), order(original[table]), `${table}: preserve content`);
+      assert.deepEqual(order(restored[table]), order(kept[table]), `${table}: preserve content`);
     };
     compare('contacts', ['first_name', 'last_name', 'notes', 'is_favorite']);
     compare('contact_values', ['kind', 'position', 'label', 'value', 'value_key', 'legacy_slot']);
@@ -387,7 +423,7 @@ test('production export and restore jobs round-trip every section through encryp
       assert.equal(restored.mail_folders.find((row: FixtureValue) => `folder:${row.id}` === folder)?.slug, 'copies', 'A folder named by id names the restored folder');
     }
     assert.deepEqual(restored.calendar_settings.map((row: FixtureValue) => [row.calendar_id, row.setting_key, row.setting_value]),
-      [[restored.calendar_calendars[0].id, 'notify_enabled', 'false']]);
+      [[restored.calendar_calendars.find((row: FixtureValue) => row.name === 'Research Calendar').id, 'notify_enabled', 'false']]);
     for (const folder of restored.mail_folders) {
       const old = original.mail_folders.find((row: FixtureValue) => row.slug === folder.slug);
       assert.equal(newAccountEmail(folder.mail_account_id), oldAccountEmail(old.mail_account_id));
@@ -422,7 +458,8 @@ test('production export and restore jobs round-trip every section through encryp
       assert.equal(account.sync_mode, original.mail_accounts.find((row: FixtureValue) => row.email_address === account.email_address).sync_mode);
       assert.equal(account.sync_status, account.sync_mode === 'sync' ? 'pending' : 'idle');
       const accountEmails = restored.emails.filter((row: FixtureValue) => row.mail_account_id === account.id);
-      assert.equal(accountEmails.length, 2, 'Same Message-ID in distinct folders must not collapse');
+      // The Sync account's mail downloads again from the provider.
+      assert.equal(accountEmails.length, account.sync_mode === 'sync' ? 0 : 2, 'Same Message-ID in distinct folders must not collapse');
       for (const email of accountEmails) {
       const fileKey = account.email_address + ':' + email.source_folder;
       const raw = await fs.readFile(email.raw_storage_path);
@@ -441,18 +478,27 @@ test('production export and restore jobs round-trip every section through encryp
       assert.ok(!original.email_attachments.some((row: FixtureValue) => email.body_html.includes(row.id)));
       assert.ok(restored.mail_email_scores.some((row: FixtureValue) => row.email_id === email.id));
       const mapping = restored.mail_folder_remote_boxes.find((row: FixtureValue) => row.mail_account_id === account.id && row.remote_name === email.source_folder);
-      assert.ok(mapping, 'Both accounts retain their folder-to-IMAP mapping');
+      assert.ok(mapping, 'The account retains its folder-to-IMAP mapping');
       assert.equal(mapping.folder_id, restored.mail_folders.find((folder: string) => (folder as FixtureValue).slug === email.folder).id);
       }
       assert.ok(restored.mail_sender_rules.some((row: FixtureValue) => row.mail_account_id === account.id));
+      assert.ok(restored.mail_folder_remote_boxes.some((row: FixtureValue) => row.mail_account_id === account.id), 'Both accounts retain their folder-to-IMAP mappings');
     }
-    const calendarAccount = restored.calendar_accounts[0];
+    const calendarAccount = restored.calendar_accounts.find((row: FixtureValue) => row.provider === 'caldav');
     for (const [field, expected] of [['encrypted_password', 'synthetic-calendar-password'], ['encrypted_access_token', 'synthetic-access-token'], ['encrypted_refresh_token', 'synthetic-refresh-token']] as const) assert.equal(decrypt(calendarAccount[field]), credentialsAvailable ? expected : null);
     assert.equal(calendarAccount.is_active, credentialsAvailable ? 1 : 0);
-    const calendar = restored.calendar_calendars[0], event = restored.calendar_events[0], ref = restored.calendar_event_external_refs[0];
-    assert.equal(calendar.account_id, calendarAccount.id); assert.equal(event.calendar_id, calendar.id);
+    const calendar = restored.calendar_calendars.find((row: FixtureValue) => row.name === 'Research Calendar');
+    const errands = restored.calendar_calendars.find((row: FixtureValue) => row.name === 'Errands'), event = restored.calendar_events[0];
+    assert.equal(calendar.account_id, calendarAccount.id); assert.equal(event.calendar_id, errands.id);
+    assert.equal(errands.account_id, restored.calendar_accounts.find((row: FixtureValue) => row.provider === 'local').id);
     assert.equal(restored.calendar_event_subtasks[0].event_id, event.id); assert.equal(restored.calendar_event_attendees[0].event_id, event.id);
-    assert.equal(ref.event_id, event.id); assert.equal(ref.calendar_id, calendar.id); assert.equal(ref.account_id, calendarAccount.id);
+    // The CalDAV task comes back with the next sync; its done state and subtask wait for it.
+    const [overlays] = await pool.execute<RowDataPacket[]>('SELECT calendar_id, uid, recurrence_id, match_kind, payload, expires_at FROM calendar_overlay_restores WHERE user_id = ?', [userId]);
+    assert.equal(overlays.length, 1);
+    assert.deepEqual([overlays[0].calendar_id, overlays[0].uid, overlays[0].recurrence_id, overlays[0].match_kind, overlays[0].expires_at],
+      [calendar.id, 'Roundtrip-Event@example.test', '', 'uid', null]);
+    const state = typeof overlays[0].payload === 'string' ? JSON.parse(overlays[0].payload) : overlays[0].payload;
+    assert.deepEqual([state.todo_status, state.done_at, state.subtasks], ['done', '2030-02-03 12:00:00', [{ title: 'Keep this task', is_done: true, position: 2 }]]);
     for (const recording of restored.recordings) {
       assert.deepEqual(await fs.readFile(recording.storage_path), audioByTitle.get(recording.title));
       assert.ok(restored.recording_tag_links.some((link: FixtureValue) => link.recording_id === recording.id && link.tag_id === restored.recording_tags[0].id));
@@ -463,7 +509,7 @@ test('production export and restore jobs round-trip every section through encryp
   }
 
   const encryptedUser = await newUser('encrypted-destination');
-  await t.test('encrypted production archive restores all data and portable passwords under a different server key', async () => {
+  await t.test('encrypted production archive restores what it holds and portable passwords under a different server key', async () => {
     const completed = await uploadAndRestore(destination, encryptedUser, encrypted, 'replace', { wrongPasswordFirst: true });
     assert.equal(completed.is_encrypted, 1);
     const restored = await assertRestored(destination, encryptedUser);
@@ -481,7 +527,7 @@ test('production export and restore jobs round-trip every section through encryp
     await destination('services/mail-folder-reconciliation').prepareFolderReconciliation(pool);
     assert.deepEqual(await rowsFor('emails', encryptedUser), before);
   });
-  await t.test('unencrypted legacy ZIP restores every section with the original deployment key', async () => {
+  await t.test('unencrypted ZIP restores every section with the original deployment key', async () => {
     const userId = await newUser('legacy-same-key');
     await uploadAndRestore(source, userId, legacy);
     await assertRestored(source, userId);
@@ -533,7 +579,7 @@ test('production export and restore jobs round-trip every section through encryp
     await pool.execute<ResultSetHeader>('UPDATE contacts SET notes = ? WHERE user_id = ?', ['Local edit', encryptedUser]);
     await uploadAndRestore(destination, encryptedUser, encrypted, 'keep_existing');
     assert.equal((await rowsFor('contacts', encryptedUser))[0].notes, 'Local edit');
-    assert.equal((await rowsFor('emails', encryptedUser)).length, original.emails.length);
+    assert.equal((await rowsFor('emails', encryptedUser)).length, kept.emails.length);
     const localEmail = (await rowsFor('emails', encryptedUser)).find((row) => row.mail_account_id);
     const destinationWritebackId = uuid();
     await insert('mail_writebacks', { id: destinationWritebackId, user_id: encryptedUser, mail_account_id: localEmail.mail_account_id,
@@ -568,8 +614,8 @@ test('production export and restore jobs round-trip every section through encryp
     assert.equal(new Set(doubled.contact_values.map((row: FixtureValue) => row.id)).size, doubled.contact_values.length);
     assert.equal(new Set(doubled.contact_photos.map((row: FixtureValue) => row.sha256)).size, 1);
     assert.deepEqual(doubled.contact_uid_aliases.map((row: FixtureValue) => row.uid), ['urn:uuid:merged-away-example']);
-    assert.equal(doubled.emails.length, original.emails.length * 2); assert.equal(doubled.recordings.length, original.recordings.length * 2);
-    assert.equal(doubled.email_attachments.length, original.email_attachments.length * 2); assert.equal(doubled.recording_tag_links.length, original.recording_tag_links.length * 2);
+    assert.equal(doubled.emails.length, kept.emails.length * 2); assert.equal(doubled.recordings.length, original.recordings.length * 2);
+    assert.equal(doubled.email_attachments.length, kept.email_attachments.length * 2); assert.equal(doubled.recording_tag_links.length, original.recording_tag_links.length * 2);
     for (const email of doubled.emails) assert.ok(doubled.email_attachments.some((row: FixtureValue) => row.email_id === email.id));
     for (const recording of doubled.recordings) {
       assert.ok(doubled.recording_tag_links.some((row: FixtureValue) => row.recording_id === recording.id));
@@ -597,7 +643,11 @@ test('production export and restore jobs round-trip every section through encryp
     await uploadAndRestore(destination, userId, encrypted);
     await pool.execute<ResultSetHeader>('UPDATE mail_folder_reconciliations SET inventory = ? WHERE user_id = ?', ['[]', userId]);
     const before = await snapshot(userId);
-    await assert.rejects(destination('services/backup').importBackupForUser(userId, legacyParsed.backup, {
+    // The kept message in Archived Copies, filed by its account's folder
+    // connection (in the fixture it is a legacy one, which needs none).
+    const archive = structuredClone(legacyParsed.backup);
+    for (const email of archive.data.emails) if (email.folder === 'copies') email.is_legacy = 0;
+    await assert.rejects(destination('services/backup').importBackupForUser(userId, archive, {
       mode: 'apply', conflict_mode: 'keep_both', fileSourcesByPath: legacyParsed.fileSourcesByPath,
     }), /not available in its filing account/);
     assert.deepEqual(await snapshot(userId), before);
@@ -658,9 +708,13 @@ test('production export and restore jobs round-trip every section through encryp
       const userId = await newUser('historical-' + format);
       const completed = await uploadAndRestore(runtime, userId, { bytes, password: format === 'encrypted' ? expected.recovery_password : null });
       const restored = await snapshot(userId);
+      // The archive's CalDAV event is the provider's copy: imported as a new
+      // backup leaves it out, with its children. Its mail accounts predate
+      // Sync mode, so all its mail is downloaded mail and stays.
+      const leftOut = new Set(['calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'calendar_event_external_refs']);
       for (const [table, oldRows] of Object.entries(expected.data)) {
         if (!Array.isArray(oldRows)) continue;
-        assert.equal(restored[table].length, oldRows.length, `Historical ${table}: preserve every row`);
+        assert.equal(restored[table].length, leftOut.has(table) ? 0 : oldRows.length, `Historical ${table}: import what the rule keeps`);
         for (const row of restored[table]) {
           assert.equal(row.user_id, userId);
           if (row.id) assert.ok(!oldRows.some(old => old.id === row.id));
@@ -691,7 +745,7 @@ test('production export and restore jobs round-trip every section through encryp
         }
       }
       for (const [table, oldRows] of Object.entries(expected.data)) {
-        if (!Array.isArray(oldRows) || !oldRows.length) continue;
+        if (!Array.isArray(oldRows) || !oldRows.length || leftOut.has(table)) continue;
         const fields = Object.keys(oldRows[0]).filter(field => !ignored.has(field));
         const project = (row: FixtureValue) => Object.fromEntries(fields.map(field => [field, normalized(field, row[field])]));
         const ordered = (rows: FixtureValue) => rows.map(project).sort((a: FixtureValue, b: FixtureValue) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
@@ -724,16 +778,26 @@ test('production export and restore jobs round-trip every section through encryp
         assert.ok(restored.mail_email_scores.some((row: FixtureValue) => row.email_id === email.id));
         assert.ok(restored.mail_sender_rules.some((row: FixtureValue) => row.mail_account_id === account.id));
       }
-      const calendarAccount = restored.calendar_accounts[0], calendar = restored.calendar_calendars[0], event = restored.calendar_events[0];
+      const calendarAccount = restored.calendar_accounts[0], calendar = restored.calendar_calendars[0];
       const credential = expected.credentials.calendar_accounts[0];
       assert.equal(decrypt(calendarAccount.encrypted_password), credential.password);
       assert.equal(decrypt(calendarAccount.encrypted_access_token), credential.access_token);
       assert.equal(decrypt(calendarAccount.encrypted_refresh_token), credential.refresh_token);
-      assert.equal(calendar.account_id, calendarAccount.id); assert.equal(event.calendar_id, calendar.id);
-      assert.equal(restored.calendar_event_subtasks[0].event_id, event.id); assert.equal(restored.calendar_event_attendees[0].event_id, event.id);
-      assert.equal(restored.calendar_event_external_refs[0].event_id, event.id);
-      assert.equal(restored.calendar_event_external_refs[0].calendar_id, calendar.id);
-      assert.equal(restored.calendar_event_external_refs[0].account_id, calendarAccount.id);
+      assert.equal(calendar.account_id, calendarAccount.id);
+      // Its subtask waits for the event to sync again, matched by title and
+      // start (the archive has no UIDs), for 30 days.
+      const [overlays] = await pool.execute<RowDataPacket[]>(`SELECT calendar_id, match_kind, shape_title, shape_start, payload, TIMESTAMPDIFF(DAY, UTC_TIMESTAMP(), expires_at) AS days
+        FROM calendar_overlay_restores WHERE user_id = ?`, [userId]);
+      assert.equal(overlays.length, 1);
+      const oldEvent = expected.data.calendar_events[0];
+      assert.deepEqual([overlays[0].calendar_id, overlays[0].match_kind, overlays[0].shape_title, new Date(overlays[0].shape_start).toISOString()],
+        [calendar.id, 'shape', oldEvent.title, new Date(oldEvent.start_time).toISOString()]);
+      assert.ok(overlays[0].days >= 29 && overlays[0].days <= 30);
+      const state = typeof overlays[0].payload === 'string' ? JSON.parse(overlays[0].payload) : overlays[0].payload;
+      assert.deepEqual(state.subtasks.map((row: FixtureValue) => row.title), expected.data.calendar_event_subtasks.map((row: FixtureValue) => row.title));
+      const outcome = typeof completed.result_counts === 'string' ? JSON.parse(completed.result_counts) : completed.result_counts;
+      assert.deepEqual(outcome.contents.left_out.map((item: FixtureValue) => [item.what, item.count]), [['CalDAV and subscription events', 1]]);
+      assert.ok(outcome.notes.some((note: string) => /when the calendar syncs/.test(note)));
       const sourceAudio = expected.files.find((file: FixtureValue) => file.kind === 'recording');
       const audioBytes = await fs.readFile(restored.recordings[0].storage_path);
       assert.deepEqual(audioBytes, Buffer.from(sourceAudio.bytes_base64, 'base64')); assert.equal(sha256(audioBytes), sourceAudio.sha256);

@@ -441,8 +441,13 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
       assert.notEqual(job.status, 'failed', job.error);
       return job.status === 'ready';
     }, 'account backup ready');
-    const archive = await call('GET', `/backup/jobs/${started.job.id}/download`, undefined, 200, true);
-    const entries = isolated('services/backup-zip-reader').readZipEntries(archive);
+    // Encrypted although the client asked otherwise; readable with the revealed recovery password.
+    const { recovery_password: recoveryPassword } = await call('POST', `/backup/jobs/${started.job.id}/recovery-password/reveal`, {});
+    const sealed = path.join(directory, 'account-backup.unihub-backup'), opened = path.join(directory, 'account-backup.zip');
+    await fs.writeFile(sealed, await call('GET', `/backup/jobs/${started.job.id}/download`, undefined, 200, true));
+    const container = isolated('services/backup-container');
+    await container.decryptBackupFile(sealed, opened, (await container.unlockContainerWithPassword(sealed, recoveryPassword)).dataKey);
+    const entries = isolated('services/backup-zip-reader').readZipEntries(await fs.readFile(opened));
     const backup = JSON.parse(entries.get('data/backup.json').toString('utf8'));
     assert.deepEqual(backup.data.mail_accounts.map((account: FixtureValue) => account.id), [switching]);
     assert.deepEqual(backup.data.emails.map((email: FixtureValue) => email.id).sort(), [...switchingMail].sort(), 'Only this account\'s mail');

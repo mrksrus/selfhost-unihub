@@ -490,7 +490,7 @@ test('task order and calendar defaults: owner-scoped, gated, kept over re-sync a
     await owner('PUT', `/calendar/events/${second}/position`, { after: null, before: first });
     await owner('PUT', '/settings/values', { values: { default_task_list_id: inbox, default_calendar_id: inbox } });
     const backup = await runtime('services/backup').buildBackupForUser(ids.owner, { sections: ['settings', 'calendar'] });
-    assert.equal(backup.version, 6);
+    assert.equal(backup.version, 7);
 
     // Keep both: the copies get their own calendar, events and order rows,
     // and the defaults follow the restored calendar (the calendar id map,
