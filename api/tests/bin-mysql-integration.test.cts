@@ -757,6 +757,46 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     assert.equal(server.copiesOf('Pinned restore').length, 1);
   });
 
+  await t.test('a pending restore whose calendar became read-only is settled by looking: absent, it may go elsewhere; there, it is adopted', async () => {
+    const caldavModule = require('../dist/src/services/caldav') as FixtureValue;
+    const realGet = caldavModule.getCalendarObject;
+    let looks = 0;
+    caldavModule.getCalendarObject = async (args: FixtureValue) => { looks += 1; return realGet(args); };
+    const { calendarId: ownList } = await ensureDefaultLocalCalendarForUser(users.alex);
+    try {
+      for (const [title, fault] of [['Read-only absent', 'lose'], ['Read-only stored', 'store-then-lose']] as const) {
+        const task = await serverTask(title);
+        await call(alex, 'DELETE', `/api/calendar/events/${task.id}`);
+        const item = (await bin(alex, 'calendar')).find(entry => entry.title === title);
+        server.faults.put = () => fault;
+        try {
+          assert.equal((await restore(item.id)).restored[0].pending, true, 'the answer was lost');
+        } finally { delete server.faults.put; }
+        // The calendar is read-only now, though still readable; the journal is long overdue.
+        await pool.execute('UPDATE calendar_calendars SET read_only = 1 WHERE id = ?', [work]);
+        await pool.execute('UPDATE calendar_event_moves SET attempts = 10000, next_attempt_at = UTC_TIMESTAMP() WHERE bin_item_id = ?', [item.id]);
+        looks = 0;
+        try {
+          const retry = await call(alex, 'POST', '/api/bin/restore', { ids: [item.id] });
+          assert.ok(looks > 0, 'the server was asked what it has');
+          if (fault === 'lose') {
+            assert.equal(retry.failed[0]?.code, 'CALENDAR_READ_ONLY', 'absent and not writable: the restore there ends');
+            assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_event_moves WHERE bin_item_id = ?', [item.id]), 0);
+            assert.equal((await call(alex, 'POST', `/api/bin/${item.id}/restore`, { calendar_id: ownList })).restored[0].item_type, 'task', 'another destination is allowed now');
+            assert.deepEqual((await rowsTitled(title)).map(row => row.calendar_id), [ownList]);
+          } else {
+            assert.equal(retry.restored[0]?.pending, undefined, 'there: adopted');
+            assert.deepEqual((await rowsTitled(title)).map(row => row.calendar_id), [work], 'one row, on its calendar');
+            assert.equal(server.copiesOf(title).length, 1);
+          }
+          assert.ok(!(await bin(alex, 'calendar')).some(entry => entry.id === item.id));
+        } finally {
+          await pool.execute('UPDATE calendar_calendars SET read_only = 0 WHERE id = ?', [work]);
+        }
+      }
+    } finally { caldavModule.getCalendarObject = realGet; }
+  });
+
   await t.test('UIDs 0.27 stored trimmed: upgrade step 25 gives them back the server\'s spaces, so the bin and the hand order still find the task', async context => {
     const { runMigrations } = require('../dist/src/services/database-migrations') as typeof import('../src/services/database-migrations');
     const { MIGRATIONS } = require('../dist/src/services/database') as typeof import('../src/services/database');

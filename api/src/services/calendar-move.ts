@@ -232,7 +232,6 @@ async function createCopy(move: MoveRow): Promise<NewCopy | null> {
   let attempt: Attempt;
   try {
     attempt = await calendarSync.withWriteContext(target, async (ctx): Promise<Attempt> => {
-      calendarSync.assertWritable(target);
       const url = calendarSync.objectUrl(ctx.account, { href: move.target_href! });
       const copy = (etag: string | null, ics: string) => ({ copy: { account: ctx.account, calendar: ctx.calendar, timeZone: ctx.timeZone, object: { href: move.target_href!, etag, ics } } });
       const look = async (otherwise: Attempt): Promise<Attempt> => {
@@ -241,6 +240,17 @@ async function createCopy(move: MoveRow): Promise<NewCopy | null> {
         if (found) return { refused: conflict('CALDAV_CONFLICT', 'Another item already uses this address on the calendar server. Nothing was moved.') };
         return otherwise;
       };
+      // A calendar that became read-only cannot take the copy, but an earlier
+      // attempt may have stored it: looking needs no write permission, so the
+      // outcome is settled now (adopted when there, ended when absent) instead
+      // of waiting for a permission that may never come back. A paused
+      // account is not contacted: it waits.
+      let blocked: unknown = null;
+      try { calendarSync.assertWritable(target); } catch (error) { blocked = error; }
+      if (blocked) {
+        if ((blocked as ApiError)?.code !== 'CALENDAR_READ_ONLY') throw blocked;
+        return move.attempts > 0 ? look({ refused: blocked }) : { refused: blocked };
+      }
       try {
         const { etag } = await caldav.putCalendarObject({ url, ics: move.target_ics!, etag: null, ...ctx.login });
         return copy(etag, move.target_ics!);
