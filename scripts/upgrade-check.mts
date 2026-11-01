@@ -322,13 +322,17 @@ try {
     const calendarAccount = (await freshOwner.json<{ accounts: Row[] }>('GET', '/api/calendar/accounts')).accounts.find(account => account.provider === 'caldav')!;
     const synced = await freshOwner.json<{ result: Row }>('POST', `/api/calendar/accounts/${calendarAccount.id}/sync`, {});
     assert.equal(synced.result.ok, true, `The restored CalDAV account syncs: ${JSON.stringify(synced.result)}`);
-    const view = await coreView(freshOwner);
-    const event = view.events.filter(entry => entry.calendar === SYNCED_CALENDAR);
-    // The older archive's state on the synced task comes back as an overlay matched by title and start.
-    assert.deepEqual(event, before.events.filter(entry => entry.calendar === SYNCED_CALENDAR), 'The CalDAV event comes back once, with its ToDo state and subtask');
+    const providerFields = ({ todo_status: _state, subtasks: _subtasks, ...fields }: CoreView['events'][number]) => fields;
+    const event = (await coreView(freshOwner)).events.filter(entry => entry.calendar === SYNCED_CALENDAR);
+    assert.deepEqual(event.map(providerFields), before.events.filter(entry => entry.calendar === SYNCED_CALENDAR).map(providerFields), 'The CalDAV event comes back once');
     assert.deepEqual(peers.log.destructive.slice(destructiveBefore), [], 'No destructive IMAP command after the restore');
     assert.equal(peers.log.logins.filter(login => !login.ok).length, failedLoginsBefore, 'Every restored password signs in');
     evidence.resynced = { mail: wanted.length, events: event.length };
+  });
+  await step('The synced task gets its state back', async () => {
+    // The older archive's state on the synced task is an overlay matched by title and start, applied by the sync.
+    const event = (await coreView(freshOwner)).events.filter(entry => entry.calendar === SYNCED_CALENDAR);
+    assert.deepEqual(event, before.events.filter(entry => entry.calendar === SYNCED_CALENDAR), 'The CalDAV event has its ToDo state and subtask');
   });
   evidence.providers = { imapCommands: [...new Set(peers.log.commands)], logins: peers.log.logins.length, smtp: peers.log.smtp.connections, davRequests: peers.log.dav.length };
   failed = false;

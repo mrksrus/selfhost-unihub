@@ -230,11 +230,6 @@ try {
   for (const field of ['title', 'description', 'start', 'end', 'all_day', 'location', 'attendees'] as const) {
     assert.deepEqual(syncedTask[0][field], sourceTask[field], `The CalDAV event's ${field} comes from the provider`);
   }
-  // UniHub's own state on the synced task: the overlay is applied by the sync that brought it back.
-  assert.deepEqual({ todo_status: syncedTask[0].todo_status, subtasks: syncedTask[0].subtasks }, { todo_status: sourceTask.todo_status, subtasks: sourceTask.subtasks },
-    'The synced task gets its ToDo state and subtasks back');
-  assert.equal(inspect(destination, userId, secrets).tables['calendar.calendar_overlay_restores'], 0, 'The applied overlay is used up');
-
   // 8. A provider outage after reconnecting removes nothing, and nothing was destructive.
   const settledMail = await mailList(user), settledEvents = JSON.stringify(await eventList(user));
   providers.outage(true);
@@ -244,6 +239,10 @@ try {
   assert.deepEqual(await mailList(user), settledMail, 'A provider outage removes no mail');
   assert.equal(JSON.stringify(await eventList(user)), settledEvents, 'A calendar outage removes no event');
   assert.deepEqual(providers.log.destructive, [], 'No provider change is replayed after restore');
+  // 9. UniHub's own state on the synced task: its overlay is applied by the sync that brought the task back.
+  assert.deepEqual({ todo_status: syncedTask[0].todo_status, subtasks: syncedTask[0].subtasks }, { todo_status: sourceTask.todo_status, subtasks: sourceTask.subtasks },
+    'The synced task gets its ToDo state and subtasks back');
+  assert.equal(inspect(destination, userId, secrets).tables['calendar.calendar_overlay_restores'], 0, 'The applied overlay is used up');
   evidence.providers = { logins: providers.log.logins.length, imapCommands: [...new Set(providers.log.commands)], davRequests: providers.log.dav.length,
     resynced: { mail: wantedMail.length, events: syncedTask.length, overlayApplied: true } };
   evidence.restored = { tables: first.server.tables, files: first.server.files.length, leftOut: sourceServer.mirror };
