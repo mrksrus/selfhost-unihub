@@ -315,6 +315,7 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
   signal.addEventListener('abort', onAbort, { once: true });
   log.info(LOG, 'Started', { run: row.id, trigger: row.trigger_kind });
   let published = false;
+  let endSampled = false;
   try {
     await checkDestination(settings.dir);
     // The setup checks of the start, again: secret files can have moved since.
@@ -330,6 +331,7 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
     // out, perhaps reachable under the stored files: the run does not count,
     // and its end sample has taught the next run those bytes.
     const moved = secretsChangedSince(secrets);
+    endSampled = true;
     if (moved.length) {
       throw new InstanceBackupError(`The backup did not count: ${moved.join(', ')} changed during the run, so the copy may hold the new key. The next run tries again.`);
     }
@@ -355,6 +357,11 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
     // The file of a run that does not count goes too.
     if (published && failedRecorded) await fs.promises.rm(finalPath, { force: true }).catch(() => {});
   } finally {
+    // A run that failed before its end check still remembers the secret
+    // files as they are now: bytes it may have copied stay out of the next.
+    if (!endSampled) {
+      try { sampleSecretFiles(); } catch (sampling) { log.error(LOG, 'Could not read the secret files at the end of a failed run', sampling, { run: row.id }); }
+    }
     clearTimeout(timer);
     signal.removeEventListener('abort', onAbort);
   }

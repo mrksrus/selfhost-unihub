@@ -559,6 +559,36 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     }
   });
 
+  await t.test('a run that fails still remembers the secret as it ended, so its copy stays out of the next run', async () => {
+    // A at the start, B (with a copy among the stored files) by the time the
+    // run fails, C before the next run.
+    const secretFile = write(path.join(scratch, 'failing-run', 'key'), `synthetic-a-${crypto.randomBytes(16).toString('hex')}`);
+    process.env.UNIHUB_FAILED_RUN_SECRET_FILE = secretFile;
+    const copy = path.join(rootDirs.attachments, users.alex, 'failed-run-copy');
+    const config = require('../dist/src/config') as typeof import('../src/config');
+    try {
+      let b: Buffer | null = null;
+      const failed = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin, hooks: { afterDump: async () => {
+        b = Buffer.from(`synthetic-b-${crypto.randomBytes(16).toString('hex')}`);
+        fs.writeFileSync(`${secretFile}.next`, b);
+        fs.renameSync(`${secretFile}.next`, secretFile);
+        write(copy, b);
+        throw new Error('synthetic failure after the rotation');
+      } } }))!;
+      assert.equal(failed.status, 'failed');
+      assert.ok(config.secretGenerationNames(b!.length, crypto.createHash('sha256').update(b!).digest('hex')), 'B is remembered');
+      write(secretFile, `synthetic-c-${crypto.randomBytes(16).toString('hex')}`);
+      const next = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      assert.equal(next.status, 'succeeded', String(next.error));
+      const copied: string[] = [];
+      await format.scanInstanceBackup(path.join(destination, next.file_name!), key, backup.INSTANCE_BACKUP_ROOTS, { onFile: entry => { copied.push(path.join(uploads, entry.root, entry.path)); return null; } });
+      assert.equal(copied.includes(copy), false, 'the copy of B is left out');
+    } finally {
+      delete process.env.UNIHUB_FAILED_RUN_SECRET_FILE;
+      fs.rmSync(copy, { force: true });
+    }
+  });
+
   await t.test('restore into an empty installation: refused while not empty, then the data, the files and no sessions', async () => {
     const database = getDatabaseConfig()!;
     await assert.rejects(restoreInstanceBackup({ file: first.file, key, database }), /is not empty/);
