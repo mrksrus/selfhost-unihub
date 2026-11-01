@@ -19,8 +19,10 @@ which takes longer on large calendars (see
   UniHub's own state on synced tasks: ToDo state, done time, subtasks and the
   email a task was made from. What a provider holds downloads again after the
   accounts reconnect and is no longer copied: CalDAV and subscription events,
-  and Sync-mode mail that is on the server. A Sync-mode message without a
-  server copy stays in the backup. Each backup shows what it holds and what
+  and Sync-mode mail that is on the server. A Sync-mode message that UniHub
+  keeps on its own stays in the backup: a draft or UniHub's own sent copy,
+  Legacy mail, mail filed in another account, and mail that is gone from the
+  server. Each backup shows what it holds and what
   it left out, with counts.
 - **"Include downloaded mail"** decides whether Download-mode mail is in a
   backup; it starts on, because that mail may be the only copy. An account

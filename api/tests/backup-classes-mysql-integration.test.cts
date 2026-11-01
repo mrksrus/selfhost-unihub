@@ -67,7 +67,7 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
     return id;
   };
 
-  await t.test('mail: Download mail by choice, always for an account that deletes at the provider, Sync mail only when UniHub holds the only copy', async () => {
+  await t.test('mail: Download mail by choice, always for an account that deletes at the provider, Sync mail only when the provider holds a live copy', async () => {
     const owner = await newUser('mail-owner');
     const stranger = await newUser('mail-stranger');
     const accounts = { kept: uuid(), deletes: uuid(), sync: uuid() };
@@ -80,28 +80,78 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
       await insert('emails', { id, user_id: owner, mail_account_id: accountId, subject, from_address: 'sender@example.test', to_addresses: '[]', folder: 'inbox', ...extra });
       return id;
     };
+    // The Sync account's INBOX as the last LIST saw it (epoch 7), and copies in it.
+    const inbox = uuid();
+    await insert('mail_remote_mailboxes', { id: inbox, user_id: owner, mail_account_id: accounts.sync, remote_name: 'INBOX', delimiter: '/', uidvalidity: 7, state: 'active' });
+    const occurrence = (emailId: string, uid: number, { uidvalidity = 7, presence = 'present' } = {}) => insert('mail_remote_occurrences', {
+      id: uuid(), user_id: owner, mail_account_id: accounts.sync, mailbox_id: inbox, uidvalidity, uid, email_id: emailId, presence, observed_at: '2030-01-01 00:00:00' });
+    const attachment = async (emailId: string, filename: string) => {
+      const id = uuid(), bytes = crypto.randomBytes(16);
+      const stored = path.join(directory, 'attachments', owner, `${id}.bin`);
+      await fs.mkdir(path.dirname(stored), { recursive: true });
+      await fs.writeFile(stored, bytes);
+      await insert('email_attachments', { id, user_id: owner, email_id: emailId, filename, content_type: 'application/octet-stream', size_bytes: bytes.length, storage_path: stored });
+    };
+    const linked = (uid: number, uidvalidity = 7) => ({ remote_folder: 'INBOX', remote_uid: uid, remote_uidvalidity: uidvalidity, imap_uid: uid, imap_uidvalidity: uidvalidity });
     await email('Downloaded', accounts.kept, { imap_uid: 1, imap_uidvalidity: 7 });
     await email('Only copy', accounts.deletes, { imap_uid: 2, imap_uidvalidity: 7 });
-    const synced = await email('On the server', accounts.sync, { imap_uid: 3, imap_uidvalidity: 7 });
-    await email('Draft', accounts.sync, { is_draft: 1 });
-    await insert('email_attachments', { id: uuid(), user_id: owner, email_id: synced, filename: 'server.pdf', content_type: 'application/pdf', size_bytes: 3 });
+    // The provider's copy, which a re-sync brings back: the only Sync message a backup leaves out.
+    const synced = await email('On the server', accounts.sync, linked(3));
+    await occurrence(synced, 3);
+    await attachment(synced, 'server.bin');
     await insert('mail_email_scores', { id: uuid(), user_id: owner, email_id: synced, score_version: 'v1', total_score: 1, reasons: '[]', metadata: '{}' });
+    // What the sync never removes, or what no live copy at the provider backs, is UniHub's own copy.
+    await occurrence(await email('Kept as Legacy', accounts.sync, { ...linked(4), is_legacy: 1 }), 4);
+    await occurrence(await email('Filed elsewhere', accounts.sync, { ...linked(5), filing_account_id: accounts.kept }), 5);
+    const pending = await email('Change pending', accounts.sync, linked(6));
+    await occurrence(pending, 6);
+    await insert('mail_writebacks', { id: uuid(), user_id: owner, mail_account_id: accounts.sync, email_id: pending, action: 'read', target_value: '1', base_value: '0',
+      remote_folder: 'INBOX', remote_uid: 6, remote_uidvalidity: 7 });
+    const gone = await email('Gone at the provider', accounts.sync, { ...linked(8), remote_missing: 1 });
+    await occurrence(gone, 8, { presence: 'absent' });
+    await attachment(gone, 'only-here.bin');
+    await email('Known absent', accounts.sync, { imap_uid: 7, imap_uidvalidity: 19, remote_missing: 1, is_legacy: 1 });
+    await email('Old address only', accounts.sync, linked(9));
+    await occurrence(await email('In an old mailbox epoch', accounts.sync, linked(10, 6)), 10, { uidvalidity: 6 });
+    await email('Draft', accounts.sync, { is_draft: 1 });
+    const keptSync = ['Change pending', 'Draft', 'Filed elsewhere', 'Gone at the provider', 'In an old mailbox epoch', 'Kept as Legacy', 'Known absent', 'Old address only'];
 
     const choice = await runtime('services/backup-classes').downloadMailChoice(owner);
     assert.deepEqual(choice, { value: true, forced: false, reason: 'Accounts that delete mail at the provider always include their downloaded mail.', forced_account_ids: [accounts.deletes] });
 
-    const subjects = (archive: FixtureValue) => archive.data.emails.map((row: FixtureValue) => row.subject).sort();
+    const subjects = (rows: FixtureValue[]) => rows.map((row: FixtureValue) => row.subject).sort();
     const without = await backup.buildBackupForUser(owner, { sections: ['mail'], includeFileData: false, includeDownloadMail: false });
-    assert.deepEqual(subjects(without), ['Draft', 'Only copy']);
-    assert.deepEqual(without.data.email_attachments, [], 'the server copy\'s files stay with it');
+    assert.deepEqual(subjects(without.data.emails), [...keptSync, 'Only copy'].sort());
+    assert.deepEqual(without.data.email_attachments.map((row: FixtureValue) => row.filename), ['only-here.bin'], 'the server copy\'s files stay with it, a kept copy\'s go along');
     assert.deepEqual(without.data.mail_email_scores, []);
     assert.deepEqual(without.data.mail_accounts.map((row: FixtureValue) => row.id).sort(), Object.values(accounts).sort(), 'every account\'s settings');
     assert.deepEqual(without.contents.left_out.map((row: FixtureValue) => [row.what, row.count]), [['Sync-mode mail', 1], ['Downloaded mail', 1]]);
     assert.ok(without.contents.included.includes('local-by-policy'));
 
     const withMail = await backup.buildBackupForUser(owner, { sections: ['mail'], includeFileData: false });
-    assert.deepEqual(subjects(withMail), ['Downloaded', 'Draft', 'Only copy']);
+    assert.deepEqual(subjects(withMail.data.emails), [...keptSync, 'Downloaded', 'Only copy'].sort());
     assert.deepEqual(withMail.contents.left_out.map((row: FixtureValue) => [row.what, row.count]), [['Sync-mode mail', 1]]);
+
+    // The same mail in an archive of 0.27 (schema 6), which held every message
+    // with the provider evidence: its import keeps the same messages.
+    await pool.execute("UPDATE mail_accounts SET sync_mode = 'download' WHERE id = ?", [accounts.sync]);
+    let old: FixtureValue;
+    try { old = await backup.buildBackupForUser(owner, { sections: ['mail'], includeFileData: true }); } finally {
+      await pool.execute("UPDATE mail_accounts SET sync_mode = 'sync' WHERE id = ?", [accounts.sync]);
+    }
+    old.version = 6;
+    delete old.contents;
+    old.data.mail_accounts.find((row: FixtureValue) => row.id === accounts.sync).sync_mode = 'sync';
+    assert.deepEqual(old.files.map((file: FixtureValue) => file.kind), ['email_attachment', 'email_attachment'], 'it holds both files');
+    assert.ok(old.data.mail_remote_occurrences.length >= 6, 'the archive carries the occurrences');
+    const reader = await newUser('mail-reader');
+    await runtime('services/mail-folders').ensureDefaultMailFoldersForUser(reader);
+    const imported = await restore(reader, old, 'keep_existing', ['mail']);
+    const [readerMail] = await pool.query<RowDataPacket[]>(`SELECT e.subject, a.sync_mode FROM emails e JOIN mail_accounts a ON a.id = e.mail_account_id WHERE e.user_id = ?`, [reader]);
+    assert.deepEqual(subjects(readerMail.filter(row => row.sync_mode === 'sync')), keptSync);
+    assert.deepEqual(subjects(readerMail.filter(row => row.sync_mode !== 'sync')), ['Downloaded', 'Only copy']);
+    assert.deepEqual(imported.contents.left_out.map((row: FixtureValue) => [row.what, row.count]), [['Sync-mode mail', 1]]);
+    assert.deepEqual((await pool.query<RowDataPacket[]>('SELECT filename FROM email_attachments WHERE user_id = ?', [reader]))[0].map(row => row.filename), ['only-here.bin']);
 
     // An administrator's policy includes downloaded mail whatever the choice.
     await pool.execute("INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked) VALUES ('installation', '', 'policy.backup.download_mail', 'always', 1)");
@@ -109,7 +159,7 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
       const forced = await runtime('services/backup-classes').downloadMailChoice(owner);
       assert.deepEqual([forced.value, forced.forced, forced.reason], [true, true, 'Your backups always include downloaded mail, as your administrator requires.']);
       const declined = await backup.buildBackupForUser(owner, { sections: ['mail'], includeFileData: false, includeDownloadMail: false });
-      assert.deepEqual(subjects(declined), ['Downloaded', 'Draft', 'Only copy']);
+      assert.deepEqual(subjects(declined.data.emails), [...keptSync, 'Downloaded', 'Only copy'].sort());
     } finally { await pool.execute("DELETE FROM setting_policies WHERE setting_key = 'policy.backup.download_mail'"); }
   });
 

@@ -165,9 +165,15 @@ and Download-mode mail unless "Include downloaded mail" is off. An account
 that deletes mail at the provider, or the `backup.download_mail` policy,
 forces that mail in. Provider copies are left out: events of CalDAV and ICS
 calendars with their subtasks, attendees and external references, and
-Sync-mode mail with a server copy (a server UID or an observed occurrence)
-with its files, scores, recovery items and the Sync accounts' provider
-evidence. A Sync-mode draft or UniHub's own copy without a server copy stays.
+Sync-mode mail the provider holds, with its files, scores, recovery items
+and the Sync accounts' provider evidence. That is the Sync policy's own
+evidence (`mail-sync-policy.ts`): a present occurrence in an active mailbox
+of the same UIDVALIDITY. A message the policy never removes stays as
+UniHub's own copy: a draft, Legacy mail, mail filed in another account, one
+with an unsettled provider change. So does one marked missing at the
+provider (`remote_missing`) or one only historical IMAP ids point at. The
+export's SQL and the old-archive filter apply the same rule
+(`backup-classes.ts`).
 Folder reconciliation markers stay for every account: they record moves
 already made, which must not run again. `calendar_calendars`,
 `calendar_events` and `recordings` carry `uid`, the item's stable identity

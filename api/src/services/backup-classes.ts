@@ -11,16 +11,45 @@ import type { BackupContents, BackupDataClass, BackupLeftOut, BackupSectionId, D
 import crypto from 'node:crypto';
 import { db } from '../state';
 import { resolvePolicy } from './settings';
+import { SETTLED } from './mail-engine/operation-states';
 
 // Row classes as SQL on a row alias. A local calendar belongs to an account
 // of the UniHub provider; an event without a calendar is local too.
 const localEventSql = (event: string) => `(${event}.calendar_id IS NULL OR EXISTS (SELECT 1 FROM calendar_calendars class_c
   JOIN calendar_accounts class_a ON class_a.id = class_c.account_id AND class_a.user_id = class_c.user_id
   WHERE class_c.id = ${event}.calendar_id AND class_c.user_id = ${event}.user_id AND class_a.provider = 'local'))`;
-// A Sync-mode message the provider holds: it has a server identity or an
-// observed provider copy. A draft and UniHub's own copies without either are local.
-const serverLinkedEmailSql = (email: string) => `(COALESCE(${email}.is_draft, FALSE) = FALSE AND (${email}.remote_uid IS NOT NULL OR ${email}.imap_uid IS NOT NULL
-  OR EXISTS (SELECT 1 FROM mail_remote_occurrences class_o WHERE class_o.email_id = ${email}.id AND class_o.user_id = ${email}.user_id)))`;
+// A Sync-mode message is the provider's copy, which a re-sync brings back,
+// only on the evidence the Sync policy (mail-sync-policy.ts) acts on: a
+// present occurrence in an active mailbox of the same UIDVALIDITY, and none
+// of what that policy never removes (a draft, Legacy mail, mail filed in
+// another account, an unsettled provider change). A copy marked missing at
+// the provider, or one only historical IMAP ids point at, is UniHub's own.
+// providerCopyIds applies the same rule to an archive's rows.
+const UNSETTLED_SQL = SETTLED.map(state => `'${state}'`).join(', ');
+const serverLinkedEmailSql = (email: string) => `(COALESCE(${email}.is_draft, FALSE) = FALSE AND COALESCE(${email}.is_legacy, FALSE) = FALSE
+  AND COALESCE(${email}.remote_missing, FALSE) = FALSE AND COALESCE(${email}.filing_account_id, ${email}.mail_account_id) = ${email}.mail_account_id
+  AND NOT EXISTS (SELECT 1 FROM mail_writebacks class_w WHERE class_w.email_id = ${email}.id AND class_w.user_id = ${email}.user_id
+    AND (class_w.state IS NULL OR class_w.state NOT IN (${UNSETTLED_SQL})))
+  AND EXISTS (SELECT 1 FROM mail_remote_occurrences class_o JOIN mail_remote_mailboxes class_mb ON class_mb.id = class_o.mailbox_id
+      AND class_mb.user_id = class_o.user_id AND class_mb.mail_account_id = class_o.mail_account_id AND class_mb.state = 'active' AND class_mb.uidvalidity = class_o.uidvalidity
+    WHERE class_o.email_id = ${email}.id AND class_o.user_id = ${email}.user_id AND class_o.mail_account_id = ${email}.mail_account_id AND class_o.presence = 'present'))`;
+
+const asRows = (value: unknown) => Array.isArray(value) ? value as BackupRow[] : [];
+const flag = (value: unknown) => value === true || value === 1 || value === '1';
+/** The archive's Sync-mode messages that are the provider's copy, by the rule of serverLinkedEmailSql. */
+function providerCopyIds(data: Record<string, unknown>, syncAccounts: ReadonlySet<string>) {
+  const mailboxes = new Map(asRows(data.mail_remote_mailboxes).map(row => [String(row.id), row]));
+  const live = new Set<string>();
+  for (const row of asRows(data.mail_remote_occurrences)) {
+    const mailbox = mailboxes.get(String(row.mailbox_id));
+    if (row.presence === 'present' && mailbox && mailbox.state === 'active' && String(mailbox.uidvalidity) === String(row.uidvalidity)
+      && String(mailbox.mail_account_id) === String(row.mail_account_id)) live.add(`${row.email_id}|${row.mail_account_id}`);
+  }
+  const unsettled = new Set(asRows(data.mail_writebacks).filter(row => row.state == null || !SETTLED.includes(String(row.state))).map(row => String(row.email_id)));
+  return new Set(asRows(data.emails).filter(row => syncAccounts.has(String(row.mail_account_id)) && !flag(row.is_draft) && !flag(row.is_legacy) && !flag(row.remote_missing)
+    && (row.filing_account_id == null || String(row.filing_account_id) === String(row.mail_account_id)) && !unsettled.has(String(row.id))
+    && live.has(`${row.id}|${row.mail_account_id}`)).map(row => String(row.id)));
+}
 const syncAccountSql = (accountId: string) => `EXISTS (SELECT 1 FROM mail_accounts class_m WHERE class_m.id = ${accountId} AND class_m.sync_mode = 'sync')`;
 
 /**
@@ -83,7 +112,6 @@ function backupContents(sections: readonly string[], counts: Partial<Record<Left
 }
 
 const OVERLAY_SHAPE_DAYS = 30;
-const asRows = (value: unknown) => Array.isArray(value) ? value as BackupRow[] : [];
 const toMysqlDate = (date: Date) => date.toISOString().slice(0, 19).replace('T', ' ');
 
 // The ToDo states a task can have (contracts/tasks.ts). The column is free
@@ -144,9 +172,7 @@ function filterOldArchive(backup: ArchiveEnvelope, now = new Date()): { counts: 
 
   const syncAccounts = new Set(asRows(data.mail_accounts).filter(row => row.sync_mode === 'sync').map(row => String(row.id)));
   if (syncAccounts.size) {
-    const observed = new Set(asRows(data.mail_remote_occurrences).map(row => String(row.email_id)));
-    const mirrored = new Set(asRows(data.emails).filter(row => syncAccounts.has(String(row.mail_account_id)) && !row.is_draft
-      && (row.remote_uid != null || row.imap_uid != null || observed.has(String(row.id)))).map(row => String(row.id)));
+    const mirrored = providerCopyIds(data, syncAccounts);
     if (mirrored.size) {
       for (const id of mirrored) removedFiles.add(`raw_email:${id}`);
       for (const row of asRows(data.email_attachments)) if (mirrored.has(String(row.email_id))) removedFiles.add(`email_attachment:${row.id}`);

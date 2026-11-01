@@ -231,14 +231,23 @@ test('production export and restore jobs round-trip what a backup holds through 
     await insert('recording_tag_links', { user_id: sourceUser, recording_id: recordingId, tag_id: tagId });
     await insert('recording_transcription_jobs', { id: uuid(), user_id: sourceUser, recording_id: recordingId, status: 'completed', provider: 'synthetic', model: 'test', language: 'de', transcript_text: 'Saved Grüße transcript ' + index, created_at: '2030-01-01 11:00:00', updated_at: '2030-01-01 11:01:00' });
   }
+  // The Sync account's first copy is at the provider (a present occurrence in
+  // the mailbox epoch the last LIST saw); its second is marked missing there.
+  const [liveSync] = await pool.execute<RowDataPacket[]>('SELECT id, remote_folder, remote_uid, remote_uidvalidity FROM emails WHERE user_id = ? AND mail_account_id = ? AND remote_missing = FALSE',
+    [sourceUser, mailAccounts[1].id]);
+  assert.equal(liveSync.length, 1);
+  const liveMailbox = uuid();
+  await insert('mail_remote_mailboxes', { id: liveMailbox, user_id: sourceUser, mail_account_id: mailAccounts[1].id, remote_name: liveSync[0].remote_folder, delimiter: '/', uidvalidity: liveSync[0].remote_uidvalidity, state: 'active' });
+  await insert('mail_remote_occurrences', { id: uuid(), user_id: sourceUser, mail_account_id: mailAccounts[1].id, mailbox_id: liveMailbox, uidvalidity: liveSync[0].remote_uidvalidity,
+    uid: liveSync[0].remote_uid, email_id: liveSync[0].id, presence: 'present', observed_at: '2030-01-02 12:34:56' });
   const original = await snapshot(sourceUser);
   // What a user backup holds (data classes, 0.28): all of the above except
-  // the provider's copies. The Sync account's server mail goes with its files,
-  // scores, recovery history and provider evidence (its folder reconciliation
-  // marker stays, so moves are not replayed), and the CalDAV event with
+  // the provider's copies. The Sync account's message at the provider goes
+  // with its files, scores, recovery history and provider evidence (the
+  // account's folder reconciliation marker stays, so moves are not replayed;
+  // its copy marked missing stays as UniHub's own), and the CalDAV event with
   // its children; that task's UniHub state travels as an overlay instead.
-  const syncAccounts = new Set(original.mail_accounts.filter((row: FixtureValue) => row.sync_mode === 'sync').map((row: FixtureValue) => row.id));
-  const keptEmails = new Set(original.emails.filter((row: FixtureValue) => !syncAccounts.has(row.mail_account_id)).map((row: FixtureValue) => row.id));
+  const keptEmails = new Set(original.emails.filter((row: FixtureValue) => row.id !== liveSync[0].id).map((row: FixtureValue) => row.id));
   const keptEvents = new Set(original.calendar_events.filter((row: FixtureValue) => row.calendar_id !== calendarId).map((row: FixtureValue) => row.id));
   const kept: typeof original = { ...original,
     emails: original.emails.filter((row: FixtureValue) => keptEmails.has(row.id)),
@@ -287,7 +296,7 @@ test('production export and restore jobs round-trip what a backup holds through 
   const legacy = { bytes: await fs.readFile(legacyPath), password: null };
   const legacyParsed = await source('services/backup').backupFromZipFile(legacyPath);
   // The kept mail's raw messages and attachments, the recordings, and the two files of one contact photo.
-  assert.equal(legacyParsed.manifest.file_count, 9);
+  assert.equal(legacyParsed.manifest.file_count, 11);
   assert.equal(legacyParsed.backup.data.calendar_overlay_restores.length, 1, 'The CalDAV task\'s UniHub state');
   assert.deepEqual(legacyParsed.manifest.missing_files, []);
   assert.equal(legacyParsed.backup.data.contacts.length, 2, 'Other users must not appear in an export');
@@ -458,8 +467,8 @@ test('production export and restore jobs round-trip what a backup holds through 
       assert.equal(account.sync_mode, original.mail_accounts.find((row: FixtureValue) => row.email_address === account.email_address).sync_mode);
       assert.equal(account.sync_status, account.sync_mode === 'sync' ? 'pending' : 'idle');
       const accountEmails = restored.emails.filter((row: FixtureValue) => row.mail_account_id === account.id);
-      // The Sync account's mail downloads again from the provider.
-      assert.equal(accountEmails.length, account.sync_mode === 'sync' ? 0 : 2, 'Same Message-ID in distinct folders must not collapse');
+      // The Sync account's copy at the provider downloads again; the one marked missing there is restored.
+      assert.equal(accountEmails.length, account.sync_mode === 'sync' ? 1 : 2, 'Same Message-ID in distinct folders must not collapse');
       for (const email of accountEmails) {
       const fileKey = account.email_address + ':' + email.source_folder;
       const raw = await fs.readFile(email.raw_storage_path);
