@@ -11,8 +11,10 @@
 //   with every storage root that can be configured in the installation's own
 //   directory, and resolves PEER_HOST to this machine in the API process. Part
 //   of the API keeps fixed paths under /app/uploads (a user backup's import
-//   and restore), so only checks that do not use them run that way, such as
-//   instance-backup-drill.mts.
+//   and restore staging), which would then be this machine's own: so only a
+//   check that declares it never uses them may run that way
+//   (installationFactory's allowWithoutSandbox: instance-backup-drill.mts),
+//   and never in CI.
 //
 // Neither kind ever touches a database, volume or directory it did not create.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
@@ -311,13 +313,24 @@ function sandboxArgs(uploads: string, hostsFile: string) {
   return [...args, '--bind', uploads, '/app/uploads', '--ro-bind', hostsFile, '/etc/hosts'];
 }
 
-export async function startLocalInstallation(options: InstallationOptions): Promise<Installation> {
+/**
+ * Whether a local installation runs in its bubblewrap sandbox or, only when
+ * the check allows it, the person asked for it and this is not CI, without
+ * one. Anything else is refused.
+ */
+export function localSandboxMode({ bwrap, env, allowWithoutSandbox }: { bwrap: boolean; env: NodeJS.ProcessEnv; allowWithoutSandbox: boolean }): 'sandbox' | 'unsandboxed' {
+  if (bwrap) return 'sandbox';
+  const need = 'Local installations need bubblewrap (bwrap) for a private /app/uploads.';
+  if (env.UNIHUB_LOCAL_WITHOUT_SANDBOX !== '1') throw new Error(`${need} (UNIHUB_LOCAL_WITHOUT_SANDBOX=1 runs the instance backup drill without it; see scripts/fresh-installations.mts.)`);
+  if (!allowWithoutSandbox) throw new Error(`${need} This check uses the API's fixed paths under /app/uploads, so UNIHUB_LOCAL_WITHOUT_SANDBOX does not apply to it.`);
+  if (env.CI !== undefined) throw new Error(`${need} UNIHUB_LOCAL_WITHOUT_SANDBOX is refused in CI (CI is set), which runs the checks with --image.`);
+  return 'unsandboxed';
+}
+
+export async function startLocalInstallation(options: InstallationOptions, { allowWithoutSandbox = false } = {}): Promise<Installation> {
+  const sandbox = localSandboxMode({ bwrap: spawnSync('bwrap', ['--version']).status === 0, env: process.env, allowWithoutSandbox }) === 'sandbox';
   const dbHome = process.env.UNIHUB_DB_HOME || path.join(os.homedir(), '.local/opt/mariadb-11.8');
   if (!fs.existsSync(path.join(dbHome, 'bin/mariadbd'))) throw new Error(`MariaDB not found at ${dbHome} (see docs/DEVELOPMENT.md)`);
-  const sandbox = spawnSync('bwrap', ['--version']).status === 0;
-  if (!sandbox && process.env.UNIHUB_LOCAL_WITHOUT_SANDBOX !== '1') {
-    throw new Error('Local installations need bubblewrap (bwrap) for a private /app/uploads (UNIHUB_LOCAL_WITHOUT_SANDBOX=1 runs some checks without it; see scripts/fresh-installations.mts).');
-  }
   if (!fs.existsSync(path.join(repo, 'api/dist/server.js'))) throw new Error('Build the API first: npm --prefix api run build');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `unihub-fresh-${options.name}-`));
   try {
@@ -480,8 +493,12 @@ const promised = dns.promises.lookup; dns.promises.lookup = async function (name
   }
 }
 
-/** Chooses the kind from the command line: --image <image> or --local. */
-export function installationFactory(argv = process.argv.slice(2)) {
+/**
+ * Chooses the kind from the command line: --image <image> or --local. Only a
+ * check that never reaches the API's fixed /app/uploads paths (no user
+ * backup import or restore) may pass allowWithoutSandbox.
+ */
+export function installationFactory(argv = process.argv.slice(2), { allowWithoutSandbox = false } = {}) {
   const imageIndex = argv.indexOf('--image');
   if (imageIndex >= 0 && argv[imageIndex + 1]) {
     const image = argv[imageIndex + 1];
@@ -489,7 +506,11 @@ export function installationFactory(argv = process.argv.slice(2)) {
     if (!id) throw new Error(`Docker image ${image} is not available`);
     return { describe: `container image ${image} (${id})`, start: (options: InstallationOptions) => startContainerInstallation(image, options) };
   }
-  if (argv.includes('--local')) return { describe: 'local build (api/dist) with MariaDB from UNIHUB_DB_HOME', start: startLocalInstallation };
+  if (argv.includes('--local')) {
+    // Decided before the check makes anything, and again when each installation starts.
+    localSandboxMode({ bwrap: spawnSync('bwrap', ['--version']).status === 0, env: process.env, allowWithoutSandbox });
+    return { describe: 'local build (api/dist) with MariaDB from UNIHUB_DB_HOME', start: (options: InstallationOptions) => startLocalInstallation(options, { allowWithoutSandbox }) };
+  }
   throw new Error('Choose the installations: --image <image> (Docker) or --local (built API, MariaDB tarball, bubblewrap).');
 }
 

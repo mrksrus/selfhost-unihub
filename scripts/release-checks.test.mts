@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { localSandboxMode } from './fresh-installations.mts';
 import { compareVersions, previousReleases } from './published-image.mts';
 import { DESTRUCTIVE_IMAP, imapCommandReader, imapResultReader } from './test-providers.mts';
 
@@ -102,4 +103,34 @@ test('the release evidence is complete only with the drill and an upgrade from e
   const missing = collect(withoutUpgrade);
   assert.equal(missing.status, 1);
   assert.match(missing.manifest.parts['upgrade-1'].problem, /missing: no upload/);
+});
+
+test('only the instance backup drill may run without the sandbox, and never in CI', () => {
+  const mode = (bwrap: boolean, env: NodeJS.ProcessEnv, allowWithoutSandbox: boolean) => localSandboxMode({ bwrap, env, allowWithoutSandbox });
+  const flag = { UNIHUB_LOCAL_WITHOUT_SANDBOX: '1' };
+  assert.equal(mode(true, flag, false), 'sandbox');
+  assert.equal(mode(true, { ...flag, CI: 'true' }, true), 'sandbox');
+  assert.equal(mode(false, flag, true), 'unsandboxed');
+  assert.throws(() => mode(false, {}, true), /need bubblewrap/);
+  assert.throws(() => mode(false, { UNIHUB_LOCAL_WITHOUT_SANDBOX: 'yes' }, true), /need bubblewrap/);
+  assert.throws(() => mode(false, flag, false), /does not apply/);
+  for (const CI of ['true', '1', 'false', '']) assert.throws(() => mode(false, { ...flag, CI }, true), /refused in CI/);
+
+  // The scripts themselves, on a machine without bwrap: refused before they make anything.
+  const run = (script: string, env: NodeJS.ProcessEnv) => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'unihub-sandbox-test-'));
+    try {
+      const result = spawnSync(process.execPath, [path.join(import.meta.dirname, script), '--local'], { encoding: 'utf8', timeout: 60000,
+        env: { PATH: path.dirname(process.execPath), TMPDIR: tmp, ...env } });
+      return { status: result.status, output: result.stdout + result.stderr, left: fs.readdirSync(tmp) };
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  };
+  const gate = run('recovery-fresh-install.mts', flag);
+  assert.notEqual(gate.status, 0);
+  assert.match(gate.output, /does not apply/);
+  assert.deepEqual(gate.left, [], 'The user-restore gate made nothing');
+  const drillInCi = run('instance-backup-drill.mts', { ...flag, CI: 'true' });
+  assert.notEqual(drillInCi.status, 0);
+  assert.match(drillInCi.output, /refused in CI/);
+  assert.deepEqual(drillInCi.left, [], 'The drill made nothing in CI');
 });

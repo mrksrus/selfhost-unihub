@@ -25,7 +25,8 @@ import { createPeerCertificates, installationFactory, Session, type Installation
 import { inspect, providerAccounts, providerSecrets, publicView, seedProviders, seedSource, sleep, type Row } from './recovery-data.mts';
 import { startProviders, type Providers } from './test-providers.mts';
 
-const factory = installationFactory();
+// The drill never imports or restores a user backup, so it may run without the sandbox locally.
+const factory = installationFactory(process.argv.slice(2), { allowWithoutSandbox: true });
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'unihub-instance-drill-'));
 const certificates = createPeerCertificates(work);
 const secrets = providerSecrets();

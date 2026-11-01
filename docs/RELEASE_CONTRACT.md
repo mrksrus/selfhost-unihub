@@ -150,8 +150,9 @@ rows. Do not describe a green CI run as full release acceptance.
 installation its own `/app/uploads`. Without `bwrap`,
 `UNIHUB_LOCAL_WITHOUT_SANDBOX=1` points every storage root that can be
 configured into the installation's own directory; a user backup's import keeps
-fixed paths under `/app/uploads` and fails that way, so only the instance
-backup drill runs without the sandbox. They create and delete their own
+fixed paths under `/app/uploads`, which would then be this machine's own, so
+only the instance backup drill accepts it; the other checks, and every check
+when `CI` is set, refuse it. They create and delete their own
 databases and directories and never touch `unihub_dev` or a live server.
 
 ## The test providers
