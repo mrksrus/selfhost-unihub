@@ -10,6 +10,7 @@ import test from 'node:test';
 import { localSandboxMode } from './fresh-installations.mts';
 import { compareVersions, previousReleases } from './published-image.mts';
 import { DESTRUCTIVE_IMAP, imapCommandReader, imapResultReader } from './test-providers.mts';
+import { coreView, seededMailProblems, seedMessage, type RawEntry, type ViewSession } from './upgrade-view.mts';
 
 const lines = (...parts: string[]) => Buffer.from(parts.join(''), 'latin1');
 
@@ -133,4 +134,48 @@ test('only the instance backup drill may run without the sandbox, and never in C
   assert.notEqual(drillInCi.status, 0);
   assert.match(drillInCi.output, /refused in CI/);
   assert.deepEqual(drillInCi.left, [], 'The drill made nothing in CI');
+});
+
+test('the upgrade check reads mail in full and fails closed when its contents are lost', async () => {
+  const crypto = await import('node:crypto');
+  const sha = (bytes: Buffer) => crypto.createHash('sha256').update(bytes).digest('hex');
+  const seed = seedMessage({ account: 'sync@example.test', folder: 'inbox', id: 'view-1', subject: 'Quarterly numbers' });
+  // An installation's answers for one message; each change below loses part of it.
+  const installation = (change: { body?: string | null; attachment?: Buffer | null; stored?: string | null; format?: string } = {}) => {
+    const attachment = change.attachment === undefined ? seed.attachment.bytes : change.attachment;
+    const routes: Record<string, unknown> = {
+      '/api/contacts': { contacts: [] }, '/api/calendar/calendars': { calendars: [] }, '/api/recordings': { recordings: [] },
+      '/api/calendar/accounts': { accounts: [] }, '/api/mail/accounts': { accounts: [{ id: 'a1', email_address: seed.account, sync_mode: 'sync' }] },
+      '/api/mail/folders': { folders: [{ slug: 'inbox' }] },
+      '/api/mail/emails?folder=inbox': { emails: [{ id: 'e1', mail_account_id: 'a1', message_id: seed.messageId, subject: seed.subject }] },
+      '/api/mail/emails/e1': { email: { message_id: seed.messageId, subject: seed.subject, body_text: change.body === undefined ? `${seed.text}\n` : change.body, body_html: null,
+        attachments: attachment ? [{ id: 'f1', filename: seed.attachment.filename, size_bytes: attachment.length }] : [] } },
+    };
+    const session: ViewSession = {
+      async json<T>(_method: string, url: string) {
+        if (url.startsWith('/api/calendar/events')) return { events: [] } as T;
+        if (!(url in routes)) throw new Error(`unexpected ${url}`);
+        return routes[url] as T;
+      },
+      async bytes(url: string) { if (url === '/api/mail/attachments/f1' && attachment) return attachment; throw new Error(`unexpected ${url}`); },
+    };
+    const raw: Record<string, RawEntry> = { e1: { format: change.format ?? 'exact_octets', verified: true, recorded: sha(seed.raw), bytes: seed.raw.length,
+      stored: change.stored === undefined ? sha(seed.raw) : change.stored } };
+    return coreView(session, () => raw);
+  };
+  const intact = await installation();
+  assert.deepEqual(seededMailProblems(intact.emails, [seed]), []);
+  const changed = Buffer.from(seed.attachment.bytes); changed[0] ^= 1;
+  const gutted = {
+    'an empty body': { body: '' }, 'no body': { body: null }, 'changed attachment bytes': { attachment: changed }, 'a lost attachment': { attachment: null },
+    'a lost original': { stored: null }, 'a changed original': { stored: sha(Buffer.from('other')) }, 'a normalized original': { format: 'legacy_normalized' },
+  };
+  for (const [what, change] of Object.entries(gutted)) {
+    const view = await installation(change);
+    assert.notDeepEqual(view, intact, `${what} reads differently`);
+    assert.notDeepEqual(seededMailProblems(view.emails, [seed]), [], `${what} fails the seeded mail check`);
+  }
+  // Missing or duplicated messages fail too, whatever the others hold.
+  assert.match(seededMailProblems([], [seed])[0], /0 copies/);
+  assert.match(seededMailProblems([...intact.emails, ...intact.emails], [seed])[0], /2 copies/);
 });

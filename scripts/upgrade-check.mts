@@ -40,6 +40,7 @@ import { createPeerCertificates, PEER_HOST, repo, Session, startContainerInstall
 import { compareVersions, IMAGE_REPOSITORY, isPublished, previousReleases } from './published-image.mts';
 import { helper, png, sha256, sleep, uploadRecording, waitForJob, wav, type Row } from './recovery-data.mts';
 import { icsEvent, startProviders, type ProviderAccount, type Providers } from './test-providers.mts';
+import { assertSeededMail, coreView as readView, seedMessage, seededMailProblems, type CoreView, type RawEntry } from './upgrade-view.mts';
 
 const argument = (name: string) => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : undefined; };
 const candidateVersion = JSON.parse(fs.readFileSync(path.join(repo, 'package.json'), 'utf8')).version as string;
@@ -94,42 +95,23 @@ const dav: ProviderAccount = { user: 'upgrade-dav', password: random('dav') };
 const SYNCED_CALENDAR = 'Team calendar';
 const providerEvent = { uid: 'upgrade-team-event@example.test', title: 'Team review', start: '2030-05-06T09:00:00.000Z', end: '2030-05-06T10:00:00.000Z',
   description: 'Synthetic agenda', location: 'Room 1', attendees: [{ email: 'colleague@example.test', name: 'Colleague', status: 'ACCEPTED' as const }] };
-const message = (id: string, subject: string, to: string) => Buffer.from(`From: Sender <sender@example.test>\r\nTo: ${to}\r\nMessage-ID: <${id}@example.test>\r\n`
-  + `Subject: ${subject}\r\nDate: Tue, 01 Jan 2030 10:00:00 +0000\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nGrüße, ${subject}.\r\n`);
+// MIME mail with an attachment at the providers, by the folder it lands in.
+const seeds = {
+  sync: [
+    { mailbox: 'INBOX', seed: seedMessage({ account: mail.sync.user, folder: 'inbox', id: 'upgrade-sync-1', subject: 'Quarterly numbers' }) },
+    { mailbox: 'INBOX', seed: seedMessage({ account: mail.sync.user, folder: 'inbox', id: 'upgrade-sync-2', subject: 'Lunch on Friday' }) },
+    { mailbox: 'Projects', seed: seedMessage({ account: mail.sync.user, folder: 'projects', id: 'upgrade-sync-3', subject: 'Project plan' }) },
+  ],
+  download: [
+    { mailbox: 'INBOX', seed: seedMessage({ account: mail.download.user, folder: 'inbox', id: 'upgrade-download-1', subject: 'Invoice 42' }) },
+    { mailbox: 'INBOX', seed: seedMessage({ account: mail.download.user, folder: 'inbox', id: 'upgrade-download-2', subject: 'Travel booking' }) },
+  ],
+};
+const syncSeeds = seeds.sync.map(entry => entry.seed), downloadSeeds = seeds.download.map(entry => entry.seed), allSeeds = [...syncSeeds, ...downloadSeeds];
 
-/** What the person sees, by what each item is, in fields every release in the window has. */
-async function coreView(session: Session) {
-  const contacts = [];
-  for (const listed of (await session.json<{ contacts: Row[] }>('GET', '/api/contacts')).contacts) {
-    const { contact } = await session.json<{ contact: Row & { name: Row; emails: Row[]; phones: Row[]; photo: Row | null } }>('GET', `/api/contacts/${listed.id}`);
-    contacts.push({ uid: contact.uid, display_name: contact.display_name, given: contact.name?.given ?? null, family: contact.name?.family ?? null, notes: contact.notes ?? null,
-      emails: (contact.emails || []).map(entry => entry.value).sort(), phones: (contact.phones || []).map(entry => entry.value).sort(),
-      photo: contact.photo ? sha256(await session.bytes(`/api/contacts/${listed.id}/photo?size=full`)) : null });
-  }
-  const calendars = (await session.json<{ calendars: Row[] }>('GET', '/api/calendar/calendars')).calendars;
-  const events = (await session.json<{ events: Row[] }>('GET', '/api/calendar/events?include_todos=true&include_done=true&range_start=2000-01-01T00:00:00Z&range_end=2100-01-01T00:00:00Z')).events
-    .map(event => ({ title: event.title, start: event.start_time ?? null, end: event.end_time ?? null, all_day: Boolean(event.all_day), location: event.location ?? null,
-      todo_status: event.todo_status ?? null, todo_only: Boolean(event.is_todo_only), calendar: calendars.find(calendar => calendar.id === event.calendar_id)?.name ?? null,
-      subtasks: ((event.subtasks as Row[]) || []).map(subtask => ({ title: subtask.title, done: Boolean(subtask.is_done) })) }));
-  const recordings = [];
-  for (const recording of (await session.json<{ recordings: Row[] }>('GET', '/api/recordings')).recordings) {
-    recordings.push({ title: recording.title, size: Number(recording.size_bytes), bytes: sha256(await session.bytes(`/api/recordings/${recording.id}/file?download=1`)) });
-  }
-  const accounts = (await session.json<{ accounts: Row[] }>('GET', '/api/mail/accounts')).accounts;
-  const emails = [];
-  for (const folder of (await session.json<{ folders: Row[] }>('GET', '/api/mail/folders')).folders) {
-    for (const email of (await session.json<{ emails: Row[] }>('GET', `/api/mail/emails?folder=${encodeURIComponent(String(folder.slug))}`)).emails) {
-      emails.push({ folder: folder.slug, account: accounts.find(account => account.id === email.mail_account_id)?.email_address ?? null, message_id: email.message_id, subject: email.subject });
-    }
-  }
-  const sort = <T,>(rows: T[]) => rows.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-  return {
-    contacts: sort(contacts), events: sort(events), recordings: sort(recordings), emails: sort(emails),
-    mailAccounts: sort(accounts.map(account => ({ email: account.email_address, sync_mode: account.sync_mode }))),
-    calendarAccounts: sort((await session.json<{ accounts: Row[] }>('GET', '/api/calendar/accounts')).accounts.map(account => ({ provider: account.provider, username: account.username ?? null }))),
-  };
-}
-type CoreView = Awaited<ReturnType<typeof coreView>>;
+/** What the person sees, with each message's original as the installation keeps it. */
+const coreView = (session: Session, installation: Installation, person: string) => readView(session,
+  () => JSON.parse(installation.exec(helper('upgrade-mail-raw.cts'), { RAW_USER_EMAIL: person })) as Record<string, RawEntry>);
 /** The person's own data: what a user backup holds (no Sync-mode mail with a provider copy, no CalDAV event). */
 const ownData = (view: CoreView) => ({ ...view, emails: view.emails.filter(email => email.account !== mail.sync.user), events: view.events.filter(event => event.calendar !== SYNCED_CALENDAR) });
 
@@ -180,11 +162,9 @@ try {
 
   providers = await step('Start the test providers', async () => {
     const started = await startProviders({ work, certificates, host: '0.0.0.0', mail: [mail.sync, mail.download], calendar: [dav], smtpPort: 465 });
-    await started.append(mail.sync, 'INBOX', message('upgrade-sync-1', 'Quarterly numbers', mail.sync.user));
-    await started.append(mail.sync, 'INBOX', message('upgrade-sync-2', 'Lunch on Friday', mail.sync.user));
-    await started.append(mail.sync, 'Projects', message('upgrade-sync-3', 'Project plan', mail.sync.user));
-    await started.append(mail.download, 'INBOX', message('upgrade-download-1', 'Invoice 42', mail.download.user));
-    await started.append(mail.download, 'INBOX', message('upgrade-download-2', 'Travel booking', mail.download.user));
+    for (const [account, entries] of [[mail.sync, seeds.sync], [mail.download, seeds.download]] as const) {
+      for (const { mailbox, seed } of entries) await started.append(account, mailbox, seed.raw);
+    }
     await started.createCalendar(dav, 'team', SYNCED_CALENDAR);
     await started.putEvent(dav, 'team', providerEvent.uid, icsEvent(providerEvent));
     return started;
@@ -217,7 +197,7 @@ try {
       const { calendar: errands } = await owner.json<{ calendar: Row }>('POST', '/api/calendar/calendars', { account_id: local.id, name: 'Errands' }, { expected: [200, 201] });
       const { event: moving } = await owner.json<{ event: Row }>('POST', '/api/calendar/events', { title: 'Pick up the parcel', is_todo_only: true }, { expected: [200, 201] });
       await owner.json('POST', `/api/calendar/events/${moving.id}/move`, { calendar_id: errands.id }, { expected: [200, 202] });
-      await until('The moved task is in its new list', () => coreView(owner), view => view.events.some(event => event.title === 'Pick up the parcel' && event.calendar === 'Errands'));
+      await until('The moved task is in its new list', () => coreView(owner, installation, admin.email), view => view.events.some(event => event.title === 'Pick up the parcel' && event.calendar === 'Errands'));
     }
     await uploadRecording(owner, 'Upgrade tone', 'upgrade-tone.wav', wav(0.5, 523));
     const ids: Record<string, unknown> = {};
@@ -227,8 +207,9 @@ try {
         sync_mode: mode, sync_fetch_limit: 'all' }, { expected: [200, 201] });
       ids[mode] = created.account?.id ?? created.id;
     }
-    await until('Both mail accounts download their mail', () => coreView(owner),
-      view => view.emails.filter(email => email.account === mail.sync.user).length >= 3 && view.emails.filter(email => email.account === mail.download.user).length >= 2,
+    // In full: bodies, attachments and originals, so the comparisons below compare contents.
+    await until('Both mail accounts download their mail in full', () => coreView(owner, installation, admin.email),
+      view => seededMailProblems(view.emails, allSeeds).length === 0,
       { nudge: async () => { await syncMail(owner, ids.sync); await syncMail(owner, ids.download); } });
     const { account: calendarAccount } = await owner.json<{ account: Row }>('POST', '/api/calendar/accounts', { provider: 'caldav', username: dav.user, account_email: 'upgrade-dav@example.test',
       password: dav.password, url: peers.davUrl(dav.user), display_name: 'Upgrade CalDAV' }, { expected: [200, 201] });
@@ -242,7 +223,8 @@ try {
     await owner.json('POST', `/api/calendar/events/${team.id}/subtasks`, { title: 'Send the minutes' }, { expected: [200, 201] });
     return { ids };
   });
-  const before = await coreView(owner);
+  const before = await coreView(owner, installation, admin.email);
+  assertSeededMail(before.emails, allSeeds, from);
   const beforeSteps = JSON.parse(installation.exec(helper('upgrade-inspect.cts'))) as { latestApplied: number; latestKnown: number };
   assert.equal(beforeSteps.latestApplied, beforeSteps.latestKnown, `${from} finished its own upgrade steps`);
   const oldExport = await step(`Export a full backup with ${from}`, () => exportFull(owner));
@@ -258,7 +240,11 @@ try {
   assert.equal(afterSteps.inventory, 'passed', 'The data inventory check passes on the upgraded database');
   evidence.migrations = { before: beforeSteps.latestApplied, after: afterSteps.latestApplied, latest: afterSteps.latestKnown, inventory: afterSteps.inventory };
   await step('The session from before the upgrade still works', () => owner.json('GET', '/api/auth/me'));
-  await step('Everything reads the same after the upgrade', async () => assert.deepEqual(await coreView(owner), before));
+  await step('Everything reads the same after the upgrade', async () => {
+    const after = await coreView(owner, installation, admin.email);
+    assertSeededMail(after.emails, allSeeds, 'After the upgrade');
+    assert.deepEqual(after, before);
+  });
   await step('Writes work after the upgrade', async () => {
     await owner.json('POST', '/api/contacts', { first_name: 'Neo', last_name: 'After', email: 'neo.after@example.test' });
     await owner.json('POST', '/api/calendar/events', { title: 'After the upgrade', start_time: '2030-06-01T08:00:00.000Z', end_time: '2030-06-01T09:00:00.000Z' }, { expected: [200, 201] });
@@ -269,12 +255,14 @@ try {
     await owner.json('POST', '/api/mail/send', { account_id: seeded.ids.sync, to: mail.download.user, subject, body: 'Synthetic message', isHtml: false }, { expected: [200, 201, 202] });
     await until('The message arrives at the provider', () => peers.messages(mail.download, 'INBOX'), messages => messages.some(entry => entry.subject === subject), { seconds: 120 });
     // And in the Download account, so the backup below and the view it is compared with hold the same mail.
-    const view = await until('The Download account downloads it', () => coreView(owner),
-      current => current.emails.some(email => email.account === mail.download.user && email.subject === subject), { nudge: () => syncMail(owner, seeded.ids.download) });
+    const view = await until('The Download account downloads it', () => coreView(owner, installation, admin.email),
+      current => current.emails.some(email => email.account === mail.download.user && email.subject === subject && typeof email.body_text === 'string'
+        && email.original?.format === 'exact_octets' && !!email.original.stored && email.original.stored === email.original.recorded),
+      { nudge: () => syncMail(owner, seeded.ids.download) });
     for (const title of ['After the upgrade', 'New task after the upgrade']) assert.ok(view.events.some(event => event.title === title), `${title} reads back`);
     assert.ok(view.contacts.some(contact => contact.family === 'After') && view.recordings.some(recording => recording.title === 'After the upgrade'));
   });
-  const upgradedView = await coreView(owner);
+  const upgradedView = await coreView(owner, installation, admin.email);
   await step('A new backup restores into a second person', async () => {
     const fresh = await exportFull(owner);
     for (const secret of [mail.sync.password, mail.download.password, dav.password, admin.password]) assert.equal(fresh.archive.includes(Buffer.from(secret)), false, 'No plain password in the backup');
@@ -285,7 +273,9 @@ try {
     await person.signIn(second.email, second.password);
     const contents = await importFull(person, fresh.archive, fresh.password);
     assert.ok(contents && !contents.included.includes('mirror'), `The new backup holds the person's own data: ${JSON.stringify(contents)}`);
-    assert.deepEqual(ownData(await coreView(person)), ownData(upgradedView), 'The second person has the first person\'s own data');
+    const restored = await coreView(person, installation, second.email);
+    assertSeededMail(restored.emails, downloadSeeds, 'Restored into a second person');
+    assert.deepEqual(ownData(restored), ownData(upgradedView), 'The second person has the first person\'s own data, with its contents');
     evidence.newBackup = { sha256: fresh.sha256, bytes: fresh.archive.length, contents };
   });
   // Only the fresh installation below may talk to the providers from here on.
@@ -309,7 +299,9 @@ try {
     assert.equal(leftOut('mail'), before.emails.filter(email => email.account === mail.sync.user).length, `Sync-mode mail is left out: ${JSON.stringify(contents.left_out)}`);
     assert.equal(leftOut('calendar'), before.events.filter(event => event.calendar === SYNCED_CALENDAR).length, `CalDAV events are left out: ${JSON.stringify(contents.left_out)}`);
     assert.ok(contents.included.includes('local-by-policy'), 'Downloaded mail is in the restore');
-    assert.deepEqual(ownData(await coreView(freshOwner)), ownData(before), 'The person\'s own data from the older release is there');
+    const restored = await coreView(freshOwner, fresh, freshAdmin.email);
+    assertSeededMail(restored.emails, downloadSeeds, `The ${from} export`);
+    assert.deepEqual(ownData(restored), ownData(before), 'The person\'s own data from the older release is there, with its contents');
     evidence.oldExportImport = { contents };
   });
   await step('The provider data comes back from the providers', async () => {
@@ -317,13 +309,15 @@ try {
     for (const account of accounts) await freshOwner.json('PUT', `/api/mail/accounts/${account.id}`, { is_active: true });
     const sync = accounts.find(account => account.email_address === mail.sync.user)!;
     const wanted = before.emails.filter(email => email.account === mail.sync.user).map(email => JSON.stringify(email));
-    await until('The Sync-mode mail comes back', () => coreView(freshOwner), view => wanted.every(row => view.emails.some(email => JSON.stringify(email) === row)),
+    // In full: the same bodies, attachments and original octets as before the export.
+    const back = await until('The Sync-mode mail comes back', () => coreView(freshOwner, fresh, freshAdmin.email), view => wanted.every(row => view.emails.some(email => JSON.stringify(email) === row)),
       { seconds: 240, nudge: () => syncMail(freshOwner, sync.id) });
+    assertSeededMail(back.emails, syncSeeds, 'Back from the provider');
     const calendarAccount = (await freshOwner.json<{ accounts: Row[] }>('GET', '/api/calendar/accounts')).accounts.find(account => account.provider === 'caldav')!;
     const synced = await freshOwner.json<{ result: Row }>('POST', `/api/calendar/accounts/${calendarAccount.id}/sync`, {});
     assert.equal(synced.result.ok, true, `The restored CalDAV account syncs: ${JSON.stringify(synced.result)}`);
     const providerFields = ({ todo_status: _state, subtasks: _subtasks, ...fields }: CoreView['events'][number]) => fields;
-    const event = (await coreView(freshOwner)).events.filter(entry => entry.calendar === SYNCED_CALENDAR);
+    const event = (await coreView(freshOwner, fresh, freshAdmin.email)).events.filter(entry => entry.calendar === SYNCED_CALENDAR);
     assert.deepEqual(event.map(providerFields), before.events.filter(entry => entry.calendar === SYNCED_CALENDAR).map(providerFields), 'The CalDAV event comes back once');
     assert.deepEqual(peers.log.destructive.slice(destructiveBefore), [], 'No destructive IMAP command after the restore');
     assert.equal(peers.log.logins.filter(login => !login.ok).length, failedLoginsBefore, 'Every restored password signs in');
@@ -331,7 +325,7 @@ try {
   });
   await step('The synced task gets its state back', async () => {
     // The older archive's state on the synced task is an overlay matched by title and start, applied by the sync.
-    const event = (await coreView(freshOwner)).events.filter(entry => entry.calendar === SYNCED_CALENDAR);
+    const event = (await coreView(freshOwner, fresh, freshAdmin.email)).events.filter(entry => entry.calendar === SYNCED_CALENDAR);
     assert.deepEqual(event, before.events.filter(entry => entry.calendar === SYNCED_CALENDAR), 'The CalDAV event has its ToDo state and subtask');
   });
   evidence.providers = { imapCommands: [...new Set(peers.log.commands)], logins: peers.log.logins.length, smtp: peers.log.smtp.connections, davRequests: peers.log.dav.length };

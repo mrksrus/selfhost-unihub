@@ -284,8 +284,8 @@ release's image from the registry, the image under test by digest, MariaDB
    and keys, and gets synthetic data through its own API: contacts with a
    photo, local tasks with done state and subtasks (from 0.27.0 one moved to
    another list), a local event, a recording, a Sync-mode and a
-   Download-mode mail account that download their mail from the providers, a
-   CalDAV account that syncs an event, and UniHub's state on that event (done,
+   Download-mode mail account that download their mail from the providers
+   (MIME messages with a text part and a binary attachment), a CalDAV account that syncs an event, and UniHub's state on that event (done,
    a subtask). It makes an encrypted full export.
 2. Its app stops, and the database and storage are copied with the database
    stopped: a snapshot to go back to, since an earlier release cannot undo a
@@ -294,17 +294,22 @@ release's image from the registry, the image under test by digest, MariaDB
    Every upgrade step must have run and the data inventory check must pass on
    the upgraded database. The session from before the upgrade still works,
    and everything the person saw reads the same (contacts with photo bytes,
-   events and tasks with state and subtasks, recordings with their bytes, mail
-   by folder, accounts). Writes work: a contact, an event, a task with a
+   events and tasks with state and subtasks, recordings with their bytes,
+   accounts, and each message by folder with its body, its attachments' bytes
+   and its original as the server keeps it). Every seeded message must be
+   there once, in full: its text, its attachment's exact bytes and its original
+   as the provider's exact octets, before the upgrade and after it, so mail
+   that keeps its subject but loses its contents fails. Writes work: a contact, an event, a task with a
    subtask, a recording, and a message sent through the Sync-mode account that
    arrives at the provider and in the Download-mode account. A new full backup
    holds no plain password and restores into a second person, who then has
-   the first person's own data.
+   the first person's own data, mail contents included.
 4. A fresh candidate installation imports the earlier release's export. The
    restore must state what the archive holds and what it left out (the
    Sync-mode mail and the CalDAV event, with their counts), and the person's
-   own data from the earlier release must be there. Reconnected, the
-   Sync-mode mail comes back from the provider, the CalDAV event comes back
+   own data from the earlier release must be there, the Download-mode mail in
+   full. Reconnected, the Sync-mode mail comes back from the provider with the
+   same contents and originals, the CalDAV event comes back
    once with its ToDo state and subtask, every restored password signs in, and
    no destructive IMAP command is sent.
 
