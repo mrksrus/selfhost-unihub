@@ -107,6 +107,23 @@ interface InstanceBackupConfig {
   errors: string[];
 }
 
+/**
+ * Every way a secret's text can be taken as key bytes: the text itself (as
+ * given and trimmed) and each of hex, base64 and base64url the text is valid
+ * for. A key is another secret when any reading of one is a reading of the other.
+ */
+function keyReadings(value: string): Buffer[] {
+  const readings: Buffer[] = [];
+  for (const text of new Set([value, value.trim()])) {
+    if (!text) continue;
+    readings.push(Buffer.from(text, 'utf8'));
+    if (/^[0-9a-f]+$/i.test(text) && text.length % 2 === 0) readings.push(Buffer.from(text, 'hex'));
+    if (/^[A-Za-z0-9+/]+={0,2}$/.test(text)) readings.push(Buffer.from(text, 'base64'));
+    if (/^[A-Za-z0-9_-]+={0,2}$/.test(text)) readings.push(Buffer.from(text, 'base64url'));
+  }
+  return readings.filter(reading => reading.length);
+}
+
 /** 32 random bytes or more, written as hex or base64 (base64url too). */
 function decodeKeyText(value: string): Buffer | null {
   const text = value.trim();
@@ -133,11 +150,11 @@ function parseInstanceBackupConfig(env: NodeJS.ProcessEnv = process.env, others:
     } else {
       // F10: the instance key protects a copy of everything; one leaked
       // secret must not open both the installation and its backups.
-      // The others are used as their text, so the instance key's bytes are
-      // compared with that text's UTF-8 bytes as well as with what the text
-      // decodes to: base64(ENCRYPTION_KEY) is the same key written another way.
-      const sameKey = (other: string) => [other, other.trim()].some(text => text === keyText!.trim()
-        || decoded.equals(Buffer.from(text, 'utf8')) || !!decodeKeyText(text)?.equals(decoded));
+      // A key written another way is the same key: base64(ENCRYPTION_KEY),
+      // or a hex secret's base64 reading written as hex. Every reading of the
+      // instance key is compared with every reading of each other secret.
+      const mine = [decoded, ...keyReadings(keyText)];
+      const sameKey = (other: string) => keyReadings(other).some(theirs => mine.some(reading => reading.equals(theirs)));
       const reused = Object.entries(others ?? {
         JWT_SECRET, ENCRYPTION_KEY, ENCRYPTION_KEY_PREVIOUS, BACKUP_MASTER_KEY: BACKUP_MASTER_KEY_SET,
       }).filter(([, other]) => other && sameKey(other)).map(([name]) => name);
@@ -191,6 +208,7 @@ export {
   INSTANCE_BACKUP,
   SecretConfigError,
   readSecret,
+  keyReadings,
   decodeKeyText,
   parseInstanceBackupConfig,
   assertConfiguration,
