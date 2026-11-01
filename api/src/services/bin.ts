@@ -133,10 +133,17 @@ async function purgeFloorDays(_userId: string, _executor: SqlExecutor): Promise<
  */
 async function applyBinRetention(userId: string, executor: SqlExecutor = db) {
   const retention = await binRetention(userId, executor);
+  // The rows by primary key, as the purge and delete for good lock them.
+  const [open] = await executor.execute<(RowDataPacket & { id: string; reason: BinReason })[]>(
+    'SELECT id, reason FROM bin_items WHERE user_id = ? AND restored_at IS NULL ORDER BY id', [userId]);
   for (const reason of ['deleted', 'merged', 'calendar_deleted'] as const) {
     const days = retentionDays(retention, reason);
-    await executor.execute(`UPDATE bin_items SET purge_after = ${days === null ? 'NULL' : 'deleted_at + INTERVAL ? DAY'}
-      WHERE user_id = ? AND reason = ? AND restored_at IS NULL`, [...(days === null ? [] : [days]), userId, reason]);
+    const ids = open.filter(row => row.reason === reason).map(row => String(row.id));
+    for (let start = 0; start < ids.length; start += PURGE_BATCH) {
+      const chunk = ids.slice(start, start + PURGE_BATCH);
+      await executor.execute(`UPDATE bin_items SET purge_after = ${days === null ? 'NULL' : 'deleted_at + INTERVAL ? DAY'}
+        WHERE id IN (${placeholders(chunk)}) AND user_id = ? AND reason = ? AND restored_at IS NULL`, [...(days === null ? [] : [days]), ...chunk, userId, reason]);
+    }
   }
 }
 
@@ -334,6 +341,8 @@ async function emptyBin(userId: string, input: unknown): Promise<BinDeleteRespon
 
 // --- The purge (worker owner) -----------------------------------------------
 
+/** Where the purge of one person's module goes on: after this item in (purge_after, id) order. */
+interface PurgeCursor { purgeAfter: Date | string; id: string }
 interface PurgeOptions {
   now?: Date;
   /** Stops between people (the worker lost its lock or shuts down). */
@@ -348,10 +357,15 @@ interface PurgeOptions {
  * with their merged contacts' window. Items whose re-creation at a calendar
  * server is under way wait.
  *
- * Each batch is one transaction that locks its candidates first, then reads
- * the retention and the restore journals: a retention change (changeRetention
- * locks the person's items) or a restore of an item committed before is
- * seen, and one begun after waits for the purge.
+ * The candidates are read in (purge_after, id) order from a cursor that
+ * passes every item a batch looked at, so items that must wait (a journal,
+ * a policy floor) never hold back the ones after them. Each batch is one
+ * transaction, its locks in the order of the other writers of bin rows:
+ * the person's users row (shared; a retention change takes it exclusively,
+ * changeUserSettings), the items' restore journals, then the items by
+ * primary key (as delete for good and a restore's commit take them).
+ * Retention and journals are read after the users row, so a change
+ * committed before is seen, and one begun after waits for the batch.
  */
 async function purgeBin({ now = new Date(), active = () => true }: PurgeOptions = {}) {
   const [due] = await db.execute<(RowDataPacket & { user_id: string })[]>(
@@ -369,31 +383,41 @@ async function purgeBin({ now = new Date(), active = () => true }: PurgeOptions 
       const work = async () => {
         if (module === 'contacts') {
           merges += await withTransaction(async cx => {
+            await lockPersonForRetention(cx, userId, 'share');
             const days = await retentionNow(userId, cx);
             return days === null ? 0 : purgeMergeRecords(cx, userId, { now, minDays: Math.max(days, MERGE_UNDO_DAYS) });
           });
         }
+        let cursor: PurgeCursor | null = null;
         for (;;) {
-          const batch = await withTransaction(async cx => {
-            const [candidates] = await cx.execute<BinRow[]>(
-              `SELECT * FROM bin_items WHERE user_id = ? AND module = ? AND purge_after IS NOT NULL AND purge_after <= ?
-               ORDER BY purge_after, id LIMIT ${PURGE_BATCH} FOR UPDATE`, [userId, module, now]);
-            if (!candidates.length) return { removed: [] as BinRow[], more: false };
+          const from: PurgeCursor | null = cursor;
+          const batch: { removed: BinRow[]; last: PurgeCursor | null } = await withTransaction(async cx => {
+            await lockPersonForRetention(cx, userId, 'share');
+            const [candidates] = await cx.execute<(RowDataPacket & { id: string; purge_after: Date | string })[]>(
+              `SELECT b.id, b.purge_after FROM bin_items b WHERE b.user_id = ? AND b.module = ? AND b.purge_after IS NOT NULL AND b.purge_after <= ?
+                 ${from ? 'AND (b.purge_after > ? OR (b.purge_after = ? AND b.id > ?))' : ''}
+                 AND NOT EXISTS (SELECT 1 FROM calendar_event_moves m WHERE m.bin_item_id = b.id)
+               ORDER BY b.purge_after, b.id LIMIT ${PURGE_BATCH}`, [userId, module, now, ...(from ? [from.purgeAfter, from.purgeAfter, from.id] : [])]);
+            if (!candidates.length) return { removed: [] as BinRow[], last: null };
+            const last: PurgeCursor = { purgeAfter: candidates[candidates.length - 1].purge_after, id: String(candidates[candidates.length - 1].id) };
             const days = await retentionNow(userId, cx);
-            if (days === null) return { removed: [] as BinRow[], more: false };
-            const ids = candidates.map(row => row.id);
+            if (days === null) return { removed: [] as BinRow[], last: null };
+            const ids = candidates.map(row => String(row.id));
             const [journals] = await cx.execute<RowDataPacket[]>(`SELECT bin_item_id FROM calendar_event_moves WHERE bin_item_id IN (${placeholders(ids)}) LOCK IN SHARE MODE`, ids);
             const restoring = new Set(journals.map(row => String(row.bin_item_id)));
-            // Still due by the retention in force now; an undone merge's rows go at their time.
-            const removed = candidates.filter(row => !restoring.has(row.id)
+            const [locked] = await cx.execute<BinRow[]>(
+              `SELECT * FROM bin_items FORCE INDEX (PRIMARY) WHERE id IN (${placeholders(ids)}) AND user_id = ? ORDER BY id FOR UPDATE`, [...ids, userId]);
+            // Still due by its time and the retention in force now; an undone merge's rows go at their time.
+            const removed = locked.filter(row => !restoring.has(row.id) && row.purge_after && new Date(row.purge_after) <= now
               && (row.restored_at || now.getTime() - new Date(row.deleted_at).getTime() >= (row.reason === 'merged' ? Math.max(days, MERGE_UNDO_DAYS) : days) * 86400000));
             if (removed.length) await cx.execute(`DELETE FROM bin_items WHERE user_id = ? AND id IN (${placeholders(removed.map(row => row.id))})`, [userId, ...removed.map(row => row.id)]);
-            return { removed, more: candidates.length === PURGE_BATCH && removed.length > 0 };
+            return { removed, last: candidates.length === PURGE_BATCH ? last : null };
           });
           items += batch.removed.length;
           // Files go after the rows' known commit.
           await releaseFiles(userId, batch.removed);
-          if (!batch.more || !active()) break;
+          if (!batch.last || !active()) break;
+          cursor = batch.last;
         }
       };
       // Purging drops photo references (file_refs); like an undo it runs under the person's photo lock.
@@ -404,16 +428,24 @@ async function purgeBin({ now = new Date(), active = () => true }: PurgeOptions 
 }
 
 /**
+ * The person's users row as the lock between the purge (shared) and a change
+ * of their retention (exclusive): taken first, before any bin row.
+ */
+async function lockPersonForRetention(cx: SqlExecutor, userId: string, mode: 'share' | 'update') {
+  await cx.execute(`SELECT id FROM users WHERE id = ? ${mode === 'share' ? 'LOCK IN SHARE MODE' : 'FOR UPDATE'}`, [userId]);
+}
+
+/**
  * Changes the person's user settings; with bin_retention among them, in one
- * transaction with the new purge times of what is in the bin, holding the
- * person's items so a purge sees either both or neither.
+ * transaction with the new purge times of what is in the bin, under the
+ * person's users row, so a purge batch sees either both or neither.
  */
 async function changeUserSettings(userId: string, input: unknown) {
   const { updateSettings } = require('./settings') as typeof import('./settings');
   const values = (input as { values?: object } | null)?.values;
   if (!values || typeof values !== 'object' || !('bin_retention' in values)) return updateSettings('user', userId, userId, input);
   return withTransaction(async cx => {
-    await cx.execute('SELECT id FROM bin_items WHERE user_id = ? FOR UPDATE', [userId]);
+    await lockPersonForRetention(cx, userId, 'update');
     const settings = await updateSettings('user', userId, userId, input, cx);
     await applyBinRetention(userId, cx);
     return settings;

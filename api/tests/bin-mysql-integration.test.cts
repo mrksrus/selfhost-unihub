@@ -340,6 +340,68 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     await call(alex, 'PUT', '/api/settings/values', { values: { bin_retention: '30' } });
   });
 
+  // A person of their own for the purge's lock tests, so other people's items never meet the hooks.
+  async function person(context: { after: (fn: () => unknown) => void }, name: string) {
+    const id = crypto.randomUUID();
+    await pool.execute('INSERT INTO users (id, email, password_hash, full_name) VALUES (?, ?, ?, ?)', [id, `${name}@example.test`, passwordHash, name]);
+    context.after(() => pool.execute('DELETE FROM users WHERE id = ?', [id]));
+    return id;
+  }
+  const binRows = (userId: string, rows: { id: string; purgeAfter: string }[]) => pool.execute(
+    `INSERT INTO bin_items (id, user_id, module, item_type, item_id, title, reason, payload, deleted_at, purge_after) VALUES
+     ${rows.map(() => "(?, ?, 'calendar', 'task', ?, 'Waiting task', 'deleted', '{}', '2025-01-01 00:00:00', ?)").join(', ')}`,
+    rows.flatMap(row => [row.id, userId, crypto.randomUUID(), row.purgeAfter]));
+  // A journal row: the item is being created at its calendar server again.
+  const reCreating = (userId: string, ids: string[]) => pool.execute(
+    `INSERT INTO calendar_event_moves (id, user_id, target_calendar_id, target_uid, state, bin_item_id) VALUES ${ids.map(() => "(?, ?, NULL, ?, 'creating', ?)").join(', ')}`,
+    ids.flatMap(id => [crypto.randomUUID(), userId, `${crypto.randomUUID()}@example.test`, id]));
+
+  await t.test('the purge passes items that must wait: 200 being created at their server again do not hold back the next one', async context => {
+    const drew = await person(context, 'drew');
+    const waiting = Array.from({ length: 200 }, () => crypto.randomUUID());
+    const due = crypto.randomUUID();
+    await binRows(drew, [...waiting.map(id => ({ id, purgeAfter: '2026-01-01 00:00:00' })), { id: due, purgeAfter: '2026-01-02 00:00:00' }]);
+    await reCreating(drew, waiting);
+    await purgeBin();
+    await purgeBin();
+    assert.equal(await count('SELECT COUNT(*) AS n FROM bin_items WHERE id = ?', [due]), 0, 'the 201st item, due and free, is purged');
+    assert.equal(await count('SELECT COUNT(*) AS n FROM bin_items WHERE user_id = ?', [drew]), 200, 'the items being created again wait');
+  });
+
+  await t.test('the purge and a delete for good of the same item lock in one order: neither is a deadlock victim', async context => {
+    const { deleteBinItem } = require('../dist/src/services/bin') as typeof import('../src/services/bin');
+    const emery = await person(context, 'emery');
+    const item = crypto.randomUUID();
+    await binRows(emery, [{ id: item, purgeAfter: '2026-01-01 00:00:00' }]);
+    await reCreating(emery, [item]);
+    const gate = () => { let open!: () => void; const reached = new Promise<void>(resolve => { open = resolve; }); return { open, reached }; };
+    const [deleteHolds, purgeChose, deleteAtItem, goDelete, goPurge] = [gate(), gate(), gate(), gate(), gate()];
+    const deadlocks = () => hooks.errors.filter((code: string) => code === 'ER_LOCK_DEADLOCK').length;
+    const before = deadlocks();
+    // The delete holds the item's journal; the purge chooses its candidates;
+    // the delete goes on to the item while the purge waits, then the purge goes on.
+    hooks.once({ match: /^SELECT id FROM calendar_event_moves WHERE user_id = \? AND bin_item_id IN/, params: (values: unknown[]) => values[0] === emery,
+      after: async () => { deleteHolds.open(); await within(goDelete.reached, 5000); } });
+    hooks.once({ match: /FROM bin_items .*module = \?.*purge_after <= \?/s, params: (values: unknown[]) => values[0] === emery && values[1] === 'calendar',
+      after: async () => { purgeChose.open(); await within(goPurge.reached, 5000); } });
+    hooks.once({ match: /FROM bin_items WHERE user_id = \? AND restored_at IS NULL AND id IN .*FOR UPDATE/s, params: (values: unknown[]) => values[0] === emery,
+      before: () => deleteAtItem.open() });
+    try {
+      const deleting = deleteBinItem(emery, item);
+      assert.ok((await within(deleteHolds.reached, 5000)).done, 'the delete holds the journal');
+      const purging = purgeBin();
+      assert.ok((await within(purgeChose.reached, 5000)).done, 'the purge chose its candidates');
+      goDelete.open();
+      assert.ok((await within(deleteAtItem.reached, 5000)).done, 'the delete goes on to the item');
+      await new Promise(resolve => setTimeout(resolve, 300));
+      goPurge.open();
+      const both = await within(Promise.all([deleting, purging]), 30000);
+      assert.ok(both.done, 'both finish');
+    } finally { hooks.clear(); goDelete.open(); goPurge.open(); }
+    assert.equal(deadlocks() - before, 0, 'no deadlock between them');
+    assert.equal(await count('SELECT COUNT(*) AS n FROM bin_items WHERE id = ?', [item]), 0);
+  });
+
   // --- A CalDAV calendar ------------------------------------------------------
   const accountId = crypto.randomUUID();
   await insertCalDavAccount(pool, encrypt, users.alex, accountId);

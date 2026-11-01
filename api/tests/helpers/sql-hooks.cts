@@ -1,21 +1,29 @@
 // Hooks on the statements the app sends through a test pool, to reproduce an
 // interleaving: run something right before or after one statement (once), or
 // make it fail as a deadlock victim would. Patches the pool and every
-// connection it hands out; a hook that is not armed costs nothing.
-type Hook = { match: RegExp; before?: () => unknown; after?: () => unknown };
+// connection it hands out; a hook that is not armed costs nothing. The codes
+// of statements that failed (a real deadlock, say) are kept in `errors`.
+type Hook = { match: RegExp; params?: (params: unknown[]) => boolean; before?: () => unknown; after?: () => unknown };
 type Execute = (sql: unknown, params?: unknown) => Promise<unknown>;
 type Executor = { execute: Execute; __sqlHooked?: boolean };
 
 function installSqlHooks(pool: Executor & { getConnection: () => Promise<Executor> }) {
   const hooks: Hook[] = [];
+  const errors: string[] = [];
   const wrap = (target: Executor) => {
     if (target.__sqlHooked) return target;
     const execute = target.execute.bind(target);
     target.execute = async (sql: unknown, params?: unknown) => {
-      const index = hooks.findIndex(hook => hook.match.test(String(sql)));
+      const index = hooks.findIndex(hook => hook.match.test(String(sql)) && (!hook.params || hook.params(Array.isArray(params) ? params : [])));
       const hook = index >= 0 ? hooks.splice(index, 1)[0] : null;
       if (hook?.before) await hook.before();
-      const result = await execute(sql, params);
+      let result;
+      try {
+        result = await execute(sql, params);
+      } catch (error) {
+        errors.push(String((error as { code?: unknown }).code ?? 'error'));
+        throw error;
+      }
       if (hook?.after) await hook.after();
       return result;
     };
@@ -29,6 +37,7 @@ function installSqlHooks(pool: Executor & { getConnection: () => Promise<Executo
     /** Runs once, on the next statement matching `match`. */
     once(hook: Hook) { hooks.push(hook); },
     clear() { hooks.length = 0; },
+    errors,
   };
 }
 
