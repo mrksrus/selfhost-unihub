@@ -1,6 +1,7 @@
 // Schema 3 recovery has passed the upgrade and recovery gate.
 // Retain a single emergency suspension switch for both HTTP dispatch paths.
 import type { SqlExecutor } from '../types';
+import type { PolicyKey } from '../contracts/policies';
 
 const BACKUP_MUTATIONS_ENABLED = true;
 const BACKUP_DISABLED_MESSAGE = 'Backup creation, import and restore are temporarily disabled while the data model changes. Existing completed backups can still be downloaded.';
@@ -23,4 +24,19 @@ async function suspendPendingBackupJobs(connection: SqlExecutor) {
   }
 }
 
-export { BACKUP_DISABLED_MESSAGE, DISABLED_BACKUP_ROUTES, suspendPendingBackupJobs };
+// F13: the data-safety policies of these routes, for the request boundary
+// to resolve before the handler (C1 puts them on the specs of routes/backup.ts; until
+// then nothing reads them). `requires` gates creating and restoring;
+// `destructive` names what removes a backup.
+const BACKUP_ROUTE_POLICIES: Readonly<Record<string, { requires?: readonly PolicyKey[]; destructive?: readonly PolicyKey[] }>> = Object.freeze({
+  'POST /api/backup/jobs': { requires: ['backup.create'] },
+  'POST /api/backup/import': { requires: ['backup.restore'] },
+  'POST /api/backup/jobs/:id/restore': { requires: ['backup.restore'] },
+  'POST /api/backup/restore-jobs/:id/start': { requires: ['backup.restore'] },
+  'DELETE /api/backup/jobs/:id': { destructive: ['backup.delete'] },
+  'DELETE /api/backup/restore-jobs/:id': { destructive: ['backup.delete'] },
+  // A mail route (routes/mail-accounts.ts): one account's backup.
+  'POST /api/mail/accounts/:id/backup-export': { requires: ['backup.create'] },
+});
+
+export { BACKUP_DISABLED_MESSAGE, DISABLED_BACKUP_ROUTES, BACKUP_ROUTE_POLICIES, suspendPendingBackupJobs };

@@ -102,6 +102,7 @@ test('encrypted archive payload retains the filtered portable credential bundle'
     async commit() {}, async rollback() {}, release() {},
     async query() { return [[]]; },
     async execute(sql: string) {
+      if (sql.startsWith('SELECT COUNT(*)')) return [[{ n: 0 }]];
       if (sql.includes('FROM users ')) {
         return [[{
           id: 'user-1',
@@ -112,7 +113,7 @@ test('encrypted archive payload retains the filtered portable credential bundle'
           email_verified: 1,
         }]];
       }
-      if (sql.includes('FROM mail_accounts ')) {
+      if (sql.includes('FROM mail_accounts b ')) {
         return [[{
           id: 'mail-account',
           user_id: 'user-1',
@@ -121,7 +122,7 @@ test('encrypted archive payload retains the filtered portable credential bundle'
           encrypted_password: mailPassword,
         }]];
       }
-      if (sql.includes('FROM calendar_accounts ')) {
+      if (sql.includes('FROM calendar_accounts b ')) {
         return [[{
           id: 'calendar-account',
           user_id: 'user-1',

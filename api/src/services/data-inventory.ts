@@ -51,8 +51,8 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
   mail_server_messages: excluded('rebuilt', 'Provider deletion bookkeeping is rediscovered; restore must not replay remote deletes.', 'id user_id mail_account_id email_id source_folder imap_uid imap_uidvalidity delete_status delete_attempts delete_error deleted_at created_at updated_at'),
   mail_sync_state: excluded('rebuilt', 'Provider UID progress is rediscovered after restore.', 'mail_account_id source_folder uidvalidity last_uid initialized last_synced_at'),
   recording_uploads: excluded('temporary', 'Incomplete upload chunks expire; only completed recordings are archived.', 'id user_id title description original_filename content_type total_bytes bytes_received duration_seconds source category recorded_at metadata tags temp_path expires_at created_at updated_at'),
-  data_export_jobs: Object.freeze({ ...excluded('temporary', 'Archive jobs and download paths belong to the originating installation.', 'id user_id scope status phase progress cancel_requested requested_sections file_path file_size file_sha256 content_type encryption_enabled backup_uuid error created_at updated_at started_at completed_at downloaded_at mail_account_id keep_until'),
-    introducedIn: Object.freeze({ mail_account_id: 10, keep_until: 25 }) }),
+  data_export_jobs: Object.freeze({ ...excluded('temporary', 'Archive jobs and download paths belong to the originating installation.', 'id user_id scope status phase progress cancel_requested requested_sections file_path file_size file_sha256 content_type encryption_enabled backup_uuid error created_at updated_at started_at completed_at downloaded_at mail_account_id keep_until include_download_mail contents'),
+    introducedIn: Object.freeze({ mail_account_id: 10, keep_until: 25, include_download_mail: 25, contents: 25 }) }),
   backup_restore_jobs: excluded('temporary', 'A restore must not resume jobs from the originating installation.', 'id user_id source_type source_export_job_id status operation phase progress cancel_requested requested_sections conflict_mode calendar_mode credentials_mode archive_path archive_size archive_sha256 backup_uuid is_encrypted validation_result result_counts error attempt_count created_at updated_at started_at completed_at expires_at'),
   backup_archive_keys: excluded('security_only', 'Archive unlock keys are installation secrets with their own recovery password.', 'backup_uuid user_id export_job_id restore_job_id server_wrapped_key recovery_password_ciphertext recovery_password_revealed_at expires_at created_at updated_at'),
   // Created by upgrade step 15 (the notification service created them at
@@ -107,8 +107,6 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
   introducedIn: Object.freeze(Object.fromEntries('id user_id event_id source_calendar_id source_object_id source_etag target_calendar_id target_uid target_href target_etag target_ics state attempts last_error next_attempt_at created_at updated_at'.split(' ').map(column => [column, 24]))) }),
   // Upgrade step 25 (0.28.0).
   ...Object.fromEntries([
-    ['calendar_overlay_restores', 'temporary', 'Written by a restore and taken by the sync that creates its task; archives up to data schema 6 do not carry it.',
-      'id user_id calendar_id account_identity uid recurrence_id match_kind shape_title shape_start payload created_at expires_at'],
     ['policy_notices', 'deliberately_excluded', 'A person confirms the data rules of the installation they are on; a restore must not carry the confirmation elsewhere.',
       'user_id revision acknowledged_at'],
     ['instance_backups', 'deliberately_excluded', 'The runs of the instance backup belong to this installation; its own dump carries them, a personal backup never does.',
@@ -116,13 +114,6 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
   ].map(([name, treatment, reason, columns]) => [name, Object.freeze({ ...excluded(treatment, reason, columns),
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 25])) })])),
 });
-
-// The stable identities of upgrade step 25 on archived tables. Archives up to
-// data schema 6 do not carry them, so a restored row gets a new identity (the
-// column default), as every restored row got a new id before.
-const UNARCHIVED_IDENTITIES: Readonly<Record<string, ExcludedPolicy>> = Object.freeze(Object.fromEntries(['calendar_events', 'calendar_calendars', 'recordings'].map(table => [table, Object.freeze({
-  ...excluded('rebuilt', 'The identity of the item across moves and installations; archives up to data schema 6 do not carry it.', 'uid'),
-  introducedIn: Object.freeze({ uid: 25 }) })])));
 
 // Every table states who owns a row, whether it can be shared, its data
 // class (F2), the module that gates it and what restore does with it
@@ -184,9 +175,9 @@ const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.fr
   bin_items: { owner: 'user', shareable: false, dataClass: 'local', module: null, restore: 'Not archived up to data schema 6; the bin belongs to this installation.' },
   // Calendar and ToDo.
   calendar_accounts: { owner: 'user', shareable: false, dataClass: CALENDAR_SETUP, module: 'calendar', restore: 'Restored with the Calendar section; a CalDAV or ICS account comes back paused until it signs in.' },
-  calendar_calendars: { owner: 'user', shareable: false, dataClass: CALENDAR_SETUP, module: 'calendar', restore: 'Restored with its account; matched by id, server id, then name.' },
-  calendar_settings: { owner: 'user', shareable: false, dataClass: 'local', module: 'calendar', restore: 'Restored with its calendar.' },
-  calendar_events: { owner: 'user', shareable: false, dataClass: CALENDAR_CONTENT, module: 'calendar', restore: 'Restored with the Calendar section; matched by id, then by shape.' },
+  calendar_calendars: { owner: 'user', shareable: false, dataClass: CALENDAR_SETUP, module: 'calendar', restore: 'Restored with its account; matched by UID, id, server id, then name.' },
+  calendar_settings: { owner: 'user', shareable: false, dataClass: CALENDAR_SETUP, module: 'calendar', restore: 'Restored with its calendar.' },
+  calendar_events: { owner: 'user', shareable: false, dataClass: CALENDAR_CONTENT, module: 'calendar', restore: 'Local events restored with the Calendar section, matched by UID across the local calendars, then by shape; synced ones download again, their UniHub state travels as an overlay.' },
   calendar_event_subtasks: { owner: 'user', shareable: false, dataClass: 'local', module: 'calendar', restore: 'Restored with its task.' },
   calendar_event_attendees: { owner: 'user', shareable: false, dataClass: CALENDAR_CONTENT, module: 'calendar', restore: 'Restored with its event.' },
   calendar_event_external_refs: { owner: 'user', shareable: false, dataClass: 'mirror', module: 'calendar', restore: 'Restored with its event; the link to the server copy is rebuilt by the next sync.' },
@@ -198,7 +189,7 @@ const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.fr
   calendar_event_moves: { owner: 'user', shareable: false, dataClass: 'installation', module: 'calendar', restore: 'Never restored: a restore must not replay provider writes.' },
   // Upgrade step 25 (0.28.0): UniHub's overlay on a synced task, waiting for
   // the sync that creates the task's row.
-  calendar_overlay_restores: { owner: 'user', shareable: false, dataClass: 'local', module: 'calendar', restore: 'Written by a restore; taken by the first sync that creates its task; goes with its calendar.' },
+  calendar_overlay_restores: { owner: 'user', shareable: false, dataClass: 'local', module: 'calendar', restore: 'Exported with the Calendar section, also for every synced task with UniHub state; a restore applies it to the live task or keeps it until the sync that creates the task takes it; goes with its calendar.' },
   // Mail.
   mail_accounts: { owner: 'user', shareable: false, dataClass: 'config', module: 'mail', restore: 'Restored with the Mail section, paused until it signs in; provider deletion off.' },
   mail_account_settings: { owner: 'user', shareable: false, dataClass: 'local', module: 'mail', restore: 'Restored with its mail account; folder references follow the restored folders.' },
@@ -223,7 +214,7 @@ const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.fr
     [name, { owner: 'user', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: rebuilt by the destination\'s mail engine.' }])),
   mail_engine_migration_progress: { owner: 'installation', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: the progress of this database\'s mail upgrade.' },
   // Recordings and Music.
-  recordings: { owner: 'user', shareable: false, dataClass: 'local', module: 'recordings', restore: 'Restored with the Recordings section and its file; matched by id, then shape.' },
+  recordings: { owner: 'user', shareable: false, dataClass: 'local', module: 'recordings', restore: 'Restored with the Recordings section and its file; matched by UID, id, then shape.' },
   recording_tags: { owner: 'user', shareable: false, dataClass: 'local', module: 'recordings', restore: 'Restored with the Recordings section.' },
   recording_tag_links: { owner: 'user', shareable: false, dataClass: 'local', module: 'recordings', restore: 'Restored with its recording and tag.' },
   recording_transcription_jobs: { owner: 'user', shareable: false, dataClass: 'local', module: 'recordings', restore: 'Completed transcripts restored with their recording; other attempts are not resumed.' },
@@ -258,7 +249,7 @@ function declaredFields() {
     if (Object.keys(policy.fieldPolicies).length !== policy.columns.length) throw new Error(`Archive policy mismatch: ${table}`);
     for (const column of policy.columns) add(table, column, policy.fieldPolicies[column], policy.introducedIn?.[column]);
   }
-  for (const [table, policy] of [...Object.entries(NON_ARCHIVE_POLICIES), ...Object.entries(UNARCHIVED_IDENTITIES)]) {
+  for (const [table, policy] of Object.entries(NON_ARCHIVE_POLICIES)) {
     if (!policy.reason) throw new Error(`Missing exclusion reason: ${table}`);
     for (const column of policy.columns) add(table, column, policy.treatment, policy.introducedIn?.[column], policy.removedIn);
   }
@@ -313,5 +304,5 @@ function assertArchiveRelationships(rows: readonly RelationshipRow[]) {
   }
 }
 
-export { NON_ARCHIVE_POLICIES, UNARCHIVED_IDENTITIES, TABLE_DECLARATIONS, declaredFields, assertInventoryCoverage, assertArchiveRelationships, verifyDatabaseInventory };
+export { NON_ARCHIVE_POLICIES, TABLE_DECLARATIONS, declaredFields, assertInventoryCoverage, assertArchiveRelationships, verifyDatabaseInventory };
 export type { DataClass, TableDeclaration };

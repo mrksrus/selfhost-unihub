@@ -35,14 +35,14 @@ test('v2 backup reader retains provider mappings and section-only backups stay s
 });
 
 test('future, missing and malformed data versions fail before normalization', () => {
-  for (const version of [undefined, null, 0, 7, 999, '1', '2', 1.5]) {
+  for (const version of [undefined, null, 0, 8, 999, '1', '2', 1.5]) {
     const backup = { app: 'unihub', version, data: {}, files: [] };
     assert.equal(validateBackupPayload(backup as FixtureValue).valid, false);
     assert.throws(() => normalizeBackupPayload(backup as FixtureValue), /Unsupported backup data version/);
   }
   // What an older release says about a newer archive, from the readers it has.
-  assert.deepEqual(validateBackupPayload({ app: 'unihub', version: 7, data: {}, files: [] } as FixtureValue).errors,
-    ['Unsupported backup data version: 7. This UniHub version reads versions 1, 2, 3, 4, 5 and 6; a newer backup may need a newer UniHub release.']);
+  assert.deepEqual(validateBackupPayload({ app: 'unihub', version: 8, data: {}, files: [] } as FixtureValue).errors,
+    ['Unsupported backup data version: 8. This UniHub version reads versions 1, 2, 3, 4, 5, 6 and 7; a newer backup may need a newer UniHub release.']);
 });
 
 test('archive and payload must agree on supported versions', () => {
@@ -58,7 +58,7 @@ test('both ZIP import paths reject unknown or inconsistent versions with intact 
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'backup-version-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   for (const [name, manifestVersion, dataVersion, archiveVersion] of [
-    ['old', 1, 1, 1], ['v2', 2, 2, 1], ['v3', 3, 3, 1], ['v4', 4, 4, 1], ['v5', 5, 5, 1], ['current', 6, 6, 1], ['future', 7, 7, 1],
+    ['old', 1, 1, 1], ['v2', 2, 2, 1], ['v3', 3, 3, 1], ['v4', 4, 4, 1], ['v5', 5, 5, 1], ['v6', 6, 6, 1], ['current', 7, 7, 1], ['future', 8, 8, 1],
     ['mismatch', 1, 2, 1], ['future-archive', 2, 2, 2],
   ] as const) {
     const filePath = path.join(directory, name + '.zip');
@@ -70,7 +70,7 @@ test('both ZIP import paths reject unknown or inconsistent versions with intact 
       { name: 'checksums.json', data: JSON.stringify({ algorithm: 'sha256', entries: { 'data/backup.json': sha256Buffer(data) } }) },
     ], filePath);
     const bytes = await fs.readFile(filePath);
-    if (['old', 'v2', 'v3', 'v4', 'v5', 'current'].includes(name)) {
+    if (['old', 'v2', 'v3', 'v4', 'v5', 'v6', 'current'].includes(name)) {
       assert.equal(backupFromZipBuffer(bytes).backup.version, dataVersion);
       assert.equal((await backupFromZipFile(filePath)).backup.version, dataVersion);
     } else {
@@ -136,6 +136,17 @@ test('schema 5 holds each archive to the fields of its own version, and contact 
   assert.deepEqual(errors(4, { contacts: [{ ...contact, uid: 'urn:uuid:c1' }] }), ['Unsupported backup field: contacts.uid']);
   assert.deepEqual(errors(3, { contact_values: [] }), ['Unsupported backup table: contact_values']);
   assert.deepEqual(errors(2, { contact_photos: [] }), ['Unsupported backup table: contact_photos']);
+  // The stable identities of schema 7 (step 25): no older archive, not even
+  // the permissive schemas 1 and 2, may bring one a restore would match by.
+  const event = { id: 'e1', user_id: user, title: 'Task', start_time: '2030-01-01 09:00:00', end_time: '2030-01-01 10:00:00' };
+  for (const version of [1, 2, 6]) {
+    assert.deepEqual(errors(version, { calendar_events: [{ ...event, uid: 'task@example.test' }], calendar_calendars: [{ id: 'k1', user_id: user, name: 'List', uid: 'k1' }],
+      recordings: [{ id: 'r1', user_id: user, title: 'Interview', uid: 'r1' }] }).filter(error => error.startsWith('Unsupported backup field')),
+    ['Unsupported backup field: calendar_events.uid', 'Unsupported backup field: calendar_calendars.uid', 'Unsupported backup field: recordings.uid'], `schema ${version}`);
+  }
+  assert.deepEqual(errors(7, { calendar_events: [{ ...event, uid: 'task@example.test' }] }), []);
+  // Schemas 1 and 2 still pass fields that are no longer read.
+  assert.deepEqual(errors(1, { calendar_events: [{ ...event, legacy_flag: true }] }), []);
   // A photo file is named by its SHA-256, is a JPEG and no larger than a stored photo.
   const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
   const name = sha256Buffer(jpeg);
@@ -156,7 +167,7 @@ test('the schema 5 reader turns fixed contact fields into values as upgrade 22 d
   const saved = structuredClone(old);
   const first = normalizeBackupPayload(structuredClone(old));
   assert.deepEqual(old, saved);
-  assert.equal(first.version, 6);
+  assert.equal(first.version, 7);
   assert.deepEqual(first.data.contacts, [{ id: 'c1', user_id: 'u', first_name: 'Li', uid: 'urn:uuid:c1' }]);
   assert.deepEqual((first.data.contact_values as FixtureValue[]).map(row => [row.kind, row.position, row.legacy_slot, row.value, row.label]),
     [['email', 0, 1, 'x@example.test', ''], ['phone', 0, 1, 'same', ''], ['phone', 1, 2, 'same', '']]);
@@ -175,7 +186,7 @@ test('task order arrives with schema 6: an older schema may not carry it, and an
   // A schema 5 archive is read unchanged: no order, so every task keeps its date's place.
   const old = { app: 'unihub', version: 5, files: [], data: { calendar_events: [] } };
   const read = normalizeBackupPayload(structuredClone(old));
-  assert.equal(read.version, 6);
+  assert.equal(read.version, 7);
   assert.equal(read.source_backup_version, 5);
   assert.deepEqual(read.data, old.data);
 });

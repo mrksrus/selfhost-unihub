@@ -10,13 +10,12 @@ const { getModuleForPath } = require('../dist/src/services/module-catalog') as t
 // the boundary applied them, and shrinks as files are converted.
 // The restore mapping the backup catalog's WRITE_PATHS gave the derived files.
 function oldRestoreSection(pathname: string) {
-  if (pathname.startsWith('/api/backup/')) return null;
   for (const [section, prefix] of [['calendar', '/api/calendar'], ['mail', '/api/mail'], ['recordings', '/api/recordings']]) {
     if (pathname === prefix || pathname.startsWith(prefix + '/')) return section;
   }
   return null;
 }
-const NATIVE_ROUTE_FILES = ['calendar-tasks', 'notifications', 'admin', 'auth', 'settings', 'modules', 'system', 'offline', 'search', 'events', 'mail-essentials', 'mail-threads', 'files',
+const NATIVE_ROUTE_FILES = ['calendar-tasks', 'notifications', 'admin', 'auth', 'settings', 'modules', 'system', 'offline', 'search', 'events', 'mail-essentials', 'mail-threads', 'files', 'backup',
   'contacts', 'contacts-transfer', 'contacts-photos', 'contacts-merge'];
 const nativeKeys = new Set(NATIVE_ROUTE_FILES.flatMap(name => Object.keys(require(`../dist/src/routes/${name}`))));
 
@@ -31,7 +30,7 @@ test('every derived route spec equals the policy the boundary looked up before s
       auth: PUBLIC_ROUTE_KEYS.has(key) ? 'public' : 'user',
       module: getModuleForPath(pathname),
       restoreSection: mutating ? oldRestoreSection(pathname) : undefined,
-      body: { limit: bodyLimitFor(key), kind: key === 'POST /api/backup/import' ? 'backup-upload' : 'json' },
+      body: { limit: bodyLimitFor(key), kind: 'json' },
       ...(BACKGROUND_HEADER_CSRF_KEYS.has(key) ? { csrf: 'background-header' } : {}),
       // Declared since F13 (0.25), not derived from an older lookup.
       ...(DESTRUCTIVE_BY_ROUTE[key] ? { destructive: DESTRUCTIVE_BY_ROUTE[key] } : {}),

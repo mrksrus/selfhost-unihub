@@ -8,6 +8,7 @@ import { AUDIO_HEADER_BYTES, identifyRecordingAudio } from './recording-audio';
 import { archiveCarriesStep, validateBackupVersionFields } from './backup-format';
 import { countContactConflicts } from './backup-contacts';
 import { isOrderKey } from './task-order';
+import { validateOverlayRows } from './backup-overlays';
 import {
   ACCOUNT_ONLY_TABLES,
   CONTENT_FILE_POLICIES,
@@ -120,11 +121,13 @@ function validateBackupPayload(backup: ArchiveEnvelope | null | undefined, {
     if (!policy) { errors.push(`Unsupported backup table: ${table}`); continue; }
     // A table every field of which is newer than the archive's schema.
     if (!policy.columns.some(column => carriedField(table, column, backup.version))) { errors.push(`Unsupported backup table: ${table}`); continue; }
-    if (backup.version >= 3) {
-      for (const row of table === 'user' ? [rows] : Array.isArray(rows) ? rows : []) {
-        for (const column of Object.keys(row || {})) {
-          if (!(policy.columns.includes(column) && carriedField(table, column, backup.version)) && !retiredField(table, column, backup.version)) errors.push(`Unsupported backup field: ${table}.${column}`);
-        }
+    // From schema 3 on an archive carries only known fields. Earlier ones may
+    // carry fields that are no longer read, but never one a later upgrade step
+    // added (an identity a restore would match by, for example).
+    for (const row of table === 'user' ? [rows] : Array.isArray(rows) ? rows : []) {
+      for (const column of Object.keys(row || {})) {
+        if (retiredField(table, column, backup.version) || (policy.columns.includes(column) && carriedField(table, column, backup.version))) continue;
+        if (backup.version >= 3 || policy.columns.includes(column)) errors.push(`Unsupported backup field: ${table}.${column}`);
       }
     }
   }
@@ -140,6 +143,7 @@ function validateBackupPayload(backup: ArchiveEnvelope | null | undefined, {
   }
   errors.push(...validateRestoreRows(backup.data));
   errors.push(...validateTaskOrder(backup.data));
+  errors.push(...validateOverlayRows(backup.data));
   errors.push(...validateAccountOnlySections(backup));
   for (const row of Array.isArray(backup.data?.user_settings) ? backup.data.user_settings : []) {
     if (row?.setting_key === 'module_preferences') {

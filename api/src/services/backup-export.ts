@@ -1,5 +1,5 @@
 import type { RowDataPacket } from 'mysql2/promise';
-import type { ApiError, BackupPayload, BackupRow, BackupFile, ArchiveEnvelope } from '../types';
+import type { ApiError, BackupPayload, BackupRow, BackupFile, ArchiveEnvelope, SqlExecutor } from '../types';
 import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
@@ -30,6 +30,9 @@ import {
 } from './backup-common';
 import { scopeBackupForImport } from './backup-validate';
 import { photoPath, photosRoot } from './contact-photos';
+import { accountIdentity, backupContents, includedDownloadAccounts, keptEmailSql, localEventSql, overlayPayload, serverLinkedEmailSql, syncAccountSql } from './backup-classes';
+import type { LeftOutKind } from './backup-classes';
+import type { BackupContents } from '../contracts/backup';
 
 type CheckCancelled = (() => Promise<unknown>) | null;
 interface SnapshotRow extends BackupRow {
@@ -55,9 +58,14 @@ interface ExportBackup extends ArchiveEnvelope {
   exported_at: string;
   portable_credentials: ReturnType<typeof encryptPortableCredentialBundle> | null;
   data: SnapshotData;
+  contents: BackupContents;
 }
 interface BackupOptions {
   includeFileData?: boolean;
+  // "Include downloaded mail" (backup-classes.ts); a policy or provider deletion can force it.
+  includeDownloadMail?: boolean;
+  // Where the archive's data document is written while the archive is made.
+  workDirectory?: string;
   portableCredentialKey?: Buffer | null;
   checkCancelled?: CheckCancelled;
   sections?: unknown;
@@ -293,7 +301,77 @@ const ACCOUNT_ONLY_FILTERS: Readonly<Record<string, string>> = Object.freeze({
   calendar_accounts: "b.provider IN ('caldav', 'ics')",
 });
 
-async function readBackupSnapshot(userId: string, sections: unknown, checkCancelled: CheckCancelled, mailAccountId: string | null = null): Promise<SnapshotData> {
+// The rows of a section table a user backup keeps, by data class
+// (backup-classes.ts): mirrored provider rows are left out. `included` are
+// the Download-mode accounts whose mail the backup holds.
+function classFilter(table: string, included: readonly string[]): { sql: string; params: string[] } | null {
+  const event = (alias: string) => `EXISTS (SELECT 1 FROM calendar_events ce WHERE ce.id = ${alias}.event_id AND ce.user_id = ${alias}.user_id AND ${localEventSql('ce')})`;
+  const email = (alias: string) => {
+    const kept = keptEmailSql('ke', included);
+    return { sql: `EXISTS (SELECT 1 FROM emails ke WHERE ke.id = ${alias}.email_id AND ke.user_id = ${alias}.user_id AND ${kept.sql})`, params: kept.params };
+  };
+  const accounts = included.length ? { sql: `b.mail_account_id IN (${included.map(() => '?').join(', ')})`, params: [...included] } : { sql: 'FALSE', params: [] };
+  switch (table) {
+    case 'calendar_events': return { sql: localEventSql('b'), params: [] };
+    case 'calendar_event_subtasks': case 'calendar_event_attendees': return { sql: event('b'), params: [] };
+    case 'calendar_event_external_refs': return { sql: 'FALSE', params: [] };
+    case 'emails': return keptEmailSql('b', included);
+    case 'email_attachments': case 'mail_email_scores': case 'mail_folder_recovery_items': return email('b');
+    case 'mail_remote_mailboxes': case 'mail_remote_occurrences': case 'mail_gmail_messages': case 'mail_writebacks':
+    case 'mail_operation_attempts': case 'mail_engine_quarantine': case 'mail_folder_reconciliations': return accounts;
+    default: return null;
+  }
+}
+
+// UniHub's state on the person's synced tasks, as overlays keyed by the
+// calendar and the task's UID and recurrence id: the restore applies them
+// to the task the provider sends again. A pending overlay of an earlier
+// restore is already among the rows (a second backup before the first sync
+// keeps it); a live task replaces one of the same identity.
+async function syncedTaskOverlays(connection: SqlExecutor, userId: string, pending: readonly BackupRow[]) {
+  const [events] = await connection.execute<RowDataPacket[]>(`SELECT e.id, e.calendar_id, e.uid, e.title, e.start_time, e.todo_status, e.done_at, e.source_email_id, e.source_email_json,
+      COALESCE(r.recurrence_id, '') AS recurrence_id, a.provider, a.account_email, a.base_url, a.discovery_url
+    FROM calendar_events e
+    JOIN calendar_calendars c ON c.id = e.calendar_id AND c.user_id = e.user_id
+    JOIN calendar_accounts a ON a.id = c.account_id AND a.user_id = e.user_id
+    LEFT JOIN calendar_event_external_refs r ON r.event_id = e.id AND r.user_id = e.user_id
+    WHERE e.user_id = ? AND a.provider <> 'local'
+    ORDER BY e.calendar_id, e.uid, recurrence_id, e.id`, [userId]);
+  if (!events.length) return [...pending];
+  const [subtasks] = await connection.execute<RowDataPacket[]>(`SELECT s.event_id, s.title, s.is_done, s.position FROM calendar_event_subtasks s
+    JOIN calendar_events e ON e.id = s.event_id AND e.user_id = s.user_id
+    WHERE s.user_id = ? AND NOT ${localEventSql('e')} ORDER BY s.event_id, s.position, s.id`, [userId]);
+  const byEvent = new Map<string, BackupRow[]>();
+  for (const row of normalizeRows(subtasks)) byEvent.set(String(row.event_id), [...(byEvent.get(String(row.event_id)) || []), row]);
+  const key = (row: BackupRow) => JSON.stringify([row.calendar_id, row.uid, String(row.recurrence_id ?? '')]);
+  const overlays = new Map<string, BackupRow>();
+  for (const row of pending) overlays.set(row.match_kind === 'uid' ? key(row) : `pending:${row.id}`, row);
+  for (const event of normalizeRows(events)) {
+    const payload = overlayPayload(event, byEvent.get(String(event.id)) || []);
+    if (!payload) continue;
+    overlays.set(key(event), { id: crypto.randomUUID(), user_id: userId, calendar_id: event.calendar_id, account_identity: accountIdentity(event), uid: event.uid,
+      recurrence_id: String(event.recurrence_id ?? ''), match_kind: 'uid', shape_title: event.title ?? '', shape_start: event.start_time ?? null,
+      payload: JSON.stringify(payload), created_at: new Date().toISOString().slice(0, 19).replace('T', ' '), expires_at: null });
+  }
+  return [...overlays.values()];
+}
+
+// How many rows of each kind the backup leaves out, for its contents.
+async function leftOutCounts(connection: SqlExecutor, userId: string, sections: readonly string[], included: readonly string[], mailAccountId: string | null) {
+  const counts: Partial<Record<LeftOutKind, number>> = {};
+  const count = async (sql: string, params: unknown[]) => Number((await connection.execute<RowDataPacket[]>(sql, params as string[]))[0][0].n) || 0;
+  if (sections.includes('calendar')) counts.synced_events = await count(`SELECT COUNT(*) AS n FROM calendar_events b WHERE b.user_id = ? AND NOT ${localEventSql('b')}`, [userId]);
+  if (sections.includes('mail')) {
+    const account = mailAccountId === null ? '' : ' AND b.mail_account_id = ?';
+    const scope = mailAccountId === null ? [] : [mailAccountId];
+    counts.sync_mail = await count(`SELECT COUNT(*) AS n FROM emails b WHERE b.user_id = ?${account} AND ${syncAccountSql('b.mail_account_id')} AND ${serverLinkedEmailSql('b')}`, [userId, ...scope]);
+    const kept = included.length ? ` AND b.mail_account_id NOT IN (${included.map(() => '?').join(', ')})` : '';
+    counts.download_mail = await count(`SELECT COUNT(*) AS n FROM emails b WHERE b.user_id = ?${account} AND NOT ${syncAccountSql('b.mail_account_id')}${kept}`, [userId, ...scope, ...included]);
+  }
+  return counts;
+}
+
+async function readBackupSnapshot(userId: string, sections: unknown, checkCancelled: CheckCancelled, mailAccountId: string | null = null, includeDownloadMail = true): Promise<{ data: SnapshotData; contents: BackupContents }> {
   const request = normalizeBackupRequest(sections);
   if (mailAccountId !== null && request.accountOnlySections.length) throw new Error('An account backup cannot also export account settings only');
   const connection = await db.getConnection();
@@ -301,6 +379,9 @@ async function readBackupSnapshot(userId: string, sections: unknown, checkCancel
     if (checkCancelled) await checkCancelled();
     await connection.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
     await connection.query('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY');
+    // An account backup (offered before switching that account to Sync) keeps its mail.
+    const exportsMail = request.sections.includes('mail') && !request.accountOnlySections.includes('mail');
+    const included = mailAccountId !== null ? [mailAccountId] : exportsMail ? await includedDownloadAccounts(userId, includeDownloadMail, connection) : [];
     const data: SnapshotData = {};
     for (const section of request.sections) {
       const accountOnly = request.accountOnlySections.includes(section);
@@ -326,11 +407,14 @@ async function readBackupSnapshot(userId: string, sections: unknown, checkCancel
           where += ` AND ${filter}`;
           if (filter.includes('?')) params = [...params, mailAccountId];
         }
+        const byClass = classFilter(table, included);
+        if (byClass) { where += ` AND ${byClass.sql}`; params = [...params, ...byClass.params]; }
         const order = policy.keyColumns.map(column => `b.\`${column}\``).join(', ');
         const [rows] = await connection.execute<RowDataPacket[]>(`SELECT ${columns} FROM ${from} WHERE ${where} ORDER BY ${order}`, params);
         if (table === 'user' && !rows.length) throw new Error('User not found');
         data[table] = table === 'user' ? normalizeRows(rows)[0] : normalizeRows(rows);
       }
+      if (section === 'calendar' && !accountOnly) data.calendar_overlay_restores = await syncedTaskOverlays(connection, userId, (data.calendar_overlay_restores || []) as BackupRow[]);
     }
     // Filing in another account is local organisation outside this export;
     // the restored copy is filed under its own account instead.
@@ -339,8 +423,13 @@ async function readBackupSnapshot(userId: string, sections: unknown, checkCancel
         if (email.filing_account_id && email.filing_account_id !== mailAccountId) email.filing_account_id = null;
       }
     }
+    const complete = request.sections.filter(section => !request.accountOnlySections.includes(section));
+    const counts = await leftOutCounts(connection, userId, complete, included, mailAccountId);
     await connection.commit();
-    return data;
+    const contents = backupContents(complete, counts, { downloadMail: included.length > 0 && complete.includes('mail') });
+    // Account settings hold only the connections.
+    if (request.accountOnlySections.length && !contents.included.includes('config')) contents.included.push('config');
+    return { data, contents };
   } catch (error) {
     await connection.rollback().catch(() => {});
     throw error;
@@ -355,8 +444,9 @@ async function buildBackupForUser(userId: string, {
   checkCancelled = null,
   sections = 'full',
   mailAccountId = null,
+  includeDownloadMail = true,
 }: BackupOptions = {}): Promise<ExportBackup> {
-  const data = await readBackupSnapshot(userId, sections, checkCancelled, mailAccountId);
+  const { data, contents } = await readBackupSnapshot(userId, sections, checkCancelled, mailAccountId, includeDownloadMail);
   const { accountOnlySections } = normalizeBackupRequest(sections);
   const fileEntries = [];
   for (const [kind, policy] of Object.entries(FILE_POLICIES)) {
@@ -423,6 +513,7 @@ async function buildBackupForUser(userId: string, {
       ...content.warnings,
     ],
     data,
+    contents,
     files: fileEntries,
     portable_credentials: portableCredentials,
   };
@@ -437,11 +528,14 @@ async function buildBackupArchiveEntriesForUser(userId: string, sections: unknow
   portableCredentialKey = null,
   checkCancelled = null,
   mailAccountId = null,
+  includeDownloadMail = true,
+  workDirectory = os.tmpdir(),
 }: BackupOptions = {}) {
   const fullBackup = await buildBackupForUser(userId, {
     includeFileData: false,
     sections,
     mailAccountId,
+    includeDownloadMail,
     portableCredentialKey,
     checkCancelled,
   });
@@ -508,11 +602,14 @@ async function buildBackupArchiveEntriesForUser(userId: string, sections: unknow
     exported_at: scopedBackup.exported_at,
     warnings: scopedBackup.warnings,
     data: scopedBackup.data,
+    contents: scopedBackup.contents,
     files: archiveFiles,
     portable_credentials: scopedBackup.portable_credentials || null,
     ...(scopedBackup.account_only_sections ? { account_only_sections: scopedBackup.account_only_sections } : {}),
   };
-  const dataPath = path.join(os.tmpdir(), `unihub-backup-data-${crypto.randomUUID()}.json`);
+  // The export job writes it beside its archive, never in the system's
+  // temporary directory (a small tmpfs on some hosts); other callers choose.
+  const dataPath = path.join(workDirectory, `unihub-backup-data-${crypto.randomUUID()}.json.partial`);
   try {
     await writeBackupJsonFile(backupPayload, dataPath);
     const checksums: { generated_at: string; algorithm: string; entries: Record<string, string> } = {
@@ -536,6 +633,8 @@ async function buildBackupArchiveEntriesForUser(userId: string, sections: unknow
       sections: scopedBackup.import_sections,
       ...(backupPayload.account_only_sections ? { account_only_sections: backupPayload.account_only_sections } : {}),
       row_counts: getBackupRowCounts(backupPayload),
+      // What the archive holds by data class, and what it left out (schema 7).
+      contents: scopedBackup.contents,
       file_count: archiveFiles.filter(file => file.archive_path).length,
       missing_files: missingFiles,
       warnings: [

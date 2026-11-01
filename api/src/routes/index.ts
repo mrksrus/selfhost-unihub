@@ -35,7 +35,7 @@ const routes = mergeRouteTables(
   contactsPhotosRoutes,
   contactsMergeRoutes,
   settingsRoutes,
-  legacyRoutes(backupRoutes),
+  backupRoutes,
   searchRoutes,
   legacyRoutes(recordingsRoutes),
   legacyRoutes(calendarRoutes),

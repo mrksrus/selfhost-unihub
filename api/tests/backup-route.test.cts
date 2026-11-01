@@ -8,10 +8,14 @@ process.env.BACKUP_MASTER_KEY = process.env.BACKUP_MASTER_KEY || 'test-backup-ma
 const routes = require('../dist/src/routes/backup') as typeof import('../src/routes/backup');
 const { setDb } = require('../dist/src/state') as typeof import('../src/state');
 
+const call = (key: string, req: FixtureValue, userId: string) =>
+  routes[key].handler(req, userId, {} as FixtureValue, {} as FixtureValue) as Promise<FixtureValue>;
+
 function requestFor(pathname: FixtureValue) {
   return {
     headers: { host: 'localhost' },
     url: pathname,
+    params: { id: 'job-1' },
   };
 }
 
@@ -35,7 +39,7 @@ test('encrypted download requires recovery-password metadata', async (t) => {
   } as FixtureValue);
   t.after(() => setDb(null));
 
-  const result = await routes['GET /api/backup/jobs/:id/download'](
+  const result = await call('GET /api/backup/jobs/:id/download',
     requestFor('/api/backup/jobs/job-1/download') as FixtureValue,
     'user-1'
   );
@@ -63,7 +67,7 @@ test('encrypted download is gated while the recovery password can still be revea
   } as FixtureValue);
   t.after(() => setDb(null));
 
-  const result = await routes['GET /api/backup/jobs/:id/download'](
+  const result = await call('GET /api/backup/jobs/:id/download',
     requestFor('/api/backup/jobs/job-1/download') as FixtureValue,
     'user-1'
   );
@@ -98,7 +102,7 @@ test('password reveal reports missing recovery metadata for an existing job', as
   } as FixtureValue);
   t.after(() => setDb(null));
 
-  const result = await routes['POST /api/backup/jobs/:id/recovery-password/reveal'](
+  const result = await call('POST /api/backup/jobs/:id/recovery-password/reveal',
     requestFor('/api/backup/jobs/job-1/recovery-password/reveal') as FixtureValue,
     'user-1'
   );
@@ -109,12 +113,16 @@ test('password reveal reports missing recovery metadata for an existing job', as
 });
 
 
-test('backup capabilities expose the shared recoverable sections without authorizing anonymous callers', async () => {
-  const handler = routes['GET /api/backup/capabilities'];
-  assert.equal((await handler({} as FixtureValue, null)).status, 401);
-  const capabilities = await handler({} as FixtureValue, 'owner');
+test('backup capabilities expose the shared recoverable sections and the Download-mail choice to signed-in callers', async (t) => {
+  const spec = routes['GET /api/backup/capabilities'];
+  assert.equal(spec.auth, 'user');
+  setDb({ async execute(sql: string) { assert.match(sql, /mail_accounts/); return [[{ id: 'download-deletes' }]]; } } as FixtureValue);
+  t.after(() => setDb(null));
+  const capabilities = await call('GET /api/backup/capabilities', {}, 'owner');
   assert.equal(capabilities.enabled, true);
-  assert.equal(capabilities.version, 6);
-  assert.deepEqual(capabilities.sections.map((section) => section.id), Object.keys((require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog')).SECTION_POLICIES));
-  assert.ok(capabilities.exclusions.some((value) => /Other users/.test(value)));
+  assert.equal(capabilities.version, 7);
+  assert.deepEqual(capabilities.sections.map((section: FixtureValue) => section.id), Object.keys((require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog')).SECTION_POLICIES));
+  assert.ok(capabilities.exclusions.some((value: string) => /Other users/.test(value)));
+  // An account that deletes mail at the provider holds the only copy, so its mail is always included.
+  assert.deepEqual(capabilities.download_mail, { value: true, forced: false, reason: 'Accounts that delete mail at the provider always include their downloaded mail.', forced_account_ids: ['download-deletes'] });
 });
