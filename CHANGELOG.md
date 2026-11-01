@@ -48,6 +48,9 @@ which takes longer on large calendars (see
   twice.** Local tasks, lists and recordings now carry a stable identity, and
   a restore finds them by it wherever they are: Replace puts the task back as
   it was in the backup, Keep existing leaves it where you moved it.
+- **A download in the Android app no longer closes the app** when Android's
+  download service has not started yet, for example right after the phone
+  starts; the app says the file could not be saved, and you can try again.
 
 ## 0.27.1
 
