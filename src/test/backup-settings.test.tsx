@@ -7,7 +7,7 @@ import BackupSettings from '@/components/settings/BackupSettings';
 import { SessionQueryProvider } from '@/components/SessionQueryProvider';
 import { AuthContext, type AuthContextType } from '@/contexts/auth-context';
 import type { BackupCapabilities, BackupJob, RestoreJob } from '@/lib/backup-api';
-import { OWNER, mountSignedIn, policiesAnswer, stubBrowserApis } from './helpers/data-safety';
+import { OWNER, mountSignedIn, policiesAnswer, stubBrowserApis, testClient } from './helpers/data-safety';
 
 const state = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }), clearToasts: vi.fn() }));
@@ -225,17 +225,55 @@ describe('Settings → Backup and restore (0.28)', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Recovery password' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Show the password' }));
     expect(await within(dialog).findByText('The server did not answer in time.', {}, { timeout: 10_000 })).toBeInTheDocument();
-    expect(within(dialog).getByRole('alert')).toHaveTextContent(/delete this backup and create a new one/);
+    // The server keeps its own key: the backup stays restorable here, and nothing advises deleting it.
+    const alert = within(dialog).getByRole('alert');
+    expect(alert).toHaveTextContent(/may have counted this attempt/);
+    expect(alert).toHaveTextContent(/this server can still restore this backup/);
+    expect(alert).toHaveTextContent(/cannot be opened on another UniHub/);
+    expect(alert).not.toHaveTextContent(/delete/i);
     expect(within(dialog).getByRole('button', { name: 'Try again' })).toBeEnabled();
     // The dialog's own Close button, not the corner X (which carries the same name).
     fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' }).find(button => button.textContent === 'Close')!);
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Recovery password' })).not.toBeInTheDocument());
   });
 
-  it('shows the recovery password once before the first download and waits until it is saved', async () => {
+  it('a lost answer says the password may be gone, a used-up retry says what the backup is still good for, and the list says so', { timeout: 20_000 }, async () => {
+    const jobs = [job('a', { recovery_password_available: true, recovery_password_revealed: false })];
+    answer(capabilities(), jobs);
+    let reveals = 0;
+    vi.mocked(api.post).mockImplementation(async (path: string) => {
+      if (!path.endsWith('/recovery-password/reveal')) return { data: {} };
+      // The server showed the password in its first answer, which never arrived; the second asks again.
+      jobs.splice(0, 1, job('a', { recovery_password_available: false, recovery_password_revealed: true }));
+      return ++reveals === 1 ? { error: 'Failed to fetch' } : { error: 'Recovery password has already been revealed', status: 410 };
+    });
+    mountSignedIn(<BackupSettings active />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Download Full backup' }, { timeout: 10_000 }));
+    const dialog = await screen.findByRole('dialog', { name: 'Recovery password' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Show the password' }));
+    const alert = await within(dialog).findByRole('alert', {}, { timeout: 10_000 });
+    expect(alert).toHaveTextContent(/The answer was lost/);
+    expect(alert).toHaveTextContent(/may have counted this attempt/);
+    expect(alert).toHaveTextContent(/this server can still restore this backup/);
+    expect(alert).not.toHaveTextContent(/delete/i);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Try again' }));
+    await within(dialog).findByText(/already shown and cannot be shown again/, {}, { timeout: 10_000 });
+    const after = within(dialog).getByRole('alert');
+    expect(after).toHaveTextContent(/this server can still restore this backup/);
+    expect(after).toHaveTextContent(/create a new backup/);
+    expect(after).not.toHaveTextContent(/delete/i);
+    expect(within(dialog).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' }).find(button => button.textContent === 'Close')!);
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Recovery password' })).not.toBeInTheDocument());
+    // The list is honest about the backup whose password never reached the person.
+    expect(await screen.findByText(/Its recovery password was not received/, {}, { timeout: 10_000 })).toBeInTheDocument();
+  });
+
+  it('shows the recovery password once before the first download and waits until it is saved', { timeout: 20_000 }, async () => {
     answer(capabilities(), [job('fresh', { recovery_password_available: true, recovery_password_revealed: false })]);
     vi.mocked(api.post).mockImplementation(async (path: string) => path.endsWith('/recovery-password/reveal') ? { data: { recovery_password: 'correct-horse-battery' } } : { data: { url: '/api/files/tickets/t2/download', filename: 'f', expires_at: '', content_type: '', size: 1 } });
-    mountSignedIn(<BackupSettings active />);
+    const client = testClient();
+    mountSignedIn(<BackupSettings active />, { client });
     fireEvent.click(await screen.findByRole('button', { name: 'Download Full backup' }));
     const dialog = await screen.findByRole('dialog', { name: 'Recovery password' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Show the password' }));
@@ -246,6 +284,11 @@ describe('Settings → Backup and restore (0.28)', () => {
     expect(download).toBeEnabled();
     fireEvent.click(download);
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/files/tickets', { kind: 'backup-archive', id: 'fresh' }));
+    // Closed: the password is gone from the page and from the query client's mutation state.
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Recovery password' })).not.toBeInTheDocument());
+    expect(screen.queryByText('correct-horse-battery')).not.toBeInTheDocument();
+    const retained = () => client.getMutationCache().getAll().some(mutation => JSON.stringify(mutation.state.data ?? null).includes('correct-horse-battery'));
+    await waitFor(() => expect(retained()).toBe(false), { timeout: 10_000 });
   });
 
   it('the restore review says what the archive holds, what it left out and the server\'s notes, and a forbidden restore greys Restore', async () => {

@@ -5,9 +5,10 @@ import { useAuth } from '@/contexts/useAuth';
 import { useToast } from '@/hooks/use-toast';
 import { usePolicy } from '@/hooks/use-policies';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
+import { useSecretMutation } from '@/hooks/use-secret-mutation';
 import { useSessionScope } from '@/lib/session-scope';
 import {
-  BACKUP_ACTIVE, RESTORE_ACTIVE, RevealUnanswered, backupApi, backupQueryKeys, getBackupDownloadAction, prepareBackupDownload, revealRecoveryPasswordOnce,
+  BACKUP_ACTIVE, RESTORE_ACTIVE, RevealAlreadyShown, RevealUncertain, backupApi, backupQueryKeys, getBackupDownloadAction, prepareBackupDownload, revealRecoveryPasswordOnce,
   type BackupContents, type BackupDataClass, type BackupImportResult, type BackupJob, type BackupSectionId, type CalendarMode, type ConflictMode, type CredentialsMode, type RestoreJob, type RestoreOptions,
 } from '@/lib/backup-api';
 import { copyText, downloadTicket, saveFile } from '@/lib/platform';
@@ -190,13 +191,19 @@ export default function BackupSettings({ active }: { active: boolean }) {
   // Recovery password, shown once before the first download. The server
   // reveals it once: the dialog cannot be dismissed while the reveal runs
   // (a bounded wait), and an answer is shown only for the backup it was
-  // asked for. A reveal that was refused or not answered in time leaves the
-  // dialog open with what happened and the way out.
+  // asked for. A reveal that was refused, lost or already used leaves the
+  // dialog open with what happened and what to do (src/lib/backup-api.ts,
+  // the classification). The shown password lives only in this state until
+  // Close; the request's own copy is dropped as soon as it settles
+  // (useSecretMutation).
   const [recoveryJob, setRecoveryJob] = useState<BackupJob | null>(null);
   const recoveryJobNow = useRef<BackupJob | null>(null);
   const [recoveryPassword, setRecoveryPassword] = useState<string | null>(null);
   const [recoverySaved, setRecoverySaved] = useState(false);
-  const [revealProblem, setRevealProblem] = useState<{ unanswered: boolean; message: string } | null>(null);
+  const [revealProblem, setRevealProblem] = useState<{ kind: 'uncertain' | 'already_shown' | 'refused'; message: string } | null>(null);
+  // Backups whose password the person never received in this page: the server counts it as shown, and
+  // only this page knows the person did not see it. The list says so while the page is open.
+  const [passwordLost, setPasswordLost] = useState<Set<string>>(() => new Set());
   const openRecovery = (job: BackupJob) => { recoveryJobNow.current = job; setRecoveryJob(job); setRecoveryPassword(null); setRecoverySaved(false); setRevealProblem(null); };
   const closeRecovery = () => { recoveryJobNow.current = null; setRecoveryJob(null); setRecoveryPassword(null); setRecoverySaved(false); setRevealProblem(null); };
 
@@ -210,13 +217,18 @@ export default function BackupSettings({ active }: { active: boolean }) {
   // The ticket is fetched in the request and handed to the browser or the app
   // only in the session-guarded callback: a late answer starts no download.
   const download = useSessionMutation({ mutationFn: (job: BackupJob) => prepareBackupDownload(job), onSuccess: ticket => downloadTicket(ticket), onError: failed('Could not download the backup') });
-  const reveal = useSessionMutation({
+  const reveal = useSecretMutation({
     mutationFn: (job: BackupJob) => revealRecoveryPasswordOnce(job.id),
-    onSuccess: (password, job) => { refreshJobs(); if (recoveryJobNow.current?.id === job.id) setRecoveryPassword(password); },
+    onSuccess: (password, job) => {
+      refreshJobs();
+      if (recoveryJobNow.current?.id === job.id) { setRecoveryPassword(password); setPasswordLost(current => { const next = new Set(current); next.delete(job.id); return next; }); }
+    },
     onError: (error, job) => {
       // The list says whether the server counts the password as shown.
       refreshJobs();
-      if (recoveryJobNow.current?.id === job.id) setRevealProblem({ unanswered: error instanceof RevealUnanswered, message: error.message });
+      const kind = error instanceof RevealUncertain ? 'uncertain' : error instanceof RevealAlreadyShown ? 'already_shown' : 'refused';
+      if (kind !== 'refused') setPasswordLost(current => new Set(current).add(job.id));
+      if (recoveryJobNow.current?.id === job.id) setRevealProblem({ kind, message: error.message });
       else failed('Could not show the recovery password')(error);
     },
   });
@@ -353,6 +365,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
             job.keep_until ? `kept until ${formatDay(job.keep_until)}` : null,
           ].filter(Boolean).join(' · ');
           const age = !job.encryption_enabled ? 'Not encrypted, made before 0.28.' : job.contents === null && job.status === 'ready' ? 'Made before 0.28; what it holds is read when it is restored.' : null;
+          const lost = passwordLost.has(job.id) && !job.recovery_password_available;
           return (
             <div key={job.id} className="space-y-2 py-4">
               <div className="flex items-start gap-3">
@@ -363,6 +376,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                   </p>
                   <p className="text-xs text-muted-foreground">{meta}</p>
                   {age && <p className="text-xs text-muted-foreground">{age}</p>}
+                  {lost && <p className="text-xs text-warning">Its recovery password was not received. This server can still restore it; its file cannot be opened on another UniHub.</p>}
                   {job.contents && job.contents.left_out.length > 0 && (
                     <p className="text-xs text-muted-foreground">Left out: {job.contents.left_out.map(entry => `${entry.what}${entry.count !== undefined ? ` (${entry.count.toLocaleString()})` : ''}`).join(', ')}.</p>
                   )}
@@ -596,17 +610,25 @@ export default function BackupSettings({ active }: { active: boolean }) {
         ) : revealProblem ? (
           <div className="space-y-3">
             <div role="alert" className="space-y-2 text-sm">
-              <p className="font-medium text-destructive">{revealProblem.unanswered ? 'The server did not answer in time.' : 'The password was not shown.'}</p>
-              {revealProblem.unanswered ? (
+              <p className="font-medium text-destructive">
+                {revealProblem.kind === 'uncertain' ? revealProblem.message : revealProblem.kind === 'already_shown' ? 'The password was already shown and cannot be shown again.' : 'The password was not shown.'}
+              </p>
+              {revealProblem.kind === 'uncertain' && (
                 <p className="text-muted-foreground">
-                  The server shows the password once. It may have counted this attempt, in which case it shows it no more and this backup cannot be opened.
-                  Try again: if the server answers that the password was already shown, delete this backup and create a new one.
+                  The server shows the password once and may have counted this attempt. Try again; if it answers that the password was already shown, the password is lost.
                 </p>
-              ) : <p className="text-muted-foreground">{revealProblem.message}</p>}
+              )}
+              {revealProblem.kind !== 'refused' && (
+                <p className="text-muted-foreground">
+                  Without the password, this server can still restore this backup with the key it keeps, but its downloaded file cannot be opened on another UniHub.
+                  Keep this backup: it holds what existed when it was made. For a file you can open elsewhere, create a new backup and save its password.
+                </p>
+              )}
+              {revealProblem.kind === 'refused' && <p className="text-muted-foreground">{revealProblem.message}</p>}
             </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={closeRecovery}>Close</Button>
-              <Button onClick={revealAgain}>Try again</Button>
+              {revealProblem.kind !== 'already_shown' && <Button onClick={revealAgain}>Try again</Button>}
             </div>
           </div>
         ) : (

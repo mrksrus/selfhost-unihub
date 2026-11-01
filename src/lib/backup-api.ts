@@ -1,5 +1,5 @@
 import { api } from '@/lib/api';
-import { unwrap } from '@/lib/api-error';
+import { ApiError, unwrap } from '@/lib/api-error';
 import { createFileTicket } from '@/lib/file-tickets-api';
 export { getBackupDownloadAction, type BackupDownloadAction } from '@/lib/backup';
 import type {
@@ -75,7 +75,7 @@ export const backupApi = {
     required(unwrap(await api.post<BackupJobResponse>('/backup/jobs', request satisfies BackupCreateRequest)), 'backup').job,
   cancel: async (id: string) => { unwrap(await api.post(`${job(id)}/cancel`)); },
   delete: async (id: string) => { unwrap(await api.delete(job(id))); },
-  /** Reveals the recovery password: the server shows it once. The wait is bounded (REVEAL_WAIT_MS), see revealRecoveryPasswordOnce. */
+  /** Reveals the recovery password: the server shows it once. Views use revealRecoveryPasswordOnce, which classifies the outcome. */
   revealRecoveryPassword: async (id: string, signal?: AbortSignal) =>
     required(unwrap(await api.post<{ recovery_password: string }>(`${job(id)}/recovery-password/reveal`, undefined, { signal })), 'recovery password').recovery_password,
   /** Validates a backup kept on the server for a restore; the answer is the restore job to follow. */
@@ -96,27 +96,58 @@ export const backupApi = {
 /** How long the page waits for the reveal before it lets go of the request. */
 export const REVEAL_WAIT_MS = 20_000;
 
-/** Thrown when the reveal was not answered in time: the server may or may not have shown the password. */
-export class RevealUnanswered extends Error {
-  constructor() { super('The server did not answer in time.'); this.name = 'RevealUnanswered'; }
+// The server shows the recovery password once: the reveal clears it in the
+// same transaction that answers. The server keeps its own wrapped key, so a
+// backup whose password was shown can still be restored on this server;
+// only its downloaded file needs the password, on any other UniHub. The
+// outcome of a reveal is therefore classified for the person:
+// - answered: the password;
+// - refused: the server said no before showing it (not ready, no metadata);
+// - already shown (410): a reveal happened before, and nothing shows it again;
+// - uncertain: the server may have shown it while the answer never arrived
+//   (deadline, transport failure, a bad or undecodable answer, a server
+//   error after the request was sent). Only a retry tells.
+
+/** The reveal was not answered in time, or its answer was lost: the password may already count as shown. */
+export class RevealUncertain extends Error {
+  constructor(readonly unanswered: boolean, detail?: string) {
+    super(unanswered ? 'The server did not answer in time.' : `The answer was lost${detail ? `: ${detail}` : '.'}`);
+    this.name = 'RevealUncertain';
+  }
 }
 
+/** The server showed the password before and shows it no more. */
+export class RevealAlreadyShown extends Error {
+  constructor(message = 'The recovery password was already shown.') { super(message); this.name = 'RevealAlreadyShown'; }
+}
+
+/** The answer could not be read as the API's JSON: a proxy or a cut connection, not the server's refusal. */
+const undecodable = (response: { error?: string; status?: number; code?: string }) =>
+  response.code === undefined && /not JSON|invalid JSON/i.test(response.error ?? '');
+
 /**
- * The reveal with a deadline. An unanswered reveal is not a failed one: the
- * server may have marked the password as shown while the answer was lost,
- * and then shows it no more. The caller tells the person what that means.
+ * The reveal with a deadline and a classified outcome (see above). The
+ * deadline wins on its own: the request is told to stop, and whether or not
+ * it does, the wait ends here.
  */
-export async function revealRecoveryPasswordOnce(id: string, waitMs = REVEAL_WAIT_MS) {
+export async function revealRecoveryPasswordOnce(id: string, waitMs = REVEAL_WAIT_MS): Promise<string> {
   const controller = new AbortController();
   const deadline = setTimeout(() => controller.abort(), waitMs);
-  // The deadline wins on its own: the request is told to stop, and whether
-  // or not it does, the wait ends here.
-  const unanswered = new Promise<never>((_, reject) => controller.signal.addEventListener('abort', () => reject(new RevealUnanswered()), { once: true }));
+  const unanswered = new Promise<never>((_, reject) => controller.signal.addEventListener('abort', () => reject(new RevealUncertain(true)), { once: true }));
   try {
-    return await Promise.race([backupApi.revealRecoveryPassword(id, controller.signal), unanswered]);
+    const response = await Promise.race([api.post<{ recovery_password: string }>(`${job(id)}/recovery-password/reveal`, undefined, { signal: controller.signal }), unanswered]);
+    if (!response.error) {
+      if (typeof response.data?.recovery_password === 'string') return response.data.recovery_password;
+      throw new RevealUncertain(false, 'the answer held no password');
+    }
+    if (response.status === 410) throw new RevealAlreadyShown(response.error);
+    // No status: the request never got an answer. 5xx or 408: the server may have committed before failing.
+    if (response.status === undefined || response.status >= 500 || response.status === 408 || undecodable(response)) throw new RevealUncertain(false, response.error);
+    throw new ApiError(response);
   } catch (error) {
-    if (controller.signal.aborted) throw new RevealUnanswered();
-    throw error;
+    if (controller.signal.aborted) throw new RevealUncertain(true);
+    if (error instanceof RevealUncertain || error instanceof RevealAlreadyShown || error instanceof ApiError) throw error;
+    throw new RevealUncertain(false, error instanceof Error ? error.message : undefined);
   } finally {
     clearTimeout(deadline);
   }
