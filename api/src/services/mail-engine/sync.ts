@@ -158,7 +158,25 @@ async function mappedMoveFor(executor: SqlExecutor, { userId, accountId, folderN
   return { operationId: op.id, emailId: op.email_id, mapping };
 }
 
-async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId, folder, epoch, item, gmail, mapped = null }: Identity & { folder: Folder; item: Item; gmail: boolean; mapped?: Mapping | null }) {
+// An item that still holds this exact provider address but no occurrence:
+// mail a backup kept and a restore brought back with its address (archived
+// occurrences are evidence only, backup-mail-engine.ts). The live SELECT and
+// listing just confirmed that address (account, mailbox, UIDVALIDITY, UID),
+// which IMAP never gives to another message, so the item is that message and
+// takes the occurrence instead of a second download beside it. Never by
+// Message-ID; never a Legacy, cross-filed, draft or missing-marked item.
+async function keptItemAtAddress(executor: SqlExecutor, { userId, accountId, folder, epoch, uid }: { userId: string; accountId: string; folder: Folder; epoch: number; uid: number }) {
+  const [rows] = await executor.execute<RowDataPacket[]>(`SELECT e.id FROM emails e
+    WHERE e.user_id = ? AND e.mail_account_id = ? AND e.remote_uidvalidity = ? AND e.remote_uid = ?
+      AND (BINARY e.remote_folder = BINARY ? OR (? = 'INBOX' AND e.remote_folder REGEXP '^[iI][nN][bB][oO][xX]$'))
+      AND COALESCE(e.is_draft, FALSE) = FALSE AND e.is_legacy = FALSE AND e.remote_missing = FALSE
+      AND COALESCE(e.filing_account_id, e.mail_account_id) = e.mail_account_id
+      AND NOT EXISTS (SELECT 1 FROM mail_remote_occurrences o WHERE o.email_id = e.id AND o.user_id = e.user_id)
+    LIMIT 2 FOR UPDATE`, [userId, accountId, epoch, uid, folder.folderName, folder.folderName]);
+  return rows.length === 1 ? String(rows[0].id) : null;
+}
+
+async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId, folder, epoch, item, gmail, mapped = null, keptLinks = new Set<string>() }: Identity & { folder: Folder; item: Item; gmail: boolean; mapped?: Mapping | null; keptLinks?: Set<string> }) {
   const [known] = await executor.execute<RowDataPacket[]>(`SELECT o.email_id FROM mail_remote_occurrences o
     WHERE o.user_id = ? AND o.mail_account_id = ? AND o.mailbox_id = ? AND o.uidvalidity = ? AND o.uid = ? LIMIT 1`,
   [userId, accountId, mailboxId, epoch, item.uid]);
@@ -179,6 +197,8 @@ async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId,
     }
     return mapped.emailId;
   }
+  const kept = await keptItemAtAddress(executor, { userId, accountId, folder, epoch, uid: item.uid });
+  if (kept) { keptLinks.add(kept); return kept; }
   const id = crypto.randomUUID();
   // Until its content arrives the message is a conversation of its own; the
   // body import gives it its real thread_key (services/mail-threading.ts).
@@ -231,9 +251,10 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
       // destination and a further Gmail label of a known message still count.
       if (!current && !mapped && outsideWindow(account, mailbox, item.internalDate)
         && !await knownGmailMessage(executor, { userId, accountId, gmail, item })) { skipped++; continue; }
-      const emailId = current?.email_id || await ensureItem(executor, { userId, accountId, mailboxId: mailbox.id, folder, epoch, item, gmail, mapped });
-      // A MOVE destination is the user's own change, not an arrival.
-      if (!current && !mapped && arrivalsAbove !== null && item.uid > arrivalsAbove)
+      const keptLinks = new Set<string>();
+      const emailId = current?.email_id || await ensureItem(executor, { userId, accountId, mailboxId: mailbox.id, folder, epoch, item, gmail, mapped, keptLinks });
+      // A MOVE destination is the user's own change, not an arrival; nor is a kept copy found again.
+      if (!current && !mapped && !keptLinks.has(emailId) && arrivalsAbove !== null && item.uid > arrivalsAbove)
         await (require('../notifications') as typeof import('../notifications')).enqueueMailNotification({ userId, emailId, held: true }, executor);
       const revision = Number(current?.observation_revision || 0) + 1;
       if (!Number.isSafeInteger(revision)) throw new RangeError('Observation revision exhausted');

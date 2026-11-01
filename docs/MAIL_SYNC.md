@@ -45,6 +45,15 @@ module:
   an active mailbox. The twin carries the server state; nothing is linked or
   merged. Unlinked items without a twin are kept. The mode impact counts them
   as `local_duplicates`.
+- An item that holds a full provider address but no occurrence (Sync mail a
+  backup kept, restored with its address; archived occurrences are evidence
+  only) is linked when a scan finds exactly that address again: same account,
+  mailbox, UIDVALIDITY and UID, which IMAP never gives to another message.
+  The item takes the occurrence and the server's flags, and its content is
+  not downloaded again (`keptItemAtAddress` in `mail-engine/sync.ts`). Drafts,
+  Legacy, cross-filed and missing-marked items are never linked this way, and
+  nothing is matched by Message-ID. An address of an older UIDVALIDITY links
+  nothing: that UID may be another message now.
 - Folder discovery records a mailbox flagged `\All` as `special_use = 'all'`
   on `mail_remote_mailboxes` (the local folder mapping still uses `archive`).
 
