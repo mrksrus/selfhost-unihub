@@ -1,13 +1,15 @@
-import { useState } from 'react';
+import { useContext, useId, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { CalendarDays, CalendarRange, CheckCircle2, CloudOff, Mic, MoreHorizontal, Trash2, UserRound } from 'lucide-react';
-import { useContext } from 'react';
+import { CalendarDays, CalendarRange, CheckCircle2, CloudOff, Loader2, Mic, MoreHorizontal, Trash2, UserRound } from 'lucide-react';
 import { AuthContext } from '@/contexts/auth-context';
 import { usePolicy } from '@/hooks/use-policies';
-import { useBinActions } from '@/hooks/use-bin-actions';
+import { useBinActions, type DestinationAsk } from '@/hooks/use-bin-actions';
 import { BIN_MODULES, binQueryOptions, groupBinItems, retentionSentence, type BinItem, type BinModule } from '@/lib/bin-api';
+import { calendarApi, calendarQueryKeys, type CalendarCalendar } from '@/lib/calendar-api';
+import { ListChooser } from '@/components/todo/ListChooser';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { buttonVariants } from '@/components/ui/button-variants';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
 import { PolicyNote, PolicyMenuItem } from '@/components/ui/policy-note';
@@ -42,6 +44,56 @@ function itemMeta(lead: BinItem, group: BinItem[]) {
 
 type Confirm = { title: string; description: string; action: string; run: () => void };
 
+/** Why a calendar cannot take the items asked about: a synced item needs a server calendar, a UniHub item a UniHub list. */
+function wrongKind(calendar: CalendarCalendar, kind: DestinationAsk['kind']) {
+  const provider = calendar.account_provider ?? 'local';
+  if (kind === 'calendar' && provider === 'local') return 'A UniHub list cannot hold a synced item';
+  if (kind === 'list' && provider !== 'local') return 'Only a UniHub list can hold it';
+  return null;
+}
+
+/**
+ * Where restored events or tasks should go when the server cannot put them
+ * back where they were: the calendar is gone or read-only
+ * (BIN_RESTORE_NEEDS_CALENDAR), or a UniHub item needs a UniHub list
+ * (BIN_RESTORE_NEEDS_LIST). The person's calendars and lists, with the ones
+ * that cannot take the items greyed out and saying why.
+ */
+function DestinationDialog({ ask, titles, pending, onClose, onChoose }: { ask: DestinationAsk | null; titles: string[]; pending: boolean; onClose: () => void; onChoose: (calendarId: string) => void }) {
+  const id = useId();
+  const [chosen, setChosen] = useState('');
+  const open = !!ask;
+  const calendars = useQuery({ queryKey: calendarQueryKeys.calendars, queryFn: ({ signal }) => calendarApi.fetchCalendars(signal), enabled: open });
+  const unavailable = Object.fromEntries((calendars.data ?? []).flatMap(calendar => { const why = ask && wrongKind(calendar, ask.kind); return why ? [[calendar.id, why]] : []; }));
+  const what = titles.length === 1 ? titles[0] : `${titles.length} items`;
+  return (
+    <Dialog open={open} onOpenChange={next => { if (!next && !pending) { setChosen(''); onClose(); } }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Where should {titles.length === 1 ? 'it' : 'they'} go?</DialogTitle>
+          <DialogDescription>
+            {ask?.kind === 'list'
+              ? `${what} belongs to UniHub, so it needs one of your UniHub lists.`
+              : `The calendar ${what} came from is gone or read-only. Choose one of your calendars on a server; the item is created there again.`}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <label htmlFor={id} className="text-sm font-medium">{ask?.kind === 'list' ? 'List' : 'Calendar'}</label>
+          {calendars.isLoading ? <LoadingState compact label="Loading your calendars…" />
+            : calendars.error ? <ErrorState title="Could not load your calendars" error={calendars.error} onRetry={() => void calendars.refetch()} retrying={calendars.isFetching} />
+            : <ListChooser id={id} calendars={calendars.data ?? []} value={chosen} onChange={setChosen} unavailable={unavailable} placeholder={ask?.kind === 'list' ? 'Choose a list' : 'Choose a calendar'} disabled={pending} />}
+        </div>
+        <DialogFooter className="gap-2 sm:gap-0">
+          <Button type="button" variant="outline" onClick={() => { setChosen(''); onClose(); }} disabled={pending}>Not now</Button>
+          <Button type="button" disabled={!chosen || pending} onClick={() => { onChoose(chosen); setChosen(''); }}>
+            {pending && <Loader2 aria-hidden="true" className="animate-spin" />}Restore there
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /**
  * The bin of one module, or of everything (Settings → Bin): rows with
  * Restore and, under the bin.delete policy, Delete for good and Empty bin.
@@ -52,7 +104,8 @@ type Confirm = { title: string; description: string; action: string; run: () => 
 export function BinView({ module, showSettingsLink = true }: { module?: BinModule; showSettingsLink?: boolean }) {
   const isOffline = !!useContext(AuthContext)?.isOffline;
   const query = useQuery({ ...binQueryOptions(module), enabled: !isOffline });
-  const actions = useBinActions(module);
+  const [ask, setAsk] = useState<DestinationAsk | null>(null);
+  const actions = useBinActions(module, { onDestinationAsked: setAsk });
   const deletePolicy = usePolicy('bin.delete');
   const [confirm, setConfirm] = useState<Confirm | null>(null);
 
@@ -61,6 +114,7 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
   if (query.error) return <ErrorState title="Could not load the bin" error={query.error} onRetry={() => void query.refetch()} retrying={query.isFetching} />;
   const { items, retention } = query.data!;
   const groups = groupBinItems(items);
+  const askedTitles = ask ? ask.ids.map(id => items.find(item => item.id === id)?.title || 'an item') : [];
   const moduleLabel = (id: BinModule) => BIN_MODULES.find(entry => entry.id === id)?.label ?? id;
 
   const confirmEmpty = () => setConfirm({
@@ -123,6 +177,9 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
           })}
         </ul>
       )}
+
+      <DestinationDialog ask={ask} titles={askedTitles} pending={actions.restore.isPending} onClose={() => setAsk(null)}
+        onChoose={calendarId => { if (ask) { actions.restore.mutate({ ids: ask.ids, modules: ask.modules, calendarId }); setAsk(null); } }} />
 
       <AlertDialog open={!!confirm} onOpenChange={open => { if (!open) setConfirm(null); }}>
         <AlertDialogContent>

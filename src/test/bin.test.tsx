@@ -31,10 +31,19 @@ const ITEMS: BinItem[] = [
   item('bin-task', { module: 'calendar', item_type: 'task', title: 'Reply to Grace', provider: 'caldav', origin: 'Team', purge_after: null, deleted_at: '2026-06-14T09:00:00.000Z' }),
 ];
 const DELETE_REASON = 'Your administrator does not allow deleting items from the bin for good.';
+// The person's calendars, as the server lists them: a UniHub list, a server calendar and a read-only subscription.
+const calendar = (id: string, name: string, provider: 'local' | 'caldav' | 'ics', fields: Record<string, unknown> = {}) => ({
+  id, user_id: 'user-ada', account_id: `acct-${provider}`, name, external_id: null, color: '#2563eb', is_visible: true, auto_todo_enabled: true, read_only: provider === 'ics', is_primary: false, sync_token: null,
+  account_provider: provider, account_display_name: provider === 'local' ? null : `${provider} account`, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+  default_for_tasks: false, default_for_events: false, write_block: provider === 'ics' ? 'read_only' : null, takes_undated_tasks: provider === 'local', ...fields,
+});
+const CALENDARS = [calendar('cal-inbox', 'Inbox', 'local'), calendar('cal-team', 'Team', 'caldav'), calendar('cal-holidays', 'Holidays', 'ics')];
+const refused = (id: string, code: string) => ({ data: { restored: [], failed: [{ id, error: `Refused: ${code}`, code }] } });
 
 function answerGets(bin: BinItem[], policies = policiesAnswer()) {
   vi.mocked(api.get).mockImplementation(async (path: string) => {
     if (path.startsWith('/bin')) return { data: { items: path.includes('module=contacts') ? bin.filter(entry => entry.module === 'contacts') : bin, retention: '30' } };
+    if (path === '/calendar/calendars') return { data: { calendars: CALENDARS } };
     if (path === '/policies/effective') return policies;
     if (path === '/settings/values') return userSettingsAnswer();
     if (path.startsWith('/contacts/duplicates')) return { data: { groups: [] } };
@@ -138,6 +147,74 @@ describe('the bin', () => {
     await act(async () => answer({ data: { bin_item_ids: ['bin-rec-a'] } }));
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
     expect(state.toast).not.toHaveBeenCalled();
+  });
+
+  it('a synced item whose calendar is gone asks for one of the server calendars, and is restored there', { timeout: 20_000 }, async () => {
+    answerGets(ITEMS);
+    vi.mocked(api.post).mockResolvedValueOnce(refused('bin-task', 'BIN_RESTORE_NEEDS_CALENDAR'));
+    mountSignedIn(<BinView module="calendar" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore Reply to Grace' }, { timeout: 10_000 }));
+    const dialog = await screen.findByRole('dialog', { name: 'Where should it go?' });
+    expect(dialog).toHaveTextContent('The calendar Reply to Grace came from is gone or read-only.');
+    expect(state.toast).not.toHaveBeenCalled();
+    const chooser = within(dialog).getByRole('combobox', { name: 'Calendar' });
+    expect(within(dialog).getByRole('button', { name: 'Restore there' })).toBeDisabled();
+    fireEvent.click(chooser);
+    // A UniHub list cannot hold a synced item, and a read-only subscription takes nothing new.
+    expect(await screen.findByRole('option', { name: /Inbox/ })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('option', { name: /Inbox/ })).toHaveTextContent('A UniHub list cannot hold a synced item');
+    expect(screen.getByRole('option', { name: /Holidays/ })).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(screen.getByRole('option', { name: /Team/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore there' }));
+    await waitFor(() => expect(api.post).toHaveBeenLastCalledWith('/bin/restore', { ids: ['bin-task'], calendar_id: 'cal-team' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Where should it go?' })).not.toBeInTheDocument());
+  });
+
+  it('a UniHub item that needs a UniHub list offers only the lists', { timeout: 20_000 }, async () => {
+    answerGets([item('bin-local-task', { module: 'calendar', item_type: 'task', title: 'Water the plants', provider: 'local', origin: 'Home' })]);
+    vi.mocked(api.post).mockResolvedValueOnce(refused('bin-local-task', 'BIN_RESTORE_NEEDS_LIST'));
+    mountSignedIn(<BinView module="calendar" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore Water the plants' }, { timeout: 10_000 }));
+    const dialog = await screen.findByRole('dialog', { name: 'Where should it go?' });
+    expect(dialog).toHaveTextContent('Water the plants belongs to UniHub, so it needs one of your UniHub lists.');
+    fireEvent.click(within(dialog).getByRole('combobox', { name: 'List' }));
+    expect(await screen.findByRole('option', { name: /Team/ })).toHaveTextContent('Only a UniHub list can hold it');
+    expect(screen.getByRole('option', { name: /Team/ })).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(screen.getByRole('option', { name: /Inbox/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore there' }));
+    await waitFor(() => expect(api.post).toHaveBeenLastCalledWith('/bin/restore', { ids: ['bin-local-task'], calendar_id: 'cal-inbox' }));
+  });
+
+  it('says plainly when the chosen calendar is not the person\'s', { timeout: 20_000 }, async () => {
+    answerGets(ITEMS);
+    vi.mocked(api.post).mockResolvedValueOnce(refused('bin-task', 'BIN_RESTORE_CALENDAR_NOT_FOUND'));
+    mountSignedIn(<BinView module="calendar" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore Reply to Grace' }, { timeout: 10_000 }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Nothing restored', description: expect.stringContaining('The chosen calendar is not one of yours.'), variant: 'destructive' })));
+  });
+
+  it('says plainly when the calendar is read-only', { timeout: 20_000 }, async () => {
+    answerGets(ITEMS);
+    vi.mocked(api.post).mockResolvedValueOnce(refused('bin-task', 'CALENDAR_READ_ONLY'));
+    mountSignedIn(<BinView module="calendar" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore Reply to Grace' }, { timeout: 10_000 }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Nothing restored', description: expect.stringContaining('read-only or a subscription') })));
+  });
+
+  it('asks to try again shortly while the calendar is syncing', { timeout: 20_000 }, async () => {
+    answerGets(ITEMS);
+    vi.mocked(api.post).mockResolvedValueOnce({ error: 'A sync is running', status: 409, code: 'CALENDAR_SYNC_BUSY' } as never);
+    mountSignedIn(<BinView module="calendar" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore Reply to Grace' }, { timeout: 10_000 }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not restore', description: 'The calendar is syncing right now. Try again shortly.' })));
+  });
+
+  it('names the administrator when the recordings folder is unsafe', { timeout: 20_000 }, async () => {
+    answerGets([item('bin-rec', { module: 'recordings', item_type: 'recording', title: 'Standup notes' })]);
+    vi.mocked(api.post).mockResolvedValueOnce({ error: 'Unsafe folder', status: 409, code: 'RECORDING_FOLDER_UNSAFE' } as never);
+    mountSignedIn(<BinView module="recordings" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore Standup notes' }, { timeout: 10_000 }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not restore', description: expect.stringContaining('Ask your administrator') })));
   });
 
   it('Settings → Bin saves the retention as a user setting', async () => {

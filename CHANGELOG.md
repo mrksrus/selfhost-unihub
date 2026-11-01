@@ -21,7 +21,9 @@ upgrade; back up first.
   with how long items are kept (7, 30 or 90 days, or until you delete them;
   30 days to start with). A merge or a calendar with its events is one entry
   and comes back as a unit; a synced event or task is created on the calendar
-  server again when restored. Mail keeps its Trash folders.
+  server again when restored. When its calendar is gone or read-only, the bin
+  asks which of your calendars or lists it should go to. Mail keeps its Trash
+  folders.
 - **Server settings → Policies.** Administrators set the data-safety rules for
   everyone on the server: which mail modes new accounts may use, whether mail
   may be deleted at the provider, whether people may create, restore or

@@ -51,8 +51,14 @@ export const binApi = {
     const answer = required(unwrap(await api.get<BinListResponse>(`/bin${module ? `?module=${module}` : ''}`, { signal })), 'bin');
     return { items: answer.items ?? [], retention: answer.retention ?? DEFAULT_BIN_RETENTION };
   },
-  /** Restores items; a group (a merge, a calendar with its events) is restored as a unit. */
-  restore: async (ids: string[]) => required(unwrap(await api.post<BinRestoreResponse>('/bin/restore', { ids } satisfies BinRestoreRequest)), 'restore result'),
+  /**
+   * Restores items; a group (a merge, a calendar with its events) is restored
+   * as a unit. `calendarId` sends events and tasks to that calendar or list
+   * of the person's instead of their own: the answer to a failed entry with
+   * BIN_RESTORE_NEEDS_CALENDAR or BIN_RESTORE_NEEDS_LIST.
+   */
+  restore: async (ids: string[], calendarId?: string) =>
+    required(unwrap(await api.post<BinRestoreResponse>('/bin/restore', { ids, ...(calendarId ? { calendar_id: calendarId } : {}) } satisfies BinRestoreRequest)), 'restore result'),
   /** Deletes one item for good (policy bin.delete). */
   delete: async (id: string) => required(unwrap(await api.delete<BinDeleteResponse>(`/bin/${encodeURIComponent(id)}`)), 'result').deleted,
   /** Empties the whole bin or one module's part (policy bin.delete). */
@@ -60,6 +66,22 @@ export const binApi = {
   /** The person's retention: a user setting (`bin_retention`), saved like the others. */
   setRetention: async (retention: BinRetention) => { unwrap(await api.put('/settings/values', { values: { bin_retention: retention } })); },
 };
+
+/** A failed entry that asks the person where the item should go. */
+export type BinDestinationKind = 'calendar' | 'list';
+export const destinationAsked = (code?: string): BinDestinationKind | null =>
+  code === 'BIN_RESTORE_NEEDS_CALENDAR' ? 'calendar' : code === 'BIN_RESTORE_NEEDS_LIST' ? 'list' : null;
+
+/** What the server's refusal to restore means for the person; the server's own sentence when the code is not known here. */
+export function restoreRefusal(code: string | undefined, fallback: string) {
+  switch (code) {
+    case 'BIN_RESTORE_CALENDAR_NOT_FOUND': return 'The chosen calendar is not one of yours. Choose another.';
+    case 'CALENDAR_READ_ONLY': return 'That calendar is read-only or a subscription: nothing can be added to it. Choose another.';
+    case 'CALENDAR_SYNC_BUSY': return 'The calendar is syncing right now. Try again shortly.';
+    case 'RECORDING_FOLDER_UNSAFE': return 'The recordings folder on the server is not safe to write to. Ask your administrator.';
+    default: return fallback;
+  }
+}
 
 export const binQueryOptions = (module?: BinModule) => queryOptions({
   queryKey: binQueryKeys.list(module),
