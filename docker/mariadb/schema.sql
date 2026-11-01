@@ -520,7 +520,7 @@ CREATE TABLE `data_export_jobs` (
   `downloaded_at` timestamp NULL DEFAULT NULL,
   `mail_account_id` char(36) DEFAULT NULL,
   `keep_until` datetime DEFAULT NULL,
-  `include_download_mail` tinyint(1) NOT NULL DEFAULT 0,
+  `include_download_mail` tinyint(1) NOT NULL DEFAULT 1,
   `contents` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`contents`)),
   PRIMARY KEY (`id`),
   KEY `idx_data_export_jobs_user_created` (`user_id`,`created_at` DESC),

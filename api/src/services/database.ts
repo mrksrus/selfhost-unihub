@@ -744,7 +744,9 @@ async function addDataSafety(connection: SqlExecutor) {
   if (!await hasIndex(connection, 'data_export_jobs', 'idx_data_export_jobs_keep_until')) await connection.execute('ALTER TABLE data_export_jobs ADD KEY idx_data_export_jobs_keep_until (keep_until)');
   // The person's "Include downloaded mail" choice, and what the finished
   // archive holds by data class (NULL for a backup made before 0.28).
-  if (!await hasColumn(connection, 'data_export_jobs', 'include_download_mail')) await connection.execute('ALTER TABLE data_export_jobs ADD COLUMN include_download_mail BOOLEAN NOT NULL DEFAULT FALSE');
+  // A job queued or running before this step was asked for when every backup
+  // held downloaded mail, so existing rows get TRUE; new jobs always state it.
+  if (!await hasColumn(connection, 'data_export_jobs', 'include_download_mail')) await connection.execute('ALTER TABLE data_export_jobs ADD COLUMN include_download_mail BOOLEAN NOT NULL DEFAULT TRUE');
   if (!await hasColumn(connection, 'data_export_jobs', 'contents')) await connection.execute('ALTER TABLE data_export_jobs ADD COLUMN contents LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL CHECK (json_valid(contents))');
   // A backup ticket's first use opens a download grant (resumable with
   // Range until expires_at); other kinds stay single use and are deleted.

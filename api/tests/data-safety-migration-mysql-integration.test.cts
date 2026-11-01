@@ -105,3 +105,47 @@ test('upgrade 25 gives every event, calendar and recording its stable identity, 
   const [[count]] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM schema_migrations WHERE id = 25');
   assert.equal(Number(count.n), 1);
 });
+
+// A backup queued before the upgrade was asked for when every backup held
+// downloaded mail; "Include downloaded mail" did not exist yet. Resumed
+// after the upgrade, it still holds that mail.
+test('upgrade 25: an export queued before it still includes downloaded mail', { skip: !process.env.MYSQL_TEST_HOST, timeout: 120000 }, async t => {
+  const fs = require('node:fs/promises') as typeof import('node:fs/promises');
+  const os = require('node:os') as typeof import('node:os');
+  const path = require('node:path') as typeof import('node:path');
+  const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts');
+  const pool = await withTestDatabase(t, { migrate: false });
+  const { runMigrations } = require('../dist/src/services/database-migrations') as typeof import('../src/services/database-migrations');
+  const { MIGRATIONS } = require('../dist/src/services/database') as typeof import('../src/services/database');
+  const { BASELINE } = require('../dist/src/services/database-baseline') as typeof import('../src/services/database-baseline');
+  await runMigrations(pool, MIGRATIONS.filter(step => step.id <= 24), BASELINE);
+  const id = () => crypto.randomUUID();
+  const [owner, account, jobId] = [id(), id(), id()];
+  await pool.execute("INSERT INTO users (id, email, password_hash) VALUES (?, 'queued@example.test', 'x')", [owner]);
+  await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode) VALUES (?, ?, 'inbox@example.test', 'custom', 'download')", [account, owner]);
+  await pool.execute("INSERT INTO emails (id, user_id, mail_account_id, subject, from_address, to_addresses, folder) VALUES (?, ?, ?, 'Downloaded message', 'sender@example.test', '[]', 'inbox')", [id(), owner, account]);
+  await pool.execute("INSERT INTO data_export_jobs (id, user_id, scope, status, requested_sections, encryption_enabled) VALUES (?, ?, 'full', 'queued', '[\"mail\"]', 0)", [jobId, owner]);
+  await runMigrations(pool, MIGRATIONS, BASELINE);
+  const [[queued]] = await pool.query<RowDataPacket[]>('SELECT include_download_mail FROM data_export_jobs WHERE id = ?', [jobId]);
+  assert.equal(Number(queued.include_download_mail), 1);
+
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-queued-export-'));
+  const runtime = createBackupRuntime(directory, 'queued-export-synthetic-key', pool);
+  try {
+    const jobs = runtime('services/export-jobs');
+    await jobs.resumePendingDataExportJobs({ schedule: false });
+    await jobs.runDataExportJob(jobId);
+    const job = await jobs.getDataExportJob(owner, jobId);
+    assert.equal(job.status, 'ready', job.error);
+    const [[key]] = await pool.query<RowDataPacket[]>('SELECT server_wrapped_key FROM backup_archive_keys WHERE export_job_id = ?', [jobId]);
+    const container = runtime('services/backup-container');
+    const zip = path.join(directory, 'queued.zip');
+    await container.decryptBackupFile(job.file_path, zip, container.unwrapDataKeyFromServer(key.server_wrapped_key, job.backup_uuid));
+    const { backup } = await runtime('services/backup').backupFromZipFile(zip);
+    assert.deepEqual(backup.data.emails.map((row: { subject: string }) => row.subject), ['Downloaded message']);
+    assert.deepEqual(backup.contents.left_out, []);
+  } finally {
+    await runtime('services/side-pools').endSidePools(pool);
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
