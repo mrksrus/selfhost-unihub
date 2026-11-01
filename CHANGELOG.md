@@ -57,8 +57,9 @@ which takes longer on large calendars (see
   manager. There is no download from the web page.
 - **Restore command.** `node /app/api/src/instance-restore.js --file
   <backup> --key-file <key>` restores an instance backup into an empty
-  installation and signs everyone out; `--verify-only` checks a backup with
-  the key ([Data recovery](docs/DATA_RECOVERY.md#instance-backup)).
+  installation and signs everyone out; mail accounts stay paused until
+  reconnected, and no queued provider operation runs again. `--verify-only`
+  checks a backup with the key ([Data recovery](docs/DATA_RECOVERY.md#instance-backup)).
 - **Secrets as files.** Every secret can be a file, `NAME_FILE`, for example a
   Compose secret; `docker-compose.yml` shows how. Setting both with different
   values, or an unreadable file, stops the start with a message naming the

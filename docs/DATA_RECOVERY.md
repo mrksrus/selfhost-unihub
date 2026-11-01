@@ -112,9 +112,16 @@ copy.
 **What is in the file.** Every table, including users, policies, the
 activity log, the push identity and the runs of `instance_backups`, and the
 stored files: mail attachments and originals, recordings, contact photos and
-the account backups kept on the server. Not in it: uploads in progress
-(recording chunks, restore archives being uploaded or staged, spooled request
-bodies, partial files) and **no key**: `ENCRYPTION_KEY`,
+the account backups kept on the server, under any name a person gave them
+(an attachment called `report.tmp` is data). Not in it: the app's own work in
+progress, by the exact names its writers use (a raw message being written,
+a recording being converted or uploaded in chunks, a contact photo being
+written, an unfinished export, backup uploads being received and uploaded
+restore archives), and **no key**. A configured secret file (`NAME_FILE`)
+inside `/app/uploads` or a stored-file root stops the start, also through a
+symbolic link or an aliased path; a secret file found among the stored files
+anyway (a hard link, a second mount) and Compose `.env` files are left out.
+`ENCRYPTION_KEY`,
 `ENCRYPTION_KEY_PREVIOUS`, `BACKUP_MASTER_KEY`, `JWT_SECRET` and the instance
 key stay outside, so no single key opens everything (F10). Keep them in a
 password manager: without `ENCRYPTION_KEY` a restored installation cannot read
@@ -151,16 +158,61 @@ docker compose up -d                    # the app migrates an older backup on st
 The command checks the whole file with the key first and writes nothing on
 a mismatch. It refuses a database with tables and storage with files. It loads
 the dump with the `mariadb` client and writes the files (owned by the API
-user), then clears what belonged to the old installation's running life:
-sessions (everyone signs in again), download tickets, login challenges, mail
-worker leases and account restores whose archive was not in the backup. Users,
-data, policies, the activity log and the push identity stay, so phones keep
-receiving notifications. A failure during the load drops the tables and
-removes the files it wrote, leaving the installation empty for another try.
-`--verify-only` only checks a backup with the key. From a checkout,
-`node api/scripts/instance-restore.cts` runs the same code after
-`npm --prefix api run build`, with `MYSQL_*` and the storage roots pointing at
-the empty installation.
+user), then changes what belonged to the old installation's running life, as
+listed in [After an instance restore](#after-an-instance-restore). A failure
+during the load drops the tables and removes the files it wrote, leaving the
+installation empty for another try. `--verify-only` only checks a backup with
+the key. From a checkout, `node api/scripts/instance-restore.cts` runs the
+same code after `npm --prefix api run build`, with `MYSQL_*` and the storage
+roots pointing at the empty installation.
+
+### After an instance restore
+
+The restore changes these rows in the same transaction, after the load
+(`services/instance-restore.ts`). Everything else comes back as the dump had
+it: users, their data, policies, the activity log and the push identity, so
+phones keep receiving notifications.
+
+The old installation's sessions and credentials of the moment:
+
+- **Sessions** are deleted: everyone signs in again.
+- **Download tickets** and **two-step sign-in challenges** are deleted.
+- **Mail worker leases** (`mail_engine_accounts`, `mail_engine_jobs`) are
+  cleared.
+- **Account restores** that had not finished fail: their archives are not in
+  an instance backup.
+- **Instance backup runs**: the run that wrote this backup shows as
+  succeeded with this file; any other run still marked running shows as
+  failed.
+
+Provider work the old installation had accepted is never replayed: it may
+have been done, changed or cancelled after the backup. The restore applies
+the account restore's policy (`pauseMailRestore` in
+`services/backup-mail-engine.ts`) to every person with a mail account, and
+retires the queues an account restore never brings back:
+
+- **Mail accounts are paused.** Each is inactive (`is_active` off), deletion
+  at the provider is off (`delete_emails_on_server` off, its enable time and
+  grace period cleared), and the confirmation of its mail policy
+  (`sync_policy_confirmed_at`) is cleared. Its owner reconnects it and
+  confirms the policy again before UniHub talks to the provider.
+- **Mail engine work is paused.** The account's engine generation moves on
+  with a pause reason; queued, running and failed engine jobs are paused and
+  cancelled.
+- **Accepted mail operations need attention.** Moves and read or star
+  changes not yet done are taken off the queue (`needs_attention`, not current) with
+  evidence that the provider must be checked. Only a read-only check of the
+  provider follows; nothing is sent again by itself.
+- **Pending calendar moves are cleared.** The journal of moves between
+  calendars (`calendar_event_moves`) is deleted. A copy a move left at a
+  server shows with the next sync as an event of its own; nothing is deleted
+  at a server.
+- **Scheduled sends are cancelled.** A scheduled send is removed, so its
+  draft comes back unscheduled; a send that had started is marked `unknown`
+  and is never sent again.
+- **Queued deletions at the provider are dropped**
+  (`mail_server_messages` still pending). Once deletion is on again, the next
+  pass queues afresh.
 
 **The drill.** Restore a recent backup on a spare machine or a second Compose
 project now and then, and sign in. The release gate runs the same restore:

@@ -108,7 +108,8 @@ container variable with `_FILE` appended names the file, for example
 `secrets:` form, which keeps the values out of `docker inspect` and the
 environment. A file holds the value alone; one trailing line break is ignored.
 It must be readable by uid 10001, which runs the API (`chown 10001` and
-`chmod 400` on the host). When a variable and its file are both set and differ,
+`chmod 400` on the host). Keep secret files outside `/app/uploads`: a secret
+file inside the stored files stops the start, since backups copy them. When a variable and its file are both set and differ,
 or the file is missing, empty or unreadable, UniHub does not start and its log
 names the setting, never the value.
 
