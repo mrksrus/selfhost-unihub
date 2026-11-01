@@ -86,15 +86,36 @@ function fileRoots() {
 }
 const ROOT_NAMES = ['attachments', 'mail-raw', 'recordings', 'contact-photos', 'backups'];
 
-// What a backup leaves out of a root: work in progress that a restore must
-// not bring back (each root's own temporary names), staged imports and restores.
+// What a backup leaves out of a root: only the work in progress of the app's
+// own writers, by the exact names they give it, which a restore must not
+// bring back. A stored file keeps any name a person gave it (an attachment
+// called report.tmp is data), so nothing else is matched by its ending.
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const TEMPORARY_FILES: Readonly<Record<string, { name: RegExp; depth?: number }>> = {
+  // mail-engine/content.ts publishRaw: <user>/<email>-<uuid>.eml.part, renamed when written.
+  'mail-raw': { name: new RegExp(`^${UUID}-${UUID}\\.eml\\.part$`, 'i'), depth: 2 },
+  // recordings.ts conversion: <final>.<uuid>.tmp.mp3 beside the recording.
+  recordings: { name: new RegExp(`\\.${UUID}\\.tmp\\.mp3$`, 'i') },
+  // contact-photos.ts writes: <user>/.<name>.<uuid>.tmp.
+  'contact-photos': { name: new RegExp(`^\\..+\\.${UUID}\\.tmp$`, 'i'), depth: 2 },
+  // export-jobs.ts: <user>/<job>.zip.partial until the archive is complete.
+  backups: { name: new RegExp(`^${UUID}\\.zip\\.partial$`, 'i'), depth: 2 },
+};
+// Directories that hold only work in progress: recording chunks being
+// uploaded (recordings.ts), backup uploads being received (request-handler.ts
+// imports) and uploaded restore archives with their work (backup-restore-jobs.ts).
+// Files a finished account restore wrote stay in <root>/<user>/restores/<job>
+// of the mail and recording roots and are data.
+const TEMPORARY_DIRECTORIES: Readonly<Record<string, readonly string[]>> = {
+  recordings: ['.tmp'],
+  backups: ['imports', 'restores'],
+};
+
 function leftOut(root: string, segments: readonly string[], isDirectory: boolean) {
   const name = segments[segments.length - 1];
-  if (name.endsWith(PARTIAL) || name.endsWith('.tmp') || /\.tmp\./.test(name)) return true;
-  if (!isDirectory) return false;
-  if (root === 'recordings' && segments.length === 1 && name === '.tmp') return true;
-  if (root === 'backups' && ((segments.length === 1 && name === 'imports') || (segments.length === 2 && name === 'restores'))) return true;
-  return false;
+  if (isDirectory) return segments.length === 1 && (TEMPORARY_DIRECTORIES[root] ?? []).includes(name);
+  const temporary = TEMPORARY_FILES[root];
+  return !!temporary && (temporary.depth === undefined || temporary.depth === segments.length) && temporary.name.test(name);
 }
 
 const inside = (child: string, parent: string) => {
