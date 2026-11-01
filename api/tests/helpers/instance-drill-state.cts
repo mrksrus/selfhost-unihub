@@ -21,15 +21,20 @@ const mysql = require(require.resolve('mysql2/promise', { paths: [apiRoot] })) a
 // The inventory of the release under test, as built into the installation.
 const { TABLE_DECLARATIONS } = require(require('node:path').join(apiRoot, 'src/services/data-inventory.js')) as typeof import('../../src/services/data-inventory');
 
-const hash = (value: unknown) => crypto.createHash('sha256').update(JSON.stringify(value, (_key, item) => Buffer.isBuffer(item) ? item.toString('base64') : item)).digest('hex');
+// BIGINTs arrive as strings (bigNumberStrings); a whole number past 2^53 here would hash with lost digits.
+const hash = (value: unknown) => crypto.createHash('sha256').update(JSON.stringify(value, (_key, item) => {
+  if (typeof item === 'number' && Number.isInteger(item) && !Number.isSafeInteger(item)) throw new Error(`${item} lost its precision before it was compared`);
+  return Buffer.isBuffer(item) ? item.toString('base64') : item;
+})).digest('hex');
 // The columns an instance restore resets on a mail account (docs/DATA_RECOVERY.md#after-an-instance-restore).
-// Plain values the comparison's rules read; none is a secret.
-const PLAIN: Record<string, string[]> = { audit_log: ['action'], instance_backups: ['status', 'file_name'] };
+// Plain values the comparison's rules and the drill read; none is a secret.
+const PLAIN: Record<string, string[]> = { audit_log: ['action'], instance_backups: ['status', 'file_name', 'finished_at'], mail_engine_migration_progress: ['processed'] };
 const ACCOUNT_RESETS = ['is_active', 'delete_emails_on_server', 'server_delete_enabled_at', 'server_delete_grace_until', 'sync_policy_confirmed_at', 'updated_at'];
 
 async function main() {
   const db = await mysql.createConnection({ host: process.env.MYSQL_HOST, port: Number(process.env.MYSQL_PORT), database: process.env.MYSQL_DATABASE,
-    user: process.env.MYSQL_USER, password: process.env.MYSQL_PASSWORD, timezone: '+00:00', dateStrings: true });
+    user: process.env.MYSQL_USER, password: process.env.MYSQL_PASSWORD, timezone: '+00:00', dateStrings: true,
+    supportBigNumbers: true, bigNumberStrings: true });
   const rows = async (sql: string, params: unknown[] = []) => (await db.query<RowDataPacket[]>(sql, params))[0];
   const count = async (sql: string) => Number((await rows(sql))[0].n);
   try {
@@ -43,7 +48,8 @@ async function main() {
         SELECT UUID(), 'manual', ?, 'failed', NULL, NULL, NULL, 'drillearlier0001', '0.27.0', MAX(id), 'The destination was full.', '2026-01-02 03:30:00', '2026-01-02 03:31:00', NULL FROM schema_migrations
         UNION ALL SELECT UUID(), 'schedule', NULL, 'succeeded', 'unihub-instance-20260103T033000Z-0.27.0.uhib', 4096, REPEAT('a', 64), 'drillearlier0001', '0.27.0', MAX(id), NULL,
           '2026-01-03 03:30:00', '2026-01-03 03:32:00', '2026-01-10 03:33:00' FROM schema_migrations`, [admin]);
-      await db.execute("UPDATE mail_engine_migration_progress SET last_id = '00000000-0000-4000-8000-00000000d211', processed = processed + 7");
+      // Past 2^53, where a JavaScript number would round it to ...992.
+      await db.execute("UPDATE mail_engine_migration_progress SET last_id = '00000000-0000-4000-8000-00000000d211', processed = IF(source_table = 'emails', 9007199254740993, processed + 7)");
       console.log(JSON.stringify({ seeded: ['setting_policies', 'instance_backups', 'mail_engine_migration_progress'] }));
       return;
     }

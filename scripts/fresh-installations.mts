@@ -41,6 +41,8 @@ export interface InstallationOptions {
   keys?: Partial<InstallationKeys>;
   /** Turns the instance backup on: a destination of its own (INSTANCE_BACKUP_DIR) and this key file (INSTANCE_BACKUP_KEY_FILE). */
   instanceBackupKeyFile?: string;
+  /** The daily time of the instance backup's schedule (INSTANCE_BACKUP_TIME, HH:MM UTC). */
+  instanceBackupTime?: string;
   /** Prepares the database and the storage without starting the app; start() starts it, so a restore can fill them first. */
   deferStart?: boolean;
   /**
@@ -170,6 +172,7 @@ export async function startContainerInstallation(firstImage: string, options: In
     ...(options.caFile ? { NODE_EXTRA_CA_CERTS: IN_CONTAINER.ca } : {}),
     ...(options.allowedOrigins ? { ALLOWED_ORIGINS: options.allowedOrigins } : {}),
     ...(options.instanceBackupKeyFile ? { INSTANCE_BACKUP_DIR: IN_CONTAINER.backup, INSTANCE_BACKUP_KEY_FILE: IN_CONTAINER.instanceKey } : {}),
+    ...(options.instanceBackupTime ? { INSTANCE_BACKUP_TIME: options.instanceBackupTime } : {}),
   };
   const envArgs = (values: Record<string, string>) => Object.entries(values).flatMap(([key, value]) => ['-e', `${key}=${value}`]);
   // The reference Compose restrictions, as in scripts/container-smoke.sh.
@@ -395,6 +398,7 @@ const promised = dns.promises.lookup; dns.promises.lookup = async function (name
       ...(options.caFile ? { NODE_EXTRA_CA_CERTS: options.caFile } : {}),
       ...(options.allowedOrigins ? { ALLOWED_ORIGINS: options.allowedOrigins } : {}),
       ...(backups ? { INSTANCE_BACKUP_DIR: backups, INSTANCE_BACKUP_KEY_FILE: path.resolve(options.instanceBackupKeyFile!) } : {}),
+      ...(options.instanceBackupTime ? { INSTANCE_BACKUP_TIME: options.instanceBackupTime } : {}),
       ...unsandboxed,
     };
     let database: ChildProcess | null = null, api: ChildProcess | null = null;

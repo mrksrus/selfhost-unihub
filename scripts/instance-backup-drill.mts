@@ -33,6 +33,7 @@ import path from 'node:path';
 import { createPeerCertificates, installationFactory, Session, type Installation } from './fresh-installations.mts';
 import { helper, inspect, providerAccounts, providerSecrets, publicView, seedProviders, seedSource, sleep, type Inspection, type PublicView, type Row } from './recovery-data.mts';
 import { installationProblems, type InstallationReport } from './instance-drill-compare.mts';
+import { drillSchedule, waitForQuietSchedule, waitForRun } from './instance-drill-schedule.mts';
 import { startProviders, type Providers } from './test-providers.mts';
 
 // The drill never imports or restores a user backup, so it may run without the sandbox locally.
@@ -58,14 +59,7 @@ async function backUpNow(admin: Session) {
     else if (Date.now() > deadline) throw new Error('The server did not start its background work within two minutes');
     else await sleep(2000);
   }
-  for (;;) {
-    const status = await admin.json<{ running: boolean; last_run: Row | null; key_fingerprint: string | null }>('GET', '/api/admin/instance-backup');
-    const run = status.last_run;
-    if (run && run.id === started.id && run.status === 'failed') throw new Error(`The instance backup failed: ${run.error}`);
-    if (run && run.id === started.id && run.status === 'succeeded') return { run, fingerprint: status.key_fingerprint };
-    if (Date.now() > deadline + 480000) throw new Error(`The instance backup did not finish: ${JSON.stringify(status)}`);
-    await sleep(1000);
-  }
+  return waitForRun(admin, String(started.id), { timeoutMs: 480000 });
 }
 
 interface InstallationState {
@@ -88,8 +82,12 @@ try {
   providers = await startProviders({ work, certificates, host: peerHost, ...providerAccounts(secrets) });
   providers.outage(true);
   const admin = { email: 'drill-admin@example.test', password: `drill-${crypto.randomBytes(9).toString('hex')}` };
-  console.log(`Starting the source installation (${factory.describe}) with the instance backup on`);
-  const source = await factory.start({ name: 'drill-source', adminEmail: admin.email, adminPassword: admin.password, caFile: certificates.ca, instanceBackupKeyFile: keyFile });
+  // The daily run's time is half a day away; the catch-up run for its slot is awaited below.
+  const schedule = drillSchedule(new Date());
+  evidence.schedule = { time_utc: schedule.time, slot: schedule.slot.toISOString(), next: schedule.next.toISOString() };
+  console.log(`Starting the source installation (${factory.describe}) with the instance backup on, daily at ${schedule.time} UTC`);
+  const source = await factory.start({ name: 'drill-source', adminEmail: admin.email, adminPassword: admin.password, caFile: certificates.ca,
+    instanceBackupKeyFile: keyFile, instanceBackupTime: schedule.time });
   installations.push(source);
   const owner = new Session(source.url);
   const ownerId = (await owner.signIn(admin.email, admin.password)).user.id;
@@ -112,6 +110,9 @@ try {
   state(source, 'seed', { DRILL_ADMIN_ID: ownerId });
   const forced = async (session: Session) => (await session.json<{ download_mail: { forced: boolean } }>('GET', '/api/backup/capabilities')).download_mail.forced;
   assert.equal(await forced(second.session), true, 'The installation policy applies on the source');
+
+  // The schedule's catch-up run for the current slot finishes before anything is compared; then no run starts until the next slot.
+  await waitForQuietSchedule(owner, schedule.slot, { timeoutMs: 600000, pollMs: 2000 });
 
   const people: Person[] = [];
   for (const person of [{ email: admin.email, password: admin.password, id: ownerId, session: owner }, second, secondAdmin]) {
@@ -138,6 +139,7 @@ try {
   // Unchanged until the comparison: the providers are down and nobody else signs in.
   for (const person of people) assert.deepEqual(inspect(source, person.id, secrets).tables, person.server.tables, `${person.email}: the source did not change during the backup`);
   const sourceState = state(source);
+  assert.ok(Date.now() < schedule.next.getTime() - 3600 * 1000, 'The snapshot is taken well before the next scheduled run');
   assert.equal(sourceState.users.length, 3);
   assert.ok(sourceState.resets.sessions > 0 && sourceState.resets.runnableWritebacks > 0, `The source has sessions and provider work to reset: ${JSON.stringify(sourceState.resets)}`);
   await source.destroy();
@@ -154,7 +156,9 @@ try {
   assert.match(wrong.output, /Instance restore refused/);
   const verified = target.instanceRestore({ file: copied, keyFile, verifyOnly: true });
   assert.equal(verified.status, 0, `--verify-only checks the file:\n${verified.output}`);
+  const restoreWindow = { from: new Date() };
   const restored = target.instanceRestore({ file: copied, keyFile });
+  const restore = { ...restoreWindow, to: new Date() };
   assert.equal(restored.status, 0, `The restore succeeds:\n${restored.output}`);
   console.log(restored.output.trim());
   const again = target.instanceRestore({ file: copied, keyFile });
@@ -165,7 +169,10 @@ try {
   const targetState = state(target);
   assert.deepEqual(targetState.users, sourceState.users, 'Every person comes back with their account as it was (role, password, two-step sign-in)');
   assert.ok(sourceState.policies.some(policy => policy.setting_key === 'policy.backup.download_mail' && policy.setting_value === 'always'), 'The seeded policy was there to compare');
-  assert.deepEqual(installationProblems(sourceState.installation, targetState.installation, { backupFile: file }), [],
+  // Read through the driver as the comparison reads it, a BIGINT past 2^53 keeps its last digit.
+  const progress = (report: InstallationState) => report.installation.mail_engine_migration_progress?.rows.find(row => row.key === 'emails')?.plain.processed;
+  assert.equal(progress(sourceState), '9007199254740993', 'The seeded mail upgrade progress reads with every digit');
+  assert.deepEqual(installationProblems(sourceState.installation, targetState.installation, { backupFile: file, restore }), [],
     'What belongs to the installation (activity log, settings, policies, push identity, backup runs, upgrade history) comes back, with only the documented changes');
   assert.deepEqual(targetState.resets, { sessions: 0, fileTickets: 0, signInChallenges: 0, leases: 0, runnableEngineJobs: 0, runnableWritebacks: 0,
     calendarMoves: 0, scheduledSends: 0, providerDeletions: 0 }, 'Nothing of the old installation\'s running life or provider work is left');

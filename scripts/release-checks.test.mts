@@ -3,11 +3,13 @@
 // The checks themselves run in CI (.github/workflows/docker-image.yml).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { localSandboxMode } from './fresh-installations.mts';
+import { drillSchedule, scheduleProblem, waitForQuietSchedule, waitForRun, type BackupStatus, type StatusSession } from './instance-drill-schedule.mts';
 import { INSTALLATION_RULES, installationProblems, type InstallationReport, type ReportedRow } from './instance-drill-compare.mts';
 import { compareVersions, previousReleases } from './published-image.mts';
 import { DESTRUCTIVE_IMAP, imapCommandReader, imapResultReader } from './test-providers.mts';
@@ -181,6 +183,7 @@ test('the upgrade check reads mail in full and fails closed when its contents ar
   assert.match(seededMailProblems([...intact.emails, ...intact.emails], [seed])[0], /2 copies/);
 });
 
+const columnHash = (value: unknown) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 test('the instance drill compares every installation-owned row in full and allows only the documented changes', () => {
   const file = 'unihub-instance-20261101T000000Z-0.28.0.uhib';
   const row = (key: string, columns: Record<string, string>, plain: Record<string, string | null> = {}): ReportedRow => ({ key, columns, plain });
@@ -189,17 +192,22 @@ test('the instance drill compares every installation-owned row in full and allow
     ...Object.fromEntries(Object.keys(INSTALLATION_RULES).map(table => [table, { owner: 'installation', rows: [row('r1', { id: 'h-id', value: 'h-value' })] }])),
     audit_log: { owner: 'installation', rows: [row('a1', { id: 'h-a1', actor_id: 'h-admin', action: 'h-role', details: 'h-details' }, { action: 'admin.role_change' })] },
     instance_backups: { owner: 'installation', rows: [
-      row('b1', { id: 'h-b1', status: 'h-succeeded', finished_at: 'h-backup-end' }, { status: 'succeeded', file_name: file }),
-      row('b0', { id: 'h-b0', status: 'h-failed', finished_at: 'h-old-end' }, { status: 'failed', file_name: null })] },
+      row('b1', { id: 'h-b1', status: 'h-succeeded', finished_at: 'h-backup-end' }, { status: 'succeeded', file_name: file, finished_at: '2026-11-01 10:00:05' }),
+      row('b0', { id: 'h-b0', status: 'h-failed', finished_at: 'h-old-end' }, { status: 'failed', file_name: null, finished_at: '2026-10-01 03:31:00' })] },
     notification_config: { owner: 'installation', rows: [row('1', { public_key: 'h-key', encrypted_private_key: 'h-private', reminder_revision: 'h-3' })] },
   });
-  const check = (change: (report: InstallationReport) => void) => { const target = source(); change(target); return installationProblems(source(), target, { backupFile: file }); };
+  // The restore command ran from 10:20:00.400 to 10:20:03.700.
+  const context = { backupFile: file, restore: { from: new Date('2026-11-01T10:20:00.400Z'), to: new Date('2026-11-01T10:20:03.700Z') } };
+  const check = (change: (report: InstallationReport) => void) => { const target = source(); change(target); return installationProblems(source(), target, context); };
+  const finishedAt = (report: InstallationReport, value: string | null) => {
+    report.instance_backups.rows[0].columns.finished_at = `h-${value}`;
+    report.instance_backups.rows[0].plain.finished_at = value;
+  };
   assert.deepEqual(check(() => {}), []);
-  // The documented changes: this backup's run is finished by the restore, the push reminder cursors move.
-  assert.deepEqual(check(report => {
-    report.instance_backups.rows[0].columns.finished_at = 'h-restore-time';
-    report.notification_config.rows[0].columns.reminder_revision = 'h-4';
-  }), []);
+  // The documented changes: this backup's run is finished by the restore (to the second), the push reminder cursors move.
+  for (const at of ['2026-11-01 10:20:00', '2026-11-01 10:20:04']) {
+    assert.deepEqual(check(report => { finishedAt(report, at); report.notification_config.rows[0].columns.reminder_revision = 'h-4'; }), [], at);
+  }
   const fails: Record<string, (report: InstallationReport) => void> = {
     'an activity entry with its id kept but another actor': report => { report.audit_log.rows[0].columns.actor_id = 'h-stranger'; },
     'an activity entry with other details': report => { report.audit_log.rows[0].columns.details = 'h-other'; },
@@ -214,9 +222,61 @@ test('the instance drill compares every installation-owned row in full and allow
     'a lost policy': report => { report.setting_policies.rows = []; },
     'an installation table the restored release does not report': report => { delete report.setting_policies; },
     'a newly declared organisation table without a rule': report => { report.org_groups = { owner: 'organisation', rows: [] }; },
+    'this backup run without a completion time': report => finishedAt(report, null),
+    'this backup run finished before the restore': report => finishedAt(report, '2026-11-01 10:19:59'),
+    'this backup run finished after the restore': report => finishedAt(report, '2026-11-01 10:20:05'),
+    'this backup run with a malformed completion time': report => finishedAt(report, '2026-11-01T10:20:01Z'),
+    'an earlier run finished during the restore': report => {
+      report.instance_backups.rows[1].columns.finished_at = 'h-restore'; report.instance_backups.rows[1].plain.finished_at = '2026-11-01 10:20:01';
+    },
   };
   for (const [what, change] of Object.entries(fails)) assert.notDeepEqual(check(change), [], `${what} fails the drill`);
+  // A BIGINT at the precision boundary, hashed as instance-drill-state.cts hashes a column: read as a string
+  // (bigNumberStrings) it keeps its last digit; read as a JavaScript number the two would hash alike, so the
+  // helper refuses unsafe integers.
+  const progress = (value: unknown) => { const report = source(); report.mail_engine_migration_progress.rows[0].columns.processed = columnHash(value); return report; };
+  assert.match(installationProblems(progress('9007199254740992'), progress('9007199254740993'), context).join('\n'), /mail_engine_migration_progress r1: processed changed/);
+  assert.equal(columnHash(Number('9007199254740992')), columnHash(Number('9007199254740993')));
   // A table with nothing in it on the source proves nothing.
   const empty = source(); empty.system_settings.rows = [];
-  assert.match(installationProblems(empty, empty, { backupFile: file }).join('\n'), /system_settings: the source has no rows/);
+  assert.match(installationProblems(empty, empty, context).join('\n'), /system_settings: the source has no rows/);
+});
+
+test('the instance drill waits out the schedule and follows its own run by id', async () => {
+  const HOUR = 3600 * 1000;
+  for (const at of ['2026-11-01T00:05:30Z', '2026-11-01T11:59:59Z', '2026-11-01T12:00:00Z', '2026-12-31T23:59:59Z']) {
+    const now = new Date(at), { time, slot, next } = drillSchedule(now);
+    assert.equal(slot.toISOString().slice(11, 16), time, at);
+    const since = now.getTime() - slot.getTime();
+    assert.ok(since >= 12 * HOUR && since < 12 * HOUR + 60000 && next.getTime() - now.getTime() > 12 * HOUR - 60000, `${at}: the slot was half a day ago, the next is half a day away`);
+  }
+  const { slot } = drillSchedule(new Date('2026-11-01T14:00:00Z'));
+  const run = (id: string, trigger: string, status: string, started_at: string) => ({ id, trigger, status, started_at });
+  const sessionOf = (statuses: BackupStatus[]): StatusSession & { polls: number } => ({
+    polls: 0,
+    async json<T>(_method: string, url: string) {
+      assert.equal(url, '/api/admin/instance-backup');
+      return statuses[Math.min(this.polls++, statuses.length - 1)] as T;
+    },
+  });
+  const now = { timeoutMs: 60000, sleep: async () => {} }, expired = { timeoutMs: -1, sleep: async () => {} };
+  // A new installation's scheduled history is older than the slot (the seeded runs are from January): the catch-up is still to come.
+  const stale: BackupStatus = { running: false, key_fingerprint: 'k', runs: [run('m0', 'manual', 'succeeded', '2026-11-01T13:58:00Z'), run('s0', 'schedule', 'succeeded', '2026-01-03T03:30:00Z')] };
+  assert.match(String(scheduleProblem(stale, slot)), /no scheduled run since the slot/);
+  await assert.rejects(waitForQuietSchedule(sessionOf([stale]), slot, expired), /did not settle \(no scheduled run since the slot/);
+  // It waits through the catch-up run and returns once it has succeeded.
+  const catchUp = sessionOf([stale, { ...stale, running: true, runs: [run('s1', 'schedule', 'running', '2026-11-01T14:01:00Z'), ...stale.runs] },
+    { ...stale, runs: [run('s1', 'schedule', 'succeeded', '2026-11-01T14:01:00Z'), ...stale.runs] }]);
+  await waitForQuietSchedule(catchUp, slot, now);
+  assert.equal(catchUp.polls, 3);
+  await assert.rejects(waitForQuietSchedule(sessionOf([{ ...stale, runs: [run('s1', 'schedule', 'failed', '2026-11-01T14:01:00Z')] }]), slot, now), /scheduled instance backup of this slot failed/);
+  // The drill's run stays found when a later run is listed first, as last_run: it returns once nothing runs.
+  const manual = run('m1', 'manual', 'running', '2026-11-01T14:05:00Z');
+  const overtaken = sessionOf([{ running: true, key_fingerprint: 'k', runs: [manual] },
+    { running: true, key_fingerprint: 'k', runs: [run('s2', 'schedule', 'running', '2026-11-01T14:05:30Z'), { ...manual, status: 'succeeded' }] },
+    { running: false, key_fingerprint: 'k', runs: [run('s2', 'schedule', 'succeeded', '2026-11-01T14:05:30Z'), { ...manual, status: 'succeeded' }] }]);
+  const followed = await waitForRun(overtaken, 'm1', now);
+  assert.deepEqual([followed.run.id, followed.run.status, followed.fingerprint, overtaken.polls], ['m1', 'succeeded', 'k', 3]);
+  await assert.rejects(waitForRun(sessionOf([{ running: false, key_fingerprint: 'k', runs: [{ ...manual, status: 'failed', error: 'disk full' }] }]), 'm1', now), /failed: disk full/);
+  await assert.rejects(waitForRun(sessionOf([stale]), 'm1', expired), /m1 did not finish/);
 });

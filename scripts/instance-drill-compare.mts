@@ -13,12 +13,13 @@ export interface ReportedRow { key: string; columns: Record<string, string>; pla
 export interface ReportedTable { owner: string; rows: ReportedRow[] }
 export type InstallationReport = Record<string, ReportedTable>;
 
-interface Context { backupFile: string }
+/** The backup's file, and when the restore command that restored it started and ended. */
+interface Context { backupFile: string; restore: { from: Date; to: Date } }
 interface Rule {
   /** Why the table comes back this way. */
   reason: string;
   /** A column of a source row that may read differently after the restore. */
-  mayChange?: (column: string, source: ReportedRow, context: Context) => boolean;
+  mayChange?: (column: string, source: ReportedRow, restored: ReportedRow, context: Context) => boolean;
   /** A row only the destination has that is expected there. */
   mayAdd?: (row: ReportedRow, context: Context) => boolean;
 }
@@ -35,13 +36,21 @@ export const INSTALLATION_RULES: Readonly<Record<string, Rule>> = Object.freeze(
   mail_engine_migration_progress: { reason: 'The progress of the mail upgrade comes back.' },
   instance_backups: {
     reason: 'The runs come back; the run that wrote this backup was still running in its dump, and the restore marks it succeeded with this file.',
-    mayChange: (column, source, { backupFile }) => column === 'finished_at' && source.plain.file_name === backupFile,
+    mayChange: (column, source, restored, { backupFile, restore }) => column === 'finished_at' && source.plain.file_name === backupFile
+      && duringRestore(restored.plain.finished_at, restore),
   },
   notification_config: {
     reason: 'The push identity (key pair, subject, creation) comes back; the reminder scan cursors beside it move while a server runs.',
     mayChange: column => ['last_reminder_scan_at', 'reminder_revision', 'scanned_revision'].includes(column),
   },
 });
+
+// A DATETIME in UTC (dateStrings), to the second, within the restore command's run.
+function duringRestore(value: string | null | undefined, { from, to }: { from: Date; to: Date }) {
+  if (!value || !/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(value)) return false;
+  const at = Date.parse(`${value.replace(' ', 'T')}Z`);
+  return at >= Math.floor(from.getTime() / 1000) * 1000 && at <= Math.ceil(to.getTime() / 1000) * 1000;
+}
 
 /** Why the restored installation differs from the source beyond the documented changes; empty when it does not. */
 export function installationProblems(source: InstallationReport, target: InstallationReport, context: Context) {
@@ -57,7 +66,7 @@ export function installationProblems(source: InstallationReport, target: Install
       const restored = targetRows.get(key);
       if (!restored) { problems.push(`${table} ${key}: missing after the restore`); continue; }
       for (const column of [...new Set([...Object.keys(row.columns), ...Object.keys(restored.columns)])].sort()) {
-        if (row.columns[column] !== restored.columns[column] && !rule.mayChange?.(column, row, context)) problems.push(`${table} ${key}: ${column} changed`);
+        if (row.columns[column] !== restored.columns[column] && !rule.mayChange?.(column, row, restored, context)) problems.push(`${table} ${key}: ${column} changed`);
       }
     }
     for (const [key, row] of targetRows) {

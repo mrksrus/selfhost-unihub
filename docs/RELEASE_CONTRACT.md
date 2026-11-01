@@ -252,9 +252,13 @@ kept do not matter to it).
    the owner, gets a contact. The installation gets a policy that is not the
    default (`backup.download_mail` forced, locked), which must apply to the
    second person, two earlier backup runs, and mail upgrade progress other
-   than a new database's. The test providers stay down, so nothing changes
-   the data.
-2. An administrator presses Back up now; the run must succeed. The file must
+   than a new database's, one value past 2^53. The test providers stay
+   down, so nothing changes the data.
+   The daily time of the backup is set half a day before the drill starts,
+   and the drill waits until the schedule's catch-up run for that slot has
+   succeeded: no scheduled run can then start before the snapshot below.
+2. An administrator presses Back up now; the drill follows that run by its
+   id until it has succeeded and nothing else runs. The file must
    hold no password or key in plain text. Every person's tables must be
    unchanged by the run. It is copied off the destination, and the source,
    its database and storage are deleted.
@@ -275,7 +279,8 @@ kept do not matter to it).
    a newly declared table fails the drill until it gets a rule there. The
    rules allow only what the restore is documented to change
    ([after an instance restore](DATA_RECOVERY.md#after-an-instance-restore)):
-   the run that wrote the backup is finished at the time of the restore. The
+   the run that wrote the backup is finished at a time within the restore
+   command's run, never left without one. The
    push identity's reminder scan cursors may move, as on any running server.
    Each mail account row must be the source's except for the pause listed
    there: inactive, deletion at the provider off and its policy
