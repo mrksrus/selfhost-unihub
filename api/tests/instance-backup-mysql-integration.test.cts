@@ -378,6 +378,34 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     }
   });
 
+  await t.test('a run whose new row cannot be read back frees its slot and is recorded as failed', async () => {
+    const state = require('../dist/src/state') as typeof import('../src/state');
+    const shared = state.getDb()!;
+    // The insert goes through; the first read of the new row fails once.
+    let failNext = true;
+    state.setDb(new Proxy(shared, { get: (pool, prop) => {
+      const value = Reflect.get(pool, prop);
+      if (prop !== 'execute') return typeof value === 'function' ? value.bind(pool) : value;
+      return async (sql: string, ...rest: unknown[]) => {
+        if (failNext && /WHERE b\.id = \?/.test(sql)) {
+          failNext = false;
+          throw Object.assign(new Error('synthetic: connection reset'), { code: 'ECONNRESET' });
+        }
+        return (value as (...args: unknown[]) => unknown).call(pool, sql, ...rest);
+      };
+    } }));
+    try {
+      await assert.rejects(backup.startInstanceBackup({ trigger: 'manual', actorId: users.admin }), /connection reset/);
+    } finally {
+      state.setDb(shared);
+    }
+    const [[stranded]] = await pool.query<RowDataPacket[]>('SELECT status, error FROM instance_backups ORDER BY started_at DESC, id DESC LIMIT 1');
+    assert.deepEqual([stranded.status, /could not start/.test(String(stranded.error))], ['failed', true]);
+    assert.equal(((await admin.request('GET', '/api/admin/instance-backup')).body as FixtureValue).running, false);
+    const next = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+    assert.equal(next.status, 'succeeded', String(next.error));
+  });
+
   await t.test('each run writes a file of its own, never over another, and retention keeps the latest', async () => {
     backup.useInstanceBackupConfig({ ...settings, keep: 1 });
     try {

@@ -281,6 +281,7 @@ async function startInstanceBackup({ trigger, actorId = null, hooks = {} }: { tr
   const abort = new AbortController();
   const slot = { id, abort, done: Promise.resolve<RunRow | null>(null) };
   current = slot;
+  let row: RunRow;
   try {
     const [migration] = await db.execute<RowDataPacket[]>('SELECT COALESCE(MAX(id), 0) AS id FROM schema_migrations');
     // The database keeps one run at a time even if a second process tried.
@@ -288,12 +289,25 @@ async function startInstanceBackup({ trigger, actorId = null, hooks = {} }: { tr
       SELECT ?, ?, ?, 'running', ?, ?, ?, UTC_TIMESTAMP() FROM DUAL
       WHERE NOT EXISTS (SELECT 1 FROM instance_backups WHERE status = 'running')`,
     [id, trigger, actorId, appVersion(), Number(migration[0]?.id) || 0, keyFingerprint(settings.key)]);
-    if (!inserted.affectedRows) throw conflict('INSTANCE_BACKUP_RUNNING', 'An instance backup is already running.');
+    if (!inserted.affectedRows) {
+      if (current === slot) current = null;
+      throw conflict('INSTANCE_BACKUP_RUNNING', 'An instance backup is already running.');
+    }
+    const read = await readRun(id);
+    if (!read) throw new InstanceBackupError('The new run could not be read back.');
+    row = read;
   } catch (error) {
-    current = null;
+    if (current === slot) {
+      // The row may exist (an insert whose answer was lost, a failed read):
+      // it is marked failed, or, if that fails too, the next worker owner's
+      // start does (recoverInterruptedInstanceBackups). The slot is free again.
+      await db.execute(`UPDATE instance_backups SET status = 'failed', error = ?, finished_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'running'`,
+        ['The backup could not start; the server log has the details.', id])
+        .catch(mark => log.error(LOG, 'Could not record a run that could not start', mark, { run: id }));
+      current = null;
+    }
     throw error;
   }
-  const row = (await readRun(id))!;
   slot.done = execute(row, settings, abort.signal, hooks).finally(() => { if (current === slot) current = null; });
   return { run: serializeRun(row), done: slot.done };
 }
