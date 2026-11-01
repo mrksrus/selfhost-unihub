@@ -102,6 +102,15 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
     const withMail = await backup.buildBackupForUser(owner, { sections: ['mail'], includeFileData: false });
     assert.deepEqual(subjects(withMail), ['Downloaded', 'Draft', 'Only copy']);
     assert.deepEqual(withMail.contents.left_out.map((row: FixtureValue) => [row.what, row.count]), [['Sync-mode mail', 1]]);
+
+    // An administrator's policy includes downloaded mail whatever the choice.
+    await pool.execute("INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked) VALUES ('installation', '', 'policy.backup.download_mail', 'always', 1)");
+    try {
+      const forced = await runtime('services/backup-classes').downloadMailChoice(owner);
+      assert.deepEqual([forced.value, forced.forced, forced.reason], [true, true, 'Your backups always include downloaded mail, as your administrator requires.']);
+      const declined = await backup.buildBackupForUser(owner, { sections: ['mail'], includeFileData: false, includeDownloadMail: false });
+      assert.deepEqual(subjects(declined), ['Downloaded', 'Draft', 'Only copy']);
+    } finally { await pool.execute("DELETE FROM setting_policies WHERE setting_key = 'policy.backup.download_mail'"); }
   });
 
   await t.test('local tasks: a moved task restores onto itself (B-34), twice into a new person gives no copies, UIDs differing in case stay two', async () => {
