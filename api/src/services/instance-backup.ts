@@ -1,4 +1,4 @@
-import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
+import type { PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import type { InstanceBackupRun, InstanceBackupStatus } from '../contracts/instance-backup';
 import type { InstanceBackupConfig } from '../config';
 import type { DatabaseConfig, SqlExecutor } from '../types';
@@ -391,19 +391,39 @@ function spawnClient(tool: 'mariadb-dump' | 'mariadb', args: string[], database:
   return { child, exited };
 }
 
-async function tableCounts() {
+const SNAPSHOT = 'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY';
+
+/**
+ * Runs `work` in a transaction (`begin`) on a connection of its own. A
+ * failed one is rolled back before the connection goes back to the pool; a
+ * connection whose rollback fails may still be inside the transaction, so it
+ * is closed instead of handed to the next user of the pool.
+ */
+async function inTransaction<T>(begin: string, work: (connection: PoolConnection) => Promise<T>): Promise<T> {
   const connection = await db.getConnection();
+  let result: T;
   try {
-    await connection.query('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY');
+    await connection.query(begin);
+    result = await work(connection);
+    await connection.query('COMMIT');
+  } catch (error) {
+    await connection.query('ROLLBACK').then(() => connection.release(), () => connection.destroy());
+    throw error;
+  }
+  connection.release();
+  return result;
+}
+
+async function tableCounts() {
+  return inTransaction(SNAPSHOT, async connection => {
     const [tables] = await connection.query<RowDataPacket[]>("SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME");
     const counts: Record<string, number> = {};
     for (const { name } of tables) {
       const [[row]] = await connection.query<RowDataPacket[]>(`SELECT COUNT(*) AS count FROM ${connection.escapeId(name)}`);
       counts[name] = Number(row.count);
     }
-    await connection.query('COMMIT');
     return counts;
-  } finally { connection.release(); }
+  });
 }
 
 async function writeBackup(partialPath: string, row: RunRow, settings: { key: Buffer }, signal: AbortSignal, hooks: RunHooks, secrets: ReadonlySet<string>) {
@@ -592,18 +612,11 @@ async function markBeyondKept(connection: SqlExecutor, keep: number) {
 }
 
 async function recordSuccess(id: string, file: { name: string; bytes: number; sha256: string; migrationId: number }, settings: { keep: number }) {
-  const connection = await db.getConnection();
-  try {
-    await connection.beginTransaction();
+  return inTransaction('START TRANSACTION', async connection => {
     await connection.execute(`UPDATE instance_backups SET status = 'succeeded', file_name = ?, size_bytes = ?, sha256 = ?, migration_id = ?, finished_at = UTC_TIMESTAMP()
       WHERE id = ? AND status = 'running'`, [file.name, file.bytes, file.sha256, file.migrationId, id]);
-    const removing = await markBeyondKept(connection, settings.keep);
-    await connection.commit();
-    return removing;
-  } catch (error) {
-    await connection.rollback().catch(() => {});
-    throw error;
-  } finally { connection.release(); }
+    return markBeyondKept(connection, settings.keep);
+  });
 }
 
 async function removeBackupFiles(dir: string, names: readonly string[]) {
@@ -621,16 +634,7 @@ async function removeBackupFiles(dir: string, names: readonly string[]) {
 /** Removes the oldest succeeded backups beyond the kept count (a run does this as it succeeds). */
 async function applyRetention(settings: { dir: string | null; keep: number } = config) {
   if (!settings.dir) return 0;
-  const connection = await db.getConnection();
-  let removing: string[];
-  try {
-    await connection.beginTransaction();
-    removing = await markBeyondKept(connection, settings.keep);
-    await connection.commit();
-  } catch (error) {
-    await connection.rollback().catch(() => {});
-    throw error;
-  } finally { connection.release(); }
+  const removing = await inTransaction('START TRANSACTION', connection => markBeyondKept(connection, settings.keep));
   await removeBackupFiles(settings.dir, removing);
   return removing.length;
 }
@@ -686,19 +690,16 @@ async function runDueInstanceBackup(now = new Date()) {
 async function getInstanceBackupStatus(now = new Date()): Promise<InstanceBackupStatus> {
   const on = enabled();
   const active = current !== null;
-  const connection = await db.getConnection();
-  let rows: RunRow[], success: RunRow | undefined, kept: RowDataPacket, runningRows: RowDataPacket;
-  try {
-    await connection.query('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY');
-    [rows] = await connection.execute<RunRow[]>(`SELECT b.*, u.email AS actor_email FROM instance_backups b LEFT JOIN users u ON u.id = b.actor_id
+  const { rows, success, kept, runningRows } = await inTransaction(SNAPSHOT, async connection => {
+    const [runs] = await connection.execute<RunRow[]>(`SELECT b.*, u.email AS actor_email FROM instance_backups b LEFT JOIN users u ON u.id = b.actor_id
       ORDER BY b.started_at DESC, b.id DESC LIMIT ${RUNS_SHOWN}`);
-    [[success]] = await connection.execute<RunRow[]>(`SELECT b.*, u.email AS actor_email FROM instance_backups b LEFT JOIN users u ON u.id = b.actor_id
+    const [[latest]] = await connection.execute<RunRow[]>(`SELECT b.*, u.email AS actor_email FROM instance_backups b LEFT JOIN users u ON u.id = b.actor_id
       WHERE b.status = 'succeeded' ORDER BY b.finished_at DESC, b.id DESC LIMIT 1`);
-    [[kept]] = await connection.execute<RowDataPacket[]>(`SELECT COUNT(*) AS count, COALESCE(SUM(size_bytes), 0) AS bytes FROM instance_backups
+    const [[keptRow]] = await connection.execute<RowDataPacket[]>(`SELECT COUNT(*) AS count, COALESCE(SUM(size_bytes), 0) AS bytes FROM instance_backups
       WHERE status = 'succeeded' AND removed_at IS NULL`);
-    [[runningRows]] = await connection.execute<RowDataPacket[]>("SELECT COUNT(*) AS count FROM instance_backups WHERE status = 'running'");
-    await connection.query('COMMIT');
-  } finally { connection.release(); }
+    const [[running]] = await connection.execute<RowDataPacket[]>("SELECT COUNT(*) AS count FROM instance_backups WHERE status = 'running'");
+    return { rows: runs, success: latest as RunRow | undefined, kept: keptRow, runningRows: running };
+  });
   return {
     enabled: on,
     missing: [...config.missing],

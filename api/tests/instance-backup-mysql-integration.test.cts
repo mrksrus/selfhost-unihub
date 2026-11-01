@@ -350,6 +350,33 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     backup.useInstanceBackupConfig(settings);
   });
 
+  await t.test('a failed status read hands no connection back inside its read-only transaction', async () => {
+    const state = require('../dist/src/state') as typeof import('../src/state');
+    const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
+    const shared = state.getDb()!;
+    const single = mysql.createPool({ ...getDatabaseConfig()!, connectionLimit: 1, timezone: '+00:00' });
+    // The first statement after the snapshot fails, as a statement timeout would.
+    let failNext = true;
+    const bound = (target: object, prop: string | symbol) => { const value = Reflect.get(target, prop); return typeof value === 'function' ? value.bind(target) : value; };
+    state.setDb(new Proxy(single, { get: (pool, prop) => prop !== 'getConnection' ? bound(pool, prop) : async () => {
+      const connection = await pool.getConnection();
+      return new Proxy(connection, { get: (target, name) => name === 'execute' && failNext
+        ? async () => { failNext = false; throw new Error('synthetic status failure'); }
+        : bound(target, name) });
+    } }));
+    try {
+      await assert.rejects(backup.getInstanceBackupStatus(), /synthetic status failure/);
+      const next = await single.getConnection();
+      try {
+        const [[row]] = await next.query<RowDataPacket[]>('SELECT @@in_transaction AS open');
+        assert.equal(Number(row.open), 0, 'the next user of the pool is outside any transaction');
+      } finally { next.release(); }
+    } finally {
+      state.setDb(shared);
+      await single.end();
+    }
+  });
+
   await t.test('each run writes a file of its own, never over another, and retention keeps the latest', async () => {
     backup.useInstanceBackupConfig({ ...settings, keep: 1 });
     try {
