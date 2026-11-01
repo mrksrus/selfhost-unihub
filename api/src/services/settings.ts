@@ -7,11 +7,12 @@ import type {
   SettingValuesByScope,
   UserSettingValues,
 } from '../contracts/settings';
+import type { EffectivePolicy, PolicyForbidsDetails, PolicyKey, PolicyValues } from '../contracts/policies';
 
 import { db } from '../state';
 import { ApiError, badRequest, forbidden, notFound } from '../http/errors';
-import { SETTINGS } from './settings-registry';
-import type { Entry, Kind, ReferenceTarget, Value } from './settings-registry';
+import { SETTINGS, POLICIES } from './settings-registry';
+import type { Entry, Kind, PolicyEntry, ReferenceTarget, Value } from './settings-registry';
 
 // The one owner of settings and policies (F1). Every option is one entry of
 // the registry (settings-registry.ts). Values are stored per scope:
@@ -271,6 +272,42 @@ async function setUserPreferences(userId: string, input: Record<string, unknown>
   return { preferences: await getUserPreferences(userId) };
 }
 
+// Data-safety policies (F13). A key resolves user -> group policies
+// (strictest wins, from 0.30) -> installation -> default, like the policies
+// on settings, and is stored as policy.<key> in setting_policies.
+//
+// Until the enforcement lands, every key resolves to its registry default:
+// nothing reads a stored policy yet, so every action stays allowed.
+async function resolvePolicy<K extends PolicyKey>(userId: string, key: K, executor: SqlExecutor = db): Promise<EffectivePolicy<K>> {
+  const entry = POLICIES[key] as unknown as PolicyEntry<PolicyValues[K]>;
+  const value = entry.default;
+  const own = entry.refuses.includes(value);
+  // A key implied by another refuses with its own reason when that one refuses.
+  const implied = !own && entry.impliedBy ? await resolvePolicy(userId, entry.impliedBy, executor) : null;
+  if (implied && !implied.allowed) return { value, source: implied.source, allowed: false, reason: entry.reasons.forbidden ?? implied.reason };
+  return { value, source: 'default', allowed: !own, reason: entry.reasons[String(value)] ?? null };
+}
+
+// The refusal of an action a policy forbids: 403 POLICY_FORBIDS with the key
+// and the plain reason the person sees.
+function policyForbids(policy: PolicyKey, reason: string) {
+  return forbidden('POLICY_FORBIDS', reason, { policy, reason } satisfies PolicyForbidsDetails);
+}
+
+interface PolicyActor {
+  // An administrator acting for the person through the admin path (F13,
+  // accounts.admin_manage): their route has already checked the role and the
+  // password, and a policy never stops them.
+  adminId?: string;
+}
+
+/** Throws POLICY_FORBIDS when a policy forbids the person the action the key names. */
+async function assertAllowed(userId: string, key: PolicyKey, { adminId }: PolicyActor = {}, executor: SqlExecutor = db): Promise<void> {
+  if (adminId) return;
+  const resolved = await resolvePolicy(userId, key, executor);
+  if (!resolved.allowed) throw policyForbids(key, resolved.reason ?? 'Your administrator does not allow this.');
+}
+
 const SIGNUP_MODES = ['open', 'approval', 'disabled'] as const;
 type SignupMode = typeof SIGNUP_MODES[number];
 const isSignupMode = (value: unknown): value is SignupMode => SIGNUP_MODES.includes(value as SignupMode);
@@ -292,6 +329,10 @@ async function setSignupMode(mode: SignupMode, executor: SqlExecutor = db) {
 
 export {
   SETTINGS,
+  POLICIES,
+  resolvePolicy,
+  assertAllowed,
+  policyForbids,
   getSettings,
   getScopedSettings,
   settingValues,
@@ -307,4 +348,4 @@ export {
   getSignupMode,
   setSignupMode,
 };
-export type { SignupMode };
+export type { SignupMode, PolicyActor };

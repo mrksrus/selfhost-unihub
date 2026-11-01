@@ -1,5 +1,6 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
+import type { BackupDataClass as DataClass } from '../contracts/backup';
 
 import { TABLE_POLICIES, REFERENCES, assertRecoveryCatalog } from './backup-catalog';
 import { EPHEMERAL_COLUMNS } from './mail-engine/recovery-policy';
@@ -50,8 +51,8 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
   mail_server_messages: excluded('rebuilt', 'Provider deletion bookkeeping is rediscovered; restore must not replay remote deletes.', 'id user_id mail_account_id email_id source_folder imap_uid imap_uidvalidity delete_status delete_attempts delete_error deleted_at created_at updated_at'),
   mail_sync_state: excluded('rebuilt', 'Provider UID progress is rediscovered after restore.', 'mail_account_id source_folder uidvalidity last_uid initialized last_synced_at'),
   recording_uploads: excluded('temporary', 'Incomplete upload chunks expire; only completed recordings are archived.', 'id user_id title description original_filename content_type total_bytes bytes_received duration_seconds source category recorded_at metadata tags temp_path expires_at created_at updated_at'),
-  data_export_jobs: Object.freeze({ ...excluded('temporary', 'Archive jobs and download paths belong to the originating installation.', 'id user_id scope status phase progress cancel_requested requested_sections file_path file_size file_sha256 content_type encryption_enabled backup_uuid error created_at updated_at started_at completed_at downloaded_at mail_account_id'),
-    introducedIn: Object.freeze({ mail_account_id: 10 }) }),
+  data_export_jobs: Object.freeze({ ...excluded('temporary', 'Archive jobs and download paths belong to the originating installation.', 'id user_id scope status phase progress cancel_requested requested_sections file_path file_size file_sha256 content_type encryption_enabled backup_uuid error created_at updated_at started_at completed_at downloaded_at mail_account_id keep_until'),
+    introducedIn: Object.freeze({ mail_account_id: 10, keep_until: 25 }) }),
   backup_restore_jobs: excluded('temporary', 'A restore must not resume jobs from the originating installation.', 'id user_id source_type source_export_job_id status operation phase progress cancel_requested requested_sections conflict_mode calendar_mode credentials_mode archive_path archive_size archive_sha256 backup_uuid is_encrypted validation_result result_counts error attempt_count created_at updated_at started_at completed_at expires_at'),
   backup_archive_keys: excluded('security_only', 'Archive unlock keys are installation secrets with their own recovery password.', 'backup_uuid user_id export_job_id restore_job_id server_wrapped_key recovery_password_ciphertext recovery_password_revealed_at expires_at created_at updated_at'),
   // Created by upgrade step 15 (the notification service created them at
@@ -82,9 +83,9 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
   ].map(([name, treatment, reason, columns]) => [name, Object.freeze({ ...excluded(treatment, reason, columns),
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 20])) })])),
   // Upgrade step 21 (0.25.0).
-  file_tickets: Object.freeze({ ...excluded('security_only', 'Download tickets are single-use credentials of a live session; a restore must not bring them back.',
-    'id token_hash user_id session_id kind resource_id expires_at created_at'),
-  introducedIn: Object.freeze(Object.fromEntries('id token_hash user_id session_id kind resource_id expires_at created_at'.split(' ').map(column => [column, 21]))) }),
+  file_tickets: Object.freeze({ ...excluded('security_only', 'Download tickets are short-lived credentials of a live session; a restore must not bring them back.',
+    'id token_hash user_id session_id kind resource_id expires_at created_at redeemed_at'),
+  introducedIn: Object.freeze({ ...Object.fromEntries('id token_hash user_id session_id kind resource_id expires_at created_at'.split(' ').map(column => [column, 21])), redeemed_at: 25 }) }),
   // The fixed 3+3 fields: copied into contact_values by upgrade step 22 and
   // dropped by step 23. Archives up to version 4 still carry them
   // (RETIRED_ARCHIVE_FIELDS); avatar_url was never filled.
@@ -104,56 +105,144 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
   calendar_event_moves: Object.freeze({ ...excluded('deliberately_excluded', 'A move in progress writes to calendar servers; a restore must not replay provider writes. The task comes back as archived, in whichever calendar held it.',
     'id user_id event_id source_calendar_id source_object_id source_etag target_calendar_id target_uid target_href target_etag target_ics state attempts last_error next_attempt_at created_at updated_at'),
   introducedIn: Object.freeze(Object.fromEntries('id user_id event_id source_calendar_id source_object_id source_etag target_calendar_id target_uid target_href target_etag target_ics state attempts last_error next_attempt_at created_at updated_at'.split(' ').map(column => [column, 24]))) }),
+  // Upgrade step 25 (0.28.0).
+  ...Object.fromEntries([
+    ['calendar_overlay_restores', 'temporary', 'Written by a restore and taken by the sync that creates its task; archives up to data schema 6 do not carry it.',
+      'id user_id calendar_id account_identity uid recurrence_id match_kind shape_title shape_start payload created_at expires_at'],
+    ['policy_notices', 'deliberately_excluded', 'A person confirms the data rules of the installation they are on; a restore must not carry the confirmation elsewhere.',
+      'user_id revision acknowledged_at'],
+    ['instance_backups', 'deliberately_excluded', 'The runs of the instance backup belong to this installation; its own dump carries them, a personal backup never does.',
+      'id trigger_kind actor_id status file_name size_bytes sha256 key_fingerprint app_version migration_id error started_at finished_at removed_at'],
+  ].map(([name, treatment, reason, columns]) => [name, Object.freeze({ ...excluded(treatment, reason, columns),
+    introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 25])) })])),
 });
 
-// From upgrade step 20 on, a new table states who owns a row, whether it can
-// be shared, its data class (F2), the module that gates it and what restore
-// does with it (AGENTS.md, Building toward 1.0).
-const DECLARATIONS_FROM = 20;
+// The stable identities of upgrade step 25 on archived tables. Archives up to
+// data schema 6 do not carry them, so a restored row gets a new identity (the
+// column default), as every restored row got a new id before.
+const UNARCHIVED_IDENTITIES: Readonly<Record<string, ExcludedPolicy>> = Object.freeze(Object.fromEntries(['calendar_events', 'calendar_calendars', 'recordings'].map(table => [table, Object.freeze({
+  ...excluded('rebuilt', 'The identity of the item across moves and installations; archives up to data schema 6 do not carry it.', 'uid'),
+  introducedIn: Object.freeze({ uid: 25 }) })])));
+
+// Every table states who owns a row, whether it can be shared, its data
+// class (F2), the module that gates it and what restore does with it
+// (AGENTS.md, Building toward 1.0). A table whose rows differ lists each
+// class its rows can have; the export tells them apart by row.
 interface TableDeclaration {
   owner: 'user' | 'organisation' | 'installation';
   shareable: boolean;
-  dataClass: 'local' | 'local-by-policy' | 'mirror' | 'org' | 'config' | 'installation' | 'ciphertext';
+  dataClass: DataClass | readonly DataClass[];
   module: string | null;
   restore: string;
 }
+// Mail rows follow their account's mode: Download-mode mail is local by
+// policy, Sync-mode mail with a server copy is a mirror, mail without one
+// (UniHub's own sent copies, local filing) is local.
+const MAIL_CONTENT: readonly DataClass[] = Object.freeze(['local', 'local-by-policy', 'mirror']);
+const MAIL_EVIDENCE: readonly DataClass[] = Object.freeze(['local-by-policy', 'mirror']);
+// Accounts and calendars of the UniHub provider are local; CalDAV and ICS
+// ones are configuration pointing at the provider.
+const CALENDAR_SETUP: readonly DataClass[] = Object.freeze(['local', 'config']);
+// Events of local calendars are local; those of CalDAV and ICS calendars
+// mirror the provider, with UniHub's ToDo state on them as a local overlay.
+const CALENDAR_CONTENT: readonly DataClass[] = Object.freeze(['local', 'mirror']);
 const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.freeze({
-  mail_account_settings: { owner: 'user', shareable: false, dataClass: 'local', module: 'mail', restore: 'Restored with its mail account; folder references follow the restored folders.' },
-  mail_templates: { owner: 'user', shareable: false, dataClass: 'local', module: 'mail', restore: 'Restored with the Mail section.' },
-  calendar_settings: { owner: 'user', shareable: false, dataClass: 'local', module: 'calendar', restore: 'Restored with its calendar.' },
+  // Identity, settings and the installation.
+  users: { owner: 'user', shareable: false, dataClass: 'config', module: null, restore: 'Profile fields restored onto the signed-in person; login, role and 2FA stay with the destination identity.' },
+  user_settings: { owner: 'user', shareable: false, dataClass: 'config', module: null, restore: 'Restored with the Settings section; references remapped.' },
+  sessions: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: a restore must not resurrect a signed-in session.' },
+  two_factor_challenges: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: login challenges expire.' },
+  audit_log: { owner: 'installation', shareable: false, dataClass: 'installation', module: null, restore: 'Never in personal backups: the trail of this installation.' },
+  system_settings: { owner: 'installation', shareable: false, dataClass: 'config', module: null, restore: 'Not in personal backups; the instance backup carries it.' },
+  schema_migrations: { owner: 'installation', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: the upgrade history of this database.' },
   setting_policies: { owner: 'installation', shareable: false, dataClass: 'config', module: null, restore: 'Not in personal backups; the instance backup carries it.' },
-  mail_scheduled_sends: { owner: 'user', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: the draft comes back unscheduled.' },
-  // Each ticket's kind names the module that gates it (services/file-tickets.ts).
-  file_tickets: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: a ticket is a single-use credential of a live session.' },
-  // Upgrade step 22 (0.26.0): the vCard model of contacts (F12).
+  // Upgrade step 25 (0.28.0).
+  policy_notices: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: a person sees the rules of the installation they are on.' },
+  instance_backups: { owner: 'installation', shareable: false, dataClass: 'installation', module: null, restore: 'Not in personal backups; the instance dump carries it, so an instance restore shows the runs up to that backup.' },
+  // Notifications. Each event's kind names the module that gates it.
+  notification_config: { owner: 'installation', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: the push identity of this server.' },
+  push_subscriptions: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: push credentials belong to a live session.' },
+  notification_events: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: pending notifications are not replayed.' },
+  notification_deliveries: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: delivery attempts belong to this server\'s devices.' },
+  notification_reminders: { owner: 'user', shareable: false, dataClass: 'installation', module: 'calendar', restore: 'Rebuilt from the restored events.' },
+  // Download tickets (0.25.0); each ticket's kind names the module that gates it (services/file-tickets.ts).
+  file_tickets: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: a ticket is a short-lived credential of a live session.' },
+  // Backups and their jobs.
+  data_export_jobs: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: archive jobs and their files belong to this installation.' },
+  backup_restore_jobs: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: a restore does not resume another installation\'s jobs.' },
+  backup_archive_keys: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: archive keys are this installation\'s secrets.' },
+  // Contacts; the vCard model since upgrade step 22 (0.26.0, F12).
+  contacts: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored with the Contacts section, matched by vCard UID; ids remapped.' },
   contact_values: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored with its contact, which it replaces wholesale; ids remapped.' },
   contact_properties: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored with its contact, which it replaces wholesale; ids remapped.' },
   contact_photos: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored with its contact and its photo files.' },
   contact_uid_aliases: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored with the contact it points to.' },
   contact_duplicate_dismissals: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored when both contacts are; ids remapped.' },
-  contact_merges: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Not archived in 0.26: a restore brings back contacts, not a 30-day undo.' },
-  // Each item's module column names the module that gates it.
-  bin_items: { owner: 'user', shareable: false, dataClass: 'local', module: null, restore: 'Not archived in 0.26; 0.28 decides the bin with D13.' },
+  contact_merges: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Not archived: a restore brings back contacts, not a 30-day undo.' },
   contact_imports: { owner: 'user', shareable: false, dataClass: 'installation', module: 'contacts', restore: 'Never restored: a staged import expires after 24 hours.' },
+  // Each item's module column names the module that gates it.
+  bin_items: { owner: 'user', shareable: false, dataClass: 'local', module: null, restore: 'Not archived up to data schema 6; the bin belongs to this installation.' },
+  // Calendar and ToDo.
+  calendar_accounts: { owner: 'user', shareable: false, dataClass: CALENDAR_SETUP, module: 'calendar', restore: 'Restored with the Calendar section; a CalDAV or ICS account comes back paused until it signs in.' },
+  calendar_calendars: { owner: 'user', shareable: false, dataClass: CALENDAR_SETUP, module: 'calendar', restore: 'Restored with its account; matched by id, server id, then name.' },
+  calendar_settings: { owner: 'user', shareable: false, dataClass: 'local', module: 'calendar', restore: 'Restored with its calendar.' },
+  calendar_events: { owner: 'user', shareable: false, dataClass: CALENDAR_CONTENT, module: 'calendar', restore: 'Restored with the Calendar section; matched by id, then by shape.' },
+  calendar_event_subtasks: { owner: 'user', shareable: false, dataClass: 'local', module: 'calendar', restore: 'Restored with its task.' },
+  calendar_event_attendees: { owner: 'user', shareable: false, dataClass: CALENDAR_CONTENT, module: 'calendar', restore: 'Restored with its event.' },
+  calendar_event_external_refs: { owner: 'user', shareable: false, dataClass: 'mirror', module: 'calendar', restore: 'Restored with its event; the link to the server copy is rebuilt by the next sync.' },
+  calendar_remote_objects: { owner: 'user', shareable: false, dataClass: 'mirror', module: 'calendar', restore: 'Never restored: downloaded again by the next sync.' },
   // Upgrade step 24 (0.27.0). The hand order is UniHub's own overlay on
   // tasks, including mirrored ones: keyed by the provider identity (calendar,
   // UID, recurrence id) for those, so a re-sync or restore matches it again.
   task_order: { owner: 'user', shareable: false, dataClass: 'local', module: 'calendar', restore: 'Restored with the Calendar section; calendar and event ids remapped, the key rebuilt. A synced task\'s order matches its UID after the next sync.' },
   calendar_event_moves: { owner: 'user', shareable: false, dataClass: 'installation', module: 'calendar', restore: 'Never restored: a restore must not replay provider writes.' },
+  // Upgrade step 25 (0.28.0): UniHub's overlay on a synced task, waiting for
+  // the sync that creates the task's row.
+  calendar_overlay_restores: { owner: 'user', shareable: false, dataClass: 'local', module: 'calendar', restore: 'Written by a restore; taken by the first sync that creates its task; goes with its calendar.' },
+  // Mail.
+  mail_accounts: { owner: 'user', shareable: false, dataClass: 'config', module: 'mail', restore: 'Restored with the Mail section, paused until it signs in; provider deletion off.' },
+  mail_account_settings: { owner: 'user', shareable: false, dataClass: 'local', module: 'mail', restore: 'Restored with its mail account; folder references follow the restored folders.' },
+  mail_templates: { owner: 'user', shareable: false, dataClass: 'local', module: 'mail', restore: 'Restored with the Mail section.' },
+  mail_folders: { owner: 'user', shareable: false, dataClass: 'local', module: 'mail', restore: 'Restored with the Mail section; matched to existing folders.' },
+  mail_folder_remote_boxes: { owner: 'user', shareable: false, dataClass: 'config', module: 'mail', restore: 'Restored with its folder and account.' },
+  mail_sender_rules: { owner: 'user', shareable: false, dataClass: 'local', module: 'mail', restore: 'Restored with the Mail section.' },
+  mail_folder_rule_overrides: { owner: 'user', shareable: false, dataClass: 'local', module: 'mail', restore: 'Restored with its rule and account.' },
+  emails: { owner: 'user', shareable: false, dataClass: MAIL_CONTENT, module: 'mail', restore: 'Restored with the Mail section, with its files; matched by id, server identity, then Message-ID.' },
+  email_attachments: { owner: 'user', shareable: false, dataClass: MAIL_CONTENT, module: 'mail', restore: 'Restored with its email and file.' },
+  mail_email_scores: { owner: 'user', shareable: false, dataClass: MAIL_CONTENT, module: 'mail', restore: 'Restored with its email.' },
+  mail_folder_reconciliations: { owner: 'user', shareable: false, dataClass: MAIL_EVIDENCE, module: 'mail', restore: 'Restored with its account as filing history.' },
+  mail_folder_recovery_items: { owner: 'user', shareable: false, dataClass: MAIL_CONTENT, module: 'mail', restore: 'Restored with its email as filing history.' },
+  mail_scheduled_sends: { owner: 'user', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: the draft comes back unscheduled.' },
+  mail_server_messages: { owner: 'user', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: provider deletion bookkeeping; a restore replays no remote delete.' },
+  mail_sync_state: { owner: 'user', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: provider progress is found again after sign-in.' },
+  // The mail engine (data schema 5 and 6): provider evidence exported and
+  // quarantined, never executed again; leases, cursors and jobs rebuilt.
+  ...Object.fromEntries(['mail_remote_mailboxes', 'mail_remote_occurrences', 'mail_gmail_messages', 'mail_writebacks', 'mail_operation_attempts', 'mail_command_receipts', 'mail_engine_quarantine'].map(name =>
+    [name, { owner: 'user', shareable: false, dataClass: MAIL_EVIDENCE, module: 'mail', restore: 'Restored as quarantined evidence; never sent to the provider again.' }])),
+  ...Object.fromEntries(['mail_engine_cursors', 'mail_engine_accounts', 'mail_engine_jobs'].map(name =>
+    [name, { owner: 'user', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: rebuilt by the destination\'s mail engine.' }])),
+  mail_engine_migration_progress: { owner: 'installation', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: the progress of this database\'s mail upgrade.' },
+  // Recordings and Music.
+  recordings: { owner: 'user', shareable: false, dataClass: 'local', module: 'recordings', restore: 'Restored with the Recordings section and its file; matched by id, then shape.' },
+  recording_tags: { owner: 'user', shareable: false, dataClass: 'local', module: 'recordings', restore: 'Restored with the Recordings section.' },
+  recording_tag_links: { owner: 'user', shareable: false, dataClass: 'local', module: 'recordings', restore: 'Restored with its recording and tag.' },
+  recording_transcription_jobs: { owner: 'user', shareable: false, dataClass: 'local', module: 'recordings', restore: 'Completed transcripts restored with their recording; other attempts are not resumed.' },
+  recording_uploads: { owner: 'user', shareable: false, dataClass: 'installation', module: 'recordings', restore: 'Never restored: unfinished uploads expire.' },
+  // Removed in 0.12.0 with the Games module.
+  tetris_scores: { owner: 'user', shareable: false, dataClass: 'local', module: null, restore: 'Never restored: the Games module was removed in 0.12.0.' },
 });
 
 function assertTableDeclarations(fields: ReadonlyMap<string, InventoryField>) {
-  const firstStep = new Map<string, number>();
+  // A table whose every field a step removed (the Notes tables) needs none.
+  const current = new Set<string>();
+  const known = new Set<string>();
   for (const [key, field] of fields) {
     const table = key.slice(0, key.indexOf('.'));
-    firstStep.set(table, Math.min(firstStep.get(table) ?? Infinity, field.introducedIn));
+    known.add(table);
+    if (!Number.isFinite(field.removedIn)) current.add(table);
   }
-  for (const [table, step] of firstStep) {
-    if (step >= DECLARATIONS_FROM && !TABLE_DECLARATIONS[table]) throw new Error(`Table ${table} lacks its declaration (owner, sharing, data class, module, restore)`);
-  }
-  for (const table of Object.keys(TABLE_DECLARATIONS)) {
-    if ((firstStep.get(table) ?? 0) < DECLARATIONS_FROM) throw new Error(`Declared table ${table} is not a table from step ${DECLARATIONS_FROM} on`);
-  }
+  for (const table of current) if (!TABLE_DECLARATIONS[table]) throw new Error(`Table ${table} lacks its declaration (owner, sharing, data class, module, restore)`);
+  for (const table of Object.keys(TABLE_DECLARATIONS)) if (!current.has(table)) throw new Error(`Declared table ${table} is ${known.has(table) ? 'removed' : 'not a table of the schema'}`);
 }
 
 function declaredFields() {
@@ -169,7 +258,7 @@ function declaredFields() {
     if (Object.keys(policy.fieldPolicies).length !== policy.columns.length) throw new Error(`Archive policy mismatch: ${table}`);
     for (const column of policy.columns) add(table, column, policy.fieldPolicies[column], policy.introducedIn?.[column]);
   }
-  for (const [table, policy] of Object.entries(NON_ARCHIVE_POLICIES)) {
+  for (const [table, policy] of [...Object.entries(NON_ARCHIVE_POLICIES), ...Object.entries(UNARCHIVED_IDENTITIES)]) {
     if (!policy.reason) throw new Error(`Missing exclusion reason: ${table}`);
     for (const column of policy.columns) add(table, column, policy.treatment, policy.introducedIn?.[column], policy.removedIn);
   }
@@ -224,4 +313,5 @@ function assertArchiveRelationships(rows: readonly RelationshipRow[]) {
   }
 }
 
-export { NON_ARCHIVE_POLICIES, TABLE_DECLARATIONS, declaredFields, assertInventoryCoverage, assertArchiveRelationships, verifyDatabaseInventory };
+export { NON_ARCHIVE_POLICIES, UNARCHIVED_IDENTITIES, TABLE_DECLARATIONS, declaredFields, assertInventoryCoverage, assertArchiveRelationships, verifyDatabaseInventory };
+export type { DataClass, TableDeclaration };

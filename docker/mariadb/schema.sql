@@ -3,7 +3,7 @@
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
--- Through migration 24.
+-- Through migration 25.
 
 CREATE TABLE `audit_log` (
   `id` char(36) NOT NULL DEFAULT uuid(),
@@ -94,6 +94,7 @@ CREATE TABLE `bin_items` (
   KEY `idx_bin_items_purge` (`user_id`,`purge_after`),
   KEY `idx_bin_items_item` (`user_id`,`item_type`,`item_id`),
   KEY `idx_bin_items_group` (`group_id`),
+  KEY `idx_bin_items_due` (`purge_after`),
   CONSTRAINT `bin_items_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -144,10 +145,12 @@ CREATE TABLE `calendar_calendars` (
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   `remote_ctag` varchar(255) DEFAULT NULL,
   `remote_expanded_on` date DEFAULT NULL,
+  `uid` char(36) NOT NULL DEFAULT uuid(),
   PRIMARY KEY (`id`),
   UNIQUE KEY `unique_calendar_external` (`account_id`,`external_id`),
   KEY `idx_calendar_calendars_user` (`user_id`),
   KEY `idx_calendar_calendars_account` (`account_id`),
+  KEY `idx_calendar_calendars_user_uid` (`user_id`,`uid`),
   CONSTRAINT `calendar_calendars_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `calendar_calendars_ibfk_2` FOREIGN KEY (`account_id`) REFERENCES `calendar_accounts` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -270,6 +273,7 @@ CREATE TABLE `calendar_events` (
   `source_email_id` char(36) DEFAULT NULL,
   `source_email_json` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`source_email_json`)),
   `order_key` varchar(64) DEFAULT NULL,
+  `uid` varchar(500) NOT NULL DEFAULT uuid(),
   PRIMARY KEY (`id`),
   KEY `idx_events_user` (`user_id`),
   KEY `idx_events_start` (`start_time`),
@@ -277,8 +281,30 @@ CREATE TABLE `calendar_events` (
   KEY `idx_events_calendar` (`calendar_id`),
   KEY `idx_events_notification_scan` (`updated_at`,`start_time`),
   KEY `idx_events_source_email` (`user_id`,`source_email_id`),
+  KEY `idx_events_user_uid` (`user_id`,`uid`),
   CONSTRAINT `calendar_events_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_calendar_events_calendar_id` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `calendar_overlay_restores` (
+  `id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `calendar_id` char(36) NOT NULL,
+  `account_identity` varchar(500) NOT NULL DEFAULT '',
+  `uid` varchar(500) DEFAULT NULL,
+  `recurrence_id` varchar(64) NOT NULL DEFAULT '',
+  `match_kind` enum('uid','shape') NOT NULL,
+  `shape_title` varchar(255) DEFAULT NULL,
+  `shape_start` datetime DEFAULT NULL,
+  `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`payload`)),
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `expires_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_overlay_restores_item` (`calendar_id`,`uid`,`recurrence_id`),
+  KEY `idx_overlay_restores_user` (`user_id`),
+  KEY `idx_overlay_restores_expires` (`expires_at`),
+  CONSTRAINT `calendar_overlay_restores_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `calendar_overlay_restores_ibfk_2` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `calendar_remote_objects` (
@@ -493,10 +519,12 @@ CREATE TABLE `data_export_jobs` (
   `completed_at` timestamp NULL DEFAULT NULL,
   `downloaded_at` timestamp NULL DEFAULT NULL,
   `mail_account_id` char(36) DEFAULT NULL,
+  `keep_until` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_data_export_jobs_user_created` (`user_id`,`created_at` DESC),
   KEY `idx_data_export_jobs_status` (`status`),
   KEY `idx_data_export_jobs_user_backup` (`user_id`,`backup_uuid`),
+  KEY `idx_data_export_jobs_keep_until` (`keep_until`),
   CONSTRAINT `data_export_jobs_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -593,6 +621,7 @@ CREATE TABLE `file_tickets` (
   `resource_id` varchar(64) NOT NULL,
   `expires_at` datetime NOT NULL,
   `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `redeemed_at` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `unique_file_ticket_token` (`token_hash`),
   KEY `idx_file_tickets_session` (`session_id`),
@@ -600,6 +629,26 @@ CREATE TABLE `file_tickets` (
   KEY `user_id` (`user_id`),
   CONSTRAINT `file_tickets_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `file_tickets_ibfk_2` FOREIGN KEY (`session_id`) REFERENCES `sessions` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `instance_backups` (
+  `id` char(36) NOT NULL,
+  `trigger_kind` enum('schedule','manual') NOT NULL,
+  `actor_id` char(36) DEFAULT NULL,
+  `status` enum('running','succeeded','failed') NOT NULL,
+  `file_name` varchar(255) DEFAULT NULL,
+  `size_bytes` bigint(20) unsigned DEFAULT NULL,
+  `sha256` char(64) DEFAULT NULL,
+  `key_fingerprint` varchar(64) DEFAULT NULL,
+  `app_version` varchar(32) NOT NULL,
+  `migration_id` int(10) unsigned NOT NULL,
+  `error` text DEFAULT NULL,
+  `started_at` datetime NOT NULL,
+  `finished_at` datetime DEFAULT NULL,
+  `removed_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_instance_backups_started` (`started_at`),
+  KEY `idx_instance_backups_status` (`status`,`started_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `mail_account_settings` (
@@ -1130,6 +1179,14 @@ CREATE TABLE `notification_reminders` (
   CONSTRAINT `notification_reminders_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `policy_notices` (
+  `user_id` char(36) NOT NULL,
+  `revision` bigint(20) unsigned NOT NULL,
+  `acknowledged_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`user_id`,`revision`),
+  CONSTRAINT `policy_notices_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE `push_subscriptions` (
   `id` char(36) NOT NULL,
   `user_id` char(36) NOT NULL,
@@ -1236,10 +1293,12 @@ CREATE TABLE `recordings` (
   `metadata` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`metadata`)),
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `uid` char(36) NOT NULL DEFAULT uuid(),
   PRIMARY KEY (`id`),
   KEY `idx_recordings_user_created` (`user_id`,`created_at` DESC),
   KEY `idx_recordings_user_category_created` (`user_id`,`category`,`created_at` DESC),
   KEY `idx_recordings_user_title` (`user_id`,`title`),
+  KEY `idx_recordings_user_uid` (`user_id`,`uid`),
   CONSTRAINT `recordings_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
