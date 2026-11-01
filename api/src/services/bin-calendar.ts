@@ -156,31 +156,62 @@ async function binSyncedObject(cx: SqlExecutor, userId: string, objectId: string
   return id;
 }
 
+// How long a delete of a synced item waits for a sync of its account.
+const DELETE_SYNC_WAIT_SECONDS = 20;
+type Refusal = ReturnType<typeof calendarSync.calendarErrorResponse>;
+const syncBusy = (): Refusal => ({ error: 'This calendar is being synced right now. Try again in a moment.', status: 409, code: 'CALENDAR_SYNC_BUSY' });
+
 /**
  * DELETE /api/calendar/events/:id, under the item's lock (routes/calendar.ts).
  * A synced item is deleted at its server first; a refusal there changes
  * nothing and is answered as the route's response. Otherwise the bin item's
  * id, or null when nothing was binned (one date of a repeating server event,
  * an item already gone).
+ *
+ * A synced delete holds its account's sync lock from before the server is
+ * written until the bin item is committed: a sync running meanwhile would
+ * see the item gone at the server and remove its rows before the bin took
+ * them. Deleting one date of a repeating server event removes it at the
+ * server for good, so bin.delete must allow it (F13), checked before.
  */
-async function deleteEventToBin(userId: string, event: CalendarEvent, scope: 'series' | 'occurrence'): Promise<{ binned: string | null } | { refused: ReturnType<typeof calendarSync.calendarErrorResponse> }> {
-  let binned: string | null = null;
-  let pushed: Awaited<ReturnType<typeof calendarSync.pushEventDelete>>;
-  try {
-    pushed = await calendarSync.pushEventDelete({
-      userId, event, scope,
-      beforeRemove: async (connection, objectIds) => { if (objectIds[0] && !binned) binned = await binSyncedObject(connection, userId, objectIds[0]); },
-    });
-  } catch (error) {
-    return { refused: calendarSync.calendarErrorResponse(error, 'Could not delete the event on the calendar server') };
+async function deleteEventToBin(userId: string, event: CalendarEvent, scope: 'series' | 'occurrence'): Promise<{ binned: string | null } | { refused: Refusal }> {
+  const write = await calendarSync.describeEventWrite(userId, event);
+  if (!write.remote) return { binned: await binLocally(userId, event.id) };
+  if (write.link && write.recurring && write.link.recurrenceId && scope !== 'series') {
+    const { assertAllowed } = require('./settings') as typeof import('./settings');
+    await assertAllowed(userId, ['bin.delete']);
   }
-  if (pushed && 'scope' in pushed) {
-    // One date removed from the series at the server: the row goes as before.
-    if (pushed.scope === 'occurrence') await fencedWrite(connection => connection.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [event.id, userId]));
-    return { binned };
-  }
-  const [id] = await fencedWrite(connection => binLocalEvents(connection, userId, [event.id]));
-  return { binned: id ?? null };
+  const outcome = await calendarSync.withAccountLock(write.ctx.account.id, async (): Promise<{ binned: string | null } | { refused: Refusal; conflict?: boolean }> => {
+    // Set by the transaction that removes the rows, again on each of its
+    // retries (a deadlock victim runs it again): only the attempt that
+    // commits counts.
+    let binned: string | null = null;
+    let pushed: Awaited<ReturnType<typeof calendarSync.pushEventDelete>>;
+    try {
+      pushed = await calendarSync.pushEventDelete({
+        userId, event, scope,
+        beforeRemove: async (connection, objectIds) => { binned = objectIds[0] ? await binSyncedObject(connection, userId, objectIds[0]) : null; },
+      });
+    } catch (error) {
+      return { refused: calendarSync.calendarErrorResponse(error, 'Could not delete the event on the calendar server'), conflict: (error as { code?: string })?.code === 'CALDAV_CONFLICT' };
+    }
+    if (pushed && 'scope' in pushed) {
+      // One date removed from the series at the server: the row goes as before.
+      if (pushed.scope === 'occurrence') await fencedWrite(connection => connection.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [event.id, userId]));
+      return { binned };
+    }
+    // Not linked to a server copy: UniHub's own row.
+    return { binned: await binLocally(userId, event.id) };
+  }, DELETE_SYNC_WAIT_SECONDS);
+  if ('skipped' in outcome) return { refused: syncBusy() };
+  // The refresh a conflict asks for could not run while the lock was held.
+  if ('refused' in outcome && outcome.conflict) calendarSync.syncCalendarAccountInBackground(write.ctx.account.id, { userId, reason: 'conflict' });
+  return 'refused' in outcome ? { refused: outcome.refused } : outcome;
+}
+
+async function binLocally(userId: string, eventId: string) {
+  const [id] = await fencedWrite(connection => binLocalEvents(connection, userId, [eventId]));
+  return id ?? null;
 }
 
 /** DELETE /api/calendar/calendars/:id for a UniHub calendar, after the route's checks: the calendar and its events into the bin as one group. */
@@ -346,6 +377,21 @@ function serverRefusal(error: unknown): never {
   throw new ApiError(status >= 500 ? 409 : status, answer.code || 'BIN_RESTORE_FAILED', `${answer.error} It stays in the bin.`);
 }
 
+// What a UniHub list would lose of a synced repeating event: it holds one
+// row with a rule, so a date of its own (an exception, an added or removed
+// date), a rule longer than the list keeps, or the state of a date (done,
+// subtasks, source email) would be lost or apply to every date. Null when
+// the copy loses nothing.
+function localCopyLoses(payload: SyncedPayload) {
+  const ics = String(payload.object?.ics || '').replace(/\r?\n[ \t]/g, '');
+  const rule = /^RRULE[:;](.*)$/im.exec(ics)?.[1] ?? null;
+  if (!rule && !/^(RDATE|RECURRENCE-ID)[:;]/im.test(ics)) return null;
+  if (/^(RECURRENCE-ID|RDATE|EXDATE)[:;]/im.test(ics)) return 'dates changed on their own';
+  if (rule && rule.replace(/^[^:]*:/, '').length > 100) return 'a long rule';
+  if ((payload.occurrences || []).length) return 'details kept for single dates';
+  return null;
+}
+
 async function restoreSyncedItem(userId: string, row: BinRow): Promise<BinRestored> {
   const payload = parsePayload<SyncedPayload>(row);
   if (!payload?.event) throw conflict('BIN_ITEM_UNREADABLE', 'This item cannot be restored.');
@@ -353,6 +399,8 @@ async function restoreSyncedItem(userId: string, row: BinRow): Promise<BinRestor
   const uid = payload.object?.uid;
   const writable = !!target && target.account.provider === 'caldav' && !target.calendar.read_only;
   if (!target || !writable || !uid || !payload.object?.ics) {
+    const lost = localCopyLoses(payload);
+    if (lost) throw conflict('BIN_RESTORE_NEEDS_CALENDAR', `${!target || !uid ? 'Its calendar is gone' : 'Its calendar is read-only now'}, and a UniHub list cannot hold this repeating event as it was (${lost}). It stays in the bin until its calendar can take it back.`);
     return restoreLocalItem(userId, row, !target || !uid ? 'Its calendar is gone; restored to your default list.' : 'Its calendar is read-only now; restored to your default list.');
   }
   if (!target.account.is_active) throw conflict('CALENDAR_SYNC_PAUSED', 'Sync is paused for this calendar account. Resume it to restore this item to its calendar.');

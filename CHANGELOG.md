@@ -22,8 +22,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   keeps it in the bin with its own details. Restoring it creates it at the
   provider again with the same identity, and its done state and subtasks
   come back. If the calendar is read-only now or gone, it is restored into
-  your default list. Deleting one date of a repeating server event is not
-  kept in the bin.
+  your default list, unless it is a repeating event whose dates have their own
+  changes or details: that one waits in the bin until its calendar can take
+  it back. Deleting one date of a repeating server event is not kept in the
+  bin, so an administrator's rule against deleting for good covers it too.
 - **Choose how long the bin keeps items:** 7, 30 or 90 days or forever (30 by
   default). Changing it applies to what is already in the bin. An
   administrator can set a minimum, and can forbid deleting from the bin for

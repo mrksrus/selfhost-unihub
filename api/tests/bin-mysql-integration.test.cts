@@ -471,6 +471,91 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     await assertBack('Address taken', task.uid);
   });
 
+  await t.test('a sync running while a synced task is deleted: the task still goes to the bin', async () => {
+    const task = await serverTask('Raced delete');
+    let racing: Promise<unknown> = Promise.resolve();
+    // Right after the server deleted it, before UniHub removes its rows, a sync starts.
+    server.faults.afterRemove = async () => {
+      server.faults.afterRemove = undefined;
+      racing = calendarSync.syncCalendarAccount(accountId, { userId: users.alex, full: true });
+      await within(racing, 2000);
+    };
+    const answer = await call(alex, 'DELETE', `/api/calendar/events/${task.id}`);
+    await within(racing, 10000);
+    assert.ok(answer.bin_item_id, 'kept in the bin');
+    assert.equal(server.copiesOf('Raced delete').length, 0);
+    assert.equal((await rowsTitled('Raced delete')).length, 0);
+    const item = (await bin(alex, 'calendar')).find(entry => entry.title === 'Raced delete');
+    assert.equal(item?.id, answer.bin_item_id);
+    await restore(item.id);
+    await assertBack('Raced delete', task.uid);
+  });
+
+  await t.test('a deadlock retry of the delete still keeps the task in the bin', async () => {
+    const task = await serverTask('Deadlocked delete');
+    let fired = false;
+    hooks.once({ match: /^DELETE FROM calendar_events WHERE user_id = \? AND id IN/, before: () => { fired = true; throw deadlock(); } });
+    const answer = await call(alex, 'DELETE', `/api/calendar/events/${task.id}`);
+    assert.ok(fired, 'the first attempt was a deadlock victim');
+    assert.equal(await count('SELECT COUNT(*) AS n FROM bin_items WHERE id = ?', [answer.bin_item_id]), 1, 'the answered bin item is the committed one');
+    assert.equal((await rowsTitled('Deadlocked delete')).length, 0);
+    await restore(answer.bin_item_id);
+    await assertBack('Deadlocked delete', task.uid);
+  });
+
+  await t.test('deleting one date of a repeating server event is checked against bin.delete before the server is written', async () => {
+    clock += 86400000;
+    const href = `${WORK}daily-standup.ics`;
+    server.store(href, eventIcs(`${crypto.randomUUID()}@example.test`, 'Daily standup', clock, ['RRULE:FREQ=DAILY;COUNT=3']));
+    await sync();
+    const dates = await rowsTitled('Daily standup');
+    assert.equal(dates.length, 3);
+    await pool.execute("INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked) VALUES ('installation', '', 'policy.bin.delete', 'forbidden', 0)");
+    server.remote.writes.length = 0;
+    try {
+      const refused = await call(alex, 'DELETE', `/api/calendar/events/${dates[1].id}?scope=occurrence`, undefined, 403);
+      assert.equal(refused.code, 'POLICY_FORBIDS');
+      assert.deepEqual(server.remote.writes, [], 'nothing written to the server');
+      assert.equal((await rowsTitled('Daily standup')).length, 3);
+      // The whole series goes to the bin, which the policy allows.
+      assert.ok((await call(alex, 'DELETE', `/api/calendar/events/${dates[0].id}?scope=series`)).bin_item_id);
+    } finally {
+      await pool.execute("DELETE FROM setting_policies WHERE setting_key = 'policy.bin.delete'");
+    }
+    const [item] = (await bin(alex, 'calendar')).filter(entry => entry.title === 'Daily standup');
+    await restore(item.id);
+    const back = await rowsTitled('Daily standup');
+    assert.equal(back.length, 3);
+    assert.equal((await call(alex, 'DELETE', `/api/calendar/events/${back[1].id}?scope=occurrence`)).bin_item_id, null, 'one date, allowed again, is not kept in the bin');
+    assert.equal((await rowsTitled('Daily standup')).length, 2);
+  });
+
+  await t.test('a repeating synced event with details on several dates waits in the bin for a calendar that can take it', async () => {
+    clock += 86400000;
+    const uid = `${crypto.randomUUID()}@example.test`;
+    server.store(`${WORK}weekly-plan.ics`, eventIcs(uid, 'Weekly plan', clock, ['RRULE:FREQ=DAILY;COUNT=3']));
+    await sync();
+    const dates = (await pool.query<RowDataPacket[]>("SELECT id FROM calendar_events WHERE user_id = ? AND title = 'Weekly plan' ORDER BY start_time", [users.alex]))[0];
+    assert.equal(dates.length, 3);
+    for (const [index, date] of dates.entries()) {
+      await pool.execute('INSERT INTO calendar_event_subtasks (id, event_id, user_id, title, is_done, position) VALUES (?, ?, ?, ?, FALSE, 0)', [crypto.randomUUID(), date.id, users.alex, `Step ${index}`]);
+    }
+    await call(alex, 'DELETE', `/api/calendar/events/${dates[0].id}?scope=series`);
+    const item = (await bin(alex, 'calendar')).find(entry => entry.title === 'Weekly plan');
+    await pool.execute('UPDATE calendar_calendars SET read_only = 1 WHERE id = ?', [work]);
+    try {
+      const answer = await call(alex, 'POST', '/api/bin/restore', { ids: [item.id] });
+      assert.equal(answer.failed[0].code, 'BIN_RESTORE_NEEDS_CALENDAR');
+      assert.equal((await rowsTitled('Weekly plan')).length, 0, 'not restored as a part of itself');
+      assert.ok((await bin(alex, 'calendar')).some(entry => entry.id === item.id), 'it stays in the bin');
+    } finally {
+      await pool.execute('UPDATE calendar_calendars SET read_only = 0 WHERE id = ?', [work]);
+    }
+    await restore(item.id);
+    const back = (await pool.query<RowDataPacket[]>("SELECT id FROM calendar_events WHERE user_id = ? AND title = 'Weekly plan' ORDER BY start_time", [users.alex]))[0];
+    assert.deepEqual(await Promise.all(back.map(async row => (await stepsOf(row.id)).map(([title]) => title))), [['Step 0'], ['Step 1'], ['Step 2']], 'every date keeps its own');
+  });
+
   await t.test('a read-only or removed calendar: restored into the default list instead', async () => {
     const readOnly = await serverTask('Now read-only');
     const removed = await serverTask('Calendar removed');

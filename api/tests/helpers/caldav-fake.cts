@@ -20,7 +20,8 @@ const davError = (message: string, fields: Record<string, unknown>) => Object.as
 
 function installCalDavFake(caldav: FixtureValue, { readOnlyShared = true } = {}) {
   const remote = { version: 1, objects: new Map<string, { etag: string; ics: string }>(), writes: [] as string[][] };
-  const faults: { put?: (path: string) => 'store-then-lose' | 'lose' | 'refuse' | void; remove?: (path: string) => 'fail' | void } = {};
+  // afterRemove: runs once the server deleted an object, before UniHub hears back.
+  const faults: { put?: (path: string) => 'store-then-lose' | 'lose' | 'refuse' | void; remove?: (path: string) => 'fail' | void; afterRemove?: (path: string) => unknown } = {};
   let etags = 0;
   const pathOf = (url: string) => decodeURIComponent(new URL(url).pathname);
   const store = (objectPath: string, ics: string) => { remote.objects.set(objectPath, { etag: `"e${++etags}"`, ics }); remote.version += 1; };
@@ -59,6 +60,7 @@ function installCalDavFake(caldav: FixtureValue, { readOnlyShared = true } = {})
     if (etag && current.etag !== etag) throw davError('The event was changed on the calendar server in the meantime.', { status: 409, code: 'CALDAV_CONFLICT' });
     remote.objects.delete(objectPath);
     remote.version += 1;
+    await faults.afterRemove?.(objectPath);
   };
   return { remote, faults, store, copiesOf, BASE, HOME, WORK, SHARED };
 }

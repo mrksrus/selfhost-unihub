@@ -382,9 +382,13 @@ are then rebuilt from the server's answer, so the server stays the authority.
   refusal or a conflict changes nothing); once the server confirmed, its rows
   leave UniHub and the bin keeps its server copy (ICS, UID, address), each
   occurrence's ToDo state, subtasks and source email, and its hand ranks.
-  Deleting **This event** of a repeating server event removes that date at the
-  server and is not kept in the bin. Items other apps delete at the server are
-  not binned.
+  The delete holds the account's sync lock from the server's answer to the
+  bin's commit, so a sync running meanwhile cannot remove the rows unbinned;
+  it waits up to 20 seconds for a sync under way, then answers
+  `409 CALENDAR_SYNC_BUSY`. Deleting **This event** of a repeating server
+  event removes that date at the server for good and is not kept in the bin,
+  so it is checked against `bin.delete` before the server is written. Items
+  other apps delete at the server are not binned.
 - **Restoring from the bin.** A UniHub item goes back into its list, or into
   the default list when that is gone. A synced one is created at its calendar
   again with the same UID, at its old address (`If-None-Match: *`), through
@@ -394,7 +398,10 @@ are then rebuilt from the server's answer, so the server stays the authority.
   the UID already is adopted at once. Another item at the address refuses it
   and it stays in the bin. A paused account refuses it (409); a calendar that
   is read-only now, or gone, takes it into the default list instead, with a
-  note. The rows the commit makes take their state back.
+  note, unless the local copy would lose something: a repeating event with
+  exceptions, extra or removed dates, or details on its dates stays in the bin
+  (`BIN_RESTORE_NEEDS_CALENDAR`) until its calendar can take it back. The rows
+  the commit makes take their state back.
 - **One change at a time.** Creating an item on a server, edits, time moves,
   deletions, moves, their cancel, a move's background run and a sync's
   adoption of a move's copy run one after another for one item (a lock per
