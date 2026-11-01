@@ -15,6 +15,7 @@ import {
 import { controlPool } from './side-pools';
 import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
 import { resolvePolicy } from './settings';
+import { conflict, notFound } from '../http/errors';
 import type { BackupContents } from '../contracts/backup';
 
 type CheckCancelled = (() => Promise<unknown>) | null;
@@ -698,6 +699,38 @@ function isBackupPathUnderRoot(filePath: string | null | undefined) {
   return resolved === root || resolved.startsWith(`${root}${path.sep}`);
 }
 
+/**
+ * The user's ready archive to send: the browser download and the
+ * backup-archive ticket (file-tickets.ts) share these checks. An archive is
+ * sent only after its recovery password was revealed, since without it the
+ * file cannot be opened.
+ */
+async function backupArchiveFile(userId: string, jobId: string) {
+  const job = await getDataExportJob(userId, jobId);
+  if (!job) throw notFound('BACKUP_NOT_FOUND', 'Backup job not found');
+  if (job.status !== 'ready' || !job.file_path) throw conflict('BACKUP_NOT_READY', 'Backup is not ready');
+  if (job.encryption_enabled) {
+    if (job.recovery_password_available) throw conflict('BACKUP_PASSWORD_UNSEEN', 'Reveal and save the recovery password before the first download');
+    if (!job.recovery_password_revealed) {
+      throw conflict('BACKUP_PASSWORD_MISSING', 'Recovery password metadata is missing. Create a new encrypted backup before downloading.');
+    }
+  }
+  if (!isBackupPathUnderRoot(job.file_path)) throw new Error('Backup path is outside the backup storage');
+  const filePath = path.resolve(job.file_path);
+  const stat = await fs.promises.stat(filePath);
+  const extension = job.encryption_enabled ? 'unihub-backup' : 'zip';
+  return {
+    path: filePath,
+    size: stat.size,
+    contentType: job.content_type || (job.encryption_enabled ? 'application/vnd.unihub.backup' : 'application/zip'),
+    filename: `unihub-backup-${new Date().toISOString().slice(0, 10)}-${jobId}.${extension}`,
+  };
+}
+
+async function markBackupDownloaded(userId: string, jobId: string) {
+  await db.execute('UPDATE data_export_jobs SET downloaded_at = UTC_TIMESTAMP() WHERE id = ? AND user_id = ?', [jobId, userId]);
+}
+
 async function deleteDataExportJob(userId: string, jobId: string | null) {
   const job = await getDataExportJob(userId, jobId);
   if (!job) return { error: 'Backup job not found', status: 404 };
@@ -772,5 +805,7 @@ export {
   deleteDataExportJob,
   cancelDataExportJob,
   isBackupPathUnderRoot,
+  backupArchiveFile,
+  markBackupDownloaded,
   serializeJob,
 };

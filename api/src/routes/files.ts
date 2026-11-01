@@ -28,7 +28,8 @@ export = defineRoutes({
     } },
 
   // Public: the ticket is the credential. Always a download (never shown as a
-  // page of this origin), without ranges (single use), not cached.
+  // page of this origin), not cached; ranges only within a backup's download
+  // grant (a single-use ticket has no second request to resume with).
   'GET /api/files/tickets/:token': { auth: 'public', module: null, body: { kind: 'none' },
     handler: async (req: Request) => {
       try {
@@ -39,7 +40,7 @@ export = defineRoutes({
           __contentType: file.contentType,
           __filename: file.filename,
           __disposition: 'attachment',
-          __ranges: false,
+          __ranges: file.ranges,
           __headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox", 'Referrer-Policy': 'no-referrer' },
         };
       } catch (error) { return failed(error, 'Failed to send the file'); }

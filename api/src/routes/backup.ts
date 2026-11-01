@@ -7,6 +7,7 @@ import path from 'path';
 import { db } from '../state';
 import { BACKUP_UPLOAD_MAX_SIZE } from '../config';
 import { defineRoutes } from '../http/route';
+import { clientError } from '../http/errors';
 import type { RouteTable } from '../http/route';
 import {
   startDataExportJob,
@@ -14,7 +15,8 @@ import {
   getDataExportJob,
   deleteDataExportJob,
   cancelDataExportJob,
-  isBackupPathUnderRoot,
+  backupArchiveFile,
+  markBackupDownloaded,
   serializeJob,
 } from '../services/export-jobs';
 import {
@@ -128,36 +130,13 @@ const routes: RouteTable = defineRoutes({
   // (services/file-tickets.ts).
   'GET /api/backup/jobs/:id/download': user(async (req, userId) => {
     try {
-      const jobId = req.params.id;
-      const job = await getDataExportJob(userId, jobId);
-      if (!job) return { error: 'Backup job not found', status: 404 };
-      if (job.status !== 'ready' || !job.file_path) return { error: 'Backup is not ready', status: 409 };
-      if (job.encryption_enabled) {
-        if (job.recovery_password_available) {
-          return { error: 'Reveal and save the recovery password before the first download', status: 409 };
-        }
-        if (!job.recovery_password_revealed) {
-          return {
-            error: 'Recovery password metadata is missing. Create a new encrypted backup before downloading.',
-            status: 409,
-          };
-        }
-      }
-      if (!isBackupPathUnderRoot(job.file_path)) return { error: 'Invalid backup path', status: 500 };
-      const filePath = path.resolve(job.file_path);
-      const stat = await fs.promises.stat(filePath);
-      await db.execute(
-        'UPDATE data_export_jobs SET downloaded_at = UTC_TIMESTAMP() WHERE id = ? AND user_id = ?',
-        [jobId, userId]
-      );
-      const extension = job.encryption_enabled ? 'unihub-backup' : 'zip';
-      return {
-        __streamPath: filePath,
-        __contentType: job.content_type || (job.encryption_enabled ? 'application/vnd.unihub.backup' : 'application/zip'),
-        __contentLength: stat.size,
-        __filename: `unihub-backup-${new Date().toISOString().slice(0, 10)}-${jobId}.${extension}`,
-      };
-    } catch (error) { return failed(error, 'Failed to download backup', 'Download backup job error'); }
+      const file = await backupArchiveFile(userId, req.params.id);
+      await markBackupDownloaded(userId, req.params.id);
+      return { __streamPath: file.path, __contentType: file.contentType, __contentLength: file.size, __filename: file.filename };
+    } catch (error) {
+      if ((error as ApiError).status) return clientError(error, 'Failed to download backup');
+      return failed(error, 'Failed to download backup', 'Download backup job error');
+    }
   }),
 
   'POST /api/backup/jobs/:id/recovery-password/reveal': write(async (req, userId) => {
