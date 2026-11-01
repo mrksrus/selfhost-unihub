@@ -114,6 +114,41 @@ test('synced tasks keep their own state through a restore and the first sync, by
     assert.equal(await pending(), 0);
   });
 
+  await t.test('UIDs that differ only by a trailing space are two items, kept as the server has them', async () => {
+    clock += 86400000;
+    server.store(`${WORK}plain-uid.ics`, eventIcs('space@example.test', 'Plain UID', clock));
+    server.store(`${WORK}spaced-uid.ics`, eventIcs('space@example.test ', 'Spaced UID', clock + 3600000));
+    await write([{ userId: users.owner, calendarId: work, uid: 'space@example.test ', recurrenceId: '', state: state('Spaced UID', ['Spaced step']) }]);
+    await sync();
+    const [plain] = await rowOf('Plain UID');
+    const [spaced] = await rowOf('Spaced UID');
+    assert.deepEqual([plain.uid, spaced.uid], ['space@example.test', 'space@example.test '], 'the UIDs as the server has them');
+    assert.deepEqual([plain.todo_status, spaced.todo_status], [null, 'done'], 'the overlay went to its own item');
+    assert.deepEqual(await subtasksOf(spaced.id), [['Spaced step', true]]);
+    const stored = (await pool.query<RowDataPacket[]>(`SELECT uid FROM calendar_remote_objects WHERE calendar_id = ? AND uid LIKE 'space@%' ORDER BY uid`, [work]))[0].map(row => row.uid);
+    assert.deepEqual(stored.sort(), ['space@example.test', 'space@example.test '].sort());
+  });
+
+  await t.test('an archive without UIDs: a title and start two tasks share matches neither, until it is the only one', async () => {
+    clock += 86400000;
+    const start = clock;
+    server.store(`${WORK}twin-a.ics`, eventIcs('twin-a@example.test', 'Twin task', start));
+    server.store(`${WORK}twin-b.ics`, eventIcs('twin-b@example.test', 'Twin task', start));
+    await write([{ userId: users.owner, calendarId: work, uid: '', recurrenceId: '', matchKind: 'shape', shape: { title: 'Twin task', start: at(start) },
+      expiresAt: at(Date.now() + 30 * 86400000), state: state('Twin task') }]);
+    // The first sync makes both rows: whichever comes first is not the match.
+    await sync();
+    assert.deepEqual((await rowOf('Twin task')).map(row => row.todo_status), [null, null]);
+    const cx = await pool.getConnection();
+    try { assert.equal(await overlays.applyOverlaysToLiveRows(cx, users.owner, { calendarIds: [work] }), 0, 'nor when applied to the live rows'); } finally { cx.release(); }
+    assert.equal(await pending(), 1, 'it waits');
+    // One of them is gone: the match is the only one now.
+    server.remote.objects.delete(`${WORK}twin-b.ics`);
+    await sync();
+    assert.deepEqual((await rowOf('Twin task')).map(row => row.todo_status), ['done']);
+    assert.equal(await pending(), 0);
+  });
+
   await t.test('an overlay whose item exists already is applied at once; one waits while its item is not back', async () => {
     const [lower] = await rowOf('Lower task');
     const cx = await pool.getConnection();

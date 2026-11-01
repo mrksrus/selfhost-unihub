@@ -25,7 +25,7 @@ import { sweepRemoteRanks } from './task-order';
 import { isDeadlock, DEADLOCK_RETRIES } from './transactions';
 import { withNamedLock } from './named-locks';
 import { tryEventLock, fenceTaskLocks } from './calendar-move-state';
-import { takeOverlayForNewRow, sweepExpiredOverlays } from './calendar-overlays';
+import { takeOverlayForNewRow, applyOverlaysToLiveRows, hasPendingOverlays, sweepExpiredOverlays } from './calendar-overlays';
 import * as caldav from './caldav';
 import * as ical from './calendar-ical';
 import {
@@ -525,10 +525,7 @@ async function applyObjectRows(connection: PoolConnection, ctx: Context, calenda
       [crypto.randomUUID(), ctx.account.user_id, id, calendar.id, ctx.account.id, ctx.account.provider, key, object.etag || null, object.id, occurrence.recurrenceId || null]
     );
     // The item's own state when a restore or the bin brought it back.
-    await takeOverlayForNewRow(connection, {
-      userId: ctx.account.user_id, calendarId: calendar.id, uid: uid || '', recurrenceId: occurrence.recurrenceId || '', eventId: id,
-      title: occurrence.title, startTime: values[3] as string,
-    });
+    await takeOverlayForNewRow(connection, { userId: ctx.account.user_id, calendarId: calendar.id, uid: uid || '', recurrenceId: occurrence.recurrenceId || '', eventId: id });
     created.push({ id, startMs: occurrence.startMs });
   }
   const stale = refs.filter(ref => !keep.has(ref.external_event_id)).map(ref => ref.event_id);
@@ -769,6 +766,13 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       }
       return ids.length;
     });
+  }
+  // Overlays a restore left whose rows exist now. With every object read,
+  // the match of a shape overlay (an archive without UIDs) can be told to be
+  // the only one; otherwise it waits for a complete sync.
+  if (!unreadable && await hasPendingOverlays(db, calendar.id)) {
+    ctx.signal?.throwIfAborted();
+    await inTransaction(ctx, connection => applyOverlaysToLiveRows(connection, ctx.account.user_id, { calendarIds: [calendar.id] }));
   }
   return unreadable;
 }

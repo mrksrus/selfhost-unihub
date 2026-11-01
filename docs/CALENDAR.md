@@ -466,8 +466,11 @@ subtasks; F2 `local` overlay) is not at the server, so a restore, which
 re-syncs mirror data, would lose it with the rows. `services/calendar-overlays.ts`
 keeps it in `calendar_overlay_restores` until the item exists again: the
 sync that creates the item's row takes it in the same transaction, by
-calendar, UID and recurrence id, or by title and start for archives without
-UIDs (those expire after 30 days). Applied once: a later change in UniHub
+calendar, exact UID (byte for byte, spaces included) and recurrence id. For
+archives without UIDs it goes by title and start, only to the one row of its
+calendar that matches once every object was read, and only to a row without
+state of its own; two candidates leave it waiting (those expire after 30
+days). Applied once: a later change in UniHub
 stands. An overlay goes with its calendar, is never written for another
 person's calendar, and nothing is applied while Calendar is off or being
 restored (no sync runs). An item whose rows exist already gets its overlay

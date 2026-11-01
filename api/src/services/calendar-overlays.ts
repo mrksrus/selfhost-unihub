@@ -170,18 +170,16 @@ async function insertOverlays(connection: SqlExecutor, overlays: readonly Pendin
 
 /**
  * In the sync's transaction, for a row it has just created: the overlay
- * waiting for this item, applied to the row and removed. By identity first;
- * an archive without UIDs matched by the row's title and start instead.
+ * waiting for this item by its exact identity, applied to the row and
+ * removed. Shape overlays (archives without UIDs) wait for the end of the
+ * calendar's sync (applyOverlaysToLiveRows), when every row that could match
+ * them exists and a match can be told to be the only one.
  */
-async function takeOverlayForNewRow(connection: SqlExecutor, target: OverlayTarget & { eventId: string; title: string; startTime: string }) {
-  const [byUid] = target.uid ? await connection.execute<RowDataPacket[]>(
+async function takeOverlayForNewRow(connection: SqlExecutor, target: OverlayTarget & { eventId: string }) {
+  if (!target.uid) return false;
+  const [[found]] = await connection.execute<RowDataPacket[]>(
     `SELECT id, payload FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = 'uid' AND uid = ? ${EXACT} AND recurrence_id = ? ${EXACT}
-     ORDER BY created_at, id LIMIT 1 FOR UPDATE`, [target.userId, target.calendarId, target.uid, target.recurrenceId || '']) : [[]];
-  const [byShape] = byUid.length ? [[]] : await connection.execute<RowDataPacket[]>(
-    `SELECT id, payload FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = 'shape' AND shape_title = ? ${EXACT} AND shape_start = ?
-       AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP()) ORDER BY created_at, id LIMIT 1 FOR UPDATE`,
-    [target.userId, target.calendarId, Array.from(target.title).slice(0, TITLE_MAX).join(''), target.startTime]);
-  const found = byUid[0] ?? byShape[0];
+     ORDER BY created_at, id LIMIT 1 FOR UPDATE`, [target.userId, target.calendarId, target.uid, target.recurrenceId || '']);
   if (!found) return false;
   await connection.execute('DELETE FROM calendar_overlay_restores WHERE id = ?', [found.id]);
   const state = parseOverlayState(found.payload);
@@ -190,9 +188,12 @@ async function takeOverlayForNewRow(connection: SqlExecutor, target: OverlayTarg
 
 /**
  * Applies the waiting overlays whose item already has rows: after a restore
- * into the installation that still has the item, or when the bin finds the
- * item back at its server. By identity; shape overlays only to a row that
- * keeps nothing of its own yet. Returns how many were applied.
+ * into the installation that still has the item, when the bin finds the item
+ * back at its server, and at the end of a calendar's complete sync. By exact
+ * identity; a shape overlay only when exactly one row of its calendar has its
+ * title and start and that row keeps nothing of its own yet. An ambiguous one
+ * stays pending until it expires (the restore note counts it as not
+ * matched). Returns how many were applied.
  */
 async function applyOverlaysToLiveRows(connection: SqlExecutor, userId: string, { calendarIds, uid, mode = 'fill' }: { calendarIds?: readonly string[]; uid?: string; mode?: Exclude<ApplyMode, 'new'> } = {}) {
   if (calendarIds && !calendarIds.length) return 0;
@@ -203,12 +204,20 @@ async function applyOverlaysToLiveRows(connection: SqlExecutor, userId: string, 
      JOIN calendar_events e ON e.user_id = p.user_id AND e.calendar_id = p.calendar_id AND e.uid = p.uid ${EXACT}
      JOIN calendar_event_external_refs r ON r.event_id = e.id AND r.user_id = e.user_id AND COALESCE(r.recurrence_id, '') = p.recurrence_id ${EXACT}
      WHERE p.user_id = ? AND p.match_kind = 'uid'${scope} ORDER BY p.created_at, p.id FOR UPDATE`, [userId, ...scopeValues]);
-  const [byShape] = uid !== undefined ? [[] as RowDataPacket[]] : await connection.execute<RowDataPacket[]>(
-    `SELECT p.id, p.payload, MIN(e.id) AS event_id FROM calendar_overlay_restores p
+  // Every row with the shape counts, also one that keeps state: the match must be the only one.
+  const [shapes] = uid !== undefined ? [[] as RowDataPacket[]] : await connection.execute<RowDataPacket[]>(
+    `SELECT p.id, p.payload, MIN(e.id) AS event_id, COUNT(e.id) AS matches FROM calendar_overlay_restores p
      JOIN calendar_events e ON e.user_id = p.user_id AND e.calendar_id = p.calendar_id AND e.title = p.shape_title ${EXACT} AND e.start_time = p.shape_start
-       AND e.todo_status IS NULL AND NOT EXISTS (SELECT 1 FROM calendar_event_subtasks s WHERE s.event_id = e.id)
      WHERE p.user_id = ? AND p.match_kind = 'shape' AND (p.expires_at IS NULL OR p.expires_at > UTC_TIMESTAMP())${scope}
      GROUP BY p.id, p.payload, p.created_at ORDER BY p.created_at, p.id`, [userId, ...scopeValues]);
+  const byShape = [];
+  for (const row of shapes) {
+    if (Number(row.matches) !== 1) continue;
+    const [[own]] = await connection.execute<RowDataPacket[]>(
+      `SELECT e.todo_status, EXISTS (SELECT 1 FROM calendar_event_subtasks s WHERE s.event_id = e.id) AS has_subtasks
+       FROM calendar_events e WHERE e.id = ? AND e.user_id = ? FOR UPDATE`, [row.event_id, userId]);
+    if (own && !own.todo_status && !Number(own.has_subtasks)) byShape.push(row);
+  }
   let applied = 0;
   const claimed = new Set<string>();
   for (const row of [...byUid, ...byShape]) {
@@ -219,6 +228,12 @@ async function applyOverlaysToLiveRows(connection: SqlExecutor, userId: string, 
     if (state && await applyOverlayState(connection, userId, String(row.event_id), state, mode)) applied += 1;
   }
   return applied;
+}
+
+/** Whether a calendar has overlays waiting, so a sync applies them only when there are some. */
+async function hasPendingOverlays(executor: SqlExecutor, calendarId: string) {
+  const [rows] = await executor.execute<RowDataPacket[]>('SELECT 1 FROM calendar_overlay_restores WHERE calendar_id = ? LIMIT 1', [calendarId]);
+  return rows.length > 0;
 }
 
 /** Shape overlays past their time (the restore note counted them as not matched). */
@@ -235,6 +250,7 @@ export {
   insertOverlays,
   takeOverlayForNewRow,
   applyOverlaysToLiveRows,
+  hasPendingOverlays,
   sweepExpiredOverlays,
 };
 export type { OverlayState, OverlaySubtask, OverlayTarget, PendingOverlay };
