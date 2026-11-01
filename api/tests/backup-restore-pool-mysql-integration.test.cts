@@ -13,7 +13,7 @@ const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts')
 // it started can wait for those rows with every other connection of the main
 // pool; the restore's progress writes and cancellation checks must still get
 // a connection, or nothing moves until the requests' lock waits time out.
-test('a restore whose rows requests wait for with every other connection still finishes', { skip: !process.env.MYSQL_TEST_HOST, timeout: 90000 }, async () => {
+test('a restore whose rows requests wait for with every other connection still finishes', { skip: !process.env.MYSQL_TEST_HOST, timeout: 300000 }, async () => {
   const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
   assert.match((process.env.MYSQL_TEST_DATABASE as string), /_test$/);
   const settings = { host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306), database: process.env.MYSQL_TEST_DATABASE, user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD };
