@@ -193,6 +193,70 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     assert.ok(!fs.existsSync(path.join(folder, 'bin', `${id}.webm`)) && !fs.existsSync(file), 'deleted for good');
   });
 
+  await t.test('recordings: two restores at once leave the file with the one that won', async () => {
+    const folder = path.join(recordingsRoot, users.alex);
+    const id = crypto.randomUUID();
+    const file = path.join(folder, `${id}.webm`);
+    fs.writeFileSync(file, 'raced recording bytes');
+    await pool.execute("INSERT INTO recordings (id, user_id, title, content_type, size_bytes, storage_path) VALUES (?, ?, 'Raced memo', 'audio/webm', 21, ?)", [id, users.alex, file]);
+    await call(alex, 'DELETE', `/api/recordings/${id}`);
+    const [item] = await bin(alex, 'recordings');
+    // The first restore moves the file back and stops there; the second runs meanwhile.
+    const files = (require('node:fs') as typeof import('node:fs')).promises;
+    const rename = files.rename;
+    let reached!: () => void; let release!: () => void;
+    const atPause = new Promise<void>(resolve => { reached = resolve; });
+    const paused = new Promise<void>(resolve => { release = resolve; });
+    let once = true;
+    files.rename = (async (from: string, to: string) => {
+      await rename(from, to);
+      if (once && String(to) === file) { once = false; reached(); await within(paused, 5000); }
+    }) as typeof files.rename;
+    try {
+      const first = alex.request('POST', `/api/bin/${item.id}/restore`);
+      assert.ok((await within(atPause, 5000)).done, 'the first restore moved the file');
+      const second = alex.request('POST', `/api/bin/${item.id}/restore`);
+      await within(second, 1000);
+      release();
+      const statuses = (await Promise.all([first, second])).map(reply => reply.status).sort();
+      assert.deepEqual(statuses, [200, 404], 'one restore, the other finds it gone');
+    } finally { files.rename = rename; release(); }
+    assert.equal(fs.readFileSync(file, 'utf8'), 'raced recording bytes', 'the file stays with the restored recording');
+    assert.equal((await pool.query<RowDataPacket[]>('SELECT storage_path FROM recordings WHERE id = ?', [id]))[0][0].storage_path, file);
+    assert.ok(!fs.existsSync(path.join(folder, 'bin', `${id}.webm`)));
+    assert.deepEqual(await bin(alex, 'recordings'), []);
+    await pool.execute('DELETE FROM recordings WHERE id = ?', [id]);
+    fs.rmSync(file, { force: true });
+  });
+
+  await t.test('recordings: a bin folder that is a link out of the recordings root is refused, nothing moves', async () => {
+    const folder = path.join(recordingsRoot, users.alex);
+    const outside = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'unihub-bin-outside-'));
+    const binFolder = path.join(folder, 'bin');
+    assert.deepEqual(fs.readdirSync(binFolder), [], 'nothing waits in the bin folder');
+    fs.rmdirSync(binFolder);
+    fs.symlinkSync(outside, binFolder);
+    const id = crypto.randomUUID();
+    const file = path.join(folder, `${id}.webm`);
+    fs.writeFileSync(file, 'linked folder bytes');
+    await pool.execute("INSERT INTO recordings (id, user_id, title, content_type, size_bytes, storage_path) VALUES (?, ?, 'Linked memo', 'audio/webm', 19, ?)", [id, users.alex, file]);
+    try {
+      assert.equal((await call(alex, 'DELETE', `/api/recordings/${id}`, undefined, 409)).code, 'RECORDING_FOLDER_UNSAFE');
+      assert.ok(fs.existsSync(file), 'the file stays where it was');
+      assert.deepEqual(fs.readdirSync(outside), [], 'nothing reached the folder outside the root');
+      assert.equal(await count('SELECT COUNT(*) AS n FROM recordings WHERE id = ?', [id]), 1);
+      assert.deepEqual(await bin(alex, 'recordings'), []);
+    } finally {
+      fs.unlinkSync(binFolder);
+      fs.mkdirSync(binFolder);
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+    await call(alex, 'DELETE', `/api/recordings/${id}`);
+    assert.ok(fs.existsSync(path.join(binFolder, `${id}.webm`)), 'a plain folder works again');
+    const [item] = await bin(alex, 'recordings');
+    await call(alex, 'DELETE', `/api/bin/${item.id}`);
+  });
+
   await t.test('deleting for good and emptying obey bin.delete; empty takes one module or all', async () => {
     const gone = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Gale' } })).contact;
     await call(alex, 'DELETE', `/api/contacts/${gone.id}`);
