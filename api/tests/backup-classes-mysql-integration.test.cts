@@ -110,6 +110,8 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
     const gone = await email('Gone at the provider', accounts.sync, { ...linked(8), remote_missing: 1 });
     await occurrence(gone, 8, { presence: 'absent' });
     await attachment(gone, 'only-here.bin');
+    // Its Gmail identity, which a backup carries on the item (the mapping table stays out for Sync).
+    await insert('mail_gmail_messages', { mail_account_id: accounts.sync, gmail_msgid: '424242', user_id: owner, email_id: gone });
     await email('Known absent', accounts.sync, { imap_uid: 7, imap_uidvalidity: 19, remote_missing: 1, is_legacy: 1 });
     await email('Old address only', accounts.sync, linked(9));
     await occurrence(await email('In an old mailbox epoch', accounts.sync, linked(10, 6)), 10, { uidvalidity: 6 });
@@ -131,6 +133,9 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
     const withMail = await backup.buildBackupForUser(owner, { sections: ['mail'], includeFileData: false });
     assert.deepEqual(subjects(withMail.data.emails), [...keptSync, 'Downloaded', 'Only copy'].sort());
     assert.deepEqual(withMail.contents.left_out.map((row: FixtureValue) => [row.what, row.count]), [['Sync-mode mail', 1]]);
+    assert.equal(withMail.data.mail_gmail_messages.length, 0, 'no mapping of a Sync account');
+    assert.deepEqual(withMail.data.emails.filter((row: FixtureValue) => row.remote_gmail_msgid != null).map((row: FixtureValue) => [row.subject, row.remote_gmail_msgid]),
+      [['Gone at the provider', '424242']]);
 
     // The same mail in an archive of 0.27 (schema 6), which held every message
     // with the provider evidence: its import keeps the same messages.
@@ -142,6 +147,9 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
     old.version = 6;
     delete old.contents;
     old.data.mail_accounts.find((row: FixtureValue) => row.id === accounts.sync).sync_mode = 'sync';
+    // Schema 6 held the Gmail identity only in the mapping table.
+    for (const row of old.data.emails) delete row.remote_gmail_msgid;
+    assert.equal(old.data.mail_gmail_messages.length, 1);
     assert.deepEqual(old.files.map((file: FixtureValue) => file.kind), ['email_attachment', 'email_attachment'], 'it holds both files');
     assert.ok(old.data.mail_remote_occurrences.length >= 6, 'the archive carries the occurrences');
     const reader = await newUser('mail-reader');
@@ -150,6 +158,8 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
     const [readerMail] = await pool.query<RowDataPacket[]>(`SELECT e.subject, a.sync_mode FROM emails e JOIN mail_accounts a ON a.id = e.mail_account_id WHERE e.user_id = ?`, [reader]);
     assert.deepEqual(subjects(readerMail.filter(row => row.sync_mode === 'sync')), keptSync);
     assert.deepEqual(subjects(readerMail.filter(row => row.sync_mode !== 'sync')), ['Downloaded', 'Only copy']);
+    const [carried] = await pool.query<RowDataPacket[]>('SELECT subject, remote_gmail_msgid FROM emails WHERE user_id = ? AND remote_gmail_msgid IS NOT NULL', [reader]);
+    assert.deepEqual(carried.map(row => [row.subject, row.remote_gmail_msgid]), [['Gone at the provider', '424242']], 'the kept item takes its identity from the old mapping');
     assert.deepEqual(imported.contents.left_out.map((row: FixtureValue) => [row.what, row.count]), [['Sync-mode mail', 1]]);
     assert.deepEqual((await pool.query<RowDataPacket[]>('SELECT filename FROM email_attachments WHERE user_id = ?', [reader]))[0].map(row => row.filename), ['only-here.bin']);
 

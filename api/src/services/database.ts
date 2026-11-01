@@ -390,7 +390,7 @@ const MIGRATIONS: readonly Migration[] = [
         if (await columnCollation(connection, table, 'uid') !== UID_COLLATION) throw new Error(`${table}.uid does not compare exactly`);
         if (!await hasIndex(connection, table, index)) throw new Error(`Index ${index} on ${table} is missing`);
       }
-      for (const [table, name] of [['data_export_jobs', 'idx_data_export_jobs_keep_until'], ['bin_items', 'idx_bin_items_due'], ['emails', 'idx_emails_remote_address']]) {
+      for (const [table, name] of [['data_export_jobs', 'idx_data_export_jobs_keep_until'], ['bin_items', 'idx_bin_items_due'], ['emails', 'idx_emails_remote_address'], ['emails', 'idx_emails_remote_gmail']]) {
         if (!await hasIndex(connection, table, name)) throw new Error(`Index ${name} on ${table} is missing`);
       }
     },
@@ -756,6 +756,12 @@ async function addDataSafety(connection: SqlExecutor) {
   // A scan looks up a restored Sync item by the exact provider address it
   // holds (keptItemAtAddress in mail-engine/sync.ts), once per new message.
   if (!await hasIndex(connection, 'emails', 'idx_emails_remote_address')) await connection.execute('ALTER TABLE emails ADD KEY idx_emails_remote_address (mail_account_id, remote_uidvalidity, remote_uid)');
+  // A kept Gmail item's X-GM-MSGID as a backup carried it (the live mapping
+  // is mail_gmail_messages, which a backup leaves out for Sync accounts): the
+  // Gmail merge of a confirmed Sync account takes the item into the group of
+  // that message (mail-sync-policy.ts).
+  if (!await hasColumn(connection, 'emails', 'remote_gmail_msgid')) await connection.execute('ALTER TABLE emails ADD COLUMN remote_gmail_msgid VARCHAR(32) NULL');
+  if (!await hasIndex(connection, 'emails', 'idx_emails_remote_gmail')) await connection.execute('ALTER TABLE emails ADD KEY idx_emails_remote_gmail (mail_account_id, remote_gmail_msgid)');
 
   // The ToDo state and subtasks of a synced task from a restored archive,
   // until the sync that creates the task's row takes them (services/

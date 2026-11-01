@@ -78,13 +78,19 @@ test('a restored Sync copy is linked when the provider shows its exact address a
     { label: 'download', mode: 'download', email: {}, providerEpoch: 19, copies: 2, linked: false },
     { label: 'sync-download', finalMode: 'download', email: {}, providerEpoch: 19, copies: 2, linked: false },
     { label: 'sync-download-sync', toggleBack: true, email: {}, providerEpoch: 19, copies: 1, linked: true },
-    // Gmail: the same X-GM-MSGID under the label Other (UID 88) as well.
-    // Address first: the restored item takes both labels. Other label first:
-    // that label's scan downloads its own item, which the address then
-    // follows; the restored item stays beside it, unlinked.
+    // Gmail: the same X-GM-MSGID under the label Other (UID 88) as well; the
+    // backup carries the restored item's X-GM-MSGID. Address first: the
+    // restored item takes both labels. Other label first: that label's scan
+    // downloads its own item, which the address then follows. Both stay until
+    // the account's Sync policy is confirmed; then the Gmail merge keeps the
+    // restored item, with both labels, and the other item's ToDo moves to it.
     { label: 'gmail-address-first', gmail: true, email: {}, providerEpoch: 19, copies: 1, linked: true, labels: 2 },
-    { label: 'gmail-other-label-first', gmail: true, otherFirst: true, email: {}, providerEpoch: 19, copies: 2, linked: false },
-    { label: 'gmail-other-label-first-with-task', gmail: true, otherFirst: true, otherTask: true, email: {}, providerEpoch: 19, copies: 2, linked: false },
+    { label: 'gmail-other-label-first', gmail: true, otherFirst: true, confirmLater: true, email: {}, providerEpoch: 19, copies: 1, linked: true, labels: 2 },
+    { label: 'gmail-other-label-first-with-task', gmail: true, otherFirst: true, otherTask: true, confirmLater: true, email: {}, providerEpoch: 19, copies: 1, linked: true, labels: 2 },
+    // A restored item without its content: the merge keeps the complete copy,
+    // and the restored item's ToDo moves to it.
+    { label: 'gmail-incomplete-restored', gmail: true, otherFirst: true, confirmLater: true, email: { raw_storage_path: null, raw_sha256: null, raw_bytes: null, import_complete: 0 },
+      providerEpoch: 19, copies: 1, replaced: true, linked: false, survivorLabels: 2 },
   ];
   const raws = new Map<string, Buffer>();
   for (const scenario of cases) {
@@ -101,6 +107,7 @@ test('a restored Sync copy is linked when the provider shows its exact address a
       from_address: 'sender@example.test', to_addresses: '["reader@example.test"]', body_text: 'Synthetic complete copy', folder: 'archive', source_folder: 'INBOX',
       received_at: '2026-10-25 12:00:00', raw_storage_path: stored, raw_sha256: sha256(raw), raw_bytes: raw.length, raw_format: 'exact_octets', raw_verified: 1, import_complete: 1,
       is_read: 1, is_starred: 1, remote_folder: 'INBOX', remote_uid: 71, remote_uidvalidity: 19, imap_uid: 71, imap_uidvalidity: 19, ...scenario.email });
+    if (scenario.gmail) await insert('mail_gmail_messages', { mail_account_id: account, gmail_msgid: '123456789', user_id: owner, email_id: email });
   }
 
   const backup = runtime('services/backup');
@@ -117,9 +124,15 @@ test('a restored Sync copy is linked when the provider shows its exact address a
     const [[account]] = await pool.query<RowDataPacket[]>('SELECT * FROM mail_accounts WHERE user_id = ? AND email_address = ?', [reader, `reappearing-${scenario.label}@example.test`]);
     const mode = scenario.finalMode || scenario.mode || 'sync';
     if (scenario.toggleBack) await pool.execute("UPDATE mail_accounts SET sync_mode = 'download', sync_policy_confirmed_at = NULL WHERE id = ?", [account.id]);
-    await pool.execute('UPDATE mail_accounts SET is_active = TRUE, sync_mode = ?, sync_policy_confirmed_at = UTC_TIMESTAMP() WHERE id = ?', [mode, account.id]);
-    Object.assign(account, { is_active: 1, sync_mode: mode, sync_policy_confirmed_at: new Date() });
-    const [[before]] = await pool.query<RowDataPacket[]>('SELECT id FROM emails WHERE user_id = ? AND mail_account_id = ?', [reader, account.id]);
+    const confirm = async () => {
+      await pool.execute('UPDATE mail_accounts SET sync_policy_confirmed_at = UTC_TIMESTAMP() WHERE id = ?', [account.id]);
+      account.sync_policy_confirmed_at = new Date();
+    };
+    await pool.execute('UPDATE mail_accounts SET is_active = TRUE, sync_mode = ? WHERE id = ?', [mode, account.id]);
+    Object.assign(account, { is_active: 1, sync_mode: mode, sync_policy_confirmed_at: null });
+    if (!scenario.confirmLater) await confirm();
+    const [[before]] = await pool.query<RowDataPacket[]>('SELECT id, remote_gmail_msgid FROM emails WHERE user_id = ? AND mail_account_id = ?', [reader, account.id]);
+    assert.equal(before.remote_gmail_msgid, scenario.gmail ? '123456789' : null, `${scenario.label}: the backup carries the X-GM-MSGID`);
     const task = uuid();
     await insert('calendar_events', { id: task, user_id: reader, title: 'Synthetic mail task', start_time: '2026-10-25 12:00:00', end_time: '2026-10-25 12:00:00',
       is_todo_only: 1, source_email_id: before.id, source_email_json: JSON.stringify({ subject: `Reappearing ${scenario.label}` }) });
@@ -152,6 +165,14 @@ test('a restored Sync copy is linked when the provider shows its exact address a
     for (const stream of mode === 'sync' ? ['presence', 'history', 'flags'] : ['history']) await scan(stream);
     if (scenario.gmail && !scenario.otherFirst) await otherLabel();
     for (let pass = 0; pass < 2; pass++) await policy.runPruneSlice({ account });
+    if (scenario.confirmLater) {
+      // Unconfirmed: nothing is merged or removed, files included.
+      const [kept] = await pool.query<RowDataPacket[]>('SELECT raw_storage_path FROM emails WHERE user_id = ? AND mail_account_id = ?', [reader, account.id]);
+      assert.equal(kept.length, 2, `${scenario.label}: both copies stay before confirmation`);
+      for (const copy of kept.filter(row => row.raw_storage_path)) assert.deepEqual(await fs.readFile(copy.raw_storage_path), raw, `${scenario.label}: files stay before confirmation`);
+      await confirm();
+      for (let pass = 0; pass < 2; pass++) await policy.runPruneSlice({ account });
+    }
 
     const [copies] = await pool.query<RowDataPacket[]>(`SELECT e.id, e.import_complete, e.raw_storage_path, e.is_read, e.is_starred, e.folder,
         (SELECT COUNT(*) FROM mail_remote_occurrences o WHERE o.email_id = e.id AND o.presence = 'present') AS live
@@ -174,9 +195,14 @@ test('a restored Sync copy is linked when the provider shows its exact address a
       const [[todo]] = await pool.query<RowDataPacket[]>('SELECT source_email_id FROM calendar_events WHERE id = ?', [task]);
       assert.equal(todo.source_email_id, before.id, `${scenario.label}: ToDo link`);
     }
+    if (scenario.survivorLabels) {
+      assert.equal(Number(copies[0].live), scenario.survivorLabels, `${scenario.label}: the kept copy holds every label`);
+      const [[todo]] = await pool.query<RowDataPacket[]>('SELECT source_email_id FROM calendar_events WHERE id = ?', [task]);
+      assert.equal(todo.source_email_id, copies[0].id, `${scenario.label}: the restored item's ToDo names the kept copy`);
+    }
     if (otherTask) {
       const [[todo]] = await pool.query<RowDataPacket[]>('SELECT source_email_id FROM calendar_events WHERE id = ?', [otherTask]);
-      assert.ok(copies.some(copy => copy.id === todo.source_email_id && copy.id !== before.id), `${scenario.label}: the other item and its ToDo link stay`);
+      assert.equal(todo.source_email_id, before.id, `${scenario.label}: the other item's ToDo names the kept item`);
     }
     if (scenario.linked) {
       // The restored item itself carries the live copy now; nothing was downloaded again.

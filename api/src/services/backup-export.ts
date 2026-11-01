@@ -293,6 +293,12 @@ const ACCOUNT_MAIL_FILTERS: Readonly<Record<string, string>> = Object.freeze({
   mail_engine_quarantine: 'b.mail_account_id = ?',
 });
 
+// A kept Gmail item carries its X-GM-MSGID: the account's one mapping of the
+// item, else the identity an earlier restore brought (a second backup before
+// the first sync). A backup leaves the mapping table out for Sync accounts.
+const GMAIL_IDENTITY_SQL = `COALESCE((SELECT IF(COUNT(*) = 1, MIN(g.gmail_msgid), NULL) FROM mail_gmail_messages g
+    WHERE g.email_id = b.id AND g.user_id = b.user_id AND g.mail_account_id = b.mail_account_id), b.remote_gmail_msgid)`;
+
 // Account settings keep only connections a restore can sign in with again:
 // every mail account and the remote calendar accounts. Local calendars have
 // nothing to download, so they belong to the complete Calendar section.
@@ -388,7 +394,7 @@ async function readBackupSnapshot(userId: string, sections: unknown, checkCancel
       for (const table of accountOnly ? [ACCOUNT_ONLY_TABLES[section]] : SECTION_POLICIES[section].tables) {
         if (checkCancelled) await checkCancelled();
         const policy = TABLE_POLICIES[table];
-        const columns = policy.columns.map(column => `b.\`${column}\``).join(', ');
+        const columns = policy.columns.map(column => table === 'emails' && column === 'remote_gmail_msgid' ? `${GMAIL_IDENTITY_SQL} AS remote_gmail_msgid` : `b.\`${column}\``).join(', ');
         let from = `${table === 'user' ? 'users' : table} b`;
         let where = table === 'user' ? 'b.id = ?' : 'b.user_id = ?';
         let params = [userId];

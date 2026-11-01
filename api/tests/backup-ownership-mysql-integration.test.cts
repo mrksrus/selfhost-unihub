@@ -132,8 +132,9 @@ test('MySQL restores colliding backup IDs without changing another user in every
   await connection.execute(`CREATE TEMPORARY TABLE contact_photos (contact_id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, sha256 CHAR(64) NOT NULL,
     width SMALLINT UNSIGNED NOT NULL, height SMALLINT UNSIGNED NOT NULL, bytes INT UNSIGNED NOT NULL, thumb_sha256 CHAR(64) NOT NULL, source VARCHAR(16) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
   await connection.execute('CREATE TEMPORARY TABLE contact_duplicate_dismissals (contact_a CHAR(36) NOT NULL, contact_b CHAR(36) NOT NULL, user_id CHAR(36) NOT NULL, PRIMARY KEY (contact_a, contact_b)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
-  // 0.28 (upgrade 25): stable identities, compared byte for byte, and the
-  // synced-task state a restore leaves for the sync.
+  // 0.28 (upgrade 25): stable identities, compared byte for byte, a kept
+  // Gmail item's X-GM-MSGID, and the synced-task state a restore leaves for the sync.
+  await connection.execute('ALTER TABLE emails ADD COLUMN remote_gmail_msgid VARCHAR(32) NULL');
   await connection.execute('ALTER TABLE calendar_calendars ADD COLUMN uid CHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NOT NULL DEFAULT uuid()');
   await connection.execute('ALTER TABLE calendar_events ADD COLUMN uid VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NOT NULL DEFAULT uuid()');
   await connection.execute('ALTER TABLE recordings ADD COLUMN uid CHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NOT NULL DEFAULT uuid()');

@@ -56,6 +56,19 @@ module:
   downloads beside it, also after the account is switched to Download before
   its first scan. Drafts, Legacy, cross-filed and missing-marked items are
   never linked this way, and nothing is matched by Message-ID.
+- On Gmail another label of a restored message may be scanned before the
+  restored item's address. That label downloads its own item, the address
+  then follows it, and the restored item stays beside it. The restored item
+  keeps its X-GM-MSGID (`emails.remote_gmail_msgid`, carried by the backup),
+  so the existing Gmail merge treats the two as copies of one message
+  ([Mail modes](MAIL_MODES.md#gmail)): nothing merges before the account's
+  Sync policy is confirmed, and a restore never confirms it; afterwards the
+  merge keeps one item. It prefers a complete copy, between complete copies
+  the restored one, which keeps its id, filing and links; the labels,
+  operation history and mapping move to the kept item, and tasks made from a
+  removed copy (also those still waiting as restore overlays) name the kept
+  item. A merge group needs an occurrence of that X-GM-MSGID; an identity
+  from an archive alone joins nothing.
 - An address of an older UIDVALIDITY links nothing: after the server reset
   the mailbox's UIDVALIDITY between the backup and the restore, that UID may
   be another message now. The restored item and the server's copy, downloaded

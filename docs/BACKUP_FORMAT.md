@@ -182,6 +182,12 @@ person's local calendars for a task: a task moved to another list after the
 backup is the same task. A restore keeps the archived `uid` unless the
 person already has it on another item or the row is a Keep both copy. Rows of
 schemas 1 to 6 have no `uid`; their archived `id` is their identity.
+A kept Gmail message carries its X-GM-MSGID in `emails.remote_gmail_msgid`
+(from the account's mapping, which the backup leaves out for Sync accounts;
+an archive of schemas 1 to 6 gives it from its `mail_gmail_messages`). It is
+provider identity, not a link: the restored item takes no occurrence from it,
+and only the Gmail merge of a confirmed Sync account uses it (see
+[Mail sync](MAIL_SYNC.md)). A value that is not a decimal id is dropped.
 
 UniHub's state on a synced task (ToDo state, done time, source email and
 subtasks) travels in `calendar_overlay_restores`, keyed by calendar, UID and

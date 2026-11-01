@@ -176,6 +176,17 @@ function filterOldArchive(backup: ArchiveEnvelope, now = new Date()): { counts: 
     counts.synced_events = removed.size;
   }
 
+  // A kept Gmail item takes its X-GM-MSGID from the archive's mapping, as a
+  // schema 7 backup carries it on the item (remote_gmail_msgid).
+  const gmailIds = new Map<string, string[]>();
+  for (const row of asRows(data.mail_gmail_messages)) {
+    const key = `${row.mail_account_id}:${row.email_id}`;
+    gmailIds.set(key, [...(gmailIds.get(key) || []), String(row.gmail_msgid)]);
+  }
+  for (const email of asRows(data.emails)) {
+    const ids = gmailIds.get(`${email.mail_account_id}:${email.id}`);
+    if (ids?.length === 1 && email.remote_gmail_msgid == null) email.remote_gmail_msgid = ids[0];
+  }
   const syncAccounts = new Set(asRows(data.mail_accounts).filter(row => row.sync_mode === 'sync').map(row => String(row.id)));
   if (syncAccounts.size) {
     const mirrored = providerCopyIds(data, syncAccounts);
