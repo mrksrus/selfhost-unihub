@@ -74,15 +74,16 @@ export = defineRoutes({
     } catch (error) { return failed(error, 'Failed to update contact'); }
   } },
 
-  // 0.28 turns a delete into a move to the bin (P-31, D13).
-  'DELETE /api/contacts/:id': { ...contactRoute, destructive: ['contacts.delete'], handler: async (req: Request, userId: string) => {
+  // A delete removes contacts for good, which bin.delete forbids (F13), until
+  // 0.28 turns it into a move to the bin (P-31, D13) and drops the key.
+  'DELETE /api/contacts/:id': { ...contactRoute, destructive: ['bin.delete'], handler: async (req: Request, userId: string) => {
     try {
       await deleteContacts(userId, [req.params.id]);
       return { message: 'Contact deleted' };
     } catch (error) { return failed(error, 'Failed to delete contact'); }
   } },
 
-  'POST /api/contacts/bulk-delete': { ...contactRoute, destructive: ['contacts.delete'], body: { limit: BULK_BODY_LIMIT }, handler: async (_req: Request, userId: string, body: unknown) => {
+  'POST /api/contacts/bulk-delete': { ...contactRoute, destructive: ['bin.delete'], body: { limit: BULK_BODY_LIMIT }, handler: async (_req: Request, userId: string, body: unknown) => {
     const ids = bulkIds((body as { ids?: unknown } | null)?.ids);
     if (!Array.isArray(ids)) return ids;
     try {

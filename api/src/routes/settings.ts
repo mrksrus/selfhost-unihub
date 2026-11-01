@@ -99,7 +99,7 @@ export = defineRoutes({
     }
   } },
 
-  'DELETE /api/settings/account': { auth: 'user', module: null, restoreSection: '*', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+  'DELETE /api/settings/account': { auth: 'user', module: null, restoreSection: '*', destructive: ['account.delete'], handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
     try {
       await deleteUser(userId, { actor: 'self', actorId: userId, req });
       clearAuthCookie(res);
@@ -112,7 +112,9 @@ export = defineRoutes({
   } },
 
   // Clearing a module's data follows that module's switch and its restore lock.
-  'POST /api/settings/clear-contacts': { auth: 'user', module: 'contacts', restoreSection: 'contacts', handler: async (req: Request, userId: string) => {
+  // It deletes for good (data.clear, also forbidden while bin.delete is), and
+  // clearing calendar or mail removes the module's accounts as well.
+  'POST /api/settings/clear-contacts': { auth: 'user', module: 'contacts', restoreSection: 'contacts', destructive: ['data.clear'], handler: async (req: Request, userId: string) => {
     try {
       const [result] = await db.execute<ResultSetHeader>('DELETE FROM contacts WHERE user_id = ?', [userId]);
       const deleted = result.affectedRows || 0;
@@ -122,7 +124,7 @@ export = defineRoutes({
       return { error: 'Failed to delete contacts', status: 500 };
     }
   } },
-  'POST /api/settings/clear-calendar': { auth: 'user', module: 'calendar', restoreSection: 'calendar', handler: async (req: Request, userId: string) => {
+  'POST /api/settings/clear-calendar': { auth: 'user', module: 'calendar', restoreSection: 'calendar', destructive: ['data.clear', 'accounts.remove'], handler: async (req: Request, userId: string) => {
     try {
       const [subtasksResult] = await db.execute<ResultSetHeader>('DELETE FROM calendar_event_subtasks WHERE user_id = ?', [userId]);
       const [eventsResult] = await db.execute<ResultSetHeader>('DELETE FROM calendar_events WHERE user_id = ?', [userId]);
@@ -137,7 +139,7 @@ export = defineRoutes({
       return { error: 'Failed to delete calendar and todo data', status: 500 };
     }
   } },
-  'POST /api/settings/clear-mail-accounts': { auth: 'user', module: 'mail', restoreSection: 'mail', handler: async (req: Request, userId: string) => {
+  'POST /api/settings/clear-mail-accounts': { auth: 'user', module: 'mail', restoreSection: 'mail', destructive: ['data.clear', 'accounts.remove', 'accounts.reset'], handler: async (req: Request, userId: string) => {
     try {
       const [attachments] = await db.execute<RowDataPacket[]>(
         'SELECT storage_path FROM email_attachments WHERE user_id = ?',
@@ -179,7 +181,7 @@ export = defineRoutes({
       return { error: 'Failed to delete mail accounts', status: 500 };
     }
   } },
-  'POST /api/settings/clear-recordings': { auth: 'user', module: 'recordings', restoreSection: 'recordings', handler: async (req: Request, userId: string) => {
+  'POST /api/settings/clear-recordings': { auth: 'user', module: 'recordings', restoreSection: 'recordings', destructive: ['data.clear'], handler: async (req: Request, userId: string) => {
     try {
       const [recordings] = await db.execute<RowDataPacket[]>('SELECT storage_path FROM recordings WHERE user_id = ?', [userId]);
       for (const row of recordings || []) {

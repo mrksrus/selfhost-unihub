@@ -23,6 +23,7 @@ import { assertRouteTable, mergeRouteTables } from '../http/route';
 import { legacyRoutes } from './legacy-spec';
 import { MODULE_CATALOG } from '../services/module-catalog';
 import { SECTION_POLICIES } from '../services/backup-catalog';
+import { POLICIES } from '../services/settings';
 
 // The production route table: every key once, each with its spec. Files still
 // exporting plain handlers are wrapped with the derived legacy policy.
@@ -49,6 +50,8 @@ const routes = mergeRouteTables(
   eventsRoutes,
   filesRoutes,
 );
-assertRouteTable(routes, { moduleIds: MODULE_CATALOG.map(module => module.id), sections: Object.keys(SECTION_POLICIES) });
+// A route declares only policy keys that can refuse an action.
+const refusablePolicies = Object.entries(POLICIES).filter(([, entry]) => entry.refuses.length).map(([key]) => key);
+assertRouteTable(routes, { moduleIds: MODULE_CATALOG.map(module => module.id), sections: Object.keys(SECTION_POLICIES), policyKeys: refusablePolicies });
 
 export = routes;

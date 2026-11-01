@@ -68,7 +68,9 @@ All mail; nothing is deleted, and a later LIST that shows the folder again
 makes it active through `ensureMailbox`.
 
 Deleting a custom folder on the server (`DELETE /api/mail/folders/:slug?server=1`,
-`mail-folder-delete.ts`) stops the account's read jobs, sends IMAP DELETE and
+`mail-folder-delete.ts`; `server=true` as well) is refused with `POLICY_FORBIDS`
+while an administrator's `mail.provider_delete` policy forbids deleting mail at
+the provider. Otherwise it stops the account's read jobs, sends IMAP DELETE and
 only then changes local rows, in one transaction. A login or connection failure,
 or a refusal, changes nothing; a DELETE reply with `NONEXISTENT` (or a "does not
 exist" reply for a folder the server no longer lists) counts as deleted. The

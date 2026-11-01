@@ -58,11 +58,11 @@ need `X-CSRF-Token`. Another person's contact, photo, merge or import answers
 | GET | `/api/contacts/:id` | One contact with its kept properties listed (`properties`) |
 | POST | `/api/contacts` | Create |
 | PUT | `/api/contacts/:id` | Replace (full body) or apply an old app's flat body as a change |
-| DELETE | `/api/contacts/:id` | Delete for good (policy `contacts.delete`) |
+| DELETE | `/api/contacts/:id` | Delete for good (policy `bin.delete`) |
 | PUT | `/api/contacts/:id/favorite` | Favourite on or off |
-| POST | `/api/contacts/bulk-delete` | Delete up to 5,000 (policy `contacts.delete`) |
+| POST | `/api/contacts/bulk-delete` | Delete up to 5,000 (policy `bin.delete`) |
 | POST | `/api/contacts/bulk-update` | Set `company`, `department` or `job_title` on many; `null` clears |
-| GET, PUT, DELETE | `/api/contacts/:id/photo` | The photo (`?size=full` or `thumb`), set it (the picture as the raw body), remove it (policy `contacts.delete`) |
+| GET, PUT, DELETE | `/api/contacts/:id/photo` | The photo (`?size=full` or `thumb`), set it (the picture as the raw body), remove it (policy `bin.delete`) |
 | POST | `/api/contacts/imports` | Stage a file (the raw body) and answer the preview |
 | GET | `/api/contacts/imports/:id` | The import's state and result |
 | POST | `/api/contacts/imports/:id/commit` | Write it with per-group decisions |
@@ -70,8 +70,8 @@ need `X-CSRF-Token`. Another person's contact, photo, merge or import answers
 | POST | `/api/contacts/export` | The contacts named in `ids`, in `format` |
 | GET | `/api/contacts/duplicates?min=` | Duplicate groups of at least `low`, `medium` (default) or `high` confidence |
 | POST | `/api/contacts/duplicates/dismiss` | "Not the same person" for every pair of `contact_ids` |
-| POST | `/api/contacts/merges` | Merge 2 to 50 contacts (policy `contacts.delete`) |
-| POST | `/api/contacts/merges/auto` | "Merge all high-confidence": up to 500 groups (policy `contacts.delete`) |
+| POST | `/api/contacts/merges` | Merge 2 to 50 contacts; the merged-away contacts go to the bin |
+| POST | `/api/contacts/merges/auto` | "Merge all high-confidence": up to 500 groups |
 | GET | `/api/contacts/merges` | "Recently merged" |
 | POST | `/api/contacts/merges/:id/undo` | Undo a merge |
 

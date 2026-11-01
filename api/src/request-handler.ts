@@ -20,9 +20,10 @@ import { parseSingleByteRange, fileValidators, rangeAllowed } from './http/range
 import { clientError } from './http/errors';
 import { log, newRequestId, withRequestId } from './log';
 import { compileRouteMatcher } from './http/route-matcher';
-import { DEFAULT_BODY_LIMIT } from './http/route';
+import { DEFAULT_BODY_LIMIT, routePolicies } from './http/route';
 import { isModuleEnabled } from './services/module-settings';
 import { getActiveRestoreSections } from './services/restore-locks';
+import { assertAllowed } from './services/settings';
 import { buildContentDisposition } from './http/content-disposition';
 
 // Every route is a spec (http/route.ts); the boundary reads policy from it and
@@ -167,6 +168,12 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
         return;
       }
     }
+
+    // F13: a data-safety policy that forbids the person this route's action
+    // refuses it with 403 POLICY_FORBIDS and its plain reason, before the
+    // body is read and before any side effect.
+    const policies = routePolicies(spec, url.searchParams);
+    if (userId && policies.length) await assertAllowed(userId, policies);
 
     const maxBodySize = spec.body?.limit ?? DEFAULT_BODY_LIMIT;
     if (isRequestBodyTooLarge(req, maxBodySize)) {

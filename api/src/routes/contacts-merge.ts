@@ -8,8 +8,9 @@ import { autoMerge, listMerges, mergeContacts, undoMerge } from '../services/con
 
 // Duplicates, merges and their 30-day undo (slices 5 and 6). Every route is
 // gated by the Contacts module; the writing ones are refused while the
-// contacts section is restored. A merge removes contacts (into the bin, then
-// for good after 30 days), so it names the contacts.delete policy (F13).
+// contacts section is restored. A merge moves the merged-away contacts into
+// the bin, where the undo finds them; their later removal is the bin's
+// (bin.delete, F13), so a merge itself names no policy.
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 
 const readRoute = { auth: 'user' as const, module: 'contacts' };
@@ -45,14 +46,14 @@ export = defineRoutes({
     try { return { merges: await listMerges(userId) }; } catch (error) { return failed(error, 'Failed to list merges'); }
   } },
 
-  'POST /api/contacts/merges': { ...contactRoute, destructive: ['contacts.delete'], body: { limit: SMALL_BODY }, handler: async (_req: Request, userId: string, body: unknown) => {
+  'POST /api/contacts/merges': { ...contactRoute, body: { limit: SMALL_BODY }, handler: async (_req: Request, userId: string, body: unknown) => {
     try {
       const answer: MergeResult = await mergeContacts(userId, body);
       return { ...answer };
     } catch (error) { return failed(error, 'Failed to merge contacts'); }
   } },
 
-  'POST /api/contacts/merges/auto': { ...contactRoute, destructive: ['contacts.delete'], body: { limit: AUTO_BODY }, handler: async (_req: Request, userId: string, body: unknown) => {
+  'POST /api/contacts/merges/auto': { ...contactRoute, body: { limit: AUTO_BODY }, handler: async (_req: Request, userId: string, body: unknown) => {
     try {
       const answer: AutoMergeResult = await autoMerge(userId, body);
       return { ...answer };

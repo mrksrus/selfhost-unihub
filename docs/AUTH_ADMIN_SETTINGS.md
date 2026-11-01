@@ -389,6 +389,18 @@ your administrator", never hidden, and under a floor the less private choices
 are greyed out the same way. The shared types are in
 `api/src/contracts/settings.ts`.
 
+Data-safety policies (F13) are rules on actions, not settings of a person:
+`policy.<key>` rows of the installation in `setting_policies`, with their keys,
+defaults and plain reasons in `settings-registry.ts` (`POLICIES`) and their
+shapes in `api/src/contracts/policies.ts`. Every default allows what UniHub
+does today. A route names the policies of its action on its spec
+(`destructive`, `requires`; [Request Handling](ARCHITECTURE.md#request-handling)),
+and the request boundary refuses a forbidden action with 403 `POLICY_FORBIDS`
+and `details: { policy, reason }` before anything changes, for every person,
+administrators included on their own data. A locked policy stands; a policy
+of a key with an order is a floor that later group policies can only make
+stricter. No route writes them yet.
+
 ### User scope
 
 | Key | Allowed values | Default | Settings page |
