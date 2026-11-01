@@ -145,7 +145,8 @@ inside `/app/uploads` or a stored-file root stops the start, also through a
 symbolic link or an aliased path. Compose `.env` files are left out. Beyond
 that the server remembers, by size and SHA-256 and never the bytes, every
 version of each secret file it has read: at its start, and at the start
-and end of each run, also of a run that fails, until it stops. A stored file with the same bytes (a hard
+and end of each run, also of a run that fails (a file larger than 64 KiB is
+no secret and is not read past that), until it stops. A stored file with the same bytes (a hard
 link, a copy, a second mount of a secret, also of a version rotated away
 since) is left out, and the log names the setting. A run that cannot read a
 configured secret file at its start (it was removed) does not run and says

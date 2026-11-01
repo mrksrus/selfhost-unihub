@@ -589,6 +589,27 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     }
   });
 
+  await t.test('a secret file that grows past the bound after its size was checked is not taken as a secret', async () => {
+    // The file is small when its size is looked up and large when it is read.
+    const secretFile = write(path.join(scratch, 'growing', 'key'), Buffer.alloc(128 * 1024, 'g'));
+    process.env.UNIHUB_GROWING_SECRET_FILE = secretFile;
+    const config = require('../dist/src/config') as typeof import('../src/config');
+    const statSync = fs.statSync;
+    fs.statSync = ((target: import('node:fs').PathLike, ...rest: unknown[]) => {
+      const stat = (statSync as (...args: unknown[]) => import('node:fs').Stats)(target, ...rest);
+      return String(target) === secretFile ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { size: 16 }) : stat;
+    }) as typeof fs.statSync;
+    try {
+      const run = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      assert.equal(run.status, 'failed');
+      assert.match(String(run.error), /UNIHUB_GROWING_SECRET_FILE .* cannot be checked now/);
+      assert.equal(config.mayBeSecretGeneration(128 * 1024), false, 'nothing past the bound is remembered');
+    } finally {
+      fs.statSync = statSync;
+      delete process.env.UNIHUB_GROWING_SECRET_FILE;
+    }
+  });
+
   await t.test('restore into an empty installation: refused while not empty, then the data, the files and no sessions', async () => {
     const database = getDatabaseConfig()!;
     await assert.rejects(restoreInstanceBackup({ file: first.file, key, database }), /is not empty/);
