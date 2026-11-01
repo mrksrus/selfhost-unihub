@@ -732,7 +732,32 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     assert.deepEqual(await Promise.all(back.map(async row => (await stepsOf(row.id)).map(([title]) => title))), [['Step 0'], ['Step 1'], ['Step 2']], 'every date keeps its own');
   });
 
-  await t.test('UIDs 0.27 stored trimmed: upgrade step 25 gives them back the server\'s spaces, so the bin and the hand order still find the task', async () => {
+  await t.test('a restore the server may have taken keeps its calendar: another destination is refused until it is settled', async () => {
+    const task = await serverTask('Pinned restore');
+    await call(alex, 'DELETE', `/api/calendar/events/${task.id}`);
+    const item = (await bin(alex, 'calendar')).find(entry => entry.title === 'Pinned restore');
+    server.faults.put = () => 'store-then-lose';
+    try {
+      assert.equal((await restore(item.id)).restored[0].pending, true, 'the answer was lost');
+    } finally { delete server.faults.put; }
+    assert.equal(server.copiesOf('Pinned restore').length, 1, 'the server took it');
+    const { calendarId: ownList } = await ensureDefaultLocalCalendarForUser(users.alex);
+    const [[{ id: shared }]] = await pool.query<RowDataPacket[]>("SELECT id FROM calendar_calendars WHERE account_id = ? AND name = 'Shared'", [accountId]);
+    for (const elsewhere of [ownList, shared]) {
+      assert.equal((await call(alex, 'POST', `/api/bin/${item.id}/restore`, { calendar_id: elsewhere }, 409)).code, 'BIN_RESTORE_PENDING');
+      assert.equal((await call(alex, 'POST', '/api/bin/restore', { ids: [item.id], calendar_id: elsewhere })).failed[0].code, 'BIN_RESTORE_PENDING');
+    }
+    assert.equal((await rowsTitled('Pinned restore')).length, 0, 'not restored anywhere else');
+    assert.ok((await bin(alex, 'calendar')).find(entry => entry.id === item.id)?.restoring, 'it waits for its server');
+    // Restored again where it began, the stored copy is adopted: one item.
+    assert.equal((await call(alex, 'POST', `/api/bin/${item.id}/restore`, { calendar_id: work })).restored[0].pending, undefined);
+    await sync();
+    const rows = await rowsTitled('Pinned restore');
+    assert.deepEqual(rows.map(row => row.calendar_id), [work], 'one row, on its calendar');
+    assert.equal(server.copiesOf('Pinned restore').length, 1);
+  });
+
+  await t.test('UIDs 0.27 stored trimmed: upgrade step 25 gives them back the server\'s spaces, so the bin and the hand order still find the task', async context => {
     const { runMigrations } = require('../dist/src/services/database-migrations') as typeof import('../src/services/database-migrations');
     const { MIGRATIONS } = require('../dist/src/services/database') as typeof import('../src/services/database');
     const { BASELINE } = require('../dist/src/services/database-baseline') as typeof import('../src/services/database-baseline');

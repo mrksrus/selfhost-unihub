@@ -352,6 +352,9 @@ async function chosenCalendar(userId: string, calendarId: string) {
 /** A UniHub item, or a synced one a list can hold, into its own list, the chosen one, or the default list. */
 async function restoreLocalItem(userId: string, row: BinRow, note?: string | null, chosenList?: string) {
   const answer = await withTransaction(async cx => {
+    await lockBinOwner(cx, userId);
+    // A synced item whose re-creation at a server began meanwhile goes there, not here.
+    if (await restoreJournal(cx, userId, row.id, { lock: true })) throw restorePending();
     const [locked] = await lockItems(cx, userId, [row]);
     if (!locked) throw notFound('BIN_ITEM_NOT_FOUND', 'Not in the bin');
     const payload = parsePayload<LocalPayload>(locked);
@@ -424,8 +427,21 @@ function localCopyLoses(payload: SyncedPayload) {
 async function restoreSyncedItem(userId: string, row: BinRow, choice: RestoreChoice = {}): Promise<BinRestored> {
   const payload = parsePayload<SyncedPayload>(row);
   if (!payload?.event) throw conflict('BIN_ITEM_UNREADABLE', 'This item cannot be restored.');
-  const chosen = choice.calendarId ? await chosenCalendar(userId, choice.calendarId) : null;
   const uid = payload.object?.uid;
+  // An earlier attempt the server may have taken (its answer was lost) pins
+  // the item to that calendar until the outcome is known: the retry finishes
+  // it there, and no other destination is tried, else the server's copy
+  // would show beside a second one. A journal whose calendar is gone ends.
+  let pinned = await restoreJournal(db, userId, row.id);
+  if (pinned && !pinned.calendarId) {
+    await calendarMove.runBinRestore(pinned.id).catch(() => undefined);
+    pinned = await restoreJournal(db, userId, row.id);
+  }
+  if (pinned) {
+    if (choice.calendarId && choice.calendarId !== pinned.calendarId) throw restorePending();
+    return finishJournal(userId, row, pinned.id, String(pinned.calendarId), String(uid ?? ''));
+  }
+  const chosen = choice.calendarId ? await chosenCalendar(userId, choice.calendarId) : null;
   if (chosen?.local) {
     const lost = localCopyLoses(payload);
     if (lost) throw conflict('BIN_RESTORE_NEEDS_CALENDAR', `A UniHub list cannot hold this repeating event as it was (${lost}). Choose a calendar on a server to restore it to.`);
@@ -445,10 +461,15 @@ async function restoreSyncedItem(userId: string, row: BinRow, choice: RestoreCho
   await calendarSync.resolveLogin(target.account).catch(serverRefusal);
   const calendarId = target.calendar.id;
   const plan = await withTransaction(async cx => {
-    const [journal] = await cx.execute<RowDataPacket[]>('SELECT id FROM calendar_event_moves WHERE bin_item_id = ? AND user_id = ? FOR UPDATE', [row.id, userId]);
+    await lockBinOwner(cx, userId);
+    const journal = await restoreJournal(cx, userId, row.id, { lock: true });
     const [locked] = await lockItems(cx, userId, [row]);
     if (!locked) throw notFound('BIN_ITEM_NOT_FOUND', 'Not in the bin');
-    if (journal[0]) return { moveId: String(journal[0].id) };
+    // Another request journalled it meanwhile: it goes where that one sends it.
+    if (journal) {
+      if (journal.calendarId !== calendarId && choice.calendarId) throw restorePending();
+      return { moveId: journal.id, calendarId: String(journal.calendarId ?? calendarId) };
+    }
     const [held] = await cx.execute<RowDataPacket[]>(`SELECT id FROM calendar_remote_objects WHERE calendar_id = ? AND user_id = ? AND uid = ? ${UID_EXACT} LIMIT 1`, [calendarId, userId, uid]);
     if (held.length) {
       // Back on the server already (another app, an earlier attempt): it gets UniHub's own details.
@@ -458,13 +479,27 @@ async function restoreSyncedItem(userId: string, row: BinRow, choice: RestoreCho
       await dropItems(cx, userId, [row.id]);
       return { adopted: true };
     }
-    return { moveId: await calendarMove.journalBinRestore(cx, userId, row.id, { calendarId, uid, href: copyHref(target, payload.object.href, uid), ics: payload.object.ics }) };
+    return { moveId: await calendarMove.journalBinRestore(cx, userId, row.id, { calendarId, uid, href: copyHref(target, payload.object.href, uid), ics: payload.object.ics }), calendarId };
   });
   if ('adopted' in plan) {
     publishCalendarChanged(userId, target.account.id, 'local');
     return restoredOf(row, await restoredEventId(userId, calendarId, uid) ?? row.item_id, 'It was on its calendar again already; UniHub\'s own details were added to it.');
   }
-  const state = await calendarMove.runBinRestore(plan.moveId).catch(serverRefusal);
+  return finishJournal(userId, row, plan.moveId, plan.calendarId, uid);
+}
+
+/** A restore journal of this bin item: the re-creation at a server an attempt began. */
+async function restoreJournal(executor: SqlExecutor, userId: string, binItemId: string, { lock = false } = {}) {
+  const [rows] = await executor.execute<RowDataPacket[]>(
+    `SELECT id, target_calendar_id FROM calendar_event_moves WHERE bin_item_id = ? AND user_id = ?${lock ? ' FOR UPDATE' : ''}`, [binItemId, userId]);
+  return rows[0] ? { id: String(rows[0].id), calendarId: rows[0].target_calendar_id ? String(rows[0].target_calendar_id) : null } : null;
+}
+
+const restorePending = () => conflict('BIN_RESTORE_PENDING', 'This item is being created on a calendar server already, which has not confirmed it yet, so it cannot go to another calendar. Restore it again without choosing a calendar to finish it there.');
+
+/** Runs a restore journal now and answers as the restore. */
+async function finishJournal(userId: string, row: BinRow, moveId: string, calendarId: string, uid: string) {
+  const state = await calendarMove.runBinRestore(moveId).catch(serverRefusal);
   if (state === 'pending') {
     return restoredOf(row, row.id, 'Being created on its calendar server again; it shows there once the server confirms.', { pending: true });
   }

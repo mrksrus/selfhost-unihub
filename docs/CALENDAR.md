@@ -412,7 +412,12 @@ are then rebuilt from the server's answer, so the server stays the authority.
   person's calendar is not found (`BIN_RESTORE_CALENDAR_NOT_FOUND`), and a
   read-only one or a subscription is refused (`CALENDAR_READ_ONLY`). This
   is how a repeating item whose calendar went with its account comes back
-  after the account is connected again.
+  after the account is connected again. A restore whose server answer was
+  lost keeps its calendar until that is settled: a retry without
+  `calendar_id`, or with the same one, finishes it there (the stored copy is
+  adopted), and any other destination, a list or another server calendar,
+  is refused with `BIN_RESTORE_PENDING`, so the server's copy never shows
+  beside a second one. The codes are `BinRestoreFailureCode`.
 - **One change at a time.** Creating an item on a server, edits, time moves,
   deletions, moves, their cancel, a move's background run and a sync's
   adoption of a move's copy run one after another for one item (a lock per
