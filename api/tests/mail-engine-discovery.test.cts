@@ -37,6 +37,10 @@ function fixture(t: import('node:test').TestContext, { uids = [1], epoch = 123, 
       const o = occurrences.get(params[4]); return [[o && o.epoch === params[3] ? { email_id: o.email_id } : undefined].filter(Boolean)];
     }
     if (sql.includes('FROM mail_gmail_messages')) return [[gmailIds.get(params[2]) ? { email_id: gmailIds.get(params[2]) } : undefined].filter(Boolean)];
+    // A kept item at this exact address without an occurrence (sync.ts keptItemAtAddress).
+    if (sql.includes('SELECT e.id FROM emails e') && sql.includes('NOT EXISTS (SELECT 1 FROM mail_remote_occurrences o')) return [[...emails.values()]
+      .filter(e => e.remote_uidvalidity === params[2] && e.remote_uid === params[3] && e.remote_folder === params[4]
+        && ![...occurrences.values()].some(o => o.email_id === e.id)).slice(0, 2).map(e => ({ id: e.id }))];
     if (sql.includes('INSERT INTO mail_gmail_messages')) { gmailIds.set(params[1], gmailIds.get(params[1]) || params[3]); return [{ affectedRows: 1 }]; }
     if (sql.includes('INSERT INTO emails')) { emails.set(params[0], { id: params[0], observation_revision: 0,
       is_read: params[10], is_starred: params[11], remote_folder: params[7],
