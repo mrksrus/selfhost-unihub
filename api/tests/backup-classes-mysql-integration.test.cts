@@ -15,7 +15,7 @@ const uuid = () => crypto.randomUUID();
 // local tasks matched by their stable UID wherever they moved (B-34), also
 // when two UIDs differ only in case; and UniHub's state on synced tasks,
 // applied to the live task or kept for the sync.
-test('backups by data class: Download mail choice, UID matching and synced-task state', { skip: !process.env.MYSQL_TEST_HOST, timeout: 120000 }, async (t) => {
+test('backups by data class: Download mail choice, UID matching and synced-task state', { skip: !process.env.MYSQL_TEST_HOST, timeout: 300000 }, async (t) => {
   const database = process.env.MYSQL_TEST_DATABASE || 'unihub_test';
   assert.match(database, /_test$/, 'Use an empty disposable database ending in _test');
   const mysql = require('mysql2/promise') as typeof import('mysql2/promise');

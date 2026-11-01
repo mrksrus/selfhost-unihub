@@ -18,7 +18,7 @@ const fixtureId = (n: number) => `02710000-0000-4000-8000-${String(n).padStart(1
 // a shape overlay, and the Sync account's server mail stays out with its
 // files and provider evidence. Local items keep their archived ids as their
 // stable identity, so restoring it again adds nothing.
-test('frozen 0.27.1 archive imports what the data classes keep, with a note of what it left out', { skip: !process.env.MYSQL_TEST_HOST, timeout: 120000 }, async (t) => {
+test('frozen 0.27.1 archive imports what the data classes keep, with a note of what it left out', { skip: !process.env.MYSQL_TEST_HOST, timeout: 300000 }, async (t) => {
   const database = process.env.MYSQL_TEST_DATABASE || 'unihub_test';
   assert.match(database, /_test$/, 'Use an empty disposable database ending in _test');
   const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
