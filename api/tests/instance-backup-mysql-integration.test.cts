@@ -208,19 +208,19 @@ test('the instance backup copies the installation, keeps only verified runs, ref
   let first: { file: string; manifest: import('../src/services/instance-backup-format').InstanceBackupManifest };
   await t.test('a run: dump and files, removals after the dump wait at the gate, verified before it counts', async () => {
     await new Promise(resolve => setTimeout(resolve, 1100));
-    let removal: unknown;
+    // What the copy finds after the dump, recorded in the hook and checked after the run.
+    const during: Record<string, unknown> = {};
     const run = await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin, hooks: { afterDump: async () => {
       // blair's message row went after the dump: the file must stay until the copy has ended.
-      removal = await backup.fileRemovalGate.run(() => fs.promises.rm(removedDuringCopy));
-      assert.equal(removal, 'deferred');
-      assert.ok(fs.existsSync(removedDuringCopy));
+      during.removal = await backup.fileRemovalGate.run(() => fs.promises.rm(removedDuringCopy));
+      during.messageKept = fs.existsSync(removedDuringCopy);
       // alex removes the contact photo after the dump: the dump still has its row, so its files stay for the copy.
-      assert.equal((await alex.request('DELETE', `/api/contacts/${contactId}/photo`)).status, 200);
-      assert.equal(Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS count FROM contact_photos WHERE user_id = ?', [users.alex]))[0][0].count), 0);
-      assert.ok(photoFiles.every(file => fs.existsSync(file)), 'photo files wait at the gate');
+      during.photoDelete = (await alex.request('DELETE', `/api/contacts/${contactId}/photo`)).status;
+      during.photoRows = Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS count FROM contact_photos WHERE user_id = ?', [users.alex]))[0][0].count);
+      during.photoFilesKept = photoFiles.map(file => fs.existsSync(file));
     } } });
     assert.equal(run!.status, 'succeeded', String(run!.error));
-    assert.equal(removal, 'deferred');
+    assert.deepEqual(during, { removal: 'deferred', messageKept: true, photoDelete: 200, photoRows: 0, photoFilesKept: [true, true] }, 'removals after the dump wait at the gate');
     assert.equal(fs.existsSync(removedDuringCopy), false, 'the queued removal ran once the copy ended');
     assert.ok(photoFiles.every(file => !fs.existsSync(file)), 'the queued photo release checked the references again and removed them');
     assert.match(run!.file_name!, /^unihub-instance-\d{8}T\d{6}Z-[0-9.]+\.uhib$/);
