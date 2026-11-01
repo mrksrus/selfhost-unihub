@@ -296,13 +296,16 @@ test('moving a task between lists and calendars: one copy, the same row, through
   await t.test('server calendar to another, and back to a UniHub list: old copies removed, row kept', async () => {
     const review = await serverTask('Review notes');
     const before = await kept(review);
+    const [[{ uid }]] = await pool.query<RowDataPacket[]>('SELECT uid FROM calendar_events WHERE id = ?', [review]);
     remote.writes.length = 0;
     const toPrivate = await owner('POST', `/calendar/events/${review}/move`, { calendar_id: privateCalendar });
     assert.equal(toPrivate.event.calendar_id, privateCalendar);
     assert.deepEqual(remote.writes.map(([kind, at]) => [kind, at.startsWith(PRIVATE) ? 'private' : 'work']), [['put', 'private'], ['delete', 'work']],
       'created in the target before it was removed from the source');
     await assertOnce('Review notes', review, privateCalendar);
-    assert.match(copiesOf('Review notes')[0], new RegExp(`^${PRIVATE}[0-9a-f-]{36}\\.ics$`), 'under a new UID');
+    // 0.28: the copy keeps the item's UID, so a restore still matches it.
+    assert.equal(copiesOf('Review notes')[0], `${PRIVATE}${uid}.ics`, 'under its own UID');
+    assert.ok(remote.objects.get(`${PRIVATE}${uid}.ics`)!.ics.includes(`UID:${uid}\r\n`));
     await sync(); await expandAll();
     await assertOnce('Review notes', review, privateCalendar);
 

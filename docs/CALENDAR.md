@@ -131,6 +131,7 @@ Core tables:
 - `calendar_event_attendees`
 - `calendar_event_external_refs`
 - `calendar_remote_objects`
+- `calendar_overlay_restores` (a synced task's own state waiting for its sync, see [Synced tasks keep their own state](#synced-tasks-keep-their-own-state))
 
 Important fields:
 
@@ -147,6 +148,7 @@ Important fields:
 | `calendar_calendars` | `is_visible` | Used by visible-only event queries |
 | `calendar_calendars` | `auto_todo_enabled` | Controls projection into ToDo queries |
 | `calendar_events` | `calendar_id` | Calendar ownership boundary |
+| `calendar_events` | `uid` | The item's identity across moves, restores and installations: a synced event's iCal UID (shared by a series' occurrences), else its id or a new UUID. UIDs compare byte for byte |
 | `calendar_events` | `is_todo_only` | Standalone ToDo item |
 | `calendar_events` | `todo_status` | `done`, `changed`, `time_moved`, `cancelled`, or null |
 | `calendar_events` | `reminders` | JSON array of reminder offsets in minutes |
@@ -210,7 +212,7 @@ Calendars of server accounts cannot be created, renamed or deleted in UniHub.
 | GET | `/api/calendar/calendars` | List calendars with account metadata |
 | POST | `/api/calendar/calendars` | Create calendar under an account |
 | PUT | `/api/calendar/calendars/:id` | Update name/color/visibility/auto-ToDo/primary |
-| DELETE | `/api/calendar/calendars/:id` | Delete calendar and linked events |
+| DELETE | `/api/calendar/calendars/:id` | Move a UniHub list and its events to the bin, as one group |
 
 The backend refuses to delete the last calendar in an account.
 
@@ -224,7 +226,7 @@ The backend refuses to delete the last calendar in an account.
 | PUT | `/api/calendar/events/:id` | Update event fields and attendees; `scope` (`occurrence` or `series`) for recurring server events. Answers `{ event: null, replaced: true, scope: 'series' }` when a series time change rebuilt the occurrences and the edited id is gone. `calendar_id: null` is refused (400) for an event linked to a server copy |
 | PUT | `/api/calendar/events/:id/todo-status` | Update `todo_status`, optionally moving time |
 | PUT | `/api/calendar/events/:id/rsvp` | Update RSVP state for an attendee |
-| DELETE | `/api/calendar/events/:id` | Delete event; `?scope=occurrence\|series` for recurring server events |
+| DELETE | `/api/calendar/events/:id` | Move the event or task to the bin (`bin_item_id` in the answer); a synced one is deleted at its server first. `?scope=occurrence\|series` for recurring server events |
 
 Event query parameters:
 
@@ -375,6 +377,24 @@ are then rebuilt from the server's answer, so the server stays the authority.
   not confirmed shows as `move_pending` and finishes in the background, or can
   be cancelled; edits wait for it (`409 CALENDAR_MOVE_PENDING`). Recurring
   events cannot be moved.
+- **Deleting.** A delete moves the item to the bin (D13, `services/bin-calendar.ts`).
+  A synced one is deleted at its server first, as before (`If-Match`; a
+  refusal or a conflict changes nothing); once the server confirmed, its rows
+  leave UniHub and the bin keeps its server copy (ICS, UID, address), each
+  occurrence's ToDo state, subtasks and source email, and its hand ranks.
+  Deleting **This event** of a repeating server event removes that date at the
+  server and is not kept in the bin. Items other apps delete at the server are
+  not binned.
+- **Restoring from the bin.** A UniHub item goes back into its list, or into
+  the default list when that is gone. A synced one is created at its calendar
+  again with the same UID, at its old address (`If-None-Match: *`), through
+  the move journal (`calendar_event_moves.bin_item_id`): a lost answer waits
+  (`pending`, the bin shows it as being restored) and its retry or the sync
+  adopts the copy the server stored, never a second one; a server that holds
+  the UID already is adopted at once. Another item at the address refuses it
+  and it stays in the bin. A paused account refuses it (409); a calendar that
+  is read-only now, or gone, takes it into the default list instead, with a
+  note. The rows the commit makes take their state back.
 - **One change at a time.** Creating an item on a server, edits, time moves,
   deletions, moves, their cancel, a move's background run and a sync's
   adoption of a move's copy run one after another for one item (a lock per
@@ -438,6 +458,23 @@ with warnings.
 - CalDAV host policy blocks private/local addresses unless explicitly trusted.
 - CalDAV credentials and ICS subscription addresses are encrypted with the
   shared `ENCRYPTION_KEY`; the API returns only the subscription's host.
+
+## Synced tasks keep their own state
+
+What UniHub adds to a synced item (ToDo state, done time, source email,
+subtasks; F2 `local` overlay) is not at the server, so a restore, which
+re-syncs mirror data, would lose it with the rows. `services/calendar-overlays.ts`
+keeps it in `calendar_overlay_restores` until the item exists again: the
+sync that creates the item's row takes it in the same transaction, by
+calendar, UID and recurrence id, or by title and start for archives without
+UIDs (those expire after 30 days). Applied once: a later change in UniHub
+stands. An overlay goes with its calendar, is never written for another
+person's calendar, and nothing is applied while Calendar is off or being
+restored (no sync runs). An item whose rows exist already gets its overlay
+at once (`applyOverlaysToLiveRows`). A move keeps the item's UID: a UniHub
+task sent to a server calendar carries its own UID unless that calendar
+holds it already (then a new one, recorded on the row), and a server task
+taken into a list keeps the server's.
 
 ## Backup and Restore (ALPHA)
 

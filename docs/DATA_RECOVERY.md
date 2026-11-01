@@ -92,6 +92,42 @@ counts too.
 A change holding a task when a calendar restore begins
 writes nothing more (`409 RESTORE_IN_PROGRESS`).
 
+0.28.0 adds the bin (`services/bin.ts`, D13) and the synced-task overlay
+(`services/calendar-overlays.ts`), upgrade step 25:
+
+- A bin item is a verbatim, versioned snapshot of the rows a delete
+  removed (`payload`, `payload_version` 1), with the files it keeps on disk
+  in `file_refs`: a contact's photo hashes, a recording's file in the
+  person's recordings `bin/` folder. Each kind restores its own rows with
+  only known columns, for the person restoring, under the old ids and
+  identities unless they are taken; nothing in a payload is trusted.
+- Archives from data schema 7 carry the bin with its module's section.
+  The import writes them with `restoreBinItems(connection, { userId,
+  section, items, exportedAt, calendarIds, recordingFiles })`: new bin ids,
+  the remaining time kept, groups kept together, an item already there not
+  added twice, a merged contact as an ordinary deleted one (`contact_merges`
+  is not archived), a recording only with its staged file.
+  `exportableBinItems` lists a section's items with their files for export.
+- A synced CalDAV item in the bin was deleted at its provider. Restoring it
+  from the bin creates it there again through the move journal
+  (`calendar_event_moves.bin_item_id`, never archived); a backup restore
+  only writes bin rows and never writes to a provider. A calendar restore
+  that relocates such a journal row ends it like any move; the item stays in
+  the bin.
+- The purge (`bin.purge`, worker owner) deletes per person and module only
+  past `purge_after` and the retention as the settings and policies resolve
+  it at that moment, never while the module is off or its section is being
+  restored, and never an item whose re-creation at a server is under way.
+  Recording files are removed after the rows, only inside the person's own
+  folder and only when no recording uses them.
+- `calendar_overlay_restores` holds a synced item's own state (ToDo state,
+  done time, source email, subtasks) until its row exists: by calendar,
+  exact UID (`utf8mb4_nopad_bin`) and recurrence id, or by title and start
+  for archives without UIDs (expiring). The restore writes it with
+  `insertOverlays` and applies those whose rows exist with
+  `applyOverlaysToLiveRows`; the sync that creates a row takes the rest. It
+  goes with its calendar and never applies to another person's calendar.
+
 A synced task's order is removed only on evidence that the provider deleted
 it: a verified deletion of its server object. An object or occurrence that
 leaves the sync window (the expansion is bounded) keeps its order and gets

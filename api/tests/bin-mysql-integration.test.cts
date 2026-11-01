@@ -55,8 +55,6 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     return reply.body;
   }
   const bin = async (client = alex, module = '') => (await call(client, 'GET', `/api/bin${module ? `?module=${module}` : ''}`)).items as FixtureValue[];
-  const binItem = async (itemId: string, client = alex) => (await bin(client)).find(item => item.title && item.id && (item as FixtureValue).item_id === itemId)
-    ?? (await pool.query<RowDataPacket[]>('SELECT id, item_type, reason, group_id FROM bin_items WHERE item_id = ? AND restored_at IS NULL', [itemId]))[0][0];
   const restore = (id: string, client = alex, status = 200) => call(client, 'POST', `/api/bin/${id}/restore`, undefined, status);
   const count = async (sql: string, params: unknown[]) => Number(((await pool.query<RowDataPacket[]>(sql, params))[0][0]).n);
   const at = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
@@ -156,6 +154,7 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     await pool.execute("INSERT INTO calendar_calendars (id, user_id, account_id, name, color) VALUES (?, ?, ?, 'Errands', '#22c55e')", [errands, users.alex, localAccount]);
     const early = await localTask('Buy stamps', errands);
     const kept = await localTask('Post letter', errands);
+    await call(alex, 'PUT', `/api/settings/values/calendars/${errands}`, { values: { notify_enabled: false } });
     await call(alex, 'DELETE', `/api/calendar/events/${early}`);
     await call(alex, 'DELETE', `/api/calendar/calendars/${errands}`);
     const items = await bin(alex, 'calendar');
@@ -168,6 +167,7 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     await restore(listItem.id);
     assert.equal((await pool.query<RowDataPacket[]>('SELECT name FROM calendar_calendars WHERE id = ?', [errands]))[0][0].name, 'Errands', 'the list under its own id');
     assert.equal((await eventRow(kept)).calendar_id, errands);
+    assert.deepEqual((await call(alex, 'GET', '/api/settings/values/calendars')).calendars[errands].notify_enabled, { value: false, source: 'user', locked: false }, 'its settings back');
     assert.deepEqual(await stepsOf(kept), [['Post letter step', true]]);
     assert.deepEqual(await bin(alex, 'calendar'), []);
   });
@@ -293,7 +293,8 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     const task = await serverTask('Review notes');
     server.remote.writes.length = 0;
     await call(alex, 'DELETE', `/api/calendar/events/${task.id}`);
-    assert.deepEqual(server.remote.writes, [['delete', task.href, 'If-Match "e1"'.replace('e1', server.remote.writes[0]?.[2]?.match(/"(e\d+)"/)?.[1] ?? '')]]);
+    assert.deepEqual(server.remote.writes.map(([kind, at]) => [kind, at]), [['delete', task.href]]);
+    assert.match(server.remote.writes[0][2], /^If-Match "e\d+"$/, 'deleted only in the version UniHub has');
     assert.equal(server.copiesOf('Review notes').length, 0, 'deleted at the provider');
     assert.equal((await rowsTitled('Review notes')).length, 0);
     const [item] = await bin(alex, 'calendar');

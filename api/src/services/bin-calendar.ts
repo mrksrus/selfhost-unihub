@@ -55,7 +55,8 @@ interface CalendarPayload {
   provider: 'local';
   origin: null;
   calendar: Stored;
-  settings: { setting_key: string; setting_value: string }[];
+  /** The calendar's settings the person chose (F1, calendar scope). */
+  settings: Record<string, unknown>;
 }
 interface Copy { account: SyncAccount; calendar: SyncCalendar; timeZone: string; object: { id?: string; href: string; etag: string | null; ics: string } }
 
@@ -187,9 +188,11 @@ async function deleteCalendarToBin(userId: string, calendarId: string) {
   return withTransaction(async cx => {
     const [[calendar]] = await cx.execute<RowDataPacket[]>('SELECT * FROM calendar_calendars WHERE id = ? AND user_id = ? FOR UPDATE', [calendarId, userId]);
     if (!calendar) throw notFound('CALENDAR_NOT_FOUND', 'Calendar not found');
-    const [settings] = await cx.execute<RowDataPacket[]>('SELECT setting_key, setting_value FROM calendar_settings WHERE calendar_id = ? AND user_id = ?', [calendarId, userId]);
+    const { getSettings } = require('./settings') as typeof import('./settings');
+    const resolved = Object.entries(await getSettings('calendar', userId, calendarId, cx)) as [string, { value: unknown; source: string }][];
+    const settings = Object.fromEntries(resolved.filter(([, setting]) => setting.source === 'user').map(([key, setting]) => [key, setting.value]));
     const groupId = crypto.randomUUID();
-    const payload: CalendarPayload = { provider: 'local', origin: null, calendar: toStored(calendar), settings: settings.map(row => ({ setting_key: row.setting_key, setting_value: row.setting_value })) };
+    const payload: CalendarPayload = { provider: 'local', origin: null, calendar: toStored(calendar), settings };
     await putInBin(cx, userId, [{ module: 'calendar', itemType: 'calendar', itemId: calendarId, title: String(calendar.name ?? ''), reason: 'deleted', groupId, payload }]);
     const [events] = await cx.execute<RowDataPacket[]>('SELECT id FROM calendar_events WHERE calendar_id = ? AND user_id = ? ORDER BY start_time, id FOR UPDATE', [calendarId, userId]);
     await binLocalEvents(cx, userId, events.map(row => String(row.id)), { reason: 'calendar_deleted', groupId });
@@ -260,10 +263,14 @@ async function restoreCalendar(cx: SqlExecutor, userId: string, payload: Calenda
   await insertRows(cx, 'calendar_calendars', CALENDAR_COLUMNS, [{
     ...calendar, id, user_id: userId, account_id: accountId, uid: uidTaken ? id : own, is_primary: 0, read_only: 0, name: String(calendar.name ?? '').slice(0, 255) || 'Restored list',
   }]);
-  const { restorableValue } = require('./settings') as typeof import('./settings');
-  for (const setting of payload.settings || []) {
-    const value = restorableValue('calendar', String(setting.setting_key), setting.setting_value);
-    if (value !== null) await cx.execute('INSERT IGNORE INTO calendar_settings (calendar_id, user_id, setting_key, setting_value) VALUES (?, ?, ?, ?)', [id, userId, setting.setting_key, value]);
+  // Its own settings back, each as the registry checks it; one the
+  // registry or a policy no longer takes stays at its default.
+  const { updateSettings } = require('./settings') as typeof import('./settings');
+  const settings = payload.settings && typeof payload.settings === 'object' && !Array.isArray(payload.settings) ? payload.settings : {};
+  for (const [key, value] of Object.entries(settings)) {
+    await updateSettings('calendar', userId, id, { values: { [key]: value } }, cx).catch(error => {
+      if (!(error instanceof ApiError && error.expose)) throw error;
+    });
   }
   return id;
 }

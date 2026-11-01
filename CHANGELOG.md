@@ -6,6 +6,45 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.28.0 (unreleased)
+
+### Added
+
+- **A bin for what you delete.** Deleted contacts, events and tasks, lists
+  with their events, and recordings now go to a bin instead of being gone at
+  once; mail keeps its Trash folders. Restore brings an item back as it was:
+  a contact with its photo, values and UIDs, a task with its subtasks, done
+  state and place in the list, a recording with its file. Several contacts
+  deleted together, or a list with its events, come back together. An item
+  whose list is gone comes back into your default list.
+- **Synced events and tasks come back to their calendar.** Deleting an event
+  or task of a CalDAV calendar still deletes it at the provider, and UniHub
+  keeps it in the bin with its own details. Restoring it creates it at the
+  provider again with the same identity, and its done state and subtasks
+  come back. If the calendar is read-only now or gone, it is restored into
+  your default list. Deleting one date of a repeating server event is not
+  kept in the bin.
+- **Choose how long the bin keeps items:** 7, 30 or 90 days or forever (30 by
+  default). Changing it applies to what is already in the bin. An
+  administrator can set a minimum, and can forbid deleting from the bin for
+  good or emptying it.
+
+### Changed
+
+- **Merged contacts are in the same bin.** Undoing a merge works as before for
+  30 days, also by restoring a merged contact from the bin; after that, the
+  merged-away contacts stay for the rest of your retention and come back on
+  their own.
+
+### Fixed
+
+- **A synced task keeps its done state and subtasks through a restore.**
+  After restoring a backup, the first sync of a server calendar brought its
+  tasks back without the ToDo state, done time, subtasks and source email
+  UniHub had kept for them. They now wait for the task and are added when
+  the sync brings it back. Moving a task between lists and calendars keeps
+  its identity, so a later restore still finds it.
+
 ## 0.27.1
 
 Fixes for the Android app and for many changes saved at once. No database
