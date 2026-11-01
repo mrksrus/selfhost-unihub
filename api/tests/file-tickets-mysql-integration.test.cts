@@ -15,7 +15,10 @@ const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts')
 // grant), for its owner's file, while its session is live, its user active,
 // the module on and no restore of the section runs; it is never stored as the
 // token itself.
-test('file tickets: one use without a cookie, owner-bound, refused when expired, revoked, module off or restoring', { skip: !process.env.MYSQL_TEST_HOST, timeout: 60000 }, async () => {
+// Building the fresh schema (every upgrade step) takes most of the time: about
+// 100 s on a slow disk against some 15 s for the checks themselves, so the
+// bound is the one of the other tests that build it.
+test('file tickets: one use without a cookie, owner-bound, refused when expired, revoked, module off or restoring', { skip: !process.env.MYSQL_TEST_HOST, timeout: 300000 }, async () => {
   const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
   assert.match((process.env.MYSQL_TEST_DATABASE as string), /_test$/);
   const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306), database: process.env.MYSQL_TEST_DATABASE, user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD, connectionLimit: 8, timezone: 'Z' });
