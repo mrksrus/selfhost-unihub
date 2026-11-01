@@ -79,7 +79,8 @@ async function adoptRawCalendarUids(connection: PoolConnection) {
         const map = new Map<string, RowDataPacket[]>();
         for (const row of rows) {
           const key = `${row.user_id}\n${row[uid]}`;
-          map.set(key, [...(map.get(key) || []), row]);
+          const group = map.get(key);
+          if (group) group.push(row); else map.set(key, [row]);
         }
         return map;
       };
