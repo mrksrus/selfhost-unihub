@@ -40,6 +40,32 @@ test('a secret comes from NAME_FILE before NAME; both set and different is refus
   }
 });
 
+// The instance backup leaves a secret file read at startup out by its inode.
+// While the file stays open, no stored file can be given that inode after
+// the secret is replaced or removed.
+test('a secret file read by the process stays open after it is removed, so its inode is not reused', t => {
+  const file = scratch(t)('pinned', `synthetic-pinned-${crypto.randomBytes(8).toString('hex')}`);
+  const stat = fs.statSync(file);
+  process.env.UNIHUB_PINNED_SECRET_FILE = file;
+  t.after(() => { delete process.env.UNIHUB_PINNED_SECRET_FILE; });
+  assert.ok(config.readSecret('UNIHUB_PINNED_SECRET'));
+  fs.rmSync(file);
+  const loaded = config.secretFilesLoaded().find(entry => entry.path === file);
+  assert.ok(loaded, 'remembered');
+  const held = fs.fstatSync(loaded.descriptor);
+  assert.deepEqual([held.dev, held.ino, held.nlink], [stat.dev, stat.ino, 0], 'the removed file is still held open');
+  // Read again, the same file is not opened a second time.
+  const open = () => fs.readdirSync('/proc/self/fd').length;
+  if (fs.existsSync('/proc/self/fd')) {
+    const again = scratch(t)('pinned-again', 'synthetic-pinned-again');
+    process.env.UNIHUB_PINNED_SECRET_FILE = again;
+    config.readSecret('UNIHUB_PINNED_SECRET');
+    const before = open();
+    config.readSecret('UNIHUB_PINNED_SECRET');
+    assert.equal(open(), before);
+  }
+});
+
 test('the database password and URL may be files, for the API and the readiness wait alike', t => {
   const file = scratch(t);
   const { getDatabaseConfig } = require('../dist/src/services/database-config') as typeof import('../src/services/database-config');

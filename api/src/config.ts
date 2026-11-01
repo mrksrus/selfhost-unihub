@@ -13,8 +13,10 @@ class SecretConfigError extends Error {}
 // The files this process read its secrets from, by identity (device and
 // inode, the file itself and not its name). The instance backup leaves these
 // out even after the name points elsewhere (a replaced or removed file whose
-// old copy survives as a hard link among the stored files).
-interface LoadedSecretFile { name: string; path: string; dev: number; ino: number }
+// old copy survives as a hard link among the stored files). Each stays open
+// for the life of the process: an inode is not reused while it is open, so a
+// stored file can never take a remembered identity and be left out with it.
+interface LoadedSecretFile { name: string; path: string; dev: number; ino: number; descriptor: number }
 const loadedSecretFiles = new Map<string, LoadedSecretFile>();
 
 function readSecret(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
@@ -30,7 +32,11 @@ function readSecret(name: string, env: NodeJS.ProcessEnv = process.env): string 
     if (!stat.isFile()) throw new SecretConfigError(`${name}_FILE (${file}) is not a file.`);
     if (stat.size > MAX_SECRET_FILE_BYTES) throw new SecretConfigError(`${name}_FILE (${file}) is larger than a secret can be.`);
     value = fs.readFileSync(descriptor, 'utf8').replace(/\r?\n$/, '');
-    if (env === process.env) loadedSecretFiles.set(`${name}:${stat.dev}:${stat.ino}`, { name: `${name}_FILE`, path: file, dev: stat.dev, ino: stat.ino });
+    const loaded = `${name}:${stat.dev}:${stat.ino}`;
+    if (env === process.env && !loadedSecretFiles.has(loaded)) {
+      loadedSecretFiles.set(loaded, { name: `${name}_FILE`, path: file, dev: stat.dev, ino: stat.ino, descriptor });
+      descriptor = null;
+    }
   } catch (error) {
     if (error instanceof SecretConfigError) throw error;
     const code = (error as NodeJS.ErrnoException).code;
