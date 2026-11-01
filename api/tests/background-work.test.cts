@@ -45,6 +45,9 @@ function deps(timers: ReturnType<typeof fakeTimers>) {
       sweepContactImports: async () => { calls.push('contact imports'); return { expired: 0, orphans: 0 }; },
       isWorkerOwner: () => true,
       stopCalendarWork: () => { calls.push('stop calendar work'); },
+      recoverInstanceBackups: async () => { calls.push('recover instance backups'); },
+      runDueInstanceBackup: async () => { calls.push('instance backup'); },
+      stopInstanceBackup: () => { calls.push('stop instance backup'); },
     } as FixtureValue,
   };
 }
@@ -55,16 +58,18 @@ async function quietly<T>(work: () => Promise<T>) {
   try { return await work(); } finally { console.log = original; }
 }
 
-test('background work starts the fifteen timers and stop clears every one of them', async () => {
+test('background work starts the sixteen timers and stop clears every one of them', async () => {
   const timers = fakeTimers();
   const { overrides, calls, idle } = deps(timers);
   const work = startBackgroundWork(overrides);
   await quietly(() => work.ready);
   assert.deepEqual([...timers.intervals.values()].map(timer => timer.ms).sort((a, b) => a - b),
-    [1000, 15000, 15000, 30000, 30000, 30000, 60000, 60000, 60000, 3600000, 3600000, 3600000, 3600000, 3600000, 86400000]);
-  // Interrupted syncs are reset before their timers can pick accounts up.
+    [1000, 15000, 15000, 30000, 30000, 30000, 60000, 60000, 60000, 60000, 3600000, 3600000, 3600000, 3600000, 3600000, 86400000]);
+  // Interrupted syncs are reset before their timers can pick accounts up,
+  // and an instance backup the last process left running is recorded as failed.
   assert.ok(calls.includes('UPDATE mail_accounts'));
   assert.ok(calls.includes('UPDATE calendar_accounts'));
+  assert.ok(calls.includes('recover instance backups'));
   assert.equal(timers.timeouts.size, 3);
   work.stop();
   assert.equal(timers.intervals.size, 0);
@@ -76,6 +81,7 @@ test('background work starts the fifteen timers and stop clears every one of the
   work.stop();
   assert.equal(idle.stopped, 1);
   assert.equal(calls.filter(call => call === 'stop calendar work').length, 1, 'running calendar syncs are stopped once');
+  assert.equal(calls.filter(call => call === 'stop instance backup').length, 1, 'a running instance backup is stopped once');
 });
 
 test('after this process lost the background-work lock its timers do nothing, even before stop (B-06)', async () => {

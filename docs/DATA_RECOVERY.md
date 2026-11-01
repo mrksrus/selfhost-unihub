@@ -48,6 +48,125 @@ step's columns. Keep bootstrap/runtime work distinct from historical repairs.
 The authenticated MariaDB readiness wait remains 300 seconds maximum and ends as
 soon as a connection succeeds.
 
+## Instance backup
+
+The instance backup (0.28.0) copies the whole installation: the database and
+every stored file, encrypted, to a destination the administrator mounts. It is
+the disaster-recovery copy; the account backups below move one person's data.
+`api/src/services/instance-backup.ts` runs it, `instance-backup-format.ts`
+defines the file, `instance-restore.ts` restores it.
+
+**Configuration, from the environment only** (`api/src/config.ts`). The admin
+page (Settings > Server settings > Instance backup) shows it and can start a
+run; it cannot change it, and no backup file is ever offered for download, so
+a stolen admin session can neither redirect the backups nor read them.
+
+| Variable | Meaning |
+| --- | --- |
+| `INSTANCE_BACKUP_DIR` | An absolute directory inside the container on a volume or mount of its own (another disk, a NAS share). Unset: the backup is off. Inside `/app/uploads` or a stored-file root: startup refuses it. It must exist and be writable by uid 10001; UniHub never creates it, so a missing mount fails the run instead of filling the container. |
+| `INSTANCE_BACKUP_KEY` or `INSTANCE_BACKUP_KEY_FILE` | At least 32 random bytes as hex or base64 (`openssl rand -base64 48`). Unset: the backup is off. Shorter, or the value of `JWT_SECRET`, `ENCRYPTION_KEY`, `ENCRYPTION_KEY_PREVIOUS` or `BACKUP_MASTER_KEY`: startup refuses it. Never derived from another key. |
+| `INSTANCE_BACKUP_TIME` | The daily run, `HH:MM` in UTC; default `03:30`. |
+| `INSTANCE_BACKUP_KEEP` | How many succeeded backups stay, 1 to 1000; default 14. |
+
+Without a destination and a key the server runs normally and the admin page
+says what is missing. The defaults are `INSTANCE_BACKUP_DEFAULT_TIME_UTC` and
+`INSTANCE_BACKUP_DEFAULT_KEEP` in `config.ts`.
+
+**A run.** The worker owner runs one at a time: daily, once the set time has
+passed without a scheduled run (so a server that was down at that time catches
+up when it starts), and on "Back up now" (`POST /api/admin/instance-backup/run`,
+permission `server.settings`, activity-log entry `admin.instance_backup_started`).
+Each run is a row of `instance_backups`.
+
+1. It checks the destination and its free space (about the last backup's size,
+   or the database's before the first, plus 64 MiB).
+2. It closes the file removal gate (`file-removal-gate.ts`), then streams
+   `mariadb-dump --single-transaction --routines --triggers --hex-blob` (one
+   consistent snapshot) and then the stored files into
+   `unihub-instance-<UTC time>-<version>.uhib.partial`, encrypted as it is
+   written. Nothing is staged in `/tmp` or elsewhere.
+3. It opens the gate again, writes the manifest and seals the file.
+4. It reads the whole file back with the key and checks every hash. Only then
+   is it renamed to `.uhib` and the run recorded as succeeded.
+5. It removes the oldest succeeded backups beyond `INSTANCE_BACKUP_KEEP`
+   (`removed_at` on their rows).
+
+A failed run (no space, a missing mount, a dump error, a stop) removes its
+partial file and records the reason; it never counts, and nothing is removed
+for it. A run that a stopped process left running is recorded as failed, and
+its partial file removed, when the next worker owner starts. A run is stopped
+after 12 hours. A failed scheduled run is not tried again until the next
+day's time; "Back up now" runs one at once.
+
+**Consistency.** The dump is one snapshot; the files are copied after it. A
+file whose row is deleted after the dump is still needed by the backup, so
+file removals pass through the gate: while it is closed, removals by user
+deletion, removing a mail account with its mail, Sync-mode pruning and folder
+deletion are queued and run when the copy ends, and the contact sweeps skip
+their turn. Files added during the copy may be in the backup without a row;
+they are harmless. A file that changes while it is read (stored files are
+written once, so this is rare) is marked in the index and left out by a
+restore. For a very large installation a volume snapshot stays the faster
+copy.
+
+**What is in the file.** Every table, including users, policies, the
+activity log, the push identity and the runs of `instance_backups`, and the
+stored files: mail attachments and originals, recordings, contact photos and
+the account backups kept on the server. Not in it: uploads in progress
+(recording chunks, restore archives being uploaded or staged, spooled request
+bodies, partial files) and **no key**: `ENCRYPTION_KEY`,
+`ENCRYPTION_KEY_PREVIOUS`, `BACKUP_MASTER_KEY`, `JWT_SECRET` and the instance
+key stay outside, so no single key opens everything (F10). Keep them in a
+password manager: without `ENCRYPTION_KEY` a restored installation cannot read
+stored mail and calendar passwords or two-step sign-in, without
+`BACKUP_MASTER_KEY` (or `ENCRYPTION_KEY` when it is unset) not the account
+backups' server unlock.
+
+**The file** (`instance-backup-format.ts`): the magic `UNIHUBIB1`, a JSON
+header (backup id, time, app version, upgrade step, key fingerprint, salt),
+then AES-256-GCM frames of 1 MiB under a key derived with HKDF-SHA256 from the
+instance key and the header's random salt. Each frame's nonce and additional
+data carry its index, the header's hash and whether it is the last, so a
+changed byte, reordered frames, a cut-off file or bytes after the end are
+refused. The key fingerprint is the key version: a file names the key that
+opens it. The plaintext is a POSIX tar: `db/NNNNNN.sql` (the dump in 8 MiB
+parts), `files/<root>/<path>` with `index/NNNNNN.ndjson` parts (size and
+SHA-256 of each file), and `manifest.json` (versions, table row counts at the
+dump's start, file counts and the hashes of the dump and the index).
+
+**Restore** is a command in the image, never the web. Into an empty
+installation: the same image version or a newer one, its own new database
+volume and uploads volume, the old installation's `ENCRYPTION_KEY` and
+`BACKUP_MASTER_KEY`, and the destination mounted to read the file.
+
+```bash
+docker compose up -d unihub-db          # the database only, not the app
+docker compose run --rm --no-deps unihub \
+  node /app/api/src/instance-restore.js \
+  --file /backup/unihub-instance-20261101T033000Z-0.28.0.uhib \
+  --key-file /run/secrets/unihub_instance_backup_key
+docker compose up -d                    # the app migrates an older backup on start
+```
+
+The command checks the whole file with the key first and writes nothing on
+a mismatch. It refuses a database with tables and storage with files. It loads
+the dump with the `mariadb` client and writes the files (owned by the API
+user), then clears what belonged to the old installation's running life:
+sessions (everyone signs in again), download tickets, login challenges, mail
+worker leases and account restores whose archive was not in the backup. Users,
+data, policies, the activity log and the push identity stay, so phones keep
+receiving notifications. A failure during the load drops the tables and
+removes the files it wrote, leaving the installation empty for another try.
+`--verify-only` only checks a backup with the key. From a checkout,
+`node api/scripts/instance-restore.cts` runs the same code after
+`npm --prefix api run build`, with `MYSQL_*` and the storage roots pointing at
+the empty installation.
+
+**The drill.** Restore a recent backup on a spare machine or a second Compose
+project now and then, and sign in. The release gate runs the same restore:
+`api/tests/instance-backup-mysql-integration.test.cts` restores into an
+emptied test database and empty storage and compares every table and file.
+
 ## Backup versions and restore behavior
 
 New exports write data schema 7, always encrypted. Readers for schemas 1 to 6 remain; the manifest

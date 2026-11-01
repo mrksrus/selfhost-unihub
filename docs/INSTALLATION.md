@@ -81,6 +81,9 @@ the runtime names shown below. Do not paste actual secrets into public issues.
 | `UNIHUB_BOOTSTRAP_ADMIN_PASSWORD` | `BOOTSTRAP_ADMIN_PASSWORD` | Yes in supplied Compose | Your initial web-login password, at least 12 characters. Use a password manager. |
 | `UNIHUB_ENCRYPTION_KEY_PREVIOUS` | `ENCRYPTION_KEY_PREVIOUS` | Only after a key change | The encryption key before the last change; values stored with it stay readable. See [Changing the encryption key](#changing-the-encryption-key). |
 | `UNIHUB_BACKUP_MASTER_KEY` | `BACKUP_MASTER_KEY` | Optional | A separate persistent key for server-side backup unlocking. If blank, the app uses `ENCRYPTION_KEY`. Set it before first use if wanted, then preserve it. |
+| `UNIHUB_INSTANCE_BACKUP_DIR` | `INSTANCE_BACKUP_DIR` | Optional | Where the instance backup writes, inside the container, for example `/backup`; mount a disk or share of its own there (see [section 5](#5-keep-storage-and-startup-defaults)). Blank: no instance backup. |
+| `UNIHUB_INSTANCE_BACKUP_KEY` | `INSTANCE_BACKUP_KEY` | Optional | The instance backup's own key, at least 32 random bytes (`openssl rand -base64 48`), never one of the keys above. Blank: no instance backup. |
+| `UNIHUB_INSTANCE_BACKUP_TIME`, `UNIHUB_INSTANCE_BACKUP_KEEP` | `INSTANCE_BACKUP_TIME`, `INSTANCE_BACKUP_KEEP` | Optional | The daily time (`HH:MM`, UTC) and how many backups are kept; blank keeps 03:30 and 14. |
 
 Generate each database password/key separately. This produces a single-line value
 without shell interpolation characters such as `$`:
@@ -94,6 +97,20 @@ fields. For a password containing `$` or `#`, use a single-quoted value in Compo
 `.env`, for example `UNIHUB_BOOTSTRAP_ADMIN_PASSWORD='your chosen password'`.
 The example text is not a suggested password. Avoid embedded quotes/newlines when
 using this simple format. `.env` is ignored by Git but still needs private storage.
+
+**Secrets as files.** Every secret can be given as a file instead: the
+container variable with `_FILE` appended names the file, for example
+`JWT_SECRET_FILE=/run/secrets/unihub_jwt_secret`. This works for
+`JWT_SECRET`, `ENCRYPTION_KEY`, `ENCRYPTION_KEY_PREVIOUS`, `BACKUP_MASTER_KEY`,
+`MYSQL_PASSWORD`, `DATABASE_URL`, `BOOTSTRAP_ADMIN_PASSWORD` and
+`INSTANCE_BACKUP_KEY`; MariaDB's image reads `MARIADB_PASSWORD_FILE` and
+`MARIADB_ROOT_PASSWORD_FILE` the same way. `docker-compose.yml` shows the
+`secrets:` form, which keeps the values out of `docker inspect` and the
+environment. A file holds the value alone; one trailing line break is ignored.
+It must be readable by uid 10001, which runs the API (`chown 10001` and
+`chmod 400` on the host). When a variable and its file are both set and differ,
+or the file is missing, empty or unreadable, UniHub does not start and its log
+names the setting, never the value.
 
 **What startup checks actually enforce:** Compose refuses empty required values.
 The API also rejects empty/known placeholder JWT, encryption and database secrets,
@@ -170,6 +187,37 @@ certificate verification. It is not required to start UniHub.
 | --- | --- | --- |
 | MariaDB `/var/lib/mysql`, Compose volume `mariadb_data` | Users, mail metadata/bodies, contacts, events/tasks, settings and jobs | Yes |
 | UniHub `/app/uploads`, Compose volume `uploads_data` | Mail originals/attachments, recordings, generated backups and restore uploads | Yes |
+| UniHub instance backup destination, for example `/backup` (optional) | The encrypted instance backups | Yes, on other storage than the two above |
+
+**What the installation itself must provide.** UniHub encrypts saved
+passwords and its backups, but the database and uploads volumes hold
+everything else in readable form. Encrypting those volumes (an encrypted
+disk, dataset or volume driver) is the installation's job; UniHub does not
+do it and cannot check it. Keep `ENCRYPTION_KEY`, `BACKUP_MASTER_KEY`,
+`JWT_SECRET` and the instance backup key in a password manager, apart from the
+server: no backup holds them, and a backup cannot be read or used without
+them.
+
+**The instance backup** copies the database and every stored file, encrypted
+with its own key, to a destination you mount, daily and on "Back up now" in
+Settings > Server settings > Instance backup. Give it a disk or share of its
+own, writable by uid 10001, and set `UNIHUB_INSTANCE_BACKUP_DIR` to where it is
+mounted in the container, together with `UNIHUB_INSTANCE_BACKUP_KEY` (or its
+file):
+
+```yaml
+    volumes:
+      - uploads_data:/app/uploads
+      - /srv/backups/unihub:/backup
+```
+
+```bash
+sudo install -d -o 10001 -g 10001 -m 700 /srv/backups/unihub
+```
+
+Without both settings the instance backup is off, the admin page says so, and
+everything else works. How it runs and how to restore it:
+[Data recovery, Instance backup](DATA_RECOVERY.md#instance-backup).
 
 The MariaDB settings (character set, memory and log sizes, connection limit) are
 command-line options of the `unihub-db` service in `docker-compose.yml`. There is

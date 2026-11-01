@@ -21,6 +21,7 @@ import { ownedMailPath, realOwnedMailPath } from './mail-storage';
 import type { MailStorageKind } from './mail-storage';
 import { SETTLED } from './mail-engine/operation-states';
 import { sqlList as list } from './mail-engine/job-kinds';
+import { fileRemovalGate } from './file-removal-gate';
 
 interface Account {
   id: string;
@@ -208,7 +209,13 @@ async function pendingRemovals(account: Account, executor: SqlExecutor = db) {
 // After COMMIT: delete files no remaining row references, only inside this
 // owner's directory of the attachment or raw-message root. A failure leaves an
 // orphan file, never a row pointing at a missing file.
-async function removeUnreferencedFiles({ userId, attachmentPaths = [], rawPaths = [] }: { userId: string; attachmentPaths?: (string | null | undefined)[]; rawPaths?: (string | null | undefined)[] }, executor: SqlExecutor = db) {
+// While an instance backup copies files the removal waits at its gate and
+// checks the references again then (file-removal-gate.ts), on the pool.
+async function removeUnreferencedFiles(files: { userId: string; attachmentPaths?: (string | null | undefined)[]; rawPaths?: (string | null | undefined)[] }) {
+  const removal = await fileRemovalGate.run(() => removeUnreferencedFilesNow(files));
+  return removal === 'deferred' ? { deleted: 0, failed: 0 } : removal;
+}
+async function removeUnreferencedFilesNow({ userId, attachmentPaths = [], rawPaths = [] }: { userId: string; attachmentPaths?: (string | null | undefined)[]; rawPaths?: (string | null | undefined)[] }, executor: SqlExecutor = db) {
   let deleted = 0, failed = 0;
   for (const [kind, paths, sql] of [
     ['attachment', attachmentPaths, 'SELECT id FROM email_attachments WHERE storage_path = ? LIMIT 1'],

@@ -10,12 +10,13 @@ import { RECORDINGS_ROOT, deleteRecordingFiles } from './recordings';
 import { BACKUPS_ROOT, isBackupPathUnderRoot } from './export-jobs';
 import { photosRoot } from './contact-photos';
 import { realtime } from './realtime';
+import { fileRemovalGate } from './file-removal-gate';
 import { log } from '../log';
 import { recordAudit } from './audit';
 import type { AuthRequest } from '../types';
 
 type DeleteActor = 'self' | 'admin';
-interface DeleteUserResult { files: { removed: number; failed: number } }
+interface DeleteUserResult { files: { removed: number; failed: number; deferred?: boolean } }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -69,7 +70,9 @@ async function deleteUser(userId: string, { actor, actorId = null, req = null }:
   });
   if (!deleted) throw notFound('USER_NOT_FOUND', 'User not found');
 
-  const outcome = await removeUserFiles(userId, files, recordingPaths);
+  // The rows are gone; while an instance backup copies files, they go after it.
+  const removal = await fileRemovalGate.run(() => removeUserFiles(userId, files, recordingPaths));
+  const outcome: DeleteUserResult = removal === 'deferred' ? { files: { removed: 0, failed: 0, deferred: true } } : removal;
   realtime.closeUser(userId);
   return outcome;
 }

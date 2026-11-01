@@ -21,6 +21,30 @@ Going back to 0.27.x means restoring that backup: 0.27.x does not know step
 order"). Backups made by 0.28.0 use **data schema 7** and are always
 encrypted. An older UniHub cannot read them; 0.28.0 reads every older backup.
 
+- **Instance backup, off until you set it up.** UniHub can now back up the
+  whole installation itself: the database and every stored file, encrypted,
+  daily to a disk or share you mount. Mount a destination of its own (not
+  inside `/app/uploads`, writable by uid 10001) and set
+  `UNIHUB_INSTANCE_BACKUP_DIR` and `UNIHUB_INSTANCE_BACKUP_KEY` (a new random
+  key, `openssl rand -base64 48`, never one of your other keys); see
+  [Installation, section 5](INSTALLATION.md#5-keep-storage-and-startup-defaults)
+  and [Data recovery](DATA_RECOVERY.md#instance-backup). Without them nothing
+  changes. Store the instance key, `ENCRYPTION_KEY` and `BACKUP_MASTER_KEY` in
+  a password manager: the backup holds none of them and cannot be used
+  without them.
+- **Secrets as files.** Each secret may now be a file, `NAME_FILE` (Compose
+  `secrets:`, shown in `docker-compose.yml`). Nothing to do if you keep the
+  variables. If you move a secret to a file, remove its variable or keep both
+  equal: different values stop the start, as does an unreadable file. Files
+  must be readable by uid 10001.
+- **Startup refuses an instance backup set up wrongly**: a key shorter than
+  32 bytes or equal to `JWT_SECRET`, `ENCRYPTION_KEY`,
+  `ENCRYPTION_KEY_PREVIOUS` or `BACKUP_MASTER_KEY`, a destination inside the
+  stored files, or a bad `INSTANCE_BACKUP_TIME`/`_KEEP`. The log names the
+  setting.
+- `BACKUP_MASTER_KEY` still falls back to `ENCRYPTION_KEY` when it is blank,
+  as before.
+
 ## 0.27.1 Follow-up fixes
 
 No database upgrade and no configuration change. Going back to 0.27.0 is
