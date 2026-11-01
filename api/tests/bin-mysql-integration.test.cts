@@ -670,6 +670,56 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     assert.deepEqual(await Promise.all(back.map(async row => (await stepsOf(row.id)).map(([title]) => title))), [['Step 0'], ['Step 1'], ['Step 2']], 'every date keeps its own');
   });
 
+  await t.test('UIDs 0.27 stored trimmed: upgrade step 25 gives them back the server\'s spaces, so the bin and the hand order still find the task', async () => {
+    const { runMigrations } = require('../dist/src/services/database-migrations') as typeof import('../src/services/database-migrations');
+    const { MIGRATIONS } = require('../dist/src/services/database') as typeof import('../src/services/database');
+    const { BASELINE } = require('../dist/src/services/database-baseline') as typeof import('../src/services/database-baseline');
+    const { itemKey, attachRanks } = require('../dist/src/services/task-order') as typeof import('../src/services/task-order');
+    clock += 3600000;
+    // UIDs with a trailing space, as another calendar app wrote them; two
+    // objects whose UIDs differ only by it, which 0.27 stored alike.
+    const [kept, ranked, twin] = [0, 1, 2].map(() => `${crypto.randomUUID()}@example.test`);
+    server.store(`${WORK}padded-done.ics`, eventIcs(`${kept} `, 'Padded done', clock));
+    server.store(`${WORK}padded-ranked.ics`, eventIcs(`${ranked} `, 'Padded ranked', clock));
+    server.store(`${WORK}twin-plain.ics`, eventIcs(twin, 'Twin plain', clock));
+    server.store(`${WORK}twin-padded.ics`, eventIcs(`${twin} `, 'Twin padded', clock));
+    await sync();
+    const [done] = await rowsTitled('Padded done');
+    await pool.execute("UPDATE calendar_events SET todo_status = 'done' WHERE id = ?", [done.id]);
+    await pool.execute('INSERT INTO calendar_event_subtasks (id, event_id, user_id, title, is_done, position) VALUES (?, ?, ?, ?, TRUE, 0)', [crypto.randomUUID(), done.id, users.alex, 'Kept step']);
+    // As 0.27 left them: the stored UIDs trimmed, the hand ranks keyed by those.
+    for (const uid of [kept, ranked, twin]) {
+      await pool.execute('UPDATE calendar_remote_objects SET uid = ? WHERE calendar_id = ? AND uid COLLATE utf8mb4_nopad_bin IN (?, ?)', [uid, work, uid, `${uid} `]);
+      await pool.execute('UPDATE calendar_events SET uid = ? WHERE user_id = ? AND uid COLLATE utf8mb4_nopad_bin IN (?, ?)', [uid, users.alex, uid, `${uid} `]);
+    }
+    for (const [uid, rank] of [[ranked, 111], [twin, 222]] as const) {
+      await pool.execute("INSERT INTO task_order (user_id, item_key, calendar_id, remote_uid, recurrence_id, sort_rank) VALUES (?, ?, ?, ?, '', ?)",
+        [users.alex, itemKey({ calendar_id: work, remote_uid: uid, recurrence_id: '' }), work, uid, rank]);
+    }
+    // The upgrade: step 25 again, as an installation of 0.27 runs it.
+    await pool.execute('DELETE FROM schema_migrations WHERE id = 25');
+    await runMigrations(pool, MIGRATIONS, BASELINE);
+    const hand = async (title: string) => (await attachRanks(users.alex, (await rowsTitled(title)) as FixtureValue[]))[0];
+    // The bin: deleted and restored, the task keeps its own state.
+    await call(alex, 'DELETE', `/api/calendar/events/${done.id}`);
+    await restore((await bin(alex, 'calendar')).find(entry => entry.title === 'Padded done').id);
+    const [back] = await rowsTitled('Padded done');
+    assert.equal(back.uid, `${kept} `, 'under the server\'s UID');
+    assert.equal(back.todo_status, 'done', 'its done state back');
+    assert.deepEqual(await stepsOf(back.id), [['Kept step', true]], 'its subtasks back');
+    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_overlay_restores WHERE calendar_id = ? AND uid COLLATE utf8mb4_nopad_bin IN (?, ?)', [work, kept, `${kept} `]), 0, 'no state left waiting');
+    // The hand order, also after the server changed the task.
+    assert.equal((await hand('Padded ranked')).sort_rank, 111);
+    server.store(`${WORK}padded-ranked.ics`, eventIcs(`${ranked} `, 'Padded ranked', clock, ['DESCRIPTION:Changed at the server']));
+    await sync();
+    const after = await hand('Padded ranked');
+    assert.deepEqual([after.hand_ordered, after.sort_rank], [true, 111], 'its hand place stays');
+    // Two items could own the trimmed UID's rank: it stays with the one whose UID it is.
+    assert.equal((await rowsTitled('Twin padded'))[0].uid, `${twin} `);
+    assert.equal((await rowsTitled('Twin plain'))[0].uid, twin);
+    assert.deepEqual([(await hand('Twin plain')).sort_rank, (await hand('Twin padded')).hand_ordered], [222, false]);
+  });
+
   await t.test('a read-only or removed calendar: restored into the default list instead', async () => {
     const readOnly = await serverTask('Now read-only');
     const removed = await serverTask('Calendar removed');

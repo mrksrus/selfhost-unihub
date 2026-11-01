@@ -118,19 +118,30 @@ writes nothing more (`409 RESTORE_IN_PROGRESS`).
   past `purge_after` and the retention as the settings and policies resolve
   it at that moment, never while the module is off or its section is being
   restored, and never an item whose re-creation at a server is under way.
-  It locks the due rows and resolves the retention in the same transaction;
-  a retention change locks the person's bin rows before it saves, so one
-  saved while the purge runs is either seen by it or applied after it.
+  It reads due items from a cursor over (`purge_after`, id) that passes
+  every item a batch looked at, so items that must wait never hold back
+  later ones. Each batch locks in the order of the other writers of bin
+  rows: the person's `users` row (shared; a retention change takes it
+  exclusively before it saves, so one saved while the purge runs is either
+  seen by it or applied after it), then the items' restore journals, then
+  the items by primary key, as deleting for good and a restore's commit do.
   Recording files are removed after the rows, only inside the person's own
   folder and only when no recording uses them. The recordings folder and its
   `bin/` are refused (`RECORDING_FOLDER_UNSAFE`) when a part of the path is a
   link or leads outside the recordings root; a restore locks its bin row, so
-  two restores of one recording cannot both move its file.
+  two restores of one recording cannot both move its file. A recording's
+  file gets its new name (a hard link, or a copy) inside the transaction and
+  loses the old one only after the commit, so a stop at any point leaves the
+  file where the committed rows name it.
 - `calendar_overlay_restores` holds a synced item's own state (ToDo state,
   done time, source email, subtasks) until its row exists: by calendar,
   exact UID (`utf8mb4_nopad_bin`, never trimmed) and recurrence id, or by
   title and start for archives without UIDs, only when exactly one stateless
-  row matches (expiring). The restore writes it with
+  row matches (expiring). It keeps every subtask, however many. Step 25
+  also gives synced UIDs that 0.27 stored trimmed the server's own back, from
+  each object's stored ICS (`calendar-uid-upgrade.ts`): the object's rows,
+  and the hand order and open moves of its calendar unless another object
+  there could own them. The restore writes it with
   `insertOverlays` and applies those whose rows exist with
   `applyOverlaysToLiveRows`; the sync that creates a row takes the rest. It
   goes with its calendar and never applies to another person's calendar.

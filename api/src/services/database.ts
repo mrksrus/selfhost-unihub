@@ -12,6 +12,7 @@ import { BASELINE } from './database-baseline';
 import { verifyDatabaseInventory } from './data-inventory';
 import { withTransaction } from './transactions';
 import { addContactModel, copyLegacyContactValues, verifyLegacyContactCopy, dropLegacyContactColumns, verifyLegacyColumnsDropped } from './contacts-migration';
+import { adoptRawCalendarUids } from './calendar-uid-upgrade';
 import { log } from '../log';
 
 type FieldRow = RowDataPacket & { Field: string };
@@ -380,10 +381,14 @@ const MIGRATIONS: readonly Migration[] = [
     // the server-kept date of a backup, the download grant of a backup
     // ticket, the generic bin purge and the bin's re-creation of synced
     // items at their server, the users' acknowledged policy notices and the
-    // instance backup's runs.
+    // instance backup's runs. Synced UIDs that 0.27 trimmed take the server's
+    // own afterwards (calendar-uid-upgrade.ts).
     id: 25,
     name: 'backup-store-and-safety',
-    up: addDataSafety,
+    up: async (connection: PoolConnection) => {
+      await addDataSafety(connection);
+      await adoptRawCalendarUids(connection);
+    },
     verify: async (connection: PoolConnection) => {
       await verifyDatabaseInventory(connection, { throughMigration: 25 });
       for (const { table, index } of STABLE_IDENTITIES) {
