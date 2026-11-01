@@ -2,15 +2,16 @@
 
 **ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of the database, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
-0.27.0 and later write account backups with data schema 6 and retain readers for schemas 1–5
-(0.26.x wrote schema 5, 0.10.13 to 0.25.x schema 4).
+0.28.0 and later write account backups with data schema 7 and retain readers for schemas 1–6
+(0.27.x wrote schema 6, 0.26.x schema 5, 0.10.13 to 0.25.x schema 4). Every new
+backup is encrypted; unencrypted ZIP archives of earlier releases still import.
 `manifest.json` is the version file. Users do not select conversion scripts.
 
 ## Independent version fields
 
 | Field | Current value | Meaning |
 | --- | --- | --- |
-| Data `version` | 6 | Meaning and shape of exported records |
+| Data `version` | 7 | Meaning and shape of exported records |
 | ZIP `format` | `unihub-restorable-backup` | Identifies a restorable archive |
 | ZIP `format_version` | 1 | Archive layout |
 | Encrypted container | 1 | Authenticated encryption framing |
@@ -32,6 +33,7 @@ framing and a password-wrapped data key.
 | 4 | Automatic | Adds durable mail intents, receipts and quarantined provider evidence |
 | 5 | Automatic | Contacts in the vCard model: values, kept properties, photos, merged-away UIDs and dismissed duplicates |
 | 6 | Automatic | The hand order of tasks (`task_order`) and the default task list and calendar settings |
+| 7 | Automatic | Data classes: no provider copies; stable `uid` of calendars, events and recordings; synced-task state as overlays; `contents` |
 | Unknown version | Rejected before restore | Requires a compatible reader |
 
 Schema 3 preserves account-scoped folder metadata, source and filing identities,
@@ -157,6 +159,43 @@ archived: a restore must not replay calendar server writes. Archives of
 schemas 1 to 5 carry no order, so every task keeps its date's place; a schema
 5 archive that carries `task_order` is refused as not made by UniHub.
 
+0.28.0 introduces schema 7 (upgrade step 25). A backup holds the data
+classes only UniHub has (`backup-classes.ts`): local items, configuration,
+and Download-mode mail unless "Include downloaded mail" is off. An account
+that deletes mail at the provider, or the `backup.download_mail` policy,
+forces that mail in. Provider copies are left out: events of CalDAV and ICS
+calendars with their subtasks, attendees and external references, and
+Sync-mode mail with a server copy (a server UID or an observed occurrence)
+with its files, scores, recovery items and the Sync accounts' provider
+evidence. A Sync-mode draft or UniHub's own copy without a server copy stays.
+Folder reconciliation markers stay for every account: they record moves
+already made, which must not run again. `calendar_calendars`,
+`calendar_events` and `recordings` carry `uid`, the item's stable identity
+(compared byte for byte), which a restore matches first, in any of the
+person's local calendars for a task: a task moved to another list after the
+backup is the same task. A restore keeps the archived `uid` unless the
+person already has it on another item or the row is a Keep both copy. Rows of
+schemas 1 to 6 have no `uid`; their archived `id` is their identity.
+
+UniHub's state on a synced task (ToDo state, done time, source email and
+subtasks) travels in `calendar_overlay_restores`, keyed by calendar, UID and
+recurrence id (`match_kind` `uid`). A restore applies it to the live task of
+that identity: Replace takes the archive's state, Keep existing and Keep both
+fill in only what the task has none of. Without a live task it waits in the
+table for the sync that brings the task back. A waiting overlay is carried on
+by the next backup. The payload is limited to the states UniHub writes; an
+overlay naming no calendar of the archive is refused.
+
+An archive of schemas 1 to 6 imports only what the rule keeps. Its synced
+tasks' state becomes `shape` overlays, matched by title and start for 30 days,
+because it carries no UIDs. Its Download-mode mail stays whatever today's
+choice says, since it may be the only copy. The manifest and the restore
+result carry `contents`: the classes included, what was left out with counts,
+and notes (`contracts/backup.ts`).
+
+Applications that read only schemas 1–6 (0.27.x and older) refuse a schema 7
+backup before restoring anything.
+
 Applications that read only schemas 1–5 (0.26.x and older) refuse a schema 6
 backup before restoring anything: "Unsupported backup data version: 6. This
 UniHub version reads versions 1, 2, 3, 4 and 5; a newer backup may need a
@@ -210,7 +249,9 @@ Frozen plain/encrypted archives from the actual `v0.9.23.0` exporter live under
 `api/tests/fixtures/backups/v1-0.9.23.0`. The frozen plain archive from the actual
 `v0.10.3` exporter is under `v2-0.10.3`, and the frozen schema 4 contacts
 archive from the actual `v0.25.1` exporter (fixed 3+3 fields with unicode,
-empty slots and repeated values) under `v4-0.25.1`. Their provenance and hashes are recorded.
+empty slots and repeated values) under `v4-0.25.1`, and the frozen encrypted
+full schema 6 archive from the actual `v0.27.1` exporter (local and CalDAV
+tasks, Sync and Download mail) under `v6-0.27.1`. Their provenance and hashes are recorded.
 They contain invented data, not the owner's mailbox. Do not regenerate them just
 to accommodate a changed reader.
 
