@@ -6,6 +6,44 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.28.0
+
+Data safety. The first start after the upgrade runs database upgrade 25,
+which takes longer on large calendars (see
+[Upgrading](docs/UPGRADING.md#0280-data-safety)).
+
+### Changed
+
+- **A backup holds what only UniHub has.** Contacts, local lists and tasks,
+  recordings, settings and the connections of your accounts are in it. So is
+  UniHub's own state on synced tasks: ToDo state, done time, subtasks and the
+  email a task was made from. What a provider holds downloads again after the
+  accounts reconnect and is no longer copied: CalDAV and subscription events,
+  and Sync-mode mail that is on the server. A Sync-mode message without a
+  server copy stays in the backup. Each backup shows what it holds and what
+  it left out, with counts.
+- **"Include downloaded mail"** decides whether Download-mode mail is in a
+  backup; it starts on, because that mail may be the only copy. An account
+  that deletes mail at the provider always includes its mail, and an
+  administrator's policy can require it for everyone; the choice then shows
+  the reason.
+- **Every backup is encrypted** and needs its recovery password to restore
+  on another server. Unencrypted .zip backups can no longer be made; older
+  ones still restore.
+- **Restoring an older backup** brings back only what a new backup would
+  hold and says what it left out. The ToDo state and subtasks of its synced
+  tasks wait for the calendar's next sync and are applied to the task with
+  the same title and start for 30 days.
+- **Backups download through a short-lived link** that the Android app can
+  resume for an hour, instead of handing the app your session.
+
+### Fixed
+
+- **A task moved to another list before a restore no longer comes back
+  twice.** Local tasks, lists and recordings now carry a stable identity, and
+  a restore finds them by it wherever they are: Replace puts the task back as
+  it was in the backup, Keep existing leaves it where you moved it.
+
 ## 0.27.1
 
 Fixes for the Android app and for many changes saved at once. No database

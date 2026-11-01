@@ -14,6 +14,7 @@ import { resolveCalDavUrl } from '../security/caldav-transport';
 import { RECORDINGS_ROOT } from './recordings';
 import { resolveOwnedReference } from './backup-ownership';
 import { writeRestoredPhotoFile } from './contact-photos';
+import { localEventSql } from './backup-classes';
 import {
   ATTACHMENTS_ROOT,
   sha256Buffer,
@@ -202,7 +203,18 @@ async function findExistingCalendarAccountForRestore(connection: SqlExecutor, ro
   return existingByIdentity[0]?.id || null;
 }
 
+// The stable identity a restored row asks for: the archive's uid (data
+// schema 7), else its id, which upgrade step 25 made the identity of every
+// row that existed then. Matching by it finds an item again after a rename
+// or a move to another list, also restoring into another installation.
+const archivedIdentity = (row: { uid?: unknown; id?: unknown }) => typeof row.uid === 'string' && row.uid ? row.uid : typeof row.id === 'string' ? row.id : null;
+
 async function findExistingCalendarForRestore(connection: SqlExecutor, row: RestoreRow, userId: string, targetAccountId: string | null, calendarMode: string) {
+  const identity = archivedIdentity(row);
+  if (identity) {
+    const [byIdentity] = await connection.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM calendar_calendars WHERE user_id = ? AND account_id = ? AND uid = ? ORDER BY created_at, id LIMIT 1', [userId, targetAccountId, identity]);
+    if (byIdentity.length) return byIdentity[0].id;
+  }
   const [existingById] = await connection.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM calendar_calendars WHERE id = ? AND user_id = ? AND account_id = ? LIMIT 1', [row.id, userId, targetAccountId]);
   if (existingById.length) return existingById[0].id;
   if (row.external_id) {
@@ -224,6 +236,16 @@ async function findExistingCalendarForRestore(connection: SqlExecutor, row: Rest
 }
 
 async function findExistingCalendarEventForRestore(connection: SqlExecutor, row: RestoreRow, userId: string, targetCalendarId: string | null, claimedIds = new Set<string>()) {
+  // By identity in any of the person's local calendars: a task moved to
+  // another list after the backup is the same task (B-34).
+  const identity = archivedIdentity(row);
+  if (identity) {
+    const [byIdentity] = await connection.execute<(RowDataPacket & { id: string })[]>(
+      `SELECT e.id FROM calendar_events e WHERE e.user_id = ? AND e.uid = ? AND ${localEventSql('e')} ORDER BY (e.calendar_id <=> ?) DESC, e.created_at, e.id`,
+      [userId, identity, targetCalendarId]);
+    const match = firstUnclaimed(byIdentity, claimedIds);
+    if (match) return match;
+  }
   const [existingById] = await connection.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM calendar_events WHERE id = ? AND user_id = ? AND calendar_id <=> ? LIMIT 1', [row.id, userId, targetCalendarId]);
   if (existingById.length && !claimedIds.has(existingById[0].id)) return existingById[0].id;
   const serializedReminders = (value: unknown) => {
@@ -379,6 +401,12 @@ async function findExistingAttachmentForRestore(connection: SqlExecutor, row: Re
 }
 
 async function findExistingRecordingForRestore(connection: SqlExecutor, row: RestoreRow, userId: string, restoredFilePath: string | null = null, claimedIds = new Set<string>()) {
+  const identity = archivedIdentity(row);
+  if (identity) {
+    const [byIdentity] = await connection.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM recordings WHERE user_id = ? AND uid = ? ORDER BY created_at, id', [userId, identity]);
+    const match = firstUnclaimed(byIdentity, claimedIds);
+    if (match) return match;
+  }
   const [existingById] = await connection.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM recordings WHERE id = ? AND user_id = ? LIMIT 1', [row.id, userId]);
   const byId = firstUnclaimed(existingById, claimedIds);
   if (byId) return byId;
@@ -509,6 +537,7 @@ async function writeRestoredContactPhoto(userId: string, file: BackupFile, {
 }
 
 export {
+  archivedIdentity,
   prepareCredentialsForRestore,
   restoredCalendarLacksLogin,
   overwriteUserId,

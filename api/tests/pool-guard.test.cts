@@ -112,3 +112,31 @@ test('after release the task may use the pool again', () => {
     await pool.query('SELECT 2');
   `);
 });
+
+test('a commit as the first statement marks the hold', () => {
+  assertRefused(`
+    const connection = await pool.getConnection();
+    await sleep(5);
+    await connection.commit();
+    await pool.query('SELECT 1');
+    connection.release();
+  `, 'query');
+});
+
+// Known limits (docs/DEVELOPMENT.md): a caller that receives the connection
+// through Promise.all or an async function of its own resumes outside the
+// handover, so a pool request before the connection's first statement is not
+// seen. These pin the gap; a guard that closes it changes them to assertRefused.
+test('known limit: a pool request before the first statement escapes after Promise.all or an acquiring wrapper', () => {
+  assertPasses(`
+    const [connection] = await Promise.all([pool.getConnection()]);
+    await pool.query('SELECT 1');
+    connection.release();
+  `);
+  assertPasses(`
+    const take = async () => pool.getConnection();
+    const connection = await take();
+    await pool.query('SELECT 1');
+    connection.release();
+  `);
+});

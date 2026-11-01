@@ -643,7 +643,8 @@ export = {
       const [[account]] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
       if (!account) return { error: 'Account not found', status: 404 };
       const { startDataExportJob } = require('../services/export-jobs') as typeof import('../services/export-jobs');
-      const job = await startDataExportJob(userId, { sections: ['mail'], mailAccountId: id, encrypt: body?.encrypt !== false });
+      // Always encrypted (0.28); an older client's encrypt: false is ignored.
+      const job = await startDataExportJob(userId, { sections: ['mail'], mailAccountId: id });
       return { job, status: 202 };
     } catch (error) {
       if (!(error as ApiError).status) console.error('[ACCOUNT] Account backup export error:', error);

@@ -119,10 +119,10 @@ test('MySQL 8 backup metadata queries and one-time password reveal', {
   const rawJob = await getDataExportJob(userId, jobId);
   assert.equal(serializeJob(rawJob).recovery_password_available, true);
 
-  const reveal = await routes['POST /api/backup/jobs/:id/recovery-password/reveal'](
-    { headers: { host: 'localhost' }, url: `/api/backup/jobs/${jobId}/recovery-password/reveal` } as FixtureValue,
-    userId
-  );
+  const reveal = await routes['POST /api/backup/jobs/:id/recovery-password/reveal'].handler(
+    { headers: { host: 'localhost' }, url: `/api/backup/jobs/${jobId}/recovery-password/reveal`, params: { id: jobId } } as FixtureValue,
+    userId, {} as FixtureValue, {} as FixtureValue
+  ) as FixtureValue;
   assert.equal(reveal.recovery_password, recoveryPassword);
 
   const revealedJob = serializeJob(await getDataExportJob(userId, jobId));
@@ -130,10 +130,10 @@ test('MySQL 8 backup metadata queries and one-time password reveal', {
   assert.equal(revealedJob.recovery_password_revealed, true);
   assert.equal(revealedJob.server_unlock_available, true);
 
-  const secondReveal = await routes['POST /api/backup/jobs/:id/recovery-password/reveal'](
-    { headers: { host: 'localhost' }, url: `/api/backup/jobs/${jobId}/recovery-password/reveal` } as FixtureValue,
-    userId
-  );
+  const secondReveal = await routes['POST /api/backup/jobs/:id/recovery-password/reveal'].handler(
+    { headers: { host: 'localhost' }, url: `/api/backup/jobs/${jobId}/recovery-password/reveal`, params: { id: jobId } } as FixtureValue,
+    userId, {} as FixtureValue, {} as FixtureValue
+  ) as FixtureValue;
   assert.equal(secondReveal.status, 410);
 
   assert.equal(await resumePendingDataExportJobs({ schedule: false }), 0);

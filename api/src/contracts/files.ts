@@ -3,18 +3,20 @@
 // services/file-tickets.ts.
 
 /** What a ticket can fetch. Each kind names its module and restore section on the server. */
-export type FileTicketKind = 'mail-attachment';
+export type FileTicketKind = 'mail-attachment' | 'backup-archive';
 
 /** POST /api/files/tickets */
 export interface FileTicketRequest {
   kind: FileTicketKind;
-  /** The record's id, for example the attachment's. */
+  /** The record's id: the attachment's, or the export job's for a backup archive. */
   id: string;
 }
 
 /**
- * The ticket for one download. `url` (GET, no cookie needed) answers once,
- * within `expires_at`; the file's name, type and size are those of that answer.
+ * The ticket for one download. `url` (GET, no cookie needed) must be used
+ * within `expires_at`; the file's name, type and size are those of that
+ * answer. It answers once, except for a `backup-archive`: its first use opens
+ * a 60-minute grant in which the same URL answers again, with Range.
  */
 export interface FileTicketResponse {
   url: string;

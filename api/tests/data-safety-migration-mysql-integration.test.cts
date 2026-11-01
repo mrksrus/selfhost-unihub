@@ -52,9 +52,13 @@ test('upgrade 25 gives every event, calendar and recording its stable identity, 
   const recording = id();
   await pool.execute("INSERT INTO recordings (id, user_id, title, content_type, storage_path) VALUES (?, ?, 'Interview', 'audio/webm', 'recordings/x.webm')", [recording, alex]);
 
+  // Each row's modification date from before the upgrade, which filling in the identity must keep.
+  const modified = '2029-05-06 07:08:09';
+  for (const table of ['calendar_events', 'calendar_calendars', 'recordings']) await pool.execute(`UPDATE ${table} SET updated_at = ?`, [modified]);
+
   // An interrupted step 25: the first column and part of the backfill ran, the step was not recorded.
   await pool.execute('ALTER TABLE calendar_events ADD COLUMN uid VARCHAR(500) NULL');
-  await pool.execute('UPDATE calendar_events SET uid = id WHERE id = ?', [local]);
+  await pool.execute('UPDATE calendar_events SET uid = id, updated_at = updated_at WHERE id = ?', [local]);
   await runMigrations(pool, MIGRATIONS, BASELINE);
 
   const [[step]] = await pool.query<RowDataPacket[]>('SELECT name FROM schema_migrations WHERE id = 25');
@@ -71,6 +75,23 @@ test('upgrade 25 gives every event, calendar and recording its stable identity, 
   for (const row of calendars) assert.equal(row.uid, row.id);
   const [[recorded]] = await pool.query<RowDataPacket[]>('SELECT uid FROM recordings WHERE id = ?', [recording]);
   assert.equal(recorded.uid, recording);
+
+  for (const table of ['calendar_events', 'calendar_calendars', 'recordings']) {
+    const [dates] = await pool.query<RowDataPacket[]>(`SELECT DISTINCT DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS at FROM ${table}`);
+    assert.deepEqual(dates.map(row => row.at), [modified], `${table} keeps its modification dates`);
+  }
+
+  // UIDs compare exactly: two that differ only in case or a trailing space are two items.
+  const upper = await event(alex, errands, 'Upper');
+  const lower = await event(alex, errands, 'Lower');
+  const spaced = await event(alex, errands, 'Spaced');
+  await pool.execute('UPDATE calendar_events SET uid = ? WHERE id = ?', ['Task@example.test', upper]);
+  await pool.execute('UPDATE calendar_events SET uid = ? WHERE id = ?', ['task@example.test', lower]);
+  await pool.execute('UPDATE calendar_events SET uid = ? WHERE id = ?', ['Task@example.test ', spaced]);
+  const [exact] = await pool.query<RowDataPacket[]>('SELECT id FROM calendar_events WHERE user_id = ? AND uid = ?', [alex, 'Task@example.test']);
+  assert.deepEqual(exact.map(row => row.id), [upper]);
+  const [trailing] = await pool.query<RowDataPacket[]>('SELECT id FROM calendar_events WHERE user_id = ? AND uid = ?', [alex, 'Task@example.test ']);
+  assert.deepEqual(trailing.map(row => row.id), [spaced]);
 
   // Rows made after the upgrade by code that does not name an identity get a new one each.
   const [later, later2] = [await event(alex, errands, 'New task'), await event(alex, errands, 'New task')];

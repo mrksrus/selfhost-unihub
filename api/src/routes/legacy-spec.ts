@@ -3,7 +3,7 @@ import type { RouteRequest, RouteResponse } from '../types';
 import type { RoutePolicy, RouteSpec, RouteTable } from '../http/route';
 import { DEFAULT_BODY_LIMIT, MUTATING_METHODS, defineRoutes } from '../http/route';
 import { getModuleForPath } from '../services/module-catalog';
-import { BACKUP_UPLOAD_MAX_SIZE, MAIL_COMPOSE_REQUEST_MAX_SIZE } from '../config';
+import { MAIL_COMPOSE_REQUEST_MAX_SIZE } from '../config';
 import { SERVER_DELETE_VALUES } from '../services/mail-folder-delete';
 
 // Route files not yet declared with specs export plain handlers; their policy
@@ -15,9 +15,8 @@ import { SERVER_DELETE_VALUES } from '../services/mail-folder-delete';
 type LegacyHandler = (...args: never[]) => unknown;
 type LegacyRouteTable = Record<string, LegacyHandler>;
 
-const PUBLIC_ROUTE_KEYS: ReadonlySet<string> = new Set([
-  'GET /api/backup/export',
-]);
+// None left since routes/backup.ts declares its own (0.28).
+const PUBLIC_ROUTE_KEYS: ReadonlySet<string> = new Set([]);
 
 // Request body limits in bytes for the routes that carry files, archives,
 // imports, bulk selections, or text columns sized well beyond the default.
@@ -26,7 +25,6 @@ const BODY_LIMIT_BY_ROUTE: Readonly<Record<string, number>> = {
   // Chord sheets (metadata.chords, 10000 characters), a TEXT description and tags
   'PUT /api/recordings/:id': 262144,
   'POST /api/recordings/uploads/start': 50000,
-  'POST /api/backup/import': BACKUP_UPLOAD_MAX_SIZE,
   'POST /api/mail/send': MAIL_COMPOSE_REQUEST_MAX_SIZE,
   'POST /api/mail/drafts': MAIL_COMPOSE_REQUEST_MAX_SIZE,
   'PUT /api/mail/drafts/:id': MAIL_COMPOSE_REQUEST_MAX_SIZE,
@@ -52,7 +50,7 @@ function bodyLimitFor(routeKey: string) {
 
 // Restore sections of the route files still on the derived policy, by path
 // prefix: a write under a module's prefix is read-only while that module's
-// section is being restored. Backup routes run the restore themselves.
+// section is being restored.
 const RESTORE_SECTION_BY_PATH_PREFIX: readonly [string, string][] = [
   ['/api/calendar', 'calendar'],
   ['/api/mail', 'mail'],
@@ -60,7 +58,6 @@ const RESTORE_SECTION_BY_PATH_PREFIX: readonly [string, string][] = [
 ];
 function restoreSectionFor(method: string, pathname: string) {
   if (!MUTATING_METHODS.has(method)) return undefined;
-  if (pathname.startsWith('/api/backup/')) return null;
   return RESTORE_SECTION_BY_PATH_PREFIX.find(([prefix]) => pathname === prefix || pathname.startsWith(prefix + '/'))?.[1] ?? null;
 }
 
@@ -87,7 +84,7 @@ const BACKGROUND_HEADER_CSRF_KEYS: ReadonlySet<string> = new Set([
 // - Deleting a mail folder at the provider as well (server=1 or true, as the
 //   route reads it) deletes its mail there and here: mail.provider_delete. A
 //   folder that is only UniHub's returns its mail to Inbox and names none.
-// - The backup routes: creating, restoring and deleting backups.
+// - One mail account's backup (routes/backup.ts declares the other backup routes).
 // The rules that depend on the body come with their service checks (0.28
 // C2): the mail mode and the provider-deletion switch of a new or changed
 // mail account (and the deletion worker's recheck), and turning a mail
@@ -102,12 +99,6 @@ const POLICIES_BY_ROUTE: Readonly<Record<string, Pick<RoutePolicy, 'destructive'
   'DELETE /api/calendar/calendars/:id': { destructive: ['bin.delete'] },
   'DELETE /api/calendar/events/:id': { destructive: ['bin.delete'] },
   'DELETE /api/recordings/:id': { destructive: ['bin.delete'] },
-  'POST /api/backup/jobs': { requires: ['backup.create'] },
-  'POST /api/backup/import': { requires: ['backup.restore'] },
-  'POST /api/backup/jobs/:id/restore': { requires: ['backup.restore'] },
-  'POST /api/backup/restore-jobs/:id/start': { requires: ['backup.restore'] },
-  'DELETE /api/backup/jobs/:id': { destructive: ['backup.delete'] },
-  'DELETE /api/backup/restore-jobs/:id': { destructive: ['backup.delete'] },
 };
 
 function legacyRouteSpec(key: string, handler: LegacyHandler): RouteSpec {
@@ -117,7 +108,7 @@ function legacyRouteSpec(key: string, handler: LegacyHandler): RouteSpec {
   const policy = {
     module: getModuleForPath(pathname),
     restoreSection: restoreSectionFor(method, pathname),
-    body: { limit: bodyLimitFor(key), kind: (key === 'POST /api/backup/import' ? 'backup-upload' : 'json') as 'backup-upload' | 'json' },
+    body: { limit: bodyLimitFor(key), kind: 'json' as const },
     ...(BACKGROUND_HEADER_CSRF_KEYS.has(key) ? { csrf: 'background-header' as const } : {}),
     ...POLICIES_BY_ROUTE[key],
   };

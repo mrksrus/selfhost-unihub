@@ -75,9 +75,11 @@ work that must not run on it uses the control pool
 the moment the connection is handed over, for the task that asked for it and
 the work it starts afterwards; a task started beside it (`Promise.all`) does
 not hold the connection, and a connection a test takes itself does not count.
-When a test wraps `getConnection` with its own function, the hold counts only
-from the connection's first statement. `api/tests/pool-guard.test.cts` checks
-the guard itself. Add
+When the connection reaches the task some other way (a test's own wrapper, an
+async function that returns it, `Promise.all`), the hold counts only from the
+connection's first statement, a `commit()` or `rollback()` included; a pool
+request before that is not caught. `api/tests/pool-guard.test.cts` checks the
+guard itself and pins these limits. Add
 `--require ./tests/helpers/pool-guard.cts` to a direct `node --test` run from
 `api/` to get the same check.
 

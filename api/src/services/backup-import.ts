@@ -33,6 +33,7 @@ import {
   scopeBackupForImport,
 } from './backup-validate';
 import {
+  archivedIdentity,
   prepareCredentialsForRestore,
   restoredCalendarLacksLogin,
   overwriteUserId,
@@ -53,6 +54,9 @@ import { backupFromZipBuffer, backupFromZipFile } from './backup-zip-reader';
 import { restoreContactsSection } from './backup-contacts';
 import { releasePhotoFiles, withContactPhotoLock } from './contact-photos';
 import { log } from '../log';
+import crypto from 'node:crypto';
+import { archivedContents, filterOldArchive } from './backup-classes';
+import { restoreOverlays } from './backup-overlays';
 
 const accountLabel = (row: BackupRow) => row.email_address || row.account_email || row.display_name || row.id;
 
@@ -84,6 +88,19 @@ function sourceEmailJson(value: unknown) {
 }
 
 const SETTING_KEYS = new Set(Object.keys(SETTINGS.user));
+
+// The identity a restored row gets (upgrade step 25): the archive's, unless
+// another of the person's rows has it already or the row is a copy kept
+// beside the one it matched (Keep both); then a new one.
+async function restoredIdentity(connection: SqlExecutor, table: 'calendar_calendars' | 'calendar_events' | 'recordings', userId: string, row: BackupRow, copy: boolean) {
+  const identity = archivedIdentity(row);
+  const limit = table === 'calendar_events' ? 500 : 36;
+  if (!copy && identity && identity.length <= limit) {
+    const [taken] = await connection.execute<RowDataPacket[]>(`SELECT id FROM ${table} WHERE user_id = ? AND uid = ? LIMIT 1`, [userId, identity]);
+    if (!taken.length) return identity;
+  }
+  return crypto.randomUUID();
+}
 
 // The archived task's order key: its own, or its id before 0.27 (an id that
 // is no valid key, which UniHub never writes, leaves the new id as the key).
@@ -214,6 +231,9 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
     : validateBackupPayload(backup, { fileBuffersByPath });
   // Verify the original hashes before migration changes the in-memory payload.
   if (validation.valid) backup = normalizeBackupPayload(backup);
+  // Archives before schema 7 lose their mirrored rows here, as a new export
+  // leaves them out (backup-classes.ts).
+  const oldArchive = validation.valid ? filterOldArchive(backup) : null;
   const scopedBackup = scopeBackupForImport(backup, sections) as RestoreArchive & { import_sections: string[] };
   // Sections that carry only account settings: restored accounts sign in
   // again and download from the provider instead of restoring content.
@@ -222,6 +242,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
   const accountOnlySections = scopedBackup.import_sections.filter(section => accountOnly.has(section));
   const counts = countBackupRows(scopedBackup);
   const conflicts = await countRestoreConflicts(userId, scopedBackup).catch(() => ({}));
+  const contents = archivedContents(backup, scopedBackup.import_sections.filter(section => !accountOnly.has(section)), oldArchive, accountOnlySections.length > 0);
   if (!validation.valid || mode !== 'apply') {
     return {
       dry_run: mode !== 'apply',
@@ -229,6 +250,8 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
       errors: validation.errors,
       warnings: validation.warnings,
       counts,
+      contents,
+      notes: contents.notes,
       import_sections: scopedBackup.import_sections,
       account_only_sections: accountOnlySections,
       conflicts,
@@ -469,12 +492,13 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         calendarIdMap.set(row.id, targetCalendarId);
         if (!shouldWriteExisting(existingCalendarId, targetCalendarId, conflictMode)) continue;
         writtenCalendarIds.add(targetCalendarId);
+        const calendarIdentity = await restoredIdentity(connection, 'calendar_calendars', userId, row, !!existingCalendarId && targetCalendarId !== existingCalendarId);
         const calendarName = targetCalendarId !== existingCalendarId && conflictMode === 'keep_both' && existingCalendarId
           ? `${row.name || 'Calendar'} (Restored)`
           : row.name || 'Calendar';
         await writeOwnedRow(connection, userId, 'calendar_calendars',
-          ['id', 'user_id', 'account_id', 'name', 'external_id', 'color', 'is_visible', 'auto_todo_enabled', 'read_only', 'is_primary', 'sync_token'],
-          [targetCalendarId, row.user_id, targetAccountId, calendarName, row.external_id || null, row.color || '#22c55e', row.is_visible === false || row.is_visible === 0 ? 0 : 1, row.auto_todo_enabled === false || row.auto_todo_enabled === 0 ? 0 : 1, row.read_only ? 1 : 0, row.is_primary ? 1 : 0, row.sync_token || null],
+          ['id', 'user_id', 'account_id', 'name', 'external_id', 'color', 'is_visible', 'auto_todo_enabled', 'read_only', 'is_primary', 'sync_token', 'uid'],
+          [targetCalendarId, row.user_id, targetAccountId, calendarName, row.external_id || null, row.color || '#22c55e', row.is_visible === false || row.is_visible === 0 ? 0 : 1, row.auto_todo_enabled === false || row.auto_todo_enabled === 0 ? 0 : 1, row.read_only ? 1 : 0, row.is_primary ? 1 : 0, row.sync_token || null, calendarIdentity],
           ['name', 'external_id', 'color', 'is_visible', 'auto_todo_enabled', 'read_only', 'is_primary', 'sync_token']
         );
       }
@@ -506,11 +530,12 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         claimedCalendarEventIds.add(targetEventId);
         if (!shouldWriteExisting(existingEventId, targetEventId, conflictMode)) continue;
         if (existingEventId === targetEventId) overwrittenEventIds.add(targetEventId);
+        const eventIdentity = await restoredIdentity(connection, 'calendar_events', userId, row, !!existingEventId && targetEventId !== existingEventId);
         // created_at and the order key too (0.27): a task without a date is
         // ordered by when it was made, and ties by the archived task's key.
         await writeOwnedRow(connection, userId, 'calendar_events',
-          ['id', 'user_id', 'calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json', 'created_at', 'order_key'],
-          [targetEventId, row.user_id, targetCalendarId, row.title || 'Untitled Event', row.description ?? null, normalizeMysqlDateTime(row.start_time), normalizeMysqlDateTime(row.end_time), row.all_day ? 1 : 0, row.location || null, row.color || '#22c55e', row.recurrence || null, row.reminder_minutes ?? null, row.reminders ? (typeof row.reminders === 'string' ? row.reminders : JSON.stringify(row.reminders)) : null, row.todo_status || null, row.is_todo_only ? 1 : 0, normalizeMysqlDateTime(row.done_at), sourceEmailId(row.source_email_id), sourceEmailJson(row.source_email_json), normalizeMysqlDateTime(row.created_at, new Date()), restoredOrderKey(row, targetEventId)],
+          ['id', 'user_id', 'calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json', 'created_at', 'order_key', 'uid'],
+          [targetEventId, row.user_id, targetCalendarId, row.title || 'Untitled Event', row.description ?? null, normalizeMysqlDateTime(row.start_time), normalizeMysqlDateTime(row.end_time), row.all_day ? 1 : 0, row.location || null, row.color || '#22c55e', row.recurrence || null, row.reminder_minutes ?? null, row.reminders ? (typeof row.reminders === 'string' ? row.reminders : JSON.stringify(row.reminders)) : null, row.todo_status || null, row.is_todo_only ? 1 : 0, normalizeMysqlDateTime(row.done_at), sourceEmailId(row.source_email_id), sourceEmailJson(row.source_email_json), normalizeMysqlDateTime(row.created_at, new Date()), restoredOrderKey(row, targetEventId), eventIdentity],
           ['calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json', 'created_at', 'order_key']
         );
         writtenCalendarEvents.push({ row, targetId: targetEventId });
@@ -581,6 +606,14 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
       }
 
       if (movesBefore) await settleMovesForRestore(connection, userId, { overwrittenEventIds, before: movesBefore });
+
+      // UniHub's state on synced tasks: applied to the live task, or kept for
+      // the sync that brings it back (backup-overlays.ts).
+      const overlays = restoresCalendarContent
+        ? await restoreOverlays(connection, userId, (data.calendar_overlay_restores || []) as BackupRow[], { calendarIds: calendarIdMap, conflictMode, checkCancelled: checkRestoreCancelled })
+        : { applied: 0, waiting: 0, sourceEmails: { events: new Map<string, string>(), overlays: new Map<string, string>() } };
+      for (const [eventId, archivedEmailId] of overlays.sourceEmails.events) eventsWithSourceEmail.set(eventId, archivedEmailId);
+      if (overlays.waiting) contents.notes.push(`${overlays.waiting} synced task${overlays.waiting === 1 ? '' : 's'} get${overlays.waiting === 1 ? 's' : ''} its ToDo state and subtasks back when the calendar syncs.`);
 
       // The hand order (0.27): a local task's row follows its restored event,
       // a synced one its calendar; the key is computed again from them. A
@@ -947,6 +980,14 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
           await connection.execute('UPDATE calendar_events SET source_email_id = ? WHERE id = ? AND user_id = ? AND source_email_id = ?', [targetEmailId, eventId, userId, archivedEmailId]);
         }
       }
+      // So does the state a synced task waits for.
+      for (const [overlayId, archivedEmailId] of overlays.sourceEmails.overlays) {
+        const targetEmailId = emailIdMap.get(archivedEmailId);
+        if (targetEmailId && targetEmailId !== archivedEmailId) {
+          await connection.execute(`UPDATE calendar_overlay_restores SET payload = JSON_SET(payload, '$.source_email_id', ?)
+            WHERE id = ? AND user_id = ? AND JSON_VALUE(payload, '$.source_email_id') = ?`, [targetEmailId, overlayId, userId, archivedEmailId]);
+        }
+      }
 
       await reportRestoreProgress('recordings', 90);
       for (const recording of data.recordings || []) {
@@ -970,8 +1011,9 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         recordingIdMap.set(row.id, targetRecordingId);
         claimedRecordingIds.add(targetRecordingId);
         if (!shouldWriteExisting(existingRecordingId, targetRecordingId, conflictMode)) continue;
+        const recordingIdentity = await restoredIdentity(connection, 'recordings', userId, row, !!existingRecordingId && targetRecordingId !== existingRecordingId);
         await writeOwnedRow(connection, userId, 'recordings',
-          ['id', 'user_id', 'title', 'description', 'original_filename', 'content_type', 'size_bytes', 'duration_seconds', 'storage_path', 'source', 'category', 'recorded_at', 'metadata', 'created_at'],
+          ['id', 'user_id', 'title', 'description', 'original_filename', 'content_type', 'size_bytes', 'duration_seconds', 'storage_path', 'source', 'category', 'recorded_at', 'metadata', 'created_at', 'uid'],
           [
             targetRecordingId,
             row.user_id,
@@ -987,6 +1029,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
             normalizeMysqlDateTime(row.recorded_at, row.created_at || new Date()),
             row.metadata ? (typeof row.metadata === 'string' ? row.metadata : JSON.stringify(row.metadata)) : null,
             normalizeMysqlDateTime(row.created_at, new Date()),
+            recordingIdentity,
           ],
           ['title', 'description', 'original_filename', 'content_type', 'size_bytes', 'duration_seconds', 'storage_path', 'source', 'category', 'recorded_at', 'metadata']
         );
@@ -1044,6 +1087,8 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         valid: true,
         warnings: validation.warnings,
         counts,
+        contents,
+        notes: contents.notes,
         import_sections: scopedBackup.import_sections,
         account_only_sections: accountOnlySections,
         restored_files: restoredPaths.size + photoFiles.size,

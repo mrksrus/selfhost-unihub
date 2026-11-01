@@ -50,13 +50,28 @@ soon as a connection succeeds.
 
 ## Backup versions and restore behavior
 
-New exports write data schema 6. Readers for schemas 1 to 5 remain; the manifest
+New exports write data schema 7, always encrypted. Readers for schemas 1 to 6 remain; the manifest
 selects automatically. ZIP layout and encrypted framing remain version 1.
 Database upgrade IDs, data schema and application release are separate numbers.
 Preserve historical readers and frozen fixtures when evolving the format. Starting
 with 1.0, retain imports for every released stable backup format throughout 1.x.
 A later major release must retain old readers or provide a maintained conversion
 path before retiring one. Do not silently omit unsupported modules from a full restore.
+
+0.28.0 writes data schema 7: a backup holds data by class (local,
+configuration, Download-mode mail by choice or policy), never a provider's
+copy, and matches local items by their stable `uid` (see
+[Backup format](BACKUP_FORMAT.md)). Older archives import only what that
+rule keeps. A table's class is declared in `data-inventory.ts`; a new table
+or column decides its class there, with `backup-classes.ts` filtering export
+and old imports alike.
+
+An export job stages its data in the person's backup directory and records
+`keep_until` (from `backup.server_retention_days`) and `contents`. A ready
+archive leaves the server by the browser download or a `backup-archive`
+ticket (F9, `file-tickets.ts`), issued only after its recovery password was
+revealed. The ticket's first use opens a 60-minute grant with Range for that
+archive, bound to the session that asked for it.
 
 0.27.0 writes data schema 6: the calendar section adds `task_order`, the hand
 order of tasks, an overlay keyed by the item's identity (event id for a task

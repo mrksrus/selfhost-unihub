@@ -14,6 +14,9 @@ import {
 } from './backup-container';
 import { controlPool } from './side-pools';
 import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
+import { resolvePolicy } from './settings';
+import { conflict, notFound } from '../http/errors';
+import type { BackupContents } from '../contracts/backup';
 
 type CheckCancelled = (() => Promise<unknown>) | null;
 interface ZipEntry {
@@ -34,7 +37,9 @@ interface PreparedEntry {
   crc32: number;
   sha256?: string;
 }
-interface ExportOptions { sections?: unknown; scope?: unknown; encrypt?: boolean; mailAccountId?: string | null }
+// encrypt is no option any more (0.28): every new backup is encrypted, also
+// when an older client asks for one without.
+interface ExportOptions { sections?: unknown; scope?: unknown; includeDownloadMail?: boolean; mailAccountId?: string | null }
 interface ExportRow extends RowDataPacket {
   id: string;
   user_id: string;
@@ -50,6 +55,9 @@ interface ExportRow extends RowDataPacket {
   file_sha256?: string | null;
   content_type?: string | null;
   encryption_enabled?: StoredFlag;
+  include_download_mail?: StoredFlag;
+  keep_until?: Date | string | null;
+  contents?: unknown;
   backup_uuid?: string | null;
   recovery_password_available?: StoredFlag;
   recovery_password_revealed?: StoredFlag;
@@ -342,6 +350,21 @@ async function collectExportEntries(userId: string, sections: unknown, options: 
   return buildBackupArchiveEntriesForUser(userId, sections, options);
 }
 
+// What a finished archive holds (schema 7 on); null before 0.28 or while it is made.
+function parseContents(value: unknown): BackupContents | null {
+  if (value == null) return null;
+  try {
+    const contents = (typeof value === 'string' ? JSON.parse(value) : value) as BackupContents;
+    return contents && Array.isArray(contents.included) && Array.isArray(contents.left_out) && Array.isArray(contents.notes) ? contents : null;
+  } catch { return null; }
+}
+
+function manifestContents(entries: readonly ZipEntry[]) {
+  const manifest = entries.find(entry => entry.name === 'manifest.json');
+  if (!manifest?.data) return null;
+  return parseContents((JSON.parse(String(manifest.data)) as { contents?: unknown }).contents);
+}
+
 function serializeJob(row: ExportRow) {
   return {
     id: row.id,
@@ -358,6 +381,8 @@ function serializeJob(row: ExportRow) {
     content_type: row.content_type || null,
     encryption_enabled: Boolean(row.encryption_enabled),
     backup_uuid: row.backup_uuid || null,
+    keep_until: row.keep_until instanceof Date ? row.keep_until.toISOString() : (row.keep_until || null),
+    contents: parseContents(row.contents),
     recovery_password_available: Boolean(row.recovery_password_available),
     recovery_password_revealed: Boolean(row.recovery_password_revealed),
     server_unlock_available: Boolean(row.server_unlock_available),
@@ -409,11 +434,15 @@ async function runDataExportJob(jobId: string) {
       started_at: job.started_at || new Date(),
     });
     const sections = parseRequestedSections(job.requested_sections);
-    const encrypted = job.encryption_enabled === undefined ? true : Boolean(job.encryption_enabled);
-    const dataKey = encrypted ? crypto.randomBytes(32) : null;
-    const recoveryPassword = encrypted ? generateRecoveryPassword() : null;
+    // A job an older release queued without encryption is encrypted as well.
+    if (!job.encryption_enabled) await updateJob(jobId!, { encryption_enabled: 1 });
+    const dataKey = crypto.randomBytes(32);
+    const recoveryPassword = generateRecoveryPassword();
+    const targetDir = path.join(BACKUPS_ROOT, String(job.user_id));
     entries = await collectExportEntries(job.user_id, sections, {
       mailAccountId: job.mail_account_id || null,
+      includeDownloadMail: job.include_download_mail === undefined ? true : Boolean(job.include_download_mail),
+      workDirectory: targetDir,
       portableCredentialKey: dataKey,
       // Runs while the snapshot read holds its connection, on which it would
       // not see a later cancellation: the control pool (side-pools.ts).
@@ -421,9 +450,9 @@ async function runDataExportJob(jobId: string) {
     });
     await checkExportCancelled(jobId);
     await updateJob(jobId!, { phase: 'archiving', progress: 35 });
-    const targetDir = path.join(BACKUPS_ROOT, String(job.user_id));
+    const contents = manifestContents(entries);
     temporaryZipPath = path.join(targetDir, `${job.id}.zip.partial`);
-    finalPath = path.join(targetDir, `${job.id}.${encrypted ? 'unihub-backup' : 'zip'}`);
+    finalPath = path.join(targetDir, `${job.id}.unihub-backup`);
     await fs.promises.rm(temporaryZipPath, { force: true }).catch(() => {});
     await fs.promises.rm(finalPath, { force: true }).catch(() => {});
     await writeZip(entries, temporaryZipPath, {
@@ -437,13 +466,13 @@ async function runDataExportJob(jobId: string) {
       },
     });
     await checkExportCancelled(jobId);
-    if (encrypted) {
+    {
       await updateJob(jobId!, { phase: 'encrypting', progress: 76 });
       backupUuid = crypto.randomUUID();
       await encryptBackupFile(temporaryZipPath, finalPath, {
         backupUuid,
-        dataKey: dataKey!,
-        recoveryPassword: recoveryPassword!,
+        dataKey,
+        recoveryPassword,
         checkCancelled: () => checkExportCancelled(jobId),
         onProgress: async (processed, total) => {
           await updateJob(jobId!, {
@@ -468,13 +497,10 @@ async function runDataExportJob(jobId: string) {
           backupUuid,
           job.user_id,
           job.id,
-          wrapDataKeyForServer(dataKey!, backupUuid),
-          protectRecoveryPassword(recoveryPassword!, backupUuid),
+          wrapDataKeyForServer(dataKey, backupUuid),
+          protectRecoveryPassword(recoveryPassword, backupUuid),
         ]
       );
-    } else {
-      await fs.promises.rename(temporaryZipPath, finalPath);
-      temporaryZipPath = null;
     }
     const stat = await fs.promises.stat(finalPath);
     if (stat.size > BACKUP_UPLOAD_MAX_SIZE) {
@@ -487,8 +513,9 @@ async function runDataExportJob(jobId: string) {
       file_path: finalPath,
       file_size: stat.size,
       file_sha256: await sha256File(finalPath),
-      content_type: encrypted ? 'application/vnd.unihub.backup' : 'application/zip',
+      content_type: 'application/vnd.unihub.backup',
       backup_uuid: backupUuid,
+      contents: contents ? JSON.stringify(contents) : null,
       completed_at: new Date(),
     });
   } catch (error) {
@@ -530,7 +557,7 @@ async function runDataExportJob(jobId: string) {
 
 // mailAccountId limits a mail-only export to one owned account (the backup
 // offered before switching that account to Sync).
-async function startDataExportJob(userId: string, { sections, scope, encrypt = true, mailAccountId = null }: ExportOptions = {}) {
+async function startDataExportJob(userId: string, { sections, scope, includeDownloadMail = true, mailAccountId = null }: ExportOptions = {}) {
   const normalizedSections = normalizeSections(sections || scope || 'full');
   if (mailAccountId !== null) {
     if (normalizedSections.length !== 1 || normalizedSections[0] !== 'mail') {
@@ -540,17 +567,21 @@ async function startDataExportJob(userId: string, { sections, scope, encrypt = t
     if (!owned.length) throw Object.assign(new Error('Mail account not found'), { status: 404 });
   }
   const jobId = crypto.randomUUID();
+  // The server keeps the backup until this date when a policy says so
+  // (backup.server_retention_days); NULL keeps it until it is deleted.
+  const retentionDays = (await resolvePolicy(userId, 'backup.server_retention_days')).value;
   await db.execute(
     `INSERT INTO data_export_jobs
-       (id, user_id, scope, status, phase, progress, requested_sections, encryption_enabled, mail_account_id)
-     VALUES (?, ?, ?, 'queued', 'queued', 0, ?, ?, ?)`,
+       (id, user_id, scope, status, phase, progress, requested_sections, encryption_enabled, include_download_mail, mail_account_id, keep_until)
+     VALUES (?, ?, ?, 'queued', 'queued', 0, ?, TRUE, ?, ?, ${retentionDays === null ? 'NULL' : 'UTC_TIMESTAMP() + INTERVAL ? DAY'})`,
     [
       jobId,
       userId,
       [...EXPORT_SECTIONS].every(section => normalizedSections.includes(section)) && mailAccountId === null ? 'full' : 'partial',
       JSON.stringify(normalizedSections),
-      encrypt === false ? 0 : 1,
+      includeDownloadMail ? 1 : 0,
       mailAccountId,
+      ...(retentionDays === null ? [] : [retentionDays]),
     ]
   );
   scheduleDataExportWorker();
@@ -668,6 +699,38 @@ function isBackupPathUnderRoot(filePath: string | null | undefined) {
   return resolved === root || resolved.startsWith(`${root}${path.sep}`);
 }
 
+/**
+ * The user's ready archive to send: the browser download and the
+ * backup-archive ticket (file-tickets.ts) share these checks. An archive is
+ * sent only after its recovery password was revealed, since without it the
+ * file cannot be opened.
+ */
+async function backupArchiveFile(userId: string, jobId: string) {
+  const job = await getDataExportJob(userId, jobId);
+  if (!job) throw notFound('BACKUP_NOT_FOUND', 'Backup job not found');
+  if (job.status !== 'ready' || !job.file_path) throw conflict('BACKUP_NOT_READY', 'Backup is not ready');
+  if (job.encryption_enabled) {
+    if (job.recovery_password_available) throw conflict('BACKUP_PASSWORD_UNSEEN', 'Reveal and save the recovery password before the first download');
+    if (!job.recovery_password_revealed) {
+      throw conflict('BACKUP_PASSWORD_MISSING', 'Recovery password metadata is missing. Create a new encrypted backup before downloading.');
+    }
+  }
+  if (!isBackupPathUnderRoot(job.file_path)) throw new Error('Backup path is outside the backup storage');
+  const filePath = path.resolve(job.file_path);
+  const stat = await fs.promises.stat(filePath);
+  const extension = job.encryption_enabled ? 'unihub-backup' : 'zip';
+  return {
+    path: filePath,
+    size: stat.size,
+    contentType: job.content_type || (job.encryption_enabled ? 'application/vnd.unihub.backup' : 'application/zip'),
+    filename: `unihub-backup-${new Date().toISOString().slice(0, 10)}-${jobId}.${extension}`,
+  };
+}
+
+async function markBackupDownloaded(userId: string, jobId: string) {
+  await db.execute('UPDATE data_export_jobs SET downloaded_at = UTC_TIMESTAMP() WHERE id = ? AND user_id = ?', [jobId, userId]);
+}
+
 async function deleteDataExportJob(userId: string, jobId: string | null) {
   const job = await getDataExportJob(userId, jobId);
   if (!job) return { error: 'Backup job not found', status: 404 };
@@ -742,5 +805,7 @@ export {
   deleteDataExportJob,
   cancelDataExportJob,
   isBackupPathUnderRoot,
+  backupArchiveFile,
+  markBackupDownloaded,
   serializeJob,
 };

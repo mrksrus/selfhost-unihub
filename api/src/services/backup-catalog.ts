@@ -23,7 +23,7 @@ interface TablePolicy {
 const SECTION_POLICIES: Readonly<Record<string, SectionPolicy>> = Object.freeze({
   settings: { tables: ["user", "user_settings"], fileKinds: [] },
   contacts: { tables: ["contacts", "contact_values", "contact_properties", "contact_photos", "contact_uid_aliases", "contact_duplicate_dismissals"], fileKinds: ["contact_photo"] },
-  calendar: { tables: ["calendar_accounts", "calendar_calendars", "calendar_settings", "calendar_events", "calendar_event_subtasks", "calendar_event_attendees", "calendar_event_external_refs", "task_order"], fileKinds: [] },
+  calendar: { tables: ["calendar_accounts", "calendar_calendars", "calendar_settings", "calendar_events", "calendar_event_subtasks", "calendar_event_attendees", "calendar_event_external_refs", "task_order", "calendar_overlay_restores"], fileKinds: [] },
   mail: { tables: ["mail_accounts", "mail_account_settings", "mail_templates", "mail_folders", "mail_folder_remote_boxes", "mail_sender_rules", "emails", "email_attachments", "mail_email_scores", "mail_folder_reconciliations", "mail_folder_recovery_items", "mail_folder_rule_overrides", ...Object.keys(ARCHIVE_COLUMNS)], fileKinds: ["email_attachment", "raw_email"] },
   recordings: { tables: ["recordings", "recording_tags", "recording_tag_links", "recording_transcription_jobs"], fileKinds: ["recording"] },
 });
@@ -62,11 +62,13 @@ const BASE_TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Obj
   contact_duplicate_dismissals: table('contacts', 'contact_a contact_b user_id created_at', ['contact_a', 'contact_b'], { contact_a: 'remap', contact_b: 'remap' },
     since(22, 'contact_a contact_b user_id created_at')),
   calendar_accounts: table('calendar', 'id user_id provider account_email display_name username encrypted_password discovery_url base_url encrypted_access_token encrypted_refresh_token token_expires_at provider_config capabilities is_active sync_status sync_error last_synced_at created_at updated_at', ["id"], {}),
-  calendar_calendars: table('calendar', 'id user_id account_id name external_id color is_visible auto_todo_enabled read_only is_primary sync_token created_at updated_at', ["id"], {}),
+  // uid (step 25, data schema 7): the identity a restore matches an item by
+  // after a rename, a move or in another installation.
+  calendar_calendars: table('calendar', 'id user_id account_id name external_id color is_visible auto_todo_enabled read_only is_primary sync_token created_at updated_at uid', ["id"], {}, since(25, 'uid')),
   calendar_settings: table('calendar', 'calendar_id user_id setting_key setting_value updated_at', ['calendar_id', 'setting_key'], {}, since(20, 'calendar_id user_id setting_key setting_value updated_at')),
   // created_at is restored (0.27): a task without a date is ordered by it.
   // order_key (step 24) keeps a task's place among equal dates over new ids.
-  calendar_events: table('calendar', 'id user_id calendar_id title description start_time end_time all_day location color recurrence reminder_minutes reminders todo_status is_todo_only done_at created_at updated_at source_email_id source_email_json order_key', ["id"], { source_email_id: 'preserve', created_at: 'preserve' }, { source_email_id: 16, source_email_json: 16, order_key: 24 }),
+  calendar_events: table('calendar', 'id user_id calendar_id title description start_time end_time all_day location color recurrence reminder_minutes reminders todo_status is_todo_only done_at created_at updated_at source_email_id source_email_json order_key uid', ["id"], { source_email_id: 'preserve', created_at: 'preserve' }, { source_email_id: 16, source_email_json: 16, order_key: 24, uid: 25 }),
   calendar_event_subtasks: table('calendar', 'id event_id user_id title is_done position created_at updated_at', ["id"], {}),
   calendar_event_attendees: table('calendar', 'id user_id event_id email display_name response_status is_organizer optional_attendee comment created_at updated_at', ["id"], {}),
   calendar_event_external_refs: table('calendar', 'id user_id event_id calendar_id account_id provider external_event_id external_etag external_updated_at last_synced_at created_at updated_at', ["id"], {}),
@@ -75,6 +77,13 @@ const BASE_TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Obj
   // recurrence_id; the key is the hash of that identity, computed again.
   task_order: table('calendar', 'user_id item_key calendar_id event_id remote_uid recurrence_id sort_rank updated_at', ['user_id', 'item_key'],
     { item_key: 'rebuild', recurrence_id: 'preserve' }, since(24, 'user_id item_key calendar_id event_id remote_uid recurrence_id sort_rank updated_at')),
+  // Upgrade step 25 (data schema 7): UniHub's own state on synced tasks (ToDo
+  // state, done time, source email, subtasks), keyed by the calendar and the
+  // task's UID and recurrence id. The export writes one for every synced task
+  // with such state and for those a restore left waiting; the restore applies
+  // it to the task the next sync brings back.
+  calendar_overlay_restores: table('calendar', 'id user_id calendar_id account_identity uid recurrence_id match_kind shape_title shape_start payload created_at expires_at', ['id'],
+    { recurrence_id: 'preserve', created_at: 'preserve' }, since(25, 'id user_id calendar_id account_identity uid recurrence_id match_kind shape_title shape_start payload created_at expires_at')),
   mail_accounts: table('mail', 'id user_id email_address display_name provider username imap_host imap_port smtp_host smtp_port encrypted_password sync_fetch_limit sync_mode sync_status delete_emails_on_server server_delete_enabled_at server_delete_grace_until server_delete_last_run_at allow_self_signed trusted_imap_fingerprint256 trusted_smtp_fingerprint256 is_active last_synced_at created_at updated_at sync_window_days trash_window_days sync_policy_confirmed_at signature_html signature_text', ["id"], {"delete_emails_on_server": "reset_server_deletion", "server_delete_enabled_at": "reset_server_deletion", "server_delete_grace_until": "reset_server_deletion", "server_delete_last_run_at": "reset_server_deletion", "sync_status": "reset_sync_progress", "sync_policy_confirmed_at": "reset_sync_policy_confirmation"}, { sync_mode: 3, sync_status: 3, sync_window_days: 10, trash_window_days: 10, sync_policy_confirmed_at: 10, signature_html: 20, signature_text: 20 }),
   // Settings of one mail account (F1); folder references are remapped.
   mail_account_settings: table('mail', 'mail_account_id user_id setting_key setting_value updated_at', ['mail_account_id', 'setting_key'], { setting_value: 'remap_setting_references' }, since(20, 'mail_account_id user_id setting_key setting_value updated_at')),
@@ -88,7 +97,7 @@ const BASE_TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Obj
   mail_folder_reconciliations: table('mail', 'mail_account_id user_id inventory previous_mappings completed_at', ["mail_account_id"], {"previous_mappings": "remap_journal", "completed_at": "preserve"}),
   mail_folder_recovery_items: table('mail', 'email_id user_id source_account_id original_folder original_filing_account_id target_folder target_account_id action created_at', ["email_id"], { created_at: 'preserve', original_filing_account_id: 'remap_optional_history', target_account_id: 'remap_optional_history' }),
   mail_folder_rule_overrides: table('mail', 'rule_id mail_account_id target_folder', ["rule_id", "mail_account_id"], {}),
-  recordings: table('recordings', 'id user_id title description original_filename content_type size_bytes duration_seconds storage_path source category recorded_at metadata created_at updated_at', ["id"], {"storage_path": "restored_file", "created_at": "preserve"}),
+  recordings: table('recordings', 'id user_id title description original_filename content_type size_bytes duration_seconds storage_path source category recorded_at metadata created_at updated_at uid', ["id"], {"storage_path": "restored_file", "created_at": "preserve"}, since(25, 'uid')),
   recording_tags: table('recordings', 'id user_id name color created_at updated_at', ["id"], {}),
   recording_tag_links: table('recordings', 'recording_id tag_id user_id created_at', ["recording_id", "tag_id"], {}),
   recording_transcription_jobs: Object.freeze({ ...table('recordings', 'id user_id recording_id status provider model language transcript_text error created_at updated_at', ['id'], { status: 'completed_only', error: 'reset', created_at: 'preserve', updated_at: 'preserve' }), rowPolicy: 'Only completed transcripts are exported; queued, running and failed attempts are not resumed.' }),
@@ -132,6 +141,7 @@ const REFERENCES: Readonly<Record<string, Readonly<Record<string, string>>>> = O
   calendar_event_external_refs: { event_id: 'calendar_events', calendar_id: 'calendar_calendars', account_id: 'calendar_accounts' },
   // Both nullable: a local task's row has only event_id, a synced one only calendar_id.
   task_order: { calendar_id: 'calendar_calendars', event_id: 'calendar_events' },
+  calendar_overlay_restores: { calendar_id: 'calendar_calendars' },
   mail_account_settings: { mail_account_id: 'mail_accounts' },
   mail_templates: {},
   mail_folders: { mail_account_id: 'mail_accounts' },
