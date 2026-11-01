@@ -534,7 +534,7 @@ async function getInstanceBackupStatus(now = new Date()): Promise<InstanceBackup
   return {
     enabled: on,
     missing: [...config.missing],
-    destination: on ? config.dir : null,
+    destination: config.dir,
     key_fingerprint: on ? keyFingerprint(config.key!) : null,
     time_utc: config.timeUtc,
     keep: config.keep,

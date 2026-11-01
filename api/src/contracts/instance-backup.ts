@@ -28,7 +28,7 @@ export interface InstanceBackupStatus {
   enabled: boolean;
   /** What the environment lacks when disabled. */
   missing: ('destination' | 'key')[];
-  /** The mount, as configured; null when off. */
+  /** INSTANCE_BACKUP_DIR as configured; null when it is unset. */
   destination: string | null;
   /** The key's fingerprint (its version in every file); null when off. */
   key_fingerprint: string | null;

@@ -104,6 +104,9 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     assert.deepEqual([off.body.enabled, off.body.missing, off.body.destination, off.body.key_fingerprint], [false, ['destination', 'key'], null, null]);
     const refused = await admin.request('POST', '/api/admin/instance-backup/run', {});
     assert.deepEqual([refused.status, refused.body.code], [409, 'INSTANCE_BACKUP_OFF']);
+    backup.useInstanceBackupConfig({ ...settings, key: null, missing: ['key'] });
+    const keyless = await admin.request('GET', '/api/admin/instance-backup');
+    assert.deepEqual([keyless.body.enabled, keyless.body.missing, keyless.body.destination], [false, ['key'], destination]);
     backup.useInstanceBackupConfig(settings);
   });
 
@@ -182,7 +185,8 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     const names: string[] = [];
     for (let i = 0; i < 2; i++) {
       await new Promise(resolve => setTimeout(resolve, 1100));
-      const started = await admin.request('POST', '/api/admin/instance-backup/run', {});
+      // No body, as the admin page sends it.
+      const started = await admin.request('POST', '/api/admin/instance-backup/run');
       assert.equal(started.status, 202, JSON.stringify(started.body));
       assert.equal((started.body.run as FixtureValue).status, 'running');
       assert.equal((started.body.run as FixtureValue).actor_email, 'admin@example.test');

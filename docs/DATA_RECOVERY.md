@@ -95,7 +95,8 @@ A failed run (no space, a missing mount, a dump error, a stop) removes its
 partial file and records the reason; it never counts, and nothing is removed
 for it. A run that a stopped process left running is recorded as failed, and
 its partial file removed, when the next worker owner starts. A run is stopped
-after 12 hours.
+after 12 hours. A failed scheduled run is not tried again until the next
+day's time; "Back up now" runs one at once.
 
 **Consistency.** The dump is one snapshot; the files are copied after it. A
 file whose row is deleted after the dump is still needed by the backup, so
