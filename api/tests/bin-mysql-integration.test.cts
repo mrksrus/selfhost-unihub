@@ -286,6 +286,38 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     assert.ok(!fs.existsSync(binned), 'nothing is left in the bin folder');
   });
 
+  await t.test('recordings: a delete\'s cleanup after its commit never removes a name a restore adopted meanwhile', async context => {
+    const folder = path.join(recordingsRoot, users.alex);
+    const id = crypto.randomUUID();
+    const file = path.join(folder, `${id}.webm`);
+    fs.writeFileSync(file, 'adopted recording bytes');
+    await pool.execute("INSERT INTO recordings (id, user_id, title, content_type, size_bytes, storage_path) VALUES (?, ?, 'Adopted memo', 'audio/webm', 23, ?)", [id, users.alex, file]);
+    context.after(async () => {
+      await pool.execute("DELETE FROM bin_items WHERE user_id = ? AND title = 'Adopted memo'", [users.alex]);
+      await pool.execute('DELETE FROM recordings WHERE id = ?', [id]);
+      for (const name of [file, path.join(folder, 'bin', `${id}.webm`)]) fs.rmSync(name, { force: true });
+    });
+    // The delete has committed and found its old name unused; a restore of
+    // the item runs then, and would take that very name back.
+    const [checked, go] = [gate(), gate()];
+    hooks.once({ match: /^SELECT id FROM recordings WHERE storage_path = \? LIMIT 1/, params: (values: unknown[]) => values[0] === file,
+      after: async () => { checked.open(); await within(go.reached, 10000); } });
+    try {
+      const deleting = alex.request('DELETE', `/api/recordings/${id}`);
+      assert.ok((await within(checked.reached, 10000)).done, 'the delete committed and checked the old name');
+      const [item] = await bin(alex, 'recordings');
+      const restoring = alex.request('POST', `/api/bin/${item.id}/restore`);
+      await within(restoring, 1000);
+      go.open();
+      const replies = await within(Promise.all([deleting, restoring]), 30000);
+      assert.ok(replies.done, 'both finish');
+      assert.deepEqual(replies.value!.map((reply: { status: number }) => reply.status), [200, 200]);
+    } finally { hooks.clear(); go.open(); }
+    const [[row]] = await pool.query<RowDataPacket[]>('SELECT storage_path FROM recordings WHERE id = ?', [id]);
+    assert.equal(fs.readFileSync(row.storage_path, 'utf8'), 'adopted recording bytes', 'the restored recording has its bytes');
+    assert.deepEqual(await bin(alex, 'recordings'), []);
+  });
+
   await t.test('recordings: a bin folder that is a link out of the recordings root is refused, nothing moves', async () => {
     const folder = path.join(recordingsRoot, users.alex);
     const outside = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'unihub-bin-outside-'));

@@ -135,7 +135,18 @@ writes nothing more (`409 RESTORE_IN_PROGRESS`).
   two restores of one recording cannot both move its file. A recording's
   file gets its new name (a hard link, or a copy) inside the transaction and
   loses the old one only after the commit, so a stop at any point leaves the
-  file where the committed rows name it.
+  file where the committed rows name it. A recording's delete, its restore
+  and every removal of one of its names hold the recording's file lock, and
+  a name is removed only if, checked under that lock at removal time, no
+  recording and no bin item names it; a removal decided earlier or run later
+  from a queue never takes a name another change adopted.
+- Names can be left behind: a stop between a commit and the removal of the
+  old name, an interrupted fallback copy, or a removal whose lock stayed
+  busy leaves a file name in the person's recordings folder or its `bin/`
+  that no row names. The listing shows rows only, so it shows nothing; no
+  sweep removes such a name yet, and the admin storage total counts it (an
+  extra hard link is counted again, though it shares the bytes; a leftover
+  copy takes real space).
 - `calendar_overlay_restores` holds a synced item's own state (ToDo state,
   done time, source email, subtasks) until its row exists: by calendar,
   exact UID (`utf8mb4_nopad_bin`, never trimmed) and recurrence id, or by
