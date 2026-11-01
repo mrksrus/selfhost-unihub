@@ -11,10 +11,15 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: mrksrus/selfhost-unihub
+  # The synthetic providers of the e2e suite and the release checks
+  # (scripts/install-test-providers.sh); GreenMail stays in one cache entry.
+  GREENMAIL_VERSION: 2.1.15
+  GREENMAIL_SHA256: 91d58798698cac357f015365240383b936ced2f2a1a9f7db37d9e3e1a31391b1
+  RADICALE_VERSION: 3.5.10
 
 # A newer push to a pull request replaces its run (the jobs below use up to
-# 15 of the 20 runners a free account gets at once). Pushes and tags never
-# cancel one another.
+# the 20 runners a free account gets at once; more wait for a free one).
+# Pushes and tags never cancel one another.
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
   cancel-in-progress: true
@@ -199,6 +204,25 @@ jobs:
         # Service containers take no command options; tests also open their own pools.
         run: docker exec ${{ job.services.mariadb.id }} mariadb -uroot -ptest-root-password -e "SET GLOBAL innodb_snapshot_isolation = OFF"
 
+      # The instance backup's test dumps and loads the database with the
+      # MariaDB client tools, as the image does (mariadb-dump, mariadb). These
+      # run them inside the database's own container, the server's release:
+      # nothing to install, and no clash with the runner's MySQL client. The
+      # test passes the password in MYSQL_PWD, which docker exec hands on.
+      - name: Provide the MariaDB client tools
+        env:
+          DATABASE: ${{ job.services.mariadb.id }}
+        run: |
+          bin="$RUNNER_TEMP/mariadb-client"
+          mkdir -p "$bin"
+          for tool in mariadb mariadb-dump; do
+            # The API starts them with a bare environment; docker reads its configuration under HOME.
+            printf '#!/bin/sh\nexport HOME="${HOME:-%s}"\nexec docker exec -i -e MYSQL_PWD %s %s "$@"\n' "$HOME" "$DATABASE" "$tool" > "$bin/$tool"
+            chmod +x "$bin/$tool"
+          done
+          "$bin/mariadb-dump" --version
+          echo "UNIHUB_MARIADB_BIN_DIR=$bin" >> "$GITHUB_ENV"
+
       - name: Run API tests
         run: npm --prefix api run test:ci
 
@@ -240,6 +264,12 @@ jobs:
           npm test -- --run
           npm run lint
           npm run build
+
+      # The logic of the release checks below (evidence, release window, IMAP log), with fakes.
+      - name: Test the release checks
+        run: |
+          npm run typecheck:scripts
+          node --test scripts/release-checks.test.mts
 
       - name: Verify the pinned interface
         run: |
@@ -446,12 +476,14 @@ jobs:
           retention-days: 1
 
   # The image starts as in production, a full backup moves to a fresh,
-  # independent installation, and an open web app updates to this build.
+  # independent installation and its provider data comes back from the
+  # providers, an instance backup restores the whole installation, and an
+  # open web app updates to this build.
   container:
     needs: build
     if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       MYSQL_TEST_HOST: 127.0.0.1
       MYSQL_TEST_PORT: "3306"
@@ -502,6 +534,15 @@ jobs:
       - name: Match the database settings of docker-compose.yml
         run: docker exec ${{ job.services.mariadb.id }} mariadb -uroot -ptest-root-password -e "SET GLOBAL innodb_snapshot_isolation = OFF"
 
+      - name: Cache GreenMail
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/unihub-e2e/greenmail
+          key: greenmail-${{ env.GREENMAIL_VERSION }}
+
+      - name: Install the synthetic providers
+        run: bash scripts/install-test-providers.sh
+
       # The web build the checks below serve is the image's own.
       - name: Pull the image under test
         env:
@@ -519,14 +560,24 @@ jobs:
 
       # Two installations of the image with their own MariaDB, uploads and
       # keys: a full backup of synthetic data in every section moves to the
-      # other after the first is deleted, survives a restart there, and its
-      # passwords log in to test peers (docs/RELEASE_CONTRACT.md).
+      # other after the first is deleted, without the provider data, survives
+      # a restart there, and its passwords sign in to the test providers, from
+      # which the Sync-mode mail and the CalDAV event come back
+      # (docs/RELEASE_CONTRACT.md).
       - name: Restore a full backup into a fresh, independent installation
         env:
           UNIHUB_RECOVERY_EVIDENCE: release-evidence/recovery.json
         run: |
           mkdir -p release-evidence
           node scripts/recovery-fresh-install.mts --image unihub:ci
+
+      # Back up now on an installation with the instance backup on (test key
+      # and destination), then the restore command in the image into an
+      # empty installation with the old keys.
+      - name: Restore an instance backup into an empty installation
+        env:
+          UNIHUB_INSTANCE_DRILL_EVIDENCE: release-evidence/instance-drill.json
+        run: node scripts/instance-backup-drill.mts --image unihub:ci
 
       # In Chrome: this build's worker hands over to a following build while a
       # request hangs and another tab has unsaved input and an upload; and
@@ -893,10 +944,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The files run alone here are left out of "the rest" (DESKTOP_ALONE).
+          # The files run alone here are left out of "the rest" (DESKTOP_ALONE),
+          # which is split by turns over its sorted files.
           - { target: desktop, part: scheduled send, only: tests/mail/scheduled-send.e2e.ts }
           - { target: desktop, part: snooze, only: tests/mail/snooze.e2e.ts }
-          - { target: desktop, part: the rest, rest: true }
+          - { target: desktop, part: the rest 1 of 2, rest: 1 }
+          - { target: desktop, part: the rest 2 of 2, rest: 2 }
           - { target: phone }
           - { target: android-app }
     name: e2e (${{ matrix.target }}${{ matrix.part && format(', {0}', matrix.part) || '' }})
@@ -906,9 +959,7 @@ jobs:
       UNIHUB_E2E_CA: ${{ github.workspace }}/.e2e-ca
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.e2e-browsers
       E2E_TELEMETRY_DISABLED: "1"
-      GREENMAIL_VERSION: 2.1.15
-      GREENMAIL_SHA256: 91d58798698cac357f015365240383b936ced2f2a1a9f7db37d9e3e1a31391b1
-      RADICALE_VERSION: 3.5.10
+      DESKTOP_REST_PARTS: "2"
       DESKTOP_ALONE: tests/mail/scheduled-send.e2e.ts tests/mail/snooze.e2e.ts
     steps:
       - name: Checkout repository
@@ -942,21 +993,7 @@ jobs:
       # GreenMail from Maven Central and Radicale from PyPI, both pinned.
       - name: Install the synthetic providers
         run: |
-          jar="$HOME/.cache/unihub-e2e/greenmail/greenmail-standalone-$GREENMAIL_VERSION.jar"
-          if [ ! -f "$jar" ]; then
-            mkdir -p "$(dirname "$jar")"
-            curl --fail --silent --show-error --location -o "$jar.part" \
-              "https://repo1.maven.org/maven2/com/icegreen/greenmail-standalone/$GREENMAIL_VERSION/greenmail-standalone-$GREENMAIL_VERSION.jar"
-            mv "$jar.part" "$jar"
-          fi
-          echo "$GREENMAIL_SHA256  $jar" | sha256sum --check
-          python3 -m venv "$RUNNER_TEMP/radicale"
-          "$RUNNER_TEMP/radicale/bin/pip" install --quiet "radicale==$RADICALE_VERSION"
-          {
-            echo "UNIHUB_E2E_GREENMAIL_JAR=$jar"
-            echo "UNIHUB_E2E_RADICALE=$RUNNER_TEMP/radicale/bin/radicale"
-            echo "JAVA=$JAVA_HOME_17_X64/bin/java"
-          } >> "$GITHUB_ENV"
+          bash scripts/install-test-providers.sh
           # The providers use the standard ports 993 and 465.
           sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
 
@@ -980,8 +1017,10 @@ jobs:
           files=()
           if [ -n "$ONLY" ]; then
             files=("$ONLY")
-          elif [ "$REST" = true ]; then
-            mapfile -t files < <(find tests -name '*.e2e.ts' | sort | grep -v -x -F $(printf -- '-e %s ' $DESKTOP_ALONE))
+          elif [ -n "$REST" ]; then
+            mapfile -t files < <(find tests -name '*.e2e.ts' | sort | grep -v -x -F $(printf -- '-e %s ' $DESKTOP_ALONE) \
+              | awk -v part="$REST" -v parts="$DESKTOP_REST_PARTS" '(NR - 1) % parts == part - 1')
+            [ "${#files[@]}" -gt 0 ] || { echo "No files in part $REST of $DESKTOP_REST_PARTS" >&2; exit 1; }
           fi
           npx e2e run --exclude-tag providers --target "$TARGET" "${files[@]}"
 
@@ -1004,6 +1043,76 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Each of the three releases before this one upgrades to the image under
+  # test with its data, and its export imports into a fresh installation
+  # (scripts/upgrade-check.mts, docs/RELEASE_CONTRACT.md). The releases are
+  # the newest published ones up to this version: release tags whose image is
+  # in the registry. Each job pulls its release by version tag and the image
+  # under test by digest, and runs both against MariaDB 11.8 containers on
+  # private networks, with GreenMail and Radicale as the providers.
+  upgrade:
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        previous: [1, 2, 3]
+    name: upgrade (previous release ${{ matrix.previous }})
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Read the image's Node.js version
+        id: node
+        run: |
+          version="$(grep -E '^FROM ' Dockerfile | tail -n 1 | sed -nE 's/^FROM node:([0-9]+\.[0-9]+\.[0-9]+)-alpine@sha256:[0-9a-f]{64}$/\1/p')"
+          [ -n "$version" ] || { echo 'The Dockerfile final stage must be FROM node:<x.y.z>-alpine@sha256:<digest>.' >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm --prefix api ci
+
+      - name: Cache GreenMail
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/unihub-e2e/greenmail
+          key: greenmail-${{ env.GREENMAIL_VERSION }}
+
+      - name: Install the synthetic providers
+        run: |
+          bash scripts/install-test-providers.sh
+          # Their SMTP listens on 465, where the API uses implicit TLS.
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+
+      - name: Pull the image under test
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+        run: |
+          if [ -n "$IMAGE" ]; then docker pull --quiet "$IMAGE" && docker tag "$IMAGE" unihub:ci
+          else docker build --quiet --tag unihub:ci .; fi
+
+      - name: Upgrade the previous release ${{ matrix.previous }} to this image
+        run: node scripts/upgrade-check.mts --previous ${{ matrix.previous }} --image unihub:ci --evidence release-evidence/upgrade/previous-${{ matrix.previous }}.json
+
+      - name: Keep the release evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unihub-evidence-part-upgrade-${{ matrix.previous }}-attempt${{ github.run_attempt }}
+          path: release-evidence/
+          if-no-files-found: ignore
+          retention-days: 7
+
   # Gathers the evidence of the test jobs into one bundle and checks that it
   # is complete; publish needs that check. Each part is uploaded per attempt
   # (unihub-evidence-part-<part>-attempt<n>, 7 days): a re-run replaces the
@@ -1015,7 +1124,7 @@ jobs:
   # incomplete attempt stores nothing and deletes nothing: its parts stay for
   # a re-run, and an earlier complete bundle stays as it was.
   evidence:
-    needs: [build, container, android-16-servers]
+    needs: [build, container, android-16-servers, upgrade]
     if: ${{ always() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1066,14 +1175,14 @@ jobs:
   # Every test job passed: the tested digest gets its lasting tags. Nothing is
   # built here.
   publish:
-    needs: [build, api-tests, frontend, android-window, container, android-10, android-16, android-16-servers, e2e, evidence]
+    needs: [build, api-tests, frontend, android-window, container, android-10, android-16, android-16-servers, e2e, upgrade, evidence]
     if: >-
       ${{ !cancelled() && needs.build.result == 'success' && needs.build.outputs.image != ''
         && needs.api-tests.result == 'success' && needs.frontend.result == 'success'
         && needs.android-window.result == 'success' && needs.container.result == 'success'
         && needs.android-10.result == 'success' && needs.android-16.result == 'success'
         && needs.android-16-servers.result == 'success' && needs.e2e.result == 'success'
-        && needs.evidence.result == 'success' }}
+        && needs.upgrade.result == 'success' && needs.evidence.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
