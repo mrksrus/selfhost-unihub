@@ -258,7 +258,8 @@ export async function startContainerInstallation(firstImage: string, options: In
         if (!options.instanceBackupKeyFile) throw new Error(`${options.name} has no instance backup`);
         if (!/^[\w.-]+$/.test(file)) throw new Error(`Not a backup file name: ${file}`);
         fs.mkdirSync(directory, { recursive: true });
-        helper([`${IN_CONTAINER.backup}/${file}`, `/out/${file}`], { user: '0', entrypoint: 'cp', extra: [
+        // Readable by this machine's user: the destination's files belong to the API user.
+        helper(['-c', `cp ${IN_CONTAINER.backup}/${file} /out/${file} && chmod 0644 /out/${file}`], { user: '0', entrypoint: 'sh', extra: [
           '--mount', `type=volume,source=${backups},target=${IN_CONTAINER.backup},readonly`, '--mount', `type=bind,source=${path.resolve(directory)},target=/out`] });
         return path.join(directory, file);
       },
