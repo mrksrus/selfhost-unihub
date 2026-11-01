@@ -36,7 +36,8 @@ upgrade; back up first.
 ### Changed
 
 - Startup refuses an instance backup key shorter than 32 bytes or equal to
-  another secret, and a backup destination inside the stored files.
+  another secret (also written another way, such as base64 for hex), and a
+  backup destination inside the stored files.
 
 ## 0.27.1
 
