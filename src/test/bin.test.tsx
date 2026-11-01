@@ -321,6 +321,33 @@ describe('the bin', () => {
     await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not restore', description: 'The calendar is syncing right now. Try again shortly.' })));
   });
 
+  it('an item whose earlier restore is still being confirmed says so, as a failed entry and as a refusal, and opens no chooser', { timeout: 20_000 }, async () => {
+    answerGets(ITEMS);
+    const sentence = 'This item is still being put back on its server calendar. Try again in a moment, or restore it to the same calendar.';
+    vi.mocked(api.post).mockResolvedValueOnce(refused('bin-task', 'BIN_RESTORE_PENDING'));
+    mountSignedIn(<BinView module="calendar" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore Reply to Grace' }, { timeout: 10_000 }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Nothing restored', description: expect.stringContaining(sentence), variant: 'destructive' })));
+    expect(screen.queryByRole('dialog', { name: 'Where should it go?' })).not.toBeInTheDocument();
+    state.toast.mockClear();
+    vi.mocked(api.post).mockResolvedValueOnce({ error: 'Pending', status: 409, code: 'BIN_RESTORE_PENDING' } as never);
+    fireEvent.click(screen.getByRole('button', { name: 'Restore Reply to Grace' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not restore', description: sentence })));
+    expect(screen.queryByRole('dialog', { name: 'Where should it go?' })).not.toBeInTheDocument();
+  });
+
+  it('a recording being changed asks to try again shortly, as a failed entry and as a refusal', { timeout: 20_000 }, async () => {
+    answerGets([item('bin-rec', { module: 'recordings', item_type: 'recording', title: 'Standup notes' })]);
+    vi.mocked(api.post).mockResolvedValueOnce(refused('bin-rec', 'RECORDING_BUSY'));
+    mountSignedIn(<BinView module="recordings" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore Standup notes' }, { timeout: 10_000 }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Nothing restored', description: expect.stringContaining('The recording is being changed right now. Try again shortly.') })));
+    state.toast.mockClear();
+    vi.mocked(api.post).mockResolvedValueOnce({ error: 'Busy', status: 409, code: 'RECORDING_BUSY' } as never);
+    fireEvent.click(screen.getByRole('button', { name: 'Restore Standup notes' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not restore', description: 'The recording is being changed right now. Try again shortly.' })));
+  });
+
   it('names the administrator when the recordings folder is unsafe', { timeout: 20_000 }, async () => {
     answerGets([item('bin-rec', { module: 'recordings', item_type: 'recording', title: 'Standup notes' })]);
     vi.mocked(api.post).mockResolvedValueOnce({ error: 'Unsafe folder', status: 409, code: 'RECORDING_FOLDER_UNSAFE' } as never);

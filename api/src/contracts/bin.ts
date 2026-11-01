@@ -67,9 +67,31 @@ export interface BinRestored {
   pending?: true;
 }
 
+/**
+ * Why an item stayed in the bin (BinRestoreResponse.failed, or the error of
+ * POST /api/bin/:id/restore), where the person can do something about it.
+ * BIN_RESTORE_PENDING: the item is being created on a calendar server
+ * already, which has not confirmed it yet; it can go to no other calendar
+ * until then, and restoring it again without calendar_id finishes it there.
+ */
+export type BinRestoreFailureCode =
+  | 'BIN_ITEM_NOT_FOUND'
+  | 'BIN_RESTORE_NEEDS_CALENDAR'
+  | 'BIN_RESTORE_NEEDS_LIST'
+  | 'BIN_RESTORE_CALENDAR_NOT_FOUND'
+  | 'BIN_RESTORE_PENDING'
+  | 'CALENDAR_READ_ONLY'
+  | 'CALENDAR_SYNC_PAUSED'
+  | 'RECORDING_FILE_MISSING'
+  | 'RECORDING_FOLDER_UNSAFE'
+  | 'RECORDING_BUSY'
+  | 'MODULE_DISABLED'
+  | 'RESTORE_IN_PROGRESS';
+
 export interface BinRestoreResponse {
   restored: BinRestored[];
-  failed: { id: string; error: string; code?: string }[];
+  /** code: one of BinRestoreFailureCode, or another the calendar server's answer gave. */
+  failed: { id: string; error: string; code?: BinRestoreFailureCode | (string & {}) }[];
 }
 
 /** POST /api/bin/empty: the whole bin, or one module's part of it. */
