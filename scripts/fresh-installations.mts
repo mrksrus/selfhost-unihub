@@ -526,13 +526,18 @@ export class Session {
   constructor(base: string) { this.base = base; }
 
   async send(method: string, path: string, body?: unknown, { expected = 200, headers = {}, raw = false }: RequestOptions = {}) {
+    // exec() blocks this process (spawnSync) while the API may close an idle
+    // kept-alive connection; one turn of the event loop lets fetch see that
+    // close before it picks a connection, instead of writing to a dead one.
+    await new Promise(resolve => setImmediate(resolve));
+    // A transport failure names the request, which the bare fetch error does not.
     const response = await fetch(this.base + path, {
       method, signal: AbortSignal.timeout(60000),
       headers: { ...(body === undefined || raw ? {} : { 'Content-Type': 'application/json' }),
         ...(this.cookies.size ? { Cookie: [...this.cookies].map(([key, value]) => `${key}=${value}`).join('; ') } : {}),
         ...(this.csrf && !['GET', 'HEAD'].includes(method) ? { 'X-CSRF-Token': this.csrf } : {}), ...headers },
       body: body === undefined ? undefined : raw ? body as Uint8Array : JSON.stringify(body),
-    });
+    }).catch((error: Error) => { throw new Error(`${method} ${path}: ${error.message}`, { cause: error }); });
     for (const cookie of response.headers.getSetCookie()) {
       const pair = cookie.split(';', 1)[0];
       const separator = pair.indexOf('=');
