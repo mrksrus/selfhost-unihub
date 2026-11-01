@@ -328,9 +328,10 @@ test('the instance backup copies the installation, keeps only verified runs, ref
       const started = await admin.request('POST', '/api/admin/instance-backup/run');
       assert.equal(started.status, 202, JSON.stringify(started.body));
       for (let wait = 0; ; wait++) {
-        // The test user sees its own threads (INNODB_TRX needs PROCESS): the run's locking read is executing, blocked by the holder.
-        const [[waiting]] = await holder.query<RowDataPacket[]>(
-          "SELECT COUNT(*) AS count FROM information_schema.PROCESSLIST WHERE ID <> CONNECTION_ID() AND INFO LIKE '%instance_backups%' AND INFO LIKE '%FOR UPDATE%'");
+        // The test user sees its own threads (INNODB_TRX needs PROCESS). A statement on
+        // the runs executing for half a second is blocked by the holder: the run's retention.
+        const [[waiting]] = await holder.query<RowDataPacket[]>(`SELECT COUNT(*) AS count FROM information_schema.PROCESSLIST
+          WHERE ID <> CONNECTION_ID() AND COMMAND <> 'Sleep' AND INFO LIKE '%instance_backups%' AND TIME_MS > 500`);
         if (Number(waiting.count) > 0) break;
         assert.ok(wait < 600, 'the run reaches its retention');
         await new Promise(resolve => setTimeout(resolve, 100));
