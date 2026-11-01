@@ -77,7 +77,7 @@ const AdminInstanceBackup = () => {
         </SettingsSection>
         <SettingsSection title="Restore" description="Never from the web. On an empty installation, run in the image:">
           <SettingsBlock>
-            <pre className="overflow-x-auto rounded-md border border-border bg-muted/40 p-3 font-mono text-xs"><code>node /app/api/dist/scripts/instance-restore.js --file &lt;backup.uhib&gt; --key-file &lt;instance key&gt;</code></pre>
+            <pre className="overflow-x-auto rounded-md border border-border bg-muted/40 p-3 font-mono text-xs"><code>{status.restore_command}</code></pre>
           </SettingsBlock>
         </SettingsSection>
       </>

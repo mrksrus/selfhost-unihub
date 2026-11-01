@@ -14,6 +14,11 @@ vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }), 
 vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'user-ada' } }) }));
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn(), uploadBlob: vi.fn(), getDownloadUrl: (path: string) => `/api${path}` } }));
 vi.mock('@/lib/platform', async importOriginal => ({ ...(await importOriginal<typeof import('@/lib/platform')>()), downloadTicket: vi.fn(), saveFile: vi.fn().mockResolvedValue(undefined) }));
+// The reveal's deadline, shortened: the real one waits 20 seconds.
+vi.mock('@/lib/backup-api', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/lib/backup-api')>();
+  return { ...actual, revealRecoveryPasswordOnce: (id: string) => actual.revealRecoveryPasswordOnce(id, 1500) };
+});
 
 const SECTIONS = [{ id: 'settings', label: 'Settings' }, { id: 'contacts', label: 'Contacts' }, { id: 'calendar', label: 'Calendar and ToDo' }, { id: 'mail', label: 'Mail' }, { id: 'recordings', label: 'Recordings' }];
 const capabilities = (download_mail: Partial<BackupCapabilities['download_mail']> = {}): BackupCapabilities => ({
@@ -136,7 +141,7 @@ describe('Settings → Backup and restore (0.28)', () => {
     fireEvent.click((await screen.findAllByRole('button', { name: 'Download Full backup' }))[0]);
     const dialog = await screen.findByRole('dialog', { name: 'Recovery password' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Show the password' }));
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/backup/jobs/a/recovery-password/reveal'));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/backup/jobs/a/recovery-password/reveal', undefined, expect.anything()));
     // The server reveals it once: Cancel, Escape and a click outside keep the dialog until it is shown and saved.
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
     fireEvent.keyDown(dialog, { key: 'Escape' });
@@ -179,7 +184,52 @@ describe('Settings → Backup and restore (0.28)', () => {
     expect(matching).toHaveTextContent('Replace with the backup');
     await waitFor(() => expect(start).toBeEnabled());
     fireEvent.click(start);
+    fireEvent.click(within(await screen.findByRole('alertdialog', { name: 'Restore this backup?' })).getByRole('button', { name: 'Restore' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/backup/restore-jobs/r/start'));
+  });
+
+  it('every start, from any button, confirms the choices the job was prepared with', async () => {
+    const replaced = restoreJob('r', { conflict_mode: 'replace', credentials_mode: 'restore' });
+    const failed = restoreJob('f', { status: 'failed', source_type: 'upload', error: 'Lost the connection', validation_result: null });
+    answer(capabilities(), JOBS, [replaced, failed]);
+    vi.mocked(api.post).mockResolvedValue({ data: { job: replaced } });
+    mountSignedIn(<BackupSettings active />);
+    const matching = await screen.findByRole('combobox', { name: 'Matching items' });
+    expect(matching).toHaveTextContent('Keep what is here');
+    // The row's Restore does not start the job: it asks first, with the job's own stored choices.
+    await screen.findByRole('button', { name: /From a backup on this server/ });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Restore' })[1]);
+    const ask = await screen.findByRole('alertdialog', { name: 'Restore this backup?' });
+    expect(api.post).not.toHaveBeenCalledWith('/backup/restore-jobs/r/start');
+    const choices = within(ask).getByLabelText('The job\'s choices');
+    expect(choices).toHaveTextContent('Matching itemsReplace with the backup');
+    expect(choices).toHaveTextContent('Account sign-insUse the backup\'s');
+    expect(matching).toHaveTextContent('Replace with the backup');
+    fireEvent.click(within(ask).getByRole('button', { name: 'Not now' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    expect(api.post).not.toHaveBeenCalledWith('/backup/restore-jobs/r/start');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Restore' })[1]);
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Restore' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/backup/restore-jobs/r/start'));
+    // Try again asks the same way.
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByRole('alertdialog', { name: 'Restore this backup?' })).toHaveTextContent('From an uploaded backup');
+    expect(api.post).not.toHaveBeenCalledWith('/backup/restore-jobs/f/start');
+  });
+
+  it('a reveal the server does not answer in time says so and lets the person out', { timeout: 20_000 }, async () => {
+    answer(capabilities(), [job('a', { recovery_password_available: true, recovery_password_revealed: false })]);
+    vi.mocked(api.post).mockImplementation(() => new Promise(() => {}) as never);
+    mountSignedIn(<BackupSettings active />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Download Full backup' }, { timeout: 10_000 }));
+    const dialog = await screen.findByRole('dialog', { name: 'Recovery password' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Show the password' }));
+    expect(await within(dialog).findByText('The server did not answer in time.', {}, { timeout: 10_000 })).toBeInTheDocument();
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(/delete this backup and create a new one/);
+    expect(within(dialog).getByRole('button', { name: 'Try again' })).toBeEnabled();
+    // The dialog's own Close button, not the corner X (which carries the same name).
+    fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' }).find(button => button.textContent === 'Close')!);
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Recovery password' })).not.toBeInTheDocument());
   });
 
   it('shows the recovery password once before the first download and waits until it is saved', async () => {

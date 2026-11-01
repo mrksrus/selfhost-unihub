@@ -28,7 +28,7 @@ export interface InstanceBackupStatus {
   enabled: boolean;
   /** What the environment lacks when disabled. */
   missing: ('destination' | 'key')[];
-  /** The mount, as configured; null when off. */
+  /** INSTANCE_BACKUP_DIR as configured; null when it is unset. */
   destination: string | null;
   /** The key's fingerprint (its version in every file); null when off. */
   key_fingerprint: string | null;
@@ -44,8 +44,16 @@ export interface InstanceBackupStatus {
   kept: { count: number; bytes: number };
   /** A run is in progress. */
   running: boolean;
+  /** The newest runs first (up to 20). */
   runs: InstanceBackupRun[];
+  /** How to restore, in the image; never from the web. */
+  restore_command: string;
 }
 
-/** POST /api/admin/instance-backup/run: starts a run now; 409 while one runs. */
+/**
+ * POST /api/admin/instance-backup/run (permission server.settings): 202 with
+ * the started run. 409 INSTANCE_BACKUP_OFF without a destination or key, 409
+ * INSTANCE_BACKUP_RUNNING while one runs, 503 INSTANCE_BACKUP_NOT_READY while
+ * this process is not (yet) the one running background work.
+ */
 export interface InstanceBackupRunResponse { run: InstanceBackupRun }

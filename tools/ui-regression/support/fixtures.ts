@@ -303,6 +303,7 @@ const INSTANCE_BACKUP = {
   enabled: true, missing: [], destination: '/backups/unihub', key_fingerprint: 'k1:7f3a…c9e2', time_utc: '03:30', keep: 14, next_run_at: at('06-16T03:30:00.000Z'),
   last_run: { id: 'ib-1', trigger: 'schedule', actor_email: null, status: 'succeeded', file_name: 'unihub-instance-20260615T0330Z-0.28.0.uhib', size_bytes: 1_310_000_000, app_version: '0.28.0', error: null, started_at: at('06-15T03:30:00.000Z'), finished_at: at('06-15T03:41:00.000Z') },
   last_success: null, kept: { count: 14, bytes: 18_000_000_000 }, running: false,
+  restore_command: 'node /app/api/dist/scripts/instance-restore.js --file <backup.uhib> --key-file <instance key>',
   runs: [
     { id: 'ib-1', trigger: 'schedule', actor_email: null, status: 'succeeded', file_name: 'unihub-instance-20260615T0330Z-0.28.0.uhib', size_bytes: 1_310_000_000, app_version: '0.28.0', error: null, started_at: at('06-15T03:30:00.000Z'), finished_at: at('06-15T03:41:00.000Z') },
     { id: 'ib-0', trigger: 'manual', actor_email: 'ada@example.com', status: 'failed', file_name: null, size_bytes: null, app_version: '0.28.0', error: 'Not enough free space at the destination.', started_at: at('06-14T14:02:00.000Z'), finished_at: at('06-14T14:02:30.000Z') },

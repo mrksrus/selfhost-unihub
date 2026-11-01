@@ -75,8 +75,9 @@ export const backupApi = {
     required(unwrap(await api.post<BackupJobResponse>('/backup/jobs', request satisfies BackupCreateRequest)), 'backup').job,
   cancel: async (id: string) => { unwrap(await api.post(`${job(id)}/cancel`)); },
   delete: async (id: string) => { unwrap(await api.delete(job(id))); },
-  revealRecoveryPassword: async (id: string) =>
-    required(unwrap(await api.post<{ recovery_password: string }>(`${job(id)}/recovery-password/reveal`)), 'recovery password').recovery_password,
+  /** Reveals the recovery password: the server shows it once. The wait is bounded (REVEAL_WAIT_MS), see revealRecoveryPasswordOnce. */
+  revealRecoveryPassword: async (id: string, signal?: AbortSignal) =>
+    required(unwrap(await api.post<{ recovery_password: string }>(`${job(id)}/recovery-password/reveal`, undefined, { signal })), 'recovery password').recovery_password,
   /** Validates a backup kept on the server for a restore; the answer is the restore job to follow. */
   restoreStored: async (id: string, sections: string[] | 'full', options: RestoreOptions) =>
     required(unwrap(await api.post<{ job: RestoreJob }>(`${job(id)}/restore`, { sections, ...options })), 'restore job').job,
@@ -91,6 +92,35 @@ export const backupApi = {
   cancelRestore: async (id: string) => { unwrap(await api.post(`${restoreJob(id)}/cancel`)); },
   deleteRestore: async (id: string) => { unwrap(await api.delete(restoreJob(id))); },
 };
+
+/** How long the page waits for the reveal before it lets go of the request. */
+export const REVEAL_WAIT_MS = 20_000;
+
+/** Thrown when the reveal was not answered in time: the server may or may not have shown the password. */
+export class RevealUnanswered extends Error {
+  constructor() { super('The server did not answer in time.'); this.name = 'RevealUnanswered'; }
+}
+
+/**
+ * The reveal with a deadline. An unanswered reveal is not a failed one: the
+ * server may have marked the password as shown while the answer was lost,
+ * and then shows it no more. The caller tells the person what that means.
+ */
+export async function revealRecoveryPasswordOnce(id: string, waitMs = REVEAL_WAIT_MS) {
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), waitMs);
+  // The deadline wins on its own: the request is told to stop, and whether
+  // or not it does, the wait ends here.
+  const unanswered = new Promise<never>((_, reject) => controller.signal.addEventListener('abort', () => reject(new RevealUnanswered()), { once: true }));
+  try {
+    return await Promise.race([backupApi.revealRecoveryPassword(id, controller.signal), unanswered]);
+  } catch (error) {
+    if (controller.signal.aborted) throw new RevealUnanswered();
+    throw error;
+  } finally {
+    clearTimeout(deadline);
+  }
+}
 
 /** The file name a backup is saved under: the archive is always `.unihub-backup`; an unencrypted one from before 0.28 keeps `.zip`. */
 export const backupFileName = (job: Pick<BackupJob, 'id' | 'encryption_enabled'>, prefix = 'unihub-backup') =>

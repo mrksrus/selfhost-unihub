@@ -7,7 +7,7 @@ import { usePolicy } from '@/hooks/use-policies';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { useSessionScope } from '@/lib/session-scope';
 import {
-  BACKUP_ACTIVE, RESTORE_ACTIVE, backupApi, backupQueryKeys, getBackupDownloadAction, prepareBackupDownload,
+  BACKUP_ACTIVE, RESTORE_ACTIVE, RevealUnanswered, backupApi, backupQueryKeys, getBackupDownloadAction, prepareBackupDownload, revealRecoveryPasswordOnce,
   type BackupContents, type BackupDataClass, type BackupImportResult, type BackupJob, type BackupSectionId, type CalendarMode, type ConflictMode, type CredentialsMode, type RestoreJob, type RestoreOptions,
 } from '@/lib/backup-api';
 import { copyText, downloadTicket, saveFile } from '@/lib/platform';
@@ -19,6 +19,7 @@ import { Switch } from '@/components/ui/switch';
 import { Progress } from '@/components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { ErrorState, LoadingState } from '@/components/ui/page-states';
 import { PolicyMenuItem, PolicyNote } from '@/components/ui/policy-note';
@@ -62,10 +63,17 @@ const NO_JOBS: BackupJob[] = [];
 const NO_RESTORES: RestoreJob[] = [];
 
 // A restore job is prepared with the three choices and runs with them: the
-// screen shows the prepared job's choices, and Restore opens only while the
-// choices on the screen are the job's.
+// screen shows the prepared job's choices, the central Restore opens only
+// while the choices on the screen are the job's, and every start, from any
+// button, confirms the job's own stored choices first.
 const sameOptions = (a: RestoreOptions, b: RestoreOptions) => a.conflict_mode === b.conflict_mode && a.calendar_mode === b.calendar_mode && a.credentials_mode === b.credentials_mode;
 const jobOptions = (job: RestoreJob): RestoreOptions => ({ conflict_mode: job.conflict_mode as ConflictMode, calendar_mode: job.calendar_mode as CalendarMode, credentials_mode: job.credentials_mode as CredentialsMode });
+const OPTION_WORDS: Record<string, string> = {
+  keep_existing: 'Keep what is here', replace: 'Replace with the backup', keep_both: 'Keep both',
+  merge_same_name: 'Merge by name', copy: 'Restore as copies', restore: 'Use the backup\'s',
+};
+const optionWord = (value: string, forCredentials = false) => (forCredentials && value === 'keep_existing' ? 'Keep the current ones' : OPTION_WORDS[value] ?? value);
+const restoreTitle = (job: RestoreJob) => `${job.source_type === 'generated' ? 'From a backup on this server' : 'From an uploaded backup'}${job.is_encrypted ? '' : ' (not encrypted)'}`;
 
 const BACKUP_STATUS: Record<BackupJob['status'], string> = { queued: 'Waiting', running: 'Creating', cancelling: 'Stopping', cancelled: 'Stopped', ready: 'Ready', failed: 'Failed' };
 const RESTORE_STATUS: Record<RestoreJob['status'], string> = {
@@ -165,6 +173,9 @@ export default function BackupSettings({ active }: { active: boolean }) {
   const resetReview = () => { setSelectedRestoreJobId(null); setShownResult(null); };
   const changeOption = <K extends keyof RestoreOptions>(key: K, value: RestoreOptions[K]) => { setOptions(current => ({ ...current, [key]: value })); resetReview(); };
   const selectRestoreJob = (job: RestoreJob) => { setSelectedRestoreJobId(job.id); setOptions(jobOptions(job)); setShownResult(job.validation_result || job.result_counts); };
+  // The job whose start waits for confirmation; the dialog shows its stored choices.
+  const [startJob, setStartJob] = useState<RestoreJob | null>(null);
+  const askToStart = (job: RestoreJob) => { selectRestoreJob(job); setStartJob(job); };
 
   useEffect(() => {
     if (selectedRestoreJob?.validation_result) setShownResult(selectedRestoreJob.validation_result);
@@ -177,14 +188,17 @@ export default function BackupSettings({ active }: { active: boolean }) {
   }, [selectedRestoreJob, restoreJobs, queryClient]);
 
   // Recovery password, shown once before the first download. The server
-  // reveals it once: the dialog cannot be dismissed while the reveal runs, and
-  // an answer is shown only for the backup it was asked for.
+  // reveals it once: the dialog cannot be dismissed while the reveal runs
+  // (a bounded wait), and an answer is shown only for the backup it was
+  // asked for. A reveal that was refused or not answered in time leaves the
+  // dialog open with what happened and the way out.
   const [recoveryJob, setRecoveryJob] = useState<BackupJob | null>(null);
   const recoveryJobNow = useRef<BackupJob | null>(null);
   const [recoveryPassword, setRecoveryPassword] = useState<string | null>(null);
   const [recoverySaved, setRecoverySaved] = useState(false);
-  const openRecovery = (job: BackupJob) => { recoveryJobNow.current = job; setRecoveryJob(job); setRecoveryPassword(null); setRecoverySaved(false); };
-  const closeRecovery = () => { recoveryJobNow.current = null; setRecoveryJob(null); setRecoveryPassword(null); setRecoverySaved(false); };
+  const [revealProblem, setRevealProblem] = useState<{ unanswered: boolean; message: string } | null>(null);
+  const openRecovery = (job: BackupJob) => { recoveryJobNow.current = job; setRecoveryJob(job); setRecoveryPassword(null); setRecoverySaved(false); setRevealProblem(null); };
+  const closeRecovery = () => { recoveryJobNow.current = null; setRecoveryJob(null); setRecoveryPassword(null); setRecoverySaved(false); setRevealProblem(null); };
 
   const create = useSessionMutation({
     mutationFn: () => backupApi.create({ sections: exportSelection === 'full' ? 'full' : exportSelection as BackupSectionId[], include_download_mail: downloadMailOn }),
@@ -197,10 +211,16 @@ export default function BackupSettings({ active }: { active: boolean }) {
   // only in the session-guarded callback: a late answer starts no download.
   const download = useSessionMutation({ mutationFn: (job: BackupJob) => prepareBackupDownload(job), onSuccess: ticket => downloadTicket(ticket), onError: failed('Could not download the backup') });
   const reveal = useSessionMutation({
-    mutationFn: (job: BackupJob) => backupApi.revealRecoveryPassword(job.id),
+    mutationFn: (job: BackupJob) => revealRecoveryPasswordOnce(job.id),
     onSuccess: (password, job) => { refreshJobs(); if (recoveryJobNow.current?.id === job.id) setRecoveryPassword(password); },
-    onError: failed('Could not show the recovery password'),
+    onError: (error, job) => {
+      // The list says whether the server counts the password as shown.
+      refreshJobs();
+      if (recoveryJobNow.current?.id === job.id) setRevealProblem({ unanswered: error instanceof RevealUnanswered, message: error.message });
+      else failed('Could not show the recovery password')(error);
+    },
   });
+  const revealAgain = () => { if (recoveryJob) { setRevealProblem(null); reveal.mutate(recoveryJob); } };
   const prepared = (job: RestoreJob, chosen: RestoreOptions) => {
     refreshRestores();
     // The choices changed while the server prepared: the job stays in the list below, unselected.
@@ -424,7 +444,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
           <Button variant="outline" onClick={() => importFile && upload.mutate({ file: importFile, options })} disabled={!available || busy || preparing || !importFile || !!restorePolicy.lock}>
             {upload.isPending ? <Loader2 aria-hidden="true" className="animate-spin" /> : <Upload aria-hidden="true" />}Upload and check
           </Button>
-          <Button onClick={() => selectedRestoreJob && preparedAsChosen && startRestore.mutate(selectedRestoreJob)}
+          <Button onClick={() => selectedRestoreJob && preparedAsChosen && askToStart(selectedRestoreJob)}
             disabled={!available || busy || startRestore.isPending || selectedRestoreJob?.status !== 'validated' || !preparedAsChosen || !!restorePolicy.lock}>
             <Play aria-hidden="true" />Restore
           </Button>
@@ -483,7 +503,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
         : restoreJobs.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">No restores yet.</p></SettingsBlock>
         : restoreJobs.map(job => {
           const running = RESTORE_ACTIVE.includes(job.status);
-          const title = `${job.source_type === 'generated' ? 'From a backup on this server' : 'From an uploaded backup'}${job.is_encrypted ? '' : ' (not encrypted)'}`;
+          const title = restoreTitle(job);
           const meta = [RESTORE_STATUS[job.status], formatWhen(job.completed_at || job.started_at || job.created_at), job.archive_size ? formatBytes(job.archive_size) : null].filter(Boolean).join(' · ');
           return (
             <div key={job.id} className={cn('space-y-2 py-4', selectedRestoreJobId === job.id && '-mx-3 rounded-md bg-muted/40 px-3')}>
@@ -495,8 +515,8 @@ export default function BackupSettings({ active }: { active: boolean }) {
                   {job.error && <p className="text-xs text-destructive">{job.error}</p>}
                 </button>
                 <div className="flex shrink-0 items-center gap-1 touch:gap-3">
-                  {job.status === 'validated' && <Button size="sm" onClick={() => startRestore.mutate(job)} disabled={!available || startRestore.isPending || !!restorePolicy.lock} title={restorePolicy.lock}><Play aria-hidden="true" />Restore</Button>}
-                  {['failed', 'cancelled'].includes(job.status) && job.archive_available && <Button variant="outline" size="sm" onClick={() => startRestore.mutate(job)} disabled={!available || !!restorePolicy.lock}><RotateCcw aria-hidden="true" />Try again</Button>}
+                  {job.status === 'validated' && <Button size="sm" onClick={() => askToStart(job)} disabled={!available || startRestore.isPending || !!restorePolicy.lock} title={restorePolicy.lock}><Play aria-hidden="true" />Restore</Button>}
+                  {['failed', 'cancelled'].includes(job.status) && job.archive_available && <Button variant="outline" size="sm" onClick={() => askToStart(job)} disabled={!available || startRestore.isPending || !!restorePolicy.lock}><RotateCcw aria-hidden="true" />Try again</Button>}
                   {running && <Button variant="outline" size="sm" onClick={() => cancelRestore.mutate(job)} disabled={job.status === 'cancelling'}><Square aria-hidden="true" />Stop</Button>}
                   {!running && (
                     <DropdownMenu>
@@ -515,6 +535,34 @@ export default function BackupSettings({ active }: { active: boolean }) {
           );
         })}
     </SettingsSection>
+
+    <AlertDialog open={!!startJob} onOpenChange={open => { if (!open) setStartJob(null); }}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Restore this backup?</AlertDialogTitle>
+          <AlertDialogDescription asChild>
+            <div className="space-y-2 text-sm text-muted-foreground">
+              {startJob && <>
+                <p>{restoreTitle(startJob)}, prepared {formatWhen(startJob.created_at)}. Sections: {startJob.requested_sections.map(section => section === 'full' ? 'everything' : sectionLabel(section)).join(', ')}.</p>
+                <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1" aria-label="The job's choices">
+                  <dt>Matching items</dt><dd className="text-foreground">{optionWord(startJob.conflict_mode)}</dd>
+                  <dt>Local calendars</dt><dd className="text-foreground">{optionWord(startJob.calendar_mode)}</dd>
+                  <dt>Account sign-ins</dt><dd className="text-foreground">{optionWord(startJob.credentials_mode, true)}</dd>
+                </dl>
+                {startJob.validation_result && Object.keys(startJob.validation_result.counts || {}).length > 0 && (
+                  <p>In the archive: {Object.entries(startJob.validation_result.counts).map(([key, value]) => `${key} ${value.toLocaleString()}`).join(', ')}.</p>
+                )}
+                <p>These are the choices the job was prepared with; to restore with other ones, prepare it again.</p>
+              </>}
+            </div>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Not now</AlertDialogCancel>
+          <AlertDialogAction disabled={!!restorePolicy.lock} onClick={() => { if (startJob && !restorePolicy.lock) startRestore.mutate(startJob); setStartJob(null); }}>Restore</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
 
     <Dialog open={!!recoveryJob} onOpenChange={open => { if (!open && !recoveryStays) closeRecovery(); }}>
       <DialogContent onEscapeKeyDown={event => { if (recoveryStays) event.preventDefault(); }}
@@ -543,6 +591,22 @@ export default function BackupSettings({ active }: { active: boolean }) {
               <Button disabled={!recoverySaved || download.isPending} onClick={() => { if (recoveryJob) download.mutate(recoveryJob); closeRecovery(); }}>
                 <Download aria-hidden="true" />Download backup
               </Button>
+            </div>
+          </div>
+        ) : revealProblem ? (
+          <div className="space-y-3">
+            <div role="alert" className="space-y-2 text-sm">
+              <p className="font-medium text-destructive">{revealProblem.unanswered ? 'The server did not answer in time.' : 'The password was not shown.'}</p>
+              {revealProblem.unanswered ? (
+                <p className="text-muted-foreground">
+                  The server shows the password once. It may have counted this attempt, in which case it shows it no more and this backup cannot be opened.
+                  Try again: if the server answers that the password was already shown, delete this backup and create a new one.
+                </p>
+              ) : <p className="text-muted-foreground">{revealProblem.message}</p>}
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={closeRecovery}>Close</Button>
+              <Button onClick={revealAgain}>Try again</Button>
             </div>
           </div>
         ) : (
