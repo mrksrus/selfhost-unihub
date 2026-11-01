@@ -29,7 +29,7 @@
         "signing": "release"
       },
       "shell": "supported",
-      "note": "From this app the download manager fetches only download tickets and the public app update (/downloads/unihub.apk), without the session cookie. The earlier apps in the window add the cookie to the same ticket URLs. So the server must answer a ticket the same with or without a Cookie header, whether the cookie's session is live or has ended, and keep the app update public."
+      "note": "From this app the download manager starts only from download tickets and the public app update (/downloads/unihub.apk), without the session cookie; it follows redirects by itself, so neither endpoint may redirect. The earlier apps in the window add the cookie to the same ticket URLs. So the server must answer a ticket the same with or without a Cookie header, whether the cookie's session is live or has ended, and keep the app update public."
     },
     {
       "version": "0.27.1",

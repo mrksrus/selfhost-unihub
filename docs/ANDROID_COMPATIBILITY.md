@@ -98,13 +98,14 @@ evidence; this table is what it is checked against.
 | 0.26.0 | starts and connects | starts and connects | starts and connects |
 
 All four apps put contacts on the phone and sync them both ways.
-From the 0.28.0 app, Android's download manager gets only download tickets
-and the public app update, never the session cookie. The 0.27.1, 0.27.0 and
-0.26.0 apps still add the cookie to the ticket URL of a backup download; the
-server answers a ticket the same with or without it, so they keep working.
-The 0.28.0 app refuses the backup addresses that need the session, which the
-pages of servers before 0.28 pass: with such a server, download backups in a
-browser.
+From the 0.28.0 app, Android's download manager starts only from download
+tickets and the public app update, never with the session cookie (it follows
+redirects by itself, so the server keeps both endpoints free of redirects).
+The 0.27.1, 0.27.0 and 0.26.0 apps still add the cookie to the ticket URL of a
+backup download; the server answers a ticket the same with or without it, so
+they keep working. The 0.28.0 app refuses the backup addresses that need the
+session, which the pages of servers before 0.28 pass: with such a server,
+download backups in a browser.
 The 0.27.0 and 0.26.0 apps can lose the "Connect to <server>?" question when Android rebuilds their screen (in the first minutes after the phone starts, or after a theme or font change); the link can simply be opened again. The 0.27.1 and 0.28.0 apps keep it, and `android/scripts/launch-test.sh --candidate` checks that for the candidate only.
 From 0.23.0 the app also reads the handshake `protocol` and `minApp` when
 connecting to a server.

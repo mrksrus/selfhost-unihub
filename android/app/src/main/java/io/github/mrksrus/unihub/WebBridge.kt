@@ -197,18 +197,22 @@ class WebBridge(
 
     /**
      * Downloads a file the server streams (backups) with the system download
-     * manager, which shows progress and survives the app closing. Only the
-     * server's download tickets and its public app update, and never with the
-     * session cookie (F9): the download manager is another app. A page of a
-     * server before 0.28 passes addresses that need the session; they are
-     * refused here.
+     * manager, which shows progress and survives the app closing. Never with
+     * the session cookie (F9): the download manager is another app. The
+     * request it starts with is a download ticket or the public app update of
+     * the server's own address; a page of a server before 0.28 passes
+     * addresses that need the session, and they are refused here. The
+     * download manager follows redirects without asking the app, so this
+     * relies on those two endpoints never redirecting (they do not); a
+     * redirect would still carry no cookie, and an update is only installed
+     * once UpdateCheck has found it signed by this app's signers.
      */
     fun download(url: String, name: String, userAgent: String) {
         if (!ServerAddress.sameOrigin(origin, url)) return
         val fileName = safeFileName(name)
         // The app update shows no "complete" notification: opened from there,
         // Android refuses to install it; the app opens the installer (AppUpdate).
-        val update = AppUpdate.isUpdate(url)
+        val update = SharedFiles.isAppUpdate(origin, url)
         if (!update && !SharedFiles.isTicket(origin, url)) {
             Toast.makeText(activity, R.string.download_failed, Toast.LENGTH_SHORT).show()
             return
