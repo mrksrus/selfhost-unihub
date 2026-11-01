@@ -66,6 +66,13 @@ rule keeps. A table's class is declared in `data-inventory.ts`; a new table
 or column decides its class there, with `backup-classes.ts` filtering export
 and old imports alike.
 
+Sync mail a backup kept comes back with its provider address and is linked
+when the server shows that exact address again ([Mail sync](MAIL_SYNC.md)).
+When the server reset the mailbox's UIDVALIDITY between the backup and the
+restore, nothing links: the restored message and the server's copy both stay
+visible. A duplicate is the safe outcome; linking by a guess could attach the
+restored message to another one, and removing it could lose data only it held.
+
 An export job stages its data in the person's backup directory and records
 `keep_until` (from `backup.server_retention_days`) and `contents`. A ready
 archive leaves the server by the browser download or a `backup-archive`

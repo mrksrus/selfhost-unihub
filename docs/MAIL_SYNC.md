@@ -64,8 +64,15 @@ module:
   occurrences and the mapping (`foldIntoKeptItem`). Only a second item that
   holds nothing of its own folds: no provider change, ToDo link, snooze,
   scheduled send, server-deletion or recovery entry, and only occurrences of
-  that X-GM-MSGID. Otherwise both stay. An address of an older UIDVALIDITY links
-  nothing: that UID may be another message now.
+  that X-GM-MSGID. Otherwise both stay.
+- An address of an older UIDVALIDITY links nothing: after the server reset
+  the mailbox's UIDVALIDITY between the backup and the restore, that UID may
+  be another message now. The restored item and the server's copy, downloaded
+  again, then both stay visible, and prune removes neither: the restored item
+  holds a full address, so it is no unlinked twin, and no occurrence ever
+  showed it gone. This is the safe choice. A visible duplicate the person can
+  delete is better than attaching the restored item to another message, or
+  removing it on a guess and losing what only it held.
 - Folder discovery records a mailbox flagged `\All` as `special_use = 'all'`
   on `mail_remote_mailboxes` (the local folder mapping still uses `archive`).
 
