@@ -8,15 +8,17 @@
 // its own and a key file), three people (the administrator and a second
 // person, each with the synthetic data of every recovery section from
 // scripts/recovery-data.mts, and a second administrator), an installation
-// policy and a sign-up setting. An administrator presses "Back up now"; the
+// policy, a sign-up setting, earlier instance backup runs and mail upgrade
+// progress. An administrator presses "Back up now"; the
 // file is copied off the source, and the source is deleted with its database
 // and storage. The restore command, as an administrator runs it in the image,
 // refuses a wrong key, checks the file with --verify-only, and restores into
 // a new, empty installation that has the source's ENCRYPTION_KEY and
 // BACKUP_MASTER_KEY but a JWT secret of its own. That installation must hold
 // exactly the source's installation (api/tests/helpers/instance-drill-state.cts:
-// the people, policies, settings, push identity, activity log and mail
-// accounts) and each person's data (same ids, rows, files, original messages
+// the people, the mail accounts and every table the data inventory declares
+// as the installation's, compared by scripts/instance-drill-compare.mts) and
+// each person's data (same ids, rows, files, original messages
 // and stored passwords), with only the documented resets: no session, ticket,
 // sign-in challenge or lease of the old installation, mail accounts paused
 // with provider deletion off, and no provider work left to replay. Each
@@ -30,6 +32,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createPeerCertificates, installationFactory, Session, type Installation } from './fresh-installations.mts';
 import { helper, inspect, providerAccounts, providerSecrets, publicView, seedProviders, seedSource, sleep, type Inspection, type PublicView, type Row } from './recovery-data.mts';
+import { installationProblems, type InstallationReport } from './instance-drill-compare.mts';
 import { startProviders, type Providers } from './test-providers.mts';
 
 // The drill never imports or restores a user backup, so it may run without the sandbox locally.
@@ -69,7 +72,7 @@ interface InstallationState {
   users: { id: string; email: string; role: string; is_active: number; row: string }[];
   mailAccounts: { id: string; user_id: string; email_address: string; is_active: number; delete_emails_on_server: number; server_delete_enabled_at: string | null;
     server_delete_grace_until: string | null; sync_policy_confirmed_at: string | null; kept: string }[];
-  policies: Row[]; systemSettings: { key: string; value: string }[]; pushIdentity: string; activity: string[]; resets: Record<string, number>;
+  installation: InstallationReport; policies: Row[]; resets: Record<string, number>;
 }
 const state = (installation: Installation, mode = 'report', extra: Record<string, string> = {}) =>
   JSON.parse(installation.exec(helper('instance-drill-state.cts'), { DRILL_MODE: mode, ...extra })) as InstallationState;
@@ -106,7 +109,7 @@ try {
   const secondAdmin = await signUp('drill-second-admin@example.test', 'Drill Second Admin');
   await owner.json('PUT', `/api/admin/users/${secondAdmin.id}/role`, { role: 'admin', current_password: admin.password });
   await secondAdmin.session.json('POST', '/api/contacts', { first_name: 'Admin', last_name: 'Contact', email: 'admin.contact@example.test' });
-  state(source, 'seed-policy', { DRILL_ADMIN_ID: ownerId });
+  state(source, 'seed', { DRILL_ADMIN_ID: ownerId });
   const forced = async (session: Session) => (await session.json<{ download_mail: { forced: boolean } }>('GET', '/api/backup/capabilities')).download_mail.forced;
   assert.equal(await forced(second.session), true, 'The installation policy applies on the source');
 
@@ -161,11 +164,9 @@ try {
   // 3. The whole installation is back, with only the documented resets.
   const targetState = state(target);
   assert.deepEqual(targetState.users, sourceState.users, 'Every person comes back with their account as it was (role, password, two-step sign-in)');
-  assert.deepEqual(targetState.policies, sourceState.policies, 'The installation policies come back');
   assert.ok(sourceState.policies.some(policy => policy.setting_key === 'policy.backup.download_mail' && policy.setting_value === 'always'), 'The seeded policy was there to compare');
-  assert.deepEqual(targetState.systemSettings, sourceState.systemSettings, 'The installation settings come back');
-  assert.equal(targetState.pushIdentity, sourceState.pushIdentity, 'The push identity stays, so phones keep receiving notifications');
-  assert.deepEqual(sourceState.activity.filter(id => !targetState.activity.includes(id)), [], 'The activity log keeps every entry');
+  assert.deepEqual(installationProblems(sourceState.installation, targetState.installation, { backupFile: file }), [],
+    'What belongs to the installation (activity log, settings, policies, push identity, backup runs, upgrade history) comes back, with only the documented changes');
   assert.deepEqual(targetState.resets, { sessions: 0, fileTickets: 0, signInChallenges: 0, leases: 0, runnableEngineJobs: 0, runnableWritebacks: 0,
     calendarMoves: 0, scheduledSends: 0, providerDeletions: 0 }, 'Nothing of the old installation\'s running life or provider work is left');
   assert.deepEqual(targetState.mailAccounts.map(({ kept, id, user_id, email_address }) => ({ kept, id, user_id, email_address })),
@@ -215,7 +216,7 @@ try {
   const calendarSync = await user.json<{ result: Row }>('POST', `/api/calendar/accounts/${calendarAccount.id}/sync`, {});
   assert.equal(calendarSync.result.ok, true, `The restored calendar account syncs: ${JSON.stringify(calendarSync.result)}`);
   assert.equal(providers.log.dav.filter(request => !request.ok && request.method !== 'OPTIONS').length, 0, 'No wrong calendar password was sent');
-  evidence.restored = { people: people.length, policies: targetState.policies.length, system_settings: targetState.systemSettings.length, activity_entries: targetState.activity.length,
+  evidence.restored = { people: people.length, installation_rows: Object.fromEntries(Object.entries(targetState.installation).map(([table, { rows }]) => [table, rows.length])),
     mail_accounts: targetState.mailAccounts.length, recovery_rows: people.map(person => Object.values(person.server.tables).reduce((sum, count) => sum + count, 0)),
     files: people.map(person => person.server.files.length), resets_on_source: sourceState.resets, logins: [...signedInto()].length, output: restored.output.trim().split('\n').slice(-3) };
   failed = false;

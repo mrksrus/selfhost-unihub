@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { localSandboxMode } from './fresh-installations.mts';
+import { INSTALLATION_RULES, installationProblems, type InstallationReport, type ReportedRow } from './instance-drill-compare.mts';
 import { compareVersions, previousReleases } from './published-image.mts';
 import { DESTRUCTIVE_IMAP, imapCommandReader, imapResultReader } from './test-providers.mts';
 import { coreView, seededMailProblems, seedMessage, type RawEntry, type ViewSession } from './upgrade-view.mts';
@@ -178,4 +179,44 @@ test('the upgrade check reads mail in full and fails closed when its contents ar
   // Missing or duplicated messages fail too, whatever the others hold.
   assert.match(seededMailProblems([], [seed])[0], /0 copies/);
   assert.match(seededMailProblems([...intact.emails, ...intact.emails], [seed])[0], /2 copies/);
+});
+
+test('the instance drill compares every installation-owned row in full and allows only the documented changes', () => {
+  const file = 'unihub-instance-20261101T000000Z-0.28.0.uhib';
+  const row = (key: string, columns: Record<string, string>, plain: Record<string, string | null> = {}): ReportedRow => ({ key, columns, plain });
+  // One row per table the rules know, as instance-drill-state.cts reports them.
+  const source = (): InstallationReport => ({
+    ...Object.fromEntries(Object.keys(INSTALLATION_RULES).map(table => [table, { owner: 'installation', rows: [row('r1', { id: 'h-id', value: 'h-value' })] }])),
+    audit_log: { owner: 'installation', rows: [row('a1', { id: 'h-a1', actor_id: 'h-admin', action: 'h-role', details: 'h-details' }, { action: 'admin.role_change' })] },
+    instance_backups: { owner: 'installation', rows: [
+      row('b1', { id: 'h-b1', status: 'h-succeeded', finished_at: 'h-backup-end' }, { status: 'succeeded', file_name: file }),
+      row('b0', { id: 'h-b0', status: 'h-failed', finished_at: 'h-old-end' }, { status: 'failed', file_name: null })] },
+    notification_config: { owner: 'installation', rows: [row('1', { public_key: 'h-key', encrypted_private_key: 'h-private', reminder_revision: 'h-3' })] },
+  });
+  const check = (change: (report: InstallationReport) => void) => { const target = source(); change(target); return installationProblems(source(), target, { backupFile: file }); };
+  assert.deepEqual(check(() => {}), []);
+  // The documented changes: this backup's run is finished by the restore, the push reminder cursors move.
+  assert.deepEqual(check(report => {
+    report.instance_backups.rows[0].columns.finished_at = 'h-restore-time';
+    report.notification_config.rows[0].columns.reminder_revision = 'h-4';
+  }), []);
+  const fails: Record<string, (report: InstallationReport) => void> = {
+    'an activity entry with its id kept but another actor': report => { report.audit_log.rows[0].columns.actor_id = 'h-stranger'; },
+    'an activity entry with other details': report => { report.audit_log.rows[0].columns.details = 'h-other'; },
+    'a lost activity entry': report => { report.audit_log.rows = []; },
+    'an activity entry added by the restore': report => { report.audit_log.rows.push(row('a2', { id: 'h-a2' }, { action: 'admin.role_change' })); },
+    'an earlier backup run finished at another time': report => { report.instance_backups.rows[1].columns.finished_at = 'h-other'; },
+    'this backup run with another status': report => { report.instance_backups.rows[0].columns.status = 'h-failed'; },
+    'a changed push key': report => { report.notification_config.rows[0].columns.encrypted_private_key = 'h-other'; },
+    'a changed upgrade history': report => { report.schema_migrations.rows[0].columns.value = 'h-other'; },
+    'reset mail upgrade progress': report => { report.mail_engine_migration_progress.rows[0].columns.value = 'h-default'; },
+    'a changed setting': report => { report.system_settings.rows[0].columns.value = 'h-other'; },
+    'a lost policy': report => { report.setting_policies.rows = []; },
+    'an installation table the restored release does not report': report => { delete report.setting_policies; },
+    'a newly declared organisation table without a rule': report => { report.org_groups = { owner: 'organisation', rows: [] }; },
+  };
+  for (const [what, change] of Object.entries(fails)) assert.notDeepEqual(check(change), [], `${what} fails the drill`);
+  // A table with nothing in it on the source proves nothing.
+  const empty = source(); empty.system_settings.rows = [];
+  assert.match(installationProblems(empty, empty, { backupFile: file }).join('\n'), /system_settings: the source has no rows/);
 });

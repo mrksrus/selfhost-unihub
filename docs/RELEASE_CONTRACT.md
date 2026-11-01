@@ -251,7 +251,9 @@ kept do not matter to it).
    accounts whose mail has originals, and a second administrator, promoted by
    the owner, gets a contact. The installation gets a policy that is not the
    default (`backup.download_mail` forced, locked), which must apply to the
-   second person. The test providers stay down, so nothing changes the data.
+   second person, two earlier backup runs, and mail upgrade progress other
+   than a new database's. The test providers stay down, so nothing changes
+   the data.
 2. An administrator presses Back up now; the run must succeed. The file must
    hold no password or key in plain text. Every person's tables must be
    unchanged by the run. It is copied off the destination, and the source,
@@ -263,15 +265,23 @@ kept do not matter to it).
    would) must refuse a wrong key, pass `--verify-only`, restore, and refuse a
    second restore into the now full installation.
 4. The app starts. What belongs to the whole installation must equal the
-   source (`api/tests/helpers/instance-drill-state.cts`): the people with
-   their roles, passwords and two-step sign-in, the policies, the installation
-   settings, the push identity and every activity log entry. Each mail
-   account row must be the source's except for the pause the restore sets,
-   as a mail restore does (`pauseMailRestore`): inactive, deletion at the
-   provider off and its policy confirmation cleared.
-   The only other differences allowed are the documented resets, which must
-   be zero after the restore: sessions, file tickets, sign-in challenges,
-   worker leases, runnable mail engine jobs, provider changes that could run,
+   source (`api/tests/helpers/instance-drill-state.cts`). The people come back
+   with their roles, passwords and two-step sign-in. Every table the data
+   inventory of the release under test declares as owned by the installation
+   or an organisation is compared row by row, every column of every row
+   (`scripts/instance-drill-compare.mts`): the activity log, the installation
+   settings and policies, the push identity, the backup runs, the database
+   upgrade history and the mail upgrade progress. Nothing may be added, and
+   a newly declared table fails the drill until it gets a rule there. The
+   rules allow only what the restore is documented to change
+   ([after an instance restore](DATA_RECOVERY.md#after-an-instance-restore)):
+   the run that wrote the backup is finished at the time of the restore. The
+   push identity's reminder scan cursors may move, as on any running server.
+   Each mail account row must be the source's except for the pause listed
+   there: inactive, deletion at the provider off and its policy
+   confirmation cleared. The other changes listed there must leave nothing
+   after the restore: sessions, file tickets, sign-in challenges, worker
+   leases, runnable mail engine jobs, provider changes that could run,
    pending calendar moves, scheduled sends and provider deletions.
    For each person, every recovery table holds the source's rows under the same IDs,
    every stored file has its bytes (owned by the API user in the image),
