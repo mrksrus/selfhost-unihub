@@ -77,11 +77,13 @@ pool.getConnection = function (this: typeof pool) {
   return handed;
 };
 
-// A caller that reaches the pool through a wrapper of its own (a test's
-// getConnection) resumes outside that window: the connection's first
-// statement marks the task that runs it.
+// A caller that receives the connection through something else (an async
+// function that returns it, Promise.all) resumes outside that window: the
+// connection's first statement, including a commit or rollback, marks the
+// task that runs it. A pool request such a caller makes before that is not
+// seen (docs/DEVELOPMENT.md).
 const connection = PromisePoolConnection.prototype as unknown as Record<string, (...args: unknown[]) => unknown>;
-for (const method of ['beginTransaction', 'execute', 'query']) {
+for (const method of ['beginTransaction', 'execute', 'query', 'commit', 'rollback']) {
   const original = connection[method];
   connection[method] = function (this: object, ...args: unknown[]) {
     if (handedOver) hold(handedOver);
