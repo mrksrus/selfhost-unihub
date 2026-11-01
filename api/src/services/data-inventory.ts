@@ -112,7 +112,7 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
     ['policy_notices', 'deliberately_excluded', 'A person confirms the data rules of the installation they are on; a restore must not carry the confirmation elsewhere.',
       'user_id revision acknowledged_at'],
     ['instance_backups', 'deliberately_excluded', 'The runs of the instance backup belong to this installation; its own dump carries them, a personal backup never does.',
-      'id trigger_kind actor_id status file_name size_bytes sha256 key_fingerprint app_version migration_id error started_at finished_at removed_at'],
+      'id trigger_kind actor_id status file_name size_bytes sha256 key_fingerprint app_version migration_id error started_at finished_at removed_at completion_seq'],
   ].map(([name, treatment, reason, columns]) => [name, Object.freeze({ ...excluded(treatment, reason, columns),
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 25])) })])),
 });

@@ -205,7 +205,7 @@ interface RunRow extends RowDataPacket {
   id: string; trigger_kind: 'schedule' | 'manual'; actor_id: string | null; actor_email: string | null;
   status: 'running' | 'succeeded' | 'failed'; file_name: string | null; size_bytes: number | string | null; sha256: string | null;
   key_fingerprint: string | null; app_version: string; migration_id: number; error: string | null;
-  started_at: Date | string; finished_at: Date | string | null; removed_at: Date | string | null;
+  started_at: Date | string; finished_at: Date | string | null; removed_at: Date | string | null; completion_seq: number | string | null;
 }
 
 const iso = (value: Date | string | null) => value === null ? null : new Date(value instanceof Date ? value : `${String(value).replace(' ', 'T')}Z`).toISOString();
@@ -341,7 +341,7 @@ async function checkDestination(dir: string) {
   if (!stat?.isDirectory()) throw new InstanceBackupError('INSTANCE_BACKUP_DIR does not exist; is its volume mounted?');
   await fs.promises.access(dir, fs.constants.W_OK).catch(() => { throw new InstanceBackupError('INSTANCE_BACKUP_DIR cannot be written by the API user.'); });
   // A run needs about as much as the last one, or the database's size before the first.
-  const [[last]] = await db.execute<RowDataPacket[]>("SELECT size_bytes FROM instance_backups WHERE status = 'succeeded' ORDER BY started_at DESC LIMIT 1");
+  const [[last]] = await db.execute<RowDataPacket[]>("SELECT size_bytes FROM instance_backups WHERE status = 'succeeded' ORDER BY completion_seq DESC LIMIT 1");
   const [[size]] = await db.execute<RowDataPacket[]>('SELECT COALESCE(SUM(DATA_LENGTH + INDEX_LENGTH), 0) AS bytes FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()');
   const needed = Math.ceil(Math.max(Number(last?.size_bytes) || 0, Number(size?.bytes) || 0) * 1.1) + MIN_FREE_BYTES;
   const space = await fs.promises.statfs(dir);
@@ -595,8 +595,10 @@ async function copyFile(tar: TarWriter, root: { name: string; dir: string }, rel
 
 // ── Retention, recovery, schedule, status ─────────────────────────────
 
-// Newest first by completion, then by the time-ordered run id.
-const KEPT_ORDER = 'ORDER BY finished_at DESC, id DESC';
+// Newest first in the order the runs counted: a number given in the success
+// transaction, never a time, since a clock set back (or a restart after it)
+// would otherwise put a new backup behind an old one.
+const KEPT_ORDER = 'ORDER BY completion_seq DESC';
 
 /**
  * Marks the oldest succeeded backups beyond the kept count removed, on
@@ -613,8 +615,10 @@ async function markBeyondKept(connection: SqlExecutor, keep: number) {
 
 async function recordSuccess(id: string, file: { name: string; bytes: number; sha256: string; migrationId: number }, settings: { keep: number }) {
   return inTransaction('START TRANSACTION', async connection => {
-    await connection.execute(`UPDATE instance_backups SET status = 'succeeded', file_name = ?, size_bytes = ?, sha256 = ?, migration_id = ?, finished_at = UTC_TIMESTAMP()
-      WHERE id = ? AND status = 'running'`, [file.name, file.bytes, file.sha256, file.migrationId, id]);
+    // One worker owner runs one backup at a time; the unique key refuses a number given twice.
+    const [[next]] = await connection.execute<RowDataPacket[]>('SELECT COALESCE(MAX(completion_seq), 0) + 1 AS seq FROM instance_backups');
+    await connection.execute(`UPDATE instance_backups SET status = 'succeeded', file_name = ?, size_bytes = ?, sha256 = ?, migration_id = ?, finished_at = UTC_TIMESTAMP(),
+      completion_seq = ? WHERE id = ? AND status = 'running'`, [file.name, file.bytes, file.sha256, file.migrationId, next.seq, id]);
     return markBeyondKept(connection, settings.keep);
   });
 }
@@ -694,7 +698,7 @@ async function getInstanceBackupStatus(now = new Date()): Promise<InstanceBackup
     const [runs] = await connection.execute<RunRow[]>(`SELECT b.*, u.email AS actor_email FROM instance_backups b LEFT JOIN users u ON u.id = b.actor_id
       ORDER BY b.started_at DESC, b.id DESC LIMIT ${RUNS_SHOWN}`);
     const [[latest]] = await connection.execute<RunRow[]>(`SELECT b.*, u.email AS actor_email FROM instance_backups b LEFT JOIN users u ON u.id = b.actor_id
-      WHERE b.status = 'succeeded' ORDER BY b.finished_at DESC, b.id DESC LIMIT 1`);
+      WHERE b.status = 'succeeded' ORDER BY b.completion_seq DESC LIMIT 1`);
     const [[keptRow]] = await connection.execute<RowDataPacket[]>(`SELECT COUNT(*) AS count, COALESCE(SUM(size_bytes), 0) AS bytes FROM instance_backups
       WHERE status = 'succeeded' AND removed_at IS NULL`);
     const [[running]] = await connection.execute<RowDataPacket[]>("SELECT COUNT(*) AS count FROM instance_backups WHERE status = 'running'");

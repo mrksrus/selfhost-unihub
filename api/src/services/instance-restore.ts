@@ -94,8 +94,10 @@ async function clearInstallationState(connection: Connection, run: { id: string;
     [`UPDATE backup_restore_jobs SET status = 'failed', phase = 'failed', archive_path = NULL, completed_at = UTC_TIMESTAMP(),
       error = 'This restore was interrupted by a restore of the whole installation; its archive was not part of that backup.'
       WHERE status NOT IN (${terminalRestoreStates.map(() => '?').join(', ')})`, terminalRestoreStates],
-    // The run that wrote this backup was still running when its dump was taken.
-    [`UPDATE instance_backups SET status = 'succeeded', file_name = ?, size_bytes = ?, sha256 = ?, finished_at = UTC_TIMESTAMP()
+    // The run that wrote this backup was still running when its dump was
+    // taken; it counts after every run the dump shows as succeeded.
+    [`UPDATE instance_backups SET status = 'succeeded', file_name = ?, size_bytes = ?, sha256 = ?, finished_at = UTC_TIMESTAMP(),
+      completion_seq = (SELECT seq FROM (SELECT COALESCE(MAX(completion_seq), 0) + 1 AS seq FROM instance_backups) AS next)
       WHERE id = ? AND status = 'running'`, [run.fileName, run.size, run.sha256, run.id]],
     ["UPDATE instance_backups SET status = 'failed', error = 'The server stopped during the backup.', finished_at = UTC_TIMESTAMP() WHERE status = 'running'", []],
     // Provider work the old installation still had to do is not replayed: it

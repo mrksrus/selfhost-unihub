@@ -412,6 +412,16 @@ test('the instance backup copies the installation, keeps only verified runs, ref
       assert.equal(await backup.applyRetention({ dir: destination, keep: 1 }), 2);
       const [latest] = await pool.query<RowDataPacket[]>("SELECT id FROM instance_backups WHERE status = 'succeeded' AND removed_at IS NULL");
       assert.deepEqual([latest.map(row => row.id), backupFiles()], [[e.id], [e.file_name]]);
+
+      // The clock was ahead when e finished and is set back, or a restart after
+      // that gives later runs smaller ids: the run that counts last stays.
+      await pool.query("UPDATE instance_backups SET finished_at = '2031-01-01 00:00:00', id = 'ffffffff-ffff-7fff-bfff-ffffffffffff' WHERE id = ?", [e.id]);
+      backup.useInstanceBackupConfig({ ...settings, keep: 1 });
+      const f = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      assert.equal(f.status, 'succeeded', String(f.error));
+      const [newest] = await pool.query<RowDataPacket[]>("SELECT id FROM instance_backups WHERE status = 'succeeded' AND removed_at IS NULL");
+      assert.deepEqual([newest.map(row => row.id), backupFiles()], [[f.id], [f.file_name]], 'the newest backup is kept');
+      assert.equal(((await admin.request('GET', '/api/admin/instance-backup')).body as FixtureValue).last_success.id, f.id);
     } finally {
       backup.useInstanceBackupConfig(settings);
     }
@@ -500,9 +510,9 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     assert.ok(photoFiles.every(file => fs.existsSync(file)), 'the restored photo row has its files');
 
     assert.match(lines.join('\n'), /Mail accounts are paused/);
-    const [runs] = await pool.query<RowDataPacket[]>('SELECT status, file_name FROM instance_backups ORDER BY started_at');
+    const [runs] = await pool.query<RowDataPacket[]>('SELECT status, file_name, completion_seq FROM instance_backups ORDER BY started_at');
     assert.deepEqual(runs.map(run => run.status), ['failed', 'succeeded'], 'the run that wrote the backup shows as succeeded');
-    assert.equal(runs[1].file_name, 'first.uhib');
+    assert.deepEqual([runs[1].file_name, Number(runs[1].completion_seq)], ['first.uhib', 1], 'and counts after the runs before it');
 
     // The restored installation works: old sessions are gone, a sign-in works and alex's data is there.
     assert.equal((await alex.request('GET', '/api/contacts')).status, 401);
