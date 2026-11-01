@@ -515,6 +515,50 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     }
   });
 
+  await t.test('a secret generation one run left out stays out of every later run', async () => {
+    // A projected secret read at startup as generation A, rotated to B before
+    // a run (B has a hard link among the stored files), then to C between runs.
+    const projected = path.join(scratch, 'projected-generations');
+    const generation = (name: string) => write(path.join(projected, name, 'key'), `synthetic-${name}-${crypto.randomBytes(16).toString('hex')}`);
+    const point = (name: string) => {
+      fs.symlinkSync(name, path.join(projected, '..data.next'));
+      fs.renameSync(path.join(projected, '..data.next'), path.join(projected, '..data'));
+    };
+    generation('gen-a');
+    point('gen-a');
+    fs.symlinkSync('..data/key', path.join(projected, 'key'));
+    process.env.UNIHUB_GENERATION_SECRET_FILE = path.join(projected, 'key');
+    const config = require('../dist/src/config') as typeof import('../src/config');
+    const alias = path.join(rootDirs.attachments, users.alex, 'generation-b-alias');
+    const copiedBy = async (run: { file_name: string | null }) => {
+      const copied: string[] = [];
+      await format.scanInstanceBackup(path.join(destination, run.file_name!), key, backup.INSTANCE_BACKUP_ROOTS, { onFile: entry => { copied.push(path.join(uploads, entry.root, entry.path)); return null; } });
+      return copied;
+    };
+    try {
+      assert.ok(config.readSecret('UNIHUB_GENERATION_SECRET'));
+      fs.linkSync(generation('gen-b'), alias);
+      point('gen-b');
+      const first = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      assert.equal(first.status, 'succeeded', String(first.error));
+      assert.equal((await copiedBy(first)).includes(alias), false, 'B is left out while it is the secret');
+      generation('gen-c');
+      point('gen-c');
+      fs.rmSync(path.join(projected, 'gen-b'), { recursive: true });
+      const second = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      assert.equal(second.status, 'succeeded', String(second.error));
+      assert.equal((await copiedBy(second)).includes(alias), false, 'B stays out after the secret moved on');
+      // A stored file that only shares a secret's size is copied.
+      const lookalike = write(path.join(rootDirs.attachments, users.alex, 'same-size'), 'x'.repeat(fs.statSync(alias).size));
+      const third = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+      assert.equal((await copiedBy(third)).includes(lookalike), true);
+      fs.rmSync(lookalike);
+    } finally {
+      delete process.env.UNIHUB_GENERATION_SECRET_FILE;
+      fs.rmSync(alias, { force: true });
+    }
+  });
+
   await t.test('restore into an empty installation: refused while not empty, then the data, the files and no sessions', async () => {
     const database = getDatabaseConfig()!;
     await assert.rejects(restoreInstanceBackup({ file: first.file, key, database }), /is not empty/);

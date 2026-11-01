@@ -9,7 +9,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import packageJson = require('../../package.json');
 import { db } from '../state';
-import { INSTANCE_BACKUP, secretFilesLoaded } from '../config';
+import { INSTANCE_BACKUP, MAX_SECRET_FILE_BYTES, mayBeSecretGeneration, rememberSecretGeneration, secretGenerationNames } from '../config';
 import { log } from '../log';
 import { conflict } from '../http/errors';
 import { getDatabaseConfig } from './database-config';
@@ -160,50 +160,51 @@ function instanceBackupSetupErrors(settings = config, env: NodeJS.ProcessEnv = p
 }
 
 // Deployment secrets a misplaced mount could put in a root: the configured
-// secret files, recognised by the file itself (a hard link or a second mount
-// of one is the same file), and Compose's .env files, a name no writer of
-// the app gives a stored file.
+// secret files, recognised by their content, and Compose's .env files, a
+// name no writer of the app gives a stored file.
 const DEPLOYMENT_FILE = /^\.env(\..*)?$/;
 //
-// The identities are those of the files read at startup (config.ts), which
-// stay even when the name is later replaced or removed, and those the names
-// point at when the run starts. A configured file that cannot be checked
-// then refuses the run: the copy cannot otherwise know which file to leave
-// out. A secret rotated during the run is not followed: secretsMovedSince
-// sees it at the end, and that run does not count.
+// Content, not the file: every generation of a secret file the process has
+// seen (config.ts) is remembered by size and hash, so a stored file with the
+// same bytes (a hard link, a copy, a second mount) is left out, also after
+// the secret has been rotated away. A run samples the configured files at its
+// start and its end and remembers both. A configured file that cannot be read
+// at the start refuses the run; one that changed by the end makes the run not
+// count (its new bytes may have been copied before they were known), and the
+// next run, which knows them, leaves them out. What this cannot see is a
+// generation that came and went within one run (DATA_RECOVERY.md).
 const secretLabel = (secret: { name: string; path: string }) => `${secret.name} (${secret.path})`;
 
-function secretIdentity(file: string) {
-  try {
-    const stat = fs.statSync(file);
-    return `${stat.dev}:${stat.ino}`;
-  } catch {
-    return null;
-  }
-}
-
-function secretIdentities(env: NodeJS.ProcessEnv = process.env) {
-  const identities = new Set(secretFilesLoaded().map(file => `${file.dev}:${file.ino}`));
-  const configured = new Map<string, string>();
-  const unchecked: string[] = [];
+/** The configured secret files as they are now: file and content, remembered as generations. */
+function sampleSecretFiles(env: NodeJS.ProcessEnv = process.env) {
+  const sampled = new Map<string, string>();
+  const unreadable: string[] = [];
   for (const secret of secretFiles(env)) {
-    const identity = secretIdentity(secret.path);
-    if (identity) {
-      identities.add(identity);
-      configured.set(secretLabel(secret), identity);
-    } else {
-      unchecked.push(secretLabel(secret));
+    try {
+      const stat = fs.statSync(secret.path);
+      if (!stat.isFile() || stat.size > MAX_SECRET_FILE_BYTES) throw new Error('not a secret file');
+      const bytes = fs.readFileSync(secret.path);
+      rememberSecretGeneration(secret.name, bytes);
+      sampled.set(secretLabel(secret), `${stat.dev}:${stat.ino}:${bytes.length}:${crypto.createHash('sha256').update(bytes).digest('hex')}`);
+    } catch {
+      unreadable.push(secretLabel(secret));
     }
   }
-  if (unchecked.length) {
-    throw new InstanceBackupError(`The backup did not run: ${unchecked.join(', ')} cannot be checked now, so it cannot make sure a key stays out. Put the file back or restart without it.`);
-  }
-  return { identities, configured };
+  return { sampled, unreadable };
 }
 
-/** The configured secret files that point at another file than when the run started, or at none. */
-function secretsMovedSince(configured: ReadonlyMap<string, string>, env: NodeJS.ProcessEnv = process.env) {
-  return secretFiles(env).filter(secret => secretIdentity(secret.path) !== configured.get(secretLabel(secret))).map(secretLabel);
+function sampleSecretsAtStart(env: NodeJS.ProcessEnv = process.env) {
+  const { sampled, unreadable } = sampleSecretFiles(env);
+  if (unreadable.length) {
+    throw new InstanceBackupError(`The backup did not run: ${unreadable.join(', ')} cannot be checked now, so it cannot make sure a key stays out. Put the file back or restart without it.`);
+  }
+  return sampled;
+}
+
+/** The configured secret files that are another file or other bytes than at the run's start, or unreadable. */
+function secretsChangedSince(start: ReadonlyMap<string, string>, env: NodeJS.ProcessEnv = process.env) {
+  const { sampled } = sampleSecretFiles(env);
+  return secretFiles(env).map(secretLabel).filter(label => sampled.get(label) !== start.get(label));
 }
 
 /** A run of a time-ordered id (UUID version 7): a later run has a larger id, also within one second. */
@@ -319,15 +320,16 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
     // The setup checks of the start, again: secret files can have moved since.
     const refused = instanceBackupSetupErrors(settings);
     if (refused.length) throw new InstanceBackupError(`The backup did not run: ${refused.join(' ')}`);
-    const secrets = secretIdentities();
-    const { bytes, sha256, manifest } = await writeBackup(partialPath, row, settings, controller.signal, hooks, secrets.identities);
+    const secrets = sampleSecretsAtStart();
+    const { bytes, sha256, manifest } = await writeBackup(partialPath, row, settings, controller.signal, hooks);
     // Counted only once the whole file reads back with the key.
     const verified = await scanInstanceBackup(partialPath, settings.key, ROOT_NAMES, { signal: controller.signal });
     if (verified.sha256 !== sha256 || verified.header.backup_id !== row.id) throw new InstanceBackupError('The backup did not read back as written.');
     controller.signal.throwIfAborted();
-    // A secret rotated during the run has a new file the copy did not know to
-    // leave out, perhaps reachable under the stored files: the run does not count.
-    const moved = secretsMovedSince(secrets.configured);
+    // A secret rotated during the run has bytes the copy did not know to leave
+    // out, perhaps reachable under the stored files: the run does not count,
+    // and its end sample has taught the next run those bytes.
+    const moved = secretsChangedSince(secrets);
     if (moved.length) {
       throw new InstanceBackupError(`The backup did not count: ${moved.join(', ')} changed during the run, so the copy may hold the new key. The next run tries again.`);
     }
@@ -476,7 +478,7 @@ async function tableCounts() {
   });
 }
 
-async function writeBackup(partialPath: string, row: RunRow, settings: { key: Buffer }, signal: AbortSignal, hooks: RunHooks, secrets: ReadonlySet<string>) {
+async function writeBackup(partialPath: string, row: RunRow, settings: { key: Buffer }, signal: AbortSignal, hooks: RunHooks) {
   const database = getDatabaseConfig();
   if (!database) throw new InstanceBackupError('The database configuration is missing.');
   const handle = await fs.promises.open(partialPath, 'wx', 0o600);
@@ -538,11 +540,16 @@ async function writeBackup(partialPath: string, row: RunRow, settings: { key: Bu
     };
     const roots = fileRoots();
     let secretsLeftOut = 0;
+    const secretNames = new Set<string>();
     for (const root of roots) {
       for await (const relative of walk(root.name, root.dir, signal)) {
         if (DEPLOYMENT_FILE.test(path.basename(relative))) { secretsLeftOut++; continue; }
-        const copied = await copyFile(tar, root, relative, signal, secrets);
-        if (copied === 'secret') { secretsLeftOut++; continue; }
+        const copied = await copyFile(tar, root, relative, signal);
+        if (copied && 'secret' in copied) {
+          secretsLeftOut++;
+          for (const name of copied.secret) secretNames.add(name);
+          continue;
+        }
         if (!copied) continue;
         const line: IndexLine = { r: root.name, p: relative, s: copied.size, h: copied.sha256, ...(copied.changed ? { c: 1 as const } : {}) };
         const text = `${JSON.stringify(line)}\n`;
@@ -556,7 +563,7 @@ async function writeBackup(partialPath: string, row: RunRow, settings: { key: Bu
     }
     await flushIndex();
     await reopen();
-    if (secretsLeftOut) log.warn(LOG, 'Left deployment secret files found among the stored files out of the backup', { run: row.id, files: secretsLeftOut });
+    if (secretsLeftOut) log.warn(LOG, 'Left deployment secret files found among the stored files out of the backup', { run: row.id, files: secretsLeftOut, secrets: [...secretNames] });
 
     // 3. The manifest, then the end.
     const manifest: InstanceBackupManifest = {
@@ -604,7 +611,9 @@ async function* walk(rootName: string, rootDir: string, signal: AbortSignal): As
  * rare) is kept at that size and marked, and a restore leaves it out. A file
  * removed before it is opened is not needed: its row went before the dump.
  */
-async function copyFile(tar: TarWriter, root: { name: string; dir: string }, relative: string, signal: AbortSignal, secrets: ReadonlySet<string>) {
+type Copied = { size: number; sha256: string; changed: boolean } | { secret: string[] } | null;
+
+async function copyFile(tar: TarWriter, root: { name: string; dir: string }, relative: string, signal: AbortSignal): Promise<Copied> {
   const handle = await fs.promises.open(path.join(root.dir, relative), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT' || error.code === 'ELOOP') return null;
     throw error;
@@ -613,8 +622,20 @@ async function copyFile(tar: TarWriter, root: { name: string; dir: string }, rel
   try {
     const before = await handle.stat();
     if (!before.isFile()) return null;
-    if (secrets.has(`${before.dev}:${before.ino}`)) return 'secret' as const;
     const size = before.size;
+    // A file the size of a secret generation is read and hashed before it is
+    // copied (secrets are small, so this is cheap): the same bytes stay out.
+    if (mayBeSecretGeneration(size)) {
+      const whole = Buffer.alloc(size);
+      let at = 0;
+      while (at < size) {
+        const { bytesRead } = await handle.read(whole, at, size - at, at);
+        if (!bytesRead) break;
+        at += bytesRead;
+      }
+      const names = at === size ? secretGenerationNames(size, crypto.createHash('sha256').update(whole).digest('hex')) : null;
+      if (names) return { secret: names };
+    }
     const hash = crypto.createHash('sha256');
     await tar.begin(`files/${root.name}/${relative}`, size);
     let read = 0, changed = false;
@@ -639,7 +660,11 @@ async function copyFile(tar: TarWriter, root: { name: string; dir: string }, rel
     await tar.close(size);
     const after = await handle.stat();
     if (after.size !== before.size || after.mtimeMs !== before.mtimeMs) changed = true;
-    return { size, sha256: hash.digest('hex'), changed };
+    const sha256 = hash.digest('hex');
+    // Bytes that became a secret's while they were copied are in the file now: the run fails.
+    const names = mayBeSecretGeneration(size) ? secretGenerationNames(size, sha256) : null;
+    if (names) throw new InstanceBackupError(`The backup did not count: a stored file became the content of ${names.join(', ')} while it was copied. The next run tries again.`);
+    return { size, sha256, changed };
   } finally { await handle.close().catch(() => {}); }
 }
 

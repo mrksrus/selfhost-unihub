@@ -40,30 +40,24 @@ test('a secret comes from NAME_FILE before NAME; both set and different is refus
   }
 });
 
-// The instance backup leaves a secret file read at startup out by its inode.
-// While the file stays open, no stored file can be given that inode after
-// the secret is replaced or removed.
-test('a secret file read by the process stays open after it is removed, so its inode is not reused', t => {
-  const file = scratch(t)('pinned', `synthetic-pinned-${crypto.randomBytes(8).toString('hex')}`);
-  const stat = fs.statSync(file);
-  process.env.UNIHUB_PINNED_SECRET_FILE = file;
-  t.after(() => { delete process.env.UNIHUB_PINNED_SECRET_FILE; });
-  assert.ok(config.readSecret('UNIHUB_PINNED_SECRET'));
-  fs.rmSync(file);
-  const loaded = config.secretFilesLoaded().find(entry => entry.path === file);
-  assert.ok(loaded, 'remembered');
-  const held = fs.fstatSync(loaded.descriptor);
-  assert.deepEqual([held.dev, held.ino, held.nlink], [stat.dev, stat.ino, 0], 'the removed file is still held open');
-  // Read again, the same file is not opened a second time.
-  const open = () => fs.readdirSync('/proc/self/fd').length;
-  if (fs.existsSync('/proc/self/fd')) {
-    const again = scratch(t)('pinned-again', 'synthetic-pinned-again');
-    process.env.UNIHUB_PINNED_SECRET_FILE = again;
-    config.readSecret('UNIHUB_PINNED_SECRET');
-    const before = open();
-    config.readSecret('UNIHUB_PINNED_SECRET');
-    assert.equal(open(), before);
-  }
+// The instance backup leaves out stored files with the bytes of any secret
+// file the process has read: by size and hash, so the bytes are never kept.
+test('a secret file read by the process is remembered by size and hash, also after it is replaced', t => {
+  const file = scratch(t);
+  const first = file('generation', `synthetic-generation-${crypto.randomBytes(8).toString('hex')}\n`);
+  const bytes = fs.readFileSync(first);
+  const hash = crypto.createHash('sha256').update(bytes).digest('hex');
+  process.env.UNIHUB_REMEMBERED_SECRET_FILE = first;
+  t.after(() => { delete process.env.UNIHUB_REMEMBERED_SECRET_FILE; });
+  assert.equal(config.secretGenerationNames(bytes.length, hash), null);
+  assert.ok(config.readSecret('UNIHUB_REMEMBERED_SECRET'));
+  fs.writeFileSync(first, 'synthetic-next-generation');
+  assert.equal(config.mayBeSecretGeneration(bytes.length), true);
+  assert.deepEqual(config.secretGenerationNames(bytes.length, hash), ['UNIHUB_REMEMBERED_SECRET_FILE'], 'the file as read, line break included');
+  // A reading for another environment (a check, a test) is not this process's secret.
+  const other = fs.readFileSync(file('other', 'synthetic-other-environment'));
+  config.readSecret('UNIHUB_OTHER_SECRET', { UNIHUB_OTHER_SECRET_FILE: path.join(path.dirname(first), 'other') });
+  assert.equal(config.secretGenerationNames(other.length, crypto.createHash('sha256').update(other).digest('hex')), null);
 });
 
 test('the database password and URL may be files, for the API and the readiness wait alike', t => {

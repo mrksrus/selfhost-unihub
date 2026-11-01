@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -10,14 +11,35 @@ const MAX_SECRET_FILE_BYTES = 64 * 1024;
 
 class SecretConfigError extends Error {}
 
-// The files this process read its secrets from, by identity (device and
-// inode, the file itself and not its name). The instance backup leaves these
-// out even after the name points elsewhere (a replaced or removed file whose
-// old copy survives as a hard link among the stored files). Each stays open
-// for the life of the process: an inode is not reused while it is open, so a
-// stored file can never take a remembered identity and be left out with it.
-interface LoadedSecretFile { name: string; path: string; dev: number; ino: number; descriptor: number }
-const loadedSecretFiles = new Map<string, LoadedSecretFile>();
+// Every generation of a secret file this process has seen, by size and
+// SHA-256, never the bytes: what readSecret read and what each instance
+// backup run finds at its start and end (instance-backup.ts). The backup
+// leaves out a stored file of the same size and hash, so a copy or hard link
+// of any of them among the stored files stays out of every later backup.
+// Never pruned while the process lives. An empty file is no secret.
+interface SecretGeneration { names: Set<string>; size: number; sha256: string }
+const secretGenerations = new Map<string, SecretGeneration>();
+const secretGenerationSizes = new Set<number>();
+
+function rememberSecretGeneration(name: string, bytes: Buffer) {
+  if (!bytes.length) return;
+  const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  const known = secretGenerations.get(`${bytes.length}:${sha256}`);
+  if (known) known.names.add(name);
+  else secretGenerations.set(`${bytes.length}:${sha256}`, { names: new Set([name]), size: bytes.length, sha256 });
+  secretGenerationSizes.add(bytes.length);
+}
+
+/** Whether a stored file of `size` bytes could be a secret generation (then its hash decides). */
+function mayBeSecretGeneration(size: number) {
+  return secretGenerationSizes.has(size);
+}
+
+/** The settings whose secret files had these bytes, or null. */
+function secretGenerationNames(size: number, sha256: string): string[] | null {
+  const known = secretGenerations.get(`${size}:${sha256}`);
+  return known ? [...known.names] : null;
+}
 
 function readSecret(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   const direct = env[name];
@@ -26,17 +48,14 @@ function readSecret(name: string, env: NodeJS.ProcessEnv = process.env): string 
   let value: string;
   let descriptor: number | null = null;
   try {
-    // One descriptor for the check and the read, so the identity is that of what was read.
+    // One descriptor for the check and the read, so the size checked is that of what was read.
     descriptor = fs.openSync(file, 'r');
     const stat = fs.fstatSync(descriptor);
     if (!stat.isFile()) throw new SecretConfigError(`${name}_FILE (${file}) is not a file.`);
     if (stat.size > MAX_SECRET_FILE_BYTES) throw new SecretConfigError(`${name}_FILE (${file}) is larger than a secret can be.`);
-    value = fs.readFileSync(descriptor, 'utf8').replace(/\r?\n$/, '');
-    const loaded = `${name}:${stat.dev}:${stat.ino}`;
-    if (env === process.env && !loadedSecretFiles.has(loaded)) {
-      loadedSecretFiles.set(loaded, { name: `${name}_FILE`, path: file, dev: stat.dev, ino: stat.ino, descriptor });
-      descriptor = null;
-    }
+    const bytes = fs.readFileSync(descriptor);
+    value = bytes.toString('utf8').replace(/\r?\n$/, '');
+    if (env === process.env) rememberSecretGeneration(`${name}_FILE`, bytes);
   } catch (error) {
     if (error instanceof SecretConfigError) throw error;
     const code = (error as NodeJS.ErrnoException).code;
@@ -125,11 +144,6 @@ interface InstanceBackupConfig {
   missing: ('destination' | 'key')[];
   /** Refused settings: startup stops on them. */
   errors: string[];
-}
-
-/** The secret files read so far (instance-backup.ts leaves them out of a backup). */
-function secretFilesLoaded(): readonly LoadedSecretFile[] {
-  return [...loadedSecretFiles.values()];
 }
 
 // The spellings a key is accepted in, in the order a key text is read:
@@ -238,11 +252,14 @@ export {
   INSTANCE_BACKUP_DEFAULT_KEEP,
   INSTANCE_BACKUP,
   SecretConfigError,
+  MAX_SECRET_FILE_BYTES,
   readSecret,
-  secretFilesLoaded,
+  rememberSecretGeneration,
+  mayBeSecretGeneration,
+  secretGenerationNames,
   keyReadings,
   decodeKeyText,
   parseInstanceBackupConfig,
   assertConfiguration,
 };
-export type { InstanceBackupConfig, LoadedSecretFile };
+export type { InstanceBackupConfig };
