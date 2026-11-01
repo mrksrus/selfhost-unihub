@@ -30,6 +30,13 @@ upgrade; install the new Android app when it is offered (see
   until it was restarted. Each now does its checks on the connection it
   already holds.
 
+### Security
+
+- **Zod updated to 4.6.7** (advisory GHSA-mrhx-c7xc-m3w5: memory exhaustion
+  while validating oversized collections). UniHub uses it only to check the
+  sign-in form's address and password in the browser, which has no such
+  collections, so it was not exploitable here.
+
 ## 0.27.0
 
 ToDo and calendar: your own order, and the list you choose. One automatic
