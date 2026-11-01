@@ -387,6 +387,7 @@ const MIGRATIONS: readonly Migration[] = [
       await verifyDatabaseInventory(connection, { throughMigration: 25 });
       for (const { table, index } of STABLE_IDENTITIES) {
         if (await columnIsNullable(connection, table, 'uid')) throw new Error(`${table}.uid still allows rows without an identity`);
+        if (await columnCollation(connection, table, 'uid') !== UID_COLLATION) throw new Error(`${table}.uid does not compare exactly`);
         if (!await hasIndex(connection, table, index)) throw new Error(`Index ${index} on ${table} is missing`);
       }
       for (const [table, name] of [['data_export_jobs', 'idx_data_export_jobs_keep_until'], ['bin_items', 'idx_bin_items_due']]) {
@@ -695,40 +696,54 @@ async function createTaskOrderAndMoves(connection: SqlExecutor) {
 // (services/backup-restore-mapping.ts matches by it). A synced event's is its
 // iCal UID, shared by the occurrences of a recurring one; every other row's
 // is its id when the step runs and a new UUID for rows made later (the
-// column default), unless the code making it sets one.
+// column default), unless the code making it sets one. UIDs compare exactly
+// (RFC 5545 gives them no case rules): Task@example.test is another task
+// than task@example.test, so the columns use a binary collation.
+const UID_COLLATION = 'utf8mb4_bin';
 const STABLE_IDENTITIES = [
-  { table: 'calendar_events', index: 'idx_events_user_uid', type: 'VARCHAR(500)' },
-  { table: 'calendar_calendars', index: 'idx_calendar_calendars_user_uid', type: 'CHAR(36)' },
-  { table: 'recordings', index: 'idx_recordings_user_uid', type: 'CHAR(36)' },
+  { table: 'calendar_events', index: 'idx_events_user_uid', type: `VARCHAR(500) CHARACTER SET utf8mb4 COLLATE ${UID_COLLATION}` },
+  { table: 'calendar_calendars', index: 'idx_calendar_calendars_user_uid', type: `CHAR(36) CHARACTER SET utf8mb4 COLLATE ${UID_COLLATION}` },
+  { table: 'recordings', index: 'idx_recordings_user_uid', type: `CHAR(36) CHARACTER SET utf8mb4 COLLATE ${UID_COLLATION}` },
 ] as const;
 
 async function columnIsNullable(connection: SqlExecutor, table: string, column: string) {
   const [rows] = await connection.execute<(RowDataPacket & { Null: string })[]>(`SHOW COLUMNS FROM ${quoteIdentifier(table)} WHERE Field = ?`, [column]);
   return rows[0]?.Null === 'YES';
 }
+async function columnCollation(connection: SqlExecutor, table: string, column: string) {
+  const [rows] = await connection.execute<(RowDataPacket & { Collation: string | null })[]>(`SHOW FULL COLUMNS FROM ${quoteIdentifier(table)} WHERE Field = ?`, [column]);
+  return rows[0]?.Collation ?? null;
+}
 
 // DDL commits on its own: each part checks whether an earlier, interrupted
 // run already made it, and the identities become required only once every
 // row has one.
 async function addDataSafety(connection: SqlExecutor) {
-  if (!await hasColumn(connection, 'calendar_events', 'uid')) await connection.execute('ALTER TABLE calendar_events ADD COLUMN uid VARCHAR(500) NULL');
-  if (!await hasColumn(connection, 'calendar_calendars', 'uid')) await connection.execute('ALTER TABLE calendar_calendars ADD COLUMN uid CHAR(36) NULL');
-  if (!await hasColumn(connection, 'recordings', 'uid')) await connection.execute('ALTER TABLE recordings ADD COLUMN uid CHAR(36) NULL');
+  if (!await hasColumn(connection, 'calendar_events', 'uid')) await connection.execute('ALTER TABLE calendar_events ADD COLUMN uid VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL');
+  if (!await hasColumn(connection, 'calendar_calendars', 'uid')) await connection.execute('ALTER TABLE calendar_calendars ADD COLUMN uid CHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL');
+  if (!await hasColumn(connection, 'recordings', 'uid')) await connection.execute('ALTER TABLE recordings ADD COLUMN uid CHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL');
+  // Filling in the identity is no change of the item: its updated_at stays.
   await connection.execute(`UPDATE calendar_events e
     JOIN calendar_event_external_refs r ON r.event_id = e.id AND r.user_id = e.user_id
     JOIN calendar_remote_objects o ON o.id = r.remote_object_id AND o.user_id = e.user_id
-    SET e.uid = o.uid WHERE e.uid IS NULL AND o.uid IS NOT NULL AND o.uid <> ''`);
+    SET e.uid = o.uid, e.updated_at = e.updated_at WHERE e.uid IS NULL AND o.uid IS NOT NULL AND o.uid <> ''`);
   // Local rows, and the rare synced row without a server copy (the next full
   // sync replaces it).
-  for (const { table } of STABLE_IDENTITIES) await connection.execute(`UPDATE ${quoteIdentifier(table)} SET uid = id WHERE uid IS NULL`);
+  for (const { table } of STABLE_IDENTITIES) await connection.execute(`UPDATE ${quoteIdentifier(table)} SET uid = id, updated_at = updated_at WHERE uid IS NULL`);
   for (const { table, index, type } of STABLE_IDENTITIES) {
-    if (await columnIsNullable(connection, table, 'uid')) await connection.execute(`ALTER TABLE ${quoteIdentifier(table)} MODIFY COLUMN uid ${type} NOT NULL DEFAULT uuid()`);
+    if (await columnIsNullable(connection, table, 'uid') || await columnCollation(connection, table, 'uid') !== UID_COLLATION) {
+      await connection.execute(`ALTER TABLE ${quoteIdentifier(table)} MODIFY COLUMN uid ${type} NOT NULL DEFAULT uuid()`);
+    }
     if (!await hasIndex(connection, table, index)) await connection.execute(`ALTER TABLE ${quoteIdentifier(table)} ADD KEY ${quoteIdentifier(index)} (user_id, uid)`);
   }
 
   // The date until which the server keeps a backup (backup.server_retention_days); NULL keeps it until deleted.
   if (!await hasColumn(connection, 'data_export_jobs', 'keep_until')) await connection.execute('ALTER TABLE data_export_jobs ADD COLUMN keep_until DATETIME NULL');
   if (!await hasIndex(connection, 'data_export_jobs', 'idx_data_export_jobs_keep_until')) await connection.execute('ALTER TABLE data_export_jobs ADD KEY idx_data_export_jobs_keep_until (keep_until)');
+  // The person's "Include downloaded mail" choice, and what the finished
+  // archive holds by data class (NULL for a backup made before 0.28).
+  if (!await hasColumn(connection, 'data_export_jobs', 'include_download_mail')) await connection.execute('ALTER TABLE data_export_jobs ADD COLUMN include_download_mail BOOLEAN NOT NULL DEFAULT FALSE');
+  if (!await hasColumn(connection, 'data_export_jobs', 'contents')) await connection.execute('ALTER TABLE data_export_jobs ADD COLUMN contents LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL CHECK (json_valid(contents))');
   // A backup ticket's first use opens a download grant (resumable with
   // Range until expires_at); other kinds stay single use and are deleted.
   if (!await hasColumn(connection, 'file_tickets', 'redeemed_at')) await connection.execute('ALTER TABLE file_tickets ADD COLUMN redeemed_at DATETIME NULL');
@@ -745,7 +760,7 @@ async function addDataSafety(connection: SqlExecutor) {
     user_id CHAR(36) NOT NULL,
     calendar_id CHAR(36) NOT NULL,
     account_identity VARCHAR(500) NOT NULL DEFAULT '',
-    uid VARCHAR(500) NULL,
+    uid VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
     recurrence_id VARCHAR(64) NOT NULL DEFAULT '',
     match_kind ENUM('uid', 'shape') NOT NULL,
     shape_title VARCHAR(255) NULL,
