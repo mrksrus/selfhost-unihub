@@ -203,17 +203,19 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     await pool.execute("INSERT INTO recordings (id, user_id, title, content_type, size_bytes, storage_path) VALUES (?, ?, 'Raced memo', 'audio/webm', 21, ?)", [id, users.alex, file]);
     await call(alex, 'DELETE', `/api/recordings/${id}`);
     const [item] = await bin(alex, 'recordings');
-    // The first restore moves the file back and stops there; the second runs meanwhile.
+    // The first restore puts the file back and stops there; the second runs meanwhile.
     const files = (require('node:fs') as typeof import('node:fs')).promises;
-    const rename = files.rename;
+    const { rename, link } = files;
     let reached!: () => void; let release!: () => void;
     const atPause = new Promise<void>(resolve => { reached = resolve; });
     const paused = new Promise<void>(resolve => { release = resolve; });
     let once = true;
-    files.rename = (async (from: string, to: string) => {
-      await rename(from, to);
+    const pausing = (real: (from: string, to: string) => Promise<void>) => async (from: string, to: string) => {
+      await real(from, to);
       if (once && String(to) === file) { once = false; reached(); await within(paused, 5000); }
-    }) as typeof files.rename;
+    };
+    files.rename = pausing(rename) as typeof files.rename;
+    files.link = pausing(link) as typeof files.link;
     try {
       const first = alex.request('POST', `/api/bin/${item.id}/restore`);
       assert.ok((await within(atPause, 5000)).done, 'the first restore moved the file');
@@ -222,13 +224,63 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
       release();
       const statuses = (await Promise.all([first, second])).map(reply => reply.status).sort();
       assert.deepEqual(statuses, [200, 404], 'one restore, the other finds it gone');
-    } finally { files.rename = rename; release(); }
+    } finally { Object.assign(files, { rename, link }); release(); }
     assert.equal(fs.readFileSync(file, 'utf8'), 'raced recording bytes', 'the file stays with the restored recording');
     assert.equal((await pool.query<RowDataPacket[]>('SELECT storage_path FROM recordings WHERE id = ?', [id]))[0][0].storage_path, file);
     assert.ok(!fs.existsSync(path.join(folder, 'bin', `${id}.webm`)));
     assert.deepEqual(await bin(alex, 'recordings'), []);
     await pool.execute('DELETE FROM recordings WHERE id = ?', [id]);
     fs.rmSync(file, { force: true });
+  });
+
+  // A process that stops right after the file got its new name, before the
+  // transaction commits (a crash, a container stop): the rows roll back, so
+  // the file must still be where they name it.
+  const stopAfterFileMove = (task: string) => new Promise<number | null>((resolve, reject) => {
+    const code = `
+      const pool = require('mysql2/promise').createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
+        user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD, database: process.env.MYSQL_TEST_DATABASE, timezone: '+00:00', connectionLimit: 2 });
+      require('./dist/src/state').setDb(pool);
+      const files = require('node:fs').promises;
+      for (const name of ['rename', 'link', 'copyFile']) {
+        const real = files[name];
+        files[name] = async (...args) => { await real(...args); process.exit(77); };
+      }
+      (${task})().then(() => process.exit(0), error => { console.error(error); process.exit(1); });`;
+    const child = (require('node:child_process') as typeof import('node:child_process')).spawn(process.execPath, ['-e', code],
+      { cwd: path.join(__dirname, '..'), env: process.env, stdio: ['ignore', 'ignore', 'pipe'], timeout: 30000 });
+    let stderr = '';
+    child.stderr!.on('data', chunk => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('exit', status => (status === 77 ? resolve(status) : reject(new Error(`the stopped process ended with ${status}: ${stderr.slice(0, 500)}`))));
+  });
+
+  await t.test('recordings: a stop right after the file moved, before the commit, leaves the file with its rows (delete and restore)', async context => {
+    const folder = path.join(recordingsRoot, users.alex);
+    const id = crypto.randomUUID();
+    const file = path.join(folder, `${id}.webm`);
+    fs.writeFileSync(file, 'interrupted recording bytes');
+    await pool.execute("INSERT INTO recordings (id, user_id, title, content_type, size_bytes, storage_path) VALUES (?, ?, 'Interrupted memo', 'audio/webm', 27, ?)", [id, users.alex, file]);
+    const binned = path.join(folder, 'bin', `${id}.webm`);
+    context.after(async () => {
+      await pool.execute("DELETE FROM bin_items WHERE user_id = ? AND title = 'Interrupted memo'", [users.alex]);
+      await pool.execute('DELETE FROM recordings WHERE id = ?', [id]);
+      for (const name of [file, binned]) fs.rmSync(name, { force: true });
+    });
+    await stopAfterFileMove(`() => require('./dist/src/services/recordings').deleteRecording(${JSON.stringify(users.alex)}, ${JSON.stringify(id)})`);
+    assert.equal((await pool.query<RowDataPacket[]>('SELECT storage_path FROM recordings WHERE id = ?', [id]))[0][0]?.storage_path, file, 'the delete rolled back');
+    assert.equal(fs.readFileSync(file, 'utf8'), 'interrupted recording bytes', 'the recording still has its file');
+    assert.deepEqual(await bin(alex, 'recordings'), []);
+    // Deleting again works, and its file waits in the bin.
+    await call(alex, 'DELETE', `/api/recordings/${id}`);
+    const [item] = await bin(alex, 'recordings');
+    assert.ok(!fs.existsSync(file) && fs.readFileSync(binned, 'utf8') === 'interrupted recording bytes');
+    await stopAfterFileMove(`() => require('./dist/src/services/bin').restoreBinItem(${JSON.stringify(users.alex)}, ${JSON.stringify(item.id)})`);
+    assert.equal((await bin(alex, 'recordings')).length, 1, 'the restore rolled back');
+    assert.equal(fs.readFileSync(binned, 'utf8'), 'interrupted recording bytes', 'the bin item still has its file');
+    await restore(item.id);
+    assert.equal(fs.readFileSync(file, 'utf8'), 'interrupted recording bytes', 'restored with its bytes, where it was');
+    assert.ok(!fs.existsSync(binned), 'nothing is left in the bin folder');
   });
 
   await t.test('recordings: a bin folder that is a link out of the recordings root is refused, nothing moves', async () => {

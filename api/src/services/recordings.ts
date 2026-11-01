@@ -741,10 +741,14 @@ async function updateRecording(userId: string, recordingId: string, input: Uploa
 //
 // A deleted recording goes to the bin with its row and tags; its file moves
 // to the bin folder of the person's recordings (<root>/<user>/bin/), out of
-// every listing, and comes back with a restore. The row leaves first, in the
-// transaction that writes the bin item; the file follows. A restore or the
-// purge looks for the file in both places, so a stop in between loses
-// nothing. MP3 copies made for playback are not kept: they are made again.
+// every listing, and comes back with a restore. A move never leaves a
+// committed row or bin item naming a file that is not there: the file gets
+// its new name first (a hard link, or a copy), the transaction that changes
+// the rows commits, and only then does the old name go. A stop before the
+// commit leaves an extra name, which the next move reuses; one after it
+// leaves the old name, which the purge or the next restore removes. A
+// restore or the purge looks for the file in both places. MP3 copies made
+// for playback are not kept: they are made again.
 
 const RECORDING_COLUMNS = ['id', 'user_id', 'title', 'description', 'original_filename', 'content_type', 'size_bytes', 'duration_seconds', 'storage_path',
   'source', 'category', 'recorded_at', 'metadata', 'created_at', 'updated_at', 'uid'] as const;
@@ -812,6 +816,33 @@ async function ownFile(userId: string, file: string | null | undefined) {
 
 const fileInUse = async (executor: SqlExecutor, file: string) => (await executor.execute<RowDataPacket[]>('SELECT id FROM recordings WHERE storage_path = ? LIMIT 1', [file]))[0].length > 0;
 
+/** Whether two names are the same file on disk (a hard link of it). */
+async function sameFile(a: string, b: string) {
+  const [first, second] = await Promise.all([fs.promises.stat(a).catch(() => null), fs.promises.stat(b).catch(() => null)]);
+  return !!first && !!second && first.dev === second.dev && first.ino === second.ino;
+}
+const exists = (file: string) => fs.promises.lstat(file).then(() => true, () => false);
+
+/**
+ * Gives a recording's file a second name in the person's folders: a hard
+ * link, or a copy where the file system has none. The source keeps its name
+ * until the caller's commit (removeOldName).
+ */
+async function addName(from: string, to: string) {
+  if (await sameFile(from, to)) return;
+  try {
+    await fs.promises.link(from, to);
+  } catch (error) {
+    if (!['EXDEV', 'EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EMLINK'].includes((error as NodeJS.ErrnoException).code || '')) throw error;
+    await fs.promises.copyFile(from, to, fs.constants.COPYFILE_EXCL);
+  }
+}
+
+/** After the commit that stopped using it: a name of a recording's file, unless a recording uses it again. */
+async function removeOldName(file: string) {
+  if (!await fileInUse(db, file)) await fs.promises.rm(file, { force: true }).catch(() => {});
+}
+
 async function deleteRecording(userId: string, recordingId: string) {
   const recording = await getRecordingForUser(userId, recordingId);
   if (!recording) return { error: 'Recording not found', status: 404 };
@@ -820,12 +851,13 @@ async function deleteRecording(userId: string, recordingId: string) {
   const original = await ownFile(userId, recording.storage_path);
   const binDir = original ? await ownFolder(userId, { bin: true, create: true }) : null;
   let binPath = original && binDir ? path.join(binDir, path.basename(original)) : null;
-  if (binPath && await fs.promises.lstat(binPath).then(() => true, () => false)) binPath = path.join(binDir!, `${crypto.randomUUID()}${path.extname(original!)}`);
+  // A name an earlier, interrupted delete gave the same file is used again.
+  if (binPath && await exists(binPath) && !await sameFile(original!, binPath)) binPath = path.join(binDir!, `${crypto.randomUUID()}${path.extname(original!)}`);
   if (original && path.extname(original).toLowerCase() !== '.mp3') await mp3ConversionJobs.get(getConvertedMp3Path(original))?.catch(() => {});
-  // The file moves in the transaction that bins the row, under its lock, so
-  // a restore of the item (which locks its bin row first) never sees the
-  // row gone and the file not yet moved. A retried attempt finds it moved.
-  let moved = false;
+  // The bin's name of the file is made in the transaction that bins the
+  // row, under its lock, so a restore of the item (which locks its bin row
+  // first) never finds the item without its file.
+  let named = false;
   let found: boolean;
   try {
     found = await withTransaction(async connection => {
@@ -836,21 +868,23 @@ async function deleteRecording(userId: string, recordingId: string) {
         provider: 'local', origin: null, bin_path: binPath, tags: tags ? String(tags).split('\u001f').filter(Boolean) : [],
         recording: Object.fromEntries(Object.entries(stored).map(([key, value]) => [key, value instanceof Date ? value.toISOString() : value])),
       };
+      const keepFile = !!(original && binPath && String(row.storage_path) === recording.storage_path && await ownFile(userId, original));
       await putInBin(connection, userId, [{ module: 'recordings', itemType: 'recording', itemId: recordingId, title: String(row.title ?? ''), reason: 'deleted', payload,
-        fileRefs: binPath ? [binPath] : null }]);
+        fileRefs: keepFile ? [binPath!] : null }]);
       await connection.execute('DELETE FROM recordings WHERE id = ? AND user_id = ?', [recordingId, userId]);
-      if (original && binPath && !moved && String(row.storage_path) === recording.storage_path && await ownFile(userId, original)) {
-        await fs.promises.rename(original, binPath);
-        moved = true;
+      if (keepFile && !named) {
+        await addName(original!, binPath!);
+        named = true;
       }
       return true;
     });
   } catch (error) {
-    // Not binned (the row is still there): the file goes back to it.
-    if (moved && binPath && original && await fileInUse(db, original)) await fs.promises.rename(binPath, original).catch(() => {});
+    // Not binned (the row is still there): the bin's name goes again.
+    if (named && binPath && original && await fileInUse(db, original) && await exists(original)) await fs.promises.rm(binPath, { force: true }).catch(() => {});
     throw error;
   }
   if (!found) return { error: 'Recording not found', status: 404 };
+  if (original && named) await removeOldName(original);
   if (original && path.extname(original).toLowerCase() !== '.mp3') {
     await Promise.all([getConvertedMp3Path(original), getLegacyConvertedMp3Path(original)].map(file => fs.promises.rm(file, { force: true }).catch(() => {})));
   }
@@ -860,9 +894,9 @@ async function deleteRecording(userId: string, recordingId: string) {
 async function restoreRecordingItem(userId: string, item: BinRow): Promise<BinRestored> {
   const folder = await ownFolder(userId, { create: true });
   if (!folder) throw unsafeFolder();
-  // Where this attempt put the file, so a retried transaction finds it and a
-  // failed one can put it back.
-  let moved: { from: string; to: string } | null = null;
+  // The name this attempt gave the file, so a retried transaction finds it
+  // and a failed one removes it again; the bin's name goes after the commit.
+  let named: { from: string; to: string } | null = null;
   try {
     const id = await withTransaction(async connection => {
       // The item first: a second restore, a delete for good or the purge of
@@ -873,25 +907,28 @@ async function restoreRecordingItem(userId: string, item: BinRow): Promise<BinRe
       const stored = payload?.recording;
       if (!payload || !stored) throw new ApiError(409, 'BIN_ITEM_UNREADABLE', 'This recording cannot be restored.');
       const original = ownPath(userId, stored.storage_path);
-      // The file is where this attempt moved it, in the bin folder, or still
-      // where it was; never one a live recording uses.
+      // The file is in the bin folder, or still where it was (a delete that
+      // stopped after its commit); never one a live recording uses.
       let source: string | null = null;
-      for (const candidate of [moved?.to, payload.bin_path, stored.storage_path]) {
+      for (const candidate of [named?.from, payload.bin_path, stored.storage_path]) {
         const file = await ownFile(userId, candidate as string | null | undefined);
-        if (file && (file === moved?.to || !await fileInUse(connection, file))) { source = file; break; }
+        if (file && !await fileInUse(connection, file)) { source = file; break; }
       }
       if (!source && payload.bin_path !== null) throw new ApiError(409, 'RECORDING_FILE_MISSING', 'The file of this recording is missing, so it stays in the bin.');
       const [[idTaken]] = RECORDING_ID.test(String(stored.id)) ? await connection.execute<RowDataPacket[]>('SELECT id FROM recordings WHERE id = ?', [String(stored.id)]) : [[{ id: '' }]];
       const recordingId = idTaken ? crypto.randomUUID() : String(stored.id);
-      // Back where it was, when that is the person's folder and free; else under its id.
+      // Back where it was, when that is the person's folder and free (or
+      // already this file); else under its id.
       let target = source;
       if (source) {
-        const free = original && path.dirname(original) === folder && (source === original || !await fs.promises.lstat(original).then(() => true, () => false));
+        const free = original && path.dirname(original) === folder && (source === original || !await exists(original) || await sameFile(source, original));
         target = !idTaken && free ? original : path.join(folder, `${recordingId}${path.extname(source) || '.webm'}`);
-        if (target !== source) {
-          await fs.promises.rename(source, target);
-          moved = { from: moved?.from ?? source, to: target };
+        // A copy an interrupted restore left there is not this file's name.
+        if (target !== source && named?.to !== target && await exists(target) && !await sameFile(source, target)) {
+          target = path.join(folder, `${crypto.randomUUID()}${path.extname(source) || '.webm'}`);
         }
+        if (target !== source && named?.to !== target) await addName(source, target);
+        if (target !== source) named = { from: source, to: target };
       }
       const own = typeof stored.uid === 'string' && RECORDING_ID.test(stored.uid) ? stored.uid : recordingId;
       const [[uidTaken]] = await connection.execute<RowDataPacket[]>('SELECT id FROM recordings WHERE user_id = ? AND uid = ? LIMIT 1', [userId, own]);
@@ -908,12 +945,14 @@ async function restoreRecordingItem(userId: string, item: BinRow): Promise<BinRe
       await connection.execute('DELETE FROM bin_items WHERE id = ? AND user_id = ?', [item.id, userId]);
       return recordingId;
     });
+    const done = named as { from: string; to: string } | null;
+    if (done) await removeOldName(done.from);
     return { id: item.id, item_type: 'recording', item_id: id, note: null };
   } catch (error) {
-    // Not restored: the file goes back to wait in the bin, unless a
+    // Not restored: the name this attempt made goes again, unless a
     // recording uses it (the commit happened after all).
-    const back = moved as { from: string; to: string } | null;
-    if (back && !await fileInUse(db, back.to)) await fs.promises.rename(back.to, back.from).catch(() => {});
+    const back = named as { from: string; to: string } | null;
+    if (back && !await fileInUse(db, back.to) && await exists(back.from)) await fs.promises.rm(back.to, { force: true }).catch(() => {});
     throw error;
   }
 }
