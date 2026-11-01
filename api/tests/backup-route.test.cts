@@ -116,7 +116,8 @@ test('password reveal reports missing recovery metadata for an existing job', as
 test('backup capabilities expose the shared recoverable sections and the Download-mail choice to signed-in callers', async (t) => {
   const spec = routes['GET /api/backup/capabilities'];
   assert.equal(spec.auth, 'user');
-  setDb({ async execute(sql: string) { assert.match(sql, /mail_accounts/); return [[{ id: 'download-deletes' }]]; } } as FixtureValue);
+  // No policy is set (defaults); one account deletes its mail at the provider.
+  setDb({ async execute(sql: string) { return /FROM mail_accounts/.test(sql) ? [[{ id: 'download-deletes' }]] : [[]]; } } as FixtureValue);
   t.after(() => setDb(null));
   const capabilities = await call('GET /api/backup/capabilities', {}, 'owner');
   assert.equal(capabilities.enabled, true);

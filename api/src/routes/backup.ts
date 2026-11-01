@@ -7,7 +7,7 @@ import { db } from '../state';
 import { BACKUP_UPLOAD_MAX_SIZE } from '../config';
 import { defineRoutes } from '../http/route';
 import { clientError } from '../http/errors';
-import type { RouteTable } from '../http/route';
+import type { PolicyDeclaration, RouteTable } from '../http/route';
 import {
   startDataExportJob,
   listDataExportJobs,
@@ -86,9 +86,11 @@ const failed = (error: unknown, fallback: string, logLabel: string): RouteRespon
 };
 
 type Handler = (req: Request, userId: string, body: Input, res: ServerResponse) => Promise<RouteResponse | undefined>;
-const user = (handler: Handler, extra: { body?: { limit?: number; kind?: 'json' | 'backup-upload' | 'none' } } = {}) => ({ auth: 'user' as const, module: null, ...extra, handler });
+// F13: creating and restoring a backup can be forbidden by a policy, and so can deleting one.
+type Extra = { body?: { limit?: number; kind?: 'json' | 'backup-upload' | 'none' }; requires?: readonly PolicyDeclaration[]; destructive?: readonly PolicyDeclaration[] };
+const user = (handler: Handler, extra: Extra = {}) => ({ auth: 'user' as const, module: null, ...extra, handler });
 // Backup routes run the restore themselves, so a running restore does not gate them.
-const write = (handler: Handler, extra: { body?: { limit?: number; kind?: 'json' | 'backup-upload' | 'none' } } = {}) => ({ ...user(handler, extra), restoreSection: null });
+const write = (handler: Handler, extra: Extra = {}) => ({ ...user(handler, extra), restoreSection: null });
 
 const routes: RouteTable = defineRoutes({
   'GET /api/backup/capabilities': user(async (_req, userId) => {
@@ -114,7 +116,7 @@ const routes: RouteTable = defineRoutes({
       const job = await startDataExportJob(userId, { sections: body?.sections, scope: body?.scope, includeDownloadMail: body?.include_download_mail !== false });
       return { job, status: 202 };
     } catch (error) { return failed(error, 'Failed to start backup job', 'Start backup job error'); }
-  }),
+  }, { requires: ['backup.create'] }),
 
   'GET /api/backup/jobs/:id': user(async (req, userId) => {
     try {
@@ -193,7 +195,7 @@ const routes: RouteTable = defineRoutes({
       const result = await createRestoreFromExport(userId, req.params.id, getRestoreOptions(req, body || {}));
       return result.error ? result : { ...result, status: 202 };
     } catch (error) { return failed(error, 'Failed to create restore job', 'Create restore from backup error'); }
-  }),
+  }, { requires: ['backup.restore'] }),
 
   'POST /api/backup/jobs/:id/cancel': write(async (req, userId) => {
     try {
@@ -204,7 +206,7 @@ const routes: RouteTable = defineRoutes({
 
   'DELETE /api/backup/jobs/:id': write(async (req, userId) => {
     try { return await deleteDataExportJob(userId, req.params.id); } catch (error) { return failed(error, 'Failed to delete backup job', 'Delete backup job error'); }
-  }),
+  }, { destructive: ['backup.delete'] }),
 
   'GET /api/backup/restore-jobs': user(async (_req, userId) => {
     try { return { jobs: await listRestoreJobs(userId) }; } catch (error) { return failed(error, 'Failed to list restore jobs', 'List restore jobs error'); }
@@ -232,7 +234,7 @@ const routes: RouteTable = defineRoutes({
       const result = await startRestoreJob(userId, req.params.id);
       return result.error ? result : { ...result, status: 202 };
     } catch (error) { return failed(error, 'Failed to start restore job', 'Start restore job error'); }
-  }),
+  }, { requires: ['backup.restore'] }),
 
   'POST /api/backup/restore-jobs/:id/cancel': write(async (req, userId) => {
     try {
@@ -243,7 +245,7 @@ const routes: RouteTable = defineRoutes({
 
   'DELETE /api/backup/restore-jobs/:id': write(async (req, userId) => {
     try { return await deleteRestoreJob(userId, req.params.id); } catch (error) { return failed(error, 'Failed to delete restore job', 'Delete restore job error'); }
-  }),
+  }, { destructive: ['backup.delete'] }),
 
   // The JSON export of releases before 0.9: gone, said plainly.
   'GET /api/backup/export': { auth: 'public', module: null, body: { kind: 'none' }, handler: async () => ({
@@ -260,7 +262,7 @@ const routes: RouteTable = defineRoutes({
       const job = await createUploadedRestoreJob(userId, body.filePath!, getRestoreOptions(req, {}));
       return { job, status: 202 };
     } catch (error) { return failed(error, 'Failed to retain backup upload', 'Backup upload error'); }
-  }, { body: { limit: BACKUP_UPLOAD_MAX_SIZE, kind: 'backup-upload' } }),
+  }, { body: { limit: BACKUP_UPLOAD_MAX_SIZE, kind: 'backup-upload' }, requires: ['backup.restore'] }),
 });
 
 // The emergency switch (services/backup-availability.ts), also for callers
