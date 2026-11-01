@@ -321,6 +321,26 @@ test('the instance backup copies the installation, keeps only verified runs, ref
 
     const lines: string[] = [];
     assert.equal(await restoreCommand(['--file', first.file, '--key-file', keyFile], line => lines.push(line)), 0, lines.join('\n'));
+    // Nothing the old server still had to do at a provider runs again (the account restore's policy).
+    const [[account]] = await pool.query<RowDataPacket[]>('SELECT is_active, delete_emails_on_server, sync_policy_confirmed_at FROM mail_accounts WHERE id = ?', [mailAccount]);
+    const [[operation]] = await pool.query<RowDataPacket[]>('SELECT state, status, is_current FROM mail_writebacks WHERE id = ?', [move]);
+    const [jobs] = await pool.query<RowDataPacket[]>('SELECT state FROM mail_engine_jobs WHERE operation_id = ?', [move]);
+    const [schedules] = await pool.query<RowDataPacket[]>('SELECT email_id, status FROM mail_scheduled_sends WHERE user_id = ? ORDER BY status', [users.alex]);
+    const count = async (sql: string) => Number((await pool.query<RowDataPacket[]>(sql))[0][0].count);
+    assert.deepEqual({
+      account: [Number(account.is_active), Number(account.delete_emails_on_server), account.sync_policy_confirmed_at],
+      move: [operation.state, operation.status, Number(operation.is_current)],
+      jobs: jobs.map(job => job.state),
+      claimed: !!await engine.claimDueJob({ workerId: 'restored-installation', accountId: mailAccount }, pool),
+      // The scheduled draft is unscheduled; the started send is never tried again.
+      sends: schedules.map(row => [row.email_id, row.status]),
+      deletionsQueued: await count("SELECT COUNT(*) AS count FROM mail_server_messages WHERE delete_status = 'pending'"),
+      calendarMoves: await count('SELECT COUNT(*) AS count FROM calendar_event_moves'),
+    }, {
+      account: [0, 0, null], move: ['needs_attention', 'conflict', 0], jobs: ['paused'], claimed: false,
+      sends: [[sends.sending, 'unknown']], deletionsQueued: 0, calendarMoves: 0,
+    });
+
     // Every table as the dump had it, but for the running life of the old installation.
     const retired: Record<string, number> = { sessions: 0, file_tickets: 0, two_factor_challenges: 0, calendar_event_moves: 0,
       mail_scheduled_sends: first.manifest.database.tables.mail_scheduled_sends - 1, mail_server_messages: first.manifest.database.tables.mail_server_messages - 1 };
@@ -337,17 +357,6 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     assert.deepEqual([restoredPhoto.sha256, restoredPhoto.thumb_sha256], [photoRow.sha256, photoRow.thumb_sha256]);
     assert.ok(photoFiles.every(file => fs.existsSync(file)), 'the restored photo row has its files');
 
-    // Nothing the old server still had to do at a provider runs again (the account restore's policy).
-    const [[account]] = await pool.query<RowDataPacket[]>('SELECT is_active, delete_emails_on_server, sync_policy_confirmed_at FROM mail_accounts WHERE id = ?', [mailAccount]);
-    assert.deepEqual([Number(account.is_active), Number(account.delete_emails_on_server), account.sync_policy_confirmed_at], [0, 0, null]);
-    const [[operation]] = await pool.query<RowDataPacket[]>('SELECT state, status, is_current FROM mail_writebacks WHERE id = ?', [move]);
-    assert.deepEqual([operation.state, operation.status, Number(operation.is_current)], ['needs_attention', 'conflict', 0]);
-    const [jobs] = await pool.query<RowDataPacket[]>('SELECT state FROM mail_engine_jobs WHERE operation_id = ?', [move]);
-    assert.deepEqual(jobs.map(job => job.state), ['paused']);
-    assert.equal(await engine.claimDueJob({ workerId: 'restored-installation', accountId: mailAccount }, pool), null, 'the scheduler claims nothing');
-    const [schedules] = await pool.query<RowDataPacket[]>('SELECT email_id, status FROM mail_scheduled_sends WHERE user_id = ?', [users.alex]);
-    assert.deepEqual(schedules.map(row => [row.email_id, row.status]), [[sends.sending, 'unknown']], 'the scheduled draft is unscheduled; the started send is never tried again');
-    assert.equal(Number((await pool.query<RowDataPacket[]>("SELECT COUNT(*) AS count FROM mail_server_messages WHERE delete_status = 'pending'"))[0][0].count), 0);
     assert.match(lines.join('\n'), /Mail accounts are paused/);
     const [runs] = await pool.query<RowDataPacket[]>('SELECT status, file_name FROM instance_backups ORDER BY started_at');
     assert.deepEqual(runs.map(run => run.status), ['failed', 'succeeded'], 'the run that wrote the backup shows as succeeded');
