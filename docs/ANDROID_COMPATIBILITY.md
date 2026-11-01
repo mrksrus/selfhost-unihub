@@ -30,10 +30,13 @@ keep listing that feature while such an app is in the window, and `minApp`
 must not refuse the oldest app in the window. From 0.26.0 the app also looks
 for `contacts-vcard`: only then does it sync every contact field, with
 version-checked writes, photos and merges; without it (0.24.3 to 0.25.1
-servers) it syncs the 3+3 fields as those apps do. A 0.26.0 server keeps the
-3+3 projection and applies their flat writes as a diff (a fourth number and
-labels stay), as long as the 0.25.1 app is in the window. Removing support for an app is a product decision: change the
-window and `minApp` together, on purpose.
+servers) it syncs the 3+3 fields as those apps do. From 0.26.0 the server
+keeps the 3+3 projection and applies the old apps' flat writes as a diff (a
+fourth number and labels stay). The 0.25.1 app, the last one that needs it,
+left the window with 0.28.0, but the bridge stays: retiring it is a separate
+compatibility decision, not a side effect of the window moving. Removing
+support for an app is a product decision: change the window and `minApp`
+together, on purpose.
 
 ## Checks
 

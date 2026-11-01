@@ -185,8 +185,10 @@ them working (P-21) without letting them remove what they cannot see:
   birthdays and photos stay on the phone for those apps, as before. The 0.26
   app uses the full API with versions (see [Android](ANDROID.md)).
 
-The flat fields are deprecated and are removed when the last 3+3 app leaves
-the support window ([Android compatibility](ANDROID_COMPATIBILITY.md)).
+The flat fields are deprecated. The last 3+3 app (0.25.1) left the support
+window with 0.28.0; the server keeps the 3+3 projection and the flat writes
+until a separate compatibility decision retires them ([Android
+compatibility](ANDROID_COMPATIBILITY.md)).
 
 ## Import
 
