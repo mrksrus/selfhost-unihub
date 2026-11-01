@@ -8,10 +8,9 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { BackupRow, SqlExecutor } from '../types';
 import crypto from 'node:crypto';
-import { localEventSql, OVERLAY_SHAPE_DAYS } from './backup-classes';
+import { localEventSql, OVERLAY_SHAPE_DAYS, TODO_STATUSES } from './backup-classes';
 import { normalizeMysqlDateTime } from './backup-common';
 
-const TODO_STATUSES = new Set(['done', 'changed', 'time_moved', 'cancelled']);
 const MAX_SUBTASKS = 500;
 
 interface OverlayState {
@@ -76,7 +75,8 @@ async function liveTask(connection: SqlExecutor, userId: string, calendarId: str
 
 /**
  * Applies the state to a live task: Replace takes the archive's; Keep
- * existing fills in only what the task has none of.
+ * existing fills in only what the task has none of. Returns whether the
+ * archive's source email was taken.
  */
 async function applyOverlayState(connection: SqlExecutor, userId: string, task: RowDataPacket, state: OverlayState, replace: boolean) {
   const [[{ n: subtaskCount }]] = await connection.execute<RowDataPacket[]>('SELECT COUNT(*) AS n FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ?', [task.id, userId]);
@@ -93,6 +93,7 @@ async function applyOverlayState(connection: SqlExecutor, userId: string, task: 
         [crypto.randomUUID(), task.id, userId, subtask.title, subtask.is_done ? 1 : 0, subtask.position]);
     }
   }
+  return takeEmail;
 }
 
 /**
@@ -100,12 +101,14 @@ async function applyOverlayState(connection: SqlExecutor, userId: string, task: 
  * a live task of that identity the state is applied now (Keep both cannot
  * copy a synced task, so it keeps the existing one's); otherwise it waits
  * for the sync. A waiting overlay of the same identity is replaced by
- * Replace and kept by the other modes.
+ * Replace and kept by the other modes. The result names the tasks and
+ * waiting overlays that carry the archive's source email id, which the
+ * restore follows to the email's new id once mail is restored.
  */
 async function restoreOverlays(connection: SqlExecutor, userId: string, rows: readonly BackupRow[], { calendarIds, conflictMode, checkCancelled, now = new Date() }: {
   calendarIds: ReadonlyMap<string, string>; conflictMode: string; checkCancelled?: () => Promise<unknown>; now?: Date;
 }) {
-  const result = { applied: 0, waiting: 0 };
+  const result = { applied: 0, waiting: 0, sourceEmails: { events: new Map<string, string>(), overlays: new Map<string, string>() } };
   for (const row of rows) {
     if (checkCancelled) await checkCancelled();
     const calendarId = calendarIds.get(String(row.calendar_id));
@@ -118,7 +121,7 @@ async function restoreOverlays(connection: SqlExecutor, userId: string, rows: re
     const recurrenceId = String(row.recurrence_id ?? '');
     const task = await liveTask(connection, userId, calendarId, row, recurrenceId);
     if (task) {
-      await applyOverlayState(connection, userId, task, state, conflictMode === 'replace');
+      if (await applyOverlayState(connection, userId, task, state, conflictMode === 'replace') && state.source_email_id) result.sourceEmails.events.set(String(task.id), state.source_email_id);
       result.applied += 1;
       continue;
     }
@@ -133,8 +136,10 @@ async function restoreOverlays(connection: SqlExecutor, userId: string, rows: re
     const expires = row.match_kind === 'shape'
       ? normalizeMysqlDateTime(row.expires_at as string | null) ?? normalizeMysqlDateTime(new Date(now.getTime() + OVERLAY_SHAPE_DAYS * 86400000).toISOString())
       : null;
+    const overlayId = crypto.randomUUID();
+    if (state.source_email_id) result.sourceEmails.overlays.set(overlayId, state.source_email_id);
     await connection.execute(`INSERT INTO calendar_overlay_restores (id, user_id, calendar_id, account_identity, uid, recurrence_id, match_kind, shape_title, shape_start, payload, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [crypto.randomUUID(), userId, calendarId, String(row.account_identity ?? '').slice(0, 500),
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [overlayId, userId, calendarId, String(row.account_identity ?? '').slice(0, 500),
       row.match_kind === 'uid' ? row.uid : null, recurrenceId, row.match_kind, row.match_kind === 'shape' ? row.shape_title : null,
       row.match_kind === 'shape' ? normalizeMysqlDateTime(row.shape_start as string) : null, JSON.stringify(state), expires] as (string | null)[]);
     result.waiting += 1;

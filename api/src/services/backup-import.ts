@@ -611,7 +611,8 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
       // the sync that brings it back (backup-overlays.ts).
       const overlays = restoresCalendarContent
         ? await restoreOverlays(connection, userId, (data.calendar_overlay_restores || []) as BackupRow[], { calendarIds: calendarIdMap, conflictMode, checkCancelled: checkRestoreCancelled })
-        : { applied: 0, waiting: 0 };
+        : { applied: 0, waiting: 0, sourceEmails: { events: new Map<string, string>(), overlays: new Map<string, string>() } };
+      for (const [eventId, archivedEmailId] of overlays.sourceEmails.events) eventsWithSourceEmail.set(eventId, archivedEmailId);
       if (overlays.waiting) contents.notes.push(`${overlays.waiting} synced task${overlays.waiting === 1 ? '' : 's'} get${overlays.waiting === 1 ? 's' : ''} its ToDo state and subtasks back when the calendar syncs.`);
 
       // The hand order (0.27): a local task's row follows its restored event,
@@ -977,6 +978,14 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         const targetEmailId = emailIdMap.get(archivedEmailId);
         if (targetEmailId && targetEmailId !== archivedEmailId) {
           await connection.execute('UPDATE calendar_events SET source_email_id = ? WHERE id = ? AND user_id = ? AND source_email_id = ?', [targetEmailId, eventId, userId, archivedEmailId]);
+        }
+      }
+      // So does the state a synced task waits for.
+      for (const [overlayId, archivedEmailId] of overlays.sourceEmails.overlays) {
+        const targetEmailId = emailIdMap.get(archivedEmailId);
+        if (targetEmailId && targetEmailId !== archivedEmailId) {
+          await connection.execute(`UPDATE calendar_overlay_restores SET payload = JSON_SET(payload, '$.source_email_id', ?)
+            WHERE id = ? AND user_id = ? AND JSON_VALUE(payload, '$.source_email_id') = ?`, [targetEmailId, overlayId, userId, archivedEmailId]);
         }
       }
 

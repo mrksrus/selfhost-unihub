@@ -318,7 +318,7 @@ function classFilter(table: string, included: readonly string[]): { sql: string;
     case 'emails': return keptEmailSql('b', included);
     case 'email_attachments': case 'mail_email_scores': case 'mail_folder_recovery_items': return email('b');
     case 'mail_remote_mailboxes': case 'mail_remote_occurrences': case 'mail_gmail_messages': case 'mail_writebacks':
-    case 'mail_operation_attempts': case 'mail_engine_quarantine': case 'mail_folder_reconciliations': return accounts;
+    case 'mail_operation_attempts': case 'mail_engine_quarantine': return accounts;
     default: return null;
   }
 }

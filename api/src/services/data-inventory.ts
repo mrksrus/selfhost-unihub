@@ -201,7 +201,7 @@ const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.fr
   emails: { owner: 'user', shareable: false, dataClass: MAIL_CONTENT, module: 'mail', restore: 'Restored with the Mail section, with its files; matched by id, server identity, then Message-ID.' },
   email_attachments: { owner: 'user', shareable: false, dataClass: MAIL_CONTENT, module: 'mail', restore: 'Restored with its email and file.' },
   mail_email_scores: { owner: 'user', shareable: false, dataClass: MAIL_CONTENT, module: 'mail', restore: 'Restored with its email.' },
-  mail_folder_reconciliations: { owner: 'user', shareable: false, dataClass: MAIL_EVIDENCE, module: 'mail', restore: 'Restored with its account as filing history.' },
+  mail_folder_reconciliations: { owner: 'user', shareable: false, dataClass: 'local', module: 'mail', restore: 'Restored with its account, also a Sync one: the folder moves it records are not made again.' },
   mail_folder_recovery_items: { owner: 'user', shareable: false, dataClass: MAIL_CONTENT, module: 'mail', restore: 'Restored with its email as filing history.' },
   mail_scheduled_sends: { owner: 'user', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: the draft comes back unscheduled.' },
   mail_server_messages: { owner: 'user', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: provider deletion bookkeeping; a restore replays no remote delete.' },

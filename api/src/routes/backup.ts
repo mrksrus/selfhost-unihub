@@ -2,7 +2,6 @@ import type { RowDataPacket } from 'mysql2/promise';
 import type { ServerResponse } from 'node:http';
 import type { RouteRequest, RouteResponse, ApiError } from '../types';
 import type { BackupCapabilities, BackupCreateRequest } from '../contracts/backup';
-import fs from 'fs';
 import path from 'path';
 import { db } from '../state';
 import { BACKUP_UPLOAD_MAX_SIZE } from '../config';

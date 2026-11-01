@@ -86,9 +86,14 @@ const OVERLAY_SHAPE_DAYS = 30;
 const asRows = (value: unknown) => Array.isArray(value) ? value as BackupRow[] : [];
 const toMysqlDate = (date: Date) => date.toISOString().slice(0, 19).replace('T', ' ');
 
+// The ToDo states a task can have (contracts/tasks.ts). The column is free
+// text, so a value outside them is left out rather than written into an
+// archive its reader would refuse.
+const TODO_STATUSES: ReadonlySet<string> = new Set(['done', 'changed', 'time_moved', 'cancelled']);
+
 // UniHub's own state on a task, as an overlay payload; null when there is none.
 function overlayPayload(event: BackupRow, subtasks: readonly BackupRow[]) {
-  const state = { todo_status: event.todo_status ?? null, done_at: event.done_at ?? null,
+  const state = { todo_status: TODO_STATUSES.has(String(event.todo_status)) ? String(event.todo_status) : null, done_at: event.done_at ?? null,
     source_email_id: event.source_email_id ?? null, source_email_json: event.source_email_json ?? null,
     subtasks: subtasks.map(row => ({ title: String(row.title ?? ''), is_done: !!row.is_done, position: Number(row.position) || 0 })) };
   return state.todo_status || state.done_at || state.source_email_id || state.source_email_json || state.subtasks.length ? state : null;
@@ -151,7 +156,9 @@ function filterOldArchive(backup: ArchiveEnvelope, now = new Date()): { counts: 
       }
       counts.sync_mail = mirrored.size;
     }
-    for (const table of ['mail_remote_mailboxes', 'mail_remote_occurrences', 'mail_gmail_messages', 'mail_writebacks', 'mail_operation_attempts', 'mail_engine_quarantine', 'mail_folder_reconciliations']) {
+    // A folder reconciliation marker stays: it is UniHub's record of folder
+    // moves already made, which a sync after the restore must not repeat.
+    for (const table of ['mail_remote_mailboxes', 'mail_remote_occurrences', 'mail_gmail_messages', 'mail_writebacks', 'mail_operation_attempts', 'mail_engine_quarantine']) {
       if (data[table] !== undefined) data[table] = asRows(data[table]).filter(row => !syncAccounts.has(String(row.mail_account_id)));
     }
   }
@@ -202,5 +209,6 @@ export {
   overlayPayload,
   accountIdentity,
   OVERLAY_SHAPE_DAYS,
+  TODO_STATUSES,
 };
 export type { LeftOutKind };
