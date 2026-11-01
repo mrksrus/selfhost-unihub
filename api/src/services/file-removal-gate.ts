@@ -28,38 +28,53 @@ function isClosed() {
   return closedBy > 0;
 }
 
+const idle = () => !isClosed() && !draining && !queue.length;
+
 /**
  * Runs `remove` now, or queues `whenQueued` (by default `remove` itself)
- * while a backup copies files and answers 'deferred'.
+ * while a backup copies files or the queue is still draining, and answers
+ * 'deferred'. It never waits: a caller may hold a lock that a queued removal
+ * needs (contact-photos.ts), so waiting here could wait for itself.
  */
 async function run<T>(remove: () => Promise<T>, whenQueued: Removal = remove): Promise<T | 'deferred'> {
   if (admitted.getStore()) return remove();
-  // Removals queued during the copy go first.
-  if (!isClosed() && draining) await draining;
-  if (isClosed()) {
+  if (isClosed() || draining || queue.length) {
     queue.push(whenQueued);
+    kick();
     return 'deferred';
   }
   return admitted.run(true, remove);
 }
 
-/** Settles when no backup copies files (workers that may wait instead of queueing). */
+/** Settles once no backup copies files and the queue is empty. */
 function whenOpen(): Promise<void> {
-  if (!isClosed() && !draining) return Promise.resolve();
+  if (idle()) return Promise.resolve();
   return new Promise(resolve => opened.push(resolve));
 }
 
-async function drain() {
-  while (queue.length && !isClosed()) {
-    const batch = queue;
-    queue = [];
-    for (const remove of batch) {
-      await admitted.run(true, remove).catch(error => log.error('INSTANCE BACKUP', 'A file removal queued during the backup failed', error));
-    }
+// Drains the queue in order, including removals that arrive meanwhile, while
+// the gate is open; once nothing is left, whoever waits for it is told.
+function kick() {
+  if (isClosed() || draining) return;
+  if (!queue.length) {
+    for (const resolve of opened.splice(0)) resolve();
+    return;
   }
+  draining = (async () => {
+    while (queue.length && !isClosed()) {
+      const batch = queue;
+      queue = [];
+      for (const remove of batch) {
+        await admitted.run(true, remove).catch(error => log.error('INSTANCE BACKUP', 'A file removal queued during the backup failed', error));
+      }
+    }
+  })().finally(() => {
+    draining = null;
+    kick();
+  });
 }
 
-/** Closes the gate until the returned function is called (once). */
+/** Closes the gate until the returned function is called (once); that settles when the queue has drained. */
 function close(): () => Promise<void> {
   closedBy++;
   let done = false;
@@ -67,12 +82,8 @@ function close(): () => Promise<void> {
     if (done) return;
     done = true;
     closedBy--;
-    if (isClosed()) return;
-    if (!draining) {
-      draining = drain().finally(() => { draining = null; });
-    }
-    await draining;
-    if (!isClosed() && !draining) for (const resolve of opened.splice(0)) resolve();
+    kick();
+    if (!isClosed()) await whenOpen();
   };
 }
 
