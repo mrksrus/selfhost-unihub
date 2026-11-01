@@ -36,9 +36,9 @@ export = defineRoutes({
     } catch (error) { return failed(error, 'Failed to restore from the bin'); }
   } },
 
-  'POST /api/bin/:id/restore': { ...binRoute, body: { kind: 'none' }, handler: async (req: Request, userId: string) => {
+  'POST /api/bin/:id/restore': { ...binRoute, handler: async (req: Request, userId: string, body: unknown) => {
     try {
-      const answer: BinRestoreResponse = await restoreBinItem(userId, req.params.id);
+      const answer: BinRestoreResponse = await restoreBinItem(userId, req.params.id, body);
       return { ...answer };
     } catch (error) { return failed(error, 'Failed to restore from the bin'); }
   } },

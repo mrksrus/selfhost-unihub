@@ -400,8 +400,19 @@ are then rebuilt from the server's answer, so the server stays the authority.
   is read-only now, or gone, takes it into the default list instead, with a
   note, unless the local copy would lose something: a repeating event with
   exceptions, extra or removed dates, or details on its dates stays in the bin
-  (`BIN_RESTORE_NEEDS_CALENDAR`) until its calendar can take it back. The rows
-  the commit makes take their state back.
+  (`BIN_RESTORE_NEEDS_CALENDAR`) until its calendar can take it back, or the
+  person chooses another calendar for it. The rows the commit makes take
+  their state back.
+- **Restoring to another calendar.** Both restore routes take
+  `calendar_id`, one of the person's own calendars (`BinRestoreRequest`):
+  a writable server calendar creates a synced item there under its UID,
+  through the same journal, and a UniHub list takes a UniHub item, or a
+  synced one it can hold whole (else `BIN_RESTORE_NEEDS_CALENDAR`). A UniHub
+  item goes to a UniHub list only (`BIN_RESTORE_NEEDS_LIST`); another
+  person's calendar is not found (`BIN_RESTORE_CALENDAR_NOT_FOUND`), and a
+  read-only one or a subscription is refused (`CALENDAR_READ_ONLY`). This
+  is how a repeating item whose calendar went with its account comes back
+  after the account is connected again.
 - **One change at a time.** Creating an item on a server, edits, time moves,
   deletions, moves, their cancel, a move's background run and a sync's
   adoption of a move's copy run one after another for one item (a lock per

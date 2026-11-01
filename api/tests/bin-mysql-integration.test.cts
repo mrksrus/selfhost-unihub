@@ -692,4 +692,46 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     assert.deepEqual([row.calendar_id, row.uid], [defaultList, removed.uid], 'its identity kept');
     assert.deepEqual(await stepsOf(row.id), [['Only step', true]]);
   });
+
+  await t.test('a calendar gone with its account: the person chooses another of their calendars, and a repeating item goes there whole', async () => {
+    await sync();
+    const [[{ id: workAgain }]] = await pool.query<RowDataPacket[]>("SELECT id FROM calendar_calendars WHERE account_id = ? AND name = 'Work'", [accountId]);
+    clock += 86400000;
+    const uid = `${crypto.randomUUID()}@example.test`;
+    server.store(`${WORK}daily-check.ics`, eventIcs(uid, 'Daily check', clock, ['RRULE:FREQ=DAILY;COUNT=3']));
+    await sync();
+    const dates = (await pool.query<RowDataPacket[]>("SELECT id FROM calendar_events WHERE user_id = ? AND calendar_id = ? AND title = 'Daily check' ORDER BY start_time", [users.alex, workAgain]))[0];
+    assert.equal(dates.length, 3);
+    for (const [index, date] of dates.entries()) {
+      await pool.execute('INSERT INTO calendar_event_subtasks (id, event_id, user_id, title, is_done, position) VALUES (?, ?, ?, ?, FALSE, 0)', [crypto.randomUUID(), date.id, users.alex, `Check ${index}`]);
+    }
+    await call(alex, 'DELETE', `/api/calendar/events/${dates[0].id}?scope=series`);
+    const item = (await bin(alex, 'calendar')).find(entry => entry.title === 'Daily check');
+    await call(alex, 'DELETE', `/api/calendar/accounts/${accountId}`);
+    const failure = async (body: object) => (await call(alex, 'POST', '/api/bin/restore', { ids: [item.id], ...body })).failed[0]?.code;
+    assert.equal(await failure({}), 'BIN_RESTORE_NEEDS_CALENDAR', 'its own calendar is gone');
+    const { calendarId: blairsList } = await ensureDefaultLocalCalendarForUser(users.blair);
+    assert.equal(await failure({ calendar_id: blairsList }), 'BIN_RESTORE_CALENDAR_NOT_FOUND', 'another person\'s calendar is not one to choose');
+    const { calendarId: ownList } = await ensureDefaultLocalCalendarForUser(users.alex);
+    assert.equal(await failure({ calendar_id: ownList }), 'BIN_RESTORE_NEEDS_CALENDAR', 'a UniHub list cannot hold it whole');
+    assert.equal((await rowsTitled('Daily check')).length, 0);
+    // The same server, connected again: its calendars have new ids.
+    const again = crypto.randomUUID();
+    await insertCalDavAccount(pool, encrypt, users.alex, again);
+    await calendarSync.syncCalendarAccount(again, { userId: users.alex, full: true });
+    const [[{ id: chosen }]] = await pool.query<RowDataPacket[]>("SELECT id FROM calendar_calendars WHERE account_id = ? AND name = 'Work'", [again]);
+    const answer = await call(alex, 'POST', `/api/bin/${item.id}/restore`, { calendar_id: chosen });
+    assert.equal(answer.restored[0].pending, undefined, 'the server confirmed');
+    assert.equal(server.copiesOf('Daily check').length, 1, 'created at the chosen calendar, once');
+    const back = (await pool.query<RowDataPacket[]>("SELECT id, calendar_id, uid FROM calendar_events WHERE user_id = ? AND title = 'Daily check' ORDER BY start_time", [users.alex]))[0];
+    assert.deepEqual(back.map(row => [row.calendar_id, row.uid]), [[chosen, uid], [chosen, uid], [chosen, uid]], 'every date, under its UID');
+    assert.deepEqual(await Promise.all(back.map(async row => (await stepsOf(row.id)).map(([title]) => title))), [['Check 0'], ['Check 1'], ['Check 2']], 'every date keeps its own');
+    assert.ok(!(await bin(alex, 'calendar')).some(entry => entry.id === item.id));
+    // A UniHub task goes back to a UniHub list only.
+    const local = (await call(alex, 'POST', '/api/calendar/events', { title: 'List only', start_time: new Date(clock).toISOString(), end_time: new Date(clock + 3600000).toISOString(), calendar_id: ownList })).event;
+    await call(alex, 'DELETE', `/api/calendar/events/${local.id}`);
+    const localItem = (await bin(alex, 'calendar')).find(entry => entry.title === 'List only');
+    assert.equal((await call(alex, 'POST', `/api/bin/${localItem.id}/restore`, { calendar_id: chosen }, 409)).code, 'BIN_RESTORE_NEEDS_LIST');
+    await restore(localItem.id);
+  });
 });

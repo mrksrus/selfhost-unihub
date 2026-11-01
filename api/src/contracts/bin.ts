@@ -37,8 +37,24 @@ export interface BinListResponse {
   retention: BinRetention;
 }
 
-/** POST /api/bin/restore (POST /api/bin/:id/restore takes no body). A group is restored as a unit. */
-export interface BinRestoreRequest { ids: string[] }
+/**
+ * POST /api/bin/restore; POST /api/bin/:id/restore takes the same without ids
+ * (or no body). A group is restored as a unit.
+ */
+export interface BinRestoreRequest {
+  ids: string[];
+  /**
+   * Restore events and tasks to this calendar of yours instead of their own:
+   * a server calendar re-creates a synced item there, a UniHub list takes a
+   * UniHub item, or a synced one it can hold without losing anything. The
+   * answer to BIN_RESTORE_NEEDS_CALENDAR (its calendar is gone or read-only
+   * and a list cannot hold it). Lists restored with their events, and other
+   * kinds, ignore it.
+   */
+  calendar_id?: string;
+}
+/** POST /api/bin/:id/restore */
+export type BinItemRestoreRequest = Omit<BinRestoreRequest, 'ids'>;
 
 export interface BinRestored {
   id: string;

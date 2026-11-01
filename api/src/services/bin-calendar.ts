@@ -2,7 +2,7 @@ import type { PoolConnection, RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import type { CalendarEvent } from '../types/calendar';
 import type { BinItemType, BinRestored } from '../contracts/bin';
-import type { BinKind, BinRow } from './bin';
+import type { BinKind, BinRow, RestoreChoice } from './bin';
 import type { OverlayState } from './calendar-overlays';
 import type { SyncAccount, SyncCalendar, SyncTarget } from './calendar-sync';
 import crypto from 'node:crypto';
@@ -327,13 +327,31 @@ async function restoreGroupWithCalendar(userId: string, group: readonly BinRow[]
   return restored;
 }
 
-async function restoreLocalItem(userId: string, row: BinRow, note?: string) {
+const listGone = () => conflict('BIN_RESTORE_CALENDAR_NOT_FOUND', 'That calendar was not found. Choose one of your calendars.');
+
+/**
+ * A calendar the person chose to restore to: their own, and one an item can
+ * be written to (a UniHub list, or a writable calendar of a server account).
+ */
+async function chosenCalendar(userId: string, calendarId: string) {
+  const [[row]] = await db.execute<RowDataPacket[]>(
+    `SELECT c.id, COALESCE(c.read_only, 0) AS read_only, a.provider FROM calendar_calendars c
+     JOIN calendar_accounts a ON a.id = c.account_id AND a.user_id = c.user_id WHERE c.id = ? AND c.user_id = ?`, [calendarId, userId]);
+  if (!row) throw listGone();
+  if (row.provider !== 'local' && row.provider !== 'caldav') throw conflict('CALENDAR_READ_ONLY', 'That calendar is a subscription, which cannot take items. Choose another one.');
+  if (Number(row.read_only)) throw conflict('CALENDAR_READ_ONLY', 'That calendar is read-only. Choose one that can take the item.');
+  return { id: String(row.id), local: row.provider === 'local' };
+}
+
+/** A UniHub item, or a synced one a list can hold, into its own list, the chosen one, or the default list. */
+async function restoreLocalItem(userId: string, row: BinRow, note?: string | null, chosenList?: string) {
   const answer = await withTransaction(async cx => {
     const [locked] = await lockItems(cx, userId, [row]);
     if (!locked) throw notFound('BIN_ITEM_NOT_FOUND', 'Not in the bin');
     const payload = parsePayload<LocalPayload>(locked);
     if (!payload?.event) throw conflict('BIN_ITEM_UNREADABLE', 'This item cannot be restored.');
-    const target = await localTarget(cx, userId, payload.provider === 'local' ? payload.event.calendar_id : null);
+    const target = await localTarget(cx, userId, chosenList ?? (payload.provider === 'local' ? payload.event.calendar_id : null));
+    if (chosenList && target.id !== chosenList) throw listGone();
     const id = await restoreLocalEvent(cx, userId, payload, target.id);
     await dropItems(cx, userId, [locked.id]);
     return restoredOf(locked, id, note ?? target.note);
@@ -392,15 +410,28 @@ function localCopyLoses(payload: SyncedPayload) {
   return null;
 }
 
-async function restoreSyncedItem(userId: string, row: BinRow): Promise<BinRestored> {
+/**
+ * A synced item back to its calendar server: to its own calendar, or to the
+ * calendar the person chose (another server calendar re-creates it there
+ * under its UID; a UniHub list takes it when a list can hold it).
+ */
+async function restoreSyncedItem(userId: string, row: BinRow, choice: RestoreChoice = {}): Promise<BinRestored> {
   const payload = parsePayload<SyncedPayload>(row);
   if (!payload?.event) throw conflict('BIN_ITEM_UNREADABLE', 'This item cannot be restored.');
-  const target = payload.calendar?.id ? await calendarSync.loadCalendarContext(userId, payload.calendar.id) : null;
+  const chosen = choice.calendarId ? await chosenCalendar(userId, choice.calendarId) : null;
   const uid = payload.object?.uid;
+  if (chosen?.local) {
+    const lost = localCopyLoses(payload);
+    if (lost) throw conflict('BIN_RESTORE_NEEDS_CALENDAR', `A UniHub list cannot hold this repeating event as it was (${lost}). Choose a calendar on a server to restore it to.`);
+    return restoreLocalItem(userId, row, null, chosen.id);
+  }
+  const calendarOf = chosen?.id ?? payload.calendar?.id;
+  const target = calendarOf ? await calendarSync.loadCalendarContext(userId, calendarOf) : null;
+  if (chosen && !target) throw listGone();
   const writable = !!target && target.account.provider === 'caldav' && !target.calendar.read_only;
   if (!target || !writable || !uid || !payload.object?.ics) {
     const lost = localCopyLoses(payload);
-    if (lost) throw conflict('BIN_RESTORE_NEEDS_CALENDAR', `${!target || !uid ? 'Its calendar is gone' : 'Its calendar is read-only now'}, and a UniHub list cannot hold this repeating event as it was (${lost}). It stays in the bin until its calendar can take it back.`);
+    if (lost) throw conflict('BIN_RESTORE_NEEDS_CALENDAR', `${!target || !uid ? 'Its calendar is gone' : 'Its calendar is read-only now'}, and a UniHub list cannot hold this repeating event as it was (${lost}). It stays in the bin: choose another calendar on a server to restore it to.`);
     return restoreLocalItem(userId, row, !target || !uid ? 'Its calendar is gone; restored to your default list.' : 'Its calendar is read-only now; restored to your default list.');
   }
   if (!target.account.is_active) throw conflict('CALENDAR_SYNC_PAUSED', 'Sync is paused for this calendar account. Resume it to restore this item to its calendar.');
@@ -461,12 +492,16 @@ async function finishServerRestore(connection: SqlExecutor, userId: string, binI
 }
 
 const eventBinKind: BinKind = {
-  async restore(userId, group) {
+  async restore(userId, group, choice) {
     if (group.some(row => row.item_type === 'calendar')) return restoreGroupWithCalendar(userId, group);
     const answers: BinRestored[] = [];
     for (const row of group) {
       const provider = parsePayload<{ provider?: string }>(row)?.provider;
-      answers.push(provider === 'caldav' ? await restoreSyncedItem(userId, row) : await restoreLocalItem(userId, row));
+      if (provider === 'caldav') { answers.push(await restoreSyncedItem(userId, row, choice)); continue; }
+      // A UniHub item goes to a UniHub list only.
+      const chosen = choice.calendarId ? await chosenCalendar(userId, choice.calendarId) : null;
+      if (chosen && !chosen.local) throw conflict('BIN_RESTORE_NEEDS_LIST', 'This item is from a UniHub list. Choose one of your UniHub lists to restore it to.');
+      answers.push(await restoreLocalItem(userId, row, undefined, chosen?.id));
     }
     return answers;
   },

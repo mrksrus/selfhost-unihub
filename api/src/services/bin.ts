@@ -53,8 +53,10 @@ interface NewBinItem {
   payload: unknown;
   fileRefs?: readonly string[] | null;
 }
+/** Where the person asked an item to go back to (calendar items: an owned calendar instead of its own). */
+interface RestoreChoice { calendarId?: string | null }
 /** What a kind's restore answers for each item of the group it was given. */
-type KindRestore = (userId: string, items: readonly BinRow[]) => Promise<BinRestored[]>;
+type KindRestore = (userId: string, items: readonly BinRow[], choice: RestoreChoice) => Promise<BinRestored[]>;
 interface BinKind {
   restore: KindRestore;
   /** After the items' rows are deleted for good: their files. */
@@ -193,6 +195,15 @@ function parseIds(input: unknown): string[] {
   return [...new Set(ids as string[])];
 }
 
+// The optional destination of a restore: calendar_id, one of the person's
+// calendars (the calendar kind checks it is theirs and can take the item).
+function parseChoice(input: unknown): RestoreChoice {
+  const value = input && typeof input === 'object' && !Array.isArray(input) ? (input as { calendar_id?: unknown }).calendar_id : undefined;
+  if (value === undefined || value === null || value === '') return {};
+  if (typeof value !== 'string' || !ID_PATTERN.test(value)) throw badRequest('BIN_INVALID', 'calendar_id must be the id of one of your calendars');
+  return { calendarId: value };
+}
+
 function parseModule(value: unknown): BinModule | null {
   if (value === undefined || value === null || value === '') return null;
   if (typeof value !== 'string' || !MODULES.includes(value as BinModule)) throw badRequest('BIN_INVALID', `module must be one of ${MODULES.join(', ')}`);
@@ -237,10 +248,13 @@ async function ownedItems(executor: SqlExecutor, userId: string, ids: readonly s
  * POST /api/bin/restore and /api/bin/:id/restore. Each item comes back with
  * the others of its group. An item another person owns, or one no longer in
  * the bin, is not found; one of a disabled module or a module being restored
- * fails with that reason, the rest go on.
+ * fails with that reason, the rest go on. calendar_id sends events and tasks
+ * to that calendar of the person instead of their own (a list's group keeps
+ * its list; other kinds ignore it).
  */
 async function restoreFromBin(userId: string, input: unknown): Promise<BinRestoreResponse> {
   const ids = parseIds(input);
+  const choice = parseChoice(input);
   const found = await ownedItems(db, userId, ids);
   const groups = new Map<string, BinRow[]>();
   const failed: BinRestoreResponse['failed'] = ids.filter(id => !found.some(row => row.id === id)).map(id => ({ id, error: 'Not in the bin', code: 'BIN_ITEM_NOT_FOUND' }));
@@ -261,7 +275,7 @@ async function restoreFromBin(userId: string, input: unknown): Promise<BinRestor
     // A calendar's group is restored by the calendar; any other by its kind.
     const lead = group.find(row => row.item_type === 'calendar') ?? group[0];
     try {
-      restored.push(...await KINDS[lead.item_type]().restore(userId, group));
+      restored.push(...await KINDS[lead.item_type]().restore(userId, group, choice));
     } catch (error) {
       const { status, code, message } = error as ApiError;
       if (!status || status >= 500) throw error;
@@ -271,9 +285,9 @@ async function restoreFromBin(userId: string, input: unknown): Promise<BinRestor
   return { restored, failed };
 }
 
-async function restoreBinItem(userId: string, id: string) {
+async function restoreBinItem(userId: string, id: string, input?: unknown) {
   if (!ID_PATTERN.test(id)) throw notFound('BIN_ITEM_NOT_FOUND', 'Not in the bin');
-  const answer = await restoreFromBin(userId, { ids: [id] });
+  const answer = await restoreFromBin(userId, { ids: [id], calendar_id: parseChoice(input).calendarId });
   const failure = answer.failed.find(item => item.id === id);
   if (failure && !answer.restored.length) {
     const status = failure.code === 'BIN_ITEM_NOT_FOUND' ? 404 : failure.code === 'MODULE_DISABLED' ? 403 : 409;
@@ -588,4 +602,4 @@ export {
   parseRefs,
   MERGE_UNDO_DAYS,
 };
-export type { BinRow, NewBinItem, BinKind, KindRestore, ArchivedBinItem, RestoreArchivedBinOptions };
+export type { BinRow, NewBinItem, BinKind, KindRestore, RestoreChoice, ArchivedBinItem, RestoreArchivedBinOptions };
