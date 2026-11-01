@@ -458,7 +458,9 @@ while its own transaction holds rows that requests may be waiting for with
 every main connection: a restore's progress writes and cancellation checks,
 an export's cancellation checks during its snapshot read, the shared VAPID
 key read, and the worker owner's lock session. Its users run one at a time
-each per process, so four connections never make one of them wait.
+each per process, so four connections never make one of them wait. At
+shutdown the side pools end with the main pool, after the worker owner has
+released its lock.
 
 ## Scheduled Jobs
 

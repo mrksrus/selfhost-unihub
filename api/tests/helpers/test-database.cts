@@ -31,7 +31,11 @@ async function withTestDatabase(t: TestContext, { migrate = true } = {}): Promis
           await cx.query('SET FOREIGN_KEY_CHECKS = 1');
         } finally { cx.release(); }
       }
-    } finally { state.setDb(previous); await pool.end(); }
+    } finally {
+      state.setDb(previous);
+      // The control pool (side-pools.ts) is derived from this pool; it ends with it.
+      try { await (require('../../dist/src/services/side-pools') as typeof import('../../src/services/side-pools')).endSidePools(pool); } finally { await pool.end(); }
+    }
   });
   assert.equal((await pool.query<RowDataPacket[]>('SHOW TABLES'))[0].length, 0, 'Refuse to touch a populated schema');
   owned = true;

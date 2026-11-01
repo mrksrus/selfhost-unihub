@@ -15,18 +15,29 @@ const PromisePool = require(path.join(mysqlRoot, 'lib/promise/pool.js')) as { pr
 const PromisePoolConnection = require(path.join(mysqlRoot, 'lib/promise/pool_connection.js')) as { prototype: PoolConnection };
 const appCode = path.resolve(__dirname, '../../dist') + path.sep;
 
-// Active from the moment the connection is handed over until its release.
-interface Checkout { pool: object; active: boolean; released: boolean; taken: string }
+// Held from the moment the connection is handed over until its release.
+interface Checkout { pool: object; released: boolean; taken: string }
 // A chain, as one task can hold connections of different pools at once.
 interface Holding { checkout: Checkout; outer: Holding | undefined }
 const holding = new AsyncLocalStorage<Holding>();
 const checkouts = new WeakMap<object, Checkout>();
+// The checkout whose caller is resuming with its connection right now (see getConnection).
+let handedOver: Checkout | undefined;
 const violations: string[] = [];
 const callers = (stack = '') => stack.split('\n').slice(2).join('\n');
 
+// Marks the running task as holding the checkout. The task's later work, and
+// work it starts from here on, inherits the mark, which release clears.
+function hold(checkout: Checkout) {
+  if (checkout.released) return;
+  for (let held = holding.getStore(); held; held = held.outer) if (held.checkout === checkout) return;
+  holding.enterWith({ checkout, outer: holding.getStore() });
+}
+
 function refuseSecond(pool: object, method: string) {
+  if (handedOver) hold(handedOver);
   for (let held = holding.getStore(); held; held = held.outer) {
-    if (!held.checkout.active || held.checkout.released || held.checkout.pool !== pool) continue;
+    if (held.checkout.released || held.checkout.pool !== pool) continue;
     const message = `pool.${method}() while this task holds a connection of the same pool; pass that connection instead.\n` +
       `Connection taken:\n${held.checkout.taken}\nSecond request:\n${callers(new Error().stack)}`;
     violations.push(message);
@@ -46,32 +57,36 @@ pool.getConnection = function (this: typeof pool) {
   // A pool that refuses rather than waits (the named-lock pool) cannot hang this way.
   const counted = taken.includes(appCode) && this.pool.config.waitForConnections !== false;
   if (!counted) return getConnection.call(this);
-  const checkout: Checkout = { pool: this, active: false, released: false, taken };
-  // The caller awaits the connection in the context marked here (its promise
-  // cannot set the caller's context later), so from the handover on, a request
-  // of the caller's counts, also before its first statement.
-  holding.enterWith({ checkout, outer: holding.getStore() });
-  return getConnection.call(this).then(connection => {
-    checkout.active = true;
-    checkouts.set(connection, checkout);
-    return connection;
-  }, error => { checkout.released = true; throw error; });
+  const checkout: Checkout = { pool: this, released: false, taken };
+  // Marking the caller's context here would also mark the rest of its
+  // synchronous run, and so every task started beside this one in the same
+  // tick (Promise.all) would hold the connection too. The hold starts in the
+  // caller's own continuation instead: the first reaction to the handed-over
+  // promise, registered before the caller's, opens a window that the
+  // microtask queued right after the caller's resumption closes. Only the
+  // caller's resumed run falls inside it, and its first pool or connection
+  // call there marks it, so a request before the first statement counts.
+  const handed = new Promise<object>((resolve, reject) => {
+    getConnection.call(this).then(connection => {
+      checkouts.set(connection, checkout);
+      resolve(connection);
+      queueMicrotask(() => { if (handedOver === checkout) handedOver = undefined; });
+    }, reject);
+  });
+  handed.then(() => { handedOver = checkout; }, () => {});
+  return handed;
 };
 
 // A caller that reaches the pool through a wrapper of its own (a test's
-// getConnection) is not marked above: the connection's first statement marks
-// the task that runs it. Work it awaits or starts afterwards inherits the
-// mark, which release clears.
+// getConnection) resumes outside that window: the connection's first
+// statement marks the task that runs it.
 const connection = PromisePoolConnection.prototype as unknown as Record<string, (...args: unknown[]) => unknown>;
 for (const method of ['beginTransaction', 'execute', 'query']) {
   const original = connection[method];
   connection[method] = function (this: object, ...args: unknown[]) {
+    if (handedOver) hold(handedOver);
     const checkout = checkouts.get(this);
-    if (checkout && !checkout.released) {
-      let held = holding.getStore();
-      while (held && held.checkout !== checkout) held = held.outer;
-      if (!held) holding.enterWith({ checkout, outer: holding.getStore() });
-    }
+    if (checkout) hold(checkout);
     return original.apply(this, args);
   };
 }
