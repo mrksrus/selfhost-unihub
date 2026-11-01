@@ -275,6 +275,21 @@ test('the instance backup copies the installation, keeps only verified runs, ref
   });
 
   const backupFiles = () => fs.readdirSync(destination).filter(name => name.endsWith('.uhib')).sort();
+  // The completion contract: once the status says nothing runs, the run's
+  // row, the kept count and the files at the destination agree.
+  async function finished() {
+    for (let wait = 0; ; wait++) {
+      const status = (await admin.request('GET', '/api/admin/instance-backup')).body as FixtureValue;
+      if (!status.running) {
+        assert.notEqual(status.last_run?.status, 'running', 'not running, yet the last run still runs');
+        assert.ok(status.kept.count <= status.keep, `${status.kept.count} kept, ${status.keep} to keep`);
+        assert.equal(backupFiles().length, status.kept.count, 'files at the destination');
+        return status;
+      }
+      assert.ok(wait < 600, 'the run finishes');
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
 
   await t.test('Back up now through the route; retention keeps the newest after each verified success', async () => {
     const names: string[] = [];
@@ -287,13 +302,7 @@ test('the instance backup copies the installation, keeps only verified runs, ref
       assert.equal((started.body.run as FixtureValue).actor_email, 'admin@example.test');
       const again = await admin.request('POST', '/api/admin/instance-backup/run', {});
       assert.deepEqual([again.status, again.body.code], [409, 'INSTANCE_BACKUP_RUNNING']);
-      let status: FixtureValue;
-      for (let wait = 0; ; wait++) {
-        status = (await admin.request('GET', '/api/admin/instance-backup')).body;
-        if (!status.running) break;
-        assert.ok(wait < 600, 'the run finishes');
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
+      const status = await finished();
       assert.equal(status.last_run.status, 'succeeded', JSON.stringify(status.last_run));
       names.push(status.last_run.file_name);
     }
@@ -305,6 +314,39 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     assert.ok(oldest.removed_at, 'its run is marked removed');
     assert.equal(Number((await pool.query<RowDataPacket[]>("SELECT COUNT(*) AS count FROM audit_log WHERE action = 'admin.instance_backup_started'"))[0][0].count), 2);
     assert.match(status.restore_command, /instance-restore\.js --file/);
+  });
+
+  await t.test('the status is one snapshot, and a run is running until its retention has removed the old files', async () => {
+    backup.useInstanceBackupConfig({ ...settings, keep: 1 });
+    const holder = await pool.getConnection();
+    try {
+      // Hold the kept runs' rows: the next run's retention has to wait for them.
+      await holder.beginTransaction();
+      const [held] = await holder.query<RowDataPacket[]>("SELECT id FROM instance_backups WHERE status = 'succeeded' AND removed_at IS NULL");
+      assert.ok(held.length >= 1);
+      await holder.query(`SELECT id FROM instance_backups WHERE id IN (${held.map(() => '?').join(', ')}) FOR UPDATE`, held.map(row => row.id));
+      const started = await admin.request('POST', '/api/admin/instance-backup/run');
+      assert.equal(started.status, 202, JSON.stringify(started.body));
+      for (let wait = 0; ; wait++) {
+        // The test user sees its own threads (INNODB_TRX needs PROCESS): the run's locking read is executing, blocked by the holder.
+        const [[waiting]] = await holder.query<RowDataPacket[]>(
+          "SELECT COUNT(*) AS count FROM information_schema.PROCESSLIST WHERE ID <> CONNECTION_ID() AND INFO LIKE '%instance_backups%' AND INFO LIKE '%FOR UPDATE%'");
+        if (Number(waiting.count) > 0) break;
+        assert.ok(wait < 600, 'the run reaches its retention');
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      const during = (await admin.request('GET', '/api/admin/instance-backup')).body as FixtureValue;
+      assert.deepEqual({ running: during.running, refused: (await admin.request('POST', '/api/admin/instance-backup/run')).body.code },
+        { running: true, refused: 'INSTANCE_BACKUP_RUNNING' }, `while retention waits: ${JSON.stringify({ last: during.last_run?.status, kept: during.kept })}`);
+      await holder.commit();
+    } finally {
+      await holder.rollback().catch(() => {});
+      holder.release();
+    }
+    const after = await finished();
+    assert.equal(after.last_run.status, 'succeeded');
+    assert.deepEqual([after.kept.count, backupFiles()], [1, [after.last_run.file_name]]);
+    backup.useInstanceBackupConfig(settings);
   });
 
   await t.test('each run writes a file of its own, never over another, and retention keeps the latest', async () => {
