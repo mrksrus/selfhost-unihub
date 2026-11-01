@@ -10,6 +10,7 @@ import {
   rewriteInlineAttachments,
 } from './mail-attachments';
 import { adoptReplies, resolveThreadKey, storedReferences, threadHeaders } from './mail-threading';
+import { fileRemovalGate } from './file-removal-gate';
 
 interface RawArchive {
   rawStoragePath?: string;
@@ -162,7 +163,9 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
   await deleteStoredAttachmentFiles(oldAttachments.map(row => row.storage_path));
   if (existingEmail?.raw_storage_path && existingEmail.raw_storage_path !== archive!.rawStoragePath) {
     // The caller controls archive paths; avoid deleting a restored arbitrary path.
-    if (isMailRawPathUnderRoot(existingEmail.raw_storage_path)) await fs.rm(existingEmail.raw_storage_path, { force: true }).catch(() => {});
+    // After an instance backup's copy when one runs (file-removal-gate.ts); the name is unique.
+    const replaced = existingEmail.raw_storage_path;
+    if (isMailRawPathUnderRoot(replaced)) await fileRemovalGate.run(() => fs.rm(replaced, { force: true })).catch(() => {});
   }
   return { emailId, isNew: !existingEmail };
 }

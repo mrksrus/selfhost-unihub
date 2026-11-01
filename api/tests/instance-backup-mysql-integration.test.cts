@@ -76,10 +76,56 @@ test('the instance backup copies the installation, keeps only verified runs, ref
   const admin = await signIn('admin'), alex = await signIn('alex');
   const contact = await alex.request('POST', '/api/contacts', { name: { given: 'Casey' }, emails: ['casey@example.test'] });
   assert.ok([200, 201].includes(contact.status), JSON.stringify(contact.body));
+  // A contact photo through the real routes: its files are named by content and released after a commit.
+  const sharp = require('sharp') as typeof import('sharp').default;
+  const portrait = await sharp({ create: { width: 400, height: 400, channels: 3, background: '#2050c0' } }).jpeg().toBuffer();
+  const contactId = String((contact.body.contact as FixtureValue).id);
+  const photoReply = await alex.request('PUT', `/api/contacts/${contactId}/photo`, portrait, { 'content-type': 'image/jpeg' });
+  assert.equal(photoReply.status, 200, JSON.stringify(photoReply.body));
+  const [[photoRow]] = await pool.query<RowDataPacket[]>('SELECT sha256, thumb_sha256 FROM contact_photos WHERE user_id = ?', [users.alex]);
+  const photoFiles = [photoRow.sha256, photoRow.thumb_sha256].map(hash => path.join(rootDirs['contact-photos'], users.alex, `${hash}.jpg`));
+  assert.ok(photoFiles.every(file => fs.existsSync(file)));
+
+  // Provider work the installation had accepted: a move into Trash queued and
+  // current with its engine job, provider deletion on with a deletion queued,
+  // a scheduled send and one in progress, a calendar move half done.
+  const mailAccount = crypto.randomUUID(), movedEmail = crypto.randomUUID(), move = crypto.randomUUID();
+  await pool.execute(`INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active, delete_emails_on_server, sync_policy_confirmed_at)
+    VALUES (?, ?, 'alex@example.test', 'custom', 'download', TRUE, TRUE, UTC_TIMESTAMP())`, [mailAccount, users.alex]);
+  await pool.execute(`INSERT INTO emails (id, user_id, mail_account_id, from_address, to_addresses, folder, remote_folder, remote_uid, remote_uidvalidity)
+    VALUES (?, ?, ?, 'casey@example.test', '[]', 'inbox', 'INBOX', 7, 1)`, [movedEmail, users.alex, mailAccount]);
+  await pool.execute(`INSERT INTO mail_writebacks (id, user_id, mail_account_id, email_id, action, target_value, base_value, target_folder, remote_folder,
+      remote_uid, remote_uidvalidity, status, state, is_current, available_at)
+    VALUES (?, ?, ?, ?, 'move', 'trash', 'inbox', 'trash', 'INBOX', 7, 1, 'pending', 'queued', TRUE, DATE_SUB(UTC_TIMESTAMP(), INTERVAL 60 SECOND))`,
+  [move, users.alex, mailAccount, movedEmail]);
+  const engine = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
+  await engine.enqueueJob({ userId: users.alex, accountId: mailAccount, operationId: move, kind: 'operation', priority: 0 }, pool);
+  await pool.execute(`INSERT INTO mail_server_messages (user_id, mail_account_id, email_id, source_folder, imap_uid, imap_uidvalidity, delete_status)
+    VALUES (?, ?, ?, 'INBOX', 7, 1, 'pending')`, [users.alex, mailAccount, movedEmail]);
+  const sends: Record<string, string> = {};
+  for (const status of ['scheduled', 'sending']) {
+    const draft = crypto.randomUUID();
+    sends[status] = draft;
+    await pool.execute(`INSERT INTO emails (id, user_id, mail_account_id, from_address, to_addresses, folder, is_draft)
+      VALUES (?, ?, ?, 'alex@example.test', '["casey@example.test"]', 'drafts', TRUE)`, [draft, users.alex, mailAccount]);
+    await pool.execute(`INSERT INTO mail_scheduled_sends (id, user_id, email_id, mail_account_id, send_at, status, client_key)
+      VALUES (?, ?, ?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 DAY), ?, ?)`, [crypto.randomUUID(), users.alex, draft, mailAccount, status, `synthetic-${status}-${draft}`]);
+  }
+  await pool.execute(`INSERT INTO calendar_event_moves (id, user_id, target_uid, state, next_attempt_at) VALUES (?, ?, 'synthetic-move@example.test', 'removing', UTC_TIMESTAMP())`,
+    [crypto.randomUUID(), users.alex]);
+
   const recordingPath = write(path.join(rootDirs.recordings, users.alex, 'memo.webm'), crypto.randomBytes(300_000));
   await pool.execute("INSERT INTO recordings (id, user_id, title, content_type, storage_path) VALUES (?, ?, 'Synthetic memo', 'audio/webm', ?)", [crypto.randomUUID(), users.alex, recordingPath]);
+  const uuid = () => crypto.randomUUID();
   const included = [
     recordingPath,
+    ...photoFiles,
+    // Stored names keep what a person called the file: none of these is work in progress.
+    write(path.join(rootDirs.attachments, users.alex, `${uuid()}-${uuid()}-report.tmp`), 'an attachment named report.tmp'),
+    write(path.join(rootDirs.attachments, users.alex, `${uuid()}-${uuid()}-draft.partial`), 'an attachment named draft.partial'),
+    write(path.join(rootDirs.attachments, users.alex, `${uuid()}-${uuid()}-notes.tmp.txt`), 'an attachment named notes.tmp.txt'),
+    // What a finished account restore wrote stays in its restores directory.
+    write(path.join(rootDirs['mail-raw'], users.alex, 'restores', uuid(), `${uuid()}-restored.eml`), 'Subject: Restored\r\n\r\n'),
     write(path.join(rootDirs['mail-raw'], users.alex, 'message-1.eml'), 'From: casey@example.test\r\nSubject: Synthetic\r\n\r\nHello\r\n'),
     write(path.join(rootDirs.attachments, users.alex, 'a'.repeat(150) + '-attachment.bin'), crypto.randomBytes(5000)),
     write(path.join(rootDirs['contact-photos'], users.alex, `${'c'.repeat(64)}.jpg`), crypto.randomBytes(2000)),
@@ -87,13 +133,26 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     write(path.join(rootDirs['mail-raw'], users.blair, 'leaves-during-copy.eml'), 'Subject: Removed after the dump\r\n\r\n'),
   ];
   const removedDuringCopy = included[included.length - 1];
+  // Work in progress, by the names the app's writers give it.
   const leftOut = [
     write(path.join(rootDirs.backups, 'imports', users.alex, 'upload.bin'), 'staged upload'),
-    write(path.join(rootDirs.backups, users.alex, 'restores', 'job', 'work.json'), '{}'),
-    write(path.join(rootDirs.backups, users.alex, 'job.zip.partial'), 'partial export'),
-    write(path.join(rootDirs.recordings, '.tmp', users.alex, 'upload.part'), 'chunk'),
-    write(path.join(rootDirs['contact-photos'], users.alex, '.photo.jpg.1234.tmp'), 'temporary'),
+    write(path.join(rootDirs.backups, 'restores', users.alex, `${uuid()}.unihub-backup`), 'uploaded restore archive'),
+    write(path.join(rootDirs.backups, 'restores', 'work', uuid(), 'manifest.json'), '{}'),
+    write(path.join(rootDirs.backups, users.alex, `${uuid()}.zip.partial`), 'partial export'),
+    write(path.join(rootDirs.recordings, '.tmp', users.alex, `${uuid()}.part`), 'chunk'),
+    write(path.join(rootDirs.recordings, users.alex, `memo.mp3.${uuid()}.tmp.mp3`), 'conversion in progress'),
+    write(path.join(rootDirs['mail-raw'], users.alex, `${uuid()}-${uuid()}.eml.part`), 'raw message being written'),
+    write(path.join(rootDirs['contact-photos'], users.alex, `.${'d'.repeat(64)}.jpg.${uuid()}.tmp`), 'photo being written'),
   ];
+  // Deployment secrets misplaced among the stored files: a Compose .env and a
+  // configured secret file reached through a hard link.
+  const deploymentSecret = write(path.join(scratch, 'secrets', 'jwt'), 'synthetic-deployment-secret');
+  process.env.UNIHUB_SYNTHETIC_SECRET_FILE = deploymentSecret;
+  t.after(() => { delete process.env.UNIHUB_SYNTHETIC_SECRET_FILE; });
+  leftOut.push(write(path.join(rootDirs.backups, '.env'), 'UNIHUB_JWT_SECRET=synthetic-env-value\n'));
+  const linkedSecret = path.join(rootDirs.attachments, users.alex, 'linked-secret');
+  fs.linkSync(deploymentSecret, linkedSecret);
+  leftOut.push(linkedSecret);
   const hashes = new Map(included.map(file => [file, sha(file)]));
 
   await t.test('admin-only routes, off without a configuration', async () => {
@@ -112,6 +171,24 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     backup.useInstanceBackupConfig(settings);
   });
 
+  await t.test('startup refuses a secret file among the stored files, also through a link or an aliased path', () => {
+    const inBackups = write(path.join(rootDirs.backups, users.alex, 'instance.key'), key.toString('base64'));
+    const viaLink = path.join(scratch, 'keys', 'alias.key');
+    fs.symlinkSync(inBackups, viaLink);
+    const aliasedUploads = path.join(scratch, 'uploads-alias');
+    fs.symlinkSync(uploads, aliasedUploads);
+    try {
+      for (const file of [inBackups, viaLink, path.join(aliasedUploads, 'backups', users.alex, 'instance.key')]) {
+        assert.match(backup.instanceBackupSetupErrors(settings, { INSTANCE_BACKUP_KEY_FILE: file }).join('\n'), /INSTANCE_BACKUP_KEY_FILE .* is inside the stored files/, file);
+      }
+      assert.match(backup.instanceBackupSetupErrors(settings, { ENCRYPTION_KEY_FILE: inBackups }).join('\n'), /ENCRYPTION_KEY_FILE/);
+      assert.match(backup.instanceBackupSetupErrors({ ...settings, dir: path.join(aliasedUploads, 'attachments') }, {}).join('\n'), /INSTANCE_BACKUP_DIR must be its own volume/);
+      assert.deepEqual(backup.instanceBackupSetupErrors(settings, { INSTANCE_BACKUP_KEY_FILE: keyFile }), []);
+    } finally {
+      for (const file of [inBackups, viaLink, aliasedUploads]) fs.rmSync(file, { force: true });
+    }
+  });
+
   await t.test('a failed run removes its partial file and is never counted', async () => {
     const previous = process.env.UNIHUB_MARIADB_BIN_DIR;
     process.env.UNIHUB_MARIADB_BIN_DIR = path.join(scratch, 'no-client-here');
@@ -128,19 +205,24 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     assert.deepEqual([status.body.kept, status.body.last_success, (status.body.last_run as FixtureValue).status], [{ count: 0, bytes: 0 }, null, 'failed']);
   });
 
-  let first: { file: string; counts: Record<string, number> };
-  await t.test('a run: dump and files, a removal after the dump waits at the gate, verified before it counts', async () => {
+  let first: { file: string; manifest: import('../src/services/instance-backup-format').InstanceBackupManifest };
+  await t.test('a run: dump and files, removals after the dump wait at the gate, verified before it counts', async () => {
     await new Promise(resolve => setTimeout(resolve, 1100));
-    let removal: unknown;
+    // What the copy finds after the dump, recorded in the hook and checked after the run.
+    const during: Record<string, unknown> = {};
     const run = await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin, hooks: { afterDump: async () => {
       // blair's message row went after the dump: the file must stay until the copy has ended.
-      removal = await backup.fileRemovalGate.run(() => fs.promises.rm(removedDuringCopy));
-      assert.equal(removal, 'deferred');
-      assert.ok(fs.existsSync(removedDuringCopy));
+      during.removal = await backup.fileRemovalGate.run(() => fs.promises.rm(removedDuringCopy));
+      during.messageKept = fs.existsSync(removedDuringCopy);
+      // alex removes the contact photo after the dump: the dump still has its row, so its files stay for the copy.
+      during.photoDelete = (await alex.request('DELETE', `/api/contacts/${contactId}/photo`)).status;
+      during.photoRows = Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS count FROM contact_photos WHERE user_id = ?', [users.alex]))[0][0].count);
+      during.photoFilesKept = photoFiles.map(file => fs.existsSync(file));
     } } });
     assert.equal(run!.status, 'succeeded', String(run!.error));
-    assert.equal(removal, 'deferred');
+    assert.deepEqual(during, { removal: 'deferred', messageKept: true, photoDelete: 200, photoRows: 0, photoFilesKept: [true, true] }, 'removals after the dump wait at the gate');
     assert.equal(fs.existsSync(removedDuringCopy), false, 'the queued removal ran once the copy ended');
+    assert.ok(photoFiles.every(file => !fs.existsSync(file)), 'the queued photo release checked the references again and removed them');
     assert.match(run!.file_name!, /^unihub-instance-\d{8}T\d{6}Z-[0-9.]+\.uhib$/);
     assert.deepEqual(fs.readdirSync(destination), [run!.file_name]);
     const file = path.join(destination, run!.file_name!);
@@ -159,12 +241,20 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     assert.deepEqual(scanned.sort(), [...included].sort(), 'every stored file, none of the work in progress');
     assert.equal(manifest.files.count, included.length);
     assert.ok(manifest.database.tables.users >= 3);
-    first = { file: path.join(scratch, 'first.uhib'), counts: {} };
+    assert.equal(manifest.database.tables.contact_photos, 1, 'the dump came before the photo was removed');
+    first = { file: path.join(scratch, 'first.uhib'), manifest };
     fs.copyFileSync(file, first.file);
-    for (const row of (await pool.query<RowDataPacket[]>('SHOW TABLES'))[0]) {
-      const name = String(Object.values(row)[0]);
-      first.counts[name] = Number((await pool.query<RowDataPacket[]>(`SELECT COUNT(*) AS count FROM ${pool.escapeId(name)}`))[0][0].count);
-    }
+  });
+
+  await t.test('verification stops when the run is stopped', async () => {
+    const controller = new AbortController();
+    const stop = new Error('synthetic stop');
+    let pieces = 0;
+    await assert.rejects(format.scanInstanceBackup(first.file, key, backup.INSTANCE_BACKUP_ROOTS, {
+      signal: controller.signal, onDatabase: () => { pieces++; controller.abort(stop); },
+    }), error => error === stop);
+    assert.equal(pieces, 1, 'nothing more was read after the stop');
+    await assert.rejects(format.scanInstanceBackup(first.file, key, backup.INSTANCE_BACKUP_ROOTS, { signal: AbortSignal.abort(stop) }), error => error === stop);
   });
 
   await t.test('another key, a changed byte, a cut-off file and trailing bytes are refused', async () => {
@@ -201,7 +291,7 @@ test('the instance backup copies the installation, keeps only verified runs, ref
         assert.ok(wait < 600, 'the run finishes');
         await new Promise(resolve => setTimeout(resolve, 100));
       }
-      assert.equal(status.last_run.status, 'succeeded', status.last_run.error);
+      assert.equal(status.last_run.status, 'succeeded', JSON.stringify(status.last_run));
       names.push(status.last_run.file_name);
     }
     const status = (await admin.request('GET', '/api/admin/instance-backup')).body as FixtureValue;
@@ -231,14 +321,43 @@ test('the instance backup copies the installation, keeps only verified runs, ref
 
     const lines: string[] = [];
     assert.equal(await restoreCommand(['--file', first.file, '--key-file', keyFile], line => lines.push(line)), 0, lines.join('\n'));
-    for (const [table, count] of Object.entries(first.counts)) {
+    // Nothing the old server still had to do at a provider runs again (the account restore's policy).
+    const [[account]] = await pool.query<RowDataPacket[]>('SELECT is_active, delete_emails_on_server, sync_policy_confirmed_at FROM mail_accounts WHERE id = ?', [mailAccount]);
+    const [[operation]] = await pool.query<RowDataPacket[]>('SELECT state, status, is_current FROM mail_writebacks WHERE id = ?', [move]);
+    const [jobs] = await pool.query<RowDataPacket[]>('SELECT state FROM mail_engine_jobs WHERE operation_id = ?', [move]);
+    const [schedules] = await pool.query<RowDataPacket[]>('SELECT email_id, status FROM mail_scheduled_sends WHERE user_id = ? ORDER BY status', [users.alex]);
+    const count = async (sql: string) => Number((await pool.query<RowDataPacket[]>(sql))[0][0].count);
+    assert.deepEqual({
+      account: [Number(account.is_active), Number(account.delete_emails_on_server), account.sync_policy_confirmed_at],
+      move: [operation.state, operation.status, Number(operation.is_current)],
+      jobs: jobs.map(job => job.state),
+      claimed: !!await engine.claimDueJob({ workerId: 'restored-installation', accountId: mailAccount }, pool),
+      // The scheduled draft is unscheduled; the started send is never tried again.
+      sends: schedules.map(row => [row.email_id, row.status]),
+      deletionsQueued: await count("SELECT COUNT(*) AS count FROM mail_server_messages WHERE delete_status = 'pending'"),
+      calendarMoves: await count('SELECT COUNT(*) AS count FROM calendar_event_moves'),
+    }, {
+      account: [0, 0, null], move: ['needs_attention', 'conflict', 0], jobs: ['paused'], claimed: false,
+      sends: [[sends.sending, 'unknown']], deletionsQueued: 0, calendarMoves: 0,
+    });
+
+    // Every table as the dump had it, but for the running life of the old installation.
+    const retired: Record<string, number> = { sessions: 0, file_tickets: 0, two_factor_challenges: 0, calendar_event_moves: 0,
+      mail_scheduled_sends: first.manifest.database.tables.mail_scheduled_sends - 1, mail_server_messages: first.manifest.database.tables.mail_server_messages - 1 };
+    for (const [table, count] of Object.entries(first.manifest.database.tables)) {
       const [[row]] = await pool.query<RowDataPacket[]>(`SELECT COUNT(*) AS count FROM ${pool.escapeId(table)}`);
-      const expected = ['sessions', 'file_tickets', 'two_factor_challenges'].includes(table) ? 0 : count;
-      assert.equal(Number(row.count), expected, table);
+      assert.equal(Number(row.count), table in retired ? retired[table] : count, table);
     }
-    assert.ok(first.counts.sessions > 0, 'the source had sessions to leave behind');
+    assert.ok(first.manifest.database.tables.sessions > 0, 'the source had sessions to leave behind');
     for (const file of included) assert.equal(sha(file), hashes.get(file), file);
     for (const file of leftOut) assert.equal(fs.existsSync(file), false, file);
+
+    // The photo whose row the dump holds has its files.
+    const [[restoredPhoto]] = await pool.query<RowDataPacket[]>('SELECT sha256, thumb_sha256 FROM contact_photos WHERE user_id = ?', [users.alex]);
+    assert.deepEqual([restoredPhoto.sha256, restoredPhoto.thumb_sha256], [photoRow.sha256, photoRow.thumb_sha256]);
+    assert.ok(photoFiles.every(file => fs.existsSync(file)), 'the restored photo row has its files');
+
+    assert.match(lines.join('\n'), /Mail accounts are paused/);
     const [runs] = await pool.query<RowDataPacket[]>('SELECT status, file_name FROM instance_backups ORDER BY started_at');
     assert.deepEqual(runs.map(run => run.status), ['failed', 'succeeded'], 'the run that wrote the backup shows as succeeded');
     assert.equal(runs[1].file_name, 'first.uhib');

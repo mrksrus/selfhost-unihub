@@ -86,15 +86,36 @@ function fileRoots() {
 }
 const ROOT_NAMES = ['attachments', 'mail-raw', 'recordings', 'contact-photos', 'backups'];
 
-// What a backup leaves out of a root: work in progress that a restore must
-// not bring back (each root's own temporary names), staged imports and restores.
+// What a backup leaves out of a root: only the work in progress of the app's
+// own writers, by the exact names they give it, which a restore must not
+// bring back. A stored file keeps any name a person gave it (an attachment
+// called report.tmp is data), so nothing else is matched by its ending.
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const TEMPORARY_FILES: Readonly<Record<string, { name: RegExp; depth?: number }>> = {
+  // mail-engine/content.ts publishRaw: <user>/<email>-<uuid>.eml.part, renamed when written.
+  'mail-raw': { name: new RegExp(`^${UUID}-${UUID}\\.eml\\.part$`, 'i'), depth: 2 },
+  // recordings.ts conversion: <final>.<uuid>.tmp.mp3 beside the recording.
+  recordings: { name: new RegExp(`\\.${UUID}\\.tmp\\.mp3$`, 'i') },
+  // contact-photos.ts writes: <user>/.<name>.<uuid>.tmp.
+  'contact-photos': { name: new RegExp(`^\\..+\\.${UUID}\\.tmp$`, 'i'), depth: 2 },
+  // export-jobs.ts: <user>/<job>.zip.partial until the archive is complete.
+  backups: { name: new RegExp(`^${UUID}\\.zip\\.partial$`, 'i'), depth: 2 },
+};
+// Directories that hold only work in progress: recording chunks being
+// uploaded (recordings.ts), backup uploads being received (request-handler.ts
+// imports) and uploaded restore archives with their work (backup-restore-jobs.ts).
+// Files a finished account restore wrote stay in <root>/<user>/restores/<job>
+// of the mail and recording roots and are data.
+const TEMPORARY_DIRECTORIES: Readonly<Record<string, readonly string[]>> = {
+  recordings: ['.tmp'],
+  backups: ['imports', 'restores'],
+};
+
 function leftOut(root: string, segments: readonly string[], isDirectory: boolean) {
   const name = segments[segments.length - 1];
-  if (name.endsWith(PARTIAL) || name.endsWith('.tmp') || /\.tmp\./.test(name)) return true;
-  if (!isDirectory) return false;
-  if (root === 'recordings' && segments.length === 1 && name === '.tmp') return true;
-  if (root === 'backups' && ((segments.length === 1 && name === 'imports') || (segments.length === 2 && name === 'restores'))) return true;
-  return false;
+  if (isDirectory) return segments.length === 1 && (TEMPORARY_DIRECTORIES[root] ?? []).includes(name);
+  const temporary = TEMPORARY_FILES[root];
+  return !!temporary && (temporary.depth === undefined || temporary.depth === segments.length) && temporary.name.test(name);
 }
 
 const inside = (child: string, parent: string) => {
@@ -102,12 +123,52 @@ const inside = (child: string, parent: string) => {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 };
 
-/** Startup refusals the configuration alone cannot see: a destination inside the stored data. */
-function instanceBackupSetupErrors(settings = config) {
-  if (!settings.dir) return [];
-  const data = ['/app/uploads', ...fileRoots().map(root => root.dir)];
-  return data.some(dir => inside(settings.dir!, dir) || inside(dir, settings.dir!))
-    ? ['INSTANCE_BACKUP_DIR must be its own volume or mount, outside /app/uploads and the stored files.'] : [];
+// A path and the path it really is (symbolic links resolved), for a check
+// that an alias must not pass.
+function bothPaths(target: string) {
+  const resolved = path.resolve(target);
+  try { return [...new Set([resolved, fs.realpathSync(resolved)])]; } catch { return [resolved]; }
+}
+
+function storedDataDirs() {
+  return [...new Set(['/app/uploads', ...fileRoots().map(root => root.dir)].flatMap(bothPaths))];
+}
+
+/** The secret files the deployment names (every NAME_FILE that is set). */
+function secretFiles(env: NodeJS.ProcessEnv = process.env) {
+  return Object.entries(env).filter(([name, value]) => /_FILE$/.test(name) && !!value).map(([name, value]) => ({ name, path: value! }));
+}
+
+/**
+ * Startup refusals the configuration alone cannot see: a destination inside
+ * the stored data, and a secret file inside what the backup copies (the
+ * backup must never carry a key, F10), also through a symbolic link.
+ */
+function instanceBackupSetupErrors(settings = config, env: NodeJS.ProcessEnv = process.env) {
+  const errors: string[] = [];
+  const data = storedDataDirs();
+  if (settings.dir && bothPaths(settings.dir).some(dir => data.some(root => inside(dir, root) || inside(root, dir)))) {
+    errors.push('INSTANCE_BACKUP_DIR must be its own volume or mount, outside /app/uploads and the stored files.');
+  }
+  for (const secret of secretFiles(env)) {
+    if (bothPaths(secret.path).some(file => data.some(root => inside(file, root)))) {
+      errors.push(`${secret.name} (${secret.path}) is inside the stored files, which backups copy; keep secret files outside /app/uploads.`);
+    }
+  }
+  return errors;
+}
+
+// Deployment secrets a misplaced mount could put in a root: the configured
+// secret files, recognised by the file itself (a hard link or a second mount
+// of one is the same file), and Compose's .env files, a name no writer of
+// the app gives a stored file.
+const DEPLOYMENT_FILE = /^\.env(\..*)?$/;
+function secretIdentities(env: NodeJS.ProcessEnv = process.env) {
+  const identities = new Set<string>();
+  for (const secret of secretFiles(env)) {
+    try { const stat = fs.statSync(secret.path); identities.add(`${stat.dev}:${stat.ino}`); } catch { /* a missing file stopped the start */ }
+  }
+  return identities;
 }
 
 // ── Runs ──────────────────────────────────────────────────────────────
@@ -208,7 +269,7 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
     await checkDestination(settings.dir);
     const { bytes, sha256, manifest } = await writeBackup(partialPath, row, settings, controller.signal, hooks);
     // Counted only once the whole file reads back with the key.
-    const verified = await scanInstanceBackup(partialPath, settings.key, ROOT_NAMES);
+    const verified = await scanInstanceBackup(partialPath, settings.key, ROOT_NAMES, { signal: controller.signal });
     if (verified.sha256 !== sha256 || verified.header.backup_id !== row.id) throw new InstanceBackupError('The backup did not read back as written.');
     controller.signal.throwIfAborted();
     await fs.promises.rename(partialPath, finalPath);
@@ -361,9 +422,13 @@ async function writeBackup(partialPath: string, row: RunRow, settings: { key: Bu
       index = []; indexBytes = 0;
     };
     const roots = fileRoots();
+    const secrets = secretIdentities();
+    let secretsLeftOut = 0;
     for (const root of roots) {
       for await (const relative of walk(root.name, root.dir, signal)) {
-        const copied = await copyFile(tar, root, relative, signal);
+        if (DEPLOYMENT_FILE.test(path.basename(relative))) { secretsLeftOut++; continue; }
+        const copied = await copyFile(tar, root, relative, signal, secrets);
+        if (copied === 'secret') { secretsLeftOut++; continue; }
         if (!copied) continue;
         const line: IndexLine = { r: root.name, p: relative, s: copied.size, h: copied.sha256, ...(copied.changed ? { c: 1 as const } : {}) };
         const text = `${JSON.stringify(line)}\n`;
@@ -377,6 +442,7 @@ async function writeBackup(partialPath: string, row: RunRow, settings: { key: Bu
     }
     await flushIndex();
     await reopen();
+    if (secretsLeftOut) log.warn(LOG, 'Left deployment secret files found among the stored files out of the backup', { run: row.id, files: secretsLeftOut });
 
     // 3. The manifest, then the end.
     const manifest: InstanceBackupManifest = {
@@ -424,7 +490,7 @@ async function* walk(rootName: string, rootDir: string, signal: AbortSignal): As
  * rare) is kept at that size and marked, and a restore leaves it out. A file
  * removed before it is opened is not needed: its row went before the dump.
  */
-async function copyFile(tar: TarWriter, root: { name: string; dir: string }, relative: string, signal: AbortSignal) {
+async function copyFile(tar: TarWriter, root: { name: string; dir: string }, relative: string, signal: AbortSignal, secrets: ReadonlySet<string>) {
   const handle = await fs.promises.open(path.join(root.dir, relative), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT' || error.code === 'ELOOP') return null;
     throw error;
@@ -433,6 +499,7 @@ async function copyFile(tar: TarWriter, root: { name: string; dir: string }, rel
   try {
     const before = await handle.stat();
     if (!before.isFile()) return null;
+    if (secrets.has(`${before.dev}:${before.ino}`)) return 'secret' as const;
     const size = before.size;
     const hash = crypto.createHash('sha256');
     await tar.begin(`files/${root.name}/${relative}`, size);

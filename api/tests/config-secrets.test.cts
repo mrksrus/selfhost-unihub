@@ -88,6 +88,23 @@ test('the instance backup is off without a destination and a key, and refuses a 
     if (value.length > 8) assert.equal(parsed.errors.join('\n').includes(value), false, 'no value in the message');
   }
   assert.equal(parse({ INSTANCE_BACKUP_KEEP: '0' }).keep, config.INSTANCE_BACKUP_DEFAULT_KEEP);
+
+  // Another secret's text, written as a key in any encoding, is that secret.
+  const texts = { JWT_SECRET: `synthetic-jwt-${crypto.randomBytes(24).toString('hex')}`, ENCRYPTION_KEY: crypto.randomBytes(32).toString('base64'),
+    ENCRYPTION_KEY_PREVIOUS: `synthetic previous key ${crypto.randomBytes(16).toString('hex')}`, BACKUP_MASTER_KEY: crypto.randomBytes(40).toString('hex') };
+  for (const [name, text] of Object.entries(texts)) {
+    const bytes = Buffer.from(text, 'utf8');
+    const decoded = config.decodeKeyText(text);
+    const encodings = [text, ` ${text}\n`, bytes.toString('base64'), bytes.toString('base64url'), bytes.toString('hex'),
+      ...(decoded && decoded.length >= 32 ? [decoded.toString('base64'), decoded.toString('hex'), decoded.toString('base64url')] : [])];
+    for (const encoding of encodings) {
+      const parsed = config.parseInstanceBackupConfig({ INSTANCE_BACKUP_KEY: encoding }, texts);
+      assert.equal(parsed.key, null, `${name} as ${encoding.slice(0, 12)}... is refused`);
+      // A text that is no key at all fails as too short; every key encoding names the secret it repeats.
+      if (config.decodeKeyText(encoding)) assert.match(parsed.errors.join('\n'), new RegExp(`its own key, not the value of (.* or )?${name}\\b`), `${name} as ${encoding.slice(0, 12)}...`);
+    }
+  }
+  assert.deepEqual(config.parseInstanceBackupConfig({ INSTANCE_BACKUP_KEY: crypto.randomBytes(32).toString('base64') }, texts).errors, []);
   assert.throws(() => config.assertConfiguration(['INSTANCE_BACKUP_DIR must be its own volume']), /Configuration refused:\n- INSTANCE_BACKUP_DIR/);
 });
 
@@ -104,13 +121,24 @@ test('the instance backup destination is refused inside the stored files, and th
   assert.equal(backup.nextRun(at('2026-11-01T10:00:00Z'), '03:30').toISOString(), '2026-11-02T03:30:00.000Z');
   assert.equal(backup.nextRun(at('2026-11-01T01:00:00Z'), '03:30').toISOString(), '2026-11-01T03:30:00.000Z');
 
+  // Only the app's own work in progress is left out, by the names its writers give it.
+  const id = () => crypto.randomUUID();
   const left = (root: string, relative: string, directory = false) => backup.leftOut(root, relative.split('/'), directory);
-  assert.ok(left('backups', 'imports', true));
-  assert.ok(left('backups', 'user/restores', true));
-  assert.ok(left('backups', 'user/job.zip.partial'));
-  assert.ok(left('recordings', '.tmp', true));
-  assert.ok(left('recordings', 'user/memo.webm.0c1d.tmp.mp3'));
-  assert.ok(left('contact-photos', 'user/.abc.jpg.0c1d.tmp'));
-  assert.equal(left('backups', 'user/job.unihub-backup'), false);
-  assert.equal(left('recordings', 'user/memo.webm'), false);
+  for (const [root, relative, directory] of [
+    ['backups', 'imports', true], ['backups', 'restores', true], ['recordings', '.tmp', true],
+    ['backups', `user/${id()}.zip.partial`], ['recordings', `user/memo.mp3.${id()}.tmp.mp3`],
+    ['recordings', `user/restores/job/memo.mp3.${id()}.tmp.mp3`], ['mail-raw', `user/${id()}-${id()}.eml.part`],
+    ['contact-photos', `user/.${'a'.repeat(64)}.jpg.${id()}.tmp`],
+  ] as [string, string, boolean?][]) assert.ok(left(root, relative, directory), `${root}/${relative} is work in progress`);
+  for (const [root, relative, directory] of [
+    // A person's names are data, whatever they end in.
+    ['attachments', `user/${id()}-${id()}-report.tmp`], ['attachments', `user/${id()}-${id()}-draft.partial`],
+    ['attachments', `user/${id()}-${id()}-notes.tmp.txt`], ['attachments', `user/${id()}.eml.part`],
+    ['backups', 'user/report.zip.partial'], ['backups', `user/${id()}.unihub-backup`], ['recordings', 'user/memo.webm'],
+    ['recordings', 'user/memo.tmp.mp3'], ['contact-photos', `user/${'a'.repeat(64)}.jpg`],
+    ['mail-raw', `user/restores/job/${id()}-${id()}.eml.part`],
+    // A finished account restore's files, and same-named directories deeper down.
+    ['attachments', 'user/restores', true], ['mail-raw', 'user/restores', true], ['recordings', 'user/.tmp', true],
+    ['backups', 'user/restores', true], ['attachments', 'imports', true],
+  ] as [string, string, boolean?][]) assert.equal(left(root, relative, directory), false, `${root}/${relative} is stored data`);
 });
