@@ -168,7 +168,9 @@ project now and then, and sign in. The release gate runs the same restore:
 emptied test database and empty storage and compares every table and file,
 and [the drill](RELEASE_CONTRACT.md#what-the-instance-backup-drill-proves)
 (`scripts/instance-backup-drill.mts`) runs the restore command of the image
-under test into an empty installation and signs in.
+under test into an empty installation, compares the people, policies,
+settings and mail accounts of the whole installation with the source, and
+signs in.
 
 ## Backup versions and restore behavior
 

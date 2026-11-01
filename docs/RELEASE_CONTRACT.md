@@ -246,24 +246,43 @@ test values for the key and the destination (the schedule and the number
 kept do not matter to it).
 
 1. The source runs with the instance backup on (a destination volume of its
-   own and the key as a file) and gets the synthetic data of the recovery
-   check. The test providers stay down, so nothing changes the data.
+   own and the key as a file). Three people get data: the owner and a second
+   person get the synthetic data of the recovery check, each with mail
+   accounts whose mail has originals, and a second administrator, promoted by
+   the owner, gets a contact. The installation gets a policy that is not the
+   default (`backup.download_mail` forced, locked), which must apply to the
+   second person. The test providers stay down, so nothing changes the data.
 2. An administrator presses Back up now; the run must succeed. The file must
-   hold no password or key in plain text. It is copied off the destination,
-   and the source, its database and storage are deleted.
+   hold no password or key in plain text. Every person's tables must be
+   unchanged by the run. It is copied off the destination, and the source,
+   its database and storage are deleted.
 3. A new installation with the source's `ENCRYPTION_KEY` and
    `BACKUP_MASTER_KEY` and a JWT secret of its own is prepared without
    starting the app. The restore command of the image
    (`node /app/api/src/instance-restore.js`, run as `docker compose run`
    would) must refuse a wrong key, pass `--verify-only`, restore, and refuse a
    second restore into the now full installation.
-4. The app starts. Every recovery table holds the source's rows under the same
-   IDs, every stored file has its bytes (owned by the API user in the image),
-   the stored passwords are the same ciphertexts and read with the old key, and
-   no session of the old installation is left. The owner signs in again and
-   sees exactly what they saw on the source.
-5. The providers come up; each restored mail password signs in, and a
-   calendar sync succeeds with the restored calendar password.
+4. The app starts. What belongs to the whole installation must equal the
+   source (`api/tests/helpers/instance-drill-state.cts`): the people with
+   their roles, passwords and two-step sign-in, the policies, the installation
+   settings, the push identity and every activity log entry. Each mail
+   account row must be the source's except for the pause the restore sets,
+   as a mail restore does (`pauseMailRestore`): inactive, deletion at the
+   provider off and its policy confirmation cleared.
+   The only other differences allowed are the documented resets, which must
+   be zero after the restore: sessions, file tickets, sign-in challenges,
+   worker leases, runnable mail engine jobs, provider changes that could run,
+   pending calendar moves, scheduled sends and provider deletions.
+   For each person, every recovery table holds the source's rows under the same IDs,
+   every stored file has its bytes (owned by the API user in the image),
+   every original message has its exact bytes, the stored passwords are the
+   same ciphertexts and read with the old key, and no session of the old
+   installation is left. Each person signs in again and sees exactly what
+   they saw on the source; the policy still applies to the second person, and
+   the second administrator still reaches the instance backup settings.
+5. The providers come up and the owners turn their mail accounts back on;
+   each restored mail password signs in, and a calendar sync succeeds with the
+   restored calendar password.
 
 With `UNIHUB_INSTANCE_DRILL_EVIDENCE=<file>` it writes the backup's name,
 size, hash and key fingerprint and what was restored; CI keeps it with the
