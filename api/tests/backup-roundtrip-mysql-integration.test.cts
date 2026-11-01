@@ -260,7 +260,9 @@ test('production export and restore jobs round-trip what a backup holds through 
     assert.ok(kept[table].length > 0 && kept[table].length < original[table].length, `${table}: the fixture has rows on both sides of the rule`);
   }
   assert.equal(kept.mail_folder_recovery_items.length, 1);
-  const pendingSource = kept.emails.find((row: FixtureValue) => row.mail_account_id);
+  // An accepted intent of the Download account (a Sync account's provider evidence is not in a backup).
+  const pendingSource = kept.emails.find((row: FixtureValue) => row.mail_account_id === mailAccounts[0].id);
+  assert.equal(mailAccounts[0].sync_mode, 'download');
   const sourceWritebackId = uuid();
   await insert('mail_writebacks', { id: sourceWritebackId, user_id: sourceUser, mail_account_id: pendingSource.mail_account_id,
     email_id: pendingSource.id, action: 'read', target_value: '1', base_value: '0', remote_folder: 'INBOX', remote_uid: 1, remote_uidvalidity: 1 });
@@ -589,7 +591,8 @@ test('production export and restore jobs round-trip what a backup holds through 
     await uploadAndRestore(destination, encryptedUser, encrypted, 'keep_existing');
     assert.equal((await rowsFor('contacts', encryptedUser))[0].notes, 'Local edit');
     assert.equal((await rowsFor('emails', encryptedUser)).length, kept.emails.length);
-    const localEmail = (await rowsFor('emails', encryptedUser)).find((row) => row.mail_account_id);
+    const downloadAccount = (await rowsFor('mail_accounts', encryptedUser)).find((row) => row.email_address === mailAccounts[0].email_address);
+    const localEmail = (await rowsFor('emails', encryptedUser)).find((row) => row.mail_account_id === downloadAccount.id);
     const destinationWritebackId = uuid();
     await insert('mail_writebacks', { id: destinationWritebackId, user_id: encryptedUser, mail_account_id: localEmail.mail_account_id,
       email_id: localEmail.id, action: 'read', target_value: '1', base_value: '0', remote_folder: 'INBOX', remote_uid: 1,
