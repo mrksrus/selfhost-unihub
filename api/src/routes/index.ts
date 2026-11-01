@@ -19,6 +19,7 @@ import notificationsRoutes = require('./notifications');
 import offlineRoutes = require('./offline');
 import eventsRoutes = require('./events');
 import filesRoutes = require('./files');
+import binRoutes = require('./bin');
 import { assertRouteTable, mergeRouteTables } from '../http/route';
 import { legacyRoutes } from './legacy-spec';
 import { MODULE_CATALOG } from '../services/module-catalog';
@@ -49,6 +50,7 @@ const routes = mergeRouteTables(
   offlineRoutes,
   eventsRoutes,
   filesRoutes,
+  binRoutes,
 );
 // A route declares only policy keys that can refuse an action.
 const refusablePolicies = Object.entries(POLICIES).filter(([, entry]) => entry.refuses.length).map(([key]) => key);

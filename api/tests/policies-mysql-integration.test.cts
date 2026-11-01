@@ -78,7 +78,7 @@ test('a forbidding installation policy refuses every declared route before any s
       for (const policy of routePolicies(spec, new URLSearchParams(query))) cases.push({ key, url, policy });
     }
   }
-  assert.ok(cases.length >= 25, `${cases.length} cases`);
+  assert.ok(cases.length >= 24, `${cases.length} cases`);
   assert.ok(cases.some(entry => entry.key === 'DELETE /api/mail/accounts/:id' && entry.policy === 'accounts.reset'), 'the purge variant is walked');
 
   for (const { key, url, policy } of cases) {

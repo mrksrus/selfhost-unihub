@@ -153,6 +153,11 @@ const NOT_DESTRUCTIVE: Readonly<Record<string, string>> = {
   'POST /api/contacts/merges': 'the merged-away contacts go to the bin; the undo restores them',
   'POST /api/contacts/merges/auto': 'the same merge for several groups',
   'POST /api/contacts/merges/:id/undo': 'restores merged contacts',
+  'DELETE /api/contacts/:id': 'moves the contact to the bin',
+  'POST /api/contacts/bulk-delete': 'moves the contacts to the bin',
+  'DELETE /api/calendar/events/:id': 'moves the event or task to the bin; a synced one is deleted at its server and kept in the bin',
+  'DELETE /api/calendar/calendars/:id': 'moves the list with its events to the bin',
+  'DELETE /api/recordings/:id': 'moves the recording to the bin',
   'DELETE /api/admin/users/:id': 'admin path: role, password and activity log; a person\'s policy never stops an administrator',
   'POST /api/admin/users/:id/2fa/reset': 'admin path, as above',
 };
@@ -161,10 +166,9 @@ const removesData = (key: string) => {
   return method === 'DELETE' || (method === 'POST' && /delete|clear|purge|reset|remove|empty|merge/.test(path));
 };
 const DESTRUCTIVE = [
-  'DELETE /api/backup/jobs/:id', 'DELETE /api/backup/restore-jobs/:id', 'DELETE /api/calendar/accounts/:id', 'DELETE /api/calendar/calendars/:id',
-  'DELETE /api/calendar/events/:id', 'DELETE /api/contacts/:id', 'DELETE /api/contacts/:id/photo', 'DELETE /api/mail/accounts/:id',
-  'DELETE /api/recordings/:id', 'DELETE /api/settings/account', 'POST /api/contacts/bulk-delete', 'POST /api/settings/clear-calendar',
-  'POST /api/settings/clear-contacts', 'POST /api/settings/clear-mail-accounts', 'POST /api/settings/clear-recordings',
+  'DELETE /api/backup/jobs/:id', 'DELETE /api/backup/restore-jobs/:id', 'DELETE /api/bin/:id', 'DELETE /api/calendar/accounts/:id',
+  'DELETE /api/contacts/:id/photo', 'DELETE /api/mail/accounts/:id', 'DELETE /api/settings/account', 'POST /api/bin/empty',
+  'POST /api/settings/clear-calendar', 'POST /api/settings/clear-contacts', 'POST /api/settings/clear-mail-accounts', 'POST /api/settings/clear-recordings',
 ];
 
 test('every route that removes data declares its policies or is on the reasoned list, and the declared set is pinned', () => {
@@ -185,10 +189,9 @@ test('each destructive route names the policies of what it removes', () => {
   const expected: Record<string, string[]> = {
     'DELETE /api/backup/jobs/:id': ['backup.delete'], 'DELETE /api/backup/restore-jobs/:id': ['backup.delete'],
     'DELETE /api/calendar/accounts/:id': ['accounts.remove'],
-    // Deleting for good until 0.28 moves these items to the bin; a photo is
-    // removed for good even then.
-    'DELETE /api/calendar/calendars/:id': ['bin.delete'], 'DELETE /api/calendar/events/:id': ['bin.delete'], 'DELETE /api/recordings/:id': ['bin.delete'],
-    'DELETE /api/contacts/:id': ['bin.delete'], 'POST /api/contacts/bulk-delete': ['bin.delete'], 'DELETE /api/contacts/:id/photo': ['bin.delete'],
+    // Deleting from the bin for good and emptying it; a contact's photo is
+    // removed for good, not kept in the bin.
+    'DELETE /api/bin/:id': ['bin.delete'], 'POST /api/bin/empty': ['bin.delete'], 'DELETE /api/contacts/:id/photo': ['bin.delete'],
     'DELETE /api/settings/account': ['account.delete'],
     'POST /api/settings/clear-contacts': ['data.clear'], 'POST /api/settings/clear-recordings': ['data.clear'],
     // Clearing calendar or mail removes the module's accounts too.

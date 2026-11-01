@@ -103,8 +103,9 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 22])) })])),
   // Upgrade step 24 (0.27.0).
   calendar_event_moves: Object.freeze({ ...excluded('deliberately_excluded', 'A move in progress writes to calendar servers; a restore must not replay provider writes. The task comes back as archived, in whichever calendar held it.',
-    'id user_id event_id source_calendar_id source_object_id source_etag target_calendar_id target_uid target_href target_etag target_ics state attempts last_error next_attempt_at created_at updated_at'),
-  introducedIn: Object.freeze(Object.fromEntries('id user_id event_id source_calendar_id source_object_id source_etag target_calendar_id target_uid target_href target_etag target_ics state attempts last_error next_attempt_at created_at updated_at'.split(' ').map(column => [column, 24]))) }),
+    'id user_id event_id source_calendar_id source_object_id source_etag target_calendar_id target_uid target_href target_etag target_ics state attempts last_error next_attempt_at created_at updated_at bin_item_id'),
+  // bin_item_id (step 25): a synced item the bin creates at its server again.
+  introducedIn: Object.freeze({ ...Object.fromEntries('id user_id event_id source_calendar_id source_object_id source_etag target_calendar_id target_uid target_href target_etag target_ics state attempts last_error next_attempt_at created_at updated_at'.split(' ').map(column => [column, 24])), bin_item_id: 25 }) }),
   // Upgrade step 25 (0.28.0).
   ...Object.fromEntries([
     ['calendar_overlay_restores', 'temporary', 'Written by a restore and taken by the sync that creates its task; archives up to data schema 6 do not carry it.',

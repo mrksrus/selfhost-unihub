@@ -4,8 +4,11 @@
 // The server copy of every calendar object (one UID with its exceptions) is
 // kept in calendar_remote_objects. Local calendar_events rows are derived from
 // it: one row per occurrence inside the sync window, keyed by
-// "<remote object id>|<recurrence id>". Local-only fields (ToDo status,
-// subtasks) survive re-expansion because rows are updated in place.
+// "<remote object id>|<recurrence id>", each with the object's iCal UID as
+// its identity (calendar_events.uid). Local-only fields (ToDo status,
+// subtasks) survive re-expansion because rows are updated in place; a row
+// made for an item a restore or the bin brought back takes them from its
+// waiting overlay (calendar-overlays.ts).
 //
 // Edits made in UniHub are written to the server first (with If-Match); the
 // local rows are then rebuilt from the new server copy, so the server stays
@@ -22,6 +25,7 @@ import { sweepRemoteRanks } from './task-order';
 import { isDeadlock, DEADLOCK_RETRIES } from './transactions';
 import { withNamedLock } from './named-locks';
 import { tryEventLock, fenceTaskLocks } from './calendar-move-state';
+import { takeOverlayForNewRow, sweepExpiredOverlays } from './calendar-overlays';
 import * as caldav from './caldav';
 import * as ical from './calendar-ical';
 import {
@@ -463,8 +467,15 @@ async function inTransaction<T>(ctx: Pick<Context, 'signal'>, work: (connection:
   }
 }
 
+// The identity of an object's rows: its iCal UID, else (an object without
+// one) each row's own id, as upgrade step 25 gave the rows it found.
+function objectIdentity(object: Pick<ObjectRecord, 'ics'>) {
+  return (ical.objectUid(object.ics) || '').slice(0, 500) || null;
+}
+
 async function applyObjectRows(connection: PoolConnection, ctx: Context, calendar: Calendar, object: ObjectRecord, expanded: NonNullable<ReturnType<typeof expandObject>>) {
   const created = [];
+  const uid = objectIdentity(object);
   const [refs] = await connection.execute<RowDataPacket[]>(
     'SELECT event_id, external_event_id FROM calendar_event_external_refs WHERE account_id = ? AND remote_object_id = ?',
     [ctx.account.id, object.id]
@@ -491,8 +502,8 @@ async function applyObjectRows(connection: PoolConnection, ctx: Context, calenda
     if (eventId) {
       await connection.execute(
         `UPDATE calendar_events SET calendar_id = ?, title = ?, description = ?, start_time = ?, end_time = ?, all_day = ?,
-           location = ?, color = ?, reminders = ?, recurrence = ? WHERE id = ? AND user_id = ?`,
-        [...values, eventId, ctx.account.user_id]
+           location = ?, color = ?, reminders = ?, recurrence = ?, uid = COALESCE(?, uid) WHERE id = ? AND user_id = ?`,
+        [...values, uid, eventId, ctx.account.user_id]
       );
       await connection.execute(
         `UPDATE calendar_event_external_refs SET calendar_id = ?, external_etag = ?, recurrence_id = ?, last_synced_at = UTC_TIMESTAMP()
@@ -503,9 +514,9 @@ async function applyObjectRows(connection: PoolConnection, ctx: Context, calenda
     }
     const id = crypto.randomUUID();
     await connection.execute(
-      `INSERT INTO calendar_events (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, reminders, recurrence)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, ctx.account.user_id, ...values]
+      `INSERT INTO calendar_events (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, reminders, recurrence, uid)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, ctx.account.user_id, ...values, uid || id]
     );
     await connection.execute(
       `INSERT INTO calendar_event_external_refs
@@ -513,6 +524,11 @@ async function applyObjectRows(connection: PoolConnection, ctx: Context, calenda
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())`,
       [crypto.randomUUID(), ctx.account.user_id, id, calendar.id, ctx.account.id, ctx.account.provider, key, object.etag || null, object.id, occurrence.recurrenceId || null]
     );
+    // The item's own state when a restore or the bin brought it back.
+    await takeOverlayForNewRow(connection, {
+      userId: ctx.account.user_id, calendarId: calendar.id, uid: uid || '', recurrenceId: occurrence.recurrenceId || '', eventId: id,
+      title: occurrence.title, startTime: values[3] as string,
+    });
     created.push({ id, startMs: occurrence.startMs });
   }
   const stale = refs.filter(ref => !keep.has(ref.external_event_id)).map(ref => ref.event_id);
@@ -530,8 +546,10 @@ async function applyObjectRows(connection: PoolConnection, ctx: Context, calenda
 // not when they were found gone: the objects, any move of their events and
 // the links are locked first (in the order a move takes them), so a move
 // committing meanwhile is waited for and its event, now linked elsewhere or
-// to nothing, stays.
-async function removeObjects(ctx: Context, objectIds: string[], outsideWindow: ReadonlySet<string> = new Set()) {
+// to nothing, stays. beforeRemove runs in the same transaction with those
+// locks held, before anything is removed (the bin takes its copy there).
+type BeforeRemove = (connection: PoolConnection, objectIds: string[]) => Promise<void>;
+async function removeObjects(ctx: Context, objectIds: string[], outsideWindow: ReadonlySet<string> = new Set(), beforeRemove?: BeforeRemove) {
   if (!objectIds.length) return;
   await inTransaction(ctx, async connection => {
     await fenceTaskLocks(connection);
@@ -545,6 +563,7 @@ async function removeObjects(ctx: Context, objectIds: string[], outsideWindow: R
         [ctx.account.id, ...chunk]
       );
       const eventIds = refs.map(ref => ref.event_id);
+      await beforeRemove?.(connection, chunk);
       if (eventIds.length) {
         await connection.execute(`DELETE FROM calendar_events WHERE user_id = ? AND id IN (${eventIds.map(() => '?').join(', ')})`, [ctx.account.user_id, ...eventIds]);
       }
@@ -591,6 +610,14 @@ async function linkMovedObject(connection: SqlExecutor, account: Account, calend
   if (expanded?.occurrences.length === 1 && !expanded.occurrences[0].recurrenceId) {
     await applyObjectRows(connection as PoolConnection, ctx, calendar, object, expanded);
   }
+}
+
+// The rows of a server copy the bin created again (bin.ts, through the move
+// journal), made as a sync makes them, so each takes its waiting overlay.
+async function applyRestoredObject(connection: PoolConnection, account: Account, calendar: Calendar, object: ObjectRecord, timeZone: string) {
+  const ctx = rebuildContext({ account, timeZone });
+  const expanded = expandObject(ctx, object.ics);
+  return expanded ? applyObjectRows(connection, ctx, calendar, object, expanded) : [];
 }
 
 // Bring one calendar up to date from a listing of { href, url, etag }.
@@ -999,6 +1026,7 @@ async function runCalendarSyncPass() {
     // not listed by the syncs below.
     await moves().resumeDueMoves(pass)
       .catch((error: Error) => console.warn('[CALENDAR] Resuming moves failed:', error.message));
+    await sweepExpiredOverlays().catch((error: Error) => console.warn('[CALENDAR] Removing expired overlays failed:', error.message));
     const [rows] = await db.execute<RowDataPacket[]>(
       `SELECT id, user_id FROM calendar_accounts
        WHERE provider IN ('caldav', 'ics') AND is_active = TRUE AND (next_sync_at IS NULL OR next_sync_at <= UTC_TIMESTAMP())
@@ -1187,8 +1215,10 @@ async function pushEventUpdate({ userId, event, changes, scope }: EventInput & {
 }
 
 // Remove an event from the server. For a recurring event, scope 'occurrence'
-// removes only this date. Local rows are rebuilt or removed accordingly.
-async function pushEventDelete({ userId, event, scope }: EventInput & { scope?: string }) {
+// removes only this date. Local rows are rebuilt or removed accordingly; when
+// the whole object goes, beforeRemove runs in the transaction that removes
+// its rows, after the server confirmed the deletion.
+async function pushEventDelete({ userId, event, scope, beforeRemove }: EventInput & { scope?: string; beforeRemove?: BeforeRemove }) {
   const base = await loadCalendarContext(userId, event.calendar_id);
   if (!base) return null;
   const link = await loadEventLink(userId, event.id);
@@ -1214,7 +1244,7 @@ async function pushEventDelete({ userId, event, scope }: EventInput & { scope?: 
     }
     await fenceTaskLocks();
     await caldav.deleteCalendarObject({ url, etag: link.object.etag, ...ctx.login }).catch(error => handleConflict(ctx, error));
-    await removeObjects(rebuildContext(ctx), [link.object.id]);
+    await removeObjects(rebuildContext(ctx), [link.object.id], new Set(), beforeRemove);
     publishCalendarChanged(userId, ctx.account.id, 'local');
     return { scope: 'series' };
   });
@@ -1264,6 +1294,7 @@ export {
   resolveTimeZone,
   storeObject,
   linkMovedObject,
+  applyRestoredObject,
   calendarUrl,
   objectUrl,
   eventFields,

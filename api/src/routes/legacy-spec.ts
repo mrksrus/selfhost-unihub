@@ -81,8 +81,8 @@ const BACKGROUND_HEADER_CSRF_KEYS: ReadonlySet<string> = new Set([
 // - Deleting a calendar account removes UniHub's copy only; the provider keeps
 //   its calendars.
 // - Deleting an event, a task, a local calendar with its events or a recording
-//   removes it for good, which bin.delete forbids, until these deletes move
-//   items to the bin (0.28 stream B), which drops the key here.
+//   moves it to the bin (services/bin.ts) and names no policy; deleting it
+//   from there for good is the bin's (bin.delete).
 // - The backup routes: creating, restoring and deleting backups.
 // Turning a mail account's linked calendar on or off depends on the body and
 // is checked in its service, as are the mail modes and provider deletion.
@@ -92,9 +92,6 @@ const POLICIES_BY_ROUTE: Readonly<Record<string, Pick<RoutePolicy, 'destructive'
   'POST /api/mail/accounts/:id/backup-export': { requires: ['backup.create'] },
   'POST /api/calendar/accounts': { requires: ['accounts.add'] },
   'DELETE /api/calendar/accounts/:id': { destructive: ['accounts.remove'] },
-  'DELETE /api/calendar/calendars/:id': { destructive: ['bin.delete'] },
-  'DELETE /api/calendar/events/:id': { destructive: ['bin.delete'] },
-  'DELETE /api/recordings/:id': { destructive: ['bin.delete'] },
   'POST /api/backup/jobs': { requires: ['backup.create'] },
   'POST /api/backup/import': { requires: ['backup.restore'] },
   'POST /api/backup/jobs/:id/restore': { requires: ['backup.restore'] },

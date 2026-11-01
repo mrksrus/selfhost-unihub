@@ -1,0 +1,402 @@
+import type { FixtureValue } from './helpers/test-types.cts';
+import type { RowDataPacket } from 'mysql2/promise';
+// Requires an initially empty, disposable MariaDB database ending in _test.
+const test: typeof import('node:test') = require('node:test');
+const assert: typeof import('node:assert/strict') = require('node:assert/strict');
+const crypto = require('node:crypto') as typeof import('node:crypto');
+const fs = require('node:fs') as typeof import('node:fs');
+const os = require('node:os') as typeof import('node:os');
+const path = require('node:path') as typeof import('node:path');
+const { withTestDatabase, startTestApi } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
+const { installCalDavFake, insertCalDavAccount, eventIcs, WORK } = require('./helpers/caldav-fake.cts');
+
+// The bin (0.28 stream B, D13) through the real request handler and MariaDB:
+// per kind, delete -> bin -> restore -> delete for good; a synced CalDAV task
+// deleted at its server and created there again with the same UID (a lost
+// answer adopted, never a second copy; a conflict or a read-only or removed
+// calendar handled); the merge bin's undo; the purge with two people, the
+// module switch, a restore lock and the retention as the policies resolve
+// it. Alex owns the items; Blair is the stranger.
+test('the bin: deleting moves items there, restore brings them back, the purge keeps what the rules keep', {
+  skip: !process.env.MYSQL_TEST_HOST, timeout: 300000,
+}, async t => {
+  const recordingsRoot = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'unihub-bin-recordings-'));
+  process.env.RECORDINGS_ROOT = recordingsRoot;
+  t.after(() => fs.rmSync(recordingsRoot, { recursive: true, force: true }));
+  const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
+  t.after(captureLog(() => {}));
+  const pool = await withTestDatabase(t);
+  const api = await startTestApi(t);
+  const server = installCalDavFake(require('../dist/src/services/caldav'));
+  const calendarSync = require('../dist/src/services/calendar-sync') as typeof import('../src/services/calendar-sync');
+  const calendarMove = require('../dist/src/services/calendar-move') as typeof import('../src/services/calendar-move');
+  const { purgeBin } = require('../dist/src/services/bin') as typeof import('../src/services/bin');
+  const { photosHeldForUndo } = require('../dist/src/services/contact-merge') as typeof import('../src/services/contact-merge');
+  const { ensureDefaultLocalCalendarForUser } = require('../dist/src/services/calendar') as typeof import('../src/services/calendar');
+  const { encrypt } = require('../dist/src/security/encryption') as typeof import('../src/security/encryption');
+  const password = 'synthetic-bin-password';
+  const passwordHash = await (require('bcryptjs') as typeof import('bcryptjs')).hash(password, 4);
+  const users: Record<string, string> = {};
+  for (const name of ['alex', 'blair']) {
+    users[name] = crypto.randomUUID();
+    await pool.execute('INSERT INTO users (id, email, password_hash, full_name) VALUES (?, ?, ?, ?)', [users[name], `${name}@example.test`, passwordHash, name]);
+  }
+  async function signIn(name: string) {
+    const client = api.client();
+    assert.equal((await client.request('POST', '/api/auth/signin', { email: `${name}@example.test`, password })).status, 200);
+    return client;
+  }
+  type Client = Awaited<ReturnType<typeof signIn>>;
+  const alex = await signIn('alex');
+  const blair = await signIn('blair');
+  async function call(client: Client, method: string, route: string, body?: unknown, status = 200): Promise<FixtureValue> {
+    const reply = await client.request(method, route, body);
+    assert.equal(reply.status, status, `${method} ${route}: ${JSON.stringify(reply.body).slice(0, 500)}`);
+    return reply.body;
+  }
+  const bin = async (client = alex, module = '') => (await call(client, 'GET', `/api/bin${module ? `?module=${module}` : ''}`)).items as FixtureValue[];
+  const binItem = async (itemId: string, client = alex) => (await bin(client)).find(item => item.title && item.id && (item as FixtureValue).item_id === itemId)
+    ?? (await pool.query<RowDataPacket[]>('SELECT id, item_type, reason, group_id FROM bin_items WHERE item_id = ? AND restored_at IS NULL', [itemId]))[0][0];
+  const restore = (id: string, client = alex, status = 200) => call(client, 'POST', `/api/bin/${id}/restore`, undefined, status);
+  const count = async (sql: string, params: unknown[]) => Number(((await pool.query<RowDataPacket[]>(sql, params))[0][0]).n);
+  const at = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+  const sha = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
+
+  await t.test('contacts: one and several, owner scope, photo and identity kept', async () => {
+    const casey = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Casey' }, emails: ['casey@example.test'] })).contact;
+    await pool.execute(`INSERT INTO contact_photos (contact_id, user_id, sha256, width, height, bytes, thumb_sha256, source) VALUES (?, ?, ?, 512, 512, 1000, ?, 'upload')`,
+      [casey.id, users.alex, sha('casey'), sha('casey-96')]);
+    await call(alex, 'DELETE', `/api/contacts/${casey.id}`);
+    assert.equal((await call(alex, 'GET', '/api/contacts')).contacts.length, 0, 'it leaves the contact list');
+    const [item] = await bin(alex, 'contacts');
+    assert.deepEqual([item.item_type, item.reason, item.title, item.provider], ['contact', 'deleted', 'Casey', 'local']);
+    assert.ok(item.purge_after, 'the default retention ends it');
+    assert.ok((await photosHeldForUndo(users.alex)).has(sha('casey')), 'its photo stays on disk while it is in the bin');
+    // Blair cannot see, restore or delete it.
+    assert.deepEqual(await bin(blair), []);
+    await restore(item.id, blair, 404);
+    await call(blair, 'DELETE', `/api/bin/${item.id}`, undefined, 404);
+    assert.deepEqual((await call(blair, 'POST', '/api/bin/restore', { ids: [item.id] })).failed.map((entry: FixtureValue) => entry.code), ['BIN_ITEM_NOT_FOUND']);
+    const answer = await restore(item.id);
+    assert.deepEqual(answer.restored.map((entry: FixtureValue) => entry.item_id), [casey.id], 'the same id');
+    const back = (await call(alex, 'GET', `/api/contacts/${casey.id}`)).contact;
+    assert.equal(back.uid, casey.uid);
+    assert.deepEqual(back.emails.map((email: FixtureValue) => email.value), ['casey@example.test']);
+    assert.equal(await count('SELECT COUNT(*) AS n FROM contact_photos WHERE contact_id = ?', [casey.id]), 1);
+    assert.deepEqual(await bin(alex), []);
+    // Several at once are one group: restoring one brings back all.
+    const dana = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Dana' } })).contact;
+    const eli = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Eli' } })).contact;
+    const theirs = (await call(blair, 'POST', '/api/contacts', { name: { given: 'Theirs' } })).contact;
+    assert.equal((await call(alex, 'POST', '/api/contacts/bulk-delete', { ids: [dana.id, eli.id, theirs.id] })).deleted, 2, 'only the owner\'s');
+    const group = await bin(alex, 'contacts');
+    assert.equal(group.length, 2);
+    assert.ok(group[0].group_id && group[0].group_id === group[1].group_id);
+    assert.equal((await restore(group[0].id)).restored.length, 2);
+    assert.equal((await call(alex, 'GET', '/api/contacts')).contacts.length, 3);
+    assert.equal((await call(blair, 'GET', '/api/contacts')).contacts.length, 1);
+  });
+
+  await t.test('the merge bin: an undo through the bin within 30 days, a plain restore after', async () => {
+    const one = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Fran' }, emails: ['fran@example.test'] })).contact;
+    const two = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Fran' }, emails: ['fran.work@example.test'] })).contact;
+    const merge = await call(alex, 'POST', '/api/contacts/merges', { contact_ids: [one.id, two.id], versions: { [one.id]: one.version, [two.id]: two.version } });
+    const [merged] = await bin(alex, 'contacts');
+    assert.deepEqual([merged.reason, merged.group_id], ['merged', merge.merge_id]);
+    const answer = await restore(merged.id);
+    assert.equal(answer.restored[0].item_id, two.id);
+    assert.match(answer.restored[0].note, /back as they were before the merge/);
+    assert.notEqual((await pool.query<RowDataPacket[]>('SELECT undone_at FROM contact_merges WHERE id = ?', [merge.merge_id]))[0][0].undone_at, null, 'it was the merge\'s undo');
+    assert.deepEqual((await call(alex, 'GET', `/api/contacts/${one.id}`)).contact.emails.map((email: FixtureValue) => email.value), ['fran@example.test']);
+    // Merged again, and the undo window ends: the contact still comes back from the bin, alone, with its UID.
+    const [first, second] = [(await call(alex, 'GET', `/api/contacts/${one.id}`)).contact, (await call(alex, 'GET', `/api/contacts/${two.id}`)).contact];
+    const again = await call(alex, 'POST', '/api/contacts/merges', { contact_ids: [first.id, second.id], versions: { [first.id]: first.version, [second.id]: second.version } });
+    await pool.execute('UPDATE contact_merges SET purge_after = UTC_TIMESTAMP() - INTERVAL 1 DAY WHERE id = ?', [again.merge_id]);
+    const [late] = await bin(alex, 'contacts');
+    assert.equal(late.reason, 'merged', 'the person\'s retention keeps it past the undo window');
+    assert.equal((await restore(late.id)).restored[0].item_id, two.id);
+    assert.equal((await call(alex, 'GET', `/api/contacts/${two.id}`)).contact.uid, two.uid);
+    assert.equal((await pool.query<RowDataPacket[]>('SELECT undone_at FROM contact_merges WHERE id = ?', [again.merge_id]))[0][0].undone_at, null);
+    assert.equal(await count('SELECT COUNT(*) AS n FROM contact_uid_aliases WHERE user_id = ? AND uid = ? AND contact_id <> ?', [users.alex, two.uid, two.id]), 0,
+      'its own UID no longer names the survivor');
+  });
+
+  const { calendarId: inbox } = await ensureDefaultLocalCalendarForUser(users.alex);
+  const [[{ account_id: localAccount }]] = await pool.query<RowDataPacket[]>('SELECT account_id FROM calendar_calendars WHERE id = ?', [inbox]);
+  let clock = Date.UTC(2026, 10, 12, 9);
+  async function localTask(title: string, list = inbox) {
+    const id = crypto.randomUUID();
+    clock += 3600000;
+    await pool.execute(`INSERT INTO calendar_events (id, user_id, calendar_id, title, start_time, end_time, todo_status, done_at) VALUES (?, ?, ?, ?, ?, ?, 'done', ?)`,
+      [id, users.alex, list, title, at(clock), at(clock + 1800000), at(clock - 86400000)]);
+    await pool.execute('INSERT INTO calendar_event_subtasks (id, event_id, user_id, title, is_done, position) VALUES (?, ?, ?, ?, TRUE, 0)', [crypto.randomUUID(), id, users.alex, `${title} step`]);
+    await pool.execute("INSERT INTO calendar_event_attendees (id, user_id, event_id, email) VALUES (?, ?, ?, 'guest@example.test')", [crypto.randomUUID(), users.alex, id]);
+    return id;
+  }
+  const eventRow = async (id: string) => (await pool.query<RowDataPacket[]>('SELECT * FROM calendar_events WHERE id = ?', [id]))[0][0];
+  const stepsOf = async (id: string) => (await pool.query<RowDataPacket[]>('SELECT title, is_done FROM calendar_event_subtasks WHERE event_id = ? ORDER BY position', [id]))[0]
+    .map(row => [row.title, !!row.is_done]);
+
+  await t.test('UniHub events, tasks and lists: back into their list, or the default list when it is gone', async () => {
+    const pay = await localTask('Pay rent');
+    await call(blair, 'DELETE', `/api/calendar/events/${pay}`);
+    assert.ok(await eventRow(pay), 'another person cannot delete it');
+    assert.equal((await call(alex, 'DELETE', `/api/calendar/events/${pay}`)).message, 'Event moved to the bin');
+    assert.equal(await eventRow(pay), undefined);
+    const [item] = await bin(alex, 'calendar');
+    const [[list]] = await pool.query<RowDataPacket[]>('SELECT name FROM calendar_calendars WHERE id = ?', [inbox]);
+    assert.deepEqual([item.item_type, item.origin], ['task', list.name], 'named by its list');
+    await restore(item.id);
+    const back = await eventRow(pay);
+    assert.deepEqual([back.calendar_id, back.todo_status], [inbox, 'done']);
+    assert.deepEqual(await stepsOf(pay), [['Pay rent step', true]]);
+    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_event_attendees WHERE event_id = ?', [pay]), 1);
+    // A list deleted with its events is one group; a task binned before from that list goes to the default list.
+    const errands = crypto.randomUUID();
+    await pool.execute("INSERT INTO calendar_calendars (id, user_id, account_id, name, color) VALUES (?, ?, ?, 'Errands', '#22c55e')", [errands, users.alex, localAccount]);
+    const early = await localTask('Buy stamps', errands);
+    const kept = await localTask('Post letter', errands);
+    await call(alex, 'DELETE', `/api/calendar/events/${early}`);
+    await call(alex, 'DELETE', `/api/calendar/calendars/${errands}`);
+    const items = await bin(alex, 'calendar');
+    const listItem = items.find(entry => entry.item_type === 'calendar');
+    assert.equal(items.filter(entry => entry.group_id === listItem.group_id).length, 2, 'the list and its event');
+    const earlyItem = items.find(entry => entry.title === 'Buy stamps');
+    const answer = await restore(earlyItem.id);
+    assert.match(answer.restored[0].note, /default list/);
+    assert.equal((await eventRow(early)).calendar_id, inbox);
+    await restore(listItem.id);
+    assert.equal((await pool.query<RowDataPacket[]>('SELECT name FROM calendar_calendars WHERE id = ?', [errands]))[0][0].name, 'Errands', 'the list under its own id');
+    assert.equal((await eventRow(kept)).calendar_id, errands);
+    assert.deepEqual(await stepsOf(kept), [['Post letter step', true]]);
+    assert.deepEqual(await bin(alex, 'calendar'), []);
+  });
+
+  await t.test('recordings: the file waits in the bin folder, comes back, and goes with a delete for good', async () => {
+    const id = crypto.randomUUID();
+    const folder = path.join(recordingsRoot, users.alex);
+    fs.mkdirSync(folder, { recursive: true });
+    const file = path.join(folder, `${id}.webm`);
+    fs.writeFileSync(file, 'synthetic recording bytes');
+    await pool.execute("INSERT INTO recordings (id, user_id, title, content_type, size_bytes, storage_path) VALUES (?, ?, 'Synthetic memo', 'audio/webm', 25, ?)", [id, users.alex, file]);
+    await call(blair, 'DELETE', `/api/recordings/${id}`, undefined, 404);
+    await call(alex, 'DELETE', `/api/recordings/${id}`);
+    assert.ok(!fs.existsSync(file) && fs.existsSync(path.join(folder, 'bin', `${id}.webm`)), 'moved to the bin folder');
+    assert.deepEqual((await call(alex, 'GET', '/api/recordings')).recordings, []);
+    const [item] = await bin(alex, 'recordings');
+    await restore(item.id);
+    assert.equal(fs.readFileSync(file, 'utf8'), 'synthetic recording bytes', 'the original bytes, where they were');
+    assert.equal((await call(alex, 'GET', '/api/recordings')).recordings[0].id, id);
+    await call(alex, 'DELETE', `/api/recordings/${id}`);
+    const [again] = await bin(alex, 'recordings');
+    assert.deepEqual(await call(alex, 'DELETE', `/api/bin/${again.id}`), { deleted: 1 });
+    assert.ok(!fs.existsSync(path.join(folder, 'bin', `${id}.webm`)) && !fs.existsSync(file), 'deleted for good');
+  });
+
+  await t.test('deleting for good and emptying obey bin.delete; empty takes one module or all', async () => {
+    const gone = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Gale' } })).contact;
+    await call(alex, 'DELETE', `/api/contacts/${gone.id}`);
+    const task = await localTask('Water plants');
+    await call(alex, 'DELETE', `/api/calendar/events/${task}`);
+    await pool.execute("INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked) VALUES ('installation', '', 'policy.bin.delete', 'forbidden', 0)");
+    const [item] = await bin(alex, 'contacts');
+    assert.equal((await call(alex, 'DELETE', `/api/bin/${item.id}`, undefined, 403)).code, 'POLICY_FORBIDS');
+    assert.equal((await call(alex, 'POST', '/api/bin/empty', {}, 403)).code, 'POLICY_FORBIDS');
+    assert.equal((await bin(alex)).length, 2, 'nothing removed');
+    await pool.execute("DELETE FROM setting_policies WHERE setting_key = 'policy.bin.delete'");
+    assert.deepEqual(await call(alex, 'POST', '/api/bin/empty', { module: 'contacts' }), { deleted: 1 });
+    assert.deepEqual((await bin(alex)).map(entry => entry.title), ['Water plants']);
+    assert.deepEqual(await call(alex, 'POST', '/api/bin/empty', {}), { deleted: 1 });
+    assert.equal((await call(alex, 'POST', '/api/bin/empty', { module: 'mail' }, 400)).code, 'BIN_INVALID');
+  });
+
+  await t.test('the purge: two people, the module switch, a restore lock, the retention as the policies resolve it', async () => {
+    const later = new Date(Date.now() + 31 * 86400000);
+    const mine = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Hale' } })).contact;
+    const theirs = (await call(blair, 'POST', '/api/contacts', { name: { given: 'Ivo' } })).contact;
+    await call(blair, 'PUT', '/api/settings/values', { values: { bin_retention: 'forever' } });
+    await call(alex, 'DELETE', `/api/contacts/${mine.id}`);
+    await call(blair, 'DELETE', `/api/contacts/${theirs.id}`);
+    assert.equal((await bin(blair))[0].purge_after, null, 'forever keeps it until restored or deleted');
+    // The module off, then a restore of the section: Alex's item waits.
+    await call(alex, 'PUT', '/api/modules', { modules: { contacts: { enabled: false } } });
+    assert.deepEqual(await purgeBin({ now: later }), { items: 0, merges: 0 });
+    assert.equal((await call(alex, 'POST', '/api/bin/empty', { module: 'contacts' }, 403)).code, 'MODULE_DISABLED');
+    await call(alex, 'PUT', '/api/modules', { modules: { contacts: { enabled: true } } });
+    const restoreId = crypto.randomUUID();
+    await pool.execute("INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', '[\"contacts\"]')", [restoreId, users.alex]);
+    assert.deepEqual(await purgeBin({ now: later }), { items: 0, merges: 0 });
+    const [waiting] = await bin(alex);
+    assert.equal((await call(alex, 'POST', '/api/bin/restore', { ids: [waiting.id] })).failed[0].code, 'RESTORE_IN_PROGRESS');
+    await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restoreId]);
+    // An administrator's locked retention holds it, though its time has come.
+    await pool.execute("INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked) VALUES ('installation', '', 'user.bin_retention', 'forever', 1)");
+    assert.deepEqual(await purgeBin({ now: later }), { items: 0, merges: 0 }, 'the policy keeps it');
+    await pool.execute("UPDATE setting_policies SET setting_value = '90', locked = 0 WHERE setting_key = 'user.bin_retention'");
+    // (The rows an undo of a merge left behind go at their time.)
+    await purgeBin({ now: later });
+    assert.equal((await bin(alex)).length, 1, 'a 90-day minimum keeps it at 31 days');
+    await pool.execute("DELETE FROM setting_policies WHERE setting_key = 'user.bin_retention'");
+    assert.deepEqual(await purgeBin(), { items: 0, merges: 0 }, 'nothing is due today');
+    assert.equal((await purgeBin({ now: later })).items, 1);
+    assert.deepEqual(await bin(alex), []);
+    assert.equal((await bin(blair)).length, 1, 'Blair keeps theirs');
+    // A new retention applies to what is in the bin already.
+    await call(blair, 'PUT', '/api/settings/values', { values: { bin_retention: '7' } });
+    const [{ purge_after: purgeAfter, deleted_at: deletedAt }] = await bin(blair);
+    assert.equal(Math.round((Date.parse(purgeAfter) - Date.parse(deletedAt)) / 86400000), 7);
+  });
+
+  // --- A CalDAV calendar ------------------------------------------------------
+  const accountId = crypto.randomUUID();
+  await insertCalDavAccount(pool, encrypt, users.alex, accountId);
+  // A sync the conflict handling started in the background finishes first
+  // (a call joins a run going on), then one that sees the server as it is now.
+  const sync = async () => {
+    await calendarSync.syncCalendarAccount(accountId, { userId: users.alex, full: true }).catch(() => undefined);
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const result = await calendarSync.syncCalendarAccount(accountId, { userId: users.alex, full: true }) as FixtureValue;
+      if (!result?.skipped) return result;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('the calendar account stayed busy');
+  };
+  await sync();
+  const [[{ id: work }]] = await pool.query<RowDataPacket[]>("SELECT id FROM calendar_calendars WHERE account_id = ? AND name = 'Work'", [accountId]);
+  async function serverTask(title: string) {
+    clock += 3600000;
+    const uid = `${crypto.randomUUID()}@example.test`;
+    const href = `${WORK}${title.toLowerCase().replace(/\W+/g, '-')}.ics`;
+    server.store(href, eventIcs(uid, title, clock));
+    await sync();
+    const [[row]] = await pool.query<RowDataPacket[]>('SELECT id FROM calendar_events WHERE user_id = ? AND title = ?', [users.alex, title]);
+    await pool.execute("UPDATE calendar_events SET todo_status = 'done', done_at = ? WHERE id = ?", [at(clock - 86400000), row.id]);
+    await pool.execute('INSERT INTO calendar_event_subtasks (id, event_id, user_id, title, is_done, position) VALUES (?, ?, ?, ?, TRUE, 0)', [crypto.randomUUID(), row.id, users.alex, 'Only step']);
+    return { id: row.id as string, uid, href };
+  }
+  const rowsTitled = async (title: string) => (await pool.query<RowDataPacket[]>('SELECT * FROM calendar_events WHERE user_id = ? AND title = ?', [users.alex, title]))[0];
+  // Once in UniHub, linked to its one copy at the server, with its own state back.
+  async function assertBack(title: string, uid: string, calendarId = work) {
+    const rows = await rowsTitled(title);
+    assert.equal(rows.length, 1, `${title}: one row`);
+    assert.deepEqual([rows[0].calendar_id, rows[0].uid, rows[0].todo_status], [calendarId, uid, 'done']);
+    assert.deepEqual(await stepsOf(rows[0].id), [['Only step', true]]);
+    assert.equal(server.copiesOf(title).length, calendarId === work ? 1 : 0, `${title}: copies at the server`);
+    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_event_moves WHERE user_id = ?', [users.alex]), 0, 'no journal left');
+  }
+  const resume = async () => {
+    await pool.execute('UPDATE calendar_event_moves SET next_attempt_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND');
+    return calendarMove.resumeDueMoves();
+  };
+
+  await t.test('a synced task: deleted at its server, kept in the bin, created there again with the same UID', async () => {
+    const task = await serverTask('Review notes');
+    server.remote.writes.length = 0;
+    await call(alex, 'DELETE', `/api/calendar/events/${task.id}`);
+    assert.deepEqual(server.remote.writes, [['delete', task.href, 'If-Match "e1"'.replace('e1', server.remote.writes[0]?.[2]?.match(/"(e\d+)"/)?.[1] ?? '')]]);
+    assert.equal(server.copiesOf('Review notes').length, 0, 'deleted at the provider');
+    assert.equal((await rowsTitled('Review notes')).length, 0);
+    const [item] = await bin(alex, 'calendar');
+    assert.deepEqual([item.provider, item.origin, item.item_type], ['caldav', 'Work', 'task']);
+    server.remote.writes.length = 0;
+    await restore(item.id);
+    assert.deepEqual(server.remote.writes, [['put', task.href, 'If-None-Match *']], 'one create at its old address');
+    assert.ok(server.remote.objects.get(task.href)!.ics.includes(`UID:${task.uid}`));
+    await assertBack('Review notes', task.uid);
+    await sync();
+    await assertBack('Review notes', task.uid);
+  });
+
+  await t.test('a provider refusing the delete leaves the task as it is, and nothing in the bin', async () => {
+    const task = await serverTask('Changed elsewhere');
+    // Another app changed it: UniHub's version is stale, the If-Match fails.
+    server.store(task.href, eventIcs(task.uid, 'Changed elsewhere', clock, ['DESCRIPTION:edited elsewhere']));
+    assert.equal((await call(alex, 'DELETE', `/api/calendar/events/${task.id}`, undefined, 409)).code, 'CALDAV_CONFLICT');
+    assert.ok(await eventRow(task.id));
+    assert.deepEqual(await bin(alex, 'calendar'), []);
+    assert.equal(server.copiesOf('Changed elsewhere').length, 1);
+  });
+
+  await t.test('a lost answer: the restore waits, its retry adopts the stored copy, never a second one', async () => {
+    const task = await serverTask('Lost answer');
+    await call(alex, 'DELETE', `/api/calendar/events/${task.id}`);
+    const [item] = await bin(alex, 'calendar');
+    let once = true;
+    server.faults.put = () => { if (once) { once = false; return 'store-then-lose'; } };
+    const answer = await restore(item.id);
+    assert.equal(answer.restored[0].pending, true);
+    assert.equal((await bin(alex, 'calendar'))[0].restoring, true, 'shown as being restored');
+    await resume();
+    server.faults.put = undefined;
+    await assertBack('Lost answer', task.uid);
+    assert.deepEqual(await bin(alex, 'calendar'), []);
+  });
+
+  await t.test('a lost answer the sync finds first: the sync makes the rows with their state, and the retry finds nothing to do', async () => {
+    const task = await serverTask('Sync first');
+    await call(alex, 'DELETE', `/api/calendar/events/${task.id}`);
+    const [item] = await bin(alex, 'calendar');
+    server.faults.put = () => 'store-then-lose';
+    assert.equal((await restore(item.id)).restored[0].pending, true);
+    server.faults.put = undefined;
+    await sync();
+    await assertBack('Sync first', task.uid);
+    await resume();
+    await assertBack('Sync first', task.uid);
+  });
+
+  await t.test('the UID back at the server already: adopted on the 412, or at once when a sync has it', async () => {
+    const task = await serverTask('Back already');
+    await call(alex, 'DELETE', `/api/calendar/events/${task.id}`);
+    const ics = eventIcs(task.uid, 'Back already', clock);
+    server.store(task.href, ics);
+    const [item] = await bin(alex, 'calendar');
+    await restore(item.id);
+    await assertBack('Back already', task.uid);
+    // Synced before the restore: its rows exist and take their state.
+    const other = await serverTask('Synced back');
+    await call(alex, 'DELETE', `/api/calendar/events/${other.id}`);
+    server.store(other.href, eventIcs(other.uid, 'Synced back', clock));
+    await sync();
+    const [second] = await bin(alex, 'calendar');
+    assert.match((await restore(second.id)).restored[0].note, /on its calendar again/);
+    await assertBack('Synced back', other.uid);
+  });
+
+  await t.test('another item at its address: refused, and it stays in the bin', async () => {
+    const task = await serverTask('Address taken');
+    await call(alex, 'DELETE', `/api/calendar/events/${task.id}`);
+    server.store(task.href, eventIcs('someone-else@example.test', 'Someone else', clock));
+    const [item] = await bin(alex, 'calendar');
+    const answer = await call(alex, 'POST', '/api/bin/restore', { ids: [item.id] });
+    assert.equal(answer.failed[0].code, 'CALDAV_CONFLICT');
+    assert.equal((await bin(alex, 'calendar')).length, 1);
+    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_event_moves WHERE user_id = ?', [users.alex]), 0);
+    server.remote.objects.delete(task.href);
+    await restore(item.id);
+    await assertBack('Address taken', task.uid);
+  });
+
+  await t.test('a read-only or removed calendar: restored into the default list instead', async () => {
+    const readOnly = await serverTask('Now read-only');
+    const removed = await serverTask('Calendar removed');
+    await call(alex, 'DELETE', `/api/calendar/events/${readOnly.id}`);
+    await call(alex, 'DELETE', `/api/calendar/events/${removed.id}`);
+    const items = await bin(alex, 'calendar');
+    const { resolveCalendarDefaults } = require('../dist/src/services/calendar') as typeof import('../src/services/calendar');
+    const { taskListId: defaultList } = await resolveCalendarDefaults(users.alex);
+    await pool.execute('UPDATE calendar_calendars SET read_only = 1 WHERE id = ?', [work]);
+    server.remote.writes.length = 0;
+    const first = await restore(items.find(entry => entry.title === 'Now read-only').id);
+    assert.match(first.restored[0].note, /read-only now/);
+    assert.deepEqual(server.remote.writes, [], 'nothing written to a read-only calendar');
+    assert.equal((await rowsTitled('Now read-only'))[0].calendar_id, defaultList);
+    assert.equal((await rowsTitled('Now read-only'))[0].todo_status, 'done');
+    await pool.execute('DELETE FROM calendar_calendars WHERE id = ?', [work]);
+    const second = await restore(items.find(entry => entry.title === 'Calendar removed').id);
+    assert.match(second.restored[0].note, /calendar is gone/);
+    const [row] = await rowsTitled('Calendar removed');
+    assert.deepEqual([row.calendar_id, row.uid], [defaultList, removed.uid], 'its identity kept');
+    assert.deepEqual(await stepsOf(row.id), [['Only step', true]]);
+  });
+});

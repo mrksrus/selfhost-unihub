@@ -27,6 +27,8 @@ export interface BinItem {
   provider: 'local' | 'caldav';
   /** The list or account it came from, in plain words, when that helps to tell items apart. */
   origin: string | null;
+  /** A synced item being created at its calendar server again; it leaves the bin once the server confirms. */
+  restoring?: true;
 }
 
 /** GET /api/bin?module= */
@@ -45,6 +47,8 @@ export interface BinRestored {
   item_id: string;
   /** For example "The calendar is gone; restored to your default list." */
   note: string | null;
+  /** Created at its calendar server again, which has not confirmed it yet; item_id is then the bin item's. */
+  pending?: true;
 }
 
 export interface BinRestoreResponse {

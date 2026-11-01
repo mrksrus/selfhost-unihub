@@ -220,6 +220,7 @@ CREATE TABLE `calendar_event_moves` (
   `next_attempt_at` datetime DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `bin_item_id` char(36) DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `unique_event_move` (`event_id`),
   KEY `idx_event_moves_due` (`state`,`next_attempt_at`),
@@ -227,11 +228,13 @@ CREATE TABLE `calendar_event_moves` (
   KEY `source_calendar_id` (`source_calendar_id`),
   KEY `source_object_id` (`source_object_id`),
   KEY `target_calendar_id` (`target_calendar_id`),
+  KEY `idx_event_moves_bin_item` (`bin_item_id`),
   CONSTRAINT `calendar_event_moves_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `calendar_event_moves_ibfk_2` FOREIGN KEY (`event_id`) REFERENCES `calendar_events` (`id`) ON DELETE SET NULL,
   CONSTRAINT `calendar_event_moves_ibfk_3` FOREIGN KEY (`source_calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE CASCADE,
   CONSTRAINT `calendar_event_moves_ibfk_4` FOREIGN KEY (`source_object_id`) REFERENCES `calendar_remote_objects` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `calendar_event_moves_ibfk_5` FOREIGN KEY (`target_calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE SET NULL
+  CONSTRAINT `calendar_event_moves_ibfk_5` FOREIGN KEY (`target_calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_event_moves_bin_item` FOREIGN KEY (`bin_item_id`) REFERENCES `bin_items` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `calendar_event_subtasks` (

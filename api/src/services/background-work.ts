@@ -16,7 +16,8 @@ import { pruneAuditLog } from './audit';
 import { runMailThreadBackfill } from './mail-thread-backfill';
 import { runDueScheduledSends } from './mail-scheduled-send';
 import { returnDueSnoozes } from './mail-snooze';
-import { purgeExpiredMerges, photosHeldForUndo } from './contact-merge';
+import { photosHeldForUndo } from './contact-merge';
+import { purgeBin } from './bin';
 import { sweepContactPhotos } from './contact-photos';
 import { sweepContactImports } from './contacts-import';
 import { isModuleEnabled } from './module-settings';
@@ -60,7 +61,7 @@ interface BackgroundWorkDeps {
   runMailThreadBackfill: () => Promise<unknown>;
   runDueScheduledSends: () => Promise<unknown>;
   returnDueSnoozes: () => Promise<unknown>;
-  purgeContactBin: (active: () => boolean) => Promise<{ items: number; merges: number }>;
+  purgeBin: (active: () => boolean) => Promise<{ items: number; merges: number }>;
   sweepContactPhotos: (active: () => boolean) => Promise<number>;
   sweepContactImports: () => Promise<{ expired: number; orphans: number }>;
   isWorkerOwner: () => boolean;
@@ -88,7 +89,7 @@ function defaultDeps(): BackgroundWorkDeps {
     runMailThreadBackfill: () => runMailThreadBackfill(),
     runDueScheduledSends: () => runDueScheduledSends(),
     returnDueSnoozes: () => returnDueSnoozes(),
-    purgeContactBin: active => purgeExpiredMerges({ active }),
+    purgeBin: active => purgeBin({ active }),
     sweepContactPhotos: active => sweepContactPhotos({ active, moduleEnabled: userId => isModuleEnabled(userId, 'contacts'), heldForUndo: userId => photosHeldForUndo(userId) }),
     sweepContactImports: () => sweepContactImports(),
     isWorkerOwner,
@@ -228,12 +229,13 @@ async function runStartup(deps: BackgroundWorkDeps, state: { stopped: boolean },
     if (deleted > 0) log.info('CLEANUP', 'Deleted expired recording uploads', { deleted });
   });
 
-  // Contacts merged away more than 30 days ago and their merge records
-  // (contacts.purgeBin): the end of the undo window. People whose contacts
-  // are being restored, or whose Contacts module is off, wait for a later hour.
+  // Bin items past their retention and merge records past their undo window
+  // (bin.purge, services/bin.ts). A module that is off or being restored
+  // keeps its items for a later hour, and nothing goes that the person's
+  // retention, as the policies resolve it now, still keeps.
   every('CLEANUP', 60 * 60 * 1000, async () => {
-    const { items, merges } = await deps.purgeContactBin(active);
-    if (items > 0 || merges > 0) log.info('CLEANUP', 'Deleted merged contacts past their undo window', { items, merges });
+    const { items, merges } = await deps.purgeBin(active);
+    if (items > 0 || merges > 0) log.info('CLEANUP', 'Deleted bin items past their retention', { items, merges });
   });
 
   // Contact imports past their 24 hours and their staged files

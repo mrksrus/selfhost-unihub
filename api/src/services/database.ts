@@ -378,8 +378,9 @@ const MIGRATIONS: readonly Migration[] = [
     // item again after a move or into another installation; archived ToDo
     // state of synced tasks waiting for the sync that brings the task back;
     // the server-kept date of a backup, the download grant of a backup
-    // ticket, the generic bin purge, the users' acknowledged policy notices
-    // and the instance backup's runs.
+    // ticket, the generic bin purge and the bin's re-creation of synced
+    // items at their server, the users' acknowledged policy notices and the
+    // instance backup's runs.
     id: 25,
     name: 'backup-store-and-safety',
     up: addDataSafety,
@@ -392,6 +393,7 @@ const MIGRATIONS: readonly Migration[] = [
       for (const [table, name] of [['data_export_jobs', 'idx_data_export_jobs_keep_until'], ['bin_items', 'idx_bin_items_due']]) {
         if (!await hasIndex(connection, table, name)) throw new Error(`Index ${name} on ${table} is missing`);
       }
+      if (!await hasIndex(connection, 'calendar_event_moves', 'idx_event_moves_bin_item')) throw new Error('calendar_event_moves.bin_item_id is missing');
     },
   },
 ];
@@ -734,6 +736,14 @@ async function addDataSafety(connection: SqlExecutor) {
   if (!await hasColumn(connection, 'file_tickets', 'redeemed_at')) await connection.execute('ALTER TABLE file_tickets ADD COLUMN redeemed_at DATETIME NULL');
   // One purge for every user's bin (services/bin.ts).
   if (!await hasIndex(connection, 'bin_items', 'idx_bin_items_due')) await connection.execute('ALTER TABLE bin_items ADD KEY idx_bin_items_due (purge_after)');
+  // A synced event or task restored from the bin is created at its calendar
+  // server again through the move journal (services/calendar-move.ts), which
+  // then has no event row yet but this bin item. One statement, so a partial
+  // run leaves the column with its key and constraint or nothing.
+  if (!await hasColumn(connection, 'calendar_event_moves', 'bin_item_id')) {
+    await connection.execute(`ALTER TABLE calendar_event_moves ADD COLUMN bin_item_id CHAR(36) NULL, ADD KEY idx_event_moves_bin_item (bin_item_id),
+      ADD CONSTRAINT fk_event_moves_bin_item FOREIGN KEY (bin_item_id) REFERENCES bin_items (id) ON DELETE CASCADE`);
+  }
 
   // The ToDo state and subtasks of a synced task from a restored archive,
   // until the sync that creates the task's row takes them (services/

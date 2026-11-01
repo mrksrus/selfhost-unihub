@@ -15,6 +15,7 @@ import {
 } from '../services/recordings';
 import { deleteUser } from '../services/user-lifecycle';
 import { getScopedSettings, getSettings, getUserPreferences, setUserPreferences, updateSettings } from '../services/settings';
+import { applyBinRetention } from '../services/bin';
 import type {
   CalendarSettingsResponse,
   CalendarSettingValues,
@@ -41,7 +42,11 @@ export = defineRoutes({
   } },
   'PUT /api/settings/values': { auth: 'user', module: null, restoreSection: 'settings', handler: async (req: Request, userId: string, body: Input) => {
     try {
-      return { settings: await updateSettings('user', userId, userId, body) } satisfies UserSettingsResponse;
+      const settings = await updateSettings('user', userId, userId, body);
+      // A new retention applies to what is in the bin already.
+      const values = (body as { values?: object } | null)?.values;
+      if (values && 'bin_retention' in values) await applyBinRetention(userId);
+      return { settings } satisfies UserSettingsResponse;
     } catch (error) {
       if (!(error as ApiError).status) console.error('Update settings error:', error);
       return clientError(error, 'Failed to save settings');
