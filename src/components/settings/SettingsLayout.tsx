@@ -1,6 +1,8 @@
 import { useId, type ReactNode } from 'react';
-import { Lock } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { PolicyNote } from '@/components/ui/policy-note';
+
+export { PolicyNote };
 
 /** A titled group of settings rows. Sections stack with space between them, never boxes. */
 export function SettingsSection({ title, description, action, children, className }: {
@@ -47,13 +49,4 @@ export function SettingsRow({ label, description, htmlFor, children, tone = 'def
 /** Content inside a section that is not a label and control pair (lists, forms, notes). */
 export function SettingsBlock({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cn('py-4', className)}>{children}</div>;
-}
-
-/** Why a control is greyed out: an administrator's policy. */
-export function PolicyNote({ reason, className }: { reason: string; className?: string }) {
-  return (
-    <p className={cn('mt-1 flex items-center gap-1.5 text-xs text-muted-foreground', className)}>
-      <Lock aria-hidden="true" className="h-3 w-3 shrink-0" />{reason}
-    </p>
-  );
 }

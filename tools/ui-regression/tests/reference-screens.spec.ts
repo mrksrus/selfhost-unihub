@@ -4,8 +4,9 @@
 // the contact detail, the contact editor and the merge review (Wide and
 // Phone), and since 0.27.0 a ToDo row picked up by its handle, the new-task
 // dialog with its list chooser open (Wide and Phone) and Settings -> Pages
-// (Wide), each in Dark Default and Light Default. Thirty-four pictures; see
-// docs/UI_BASELINES.md.
+// (Wide), and since 0.28.0 Settings -> Backup and restore (Wide), the bin
+// (Wide and Phone) and Server settings -> Policies (Wide), each in Dark
+// Default and Light Default. Forty-two pictures; see docs/UI_BASELINES.md.
 import { expect, expectBaseline, test, THEMES, VIEWPORTS, type Page } from '../support/test.ts';
 
 // A row picked up with the keyboard (P-29, D29/D31): Space on the ≡ handle
@@ -68,6 +69,32 @@ for (const theme of THEMES) {
         await expectBaseline(page, `settings-pages-wide-${theme}.png`);
       });
 
+      // 0.28 (P-29, D29): Backup and restore, the bin and the policies page.
+      test(`settings backup (wide, ${theme})`, async ({ page, open, settle }) => {
+        await open('/settings?section=backup');
+        await expect(page.getByRole('button', { name: 'Create backup' })).toBeVisible();
+        await expect(page.getByText('Not encrypted, made before 0.28.')).toBeVisible();
+        await settle();
+        await expectBaseline(page, `settings-backup-wide-${theme}.png`);
+      });
+
+      test(`bin (wide, ${theme})`, async ({ page, open, settle }) => {
+        await open('/settings?section=bin');
+        await expect(page.getByRole('list', { name: 'Deleted items' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `bin-wide-${theme}.png`);
+      });
+
+      test.describe('as an administrator', () => {
+        test.use({ admin: true });
+        test(`admin policies (wide, ${theme})`, async ({ page, open, settle }) => {
+          await open('/admin/policies');
+          await expect(page.getByRole('combobox', { name: 'Creating backups' })).toBeVisible();
+          await settle();
+          await expectBaseline(page, `admin-policies-wide-${theme}.png`);
+        });
+      });
+
       test(`settings appearance (wide, ${theme})`, async ({ page, open }) => {
         await open('/settings?section=appearance');
         await expect(page.getByRole('heading', { name: 'Theme', exact: true })).toBeVisible();
@@ -117,6 +144,13 @@ for (const theme of THEMES) {
         await openNewTaskChooser(page);
         await settle();
         await expectBaseline(page, `new-task-phone-${theme}.png`);
+      });
+
+      test(`bin (phone, ${theme})`, async ({ page, open, settle }) => {
+        await open('/settings?section=bin');
+        await expect(page.getByRole('list', { name: 'Deleted items' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `bin-phone-${theme}.png`);
       });
 
       test(`recordings (phone, ${theme})`, async ({ page, open }) => {

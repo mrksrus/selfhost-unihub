@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { formatDistanceToNowStrict } from 'date-fns';
-import { MoreHorizontal, Plus, Settings2 } from 'lucide-react';
+import { MoreHorizontal, Plus, Settings2, Trash2 } from 'lucide-react';
 import { isRemoteCalendarAccount, type CalendarAccount, type CalendarCalendar } from '@/lib/calendar-api';
 import type { CalendarAccounts } from '@/hooks/use-calendar-accounts';
 import { cn } from '@/lib/utils';
@@ -11,7 +11,9 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { buttonVariants } from '@/components/ui/button-variants';
-import { PanelHeader } from '@/components/layout/PageShell';
+import { PanelGroup, PanelHeader, PanelItem } from '@/components/layout/PageShell';
+import { usePolicy } from '@/hooks/use-policies';
+import { PolicyMenuItem, PolicyNote } from '@/components/ui/policy-note';
 
 const providerLabels: Record<string, string> = { local: 'On this server', caldav: 'CalDAV', ics: 'Subscription' };
 
@@ -34,11 +36,17 @@ interface Props {
   onAddAccount: () => void;
   onAddCalendar: (accountId: string) => void;
   onCalendarSettings: (calendar: CalendarCalendar) => void;
+  /** The bin of deleted events, tasks and calendars (0.28). */
+  binOpen: boolean;
+  onOpenBin: () => void;
 }
 
 /** Calendar's context panel: accounts, their calendars and which ones are shown. */
-export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount, onAddCalendar, onCalendarSettings }: Props) {
+export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount, onAddCalendar, onCalendarSettings, binOpen, onOpenBin }: Props) {
   const { accounts, calendars, accountsQuery, calendarsQuery } = data;
+  // The server refuses what a policy forbids; the entries only show the reason (F13).
+  const removePolicy = usePolicy('accounts.remove');
+  const addPolicy = usePolicy('accounts.add');
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const groups = useMemo(() => {
     const grouped = new Map<string, { account: CalendarAccount | null; calendars: CalendarCalendar[] }>();
@@ -98,7 +106,7 @@ export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount
                       )}
                       {!remote && <DropdownMenuItem onClick={() => onAddCalendar(account.id)}>Add a calendar</DropdownMenuItem>}
                       <DropdownMenuSeparator />
-                      <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setConfirm(remote ? {
+                      <PolicyMenuItem lock={remote ? removePolicy.lock : undefined} className="text-destructive focus:text-destructive" onClick={() => setConfirm(remote ? {
                         title: `Remove ${name}?`,
                         description: 'Its calendars and events are removed from UniHub. Nothing is deleted on the calendar server.',
                         action: 'Remove account', run: () => data.deleteAccount.mutate(account.id),
@@ -108,7 +116,7 @@ export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount
                         action: 'Delete account', run: () => data.deleteAccount.mutate(account.id),
                       })}>
                         {remote ? 'Remove account' : 'Delete account'}
-                      </DropdownMenuItem>
+                      </PolicyMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
                 )}
@@ -137,8 +145,12 @@ export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount
           );
         })}
         <div className="px-4 pt-2">
-          <Button variant="ghost" size="sm" className="-ml-2 text-muted-foreground" onClick={onAddAccount}><Plus aria-hidden="true" />Add calendar account</Button>
+          <Button variant="ghost" size="sm" className="-ml-2 text-muted-foreground" onClick={onAddAccount} disabled={!!addPolicy.lock}><Plus aria-hidden="true" />Add calendar account</Button>
+          {addPolicy.lock && <PolicyNote reason={addPolicy.lock} />}
         </div>
+        <PanelGroup className="mt-2 border-t border-border pt-3">
+          <PanelItem icon={Trash2} active={binOpen} onSelect={onOpenBin}>Bin</PanelItem>
+        </PanelGroup>
       </div>
 
       <AlertDialog open={!!confirm} onOpenChange={open => { if (!open) setConfirm(null); }}>

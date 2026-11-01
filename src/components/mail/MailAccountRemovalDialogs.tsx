@@ -13,6 +13,8 @@ import {
 import type { MailAccountRemoval } from '@/hooks/use-mail-account-removal';
 import type { MailAccount } from '@/lib/mail-api';
 import type { MailPurgePreview } from '@/components/mail/mail-page-model';
+import { usePolicy } from '@/hooks/use-policies';
+import { PolicyNote } from '@/components/ui/policy-note';
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
@@ -26,14 +28,15 @@ function describePreview(preview: MailPurgePreview) {
  * One of the two ways to remove a connected account (D27): a row with the
  * choice as its title and what it does beneath, the whole row the button.
  */
-function RemovalChoice({ title, children, destructive = false, disabled, onClick }: {
-  title: string; children: string; destructive?: boolean; disabled?: boolean; onClick: () => void;
+function RemovalChoice({ title, children, destructive = false, disabled, lock, onClick }: {
+  title: string; children: string; destructive?: boolean; disabled?: boolean; lock?: string; onClick: () => void;
 }) {
   return (
-    <button type="button" disabled={disabled} onClick={onClick}
+    <button type="button" disabled={disabled || !!lock} onClick={onClick}
       className="flex w-full flex-col items-start gap-0.5 rounded-md border border-border px-3 py-2.5 text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60">
       <span className={destructive ? 'text-sm font-medium text-destructive' : 'text-sm font-medium'}>{title}</span>
       <span className="text-sm text-muted-foreground">{children}</span>
+      {lock && <PolicyNote reason={lock} />}
     </button>
   );
 }
@@ -49,6 +52,8 @@ export function MailAccountRemovalDialogs({ removal, accounts }: { removal: Mail
   const deleteAddress = accounts.find(account => account.id === accountToDelete)?.email_address ?? 'this account';
   const purgeAddress = accounts.find(account => account.id === accountToPurge)?.email_address ?? '';
   const confirmed = !!purgeAddress && purgeConfirmation.trim().toLowerCase() === purgeAddress.toLowerCase();
+  const removePolicy = usePolicy('accounts.remove');
+  const resetPolicy = usePolicy('accounts.reset');
   return <>
     <AlertDialog open={!!accountToDelete} onOpenChange={(open) => !open && removal.cancelDisconnect()}>
       <AlertDialogContent>
@@ -59,11 +64,11 @@ export function MailAccountRemovalDialogs({ removal, accounts }: { removal: Mail
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className="space-y-2">
-          <RemovalChoice title="Disconnect and keep mail" disabled={deleteAccount.isPending}
+          <RemovalChoice title="Disconnect and keep mail" disabled={deleteAccount.isPending} lock={removePolicy.lock}
             onClick={() => accountToDelete && deleteAccount.mutate(accountToDelete)}>
             Sync stops and the saved password is removed. Your mail, attachments and linked calendar stay in UniHub. Reconnect any time by editing the account.
           </RemovalChoice>
-          <RemovalChoice title="Remove the account with its mail" destructive disabled={deleteAccount.isPending}
+          <RemovalChoice title="Remove the account with its mail" destructive disabled={deleteAccount.isPending} lock={removePolicy.lock ?? resetPolicy.lock}
             onClick={() => accountToDelete && void removal.openPurgePreview(accountToDelete, { disconnect: true })}>
             Deletes UniHub's copy of the account, its mail, attachments and linked calendar. You confirm next by typing the address.
           </RemovalChoice>
@@ -83,6 +88,7 @@ export function MailAccountRemovalDialogs({ removal, accounts }: { removal: Mail
               : 'This removes the disconnected account from UniHub with its local mail, attachments and linked calendar. Messages and events at the provider are not deleted.'}
           </AlertDialogDescription>
         </AlertDialogHeader>
+        {resetPolicy.lock && <PolicyNote reason={resetPolicy.lock} />}
         {purgePreviewError && <p role="alert" className="text-sm text-destructive">{purgePreviewError}</p>}
         {!purgePreview && !purgePreviewError && <p role="status">Loading preview…</p>}
         {purgePreview && <div className="space-y-2 text-sm">
@@ -94,7 +100,7 @@ export function MailAccountRemovalDialogs({ removal, accounts }: { removal: Mail
         </div>}
         <AlertDialogFooter>
           <AlertDialogCancel>{purgeDisconnects ? 'Keep the account' : 'Keep local data'}</AlertDialogCancel>
-          <Button type="button" variant="destructive" disabled={!purgePreview || purgePreview.blocked || purgePreview.account_id !== accountToPurge || !confirmed || purgeAccount.isPending}
+          <Button type="button" variant="destructive" disabled={!!resetPolicy.lock || !purgePreview || purgePreview.blocked || purgePreview.account_id !== accountToPurge || !confirmed || purgeAccount.isPending}
             onClick={() => accountToPurge && purgeAccount.mutate({ id: accountToPurge, disconnect: purgeDisconnects, address: purgeConfirmation })}>
             {purgeDisconnects ? 'Remove account and mail' : 'Delete local data'}
           </Button>

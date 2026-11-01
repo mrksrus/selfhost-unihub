@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
-import { FileAudio, Loader2, Mic, Pause, Play, Search, Square, Tag, Upload, Layers } from 'lucide-react';
+import { FileAudio, Loader2, Mic, Pause, Play, Search, Square, Tag, Trash2, Upload, Layers } from 'lucide-react';
 import { api } from '@/lib/api';
 import { saveFile } from '@/lib/platform';
 import { runRecordingUpload, type RecordingUploadJob } from '@/lib/recording-upload';
@@ -17,6 +17,8 @@ import { recordingCategories, recordingCategoryLabels, recordingsApi, recordings
 import { closeUploadNotices, kickRecordingUploads, pageUploadRequest, stopRecordingUploads, useStoredRecordings } from '@/hooks/use-recording-uploads';
 import { useAudioCapture } from '@/hooks/use-audio-capture';
 import { useAuth } from '@/contexts/useAuth';
+import { useBinActions } from '@/hooks/use-bin-actions';
+import { BinView } from '@/components/bin/BinView';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { buttonVariants } from '@/components/ui/button-variants';
@@ -46,6 +48,7 @@ const AUDIO_FILE = /\.(mp3|m4a|mp4|wav|ogg|webm|flac|aac|aiff|aif)$/i;
 
 const Recordings = () => {
   const { toast } = useToast();
+  const bin = useBinActions('recordings');
   const { user } = useAuth();
   const userId = user?.id;
   const queryClient = useQueryClient();
@@ -71,6 +74,12 @@ const Recordings = () => {
   const categoryParam = params.get('category');
   const categoryFilter: 'all' | RecordingCategory = recordingCategories.includes(categoryParam as RecordingCategory) ? categoryParam as RecordingCategory : 'all';
   const tagFilter = params.get('tag') || '';
+  const binView = params.get('view') === 'bin';
+  const setBinView = (open: boolean) => {
+    const next = new URLSearchParams(params);
+    if (open) next.set('view', 'bin'); else next.delete('view');
+    setParams(next, { replace: true });
+  };
   const setFilter = (key: 'category' | 'tag', value: string | null) => {
     const next = new URLSearchParams(params);
     if (value) next.set(key, value); else next.delete(key);
@@ -274,11 +283,12 @@ const Recordings = () => {
   });
 
   const deleteRecording = useMutation({
-    mutationFn: (id: string) => recordingsApi.delete(id),
-    onSuccess: () => {
+    mutationFn: ({ id }: { id: string; title: string }) => recordingsApi.delete(id),
+    // The recording waits in the bin with its file; the notice offers Undo.
+    onSuccess: (binItemIds, { title }) => {
       queryClient.invalidateQueries({ queryKey: recordingsQueryKeys.all });
       setDeleteTarget(null);
-      toast({ title: 'Recording deleted' });
+      bin.movedToBin(title || 'The recording', binItemIds);
     },
     onError: (error: Error) => {
       toast({ title: 'Could not delete recording', description: error.message, variant: 'destructive' });
@@ -311,15 +321,15 @@ const Recordings = () => {
 
   const busy = capture.state !== 'idle';
   const filtered = !!(search || tagFilter || categoryFilter !== 'all');
-  const scope = [categoryFilter === 'all' ? 'All recordings' : recordingCategoryLabels[categoryFilter], tagFilter].filter(Boolean).join(' · ');
+  const scope = binView ? 'Bin' : [categoryFilter === 'all' ? 'All recordings' : recordingCategoryLabels[categoryFilter], tagFilter].filter(Boolean).join(' · ');
 
   const panel = (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       <PanelHeader title="Recordings" action={<Button size="sm" onClick={() => void capture.start()} disabled={busy || !!pendingAudio}><Mic aria-hidden="true" />Record</Button>} />
       <PanelGroup>
-        <PanelItem icon={Layers} active={categoryFilter === 'all'} onSelect={() => setFilter('category', null)}>All recordings</PanelItem>
+        <PanelItem icon={Layers} active={!binView && categoryFilter === 'all'} onSelect={() => { setBinView(false); setFilter('category', null); }}>All recordings</PanelItem>
         {recordingCategories.filter(item => item !== 'none').map(item => (
-          <PanelItem key={item} icon={FileAudio} active={categoryFilter === item} onSelect={() => setFilter('category', item)}>{recordingCategoryLabels[item]}</PanelItem>
+          <PanelItem key={item} icon={FileAudio} active={!binView && categoryFilter === item} onSelect={() => { setBinView(false); setFilter('category', item); }}>{recordingCategoryLabels[item]}</PanelItem>
         ))}
       </PanelGroup>
       {allTags.length > 0 && (
@@ -331,6 +341,7 @@ const Recordings = () => {
       )}
       <PanelGroup className="border-t border-border pt-3">
         <PanelItem icon={Upload} onSelect={() => fileInputRef.current?.click()}>Import audio file</PanelItem>
+        <PanelItem icon={Trash2} active={binView} onSelect={() => setBinView(true)}>Bin</PanelItem>
       </PanelGroup>
     </div>
   );
@@ -342,7 +353,7 @@ const Recordings = () => {
         <div className="flex h-12 items-center gap-2 px-4 md:px-6">
           <div className="relative w-full max-w-md">
             <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search recordings" aria-label="Search recordings" className="h-9 pl-9" />
+            <Input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search recordings" aria-label="Search recordings" className="h-9 pl-9" disabled={binView} />
           </div>
         </div>
       </PageHeader>
@@ -396,7 +407,8 @@ const Recordings = () => {
           <p className="mb-6 text-sm text-muted-foreground">This browser does not allow storing recordings on the device. Keep the app open until an upload finishes.</p>
         )}
 
-        {recordingsQuery.isLoading ? <LoadingState label="Loading recordings…" />
+        {binView ? <BinView module="recordings" />
+          : recordingsQuery.isLoading ? <LoadingState label="Loading recordings…" />
           : recordingsQuery.error ? <ErrorState title="Could not load recordings" error={recordingsQuery.error} onRetry={() => void recordingsQuery.refetch()} retrying={recordingsQuery.isFetching} />
           : recordings.length === 0 ? (
             <EmptyState icon={FileAudio} title={filtered ? 'No recordings match' : 'No recordings yet'}
@@ -465,11 +477,11 @@ const Recordings = () => {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete recording?</AlertDialogTitle>
-            <AlertDialogDescription>This permanently deletes {deleteTarget?.title || 'this recording'} and its stored audio file.</AlertDialogDescription>
+            <AlertDialogDescription>{deleteTarget?.title || 'This recording'} goes to the bin with its audio file, and can be restored from there.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction className={buttonVariants({ variant: 'destructive' })} onClick={() => { if (deleteTarget) deleteRecording.mutate(deleteTarget.id); }}>Delete</AlertDialogAction>
+            <AlertDialogAction className={buttonVariants({ variant: 'destructive' })} onClick={() => { if (deleteTarget) deleteRecording.mutate({ id: deleteTarget.id, title: deleteTarget.title }); }}>Delete</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

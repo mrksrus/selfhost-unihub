@@ -6,6 +6,55 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.28.0
+
+Data safety: encrypted backups that hold only your own data, a bin for what
+you delete, and rules an administrator can set. One automatic database
+upgrade; back up first.
+
+### Added
+
+- **A bin.** Deleted contacts, events, tasks (also synced ones), recordings
+  and local calendars wait in the bin instead of disappearing. Every delete
+  says "Moved to the bin" with Undo; each page's panel has a Bin entry to
+  restore or delete for good, and Settings → Bin shows everything together
+  with how long items are kept (7, 30 or 90 days, or until you delete them;
+  30 days to start with). A merge or a calendar with its events is one entry
+  and comes back as a unit; a synced event or task is created on the calendar
+  server again when restored. Mail keeps its Trash folders.
+- **Server settings → Policies.** Administrators set the data-safety rules for
+  everyone on the server: which mail modes new accounts may use, whether mail
+  may be deleted at the provider, whether people may create, restore or
+  delete backups and how long the server keeps them, whether accounts may be
+  added, removed or reset, and whether the bin and Delete data may delete for
+  good. Saving asks for the administrator's password and is recorded in the
+  activity log. Changing a rule never deletes data.
+- **A rule shows where it applies.** A control a rule forbids stays visible,
+  greyed out, with the reason beside it: in the mail account dialog, the
+  panels' Disconnect and Remove, Add account, Backup and restore, Delete data
+  and the bin.
+- **Users → a person → Accounts, backups and bin.** An administrator adds,
+  changes, disconnects or removes a person's mail and calendar accounts,
+  deletes their backups, empties their bin or deletes a module's data for
+  them, each with the administrator's password and an activity-log entry.
+- **Server settings → Instance backup.** The status, configuration (read from
+  the environment), last and next run and "Back up now" of the built-in
+  backup of the whole installation; off, with what is missing, until a
+  destination and a key are set.
+
+### Changed
+
+- **Every backup is encrypted.** The "Encrypt backups" switch is gone; a
+  backup from before 0.28 is marked "Not encrypted, made before 0.28" and
+  still downloads and restores. Backup and restore is now settings rows: what
+  to back up, "Include downloaded mail" (checked and greyed when a rule or a
+  provider-deleting account requires it), a ledger of what the backup holds
+  and what it leaves out, and the backups on this server with when the server
+  removes them. The review of a backup to restore lists what it holds, what
+  was left out with counts and the server's notes, also for old archives.
+- **Backup downloads use a download ticket.** The Android app's download
+  manager fetches the archive without the session cookie.
+
 ## 0.27.1
 
 Fixes for the Android app and for many changes saved at once. No database

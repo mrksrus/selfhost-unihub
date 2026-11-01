@@ -44,14 +44,18 @@ interface TicketFile { path: string; size: number; filename: string; contentType
 interface TicketKindPolicy {
   // The module whose switch gates the file, and the recovery section whose
   // running restore makes it unavailable; both are checked at issue and at use.
-  module: string;
-  restoreSection: string;
+  // A kind outside every module (a backup archive) names neither.
+  module: string | null;
+  restoreSection: string | null;
   /** The user's own file for this record, or null. */
   file(userId: string, resourceId: string): Promise<TicketFile | null>;
 }
 
 const KINDS: Readonly<Record<FileTicketKind, TicketKindPolicy>> = Object.freeze({
   'mail-attachment': { module: 'mail', restoreSection: 'mail', file: (userId: string, id: string) => attachmentFileForUser(userId, id) },
+  // 0.28 (stream A): the user's ready backup archive, with a download grant
+  // that allows Range for an hour. Until that lands, no backup is found.
+  'backup-archive': { module: null, restoreSection: null, file: async () => null },
 });
 
 let ticketKey: Buffer | null = null;
@@ -71,10 +75,10 @@ function parseRequest(body: unknown): { kind: FileTicketKind; id: string } {
 
 // The same refusals the request boundary gives a route of this module.
 async function assertAvailable(userId: string, policy: TicketKindPolicy) {
-  if (!await isModuleEnabled(userId, policy.module)) {
+  if (policy.module && !await isModuleEnabled(userId, policy.module)) {
     throw forbidden('MODULE_DISABLED', 'This module is disabled. Enable it in Settings.', { module: policy.module });
   }
-  if ((await getActiveRestoreSections(userId)).has(policy.restoreSection)) {
+  if (policy.restoreSection && (await getActiveRestoreSections(userId)).has(policy.restoreSection)) {
     throw new ApiError(409, 'RESTORE_IN_PROGRESS', `Restore in progress for ${policy.restoreSection}. This section is temporarily read-only.`);
   }
 }

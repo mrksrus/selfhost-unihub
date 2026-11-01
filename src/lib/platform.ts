@@ -270,14 +270,26 @@ export function appFileActions(): AppFileActions | null {
 }
 
 /**
- * Downloads a file the server streams (backups). The browser fetches it
- * directly, outside the service worker, so large files never pass through
- * page memory.
+ * Downloads a file through its ticket URL (lib/file-tickets-api.ts): backups
+ * and other large files the server streams. The browser fetches it directly,
+ * outside the service worker, so it never passes through page memory; in the
+ * app the system download manager fetches it, and the ticket means the
+ * session cookie never leaves the page (F9). Apps before 0.28 still attach
+ * the cookie to the ticket URL; the server ignores it.
+ */
+export function downloadTicket({ url, filename }: { url: string; filename: string }) {
+  downloadFromServer(url, filename);
+}
+
+/**
+ * Downloads a public file the server serves without a session (the Android
+ * app update). A file of the person's own goes through `downloadTicket`.
  */
 export function downloadFromServer(url: string, filename: string) {
-  // In the app the system download manager fetches it with the app's session.
-  if (postToApp({ type: 'download', url: new URL(url, window.location.href).href, name: filename })) return;
-  startDownload(url, filename);
+  const href = new URL(url, window.location.href).href;
+  // In the app the system download manager fetches it.
+  if (postToApp({ type: 'download', url: href, name: filename })) return;
+  startDownload(href, filename);
 }
 
 function blobBase64(blob: Blob) {

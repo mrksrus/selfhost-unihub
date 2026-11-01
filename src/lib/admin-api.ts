@@ -130,6 +130,20 @@ const ACTIONS: Record<string, string> = {
   'admin.signup_mode_changed': 'Changed sign-up',
   'mail.account_disconnected': 'Disconnected a mail account',
   'mail.account_purged': 'Removed a mail account and its mail from UniHub',
+  // 0.28: policies, the admin path for a person, the instance backup.
+  'admin.policy_changed': 'Changed a policy',
+  'admin.mail_account_added': 'Added a mail account',
+  'admin.mail_account_changed': 'Changed a mail account',
+  'admin.mail_account_removed': 'Removed a mail account',
+  'admin.mail_account_reset': 'Deleted UniHub\'s copy of a mail account\'s mail',
+  'admin.calendar_account_added': 'Added a calendar account',
+  'admin.calendar_account_changed': 'Changed a calendar account',
+  'admin.calendar_account_removed': 'Removed a calendar account',
+  'admin.backup_deleted': 'Deleted a backup',
+  'admin.bin_emptied': 'Emptied the bin',
+  'admin.bin_item_deleted': 'Deleted an item from the bin for good',
+  'admin.data_cleared': 'Deleted data',
+  'admin.instance_backup_started': 'Started an instance backup',
 };
 
 /** What happened, in words; the person acting and the account it concerns are shown beside it. */
@@ -137,5 +151,86 @@ export function auditActionLabel(entry: Pick<AuditEntry, 'action' | 'details'>) 
   const label = ACTIONS[entry.action] ?? entry.action;
   if (entry.action === 'admin.role_changed' && entry.details?.role) return `${label} to ${entry.details.role === 'admin' ? 'admin' : 'standard user'}`;
   if (entry.action === 'admin.signup_mode_changed' && entry.details?.mode) return `${label} to ${entry.details.mode}`;
+  if (entry.action === 'admin.policy_changed' && entry.details?.key) return `${label}: ${entry.details.key} to ${entry.details.to ?? '?'}`;
+  if (entry.action === 'admin.data_cleared' && entry.details?.module) return `${label}: ${entry.details.module}`;
   return label;
+}
+
+// ── Policies (Server settings → Policies) ─────────────────────────
+import type { AdminPoliciesResponse, AdminPoliciesUpdateRequest, PolicyValues } from '../../api/src/contracts/policies';
+export type { AdminPolicy, AdminPoliciesResponse } from '../../api/src/contracts/policies';
+
+export const adminPoliciesQueryKey = ['admin', 'policies'] as const;
+
+export async function fetchAdminPolicies(signal?: AbortSignal): Promise<AdminPoliciesResponse> {
+  const answer = unwrap(await api.get<AdminPoliciesResponse>('/admin/policies', { signal }));
+  if (!answer?.policies) throw new Error('The server did not answer with its policies.');
+  return answer;
+}
+
+/** Saves the changed values only, with the administrator's password; the answer is every policy as now set. */
+export async function saveAdminPolicies(values: Partial<PolicyValues>, currentPassword: string): Promise<AdminPoliciesResponse> {
+  const answer = unwrap(await api.put<AdminPoliciesResponse>('/admin/policies', { values, current_password: currentPassword } satisfies AdminPoliciesUpdateRequest));
+  if (!answer?.policies) throw new Error('The server did not answer with its policies.');
+  return answer;
+}
+
+// ── A person's accounts, backups and bin (the admin path, F13) ───
+// Every change carries the administrator's own password; the activity log
+// records it. The routes call the same services as the person's own.
+import type {
+  AdminAccountResponse, AdminBinEmptyRequest, AdminCalendarAccount, AdminCalendarAccountCreateRequest, AdminCalendarAccountUpdateRequest,
+  AdminClearModule, AdminDeleteResponse, AdminMailAccount, AdminMailAccountCreateRequest, AdminMailAccountUpdateRequest,
+  AdminUserAccountsResponse, AdminUserBackupsResponse,
+} from '../../api/src/contracts/admin-accounts';
+import type { BinModule } from '../../api/src/contracts/bin';
+export type {
+  AdminCalendarAccount, AdminCalendarAccountCreateRequest, AdminCalendarAccountUpdateRequest, AdminClearModule, AdminMailAccount,
+  AdminMailAccountCreateRequest, AdminMailAccountUpdateRequest, AdminUserAccountsResponse,
+} from '../../api/src/contracts/admin-accounts';
+
+export const adminUserQueryKeys = {
+  accounts: (userId: string) => ['admin', 'users', userId, 'accounts'] as const,
+  backups: (userId: string) => ['admin', 'users', userId, 'backups'] as const,
+};
+
+const userPath = (userId: string, rest: string) => `/admin/users/${encodeURIComponent(userId)}${rest}`;
+const withPassword = <T extends object>(body: T, currentPassword: string) => ({ ...body, current_password: currentPassword });
+const deleted = (answer: AdminDeleteResponse | undefined) => answer?.deleted ?? 0;
+
+export async function fetchAdminUserAccounts(userId: string, signal?: AbortSignal): Promise<AdminUserAccountsResponse> {
+  const answer = unwrap(await api.get<AdminUserAccountsResponse>(userPath(userId, '/accounts'), { signal }));
+  return { user_id: userId, mail_accounts: answer?.mail_accounts ?? [], calendar_accounts: answer?.calendar_accounts ?? [] };
+}
+export async function fetchAdminUserBackups(userId: string, signal?: AbortSignal) {
+  return unwrap(await api.get<AdminUserBackupsResponse>(userPath(userId, '/backups'), { signal }))?.jobs ?? [];
+}
+export async function addAdminMailAccount(userId: string, account: Omit<AdminMailAccountCreateRequest, 'current_password'>, currentPassword: string) {
+  return unwrap(await api.post<AdminAccountResponse<AdminMailAccount>>(userPath(userId, '/mail-accounts'), withPassword(account, currentPassword)))?.account;
+}
+export async function updateAdminMailAccount(userId: string, accountId: string, change: Omit<AdminMailAccountUpdateRequest, 'current_password'>, currentPassword: string) {
+  return unwrap(await api.put<AdminAccountResponse<AdminMailAccount>>(userPath(userId, `/mail-accounts/${encodeURIComponent(accountId)}`), withPassword(change, currentPassword)))?.account;
+}
+/** Disconnects the account; `purge` also deletes UniHub's copy of its mail (the provider keeps it). */
+export async function removeAdminMailAccount(userId: string, accountId: string, currentPassword: string, purge = false) {
+  return deleted(unwrap(await api.delete<AdminDeleteResponse>(userPath(userId, `/mail-accounts/${encodeURIComponent(accountId)}${purge ? '?purge=true' : ''}`), { current_password: currentPassword })));
+}
+export async function addAdminCalendarAccount(userId: string, account: Omit<AdminCalendarAccountCreateRequest, 'current_password'>, currentPassword: string) {
+  return unwrap(await api.post<AdminAccountResponse<AdminCalendarAccount>>(userPath(userId, '/calendar-accounts'), withPassword(account, currentPassword)))?.account;
+}
+export async function updateAdminCalendarAccount(userId: string, accountId: string, change: Omit<AdminCalendarAccountUpdateRequest, 'current_password'>, currentPassword: string) {
+  return unwrap(await api.put<AdminAccountResponse<AdminCalendarAccount>>(userPath(userId, `/calendar-accounts/${encodeURIComponent(accountId)}`), withPassword(change, currentPassword)))?.account;
+}
+export async function removeAdminCalendarAccount(userId: string, accountId: string, currentPassword: string) {
+  return deleted(unwrap(await api.delete<AdminDeleteResponse>(userPath(userId, `/calendar-accounts/${encodeURIComponent(accountId)}`), { current_password: currentPassword })));
+}
+export async function deleteAdminUserBackup(userId: string, jobId: string, currentPassword: string) {
+  return deleted(unwrap(await api.delete<AdminDeleteResponse>(userPath(userId, `/backups/${encodeURIComponent(jobId)}`), { current_password: currentPassword })));
+}
+export async function emptyAdminUserBin(userId: string, currentPassword: string, module?: BinModule) {
+  return deleted(unwrap(await api.post<AdminDeleteResponse>(userPath(userId, '/bin/empty'), withPassword(module ? { module } : {}, currentPassword) satisfies AdminBinEmptyRequest)));
+}
+/** Settings → Delete data for that person: every item of one module. */
+export async function clearAdminUserModule(userId: string, module: AdminClearModule, currentPassword: string) {
+  return deleted(unwrap(await api.post<AdminDeleteResponse>(userPath(userId, `/clear/${module}`), { current_password: currentPassword })));
 }

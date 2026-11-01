@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { ChevronRight, LogOut, Server, Settings, Users } from 'lucide-react';
+import { ChevronRight, HardDriveDownload, LogOut, Server, Settings, ShieldCheck, Users } from 'lucide-react';
 import { useModules } from '@/hooks/use-modules';
 import { useAuth } from '@/contexts/useAuth';
 import { useAttentionItems } from '@/hooks/use-attention';
@@ -20,6 +20,8 @@ const More = () => {
     { title: 'Settings', href: '/settings', icon: Settings },
     ...(user?.role === 'admin' ? [
       { title: 'Server settings', href: '/admin/settings', icon: Server },
+      { title: 'Policies', href: '/admin/policies', icon: ShieldCheck },
+      { title: 'Instance backup', href: '/admin/instance-backup', icon: HardDriveDownload },
       { title: 'Users', href: '/admin/users', icon: Users },
     ] : []),
   ];

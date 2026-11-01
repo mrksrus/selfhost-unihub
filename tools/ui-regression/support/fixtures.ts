@@ -231,6 +231,84 @@ const KEPT_PROPERTIES = [
   { name: 'ROLE', group: null, params: null, value: 'Rear admiral' },
 ];
 
+
+// ── 0.28 data safety: policies, backups, the bin, the admin pages ──
+// The default rules allow everything; the pictures of the greyed state set
+// one rule through the admin answer below (the policies page) and the
+// person's answer (POLICIES_EFFECTIVE) alike.
+const POLICY_DEFAULTS: Record<string, unknown> = {
+  'mail.mode.download': 'allowed', 'mail.mode.sync': 'allowed', 'mail.mode.new_accounts': 'user_choice', 'mail.provider_delete': 'user_choice',
+  'backup.download_mail': 'user_choice', 'backup.create': 'allowed', 'backup.restore': 'allowed', 'backup.delete': 'allowed', 'backup.server_retention_days': null,
+  'accounts.add': 'allowed', 'accounts.remove': 'allowed', 'accounts.reset': 'allowed', 'accounts.admin_manage': 'available', 'account.delete': 'allowed', 'data.clear': 'allowed', 'bin.delete': 'allowed',
+};
+const POLICY_VALUES: Record<string, unknown[]> = {
+  'mail.mode.new_accounts': ['user_choice', 'download', 'download_delete', 'sync'], 'mail.provider_delete': ['user_choice', 'forbidden', 'required'],
+  'backup.download_mail': ['user_choice', 'always'], 'backup.server_retention_days': [null, 30, 90, 365], 'accounts.admin_manage': ['available'],
+};
+/** One rule set for the pictures: deleting from the bin for good is not allowed. */
+const POLICY_SET: Record<string, { value: unknown; reason: string }> = {
+  'bin.delete': { value: 'forbidden', reason: 'Your administrator does not allow deleting items from the bin for good.' },
+};
+const POLICIES_EFFECTIVE = {
+  policies: Object.fromEntries(Object.keys(POLICY_DEFAULTS).map(key => [key, key in POLICY_SET
+    ? { value: POLICY_SET[key].value, source: 'policy', allowed: false, reason: POLICY_SET[key].reason }
+    : { value: POLICY_DEFAULTS[key], source: 'default', allowed: true, reason: null }])),
+  revision: 2, acknowledged_revision: 2, rules: [POLICY_SET['bin.delete'].reason],
+};
+const POLICIES_ADMIN = {
+  policies: Object.fromEntries(Object.keys(POLICY_DEFAULTS).map(key => [key, {
+    value: key in POLICY_SET ? POLICY_SET[key].value : POLICY_DEFAULTS[key], source: key in POLICY_SET ? 'policy' : 'default', default: POLICY_DEFAULTS[key],
+    values: POLICY_VALUES[key] ?? ['allowed', 'forbidden'], effect: key === 'mail.mode.sync' ? 'Existing Sync accounts keep working.' : key === 'bin.delete' ? 'Items stay in the bin until restored.' : null,
+  }])),
+  revision: 2,
+};
+
+const BACKUP_CAPABILITIES = {
+  enabled: true, version: 7,
+  sections: [{ id: 'settings', label: 'Settings' }, { id: 'contacts', label: 'Contacts' }, { id: 'calendar', label: 'Calendar and ToDo' }, { id: 'mail', label: 'Mail' }, { id: 'recordings', label: 'Recordings' }],
+  exclusions: [],
+  download_mail: { value: true, forced: false, reason: null, forced_account_ids: ['acct-home'] },
+};
+const backupJob = <T extends object>(id: string, fields: T) => row({
+  id, scope: 'full', status: 'ready', phase: 'done', progress: 100, cancel_requested: false, requested_sections: [], file_size: 12_400_000, file_sha256: 'synthetic', content_type: 'application/vnd.unihub.backup',
+  encryption_enabled: true, backup_uuid: `uuid-${id}`, recovery_password_available: false, recovery_password_revealed: true, server_unlock_available: true, keep_until: null,
+  contents: { included: ['local', 'local-by-policy', 'config'], left_out: [
+    { section: 'mail', what: 'Sync-mode mail', reason: 'It downloads again from the provider after the account reconnects.', count: 1204 },
+    { section: 'calendar', what: 'Events and tasks of the calendar server', reason: 'They sync again from the calendar server.', count: 88 },
+  ], notes: [] },
+  error: null, created_at: at('06-14T03:30:00.000Z'), updated_at: at('06-14T03:35:00.000Z'), started_at: at('06-14T03:30:00.000Z'), completed_at: at('06-14T03:35:00.000Z'), downloaded_at: null,
+}, fields);
+const BACKUP_JOBS = [
+  backupJob('bk-running', { status: 'running', phase: 'files', progress: 45, file_size: null, completed_at: null, created_at: at('06-15T09:28:00.000Z'), started_at: at('06-15T09:28:00.000Z'), recovery_password_available: true, recovery_password_revealed: false }),
+  backupJob('bk-full', { recovery_password_available: true, recovery_password_revealed: false }),
+  backupJob('bk-contacts', { scope: 'partial', requested_sections: ['contacts'], file_size: 320_000, created_at: at('06-10T18:00:00.000Z'), completed_at: at('06-10T18:00:20.000Z'),
+    contents: { included: ['local'], left_out: [], notes: [] } }),
+  backupJob('bk-old', { encryption_enabled: false, content_type: 'application/zip', contents: null, file_size: 48_000_000, created_at: at('05-02T10:00:00.000Z'), completed_at: at('05-02T10:04:00.000Z') }),
+];
+
+const binItem = <T extends object>(id: string, fields: T) => row({
+  id, module: 'contacts', item_type: 'contact', title: '', reason: 'deleted', group_id: null, deleted_at: at('06-13T15:20:00.000Z'), purge_after: at('07-13T15:20:00.000Z'), provider: 'local', origin: null,
+}, fields);
+export const BIN_ITEMS = [
+  binItem('bin-task', { module: 'calendar', item_type: 'task', title: 'Share the updated roadmap draft', provider: 'caldav', origin: 'Team', deleted_at: at('06-15T08:10:00.000Z'), purge_after: at('07-15T08:10:00.000Z') }),
+  binItem('bin-contact', { title: 'Margaret Hamilton', deleted_at: at('06-14T11:00:00.000Z'), purge_after: at('07-14T11:00:00.000Z') }),
+  binItem('bin-rec', { module: 'recordings', item_type: 'recording', title: 'Reminder: renew passport', deleted_at: at('06-13T15:20:00.000Z') }),
+  binItem('bin-cal', { module: 'calendar', item_type: 'calendar', title: 'Garden club', reason: 'calendar_deleted', group_id: 'grp-garden', deleted_at: at('06-12T09:00:00.000Z'), purge_after: at('07-12T09:00:00.000Z') }),
+  binItem('bin-cal-ev1', { module: 'calendar', item_type: 'event', title: 'Seed swap', reason: 'calendar_deleted', group_id: 'grp-garden', deleted_at: at('06-12T09:00:00.000Z'), purge_after: at('07-12T09:00:00.000Z') }),
+  binItem('bin-cal-ev2', { module: 'calendar', item_type: 'event', title: 'Compost workshop', reason: 'calendar_deleted', group_id: 'grp-garden', deleted_at: at('06-12T09:00:00.000Z'), purge_after: at('07-12T09:00:00.000Z') }),
+  binItem('bin-merge-a', { title: 'Jane Doe', reason: 'merged', group_id: 'grp-merge', deleted_at: at('06-11T16:45:00.000Z'), purge_after: at('07-11T16:45:00.000Z') }),
+];
+
+const INSTANCE_BACKUP = {
+  enabled: true, missing: [], destination: '/backups/unihub', key_fingerprint: 'k1:7f3a…c9e2', time_utc: '03:30', keep: 14, next_run_at: at('06-16T03:30:00.000Z'),
+  last_run: { id: 'ib-1', trigger: 'schedule', actor_email: null, status: 'succeeded', file_name: 'unihub-instance-20260615T0330Z-0.28.0.uhib', size_bytes: 1_310_000_000, app_version: '0.28.0', error: null, started_at: at('06-15T03:30:00.000Z'), finished_at: at('06-15T03:41:00.000Z') },
+  last_success: null, kept: { count: 14, bytes: 18_000_000_000 }, running: false,
+  runs: [
+    { id: 'ib-1', trigger: 'schedule', actor_email: null, status: 'succeeded', file_name: 'unihub-instance-20260615T0330Z-0.28.0.uhib', size_bytes: 1_310_000_000, app_version: '0.28.0', error: null, started_at: at('06-15T03:30:00.000Z'), finished_at: at('06-15T03:41:00.000Z') },
+    { id: 'ib-0', trigger: 'manual', actor_email: 'ada@example.com', status: 'failed', file_name: null, size_bytes: null, app_version: '0.28.0', error: 'Not enough free space at the destination.', started_at: at('06-14T14:02:00.000Z'), finished_at: at('06-14T14:02:30.000Z') },
+  ],
+};
+
 export interface ApiReply { status?: number; body: unknown }
 type Handler = (url: URL, method: string, body: unknown) => ApiReply | undefined;
 type Route = [method: string, path: RegExp, handler: Handler];
@@ -273,10 +351,10 @@ function savedDraft(id: string, body: unknown) {
  * answered 501 and fails the test (see support/test.ts), so a new request in
  * the product shows up as a fixture to add, never as a silent real call.
  */
-function defaultRoutes(emails: typeof EMAILS): Route[] {
+function defaultRoutes(emails: typeof EMAILS, admin = false): Route[] {
   const byId = (url: URL) => emails.find(entry => entry.id === decodeURIComponent(url.pathname.split('/')[4] ?? ''));
   return [
-    ['GET', /^\/auth\/me$/, () => ok({ user: USER, csrfToken: 'synthetic-csrf-token' })],
+    ['GET', /^\/auth\/me$/, () => ok({ user: admin ? { ...USER, role: 'admin' } : USER, csrfToken: 'synthetic-csrf-token' })],
     ['GET', /^\/modules$/, () => ok({ modules: MODULES, pages: PAGES })],
     ['GET', /^\/settings\/preferences$/, () => ok({ preferences: PREFERENCES })],
     ['GET', /^\/settings\/values$/, () => ok({ settings: SETTINGS })],
@@ -319,6 +397,17 @@ function defaultRoutes(emails: typeof EMAILS): Route[] {
       const category = url.searchParams.get('category');
       return ok({ recordings: RECORDINGS.filter(row => !category || row.category === category) });
     }],
+    // 0.28 data safety. The person's own rules; the bin by module; backups; the admin pages.
+    ['GET', /^\/policies\/effective$/, () => ok(POLICIES_EFFECTIVE)],
+    ['GET', /^\/bin$/, url => {
+      const module = url.searchParams.get('module');
+      return ok({ items: BIN_ITEMS.filter(item => !module || item.module === module), retention: '30' });
+    }],
+    ['GET', /^\/backup\/capabilities$/, () => ok(BACKUP_CAPABILITIES)],
+    ['GET', /^\/backup\/jobs$/, () => ok({ jobs: BACKUP_JOBS })],
+    ['GET', /^\/backup\/restore-jobs$/, () => ok({ jobs: [] })],
+    ['GET', /^\/admin\/policies$/, () => ok(POLICIES_ADMIN)],
+    ['GET', /^\/admin\/instance-backup$/, () => ok(INSTANCE_BACKUP)],
     ['GET', /^\/contacts$/, url => {
       const offset = Number(url.searchParams.get('offset') || 0);
       return ok({ contacts: CONTACTS.slice(offset), has_more: false, offset });
@@ -340,9 +429,9 @@ export interface ApiRouter {
   readonly unhandled: string[];
 }
 
-export function createApiRouter(): ApiRouter {
+export function createApiRouter({ admin = false } = {}): ApiRouter {
   // Each test gets its own copy, so a message read in one test is unread in the next.
-  const routes = defaultRoutes(EMAILS.map(row => ({ ...row })));
+  const routes = defaultRoutes(EMAILS.map(row => ({ ...row })), admin);
   const unhandled: string[] = [];
   let requests = 0;
   return {

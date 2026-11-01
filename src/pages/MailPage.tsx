@@ -21,6 +21,7 @@ import { useMailFlags } from '@/hooks/use-mail-flags';
 import { useMailCompose } from '@/hooks/use-mail-compose';
 import { useMailAccountEditor } from '@/hooks/use-mail-account-editor';
 import { useMailAccountRemoval } from '@/hooks/use-mail-account-removal';
+import { usePolicy } from '@/hooks/use-policies';
 import { useMailSyncJobs } from '@/hooks/use-mail-sync-jobs';
 import { useMailWritebacks } from '@/hooks/use-mail-writebacks';
 import { useMailSnooze } from '@/hooks/use-mail-snooze';
@@ -75,6 +76,7 @@ const MailPage = () => {
   const accountEditor = useMailAccountEditor();
   const compose = useMailCompose({ activeMailAccountId, selectedAccount, isMobile });
   const accountRemoval = useMailAccountRemoval(() => setSelectedAccount(ALL_ACCOUNTS));
+  const addAccountPolicy = usePolicy('accounts.add');
   const [contextMenuEmail, setContextMenuEmail] = useState<{ email: Email; x: number; y: number } | null>(null);
   const [taskEmail, setTaskEmail] = useState<TaskSource | null>(null);
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
@@ -182,7 +184,7 @@ const MailPage = () => {
     <MailPanel onCompose={compose.openCompose}>
       <MailAccountList accounts={accounts} loading={accountsLoading} selectedAccount={selectedAccount} legacyCount={folderView.legacyCount}
         addAccount={<MailAccountDialog editor={accountEditor} touch={isMobile} trigger={
-          <Button variant="ghost" size="icon-xs" aria-label="Add mail account" title="Add mail account">
+          <Button variant="ghost" size="icon-xs" aria-label="Add mail account" title={addAccountPolicy.lock ?? 'Add mail account'} disabled={!!addAccountPolicy.lock}>
             <Plus aria-hidden="true" />
           </Button>
         } />}
