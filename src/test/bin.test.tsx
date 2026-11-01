@@ -271,9 +271,17 @@ describe('the bin', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Restore there' }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Where should it go?' })).not.toBeInTheDocument());
     expect(restore).toBeDisabled();
+    // Not the row's menu, which goes with the row once the restore succeeds: the view itself.
     await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+    expect(document.activeElement?.getAttribute('aria-label') ?? '').not.toMatch(/^More actions/);
+    // The restore succeeds and the refetched bin is empty: the row and the list are gone, focus stays in the view.
+    bin = [];
     await act(async () => finish({ data: { restored: [{ id: 'bin-task', item_type: 'task', item_id: 't', note: null }], failed: [] } }));
+    await screen.findByText('The bin is empty', {}, { timeout: 10_000 });
+    expect(document.activeElement).not.toBe(document.body);
     // The only row leaves the bin while its dialog is open: the list is gone, the view itself takes focus.
+    bin = [ITEMS.find(entry => entry.id === 'bin-task')!];
+    await act(async () => { await client.invalidateQueries({ queryKey: ['bin'] }); });
     vi.mocked(api.post).mockResolvedValueOnce(refused('bin-task', 'BIN_RESTORE_NEEDS_CALENDAR'));
     fireEvent.click(await screen.findByRole('button', { name: 'Restore Reply to Grace' }, { timeout: 10_000 }));
     dialog = await screen.findByRole('dialog', { name: 'Where should it go?' });

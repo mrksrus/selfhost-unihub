@@ -121,14 +121,15 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
   const deletePolicy = usePolicy('bin.delete');
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   // Where focus returns when the destination dialog closes: the Restore button that opened it
-  // while it is there and enabled, else an enabled Restore button in the list, else the view
-  // itself, which is always there (the list is not when the bin became empty).
+  // while it is there and enabled, else an enabled Restore button of a row (never a row's menu:
+  // while a restore runs every Restore is disabled, and the row may be about to go), else the
+  // view itself, which is always there (the list is not when the bin became empty).
   const opener = useRef<HTMLElement | null>(null);
   const list = useRef<HTMLUListElement | null>(null);
   const view = useRef<HTMLDivElement | null>(null);
   const returnFocus = () => {
     const usable = (element: HTMLElement | null | undefined) => !!element && element.isConnected && !(element as HTMLButtonElement).disabled;
-    const target = usable(opener.current) ? opener.current : list.current?.querySelector<HTMLElement>('button:not(:disabled)') ?? view.current;
+    const target = usable(opener.current) ? opener.current : list.current?.querySelector<HTMLElement>('button[data-bin-restore]:not(:disabled)') ?? view.current;
     target?.focus();
   };
   // An ask names only items still in the bin: one restored or deleted elsewhere since (a refetch
@@ -191,7 +192,7 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
                   {itemMeta(lead, group).map(line => <p key={line} className="text-xs text-muted-foreground">{line}</p>)}
                 </div>
                 <div className="flex shrink-0 items-center gap-1 touch:gap-3">
-                  <Button variant="outline" size="sm" aria-label={`Restore ${name}`} disabled={actions.restore.isPending}
+                  <Button variant="outline" size="sm" aria-label={`Restore ${name}`} disabled={actions.restore.isPending} data-bin-restore=""
                     onClick={event => { opener.current = event.currentTarget; actions.restore.mutate({ ids, modules: [...new Set(group.map(item => item.module))] }); }}>Restore</Button>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
