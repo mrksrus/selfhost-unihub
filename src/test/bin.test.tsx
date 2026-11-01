@@ -217,6 +217,73 @@ describe('the bin', () => {
     expect(api.post).toHaveBeenCalledTimes(2);
   });
 
+  it('a choice made for one ask does not carry into the next, and only an eligible destination can be sent', { timeout: 20_000 }, async () => {
+    const client = testClient();
+    const localTask = item('bin-local-task', { module: 'calendar', item_type: 'task', title: 'Water the plants', provider: 'local', origin: 'Home' });
+    let bin = [...ITEMS, localTask];
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path.startsWith('/bin')) return { data: { items: bin, retention: '30' } };
+      if (path === '/policies/effective') return policiesAnswer();
+      if (path === '/calendar/calendars') return { data: { calendars: CALENDARS } };
+      return { data: {} };
+    });
+    vi.mocked(api.post).mockResolvedValueOnce(refused('bin-task', 'BIN_RESTORE_NEEDS_CALENDAR'));
+    mountSignedIn(<BinView module="calendar" />, { client });
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore Reply to Grace' }, { timeout: 10_000 }));
+    let dialog = await screen.findByRole('dialog', { name: 'Where should it go?' });
+    fireEvent.click(within(dialog).getByRole('combobox', { name: 'Calendar' }));
+    fireEvent.click(await screen.findByRole('option', { name: /Team/ }));
+    expect(within(dialog).getByRole('button', { name: 'Restore there' })).toBeEnabled();
+    // The synced task leaves the bin before the choice is sent: the ask closes on its own.
+    bin = [localTask];
+    await act(async () => { await client.invalidateQueries({ queryKey: ['bin'] }); });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Where should it go?' })).not.toBeInTheDocument(), { timeout: 10_000 });
+    // The next ask, for a UniHub item, starts without a choice; the server calendar cannot be sent for it.
+    vi.mocked(api.post).mockResolvedValueOnce(refused('bin-local-task', 'BIN_RESTORE_NEEDS_LIST'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore Water the plants' }, { timeout: 10_000 }));
+    dialog = await screen.findByRole('dialog', { name: 'Where should it go?' });
+    expect(within(dialog).getByRole('combobox', { name: 'List' })).toHaveTextContent('Choose a list');
+    expect(within(dialog).getByRole('button', { name: 'Restore there' })).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore there' }));
+    expect(api.post).not.toHaveBeenCalledWith('/bin/restore', expect.objectContaining({ calendar_id: 'cal-team' }));
+  });
+
+  it('focus lands on something enabled after the dialog closes for a pending restore or an emptied bin', { timeout: 20_000 }, async () => {
+    const client = testClient();
+    let bin = [ITEMS.find(entry => entry.id === 'bin-task')!];
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path.startsWith('/bin')) return { data: { items: bin, retention: '30' } };
+      if (path === '/policies/effective') return policiesAnswer();
+      if (path === '/calendar/calendars') return { data: { calendars: CALENDARS } };
+      return { data: {} };
+    });
+    vi.mocked(api.post).mockResolvedValueOnce(refused('bin-task', 'BIN_RESTORE_NEEDS_CALENDAR'));
+    mountSignedIn(<BinView module="calendar" />, { client });
+    // Restore there closes the dialog while the restore runs and every Restore button is disabled.
+    const restore = await screen.findByRole('button', { name: 'Restore Reply to Grace' }, { timeout: 10_000 });
+    restore.focus();
+    fireEvent.click(restore);
+    let dialog = await screen.findByRole('dialog', { name: 'Where should it go?' });
+    fireEvent.click(within(dialog).getByRole('combobox', { name: 'Calendar' }));
+    fireEvent.click(await screen.findByRole('option', { name: /Team/ }));
+    let finish!: (value: unknown) => void;
+    vi.mocked(api.post).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }) as never);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore there' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Where should it go?' })).not.toBeInTheDocument());
+    expect(restore).toBeDisabled();
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+    await act(async () => finish({ data: { restored: [{ id: 'bin-task', item_type: 'task', item_id: 't', note: null }], failed: [] } }));
+    // The only row leaves the bin while its dialog is open: the list is gone, the view itself takes focus.
+    vi.mocked(api.post).mockResolvedValueOnce(refused('bin-task', 'BIN_RESTORE_NEEDS_CALENDAR'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore Reply to Grace' }, { timeout: 10_000 }));
+    dialog = await screen.findByRole('dialog', { name: 'Where should it go?' });
+    bin = [];
+    await act(async () => { await client.invalidateQueries({ queryKey: ['bin'] }); });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Where should it go?' })).not.toBeInTheDocument(), { timeout: 10_000 });
+    await screen.findByText('The bin is empty');
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+  });
+
   it('cancelling the destination dialog with the keyboard returns focus to the Restore button that opened it', { timeout: 20_000 }, async () => {
     answerGets(ITEMS);
     vi.mocked(api.post).mockResolvedValueOnce(refused('bin-task', 'BIN_RESTORE_NEEDS_CALENDAR'));

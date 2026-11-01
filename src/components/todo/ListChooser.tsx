@@ -37,15 +37,18 @@ export function ListChooser({ id, calendars, value, onChange, undated = false, u
   const reasonFor = (calendar: CalendarCalendar) => unavailable[calendar.id] ?? listRefusal(calendar, { undated });
   return (
     <Select value={value} onValueChange={onChange} disabled={disabled}>
-      <SelectTrigger id={id} aria-label={ariaLabel} className={cn('h-auto min-h-10 touch:min-h-11', className)}>
+      {/* The chosen name is plain inline text in the control's value span, which clips it to one line with an
+          ellipsis and may break it anywhere (SelectTrigger): nothing here fixes a width, so a long name never
+          widens the control past its box. The full name stays in the control's text and title. */}
+      <SelectTrigger id={id} aria-label={ariaLabel} title={chosen?.name} className={cn('h-auto min-h-10 max-w-full text-left touch:min-h-11', className)}>
         <SelectValue placeholder={placeholder}>
           {extra && value === extra.value && <span>{extra.label}</span>}
           {chosen && (
-            <span className="flex min-w-0 items-center gap-2 text-left">
-              <span aria-hidden="true" className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: chosen.color }} />
-              <span className="truncate">{chosen.name}</span>
-              {severalAccounts && <span className="truncate text-xs text-muted-foreground">{groups.find(group => group.calendars.includes(chosen))?.label}</span>}
-            </span>
+            <>
+              <span aria-hidden="true" className="mr-2 inline-block h-2.5 w-2.5 rounded-full align-middle" style={{ backgroundColor: chosen.color }} />
+              {chosen.name}
+              {severalAccounts && <span className="ml-2 text-xs text-muted-foreground">{groups.find(group => group.calendars.includes(chosen))?.label}</span>}
+            </>
           )}
         </SelectValue>
       </SelectTrigger>
@@ -62,7 +65,7 @@ export function ListChooser({ id, calendars, value, onChange, undated = false, u
                   {/* The dot stays beside the first line; a long name wraps within the popup, and the note follows it. */}
                   <span className="flex min-w-0 items-start gap-2">
                     <span aria-hidden="true" className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: calendar.color }} />
-                    <span className="min-w-0 break-words">
+                    <span className="min-w-0 [overflow-wrap:anywhere]">
                       {calendar.name}
                       {note && <span className="ml-2 text-xs text-muted-foreground">{note}</span>}
                     </span>

@@ -7,6 +7,7 @@ import { usePolicy } from '@/hooks/use-policies';
 import { useBinActions, type DestinationAsk } from '@/hooks/use-bin-actions';
 import { BIN_MODULES, binQueryOptions, groupBinItems, retentionSentence, type BinItem, type BinModule } from '@/lib/bin-api';
 import { calendarApi, calendarQueryKeys, type CalendarCalendar } from '@/lib/calendar-api';
+import { listRefusal } from '@/lib/tasks';
 import { ListChooser } from '@/components/todo/ListChooser';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -67,8 +68,15 @@ function DestinationDialog({ ask, titles, pending, onClose, onChoose, returnFocu
   const id = useId();
   const [chosen, setChosen] = useState('');
   const open = !!ask;
+  // A choice belongs to one ask: another ask, or none, starts without one. (The dialog stays
+  // mounted, so closing it from outside runs no onOpenChange.)
+  const askKey = ask ? `${ask.kind}:${ask.ids.join(',')}` : '';
+  useEffect(() => { setChosen(''); }, [askKey]);
   const calendars = useQuery({ queryKey: calendarQueryKeys.calendars, queryFn: ({ signal }) => calendarApi.fetchCalendars(signal), enabled: open });
   const unavailable = Object.fromEntries((calendars.data ?? []).flatMap(calendar => { const why = ask && wrongKind(calendar, ask.kind); return why ? [[calendar.id, why]] : []; }));
+  // Only a calendar that is listed and can take the items is sent, whatever the state says.
+  const chosenCalendar = calendars.data?.find(calendar => calendar.id === chosen);
+  const eligible = !!chosenCalendar && !unavailable[chosenCalendar.id] && !listRefusal(chosenCalendar, { undated: false });
   const what = titles.length === 1 ? titles[0] : `${titles.length} items`;
   return (
     <Dialog open={open} onOpenChange={next => { if (!next && !pending) { setChosen(''); onClose(); } }}>
@@ -89,7 +97,7 @@ function DestinationDialog({ ask, titles, pending, onClose, onChoose, returnFocu
         </div>
         <DialogFooter className="gap-2 sm:gap-0">
           <Button type="button" variant="outline" onClick={() => { setChosen(''); onClose(); }} disabled={pending}>Not now</Button>
-          <Button type="button" disabled={!chosen || pending} onClick={() => { onChoose(chosen); setChosen(''); }}>
+          <Button type="button" disabled={!eligible || pending} onClick={() => { if (eligible) onChoose(chosen); setChosen(''); }}>
             {pending && <Loader2 aria-hidden="true" className="animate-spin" />}Restore there
           </Button>
         </DialogFooter>
@@ -112,11 +120,15 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
   const actions = useBinActions(module, { onDestinationAsked: setAsk });
   const deletePolicy = usePolicy('bin.delete');
   const [confirm, setConfirm] = useState<Confirm | null>(null);
-  // The Restore button that opened the destination dialog, and the list to fall back to.
+  // Where focus returns when the destination dialog closes: the Restore button that opened it
+  // while it is there and enabled, else an enabled Restore button in the list, else the view
+  // itself, which is always there (the list is not when the bin became empty).
   const opener = useRef<HTMLElement | null>(null);
   const list = useRef<HTMLUListElement | null>(null);
+  const view = useRef<HTMLDivElement | null>(null);
   const returnFocus = () => {
-    const target = opener.current?.isConnected ? opener.current : list.current?.querySelector<HTMLElement>('button') ?? list.current;
+    const usable = (element: HTMLElement | null | undefined) => !!element && element.isConnected && !(element as HTMLButtonElement).disabled;
+    const target = usable(opener.current) ? opener.current : list.current?.querySelector<HTMLElement>('button:not(:disabled)') ?? view.current;
     target?.focus();
   };
   // An ask names only items still in the bin: one restored or deleted elsewhere since (a refetch
@@ -147,7 +159,7 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
   });
 
   return (
-    <div>
+    <div ref={view} tabIndex={-1} className="outline-none">
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
         <div className="min-w-0">
           <p className="text-sm text-muted-foreground">

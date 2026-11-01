@@ -17,7 +17,8 @@ const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      "flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background touch:h-11 placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1",
+      // The value span Radix renders (its own className is dropped) may shrink and clips to one line, so a long chosen entry never widens the control past its box.
+      "flex h-10 w-full min-w-0 items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background touch:h-11 placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:min-w-0 [&>span]:line-clamp-1 [&>span]:[overflow-wrap:anywhere]",
       className,
     )}
     {...props}
@@ -117,7 +118,10 @@ const SelectItem = React.forwardRef<
       </SelectPrimitive.ItemIndicator>
     </span>
 
-    <SelectPrimitive.ItemText className="min-w-0 whitespace-normal break-words">{children}</SelectPrimitive.ItemText>
+    {/* Radix drops the className it is given, so the span is ours (asChild): it may shrink and a long entry, even without spaces, wraps inside the popup. */}
+    <SelectPrimitive.ItemText asChild>
+      <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">{children}</span>
+    </SelectPrimitive.ItemText>
   </SelectPrimitive.Item>
 ));
 SelectItem.displayName = SelectPrimitive.Item.displayName;
