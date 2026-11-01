@@ -23,6 +23,7 @@ interface Account {
   trash_window_days?: number | null;
 }
 interface Folder { folderName: string; dbFolderName: string; delimiter?: string; specialUse?: string | null }
+interface FoldedFiles { attachmentPaths: string[]; rawPaths: string[] }
 interface Window { start: number; end: number }
 interface Identity { userId: string; accountId: string; mailboxId: string; epoch: number }
 interface MappedOperation extends RowDataPacket { remote_uid: number | string; }
@@ -176,14 +177,59 @@ async function keptItemAtAddress(executor: SqlExecutor, { userId, accountId, fol
   return rows.length === 1 ? String(rows[0].id) : null;
 }
 
-async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId, folder, epoch, item, gmail, sync = false, mapped = null, keptLinks = new Set<string>() }: Identity & { folder: Folder; item: Item; gmail: boolean; sync?: boolean; mapped?: Mapping | null; keptLinks?: Set<string> }) {
+// The same message under another Gmail label may have been scanned before the
+// restored item's own address: that label's scan created a second item and the
+// account's X-GM-MSGID mapping. The exact address and X-GM-MSGID both prove one
+// message, so the newer item folds into the restored original, which keeps its
+// id, filing, state and links and takes the label occurrences. Only an item
+// that holds nothing of its own folds: no provider change (pending or past),
+// ToDo link, snooze, scheduled send, server-deletion or recovery entry, and only
+// occurrences of this same Gmail message. Anything else stays as it was.
+async function foldIntoKeptItem(executor: SqlExecutor, { userId, accountId, keptId, emailId, gmailMsgId, removed }: { userId: string; accountId: string; keptId: string; emailId: string; gmailMsgId: string; removed: FoldedFiles }) {
+  const [own] = await executor.execute<RowDataPacket[]>(`SELECT e.id FROM emails e
+    WHERE e.id = ? AND e.user_id = ? AND e.mail_account_id = ?
+      AND COALESCE(e.is_draft, FALSE) = FALSE AND e.is_legacy = FALSE
+      AND COALESCE(e.filing_account_id, e.mail_account_id) = e.mail_account_id
+      AND e.snoozed_until IS NULL AND e.snooze_returned_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM mail_writebacks w WHERE w.email_id = e.id AND w.user_id = e.user_id)
+      AND NOT EXISTS (SELECT 1 FROM calendar_events c WHERE c.source_email_id = e.id AND c.user_id = e.user_id)
+      AND NOT EXISTS (SELECT 1 FROM mail_scheduled_sends s WHERE s.email_id = e.id)
+      AND NOT EXISTS (SELECT 1 FROM mail_server_messages d WHERE d.email_id = e.id)
+      AND NOT EXISTS (SELECT 1 FROM mail_folder_recovery_items r WHERE r.email_id = e.id)
+    FOR UPDATE`, [emailId, userId, accountId]);
+  if (own.length !== 1) return false;
+  const [foreign] = await executor.execute<RowDataPacket[]>(`SELECT id FROM mail_remote_occurrences
+    WHERE user_id = ? AND mail_account_id = ? AND email_id = ?
+      AND (gmail_msgid IS NULL OR gmail_msgid <> ? OR presence = 'quarantined') LIMIT 1 FOR UPDATE`,
+  [userId, accountId, emailId, gmailMsgId]);
+  if (foreign.length) return false;
+  await executor.execute('UPDATE mail_remote_occurrences SET email_id = ? WHERE user_id = ? AND mail_account_id = ? AND email_id = ?',
+    [keptId, userId, accountId, emailId]);
+  await executor.execute('UPDATE mail_gmail_messages SET email_id = ? WHERE mail_account_id = ? AND user_id = ? AND email_id = ?',
+    [keptId, accountId, userId, emailId]);
+  // A held arrival notice of the folded item goes with it: the message was kept, not new.
+  await executor.execute(`DELETE FROM notification_events WHERE user_id = ? AND kind = 'mail' AND source_id = ?
+    AND JSON_VALUE(payload, '$.held') = 'true'`, [userId, emailId]);
+  const { deleteEmailRows } = require('../mail-sync-policy') as typeof import('../mail-sync-policy');
+  const outcome = await deleteEmailRows(executor, { userId, accountId, ids: [emailId] });
+  removed.attachmentPaths.push(...outcome.attachmentPaths);
+  removed.rawPaths.push(...outcome.rawPaths);
+  return true;
+}
+
+async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId, folder, epoch, item, gmail, sync = false, mapped = null, keptLinks = new Set<string>(), removed = { attachmentPaths: [], rawPaths: [] } }: Identity & { folder: Folder; item: Item; gmail: boolean; sync?: boolean; mapped?: Mapping | null; keptLinks?: Set<string>; removed?: FoldedFiles }) {
   const [known] = await executor.execute<RowDataPacket[]>(`SELECT o.email_id FROM mail_remote_occurrences o
     WHERE o.user_id = ? AND o.mail_account_id = ? AND o.mailbox_id = ? AND o.uidvalidity = ? AND o.uid = ? LIMIT 1`,
   [userId, accountId, mailboxId, epoch, item.uid]);
   if (known.length) return known[0].email_id;
   if (gmail && item.gmailMsgId && /^[0-9]+$/.test(String(item.gmailMsgId))) {
     const [mapped] = await executor.execute<RowDataPacket[]>('SELECT email_id FROM mail_gmail_messages WHERE mail_account_id = ? AND user_id = ? AND gmail_msgid = ? LIMIT 1', [accountId, userId, String(item.gmailMsgId)]);
-    if (mapped.length) return mapped[0].email_id;
+    if (mapped.length) {
+      const kept = sync ? await keptItemAtAddress(executor, { userId, accountId, folder, epoch, uid: item.uid }) : null;
+      if (kept && kept !== mapped[0].email_id && await foldIntoKeptItem(executor, { userId, accountId, keptId: kept,
+        emailId: mapped[0].email_id, gmailMsgId: String(item.gmailMsgId), removed })) { keptLinks.add(kept); return kept; }
+      return mapped[0].email_id;
+    }
   }
   if (mapped) {
     if (gmail && item.gmailMsgId && /^[0-9]+$/.test(String(item.gmailMsgId))) {
@@ -227,7 +273,8 @@ async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId,
 
 async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper, window, items, snapshot, gmail, job, sweepGeneration = 0, saveCoverage = true, announce = false }: CommitInput) {
   const userId = account.user_id, accountId = account.id;
-  return repository.withTransaction(async executor => {
+  const removed: FoldedFiles = { attachmentPaths: [], rawPaths: [] };
+  const committed = await repository.withTransaction(async executor => {
     if (job) await runtime.assertFence({ accountId, jobId: job.id, workerId: job.lease_owner, generation: job.worker_generation }, executor);
     // A reset in another worker invalidates the selection before any cursor write.
     const [epochs] = await executor.execute<RowDataPacket[]>('SELECT uidvalidity FROM mail_remote_mailboxes WHERE id = ? AND user_id = ? AND mail_account_id = ? FOR UPDATE', [mailbox.id, userId, accountId]);
@@ -255,7 +302,7 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
         && !await knownGmailMessage(executor, { userId, accountId, gmail, item })) { skipped++; continue; }
       const keptLinks = new Set<string>();
       const emailId = current?.email_id || await ensureItem(executor, { userId, accountId, mailboxId: mailbox.id, folder, epoch, item, gmail,
-        sync: account.sync_mode === 'sync', mapped, keptLinks });
+        sync: account.sync_mode === 'sync', mapped, keptLinks, removed });
       // A MOVE destination is the user's own change, not an arrival; nor is a kept copy found again.
       if (!current && !mapped && !keptLinks.has(emailId) && arrivalsAbove !== null && item.uid > arrivalsAbove)
         await (require('../notifications') as typeof import('../notifications')).enqueueMailNotification({ userId, emailId, held: true }, executor);
@@ -337,6 +384,10 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
       sweepGeneration, coverage: { bounded: true, observed: items.length, upper }, complete: true }, executor);
     return { inserted, updated, skipped };
   }, db);
+  // A folded item's files go once its rows are committed away.
+  if (removed.attachmentPaths.length || removed.rawPaths.length)
+    await (require('../mail-sync-policy') as typeof import('../mail-sync-policy')).removeUnreferencedFiles({ userId, ...removed });
+  return committed;
 }
 async function knownGmailMessage(executor: SqlExecutor, { userId, accountId, gmail, item }: { userId: string; accountId: string; gmail: boolean; item: Item }) {
   if (!gmail || !item.gmailMsgId || !/^[0-9]+$/.test(String(item.gmailMsgId))) return false;

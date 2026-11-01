@@ -78,6 +78,12 @@ test('a restored Sync copy is linked when the provider shows its exact address a
     { label: 'download', mode: 'download', email: {}, providerEpoch: 19, copies: 2, linked: false },
     { label: 'sync-download', finalMode: 'download', email: {}, providerEpoch: 19, copies: 2, linked: false },
     { label: 'sync-download-sync', toggleBack: true, email: {}, providerEpoch: 19, copies: 1, linked: true },
+    // Gmail: the same X-GM-MSGID under the label Other (UID 88) as well, in
+    // either scan order. One item, the restored one, holds both labels.
+    { label: 'gmail-address-first', gmail: true, email: {}, providerEpoch: 19, copies: 1, linked: true, labels: 2 },
+    { label: 'gmail-other-label-first', gmail: true, otherFirst: true, email: {}, providerEpoch: 19, copies: 1, linked: true, labels: 2 },
+    // An item that holds something of its own (here a ToDo made from it) is never folded away.
+    { label: 'gmail-other-label-first-with-task', gmail: true, otherFirst: true, otherTask: true, email: {}, providerEpoch: 19, copies: 2, linked: false },
   ];
   const raws = new Map<string, Buffer>();
   for (const scenario of cases) {
@@ -130,7 +136,15 @@ test('a restored Sync copy is linked when the provider shows its exact address a
       const [[mailbox]] = await pool.query<RowDataPacket[]>('SELECT id FROM mail_remote_mailboxes WHERE mail_account_id = ? AND BINARY remote_name = BINARY ?', [account.id, mailboxName]);
       await content.processBodySlice({ db: pool, connection: {}, account, folder: folder(), mailboxId: mailbox.id });
     };
-    const otherLabel = async () => { mailboxName = 'Other'; uid = 88; await scanAndImport(); mailboxName = 'INBOX'; uid = 71; };
+    let otherTask: string | null = null;
+    const otherLabel = async () => {
+      mailboxName = 'Other'; uid = 88; await scanAndImport(); mailboxName = 'INBOX'; uid = 71;
+      if (!scenario.otherTask) return;
+      const [[other]] = await pool.query<RowDataPacket[]>('SELECT id FROM emails WHERE user_id = ? AND mail_account_id = ? AND id <> ?', [reader, account.id, before.id]);
+      otherTask = uuid();
+      await insert('calendar_events', { id: otherTask, user_id: reader, title: 'Synthetic task from the other label', start_time: '2026-10-25 12:00:00', end_time: '2026-10-25 12:00:00',
+        is_todo_only: 1, source_email_id: other.id, source_email_json: JSON.stringify({ subject: `Reappearing ${scenario.label}` }) });
+    };
     if (scenario.otherFirst) await otherLabel();
     await scanAndImport();
     // Download accounts run the recent and history streams only (mail-durable-jobs.ts).
@@ -158,6 +172,10 @@ test('a restored Sync copy is linked when the provider shows its exact address a
       assert.equal(restoredCopy.folder, 'archive', `${scenario.label}: local filing`);
       const [[todo]] = await pool.query<RowDataPacket[]>('SELECT source_email_id FROM calendar_events WHERE id = ?', [task]);
       assert.equal(todo.source_email_id, before.id, `${scenario.label}: ToDo link`);
+    }
+    if (otherTask) {
+      const [[todo]] = await pool.query<RowDataPacket[]>('SELECT source_email_id FROM calendar_events WHERE id = ?', [otherTask]);
+      assert.ok(copies.some(copy => copy.id === todo.source_email_id && copy.id !== before.id), `${scenario.label}: the other item and its ToDo link stay`);
     }
     if (scenario.linked) {
       // The restored item itself carries the live copy now; nothing was downloaded again.
