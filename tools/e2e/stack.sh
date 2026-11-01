@@ -145,6 +145,10 @@ nginx_config() {
       -e "s|^worker_processes auto;|worker_processes 2;\ndaemon off;|" \
       "$REPO/docker/nginx/nginx.conf" > "$conf/nginx.conf"
   sed -i "s|^http {|http {\n    client_body_temp_path $conf/temp/body;\n    proxy_temp_path $conf/temp/proxy;\n    fastcgi_temp_path $conf/temp/fastcgi;\n    uwsgi_temp_path $conf/temp/uwsgi;\n    scgi_temp_path $conf/temp/scgi;|" "$conf/nginx.conf"
+  # Test-only: each download ticket request, with whether a Cookie header came
+  # (never its value) and the token's first eight characters, so the Android
+  # tests can show the app fetches tickets without the session (F9).
+  sed -i "s|^http {|http {\n    map \$http_cookie \$e2e_cookie { \"\" absent; default present; }\n    map \$uri \$e2e_ticket { \"~^/api/files/tickets/(?<e2e_token>[A-Za-z0-9_-]{8})\" \$e2e_token; default \"\"; }\n    log_format e2e_tickets '\$time_iso8601 \$request_method ticket=\$e2e_ticket \$status bytes=\$body_bytes_sent range=\"\$http_range\" cookie=\$e2e_cookie';\n    access_log $STATE/log/nginx-tickets.log e2e_tickets if=\$e2e_ticket;|" "$conf/nginx.conf"
   local f
   for f in "$REPO/docker/nginx/"*.conf; do # included files, e.g. security-headers.conf
     case "${f##*/}" in nginx.conf|default.conf) ;; *) sed "s|/etc/nginx/|$conf/|g" "$f" > "$conf/${f##*/}" ;; esac

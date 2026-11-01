@@ -124,6 +124,10 @@ runs on port 5560 (`UNIHUB_E2E_EMULATOR_PORT`) and reaches the stack through
 Android driver (the debug build enables WebView debugging) and Android's own
 screens (document picker, permission and system dialogs) through
 uiautomator; it answers the "isn't responding" dialogs a slow emulator shows.
+The stack's nginx also writes `log/nginx-tickets.log`: one line per download
+ticket request with the token's first eight characters, the status, Range and
+whether a Cookie header came (never its value), so `ticketLog()` can show that
+the app fetches tickets without the session.
 
 ## Real providers
 
