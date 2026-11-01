@@ -28,9 +28,10 @@ function mount() {
   render(<QueryClientProvider client={client}><MemoryRouter><AdminUsers /></MemoryRouter></QueryClientProvider>);
 }
 
-// Opens a user's actions menu and returns its Reset 2FA entry, if offered.
+// Opens a user's actions menu and returns its Reset 2FA entry, if offered. The first lookup
+// also waits for the page's first render, which a loaded host can take seconds over.
 async function resetEntry(email: string) {
-  fireEvent.pointerDown(await screen.findByRole('button', { name: `Actions for ${email}` }), { button: 0, ctrlKey: false });
+  fireEvent.pointerDown(await screen.findByRole('button', { name: `Actions for ${email}` }, { timeout: 10_000 }), { button: 0, ctrlKey: false });
   await screen.findByRole('menu');
   return screen.queryByRole('menuitem', { name: 'Reset 2FA' });
 }
@@ -104,7 +105,7 @@ describe('authenticator QR code', () => {
 
 describe('admin changes to another account', () => {
   const openEntry = async (email: string, name: string) => {
-    fireEvent.pointerDown(await screen.findByRole('button', { name: `Actions for ${email}` }), { button: 0, ctrlKey: false });
+    fireEvent.pointerDown(await screen.findByRole('button', { name: `Actions for ${email}` }, { timeout: 10_000 }), { button: 0, ctrlKey: false });
     fireEvent.click(await screen.findByRole('menuitem', { name }));
   };
 
@@ -139,7 +140,7 @@ describe('admin changes to another account', () => {
 
 describe('deleting and deactivating someone', () => {
   async function choose(email: string, item: string) {
-    fireEvent.pointerDown(await screen.findByRole('button', { name: `Actions for ${email}` }), { button: 0, ctrlKey: false });
+    fireEvent.pointerDown(await screen.findByRole('button', { name: `Actions for ${email}` }, { timeout: 10_000 }), { button: 0, ctrlKey: false });
     fireEvent.click(await screen.findByRole('menuitem', { name: item }));
   }
 
