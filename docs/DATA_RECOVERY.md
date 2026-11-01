@@ -159,6 +159,14 @@ writes nothing more (`409 RESTORE_IN_PROGRESS`).
   `insertOverlays` and applies those whose rows exist with
   `applyOverlaysToLiveRows`; the sync that creates a row takes the rest. It
   goes with its calendar and never applies to another person's calendar.
+- An archive made before 0.28 holds the UIDs as 0.27 stored them, with
+  surrounding spaces cut, and step 25 cannot repair it later: it carries no
+  server copy to compare with. Restored from such an archive, an item whose
+  provider UID really begins or ends with spaces (rare) is not matched by
+  its overlay or its hand rank. The task then shows as its provider has it,
+  without UniHub's own state (done, subtasks, source email) or its place in
+  the list; that overlay stays pending. UIDs are not matched trimmed instead,
+  because that could give one item's state to another.
 
 A synced task's order is removed only on evidence that the provider deleted
 it: a verified deletion of its server object. An object or occurrence that
