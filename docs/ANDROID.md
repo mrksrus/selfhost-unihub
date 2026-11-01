@@ -60,7 +60,7 @@ email) a `UniHubAndroid` object that takes JSON messages:
 | Message | What the app does |
 | --- | --- |
 | `saveFileStart`, `saveFileChunk`, `saveFileEnd`, `saveFileAbort` | Saves a file the page made (an attachment, an export, a recording) to Downloads, in pieces of 1.5 MB that the app confirms one by one. A WebView cannot download `blob:` links. |
-| `download` | Downloads a file the server streams (backups, the app update) with Android's download manager and the app's session. Only the server's own addresses. For the app update (`/downloads/unihub.apk`) the app opens Android's installer itself when the download completes, at once while it is on screen, otherwise from its "UniHub update downloaded" notification or when it is next opened (`AppUpdate.kt`). Opened from the download manager's own notification, Android would count the download manager as the source and refuse it. Android asks once to allow UniHub to install apps (`REQUEST_INSTALL_PACKAGES`). The installer gets only a copy in the app's cache that is this app, signed with the installed app's key, in a version not older than the installed one (`UpdateCheck.kt`); anything else is deleted, also from Downloads, and the app says that nothing was installed. |
+| `download` | Downloads a file the server streams (backups, the app update) with Android's download manager, which never gets the app's session: from the 0.28.0 app only a [download ticket](#files-for-other-apps) URL or the public app update of the server's own address, anything else (a page of a server before 0.28 passes backup addresses that need the session) is refused with "Could not save the file". Earlier apps add the session cookie to the ticket URL; the server ignores it. For the app update (`/downloads/unihub.apk`) the app opens Android's installer itself when the download completes, at once while it is on screen, otherwise from its "UniHub update downloaded" notification or when it is next opened (`AppUpdate.kt`). Opened from the download manager's own notification, Android would count the download manager as the source and refuse it. Android asks once to allow UniHub to install apps (`REQUEST_INSTALL_PACKAGES`). The installer gets only a copy in the app's cache that is this app, signed with the installed app's key, in a version not older than the installed one (`UpdateCheck.kt`); anything else is deleted, also from Downloads, and the app says that nothing was installed. |
 | `fileAction` (`action`: `open`, `save`, `share`; `url`, `name`, `mime`, with an `id`) | "Open with…", "Save to Downloads" and "Share" for a server file, by a [download ticket](#files-for-other-apps) URL; answers with the same `id` and `ok` or an `error` once Android has the file. From bridge level 2 (0.25.0). |
 | `changeServer` | Forgets the server and shows the connect screen. |
 | `theme` | Colours the status and navigation bars like the page (UniHub's own light/dark setting, not the phone's). |
@@ -104,6 +104,16 @@ cleans up whenever it is opened or comes back to the front, and refuses an
 older copy at once) and all at once whenever the page shows the sign-in page
 (signing out, a session ended elsewhere) or the app leaves the server. A ticket works once, so a download
 that breaks off is started again from the page.
+
+Backups (Settings → Backup and restore, a mail account's backup) download the
+same way from 0.28.0: the page asks for a `backup-archive` ticket and passes
+its URL to the `download` message, and Android's download manager fetches it
+without the session cookie. Its first use opens a download grant: for an hour
+the same URL fetches this one archive again, with ranges, so the download
+manager can resume a large archive on a flaky network. The archive is
+encrypted and useless without its recovery password, which never travels with
+the link; ending the session ends the grant. The app update
+(`/downloads/unihub.apk`) is public and needs no ticket.
 
 ### Keyboard
 

@@ -36,6 +36,11 @@ which takes longer on large calendars (see
   the same title and start for 30 days.
 - **Backups download through a short-lived link** that the Android app can
   resume for an hour, instead of handing the app your session.
+- **The Android app no longer gives your session to Android's downloader.**
+  The system download manager gets only a backup's short-lived link or the
+  app update, which needs no sign-in, never the app's session cookie. Install
+  the new app when it is offered; older apps keep downloading with the new
+  links.
 
 ### Fixed
 
