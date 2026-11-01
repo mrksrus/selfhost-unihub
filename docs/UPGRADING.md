@@ -24,7 +24,10 @@ One automatic database upgrade (step 25); back up first.
   `secrets:`, shown in `docker-compose.yml`). Nothing to do if you keep the
   variables. If you move a secret to a file, remove its variable or keep both
   equal: different values stop the start, as does an unreadable file. Files
-  must be readable by uid 10001.
+  must be readable by uid 10001 and lie outside `/app/uploads`.
+- **After restoring an instance backup**, mail accounts are paused until
+  each person reconnects theirs; nothing the old server still had to do at
+  a provider is replayed.
 - **Startup refuses an instance backup set up wrongly**: a key shorter than
   32 bytes or equal to `JWT_SECRET`, `ENCRYPTION_KEY`,
   `ENCRYPTION_KEY_PREVIOUS` or `BACKUP_MASTER_KEY`, a destination inside the

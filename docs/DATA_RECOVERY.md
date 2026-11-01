@@ -112,9 +112,16 @@ copy.
 **What is in the file.** Every table, including users, policies, the
 activity log, the push identity and the runs of `instance_backups`, and the
 stored files: mail attachments and originals, recordings, contact photos and
-the account backups kept on the server. Not in it: uploads in progress
-(recording chunks, restore archives being uploaded or staged, spooled request
-bodies, partial files) and **no key**: `ENCRYPTION_KEY`,
+the account backups kept on the server, under any name a person gave them
+(an attachment called `report.tmp` is data). Not in it: the app's own work in
+progress, by the exact names its writers use (a raw message being written,
+a recording being converted or uploaded in chunks, a contact photo being
+written, an unfinished export, backup uploads being received and uploaded
+restore archives), and **no key**. A configured secret file (`NAME_FILE`)
+inside `/app/uploads` or a stored-file root stops the start, also through a
+symbolic link or an aliased path; a secret file found among the stored files
+anyway (a hard link, a second mount) and Compose `.env` files are left out.
+`ENCRYPTION_KEY`,
 `ENCRYPTION_KEY_PREVIOUS`, `BACKUP_MASTER_KEY`, `JWT_SECRET` and the instance
 key stay outside, so no single key opens everything (F10). Keep them in a
 password manager: without `ENCRYPTION_KEY` a restored installation cannot read
@@ -153,7 +160,17 @@ a mismatch. It refuses a database with tables and storage with files. It loads
 the dump with the `mariadb` client and writes the files (owned by the API
 user), then clears what belonged to the old installation's running life:
 sessions (everyone signs in again), download tickets, login challenges, mail
-worker leases and account restores whose archive was not in the backup. Users,
+worker leases and account restores whose archive was not in the backup.
+Provider work the old installation had accepted is never replayed, since it
+may have been done, changed or cancelled after the backup: as after an
+account restore, every mail account is paused until its owner reconnects it
+(deletion at the provider off until confirmed again), its engine jobs are
+paused and its accepted moves, flags and deletions need attention instead of
+running, so only a read-only check of the provider follows. Cross-calendar
+moves in progress are dropped (a copy left at a server shows as an event of
+its own), a scheduled send comes back as an unscheduled draft, one that had
+started is marked unknown and never sent again, and queued deletions at the
+provider are dropped. Users,
 data, policies, the activity log and the push identity stay, so phones keep
 receiving notifications. A failure during the load drops the tables and
 removes the files it wrote, leaving the installation empty for another try.
