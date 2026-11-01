@@ -269,7 +269,7 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
     await checkDestination(settings.dir);
     const { bytes, sha256, manifest } = await writeBackup(partialPath, row, settings, controller.signal, hooks);
     // Counted only once the whole file reads back with the key.
-    const verified = await scanInstanceBackup(partialPath, settings.key, ROOT_NAMES);
+    const verified = await scanInstanceBackup(partialPath, settings.key, ROOT_NAMES, { signal: controller.signal });
     if (verified.sha256 !== sha256 || verified.header.backup_id !== row.id) throw new InstanceBackupError('The backup did not read back as written.');
     controller.signal.throwIfAborted();
     await fs.promises.rename(partialPath, finalPath);

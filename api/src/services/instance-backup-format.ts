@@ -200,7 +200,7 @@ async function readHeaderFrom(handle: fs.promises.FileHandle) {
  * plaintext in frames. A wrong key, a changed byte, frames out of order, a
  * missing last frame or bytes after it end the reading with an error.
  */
-async function openEncrypted(filePath: string, instanceKey: Buffer) {
+async function openEncrypted(filePath: string, instanceKey: Buffer, signal?: AbortSignal) {
   const handle = await fs.promises.open(filePath, 'r');
   try {
     const { header, headerBytes, offset, prefix } = await readHeaderFrom(handle);
@@ -217,6 +217,8 @@ async function openEncrypted(filePath: string, instanceKey: Buffer) {
         let position = offset, index = 0;
         const { size } = await handle.stat();
         for (;;) {
+          // A stopped run or its deadline ends the reading at the next frame.
+          signal?.throwIfAborted();
           const lengthBytes = await readExactly(handle, 4, position);
           const lengthField = lengthBytes.readUInt32BE(0);
           const final = (lengthField & FINAL) !== 0;
@@ -407,8 +409,9 @@ async function nextEntry(reader: ByteReader): Promise<TarEntry | null> {
 }
 
 /** Calls onData with the entry's bytes in pieces, then skips its padding. */
-async function readBody(reader: ByteReader, size: number, onData: (buffer: Buffer) => Promise<void> | void) {
+async function readBody(reader: ByteReader, size: number, onData: (buffer: Buffer) => Promise<void> | void, signal?: AbortSignal) {
   for (let left = size; left > 0;) {
+    signal?.throwIfAborted();
     const piece = await reader.read(left, CHUNK_BYTES);
     left -= piece.length;
     await onData(piece);
@@ -439,6 +442,8 @@ interface ScanHandlers {
   onFile?: (file: { root: string; path: string; size: number }) => Promise<FileSink | null> | FileSink | null;
   /** Files copied while they changed; restore skips them. */
   skip?: ReadonlySet<string>;
+  /** Ends the reading (with the signal's reason) at the next frame. */
+  signal?: AbortSignal;
 }
 interface FileSink { write(buffer: Buffer): Promise<void> | void; end(): Promise<void> | void }
 
@@ -449,7 +454,8 @@ interface FileSink { write(buffer: Buffer): Promise<void> | void; end(): Promise
  * saw part of it, so a caller that writes must be able to undo.
  */
 async function scanInstanceBackup(filePath: string, instanceKey: Buffer, roots: readonly string[], handlers: ScanHandlers = {}) {
-  const opened = await openEncrypted(filePath, instanceKey);
+  handlers.signal?.throwIfAborted();
+  const opened = await openEncrypted(filePath, instanceKey, handlers.signal);
   const reader = new ByteReader(opened.frames[Symbol.asyncIterator]());
   const rootSet = new Set(roots);
   const dbHash = crypto.createHash('sha256'), indexHash = crypto.createHash('sha256');
@@ -460,12 +466,13 @@ async function scanInstanceBackup(filePath: string, instanceKey: Buffer, roots: 
   try {
     const endDatabase = async () => { if (stage === 'db') { stage = 'files'; await handlers.onDatabaseEnd?.(); } };
     for (let entry = await nextEntry(reader); entry; entry = await nextEntry(reader)) {
+      handlers.signal?.throwIfAborted();
       if (stage === 'end') throw new InstanceBackupFormatError('The backup has entries after its manifest.');
       const part = PART_NAME.exec(entry.name);
       if (part && part[1] === 'db') {
         if (stage !== 'db' || Number(part[2]) !== dbParts + 1 || part[3] !== 'sql' || entry.size > PART_BYTES) throw new InstanceBackupFormatError('The backup has its database parts out of order.');
         dbParts++;
-        await readBody(reader, entry.size, async piece => { dbHash.update(piece); dbBytes += piece.length; await handlers.onDatabase?.(piece); });
+        await readBody(reader, entry.size, async piece => { dbHash.update(piece); dbBytes += piece.length; await handlers.onDatabase?.(piece); }, handlers.signal);
         continue;
       }
       await endDatabase();
@@ -473,7 +480,7 @@ async function scanInstanceBackup(filePath: string, instanceKey: Buffer, roots: 
         if (Number(part[2]) !== indexParts + 1 || part[3] !== 'ndjson' || entry.size > PART_BYTES) throw new InstanceBackupFormatError('The backup has its index out of order.');
         indexParts++;
         const chunks: Buffer[] = [];
-        await readBody(reader, entry.size, piece => { chunks.push(piece); indexHash.update(piece); });
+        await readBody(reader, entry.size, piece => { chunks.push(piece); indexHash.update(piece); }, handlers.signal);
         const lines = Buffer.concat(chunks).toString('utf8').split('\n').filter(Boolean);
         for (const text of lines) {
           const line = JSON.parse(text) as IndexLine;
@@ -488,7 +495,7 @@ async function scanInstanceBackup(filePath: string, instanceKey: Buffer, roots: 
       if (entry.name === 'manifest.json') {
         if (entry.size > MAX_MANIFEST_BYTES) throw new InstanceBackupFormatError('The backup manifest is damaged.');
         const chunks: Buffer[] = [];
-        await readBody(reader, entry.size, piece => { chunks.push(piece); });
+        await readBody(reader, entry.size, piece => { chunks.push(piece); }, handlers.signal);
         manifest = JSON.parse(Buffer.concat(chunks).toString('utf8')) as InstanceBackupManifest;
         stage = 'end';
         continue;
@@ -498,7 +505,7 @@ async function scanInstanceBackup(filePath: string, instanceKey: Buffer, roots: 
       const key = `${file.root}/${file.path}`;
       const sink = handlers.skip?.has(key) ? null : await handlers.onFile?.({ ...file, size: entry.size }) ?? null;
       const hash = crypto.createHash('sha256');
-      await readBody(reader, entry.size, async piece => { hash.update(piece); await sink?.write(piece); });
+      await readBody(reader, entry.size, async piece => { hash.update(piece); await sink?.write(piece); }, handlers.signal);
       await sink?.end();
       fileCount++;
       fileBytes += entry.size;
