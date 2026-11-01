@@ -16,7 +16,7 @@ function filingAccountId(email: MailFiling) {
 
 function presentMailFiling<T extends MailFiling>(email: T) {
   const visible = { ...email };
-  for (const key of ['source_folder', 'imap_uid', 'imap_uidvalidity', 'remote_folder', 'remote_uid', 'remote_uidvalidity', 'raw_storage_path', 'raw_sha256']) delete visible[key];
+  for (const key of ['source_folder', 'imap_uid', 'imap_uidvalidity', 'remote_folder', 'remote_uid', 'remote_uidvalidity', 'remote_gmail_msgid', 'raw_storage_path', 'raw_sha256']) delete visible[key];
   return {
     ...visible,
     remote_missing: email.remote_missing === true || email.remote_missing === 1 || email.remote_missing === '1',
