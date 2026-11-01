@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { log } from '../log';
 
 // The instance backup (instance-backup.ts) dumps the database first and then
@@ -10,28 +11,36 @@ import { log } from '../log';
 //
 // A queued removal runs later, outside its caller: it must hold nothing of the
 // caller's (no transaction connection, no lock) and check again what it checks
-// now (that no row refers to the file). A process that stops with removals
-// queued leaves those files behind as orphans, never a row without its file.
+// now (that no row refers to the file). A caller whose removal holds those
+// passes a second function for the queue that takes them afresh. A process
+// that stops with removals queued leaves those files behind as orphans, never
+// a row without its file. A removal the gate let through (now or from the
+// queue) runs the gated removals it calls itself at once: they are part of it.
 type Removal = () => Promise<unknown>;
 
 let closedBy = 0;
 let queue: Removal[] = [];
 let draining: Promise<void> | null = null;
 const opened: (() => void)[] = [];
+const admitted = new AsyncLocalStorage<true>();
 
 function isClosed() {
   return closedBy > 0;
 }
 
-/** Runs `remove` now, or queues it while a backup copies files and answers 'deferred'. */
-async function run<T>(remove: () => Promise<T>): Promise<T | 'deferred'> {
+/**
+ * Runs `remove` now, or queues `whenQueued` (by default `remove` itself)
+ * while a backup copies files and answers 'deferred'.
+ */
+async function run<T>(remove: () => Promise<T>, whenQueued: Removal = remove): Promise<T | 'deferred'> {
+  if (admitted.getStore()) return remove();
   // Removals queued during the copy go first.
   if (!isClosed() && draining) await draining;
   if (isClosed()) {
-    queue.push(remove);
+    queue.push(whenQueued);
     return 'deferred';
   }
-  return remove();
+  return admitted.run(true, remove);
 }
 
 /** Settles when no backup copies files (workers that may wait instead of queueing). */
@@ -45,7 +54,7 @@ async function drain() {
     const batch = queue;
     queue = [];
     for (const remove of batch) {
-      await remove().catch(error => log.error('INSTANCE BACKUP', 'A file removal queued during the backup failed', error));
+      await admitted.run(true, remove).catch(error => log.error('INSTANCE BACKUP', 'A file removal queued during the backup failed', error));
     }
   }
 }
