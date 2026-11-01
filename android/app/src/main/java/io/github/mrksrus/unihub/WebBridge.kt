@@ -213,12 +213,14 @@ class WebBridge(
             Toast.makeText(activity, R.string.download_failed, Toast.LENGTH_SHORT).show()
             return
         }
-        val request = DownloadManager.Request(Uri.parse(url))
-            .setTitle(fileName)
-            .setNotificationVisibility(if (update) DownloadManager.Request.VISIBILITY_VISIBLE else DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
-            .addRequestHeader("User-Agent", userAgent)
         try {
+            // Setting the destination asks Android's downloads provider, which
+            // throws while that provider is not (yet) running.
+            val request = DownloadManager.Request(Uri.parse(url))
+                .setTitle(fileName)
+                .setNotificationVisibility(if (update) DownloadManager.Request.VISIBILITY_VISIBLE else DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+                .addRequestHeader("User-Agent", userAgent)
             val id = activity.getSystemService(DownloadManager::class.java).enqueue(request)
             if (update) AppUpdate.downloading(activity, id)
             Toast.makeText(activity, activity.getString(R.string.download_started, fileName), Toast.LENGTH_SHORT).show()
