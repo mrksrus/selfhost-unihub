@@ -8,6 +8,7 @@ import mysql from 'mysql2/promise';
 import { LATEST_MIGRATION_ID } from './database';
 import { fileRoots, spawnClient, INSTANCE_BACKUP_ROOTS } from './instance-backup';
 import { readInstanceBackupHeader, scanInstanceBackup, type FileSink } from './instance-backup-format';
+import { pauseMailRestore } from './backup-mail-engine';
 
 // Restores an instance backup (instance-backup.ts) into an empty
 // installation: the restore command (src/instance-restore.ts) runs it in the
@@ -19,9 +20,12 @@ import { readInstanceBackupHeader, scanInstanceBackup, type FileSink } from './i
 // were empty before), so the installation is empty again for another try.
 // Then what belongs to the old installation's running life is cleared: its
 // sessions, download tickets, login challenges, worker leases and restores
-// whose archive stayed behind. Users, their data, policies, the activity log
-// and the push identity stay; the app's own start resumes interrupted jobs
-// and runs the migrations of a backup from an older release.
+// whose archive stayed behind. Provider work it had accepted is never
+// replayed: mail accounts and their operations are paused as after an account
+// restore, until each person reconnects; calendar moves, scheduled sends and
+// queued provider deletions are retired. Users, their data, policies, the
+// activity log and the push identity stay; the app's own start resumes
+// interrupted jobs and runs the migrations of a backup from an older release.
 
 interface RestoreOptions {
   file: string;
@@ -94,8 +98,34 @@ async function clearInstallationState(connection: Connection, run: { id: string;
     [`UPDATE instance_backups SET status = 'succeeded', file_name = ?, size_bytes = ?, sha256 = ?, finished_at = UTC_TIMESTAMP()
       WHERE id = ? AND status = 'running'`, [run.fileName, run.size, run.sha256, run.id]],
     ["UPDATE instance_backups SET status = 'failed', error = 'The server stopped during the backup.', finished_at = UTC_TIMESTAMP() WHERE status = 'running'", []],
+    // Provider work the old installation still had to do is not replayed: it
+    // may have been done, changed or cancelled after the dump. As after an
+    // account restore (installation-class tables, data-inventory.ts):
+    // a cross-calendar move's journal goes (the next sync shows a copy left
+    // behind as an event of its own; nothing is deleted at the server) ...
+    ['DELETE FROM calendar_event_moves', []],
+    // ... a scheduled draft comes back unscheduled, and a send that had
+    // started is 'unknown', which is never sent again ...
+    ["DELETE FROM mail_scheduled_sends WHERE status = 'scheduled'", []],
+    ["UPDATE mail_scheduled_sends SET status = 'unknown', last_error = 'Interrupted by a restore of the whole installation' WHERE status = 'sending'", []],
+    // ... and queued deletions at the provider go; deletion is off until the
+    // person confirms the account again, and its next pass queues afresh.
+    ["DELETE FROM mail_server_messages WHERE delete_status = 'pending'", []],
   ];
-  for (const [sql, values] of statements) await connection.execute(sql, values);
+  await connection.beginTransaction();
+  try {
+    for (const [sql, values] of statements) await connection.execute(sql, values);
+    // The account restore's policy for accepted mail operations, for every
+    // person (backup-mail-engine.ts): accounts paused until reconnected, engine
+    // jobs paused, accepted moves, flags and deletions taken off the queue as
+    // needing attention, so only a read-only check of the provider follows.
+    const [owners] = await connection.query<RowDataPacket[]>('SELECT DISTINCT user_id FROM mail_accounts');
+    for (const { user_id: userId } of owners) await pauseMailRestore(connection, String(userId));
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback().catch(() => {});
+    throw error;
+  }
 }
 
 async function restoreInstanceBackup({ file, key, database, verifyOnly = false, owner = null, print = () => {} }: RestoreOptions) {
@@ -174,6 +204,7 @@ async function restoreInstanceBackup({ file, key, database, verifyOnly = false, 
     const missing = Object.keys(manifest.database.tables).filter(name => !(name in tables));
     if (missing.length) throw new Error(`The restored database lacks ${missing.length} tables of the backup (${missing.slice(0, 5).join(', ')}).`);
     print(`Restored ${Object.keys(tables).length} tables and ${manifest.files.count - checked.changed.size} files.`);
+    print('Mail accounts are paused: each person reconnects theirs, and nothing the old server still had to do at a provider is replayed.');
     return { verified: true as const, restored: true, manifest, tables };
   } catch (error) {
     if (wrote) {
