@@ -648,6 +648,7 @@ async function copyFile(tar: TarWriter, root: { name: string; dir: string }, rel
     const size = before.size;
     // A file the size of a secret generation is read and hashed before it is
     // copied (secrets are small, so this is cheap): the same bytes stay out.
+    let prefetched: Buffer | null = null;
     if (mayBeSecretGeneration(size)) {
       const whole = Buffer.alloc(size);
       let at = 0;
@@ -658,11 +659,18 @@ async function copyFile(tar: TarWriter, root: { name: string; dir: string }, rel
       }
       const names = at === size ? secretGenerationNames(size, crypto.createHash('sha256').update(whole).digest('hex')) : null;
       if (names) return { secret: names };
+      if (at === size) prefetched = whole;
     }
     const hash = crypto.createHash('sha256');
     await tar.begin(`files/${root.name}/${relative}`, size);
     let read = 0, changed = false;
-    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    // A file read whole for its hash is copied from that read.
+    if (prefetched) {
+      hash.update(prefetched);
+      await tar.data(prefetched);
+      read = size;
+    }
+    const buffer = Buffer.allocUnsafe(read < size ? 1024 * 1024 : 0);
     while (read < size) {
       signal.throwIfAborted();
       const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, size - read), read);

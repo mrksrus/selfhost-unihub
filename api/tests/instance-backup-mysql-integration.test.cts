@@ -548,10 +548,13 @@ test('the instance backup copies the installation, keeps only verified runs, ref
       const second = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
       assert.equal(second.status, 'succeeded', String(second.error));
       assert.equal((await copiedBy(second)).includes(alias), false, 'B stays out after the secret moved on');
-      // A stored file that only shares a secret's size is copied.
+      // A stored file that only shares a secret's size is copied, with its own bytes.
       const lookalike = write(path.join(rootDirs.attachments, users.alex, 'same-size'), 'x'.repeat(fs.statSync(alias).size));
       const third = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
-      assert.equal((await copiedBy(third)).includes(lookalike), true);
+      const pieces: Buffer[] = [];
+      await format.scanInstanceBackup(path.join(destination, third.file_name!), key, backup.INSTANCE_BACKUP_ROOTS, { onFile: entry => (
+        path.join(uploads, entry.root, entry.path) === lookalike ? { write: async (buffer: Buffer) => { pieces.push(Buffer.from(buffer)); }, end: async () => {} } : null) });
+      assert.equal(Buffer.concat(pieces).toString(), fs.readFileSync(lookalike, 'utf8'));
       fs.rmSync(lookalike);
     } finally {
       delete process.env.UNIHUB_GENERATION_SECRET_FILE;
