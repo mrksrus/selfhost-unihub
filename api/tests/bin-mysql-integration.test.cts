@@ -544,6 +544,27 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     return { id: row.id as string, uid, href };
   }
   const rowsTitled = async (title: string) => (await pool.query<RowDataPacket[]>('SELECT * FROM calendar_events WHERE user_id = ? AND title = ?', [users.alex, title]))[0];
+  // How often UniHub asks the server what it holds at an address.
+  const caldavService = require('../dist/src/services/caldav') as FixtureValue;
+  function countLooks() {
+    const real = caldavService.getCalendarObject;
+    const looks = { count: 0, stop: () => { caldavService.getCalendarObject = real; } };
+    caldavService.getCalendarObject = async (args: FixtureValue) => { looks.count += 1; return real(args); };
+    return looks;
+  }
+  // A server task deleted to the bin, whose restore the server took (or not) without its answer arriving.
+  async function pendingRestore(title: string, fault: 'lose' | 'store-then-lose') {
+    const task = await serverTask(title);
+    await call(alex, 'DELETE', `/api/calendar/events/${task.id}`);
+    const item = (await bin(alex, 'calendar')).find(entry => entry.title === title);
+    server.faults.put = () => fault;
+    try {
+      assert.equal((await restore(item.id)).restored[0].pending, true, 'the answer was lost');
+    } finally { delete server.faults.put; }
+    return item;
+  }
+  const journalOf = (binItemId: string) => count('SELECT COUNT(*) AS n FROM calendar_event_moves WHERE bin_item_id = ?', [binItemId]);
+  const setReadOnly = (calendarId: string, value: boolean) => pool.execute('UPDATE calendar_calendars SET read_only = ? WHERE id = ?', [value ? 1 : 0, calendarId]);
   // Once in UniHub, linked to its one copy at the server, with its own state back.
   async function assertBack(title: string, uid: string, calendarId = work) {
     const rows = await rowsTitled(title);
@@ -795,6 +816,28 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
         }
       }
     } finally { caldavModule.getCalendarObject = realGet; }
+  });
+
+  await t.test('a restore the server stored before its attempt was counted is still checked at the server, never let go unseen', async () => {
+    const task = await serverTask('Uncounted restore');
+    await call(alex, 'DELETE', `/api/calendar/events/${task.id}`);
+    const item = (await bin(alex, 'calendar')).find(entry => entry.title === 'Uncounted restore');
+    // The server stores the copy, its answer is lost, and the process stops before the attempt's bookkeeping.
+    hooks.once({ match: /^UPDATE calendar_event_moves SET attempts = \?, last_error/, before: () => { throw new Error('synthetic stop before the attempt is counted'); } });
+    server.faults.put = () => 'store-then-lose';
+    try { await alex.request('POST', `/api/bin/${item.id}/restore`); } finally { delete server.faults.put; hooks.clear(); }
+    assert.equal(server.copiesOf('Uncounted restore').length, 1, 'the server took it');
+    assert.equal(await journalOf(item.id), 1);
+    await setReadOnly(work, true);
+    const looks = countLooks();
+    try {
+      const retry = await call(alex, 'POST', '/api/bin/restore', { ids: [item.id] });
+      assert.ok(looks.count > 0, 'the server was asked what it has');
+      assert.equal(retry.restored[0]?.pending, undefined, 'its copy adopted');
+    } finally { looks.stop(); await setReadOnly(work, false); }
+    await sync();
+    assert.deepEqual((await rowsTitled('Uncounted restore')).map(row => row.calendar_id), [work], 'one item');
+    assert.equal(server.copiesOf('Uncounted restore').length, 1);
   });
 
   await t.test('UIDs 0.27 stored trimmed: upgrade step 25 gives them back the server\'s spaces, so the bin and the hand order still find the task', async context => {

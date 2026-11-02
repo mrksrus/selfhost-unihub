@@ -249,16 +249,21 @@ async function createCopy(move: MoveRow): Promise<NewCopy | null> {
       try { calendarSync.assertWritable(target); } catch (error) { blocked = error; }
       if (blocked) {
         if ((blocked as ApiError)?.code !== 'CALENDAR_READ_ONLY') throw blocked;
-        return move.attempts > 0 ? look({ refused: blocked }) : { refused: blocked };
+        return look({ refused: blocked });
       }
+      // The attempt is on record before it is sent, in its own commit: a
+      // stop after the server stored the copy can never leave a journal
+      // that claims nothing was sent.
+      await db.execute('UPDATE calendar_event_moves SET attempts = GREATEST(attempts, ?) WHERE id = ?', [Number(move.attempts) + 1, move.id]);
       try {
         const { etag } = await caldav.putCalendarObject({ url, ics: move.target_ics!, etag: null, ...ctx.login });
         return copy(etag, move.target_ics!);
       } catch (error) {
         const taken = (error as ApiError)?.code === 'CALDAV_CONFLICT';
         const refused = refusedByServer(error);
-        // Refused on the first attempt: nothing was stored. Otherwise an
-        // earlier attempt may have stored it: look at what is there.
+        // Refused on the first attempt (the count is recorded before each
+        // one is sent): nothing was stored. Otherwise an earlier attempt may
+        // have stored it: look at what is there.
         if (!taken && !(refused && move.attempts > 0)) {
           if (refused) return { refused: error };
           return settle ? look({ refused: new HttpError(409, 'CALENDAR_MOVE_FAILED', 'The calendar server did not take the item, so it stays in its calendar.') }) : { wait: error };
