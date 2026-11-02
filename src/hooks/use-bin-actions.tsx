@@ -76,7 +76,10 @@ export function useBinActions(module?: BinModule, { onDestinationAsked }: { onDe
 
   /**
    * The notice after a delete: what went to the bin and one Undo, which
-   * restores the same items. Pass the ids the delete route answered with.
+   * restores the same items. Pass the ids the delete route answered with:
+   * one item, or one group (a list with its events, several contacts at
+   * once), which the server restores as a unit from any one of its members,
+   * so Undo sends the first id and stays under the request's id limit.
    * A delete answered after the session ended names nothing: the caller's
    * callbacks may run unguarded (plain useMutation), so the check is here.
    */
@@ -86,7 +89,7 @@ export function useBinActions(module?: BinModule, { onDestinationAsked }: { onDe
     toast({
       title: 'Moved to the bin',
       description: what,
-      action: binItemIds.length ? <ToastAction altText={`Undo: bring ${what} back`} onClick={() => restore.mutate({ ids: binItemIds, modules: target ? [target] : undefined })}>Undo</ToastAction> : undefined,
+      action: binItemIds.length ? <ToastAction altText={`Undo: bring ${what} back`} onClick={() => restore.mutate({ ids: binItemIds.slice(0, 1), modules: target ? [target] : undefined })}>Undo</ToastAction> : undefined,
     });
   };
 

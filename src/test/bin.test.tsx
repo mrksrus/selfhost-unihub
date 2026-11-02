@@ -77,9 +77,30 @@ describe('the bin', () => {
     expect(rows[1]).toHaveTextContent('With 1 item: J. Doe');
     expect(rows[1]).toHaveTextContent('Merged into another contact');
     expect(rows[2]).toHaveTextContent('gone for good');
+    // One member names the group; the server restores the group from it.
     fireEvent.click(within(rows[1]).getByRole('button', { name: 'Restore Jane Doe' }));
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/bin/restore', { ids: ['bin-merge-a', 'bin-merge-b'] }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/bin/restore', { ids: ['bin-merge-a'] }));
     await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Restored' })));
+  });
+
+  it('a list with 500 events is one group of 501 items, restored with one id (the request takes at most 500), also to a chosen list', { timeout: 20_000 }, async () => {
+    const list = item('bin-list', { module: 'calendar', item_type: 'calendar', title: 'Garden club', group_id: 'list-1', deleted_at: '2026-06-13T09:00:00.000Z' });
+    const events = Array.from({ length: 500 }, (_, index) => item(`bin-event-${index}`, { module: 'calendar', item_type: 'event', title: `Event ${index}`, reason: 'calendar_deleted', group_id: 'list-1', deleted_at: '2026-06-13T09:00:00.000Z' }));
+    answerGets([list, ...events]);
+    mountSignedIn(<BinView module="calendar" />);
+    const rows = within(await screen.findByRole('list', { name: 'Deleted items' }, { timeout: 10_000 })).getAllByRole('listitem');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent('With 500 items');
+    vi.mocked(api.post).mockResolvedValueOnce(refused('bin-list', 'BIN_RESTORE_NEEDS_LIST'));
+    fireEvent.click(within(rows[0]).getByRole('button', { name: 'Restore Garden club' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/bin/restore', { ids: ['bin-list'] }));
+    // The chosen destination is sent for the group once too, not for every member.
+    const dialog = await screen.findByRole('dialog', { name: 'Where should it go?' });
+    fireEvent.click(within(dialog).getByRole('combobox', { name: 'List' }));
+    fireEvent.click(await screen.findByRole('option', { name: /Inbox/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore there' }));
+    await waitFor(() => expect(api.post).toHaveBeenLastCalledWith('/bin/restore', { ids: ['bin-list'], calendar_id: 'cal-inbox' }));
+    expect(vi.mocked(api.post).mock.calls.every(call => (call[1] as { ids: string[] }).ids.length === 1)).toBe(true);
   });
 
   it('deletes one item for good after a confirmation, and empties the bin', async () => {
