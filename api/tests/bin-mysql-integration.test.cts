@@ -840,6 +840,24 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     assert.equal(server.copiesOf('Uncounted restore').length, 1);
   });
 
+  await t.test('a restore journal from before 0.28 whose attempt was not counted: a refused retry asks the server first and adopts the stored copy', async () => {
+    const title = 'Legacy uncounted restore';
+    const item = await pendingRestore(title, 'store-then-lose');
+    // As 0.27 counted: only after a failure, so a stop before that left 0 on a stored copy.
+    await pool.execute('UPDATE calendar_event_moves SET attempts = 0, counted_before_send = FALSE WHERE bin_item_id = ?', [item.id]);
+    const looks = countLooks();
+    // The calendar is writable in UniHub, but the server now refuses the write (permission revoked there).
+    server.faults.put = () => 'refuse';
+    try {
+      assert.equal((await restore(item.id)).restored[0]?.pending, undefined, 'its stored copy adopted');
+      assert.ok(looks.count > 0, 'the server was asked what it has');
+    } finally { delete server.faults.put; looks.stop(); }
+    assert.equal(await journalOf(item.id), 0);
+    await sync();
+    assert.deepEqual((await rowsTitled(title)).map(row => row.calendar_id), [work], 'one item');
+    assert.equal(server.copiesOf(title).length, 1);
+  });
+
   await t.test('a paused account is not contacted while a restore waits for it, also when its calendar became read-only', async () => {
     const item = await pendingRestore('Paused restore', 'store-then-lose');
     await setReadOnly(work, true);

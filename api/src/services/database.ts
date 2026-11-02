@@ -399,6 +399,7 @@ const MIGRATIONS: readonly Migration[] = [
         if (!await hasIndex(connection, table, name)) throw new Error(`Index ${name} on ${table} is missing`);
       }
       if (!await hasIndex(connection, 'calendar_event_moves', 'idx_event_moves_bin_item')) throw new Error('calendar_event_moves.bin_item_id is missing');
+      if (!await hasColumn(connection, 'calendar_event_moves', 'counted_before_send')) throw new Error('calendar_event_moves.counted_before_send is missing');
     },
   },
 ];
@@ -748,6 +749,13 @@ async function addDataSafety(connection: SqlExecutor) {
   if (!await hasColumn(connection, 'calendar_event_moves', 'bin_item_id')) {
     await connection.execute(`ALTER TABLE calendar_event_moves ADD COLUMN bin_item_id CHAR(36) NULL, ADD KEY idx_event_moves_bin_item (bin_item_id),
       ADD CONSTRAINT fk_event_moves_bin_item FOREIGN KEY (bin_item_id) REFERENCES bin_items (id) ON DELETE CASCADE`);
+  }
+  // A journal made from 0.28 on counts each attempt before it is sent
+  // (counted_before_send = 1). An older one counted only after a failure, so
+  // its count may miss a copy the server stored: a refusal is checked at the
+  // server before such a journal ends (calendar-move.ts createCopy).
+  if (!await hasColumn(connection, 'calendar_event_moves', 'counted_before_send')) {
+    await connection.execute('ALTER TABLE calendar_event_moves ADD COLUMN counted_before_send BOOLEAN NOT NULL DEFAULT FALSE');
   }
 
   // The ToDo state and subtasks of a synced task from a restored archive,

@@ -73,13 +73,15 @@ test('moving a task between lists and calendars: one copy, the same row, through
   await runtime('services/database').ensureSchema();
   await runtime('services/data-inventory').verifyDatabaseInventory(pool);
   // A branch database made an earlier journal, which nothing wrote to: step 24
-  // run again replaces it, and repeats without harm.
-  const step24 = (runtime('services/database').MIGRATIONS as FixtureValue[]).find(migration => migration.id === 24);
+  // run again replaces it, and repeats without harm; step 25 then gives it
+  // today's columns again.
+  const [step24, step25] = [24, 25].map(id => (runtime('services/database').MIGRATIONS as FixtureValue[]).find(migration => migration.id === id));
   const repeat = await pool.getConnection();
   try {
     await repeat.execute('DROP TABLE calendar_event_moves');
     await repeat.execute('CREATE TABLE calendar_event_moves (id CHAR(36) NOT NULL PRIMARY KEY, event_id CHAR(36) NOT NULL)');
     await step24.up(repeat); await step24.up(repeat); await step24.verify(repeat);
+    await step25.up(repeat); await step25.verify(repeat);
   } finally { repeat.release(); }
 
   // --- The calendar server: two calendars of one account ---------------------
@@ -360,6 +362,28 @@ test('moving a task between lists and calendars: one copy, the same row, through
       await sync(); await expandAll();
       await assertOnce(title, book, work);
     }
+  });
+
+  await t.test('a journal from before 0.28 whose attempt was not counted: a refused retry asks the server first and adopts the stored copy', async () => {
+    const title = 'Legacy uncounted move';
+    const task = await localTask(title);
+    faults.put = () => 'store-then-lose';
+    await owner('POST', `/calendar/events/${task}/move`, { calendar_id: work }, 202);
+    faults.put = undefined;
+    // As 0.27 counted: only after a failure, so a stop before that left 0 on a stored copy.
+    await pool.execute('UPDATE calendar_event_moves SET attempts = 0, counted_before_send = FALSE WHERE event_id = ?', [task]);
+    let looks = 0;
+    const realGet = caldav.getCalendarObject;
+    caldav.getCalendarObject = async (args: FixtureValue) => { looks += 1; return realGet(args); };
+    // The calendar is writable in UniHub, but the server now refuses the write (permission revoked there).
+    faults.put = () => 'refuse';
+    try {
+      assert.equal((await owner('POST', `/calendar/events/${task}/move`, { calendar_id: work })).event.calendar_id, work, 'its stored copy adopted');
+    } finally { faults.put = undefined; caldav.getCalendarObject = realGet; }
+    assert.ok(looks > 0, 'the server was asked what it has');
+    assert.equal((await journal(task)).length, 0);
+    await sync(); await expandAll();
+    await assertOnce(title, task, work);
   });
 
   await t.test('stopped between the server write and the local commit: the next sync links the copy to the moved row', async () => {

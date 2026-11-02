@@ -221,6 +221,7 @@ CREATE TABLE `calendar_event_moves` (
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   `bin_item_id` char(36) DEFAULT NULL,
+  `counted_before_send` tinyint(1) NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`),
   UNIQUE KEY `unique_event_move` (`event_id`),
   KEY `idx_event_moves_due` (`state`,`next_attempt_at`),

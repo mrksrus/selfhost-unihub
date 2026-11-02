@@ -74,6 +74,8 @@ interface MoveRow extends RowDataPacket {
   state: MoveState;
   attempts: number;
   bin_item_id: string | null;
+  /** 0 for a journal from before 0.28, whose count may miss a stored attempt. */
+  counted_before_send: number;
 }
 interface MoveOutcome { pending?: MoveState; sourceKept?: boolean }
 /** The new server copy of a moved event, stored or about to be. */
@@ -298,10 +300,12 @@ async function createCopy(move: MoveRow): Promise<NewCopy | null> {
       } catch (error) {
         const taken = (error as ApiError)?.code === 'CALDAV_CONFLICT';
         const refused = refusedByServer(error);
-        // Refused on the first attempt (the count is recorded before each
-        // one is sent): nothing was stored. Otherwise an earlier attempt may
-        // have stored it: look at what is there.
-        if (!taken && !(refused && move.attempts > 0)) {
+        // Refused on the first attempt of a journal that counts each one
+        // before it is sent: nothing was stored. Otherwise an earlier attempt
+        // may have stored it (a journal from before 0.28 counted only after
+        // a failure, so its count proves nothing): look at what is there.
+        const first = Number(move.attempts) === 0 && !!Number(move.counted_before_send);
+        if (!taken && !(refused && !first)) {
           if (refused) return { refused: error };
           return settle ? look({ refused: new HttpError(409, 'CALENDAR_MOVE_FAILED', 'The calendar server did not take the item, so it stays in its calendar.') }) : { wait: error };
         }
@@ -649,8 +653,8 @@ async function admitMove(userId: string, eventId: string, targetCalendarId: stri
       // A move still removing an older copy of this item goes on without it.
       await connection.execute("UPDATE calendar_event_moves SET event_id = NULL WHERE event_id = ? AND user_id = ? AND state = 'removing'", [eventId, userId]);
       await connection.execute(
-        `INSERT INTO calendar_event_moves (id, user_id, event_id, source_calendar_id, source_object_id, source_etag, target_calendar_id, target_uid, target_href, target_ics, state, next_attempt_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', UTC_TIMESTAMP() + INTERVAL 1 MINUTE)`,
+        `INSERT INTO calendar_event_moves (id, user_id, event_id, source_calendar_id, source_object_id, source_etag, target_calendar_id, target_uid, target_href, target_ics, state, next_attempt_at, counted_before_send)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', UTC_TIMESTAMP() + INTERVAL 1 MINUTE, TRUE)`,
         [moveId, userId, eventId, event.calendar_id || null, sourceObjectId, sourceEtag, targetCalendarId, uid, href, ics]
       );
       return 'journal';
@@ -728,8 +732,8 @@ async function cancelMove(userId: string, eventId: string): Promise<TaskMoveCanc
 async function journalBinRestore(connection: SqlExecutor, userId: string, binItemId: string, target: { calendarId: string; uid: string; href: string; ics: string }) {
   const moveId = crypto.randomUUID();
   await connection.execute(
-    `INSERT INTO calendar_event_moves (id, user_id, event_id, target_calendar_id, target_uid, target_href, target_ics, state, next_attempt_at, bin_item_id)
-     VALUES (?, ?, NULL, ?, ?, ?, ?, 'creating', UTC_TIMESTAMP() + INTERVAL 1 MINUTE, ?)`,
+    `INSERT INTO calendar_event_moves (id, user_id, event_id, target_calendar_id, target_uid, target_href, target_ics, state, next_attempt_at, bin_item_id, counted_before_send)
+     VALUES (?, ?, NULL, ?, ?, ?, ?, 'creating', UTC_TIMESTAMP() + INTERVAL 1 MINUTE, ?, TRUE)`,
     [moveId, userId, target.calendarId, target.uid, target.href, target.ics, binItemId]);
   return moveId;
 }
