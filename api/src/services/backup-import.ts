@@ -621,15 +621,6 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
 
       if (movesBefore) await settleMovesForRestore(connection, userId, { overwrittenEventIds, before: movesBefore });
 
-      // UniHub's state on synced tasks: applied to the live task, or kept for
-      // the sync that brings it back (backup-overlays.ts).
-      const overlays = restoresCalendarContent
-        ? await restoreOverlays(connection, userId, (data.calendar_overlay_restores || []) as BackupRow[], { calendarIds: calendarIdMap, conflictMode, checkCancelled: checkRestoreCancelled })
-        : { applied: 0, waiting: 0, unplaced: 0, sourceEmails: { events: new Map<string, string>(), overlays: new Map<string, string>() } };
-      for (const [eventId, archivedEmailId] of overlays.sourceEmails.events) eventsWithSourceEmail.set(eventId, archivedEmailId);
-      if (overlays.waiting) contents.notes.push(`${overlays.waiting} synced task${overlays.waiting === 1 ? '' : 's'} get${overlays.waiting === 1 ? 's' : ''} its ToDo state and subtasks back when the calendar syncs.`);
-      if (overlays.unplaced) contents.notes.push(`The ToDo state and subtasks of ${overlays.unplaced} synced task${overlays.unplaced === 1 ? '' : 's'} could not be restored: ${overlays.unplaced === 1 ? 'its calendar is' : 'their calendars are'} not a synced calendar here.`);
-
       // The hand order (0.27): a local task's row follows its restored event,
       // a synced one its calendar; the key is computed again from them. A
       // synced task's order matches its UID once the next sync links it.
@@ -1009,13 +1000,14 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
           await connection.execute('UPDATE calendar_events SET source_email_id = ? WHERE id = ? AND user_id = ? AND source_email_id = ?', [targetEmailId, eventId, userId, archivedEmailId]);
         }
       }
-      // So does the state a synced task waits for.
-      for (const [overlayId, archivedEmailId] of overlays.sourceEmails.overlays) {
-        const targetEmailId = emailIdMap.get(archivedEmailId);
-        if (targetEmailId && targetEmailId !== archivedEmailId) {
-          await connection.execute(`UPDATE calendar_overlay_restores SET payload = JSON_SET(payload, '$.source_email_id', ?)
-            WHERE id = ? AND user_id = ? AND JSON_VALUE(payload, '$.source_email_id') = ?`, [targetEmailId, overlayId, userId, archivedEmailId]);
-        }
+      // UniHub's state on synced tasks, after mail so that a source email
+      // follows to its restored id: applied to the live task, or kept for the
+      // sync that brings it back (backup-overlays.ts).
+      if (restoresCalendarContent) {
+        const overlays = await restoreOverlays(connection, userId, (data.calendar_overlay_restores || []) as BackupRow[],
+          { calendarIds: calendarIdMap, emailIds: emailIdMap, conflictMode, checkCancelled: checkRestoreCancelled });
+        if (overlays.waiting) contents.notes.push(`${overlays.waiting} synced task${overlays.waiting === 1 ? '' : 's'} get${overlays.waiting === 1 ? 's' : ''} its ToDo state and subtasks back when the calendar syncs.`);
+        if (overlays.unplaced) contents.notes.push(`The ToDo state and subtasks of ${overlays.unplaced} synced task${overlays.unplaced === 1 ? '' : 's'} could not be restored: ${overlays.unplaced === 1 ? 'its calendar is' : 'their calendars are'} not a synced calendar here.`);
       }
 
       await reportRestoreProgress('recordings', 90);

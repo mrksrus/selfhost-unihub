@@ -12,6 +12,7 @@ import crypto from 'node:crypto';
 import { db } from '../state';
 import { resolvePolicy } from './settings';
 import { SETTLED } from './mail-engine/operation-states';
+import { parseOverlayState } from './calendar-overlays';
 
 // Row classes as SQL on a row alias. A local calendar belongs to an account
 // of the UniHub provider; an event without a calendar is local too.
@@ -119,18 +120,13 @@ const toMysqlDate = (date: Date) => date.toISOString().slice(0, 19).replace('T',
 // archive its reader would refuse.
 const TODO_STATUSES: ReadonlySet<string> = new Set(['done', 'changed', 'time_moved', 'cancelled']);
 
-// UniHub's own state on a task, as an overlay payload; null when there is none.
-// Only what the overlay reader (backup-overlays.ts) accepts, so converting an
-// older archive never writes a state its own restore would refuse.
-const sourceEmailJson = (value: unknown) => {
-  if (value == null) return null;
-  try { return JSON.stringify(typeof value === 'string' ? JSON.parse(value) : value); } catch { return null; }
-};
+// UniHub's own state on a task, as an overlay payload in the overlay owner's
+// form (calendar-overlays.ts); null when there is none. A value outside what
+// the overlay reader (backup-overlays.ts) accepts is left out, so converting
+// an older archive never writes a state its own restore would refuse.
 function overlayPayload(event: BackupRow, subtasks: readonly BackupRow[]) {
-  const state = { todo_status: TODO_STATUSES.has(String(event.todo_status)) ? String(event.todo_status) : null, done_at: event.done_at ?? null,
-    source_email_id: /^[0-9a-f-]{36}$/i.test(String(event.source_email_id ?? '')) ? String(event.source_email_id) : null, source_email_json: sourceEmailJson(event.source_email_json),
-    subtasks: subtasks.map(row => ({ title: String(row.title ?? ''), is_done: !!row.is_done, position: Number(row.position) || 0 })) };
-  return state.todo_status || state.done_at || state.source_email_id || state.source_email_json || state.subtasks.length ? state : null;
+  return parseOverlayState({ todo_status: event.todo_status, done_at: event.done_at, source_email_id: event.source_email_id, source_email_json: event.source_email_json,
+    subtasks: subtasks.map(row => ({ title: String(row.title ?? ''), is_done: !!row.is_done, position: Number(row.position) || 0 })) });
 }
 
 const accountIdentity = (account: BackupRow | undefined) => account ? [account.provider, account.account_email, account.base_url || account.discovery_url].map(value => String(value ?? '')).join('|') : '';

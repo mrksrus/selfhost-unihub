@@ -106,7 +106,9 @@ test('frozen 0.27.1 archive imports what the data classes keep, with a note of w
     [calendars.find(row => row.name === 'Team')!.id, 'shape', null, 'Review draft', '2030-02-04T09:00:00.000Z']);
   assert.ok(overlay.days >= 29 && overlay.days <= 30);
   const state = typeof overlay.payload === 'string' ? JSON.parse(overlay.payload) : overlay.payload;
-  assert.deepEqual([state.todo_status, state.done_at, JSON.parse(state.source_email_json).subject], ['done', '2030-02-04 11:00:00', 'Draft for review']);
+  // The overlay owner (calendar-overlays.ts) stores the email snapshot as JSON; its reader takes a string as well.
+  const sourceEmail = typeof state.source_email_json === 'string' ? JSON.parse(state.source_email_json) : state.source_email_json;
+  assert.deepEqual([state.todo_status, state.done_at, sourceEmail.subject], ['done', '2030-02-04 11:00:00', 'Draft for review']);
   assert.deepEqual(state.subtasks, [{ title: 'Read section one', is_done: true, position: 0 }, { title: 'Write comments', is_done: false, position: 1 }]);
 
   // Mail: the Download account's message and the Sync account's own sent copy, with their raw files.

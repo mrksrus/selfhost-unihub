@@ -295,6 +295,20 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
     await restore(owner, archive, 'replace');
     assert.deepEqual(await state(), ['done', '2030-05-01T12:00:00.000Z', ['Read:1', 'Comment:0']]);
 
+    // An item is its calendar, UID and recurrence id byte for byte (calendar-overlays.ts): the state
+    // of one date does not go onto a date whose recurrence id differs only in case; it waits for its own.
+    const occurrence = uuid();
+    await insert('calendar_events', { id: occurrence, user_id: owner, calendar_id: calendarId, uid: 'Synced@example.test', title: 'Review draft', start_time: '2030-05-08 10:00:00', end_time: '2030-05-08 11:00:00' });
+    await insert('calendar_event_external_refs', { id: uuid(), user_id: owner, event_id: occurrence, calendar_id: calendarId, account_id: accountId, provider: 'caldav',
+      external_event_id: 'review-0508.ics', external_etag: 'one', recurrence_id: '20300508t100000z' });
+    const ofOneDate = structuredClone(archive);
+    ofOneDate.data.calendar_overlay_restores = [{ ...archive.data.calendar_overlay_restores[0], id: uuid(), recurrence_id: '20300508T100000Z' }];
+    await restore(owner, ofOneDate, 'replace');
+    assert.equal((await rows('SELECT todo_status FROM calendar_events WHERE id = ?', [occurrence]))[0].todo_status, null, 'not onto the other date');
+    assert.deepEqual((await rows('SELECT recurrence_id FROM calendar_overlay_restores WHERE user_id = ?', [owner])).map(row => row.recurrence_id), ['20300508T100000Z']);
+    await pool.execute('DELETE FROM calendar_overlay_restores WHERE user_id = ?', [owner]);
+    await pool.execute('DELETE FROM calendar_events WHERE id = ?', [occurrence]);
+
     // Into a new person the task is not there yet: the state waits, once, for the sync.
     const fresh = await newUser('synced-fresh');
     const waiting = await restore(fresh, archive, 'keep_existing');
