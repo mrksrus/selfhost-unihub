@@ -136,16 +136,21 @@ async function main() {
     // the backup leaves the event out and keeps that state as an overlay.
     const calendarAccountId = uuid(), calendarId = uuid(), eventId = uuid();
     const dav = `https://${peer.host}:${peer.davPort}/calendar-user/`;
+    // Inside the CalDAV sync window (a year back, two years ahead): a user
+    // backup leaves the event out, and it comes back from the provider.
+    const eventStart = new Date(Date.now() + 30 * 86400000); eventStart.setUTCHours(10, 0, 0, 0);
+    const eventAt = (minutes: number) => new Date(eventStart.getTime() + minutes * 60000);
+    const sqlTime = (date: Date) => date.toISOString().slice(0, 19).replace('T', ' ');
     const providerEvent = { user: 'calendar-user', calendar: 'research', displayName: 'Research Calendar', uid: 'fresh-remote-event@example.test',
-      title: 'Remote weekly event', description: 'Preserve Grüße\nSecond line', location: 'Vienna', start: '2030-02-03T10:00:00.000Z', end: '2030-02-03T11:00:00.000Z',
+      title: 'Remote weekly event', description: 'Preserve Grüße\nSecond line', location: 'Vienna', start: eventStart.toISOString(), end: eventAt(60).toISOString(),
       attendees: [{ email: 'attendee@example.test', name: 'Attendee', status: 'ACCEPTED' as const }] };
     await insert('calendar_accounts', { id: calendarAccountId, user_id: userId, provider: 'caldav', display_name: 'Fresh calendar', account_email: 'calendar@example.test',
       username: 'calendar-user', discovery_url: dav, base_url: dav, encrypted_password: encrypt(secrets.calendar), is_active: 1 });
     await insert('calendar_calendars', { id: calendarId, user_id: userId, account_id: calendarAccountId, name: providerEvent.displayName, external_id: `${dav}${providerEvent.calendar}/`,
       color: '#2244ff', is_visible: 1, uid: uuid() });
     await insert('calendar_events', { id: eventId, user_id: userId, calendar_id: calendarId, uid: providerEvent.uid, title: providerEvent.title, description: providerEvent.description,
-      start_time: '2030-02-03 10:00:00', end_time: '2030-02-03 11:00:00', reminders: JSON.stringify([10, 60]), reminder_minutes: 10, location: providerEvent.location,
-      todo_status: 'done', done_at: '2030-02-03 11:05:00' });
+      start_time: sqlTime(eventStart), end_time: sqlTime(eventAt(60)), reminders: JSON.stringify([10, 60]), reminder_minutes: 10, location: providerEvent.location,
+      todo_status: 'done', done_at: sqlTime(eventAt(65)) });
     await insert('calendar_event_subtasks', { id: uuid(), event_id: eventId, user_id: userId, title: 'Check the notes', is_done: 1, position: 0 });
     await insert('calendar_settings', { calendar_id: calendarId, user_id: userId, setting_key: 'notify_enabled', setting_value: 'false' });
     await insert('calendar_event_attendees', { id: uuid(), user_id: userId, event_id: eventId, email: 'attendee@example.test', display_name: 'Attendee', response_status: 'accepted' });
