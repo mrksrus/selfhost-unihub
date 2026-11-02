@@ -373,13 +373,17 @@ async function syncedTaskOverlays(connection: SqlExecutor, userId: string, pendi
   const [subtasks] = await connection.execute<RowDataPacket[]>(`SELECT s.event_id, s.title, s.is_done, s.position FROM calendar_event_subtasks s
     JOIN calendar_events e ON e.id = s.event_id AND e.user_id = s.user_id
     WHERE s.user_id = ? AND NOT ${localEventSql('e')} ORDER BY s.event_id, s.position, s.id`, [userId]);
-  const byEvent = new Map<string, BackupRow[]>();
+  const [attendees] = await connection.execute<RowDataPacket[]>(`SELECT t.event_id, t.email, t.display_name, t.response_status, t.is_organizer, t.optional_attendee, t.comment
+    FROM calendar_event_attendees t JOIN calendar_events e ON e.id = t.event_id AND e.user_id = t.user_id
+    WHERE t.user_id = ? AND NOT ${localEventSql('e')} ORDER BY t.event_id, t.created_at, t.id`, [userId]);
+  const byEvent = new Map<string, BackupRow[]>(), attendeesByEvent = new Map<string, BackupRow[]>();
   for (const row of normalizeRows(subtasks)) byEvent.set(String(row.event_id), [...(byEvent.get(String(row.event_id)) || []), row]);
+  for (const row of normalizeRows(attendees)) attendeesByEvent.set(String(row.event_id), [...(attendeesByEvent.get(String(row.event_id)) || []), row]);
   const key = (row: BackupRow) => JSON.stringify([row.calendar_id, row.uid, String(row.recurrence_id ?? '')]);
   const overlays = new Map<string, BackupRow>();
   for (const row of pending) overlays.set(row.match_kind === 'uid' ? key(row) : `pending:${row.id}`, row);
   for (const event of normalizeRows(events)) {
-    const payload = overlayPayload(event, byEvent.get(String(event.id)) || []);
+    const payload = overlayPayload(event, byEvent.get(String(event.id)) || [], attendeesByEvent.get(String(event.id)) || []);
     if (!payload) continue;
     overlays.set(key(event), { id: crypto.randomUUID(), user_id: userId, calendar_id: event.calendar_id, account_identity: accountIdentity(event), uid: event.uid,
       recurrence_id: String(event.recurrence_id ?? ''), match_kind: 'uid', shape_title: event.title ?? '', shape_start: event.start_time ?? null,

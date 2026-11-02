@@ -2,9 +2,11 @@ import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import crypto from 'node:crypto';
 import { db } from '../state';
+import { replaceEventAttendees } from './calendar';
 
 // UniHub's own additions to a synced event or task (F2 `local` overlay): its
-// ToDo state, done time, source email and subtasks. The calendar server holds
+// ToDo state, done time, source email, subtasks, and the attendees with their
+// replies (UniHub never writes those to the server). The calendar server holds
 // the item itself (a mirror), so an archive or the bin keeps only these, keyed
 // by the item's provider identity: its calendar, its iCal UID and its
 // recurrence id. The hand order has its own table (task-order.ts), keyed the
@@ -31,8 +33,12 @@ const TODO_STATUSES = new Set(['done', 'changed', 'time_moved', 'cancelled']);
 const TITLE_MAX = 255;
 const DATETIME = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 const ID_PATTERN = /^[0-9a-f-]{36}$/i;
+const RESPONSES = new Set(['accepted', 'tentative', 'declined', 'needsAction']);
+const TEXT_MAX = 255;
+const COMMENT_MAX = 10000;
 
 interface OverlaySubtask { title: string; is_done: boolean; position: number }
+interface OverlayAttendee { email: string; display_name: string | null; response_status: string; is_organizer: boolean; optional_attendee: boolean; comment: string | null }
 /** The payload of a calendar_overlay_restores row, and of each occurrence of a synced item in the bin. */
 interface OverlayState {
   todo_status: string | null;
@@ -41,6 +47,7 @@ interface OverlayState {
   source_email_id: string | null;
   source_email_json: unknown;
   subtasks: OverlaySubtask[];
+  attendees: OverlayAttendee[];
 }
 /** Where an overlay applies. recurrenceId is calendar_event_external_refs.recurrence_id, '' for none. */
 interface OverlayTarget { userId: string; calendarId: string; uid: string; recurrenceId: string }
@@ -86,9 +93,26 @@ function parseOverlayState(value: unknown): OverlayState | null {
     const position = Number.isSafeInteger((item as OverlaySubtask).position) ? (item as OverlaySubtask).position : index;
     return [{ title, is_done: !!(item as OverlaySubtask).is_done, position }];
   });
-  const state = { todo_status: status, done_at: status ? doneAt : null, source_email_id: emailId, source_email_json: email && typeof email === 'object' ? email : null, subtasks };
-  return state.todo_status || state.source_email_id || state.source_email_json || state.subtasks.length ? state : null;
+  const text = (value: unknown, max: number) => typeof value === 'string' && value.trim() ? Array.from(value.trim()).slice(0, max).join('') : null;
+  const seen = new Set<string>();
+  const attendees = (Array.isArray(input.attendees) ? input.attendees : []).flatMap(item => {
+    if (!item || typeof item !== 'object') return [];
+    const attendee = item as Record<string, unknown>;
+    const address = typeof attendee.email === 'string' ? attendee.email.trim().toLowerCase() : '';
+    // An address the column cannot hold is not shortened into another one.
+    if (!address || address.length > TEXT_MAX || seen.has(address)) return [];
+    seen.add(address);
+    const response = typeof attendee.response_status === 'string' && RESPONSES.has(attendee.response_status) ? attendee.response_status : 'needsAction';
+    return [{ email: address, display_name: text(attendee.display_name, TEXT_MAX), response_status: response, is_organizer: !!attendee.is_organizer,
+      optional_attendee: !!attendee.optional_attendee, comment: text(attendee.comment, COMMENT_MAX) }];
+  });
+  const state = { todo_status: status, done_at: status ? doneAt : null, source_email_id: emailId, source_email_json: email && typeof email === 'object' ? email : null, subtasks, attendees };
+  return state.todo_status || state.source_email_id || state.source_email_json || state.subtasks.length || state.attendees.length ? state : null;
 }
+
+/** An attendee row as an overlay holds it. */
+const overlayAttendee = (row: Record<string, unknown>) => ({ email: row.email, display_name: row.display_name, response_status: row.response_status,
+  is_organizer: !!Number(row.is_organizer), optional_attendee: !!Number(row.optional_attendee), comment: row.comment });
 
 /** What UniHub keeps of its own on one event row, or null when it keeps nothing. */
 async function overlayStateOf(executor: SqlExecutor, userId: string, eventId: string): Promise<OverlayState | null> {
@@ -96,9 +120,12 @@ async function overlayStateOf(executor: SqlExecutor, userId: string, eventId: st
   if (!event) return null;
   const [subtasks] = await executor.execute<RowDataPacket[]>(
     'SELECT title, is_done, position FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ? ORDER BY position, created_at, id', [eventId, userId]);
+  const [attendees] = await executor.execute<RowDataPacket[]>(
+    'SELECT email, display_name, response_status, is_organizer, optional_attendee, comment FROM calendar_event_attendees WHERE event_id = ? AND user_id = ? ORDER BY created_at, id', [eventId, userId]);
   return parseOverlayState({
     todo_status: event.todo_status, done_at: event.done_at, source_email_id: event.source_email_id, source_email_json: event.source_email_json,
     subtasks: subtasks.map(row => ({ title: row.title, is_done: !!Number(row.is_done), position: Number(row.position) })),
+    attendees: attendees.map(overlayAttendee),
   });
 }
 
@@ -137,6 +164,10 @@ async function applyOverlayState(connection: SqlExecutor, userId: string, eventI
           chunk.flatMap(subtask => [crypto.randomUUID(), eventId, userId, subtask.title, subtask.is_done ? 1 : 0, subtask.position]));
       }
     }
+  }
+  if (exact || state.attendees.length) {
+    const [[{ count }]] = await connection.execute<RowDataPacket[]>('SELECT COUNT(*) AS count FROM calendar_event_attendees WHERE event_id = ? AND user_id = ?', [eventId, userId]);
+    if (mode === 'replace' || !Number(count)) await replaceEventAttendees(userId, eventId, state.attendees, connection);
   }
   return true;
 }
@@ -249,6 +280,7 @@ async function sweepExpiredOverlays(executor: SqlExecutor = db) {
 }
 
 export {
+  overlayAttendee,
   EXACT as UID_EXACT,
   parseOverlayState,
   overlayStateOf,
@@ -259,4 +291,4 @@ export {
   hasPendingOverlays,
   sweepExpiredOverlays,
 };
-export type { OverlayState, OverlaySubtask, OverlayTarget, PendingOverlay };
+export type { OverlayAttendee, OverlayState, OverlaySubtask, OverlayTarget, PendingOverlay };

@@ -252,7 +252,7 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
     const imported = await restore(oldReader, old, 'keep_existing');
     assert.equal((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [oldReader]))[0][0].n, 0);
     assert.deepEqual(await waitingSteps(oldReader), [['shape', 501]]);
-    assert.ok(imported.notes.some((note: string) => /1 synced task gets its ToDo state and subtasks back when the calendar syncs/.test(note)), JSON.stringify(imported.notes));
+    assert.ok(imported.notes.some((note: string) => /1 synced item gets its ToDo state, subtasks and replies back when the calendar syncs/.test(note)), JSON.stringify(imported.notes));
     // State its conversion cannot store (a title no task can have) refuses the restore by name rather than vanishing.
     const unstorable = structuredClone(old);
     unstorable.data.calendar_events[0].title = 'x'.repeat(300);
@@ -317,7 +317,7 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
     const pending = await rows(`SELECT o.uid, o.match_kind, o.expires_at, c.name FROM calendar_overlay_restores o JOIN calendar_calendars c ON c.id = o.calendar_id AND c.user_id = o.user_id
       WHERE o.user_id = ?`, [fresh]);
     assert.deepEqual(pending.map(row => [row.uid, row.match_kind, row.expires_at, row.name]), [['Synced@example.test', 'uid', null, 'Team']]);
-    assert.ok(waiting.notes.some((note: string) => /1 synced task gets its ToDo state and subtasks back when the calendar syncs/.test(note)));
+    assert.ok(waiting.notes.some((note: string) => /1 synced item gets its ToDo state, subtasks and replies back when the calendar syncs/.test(note)));
     assert.equal((await rows('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [fresh]))[0].n, 0, 'the restore never writes a synced task itself');
     // A backup before that sync carries the waiting state on.
     const again = await backup.buildBackupForUser(fresh, { sections: ['calendar'], includeFileData: false });

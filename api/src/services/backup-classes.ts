@@ -12,7 +12,7 @@ import crypto from 'node:crypto';
 import { db } from '../state';
 import { resolvePolicy } from './settings';
 import { SETTLED } from './mail-engine/operation-states';
-import { parseOverlayState } from './calendar-overlays';
+import { overlayAttendee, parseOverlayState } from './calendar-overlays';
 
 // Row classes as SQL on a row alias. A local calendar belongs to an account
 // of the UniHub provider; an event without a calendar is local too.
@@ -92,7 +92,7 @@ const SECTION_CLASSES: Readonly<Record<BackupSectionId, readonly BackupDataClass
 });
 
 const LEFT_OUT = Object.freeze({
-  synced_events: { section: 'calendar' as const, what: 'CalDAV and subscription events', reason: 'They download again from the provider after the accounts reconnect; UniHub\'s ToDo state and subtasks of synced tasks are in the backup.' },
+  synced_events: { section: 'calendar' as const, what: 'CalDAV and subscription events', reason: 'They download again from the provider after the accounts reconnect; UniHub\'s ToDo state, subtasks and replies of synced items are in the backup.' },
   sync_mail: { section: 'mail' as const, what: 'Sync-mode mail', reason: 'It downloads again from the provider after the account signs in.' },
   download_mail: { section: 'mail' as const, what: 'Downloaded mail', reason: '"Include downloaded mail" was off.' },
 });
@@ -124,9 +124,10 @@ const TODO_STATUSES: ReadonlySet<string> = new Set(['done', 'changed', 'time_mov
 // form (calendar-overlays.ts); null when there is none. A value outside what
 // the overlay reader (backup-overlays.ts) accepts is left out, so converting
 // an older archive never writes a state its own restore would refuse.
-function overlayPayload(event: BackupRow, subtasks: readonly BackupRow[]) {
+function overlayPayload(event: BackupRow, subtasks: readonly BackupRow[], attendees: readonly BackupRow[] = []) {
   return parseOverlayState({ todo_status: event.todo_status, done_at: event.done_at, source_email_id: event.source_email_id, source_email_json: event.source_email_json,
-    subtasks: subtasks.map(row => ({ title: String(row.title ?? ''), is_done: !!row.is_done, position: Number(row.position) || 0 })) });
+    subtasks: subtasks.map(row => ({ title: String(row.title ?? ''), is_done: !!row.is_done, position: Number(row.position) || 0 })),
+    attendees: attendees.map(row => overlayAttendee({ ...row, is_organizer: row.is_organizer ? 1 : 0, optional_attendee: row.optional_attendee ? 1 : 0 })) });
 }
 
 const accountIdentity = (account: BackupRow | undefined) => account ? [account.provider, account.account_email, account.base_url || account.discovery_url].map(value => String(value ?? '')).join('|') : '';
@@ -154,10 +155,11 @@ function filterOldArchive(backup: ArchiveEnvelope, now = new Date()): { counts: 
   const syncedEvents = asRows(data.calendar_events).filter(event => syncedCalendars.has(String(event.calendar_id)));
   if (syncedEvents.length) {
     const removed = new Set(syncedEvents.map(event => String(event.id)));
-    const subtasks = asRows(data.calendar_event_subtasks);
+    const subtasks = asRows(data.calendar_event_subtasks), attendees = asRows(data.calendar_event_attendees);
     const overlays = asRows(data.calendar_overlay_restores);
     for (const event of syncedEvents) {
-      const payload = overlayPayload(event, subtasks.filter(row => String(row.event_id) === String(event.id)));
+      const own = (row: BackupRow) => String(row.event_id) === String(event.id);
+      const payload = overlayPayload(event, subtasks.filter(own), attendees.filter(own));
       if (!payload) continue;
       overlays.push({ id: crypto.randomUUID(), user_id: event.user_id, calendar_id: event.calendar_id, account_identity: accountIdentity(syncedCalendars.get(String(event.calendar_id))),
         uid: null, recurrence_id: '', match_kind: 'shape', shape_title: event.title ?? '', shape_start: event.start_time ?? null, payload: JSON.stringify(payload),

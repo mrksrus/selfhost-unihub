@@ -53,10 +53,14 @@ test('synced tasks keep their own state through a restore and the first sync, by
     todo_status: 'done', done_at: '2026-11-01 08:00:00', source_email_id: crypto.randomUUID(),
     source_email_json: { subject: `About ${title}`, from_address: 'sender@example.test' },
     subtasks: subtasks.map((subtask, position) => ({ title: subtask, is_done: position === 0, position })),
+    // UniHub's reply to an invitation: never written to the server, so it travels in the overlay.
+    attendees: [{ email: 'guest@example.test', display_name: 'Guest', response_status: 'accepted', is_organizer: false, optional_attendee: false, comment: `On ${title}` }],
   });
   const rowOf = async (title: string) => (await pool.query<RowDataPacket[]>('SELECT * FROM calendar_events WHERE user_id = ? AND title = ?', [users.owner, title]))[0];
   const subtasksOf = async (eventId: string) => (await pool.query<RowDataPacket[]>('SELECT title, is_done FROM calendar_event_subtasks WHERE event_id = ? ORDER BY position', [eventId]))[0]
     .map(row => [row.title, !!row.is_done]);
+  const attendeesOf = async (eventId: string) => (await pool.query<RowDataPacket[]>('SELECT email, response_status, comment FROM calendar_event_attendees WHERE event_id = ? ORDER BY email', [eventId]))[0]
+    .map(row => [row.email, row.response_status, row.comment]);
   const pending = async () => Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM calendar_overlay_restores WHERE user_id = ?', [users.owner]))[0][0].n);
   const write = async (rows: FixtureValue[]) => {
     const cx = await pool.getConnection();
@@ -81,8 +85,11 @@ test('synced tasks keep their own state through a restore and the first sync, by
     assert.equal(upper.source_email_id, null, 'an email the person does not have is not linked');
     assert.equal((typeof upper.source_email_json === 'string' ? JSON.parse(upper.source_email_json) : upper.source_email_json).subject, 'About Upper task');
     assert.deepEqual(await subtasksOf(upper.id), [['Draft', true], ['Send', false]]);
+    assert.deepEqual(await attendeesOf(upper.id), [['guest@example.test', 'accepted', 'On Upper task']], 'the reply comes back with the item');
+    assert.deepEqual((await overlays.overlayStateOf(pool, users.owner, upper.id))!.attendees.map(row => row.email), ['guest@example.test'], 'and a backup takes it again');
     assert.equal(lower.todo_status, null, 'a UID differing only in case is another item');
     assert.deepEqual(await subtasksOf(lower.id), []);
+    assert.deepEqual(await attendeesOf(lower.id), []);
     assert.equal(await pending(), 0, 'taken by the sync');
     // Applied once: a later change in UniHub stands through more syncs.
     await call('PUT', `/api/calendar/events/${upper.id}/todo-status`, { todo_status: null });
@@ -176,6 +183,7 @@ test('synced tasks keep their own state through a restore and the first sync, by
     } finally { cx.release(); }
     assert.equal((await rowOf('Lower task'))[0].todo_status, 'done');
     assert.deepEqual(await subtasksOf(lower.id), [['Live', true]]);
+    assert.deepEqual(await attendeesOf(lower.id), [['guest@example.test', 'accepted', 'On Lower task']]);
     assert.equal(await pending(), 1, 'the other waits for its item');
   });
 

@@ -86,7 +86,7 @@ test('frozen 0.27.1 archive imports what the data classes keep, with a note of w
   const result = await restore('keep_existing');
   assert.deepEqual(result.contents.left_out.map((item: FixtureValue) => [item.what, item.count]), [['CalDAV and subscription events', 3], ['Sync-mode mail', 1]]);
   assert.ok(result.notes.some((note: string) => /Provider data is not in this backup/.test(note)));
-  assert.ok(result.notes.some((note: string) => /1 synced task gets its ToDo state and subtasks back when the calendar syncs/.test(note)));
+  assert.ok(result.notes.some((note: string) => /2 synced items get their ToDo state, subtasks and replies back when the calendar syncs/.test(note)));
 
   // Local tasks, with the archived ids as their identity.
   const events = await rows('SELECT uid, title, calendar_id, todo_status FROM calendar_events WHERE user_id = ? ORDER BY title');
@@ -98,11 +98,16 @@ test('frozen 0.27.1 archive imports what the data classes keep, with a note of w
   const calendars = await rows('SELECT c.id, c.name, a.provider FROM calendar_calendars c JOIN calendar_accounts a ON a.id = c.account_id WHERE c.user_id = ? ORDER BY c.name');
   assert.deepEqual(calendars.map(row => [row.name, row.provider]), [['Errands', 'local'], ['Team', 'caldav'], ['Work', 'local']]);
 
-  // The done synced task's state waits as a shape overlay for 30 days.
+  // The done synced task's state, and the reply to the synced meeting (UniHub
+  // never writes it to the server), wait as shape overlays for 30 days.
   const overlays = await rows(`SELECT calendar_id, match_kind, uid, shape_title, shape_start, payload, TIMESTAMPDIFF(DAY, UTC_TIMESTAMP(), expires_at) AS days
     FROM calendar_overlay_restores WHERE user_id = ?`);
-  assert.equal(overlays.length, 1, 'only the task with UniHub state');
-  const [overlay] = overlays;
+  assert.deepEqual(overlays.map(row => row.shape_title).sort(), ['Planning meeting', 'Review draft'], 'only the items with UniHub state');
+  const meeting = overlays.find(row => row.shape_title === 'Planning meeting')!;
+  const reply = typeof meeting.payload === 'string' ? JSON.parse(meeting.payload) : meeting.payload;
+  assert.deepEqual(reply.attendees.map((row: FixtureValue) => [row.email, row.display_name, row.response_status]), [['colleague@example.test', 'Colleague', 'accepted']]);
+  assert.equal(reply.todo_status, null);
+  const overlay = overlays.find(row => row.shape_title === 'Review draft')!;
   assert.deepEqual([overlay.calendar_id, overlay.match_kind, overlay.uid, overlay.shape_title, new Date(overlay.shape_start).toISOString()],
     [calendars.find(row => row.name === 'Team')!.id, 'shape', null, 'Review draft', '2030-02-04T09:00:00.000Z']);
   assert.ok(overlay.days >= 29 && overlay.days <= 30);

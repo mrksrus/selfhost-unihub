@@ -67,13 +67,14 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
 
 - **A backup holds what only UniHub has.** Contacts, local lists and tasks,
   recordings, settings and the connections of your accounts are in it. So is
-  UniHub's own state on synced tasks: ToDo state, done time, subtasks and the
-  email a task was made from. What a provider holds downloads again after the
-  accounts reconnect and is no longer copied: CalDAV and subscription events,
-  and Sync-mode mail that is on the server. A Sync-mode message that UniHub
-  keeps on its own stays in the backup: a draft or UniHub's own sent copy,
-  Legacy mail, mail filed in another account, and mail that is gone from the
-  server.
+  UniHub's own state on synced events and tasks: ToDo state, done time,
+  subtasks, the email a task was made from, and your replies to invitations
+  (UniHub keeps those to itself). What a provider holds downloads again after
+  the accounts reconnect and is no longer copied: CalDAV and subscription
+  events, and Sync-mode mail that is on the server. A Sync-mode message that
+  UniHub keeps on its own stays in the backup: a draft or UniHub's own sent
+  copy, Legacy mail, mail filed in another account, and mail that is gone from
+  the server.
 - **"Include downloaded mail"** decides whether Download-mode mail is in a
   backup; it starts on, because that mail may be the only copy. An account
   that deletes mail at the provider always includes its mail; the choice is
@@ -88,9 +89,9 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   review of a backup to restore lists the same, with the server's notes, also
   for old archives.
 - **Restoring an older backup** brings back only what a new backup would
-  hold and says what it left out. The ToDo state and subtasks of its synced
-  tasks wait for the calendar's next sync and are applied to the task with
-  the same title and start for 30 days.
+  hold and says what it left out. The ToDo state, subtasks and replies of its
+  synced items wait for the calendar's next sync and are applied to the item
+  with the same title and start for 30 days.
 - **Backups download through a single-use download ticket** instead of a link
   that needs the session; the Android app can resume the download for an
   hour. The Android app no longer gives your session to Android's downloader:

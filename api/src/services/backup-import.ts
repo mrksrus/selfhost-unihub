@@ -1016,8 +1016,8 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
       if (restoresCalendarContent) {
         const overlays = await restoreOverlays(connection, userId, (data.calendar_overlay_restores || []) as BackupRow[],
           { calendarIds: calendarIdMap, emailIds: emailIdMap, conflictMode, checkCancelled: checkRestoreCancelled });
-        if (overlays.waiting) contents.notes.push(`${overlays.waiting} synced task${overlays.waiting === 1 ? '' : 's'} get${overlays.waiting === 1 ? 's' : ''} its ToDo state and subtasks back when the calendar syncs.`);
-        if (overlays.unplaced) contents.notes.push(`The ToDo state and subtasks of ${overlays.unplaced} synced task${overlays.unplaced === 1 ? '' : 's'} could not be restored: ${overlays.unplaced === 1 ? 'its calendar is' : 'their calendars are'} not a synced calendar here.`);
+        if (overlays.waiting) contents.notes.push(`${overlays.waiting} synced item${overlays.waiting === 1 ? ' gets its' : 's get their'} ToDo state, subtasks and replies back when the calendar syncs.`);
+        if (overlays.unplaced) contents.notes.push(`The ToDo state, subtasks and replies of ${overlays.unplaced} synced item${overlays.unplaced === 1 ? '' : 's'} could not be restored: ${overlays.unplaced === 1 ? 'its calendar is' : 'their calendars are'} not a synced calendar here.`);
       }
 
       await reportRestoreProgress('recordings', 90);

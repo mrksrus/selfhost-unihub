@@ -1005,6 +1005,8 @@ test('production export and restore jobs round-trip what a backup holds through 
     await insert('calendar_events', { id: synced, user_id: owner, calendar_id: davCalendar, uid: 'Bin-Synced@example.test', title: 'Synced review', start_time: '2030-03-02 09:00:00', end_time: '2030-03-02 10:00:00',
       todo_status: 'done', done_at: '2030-03-02 11:00:00' });
     await insert('calendar_event_external_refs', { id: uuid(), user_id: owner, event_id: synced, calendar_id: davCalendar, account_id: davAccount, provider: 'caldav', external_event_id: 'bin-review.ics', external_etag: 'one' });
+    // The person's reply to the invitation stays in UniHub (never written to the server), so it travels too.
+    await insert('calendar_event_attendees', { id: uuid(), user_id: owner, event_id: synced, email: 'organizer@example.test', display_name: 'Organizer', response_status: 'tentative', comment: 'Maybe later' });
     const strangerBin = await rowsFor('bin_items', stranger);
 
     // The archive holds the owner's bin with its files, never another person's.
@@ -1027,8 +1029,10 @@ test('production export and restore jobs round-trip what a backup holds through 
     const days = (row: FixtureValue) => (new Date(row.purge_after).getTime() - Date.now()) / 86400000;
     assert.ok(items.every(row => days(row) > 29 && days(row) <= 30.01), 'each keeps the time it had left');
     assert.deepEqual(await rowsFor('bin_items', stranger), strangerBin, 'the stranger\'s bin is untouched');
-    const [overlays] = await pool.execute<RowDataPacket[]>('SELECT uid FROM calendar_overlay_restores WHERE user_id = ?', [fresh]);
+    const [overlays] = await pool.execute<RowDataPacket[]>('SELECT uid, payload FROM calendar_overlay_restores WHERE user_id = ?', [fresh]);
     assert.deepEqual(overlays.map(row => row.uid), ['Bin-Synced@example.test'], 'the synced task\'s state waits for its sync, once');
+    const waiting = typeof overlays[0].payload === 'string' ? JSON.parse(overlays[0].payload) : overlays[0].payload;
+    assert.deepEqual(waiting.attendees.map((row: FixtureValue) => [row.email, row.response_status, row.comment]), [['organizer@example.test', 'tentative', 'Maybe later']], 'with its reply');
 
     // Back from the bin as they were: the contact with its photo, the task in its list, the recording with its bytes.
     const back = await destination('services/bin').restoreFromBin(fresh, { ids: items.map(row => row.id) });

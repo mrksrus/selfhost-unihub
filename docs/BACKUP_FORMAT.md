@@ -191,20 +191,22 @@ and only the Gmail merge of a confirmed Sync account uses it (see
 Gmail there (Gmail's IMAP host, or Gmail ids its sync already read); it
 drops a value that is not a decimal id, and the API never returns it.
 
-UniHub's state on a synced task (ToDo state, done time, source email and
-subtasks) travels in `calendar_overlay_restores`, keyed by calendar, UID and
-recurrence id (`match_kind` `uid`). A restore applies it to the live task of
-that identity: Replace takes the archive's state, Keep existing and Keep both
-fill in only what the task has none of. Without a live task it waits in the
-table for the sync that brings the task back; outside Replace an overlay
-already waiting for that item stays. The overlay's owner
+UniHub's state on a synced event or task (ToDo state, done time, source email,
+subtasks, and the attendees with the person's replies, which UniHub never
+writes to the server) travels in `calendar_overlay_restores`, keyed by
+calendar, UID and recurrence id (`match_kind` `uid`). A restore applies it to
+the live item of that identity: Replace takes the archive's state, Keep
+existing and Keep both fill in only what the task has none of. Without a live
+task it waits in the table for the sync that brings the task back; outside
+Replace an overlay already waiting for that item stays. The overlay's owner
 (`calendar-overlays.ts`) stores and applies it, matching UID and recurrence id
 byte for byte, after mail is restored, so a source email follows to its
 restored id. A waiting overlay is carried on by the next backup. The payload
-is limited to the states UniHub writes, with any number of subtasks (the size
-limit of `data/backup.json` bounds them); an overlay naming no calendar of the
-archive is refused. A restore that cannot place an overlay (its calendar is
-not a synced one there) says so in a note.
+is limited to the states UniHub writes, with any number of subtasks and
+attendees (an address longer than its column is left out; the size limit of
+`data/backup.json` bounds them); an overlay naming no calendar of the archive
+is refused. A restore that cannot place an overlay (its calendar is not a
+synced one there) says so in a note.
 
 The bin travels in `bin_items`, one table that the Contacts, Calendar and
 Recordings sections share: each row goes with the section of its `module`, so
@@ -221,13 +223,13 @@ again when an item is restored from the bin. Export leaves out, with a
 warning, a recording in the bin whose file is missing.
 
 An archive of schemas 1 to 6 imports only what the rule keeps. Its synced
-tasks' state becomes `shape` overlays, matched by title and start for 30 days,
-because it carries no UIDs; the converted rows are validated as a schema 7
-archive's are, so state UniHub cannot store refuses the restore instead of
-disappearing. Its Download-mode mail stays whatever today's
-choice says, since it may be the only copy. The manifest and the restore
-result carry `contents`: the classes included, what was left out with counts,
-and notes (`contracts/backup.ts`).
+items' state, their replies included, becomes `shape` overlays, matched by
+title and start for 30 days, because it carries no UIDs; the converted rows
+are validated as a schema 7 archive's are, so state UniHub cannot store
+refuses the restore instead of disappearing. Its Download-mode mail stays
+whatever today's choice says, since it may be the only copy. The manifest and
+the restore result carry `contents`: the classes included, what was left out
+with counts, and notes (`contracts/backup.ts`).
 
 Applications that read only schemas 1–6 (0.27.x and older) refuse a schema 7
 backup before restoring anything.
