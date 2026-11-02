@@ -328,6 +328,21 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     expectOnlyKnown(await touchViolations(page), []);
   });
 
+  // 0.28: the backup rows' Download and menu, the bin rows' Restore and menu.
+  test('Settings, Backup and restore', async ({ page, open, settle }) => {
+    await open('/settings?section=backup');
+    await expect(page.getByRole('button', { name: 'Create backup' })).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page), []);
+  });
+
+  test('Settings, Bin', async ({ page, open, settle }) => {
+    await open('/settings?section=bin');
+    await expect(page.getByRole('list', { name: 'Deleted items' })).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page), []);
+  });
+
   // A long template must not push the dialog's buttons off the screen.
   test('a long template keeps Save on screen', async ({ page, open, settle }) => {
     await open('/settings?section=mail');

@@ -235,6 +235,7 @@ export function MailAccountDialog({ editor, trigger, touch = false }: { editor: 
               trashWindow={editor.accountForm.trash_window_days}
               deleteOnServer={editor.accountForm.delete_emails_on_server}
               saveDownloadFirst={editor.editingAccount?.sync_mode === 'sync'}
+              isNew={!editor.editingAccount}
               onModeChange={mode => editor.changeModeChoice({ sync_mode: mode, delete_emails_on_server: false })}
               onSyncWindowChange={days => editor.changeModeChoice({ sync_window_days: days })}
               onTrashWindowChange={days => editor.changeModeChoice({ trash_window_days: days })}

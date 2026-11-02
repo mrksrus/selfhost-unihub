@@ -5,6 +5,7 @@
 import { queryOptions, type QueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { ApiError, unwrap } from '@/lib/api-error';
+import type { BinnedResponse } from '../../api/src/contracts/bin';
 import type {
   AutoMergeRequest, AutoMergeResult, BulkContactUpdate, ContactDetail, ContactInput, ContactListResponse, ContactRecord, ContactResponse,
   ContactSingleField, ContactValueKind, DismissDuplicatesRequest, DuplicateConfidence, DuplicatesResponse, ExportFormat, ImportCommitRequest, ImportStatus,
@@ -120,8 +121,12 @@ export const contactsApi = {
   get: async (id: string) => required(unwrap(await api.get<{ contact: ContactDetail }>(`/contacts/${encodeURIComponent(id)}`))?.contact, 'contact'),
   create: (contact: ContactInput) => sendContact(api.post<ContactResponse>('/contacts', contact)),
   update: (id: string, contact: ContactInput) => sendContact(api.put<ContactResponse>(`/contacts/${encodeURIComponent(id)}`, contact)),
-  remove: async (id: string) => { unwrap(await api.delete(`/contacts/${encodeURIComponent(id)}`)); },
-  removeMany: async (ids: string[]) => unwrap(await api.post<{ deleted: number }>('/contacts/bulk-delete', { ids }))?.deleted ?? ids.length,
+  // Deletes go to the bin (0.28); the answer names the bin items to restore for Undo.
+  remove: async (id: string) => unwrap(await api.delete<BinnedResponse>(`/contacts/${encodeURIComponent(id)}`))?.bin_item_ids ?? [],
+  removeMany: async (ids: string[]) => {
+    const answer = unwrap(await api.post<{ deleted: number } & Partial<BinnedResponse>>('/contacts/bulk-delete', { ids }));
+    return { deleted: answer?.deleted ?? ids.length, binItemIds: answer?.bin_item_ids ?? [] };
+  },
   updateMany: async (ids: string[], contact: BulkContactChange) => unwrap(await api.post<{ updated: number }>('/contacts/bulk-update', { ids, contact }))?.updated ?? ids.length,
   setFavorite: async (id: string, isFavorite: boolean) => { unwrap(await api.put(`/contacts/${encodeURIComponent(id)}/favorite`, { is_favorite: isFavorite })); },
 

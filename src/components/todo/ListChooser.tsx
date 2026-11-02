@@ -37,14 +37,20 @@ export function ListChooser({ id, calendars, value, onChange, undated = false, u
   const reasonFor = (calendar: CalendarCalendar) => unavailable[calendar.id] ?? listRefusal(calendar, { undated });
   return (
     <Select value={value} onValueChange={onChange} disabled={disabled}>
-      <SelectTrigger id={id} aria-label={ariaLabel} className={cn('h-auto min-h-10 touch:min-h-11', className)}>
+      {/* The chosen name stays on one line beside its dot and is cut with an ellipsis, so a useful prefix always
+          shows: it takes the room first and keeps at least its first characters, while the account annotation
+          gets at most two fifths of the control and is cut on its own. The control's value span (Radix's, styled
+          through the trigger) takes the room left by the chevron and contributes no width of its own
+          (contain: inline-size): a long name, with or without spaces, never widens the control past its box.
+          The full name stays in the control's text and title. */}
+      <SelectTrigger id={id} aria-label={ariaLabel} title={chosen?.name} className={cn('h-auto min-h-10 max-w-full text-left touch:min-h-11 [&>span]:flex-1 [&>span]:[contain:inline-size]', className)}>
         <SelectValue placeholder={placeholder}>
           {extra && value === extra.value && <span>{extra.label}</span>}
           {chosen && (
-            <span className="flex min-w-0 items-center gap-2 text-left">
+            <span className="flex min-w-0 items-center gap-2">
               <span aria-hidden="true" className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: chosen.color }} />
-              <span className="truncate">{chosen.name}</span>
-              {severalAccounts && <span className="truncate text-xs text-muted-foreground">{groups.find(group => group.calendars.includes(chosen))?.label}</span>}
+              <span className="min-w-[8ch] flex-1 truncate">{chosen.name}</span>
+              {severalAccounts && <span className="min-w-0 max-w-[40%] truncate text-xs text-muted-foreground">{groups.find(group => group.calendars.includes(chosen))?.label}</span>}
             </span>
           )}
         </SelectValue>
@@ -59,10 +65,13 @@ export function ListChooser({ id, calendars, value, onChange, undated = false, u
               const note = reason ?? (forTask && !calendar.auto_todo_enabled ? 'Not shown in ToDo' : null);
               return (
                 <SelectItem key={calendar.id} value={calendar.id} disabled={!!reason} textValue={calendar.name}>
-                  <span className="flex items-center gap-2">
-                    <span aria-hidden="true" className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: calendar.color }} />
-                    <span>{calendar.name}</span>
-                    {note && <span className="text-xs text-muted-foreground">{note}</span>}
+                  {/* The dot stays beside the first line; a long name wraps within the popup, and the note follows it. */}
+                  <span className="flex min-w-0 items-start gap-2">
+                    <span aria-hidden="true" className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: calendar.color }} />
+                    <span className="min-w-0 [overflow-wrap:anywhere]">
+                      {calendar.name}
+                      {note && <span className="ml-2 text-xs text-muted-foreground">{note}</span>}
+                    </span>
                   </span>
                 </SelectItem>
               );

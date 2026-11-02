@@ -122,6 +122,19 @@ refused and the page would flash the dark default. `scripts/container-smoke.sh`
 asserts that header and the absence of inline scripts in the built image, and
 `appearance-settings.test.tsx` holds the file and its order in `index.html`.
 
+### Data safety: backups, the bin and policies (P-31, D29)
+
+| ID | Where | Steps | Checks | Mark |
+| --- | --- | --- | --- | --- |
+| D-01 | Wide, Phone | Settings → Backup and restore: choose sections, switch "Include downloaded mail", create a backup. | No encryption choice exists; the ledger says what the backup holds and what is left out (Sync-mode mail, calendar-server events download again); the switch is checked and greyed with the reason when a policy or a provider-deleting account forces it; the request carries the choice; the new backup appears as a row with its progress. | Source (`backup-settings.test.tsx`), Browser (pictures `settings-backup-*`), e2e (`tools/e2e/tests/backup/user-backup.e2e.ts`) |
+| D-02 | Wide, Phone | Download a backup; download one made before 0.28; review an uploaded old archive. | The recovery password is shown once and Download waits until it is saved; the file leaves through a download ticket (in the app without the session cookie); an old row says "Not encrypted, made before 0.28"; the review lists what the archive holds, what was left out with counts, and the server's notes. | Source (`backup-settings.test.tsx`), e2e (`tools/e2e/tests/backup/old-archive.e2e.ts`) |
+| D-03 | Wide, Phone | Delete a contact, an event, a task, a recording and a local calendar; use Undo from the notice; open the Bin of each page and Settings → Bin. | Every delete says "Moved to the bin" with Undo, which brings the item back; the bin lists items with when they go for good, a merge or a calendar with its events as one row, a synced item with "Restoring creates it on the calendar server again"; Restore returns the item; Delete for good and Empty bin ask first. | Source (`bin.test.tsx`), Browser (pictures `bin-*`), e2e (`tools/e2e/tests/bin/bin.e2e.ts`) |
+| D-04 | Wide, Phone | Settings → Bin: change "Keep deleted items for". | The choice is saved as a user setting and the bin's sentence follows; a floor set by an administrator greys the shorter choices (D34, when decided). | Source (`bin.test.tsx`) |
+| D-05 | Wide, Phone | As a person under a rule: open the mail account dialog, the panel's Disconnect, Settings → Delete data, Backup and restore, the Bin. | Every forbidden control stays visible, greyed out, with the server's reason beside it (`PolicyNote`); a preset mode for new accounts is selected and locked; the controls are usable until the rules have loaded; the server refuses the action anyway. | Source (`data-safety-policies.test.tsx`), e2e (`tools/e2e/tests/policies/policies.e2e.ts`) |
+| D-06 | Wide | Server settings → Policies: change two rules, discard, change again, save with the password. | Each rule is a row with its choices and the default marked; a changed row says so and the effect of a non-default value shows under it; the bar counts the changes; saving asks for the administrator's password and sends only the changed keys; nothing is deleted. | Source (`admin-data-safety.test.tsx`), Browser (pictures `admin-policies-*`) |
+| D-07 | Wide | Server settings → Instance backup, with and without the environment set. | Off says which variables are missing and the server runs normally; on shows destination, key fingerprint, time, kept count, last run and next run read-only, and "Back up now" starts a run; the restore command is shown, never a web restore. | Source (`admin-data-safety.test.tsx`), e2e (`tools/e2e/tests/settings/instance-backup.e2e.ts`) |
+| D-08 | Wide | Users → a person → Accounts, backups and bin: add and remove a mail account, delete a backup, empty the bin, delete a module's data. | Every change asks for the administrator's password and names the person; adding uses the person's own fields and checks; a rule that forbids the person does not grey anything here; the activity log records each action. | Source (`admin-data-safety.test.tsx`), e2e (`tools/e2e/tests/policies/policies.e2e.ts`) |
+
 ### Contacts and settings (P-10, P-18)
 
 | ID | Where | Steps | Checks | Mark |
@@ -145,8 +158,10 @@ composer (Phone), since 0.26.0 the contact detail, the contact editor and
 the merge review (Wide and Phone; P-29, D29), and since 0.27.0 a ToDo row
 picked up by its handle and the new-task dialog with its list chooser open
 (Wide and Phone) and Settings → Pages and modules (Wide; P-29, D29, D31),
-each in Dark Default and Light Default. Thirty-four pictures in total; add a
-screen only when a decision depends on it.
+and since 0.28.0 Settings → Backup and restore (Wide), the Bin (Wide and
+Phone) and Server settings → Policies (Wide; P-29, D29), each in Dark Default
+and Light Default. Forty-two pictures in total; add a screen only when a
+decision depends on it.
 
 **Approval policy.**
 

@@ -2,7 +2,12 @@
 // frontend imports these as types only; the rules are in
 // services/file-tickets.ts.
 
-/** What a ticket can fetch. Each kind names its module and restore section on the server. */
+/**
+ * What a ticket can fetch. Each kind names its module and restore section on
+ * the server. 'backup-archive' (0.28): one of the person's ready backups; its
+ * redemption opens a download grant that allows Range requests for an hour,
+ * because archives are large and the download manager resumes them.
+ */
 export type FileTicketKind = 'mail-attachment' | 'backup-archive';
 
 /** POST /api/files/tickets */

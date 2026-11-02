@@ -95,7 +95,7 @@ describe('Contacts', () => {
     vi.mocked(api.post).mockResolvedValueOnce({ data: { deleted: 2 } });
     fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/contacts/bulk-delete', { ids: ['ada', 'ben'] }));
-    expect(state.toast).toHaveBeenCalledWith({ title: '2 contacts deleted' });
+    expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Moved to the bin', description: '2 contacts' }));
   });
 
   it('selects with Ctrl+click and Shift+click without opening, and clears with Escape', async () => {

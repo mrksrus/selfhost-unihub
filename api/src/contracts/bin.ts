@@ -99,3 +99,12 @@ export interface BinEmptyRequest { module?: BinModule }
 
 /** DELETE /api/bin/:id and POST /api/bin/empty (both under the bin.delete policy). */
 export interface BinDeleteResponse { deleted: number }
+
+/**
+ * What a delete route answers once the item went to the bin (DELETE
+ * /api/contacts/:id, POST /api/contacts/bulk-delete, DELETE
+ * /api/calendar/events/:id, DELETE /api/calendar/calendars/:id, DELETE
+ * /api/recordings/:id): the bin items to restore for "Undo". Empty when
+ * nothing was binned (a provider delete that did not keep a copy).
+ */
+export interface BinnedResponse { bin_item_ids: string[] }

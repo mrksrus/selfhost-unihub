@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog';
 import { useAuth } from '@/contexts/useAuth';
 import { adminUsersQueryKey, deleteAdminUser, fetchAdminUsers, resetUserTwoFactor, setUserActive, setUserPassword, setUserRole, type AdminUser } from '@/lib/admin-api';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSecretMutation } from '@/hooks/use-secret-mutation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -37,7 +40,7 @@ const AdminUsers = () => {
     enabled: user?.role === 'admin',
   });
   
-  const deleteUser = useMutation({
+  const deleteUser = useSecretMutation({
     mutationFn: ({ userId, currentPassword }: { userId: string; currentPassword: string }) => deleteAdminUser(userId, currentPassword),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: adminUsersQueryKey });
@@ -49,7 +52,7 @@ const AdminUsers = () => {
     },
   });
 
-  const updateUserRole = useMutation({
+  const updateUserRole = useSecretMutation({
     mutationFn: ({ userId, role, currentPassword }: { userId: string; role: 'user' | 'admin'; currentPassword: string }) => setUserRole(userId, role, currentPassword),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: adminUsersQueryKey });
@@ -62,7 +65,7 @@ const AdminUsers = () => {
     },
   });
   
-  const toggleUserActive = useMutation({
+  const toggleUserActive = useSecretMutation({
     mutationFn: ({ userId, is_active, currentPassword }: { userId: string; is_active: boolean; currentPassword?: string }) => setUserActive(userId, is_active, currentPassword),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: adminUsersQueryKey });
@@ -74,7 +77,7 @@ const AdminUsers = () => {
     },
   });
   
-  const resetTwoFactor = useMutation({
+  const resetTwoFactor = useSecretMutation({
     mutationFn: ({ user, currentPassword }: { user: UserRow; currentPassword: string }) => resetUserTwoFactor(user.id, currentPassword),
     // Report on the submitted user; the dialog may have been reopened for someone else meanwhile.
     onSuccess: (_data, { user }) => {
@@ -146,6 +149,7 @@ const AdminUsers = () => {
                     {u.role === 'admin' ? 'Remove admin rights' : 'Make admin'}
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => { setPasswordDialogUser(u); setNewPassword(''); setAdminPassword(''); }}>Set a new password</DropdownMenuItem>
+                  <DropdownMenuItem asChild><Link to={`/admin/users/${encodeURIComponent(u.id)}`}>Accounts, backups and bin</Link></DropdownMenuItem>
                   {u.two_factor_enabled && !self && (
                     <DropdownMenuItem onClick={() => { setResetTwoFactorUser(u); setAdminPassword(''); }}>Reset 2FA</DropdownMenuItem>
                   )}
@@ -328,38 +332,5 @@ const AdminUsers = () => {
     </PageShell>
   );
 };
-
-// Confirms an action on another account with the admin's own password; the
-// dialog stays open with the password kept when the server refuses it.
-function PasswordConfirmDialog({ open, onClose, title, description, actionLabel, destructive = false, pending, onConfirm }: {
-  open: boolean; onClose: () => void; title: string; description: string; actionLabel: string;
-  destructive?: boolean; pending: boolean; onConfirm: (currentPassword: string) => void;
-}) {
-  const [password, setPassword] = useState('');
-  useEffect(() => { if (!open) setPassword(''); }, [open]);
-  return (
-    <Dialog open={open} onOpenChange={next => { if (!next) onClose(); }}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
-        </DialogHeader>
-        <form className="space-y-4 pt-2" onSubmit={event => { event.preventDefault(); if (password) onConfirm(password); }}>
-          <div className="space-y-2">
-            <Label htmlFor="adminConfirmPassword">Your password</Label>
-            <Input id="adminConfirmPassword" type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} />
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-            <Button type="submit" variant={destructive ? 'destructive' : 'default'} disabled={pending || !password}>
-              {pending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              {actionLabel}
-            </Button>
-          </div>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
 
 export default AdminUsers;

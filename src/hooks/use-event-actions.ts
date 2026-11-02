@@ -5,6 +5,7 @@ import {
   type CalendarEvent, type CalendarRsvpStatus, type RecurrenceScope, type TaskMoveCancelled,
 } from '@/lib/calendar-api';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
+import { useBinActions } from '@/hooks/use-bin-actions';
 import { useSessionScope } from '@/lib/session-scope';
 import { MOVE_DEADLINE_MS, cancelledMoveNotice, confirmedFields, isCurrentWrite, issueWrite, markDeleted, queueTaskWrite, taskKey, writeTaskFields } from '@/lib/task-order-queue';
 
@@ -15,6 +16,7 @@ export function useEventActions() {
   const client = useQueryClient();
   const scope = useSessionScope();
   const { toast } = useToast();
+  const bin = useBinActions('calendar');
   const refresh = () => { void invalidateCalendarQueries(client); };
   // A write the server refused with a reason (still being moved, changed on
   // the server, not movable on its own) is a plain notice, not a failure; a
@@ -48,7 +50,8 @@ export function useEventActions() {
   const remove = useMutation({
     mutationFn: ({ id, scope }: { id: string; scope?: RecurrenceScope }) => calendarApi.deleteEvent(id, scope),
     // Deleted stays deleted, whatever an older reply or an older fetch says (task-order-queue.ts).
-    onSuccess: (_data, { id, scope }) => { markDeleted(client, taskKey(id)); refresh(); toast({ title: scope === 'series' ? 'Series deleted' : 'Event deleted' }); },
+    // The event waits in the bin; the notice offers Undo (a server event is created at the provider again).
+    onSuccess: (binItemIds, { id, scope }) => { markDeleted(client, taskKey(id)); refresh(); bin.movedToBin(scope === 'series' ? 'The series' : '1 event', binItemIds); },
     onError: failed('Could not delete the event'),
   });
 

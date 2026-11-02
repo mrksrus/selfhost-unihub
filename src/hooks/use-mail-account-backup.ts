@@ -1,7 +1,8 @@
-import { downloadFromServer } from '@/lib/platform';
 import { skipToken, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import type { BackupJob } from '@/lib/backup-api';
+import { prepareBackupDownload, type BackupJob } from '@/lib/backup-api';
+import { downloadTicket } from '@/lib/platform';
+import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { getBackupDownloadAction } from '@/lib/backup';
 import { jobPollInterval } from '@/lib/job-polling';
 
@@ -38,18 +39,20 @@ export function useMailAccountBackup(accountId: string) {
     },
   });
   const current = jobId ? job.data ?? null : null;
-  const download = () => {
-    if (!current) return;
-    downloadFromServer(api.getDownloadUrl(`/backup/jobs/${encodeURIComponent(current.id)}/download`),
-      `unihub-mail-backup-${current.id}.${current.encryption_enabled ? 'unihub-backup' : 'zip'}`);
-  };
+  // Through a download ticket (F9): the app fetches it without the session
+  // cookie. A ticket answered after the session ended starts nothing.
+  const download = useSessionMutation({
+    mutationFn: async () => (current ? prepareBackupDownload(current, 'unihub-mail-backup') : null),
+    retry: false,
+    onSuccess: ticket => { if (ticket) downloadTicket(ticket); },
+  });
   return {
     job: current,
     start: () => start.mutate(),
     starting: start.isPending,
-    error: start.error?.message ?? (jobId && job.isError ? job.error.message : null),
+    error: start.error?.message ?? download.error?.message ?? (jobId && job.isError ? job.error.message : null),
     /** Encrypted exports need their recovery password saved in Settings › Backup before download. */
     directDownload: current ? getBackupDownloadAction(current) === 'download' : false,
-    download,
+    download: () => download.mutate(),
   };
 }

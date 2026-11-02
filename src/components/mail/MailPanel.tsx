@@ -3,6 +3,7 @@ import { FolderOpen, Inbox, Loader2, Pencil, PenSquare, Trash2, Users, X } from 
 import type { MailAccount } from '@/lib/mail-api';
 import { Button } from '@/components/ui/button';
 import { PanelGroup, PanelHeader, PanelItem } from '@/components/layout/PageShell';
+import { usePolicy } from '@/hooks/use-policies';
 
 import { ALL_ACCOUNTS, LEGACY_ACCOUNT, getServerDeleteStatus } from '@/components/mail/mail-page-model';
 
@@ -41,6 +42,9 @@ function AccountState({ account }: { account: MailAccount }) {
 }
 
 export function MailAccountList({ accounts, loading, selectedAccount, legacyCount, addAccount, onSelect, onEdit, onRemove }: AccountListProps) {
+  // Greyed with the policy's reason (F13); the server refuses the request anyway.
+  const removePolicy = usePolicy('accounts.remove');
+  const resetPolicy = usePolicy('accounts.reset');
   return (
     <div role="region" aria-label="Mail accounts" className="shrink-0 max-h-[40%] overflow-y-auto">
       <PanelGroup label="Accounts" action={addAccount}>
@@ -66,7 +70,8 @@ export function MailAccountList({ accounts, loading, selectedAccount, legacyCoun
                 <Button variant="ghost" size="icon-xs" className="bg-card" aria-label={`Edit ${account.email_address}`}
                   onClick={() => onEdit(account)}><Pencil aria-hidden="true" /></Button>
                 <Button variant="ghost" size="icon-xs" className="bg-card text-destructive hover:text-destructive"
-                  title={account.disconnected_at ? 'Delete local data' : 'Disconnect account'}
+                  disabled={!!(account.disconnected_at ? resetPolicy.lock : removePolicy.lock)}
+                  title={(account.disconnected_at ? resetPolicy.lock : removePolicy.lock) ?? (account.disconnected_at ? 'Delete local data' : 'Disconnect account')}
                   aria-label={account.disconnected_at ? `Delete local data of ${account.email_address}` : `Disconnect ${account.email_address}`}
                   onClick={() => onRemove(account)}>
                   {account.disconnected_at ? <Trash2 aria-hidden="true" /> : <X aria-hidden="true" />}

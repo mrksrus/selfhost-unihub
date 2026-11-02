@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
+import { useBinActions } from '@/hooks/use-bin-actions';
 import {
   browserTimeZone, calendarApi, calendarQueryKeys, invalidateCalendarQueries,
   type CalendarAccount, type CalendarCalendar, type CalendarProvider,
@@ -21,6 +22,7 @@ const EMPTY_CALENDARS: CalendarCalendar[] = [];
 export function useCalendarAccounts() {
   const client = useQueryClient();
   const { toast } = useToast();
+  const bin = useBinActions('calendar');
   const refresh = () => { void invalidateCalendarQueries(client); };
   const failed = (title: string) => (error: Error) => toast({ title, description: error.message, variant: 'destructive' });
 
@@ -85,7 +87,8 @@ export function useCalendarAccounts() {
 
   const deleteCalendar = useMutation({
     mutationFn: (id: string) => calendarApi.deleteCalendar(id),
-    onSuccess: () => { refresh(); toast({ title: 'Calendar deleted' }); },
+    // The calendar and its events wait in the bin as one group; the notice offers Undo.
+    onSuccess: binItemIds => { refresh(); bin.movedToBin('The calendar with its events', binItemIds); },
     onError: failed('Could not delete the calendar'),
   });
 
