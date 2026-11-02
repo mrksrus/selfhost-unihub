@@ -23,7 +23,7 @@ const userId = process.env.INSPECT_USER_ID!;
 const expectedSecrets = JSON.parse(process.env.INSPECT_SECRETS || '{"mail":[],"calendar":null}') as { mail: string[]; calendar: string | null };
 // The image's storage, or a local installation's own (scripts/fresh-installations.mts).
 const UPLOADS = process.env.UNIHUB_UPLOADS_ROOT || '/app/uploads';
-const FILE_ROOTS: Record<string, string> = { email_attachment: 'attachments', raw_email: 'mail-raw', recording: 'recordings' };
+const FILE_ROOTS: Record<string, string> = { email_attachment: 'attachments', raw_email: 'mail-raw', recording: 'recordings', recording_bin: 'recordings' };
 const hash = (value: string | Buffer) => crypto.createHash('sha256').update(value).digest('hex');
 
 async function main() {
@@ -45,7 +45,9 @@ async function main() {
       for (const table of policy.tables) {
         if (table === 'user') continue;
         data[table] = await owned(table);
-        tables[`${section}.${table}`] = data[table].length;
+        // A table several sections share (the bin) counts each section's rows.
+        const shared = catalog.TABLE_POLICIES[table]?.rowSection;
+        tables[`${section}.${table}`] = shared ? data[table].filter(row => row[shared] === section).length : data[table].length;
       }
     }
     const mirror: Record<string, number> = {};
@@ -95,10 +97,13 @@ async function main() {
     // Stored files: regular files, inside this user's directory, with the recorded bytes.
     const files: { kind: string; sha256: string; size: number; uid: number; mode: number; mirror: boolean }[] = [];
     for (const [kind, policy] of Object.entries(catalog.FILE_POLICIES)) {
-      for (const row of data[policy.table] || []) {
-        const stored = row[policy.column] as string | null;
+      const bin = policy.table === 'bin_items';
+      for (const row of (data[policy.table] || []).filter(item => !bin || item.item_type === 'recording')) {
+        // A recording in the bin keeps its file under the bin's name, in the person's bin folder.
+        const payload = bin ? (typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload) : null;
+        const stored = (bin ? payload?.bin_path : row[policy.column]) as string | null;
         if (!stored) { problems.push(`${policy.table} row without ${policy.column}`); continue; }
-        const directory = path.join(UPLOADS, FILE_ROOTS[kind], userId) + path.sep;
+        const directory = path.join(UPLOADS, FILE_ROOTS[kind], userId, ...(bin ? ['bin'] : [])) + path.sep;
         if (!path.resolve(stored).startsWith(directory)) { problems.push(`${kind} stored outside ${directory}: ${stored}`); continue; }
         let stat: import('node:fs').Stats;
         try { stat = fs.lstatSync(stored); } catch { problems.push(`${kind} file missing: ${stored}`); continue; }
@@ -106,7 +111,7 @@ async function main() {
         if (!fs.realpathSync(stored).startsWith(directory)) problems.push(`${kind} resolves outside ${directory}`);
         const bytes = fs.readFileSync(stored);
         if (kind === 'raw_email' && hash(bytes) !== row.raw_sha256) problems.push(`raw email bytes differ from raw_sha256: ${stored}`);
-        if (kind !== 'raw_email' && Number(row.size_bytes) !== bytes.length) problems.push(`${kind} size differs from size_bytes: ${stored}`);
+        if (kind !== 'raw_email' && Number(bin ? payload?.recording?.size_bytes : row.size_bytes) !== bytes.length) problems.push(`${kind} size differs from size_bytes: ${stored}`);
         files.push({ kind, sha256: hash(bytes), size: bytes.length, uid: stat.uid, mode: stat.mode & 0o777, mirror: mirrorFileRows.has(String(row.id)) });
       }
     }

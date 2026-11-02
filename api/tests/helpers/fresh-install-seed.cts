@@ -154,6 +154,13 @@ async function main() {
       await insert('recording_transcription_jobs', { id: uuid(), user_id: userId, recording_id: id, status: 'completed', provider: 'synthetic', model: 'test',
         language: 'de', transcript_text: `Saved Grüße transcript ${index}`, created_at: '2030-01-01 11:00:00', updated_at: '2030-01-01 11:01:00' });
     }
+    // A recording in the bin: its file under the bin's name, the time it has left (data schema 7).
+    const binned = uuid(), binPath = store('recordings', path.join('bin', `${binned}.wav`), audio);
+    const binnedRow = { id: binned, user_id: userId, uid: binned, title: 'Deleted memo', description: null, original_filename: 'memo.wav', content_type: 'audio/wav', size_bytes: audio.length,
+      duration_seconds: 0.002, storage_path: path.join(UPLOADS, 'recordings', userId, `${binned}.wav`), source: 'recorded', category: 'none', recorded_at: '2030-01-01T10:00:00.000Z', metadata: null };
+    await db.execute(`INSERT INTO bin_items (id, user_id, module, item_type, item_id, title, reason, payload, payload_version, file_refs, deleted_at, purge_after)
+      VALUES (?, ?, 'recordings', 'recording', ?, 'Deleted memo', 'deleted', ?, 1, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP() + INTERVAL 20 DAY)`,
+    [uuid(), userId, binned, JSON.stringify({ provider: 'local', origin: null, bin_path: binPath, tags: [], recording: binnedRow }), JSON.stringify([binPath])]);
     // A failed transcription is not recovery data.
     await insert('recording_transcription_jobs', { id: uuid(), user_id: userId, recording_id: secondRecording, status: 'failed', provider: 'synthetic', model: 'test', error: 'synthetic failure' });
     console.log(JSON.stringify({ emails, accounts, calendarAccountId, providerMail, providerEvent }));
