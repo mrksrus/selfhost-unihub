@@ -460,6 +460,7 @@ async function enqueuePrune({ userId, accountId }: { userId: string; accountId: 
 }
 
 export {
+  isGmailAccount,
   MAIL_WINDOW_DAYS,
   DEFAULT_TRASH_WINDOW_DAYS,
   PRUNE_BATCH,

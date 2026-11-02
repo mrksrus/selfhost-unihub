@@ -66,7 +66,8 @@ test('a restored Sync copy is linked when the provider shows its exact address a
   // it, and no live occurrence. The provider later shows UID 71 again, unread
   // and unstarred, in the epoch the case names.
   const cases: FixtureValue[] = [
-    { label: 'address', email: {}, providerEpoch: 19, copies: 1, linked: true },
+    // A Gmail id the archive names for an account that is not Gmail is dropped.
+    { label: 'address', email: {}, providerEpoch: 19, copies: 1, linked: true, sourceGmailId: true },
     // Missing-marked: prune removes it. Unlinked: the downloaded twin replaces it (local_duplicates).
     { label: 'missing', email: { remote_missing: 1 }, providerEpoch: 19, copies: 1, linked: false, replaced: true },
     { label: 'unlinked', email: { remote_folder: null, remote_uid: null, remote_uidvalidity: null }, providerEpoch: 19, copies: 1, linked: false, replaced: true },
@@ -106,12 +107,12 @@ test('a restored Sync copy is linked when the provider shows its exact address a
     await fs.mkdir(path.dirname(stored), { recursive: true });
     await fs.writeFile(stored, raw);
     await insert('mail_accounts', { id: account, user_id: owner, email_address: `reappearing-${scenario.label}@example.test`, provider: scenario.gmail ? 'gmail' : 'custom',
-      sync_mode: scenario.mode || 'sync', imap_host: 'imap.example.test' });
+      sync_mode: scenario.mode || 'sync', imap_host: scenario.gmail ? 'imap.gmail.com' : 'imap.example.test' });
     await insert('emails', { id: email, user_id: owner, mail_account_id: account, message_id: `<reappearing-${scenario.label}@example.test>`, subject: `Reappearing ${scenario.label}`,
       from_address: 'sender@example.test', to_addresses: '["reader@example.test"]', body_text: 'Synthetic complete copy', folder: 'archive', source_folder: 'INBOX',
       received_at: '2026-10-25 12:00:00', raw_storage_path: stored, raw_sha256: sha256(raw), raw_bytes: raw.length, raw_format: 'exact_octets', raw_verified: 1, import_complete: 1,
       is_read: 1, is_starred: 1, remote_folder: 'INBOX', remote_uid: 71, remote_uidvalidity: 19, imap_uid: 71, imap_uidvalidity: 19, ...scenario.email });
-    if (scenario.gmail) await insert('mail_gmail_messages', { mail_account_id: account, gmail_msgid: '123456789', user_id: owner, email_id: email });
+    if (scenario.gmail || scenario.sourceGmailId) await insert('mail_gmail_messages', { mail_account_id: account, gmail_msgid: '123456789', user_id: owner, email_id: email });
   }
 
   const backup = runtime('services/backup');

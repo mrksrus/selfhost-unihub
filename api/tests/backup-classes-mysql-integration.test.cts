@@ -147,8 +147,10 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
     old.version = 6;
     delete old.contents;
     old.data.mail_accounts.find((row: FixtureValue) => row.id === accounts.sync).sync_mode = 'sync';
-    // Schema 6 held the Gmail identity only in the mapping table.
+    // Schema 6 held the Gmail identity only in the mapping table. A restore
+    // keeps it for a Gmail account (by its IMAP host) only.
     for (const row of old.data.emails) delete row.remote_gmail_msgid;
+    old.data.mail_accounts.find((row: FixtureValue) => row.id === accounts.sync).imap_host = 'imap.gmail.com';
     assert.equal(old.data.mail_gmail_messages.length, 1);
     assert.deepEqual(old.files.map((file: FixtureValue) => file.kind), ['email_attachment', 'email_attachment'], 'it holds both files');
     assert.ok(old.data.mail_remote_occurrences.length >= 6, 'the archive carries the occurrences');

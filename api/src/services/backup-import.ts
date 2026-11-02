@@ -878,6 +878,20 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         );
       }
 
+      // An X-GM-MSGID is kept only for an account that is Gmail here: Gmail's
+      // IMAP host, or Gmail ids this installation's sync already read for it
+      // (mail-sync-policy.ts); the archive's own field is no evidence.
+      const gmailAccounts = new Map<string, boolean>();
+      const accountsConnection = connection;
+      const gmailIdentityFor = async (accountId: string, value: unknown) => {
+        const identity = gmailIdentity(value);
+        if (!identity) return null;
+        if (!gmailAccounts.has(accountId)) {
+          const { isGmailAccount } = require('./mail-sync-policy') as typeof import('./mail-sync-policy');
+          gmailAccounts.set(accountId, await isGmailAccount(accountsConnection, userId, accountId));
+        }
+        return gmailAccounts.get(accountId) ? identity : null;
+      };
       for (const email of data.emails || []) {
         await checkRestoreCancelled();
         const row = overwriteUserId(email, userId);
@@ -897,7 +911,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         writtenEmailHtml.set(row.id, { targetEmailId, html: row.body_html || null });
         await writeOwnedRow(connection, userId, 'emails',
           ['id', 'user_id', 'mail_account_id', 'message_id', 'subject', 'from_address', 'from_name', 'to_addresses', 'cc_addresses', 'bcc_addresses', 'body_text', 'body_html', 'folder', 'source_folder', 'imap_uid', 'imap_uidvalidity', 'raw_storage_path', 'raw_sha256', 'is_read', 'is_starred', 'is_draft', 'has_attachments', 'received_at', 'import_complete', 'filing_account_id', 'is_legacy', 'remote_folder', 'remote_uid', 'remote_uidvalidity', 'remote_missing', 'remote_gmail_msgid'],
-          [targetEmailId, row.user_id, targetMailAccountId, row.message_id || null, row.subject || null, row.from_address || 'unknown', row.from_name || null, typeof row.to_addresses === 'string' ? row.to_addresses : JSON.stringify(row.to_addresses || []), row.cc_addresses ? (typeof row.cc_addresses === 'string' ? row.cc_addresses : JSON.stringify(row.cc_addresses)) : null, row.bcc_addresses ? (typeof row.bcc_addresses === 'string' ? row.bcc_addresses : JSON.stringify(row.bcc_addresses)) : null, row.body_text || null, row.body_html || null, row.folder || 'inbox', row.source_folder || null, row.imap_uid || null, row.imap_uidvalidity || null, rawPath, rawPath ? row.raw_sha256 || null : null, row.is_read ? 1 : 0, row.is_starred ? 1 : 0, row.is_draft ? 1 : 0, row.has_attachments ? 1 : 0, normalizeMysqlDateTime(row.received_at, new Date()), rawPath && (row.import_complete === true || row.import_complete === 1) ? 1 : 0, targetFilingAccountId, row.is_legacy ? 1 : 0, row.remote_folder ?? null, row.remote_uid ?? null, row.remote_uidvalidity ?? null, row.remote_missing ? 1 : 0, gmailIdentity(row.remote_gmail_msgid)],
+          [targetEmailId, row.user_id, targetMailAccountId, row.message_id || null, row.subject || null, row.from_address || 'unknown', row.from_name || null, typeof row.to_addresses === 'string' ? row.to_addresses : JSON.stringify(row.to_addresses || []), row.cc_addresses ? (typeof row.cc_addresses === 'string' ? row.cc_addresses : JSON.stringify(row.cc_addresses)) : null, row.bcc_addresses ? (typeof row.bcc_addresses === 'string' ? row.bcc_addresses : JSON.stringify(row.bcc_addresses)) : null, row.body_text || null, row.body_html || null, row.folder || 'inbox', row.source_folder || null, row.imap_uid || null, row.imap_uidvalidity || null, rawPath, rawPath ? row.raw_sha256 || null : null, row.is_read ? 1 : 0, row.is_starred ? 1 : 0, row.is_draft ? 1 : 0, row.has_attachments ? 1 : 0, normalizeMysqlDateTime(row.received_at, new Date()), rawPath && (row.import_complete === true || row.import_complete === 1) ? 1 : 0, targetFilingAccountId, row.is_legacy ? 1 : 0, row.remote_folder ?? null, row.remote_uid ?? null, row.remote_uidvalidity ?? null, row.remote_missing ? 1 : 0, await gmailIdentityFor(targetMailAccountId, row.remote_gmail_msgid)],
           ['subject', 'from_address', 'from_name', 'to_addresses', 'cc_addresses', 'bcc_addresses', 'body_text', 'body_html', 'folder', 'source_folder', 'imap_uid', 'imap_uidvalidity', 'raw_storage_path', 'raw_sha256', 'is_read', 'is_starred', 'is_draft', 'has_attachments', 'received_at', 'import_complete', 'filing_account_id', 'is_legacy', 'remote_folder', 'remote_uid', 'remote_uidvalidity', 'remote_missing', 'remote_gmail_msgid']
             .filter(column => rawPath || !['raw_storage_path', 'raw_sha256', 'import_complete'].includes(column))
         );
