@@ -83,6 +83,10 @@ test('[27-01 27-03] a task dragged by its handle keeps its place after a reload 
     await expect(handle(screen, `${prefix} 1`)).toHaveAttribute('aria-pressed', 'true');
     // Each step is announced; the next key follows the announcement, as a screen-reader user would.
     await expect(screen.getByRole('status').filter({ hasText: `Picked up ${prefix} 1,` })).toHaveCount(1);
+    // dnd-kit starts listening for the arrow keys from a timer it sets on the
+    // pick-up, and Chromium handles input before timers: a key sent at once can
+    // arrive before it listens (CI). One timer turn in the page lets it run first.
+    await browser.evaluate(() => new Promise<null>(resolve => setTimeout(() => resolve(null), 0)));
     await browser.keyboard.press('ArrowDown');
     await expect(screen.getByRole('status').filter({ hasText: `${prefix} 1 moved to position` })).toHaveCount(1);
     await browser.keyboard.press('Space');

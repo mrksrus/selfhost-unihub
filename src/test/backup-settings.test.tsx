@@ -330,7 +330,8 @@ describe('Settings → Backup and restore (0.28)', () => {
       validation_result: {
         dry_run: true, valid: true, errors: [], warnings: [], counts: { contacts: 7 },
         contents: { included: ['local', 'config'], left_out: [{ section: 'calendar', what: 'CalDAV events', reason: 'They sync again from the calendar server.', count: 88 }], notes: ['This backup was made before 0.28; mirrored data was left out when it was read.'] },
-        notes: ['3 synced tasks keep their ToDo state once their calendars sync.'],
+        // The server's result repeats the archive's notes; each shows once.
+        notes: ['This backup was made before 0.28; mirrored data was left out when it was read.', '3 synced tasks keep their ToDo state once their calendars sync.'],
       },
     };
     answer(capabilities(), JOBS, [validated], policiesAnswer({ 'backup.restore': { value: 'forbidden', reason: RESTORE } }));
@@ -340,7 +341,7 @@ describe('Settings → Backup and restore (0.28)', () => {
     expect(review).toHaveTextContent('The backup checks out');
     expect(review).toHaveTextContent('In the backup: Your contacts, local calendars, tasks and recordings and your settings and account sign-ins.');
     expect(review).toHaveTextContent('Left out: CalDAV events (88), they sync again from the calendar server');
-    expect(review).toHaveTextContent('This backup was made before 0.28');
+    expect(within(review).getAllByText(/This backup was made before 0\.28/)).toHaveLength(1);
     expect(review).toHaveTextContent('3 synced tasks keep their ToDo state');
     const restoreButtons = screen.getAllByRole('button', { name: 'Restore' });
     await waitFor(() => { for (const button of restoreButtons) expect(button).toBeDisabled(); });

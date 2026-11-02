@@ -206,6 +206,10 @@ function filterOldArchive(backup: ArchiveEnvelope, now = new Date()): { counts: 
   return { counts, downloadMail: asRows(data.emails).some(row => !syncAccounts.has(String(row.mail_account_id))) };
 }
 
+// What a review of an archive before data schema 7 says first: it was read
+// under today's rule, and holds nothing of what 0.28 added.
+const OLD_ARCHIVE_NOTE = 'This backup was made before 0.28: what providers hold was left out when it was read, as a new backup leaves it out, and it has no bin.';
+
 const DATA_CLASSES = new Set<BackupDataClass>(['local', 'local-by-policy', 'mirror', 'org', 'config', 'installation', 'ciphertext']);
 const text = (value: unknown, limit = 300) => typeof value === 'string' && value.trim() ? value.slice(0, limit) : null;
 
@@ -216,7 +220,10 @@ const text = (value: unknown, limit = 300) => typeof value === 'string' && value
  */
 function archivedContents(backup: ArchiveEnvelope, sections: readonly string[], oldArchive: ReturnType<typeof filterOldArchive>, accountOnly = false): BackupContents {
   let contents: BackupContents;
-  if (oldArchive) contents = backupContents(sections, oldArchive.counts, { downloadMail: oldArchive.downloadMail });
+  if (oldArchive) {
+    contents = backupContents(sections, oldArchive.counts, { downloadMail: oldArchive.downloadMail });
+    contents.notes.unshift(OLD_ARCHIVE_NOTE);
+  }
   else {
     const raw = (backup.contents && typeof backup.contents === 'object' ? backup.contents : {}) as Record<string, unknown>;
     const list = (value: unknown) => Array.isArray(value) ? value.slice(0, 50) : [];

@@ -76,6 +76,7 @@ test('frozen 0.27.1 archive imports what the data classes keep, with a note of w
     // The review before the restore already says what the archive leaves out.
     const review = typeof validated.validation_result === 'string' ? JSON.parse(validated.validation_result) : validated.validation_result;
     assert.deepEqual(review.contents.left_out.map((item: FixtureValue) => [item.what, item.count]), [['CalDAV and subscription events', 3], ['Sync-mode mail', 1]]);
+    assert.match(review.contents.notes[0], /^This backup was made before 0\.28: /, 'the review says the archive is older and was read under today\'s rule');
     assert.equal((await jobs.startRestoreJob(userId, created.id)).error, undefined);
     const completed = await waitFor(() => jobs.getRestoreJob(userId, created.id), job => job?.status === 'completed', 'Restore');
     return typeof completed.result_counts === 'string' ? JSON.parse(completed.result_counts) : completed.result_counts;
