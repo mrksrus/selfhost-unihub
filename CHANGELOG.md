@@ -140,6 +140,18 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   once,** and **Save as template no longer sends the message** you are
   writing. Confirming either dialog was also taken as Send.
 
+### Pinned interface pictures
+
+- New pictures `settings-backup` (wide), `bin` (wide and phone) and
+  `admin-policies` (wide), dark and light: Backup and restore, the Bin and
+  Server settings → Policies, designed under P-29 and D29 for 0.28.0.
+- Changed pictures: the Settings panel gains its Bin entry
+  (`settings-appearance`, `settings-pages`, wide) and the Contacts panel its
+  Bin view (`contact-detail`, `contact-editor`, `merge-review`, wide); the
+  list chooser (`new-task`, wide and phone) keeps the chosen list's name in
+  front and puts the account annotation at the end of the control, and its
+  options wrap a long name with the dot on the first line.
+
 ## 0.27.1
 
 Fixes for the Android app and for many changes saved at once. No database

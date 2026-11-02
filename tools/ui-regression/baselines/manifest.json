@@ -22,6 +22,30 @@
     "deviceScaleFactor": 1
   },
   "baselines": {
+    "admin-policies-wide-dark.png": {
+      "sha256": "b31093805a9f1450aaa858e73be024c3e754f647e8105b774e6c072abc3dbd84",
+      "bytes": 141443
+    },
+    "admin-policies-wide-light.png": {
+      "sha256": "63365d5afe7e1421fee5c0448f1b616636f6cf413a710ecec6abb000b751b5d8",
+      "bytes": 145001
+    },
+    "bin-phone-dark.png": {
+      "sha256": "368ab0af0cef3b0f14868e91ee743795b4f19657eb06561b0aa30f87fc8140d1",
+      "bytes": 69514
+    },
+    "bin-phone-light.png": {
+      "sha256": "117ce7e2ecec332931bb62b4de87d2aca0d7e3554f5e3a8cf7626354ae84649e",
+      "bytes": 72994
+    },
+    "bin-wide-dark.png": {
+      "sha256": "8d0c4759d69ecee330d5ac3e66a77dc01e6cdb159c409bf5df4ff7be42191c42",
+      "bytes": 131587
+    },
+    "bin-wide-light.png": {
+      "sha256": "5db2cd9067f69535aa9f72e8a3656fc3c149400cddc60b54a4778ea98c825189",
+      "bytes": 133061
+    },
     "composer-phone-dark.png": {
       "sha256": "434bd2f9e2529bdc972654ac3716f26958c6e8747598c4d3ec637b89972a902d",
       "bytes": 23093
@@ -39,12 +63,12 @@
       "bytes": 60691
     },
     "contact-detail-wide-dark.png": {
-      "sha256": "6263815ad3f2ac97495b674981b79e6a84a90ca86a57dc74f2394231c4a0fe65",
-      "bytes": 127190
+      "sha256": "6e7cc32a8b855d9cf17e718003ab9b34d144707ef86d081a03498792e5d453a0",
+      "bytes": 127941
     },
     "contact-detail-wide-light.png": {
-      "sha256": "738187706097ade5c5a89a73e67f33685f895d8af1f69df32d6623ad6fac1cec",
-      "bytes": 127854
+      "sha256": "ffeb3e5935fe4e3e3e6401933e11385ff1c3afc873c7dd14d94669abb4da0dde",
+      "bytes": 128770
     },
     "contact-editor-phone-dark.png": {
       "sha256": "b8d1ce4a58c223f85572c90f781f16be22bce578399b2ed6b2d0162312001df4",
@@ -55,12 +79,12 @@
       "bytes": 52910
     },
     "contact-editor-wide-dark.png": {
-      "sha256": "822d8aef7e8bc98d8e645c62e78b8959c49e8651d06d5226430285011decf0c0",
-      "bytes": 117831
+      "sha256": "0d972c72091825ae9cbe0573e7fff099f78b352919363bbaf80d6b2c8f2fc404",
+      "bytes": 118589
     },
     "contact-editor-wide-light.png": {
-      "sha256": "e761bf04dcbf51f9ab74cc7c490b5d2347f8acea23d2a24cba0cc1aababb40ef",
-      "bytes": 121940
+      "sha256": "49f1d6713104d2063aadae197e3e4f08ead80c197f51152638cc477fe3a20e8a",
+      "bytes": 122698
     },
     "mail-reader-wide-dark.png": {
       "sha256": "1f24aa99d3b156f46fb8ad11480d4b3f98cd1b3166db3340ae7d2b671f7e4de4",
@@ -79,28 +103,28 @@
       "bytes": 66815
     },
     "merge-review-wide-dark.png": {
-      "sha256": "278cc6f5b70b5b095c0b5d0407849a6dfec679c64ba950e5b7ff94ac602755ff",
-      "bytes": 91892
+      "sha256": "d1e04d2a744bbf95b55040c93e73497fa8196d48f5404184ed020b2fb67135e0",
+      "bytes": 92446
     },
     "merge-review-wide-light.png": {
-      "sha256": "69d0404de2df34a8db8e7b64845f6bd63cf11a9ea6937178934b9f99551eca17",
-      "bytes": 95506
+      "sha256": "9934cc5ef9236e06a98a9ff2162968af3e3e6ceff05724576707337e5748c041",
+      "bytes": 96304
     },
     "new-task-phone-dark.png": {
-      "sha256": "38ce71edb57a1ad16ec095ef57c62c3823c2e3e1c1281750a5d2b855a0229cc5",
-      "bytes": 47697
+      "sha256": "a60061670f85cfbb43bd4b8dd728d4308590f68b8c935b1c79d26defb63fac89",
+      "bytes": 47716
     },
     "new-task-phone-light.png": {
-      "sha256": "82c7221b293465b17c692128f7612712a4f4280209d8cfb6a4985b21ec8ce2b9",
-      "bytes": 49700
+      "sha256": "c1852dd8a9848f854ef3067eb3e756b91afea656ce30a6dda6e983cfb361b886",
+      "bytes": 49718
     },
     "new-task-wide-dark.png": {
-      "sha256": "8f80ac7e04885e8332f605ee2e297f72e029dcc96d3ade5a021964b46a7fc76e",
-      "bytes": 106486
+      "sha256": "bd309038f444e7874a17c6ed955b8db8296369d2fc9b1ff0894be99b9ac8289a",
+      "bytes": 106557
     },
     "new-task-wide-light.png": {
-      "sha256": "673f72c3c969442c88a0b3ea5ab7ee7003da91cb7612437a7955428dc0cffc48",
-      "bytes": 111470
+      "sha256": "46692a3498b6a56a22197426e89d4899a9526be0f87ace4a755549bcd205e835",
+      "bytes": 111601
     },
     "recordings-phone-dark.png": {
       "sha256": "30b8530f865fd11b7e05379b33d2bb208fef68a34c36933b94d1f77df017952b",
@@ -111,20 +135,28 @@
       "bytes": 50768
     },
     "settings-appearance-wide-dark.png": {
-      "sha256": "b7035d44ed8b3de2cbe127350aaa3d9a6f9e8fea6cdb334c5476246e6c99e19d",
-      "bytes": 110521
+      "sha256": "c70759f51ae3d2e3bf8d4111a5b3cdc2a4c3b192adf769f0487ef38cfc9e6e2e",
+      "bytes": 111216
     },
     "settings-appearance-wide-light.png": {
-      "sha256": "3a19117b8e77764a94911efc3d2780c9db3413d5b537a541f7b12db36c05b3fd",
-      "bytes": 103347
+      "sha256": "c3eb59292d1e1a804dfb4ee19a485bd036eb2609c3837901c485960098e7e516",
+      "bytes": 104051
+    },
+    "settings-backup-wide-dark.png": {
+      "sha256": "95d8c603eb3f6b64ffd706ab49d65db540d489968137a536081b96a1fb203d6e",
+      "bytes": 152262
+    },
+    "settings-backup-wide-light.png": {
+      "sha256": "878ac3d86f456ba16a1ca0362b2ffa87c1d50819fb7fbd4b0756510c0ca89afb",
+      "bytes": 157946
     },
     "settings-pages-wide-dark.png": {
-      "sha256": "0fd1c20a605284cda0c2ab7c584cd942164464f25e89c91eca28b9b7bf1aaae2",
-      "bytes": 116806
+      "sha256": "448b8620c4cf897165f0353947b62115d56f01e8392cd9ed7879df4dc8382511",
+      "bytes": 117482
     },
     "settings-pages-wide-light.png": {
-      "sha256": "28dd219ce313d8a99bc8da8c4c5fff96be1798fdfd33e5685a9d0bd747afdcd9",
-      "bytes": 120795
+      "sha256": "a51fce7801e6a4a0a0a740e66096985452351705d9a6f5878a1e3da1747a6f1a",
+      "bytes": 121389
     },
     "todo-drag-phone-dark.png": {
       "sha256": "cd9aa4c9edec5346bcb78c6293cc60dfd33ffc7e58414d6f795d1df032fa8698",
@@ -566,6 +598,67 @@
         "todo-phone-light.png",
         "todo-wide-dark.png",
         "todo-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-02T09:12:00.072Z",
+      "reason": "0.28.0 stream E (Fable, P-29/D29): new pictures settings-backup-wide-*, bin-wide-*, bin-phone-* and admin-policies-wide-* for Backup and restore, the Bin and Policies; changed pictures: the Bin entry in the Settings and Contacts panels (settings-appearance, settings-pages, contact-detail, contact-editor and merge-review, wide) and the list chooser (new-task, wide and phone: the account annotation at the end of the control, the option's dot on its first line and its note wrapping). Integrator shows old beside new in the PR (P-27).",
+      "source": {
+        "commit": "2c553b5d479f107d294759539e3d4ef8a6841043",
+        "branch": "wip/0.28.0-e",
+        "dirty": false,
+        "digest": "dbc8cfb052a77819b9400a225e690263d540cd9e489c4afdc6ffd65b35bac01b"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [
+        "admin-policies-wide-dark.png",
+        "admin-policies-wide-light.png",
+        "bin-phone-dark.png",
+        "bin-phone-light.png",
+        "bin-wide-dark.png",
+        "bin-wide-light.png",
+        "settings-backup-wide-dark.png",
+        "settings-backup-wide-light.png"
+      ],
+      "changed": [
+        "contact-detail-wide-dark.png",
+        "contact-detail-wide-light.png",
+        "contact-editor-wide-dark.png",
+        "contact-editor-wide-light.png",
+        "merge-review-wide-dark.png",
+        "merge-review-wide-light.png",
+        "new-task-phone-dark.png",
+        "new-task-phone-light.png",
+        "new-task-wide-dark.png",
+        "new-task-wide-light.png",
+        "settings-appearance-wide-dark.png",
+        "settings-appearance-wide-light.png",
+        "settings-pages-wide-dark.png",
+        "settings-pages-wide-light.png"
       ],
       "removed": []
     }

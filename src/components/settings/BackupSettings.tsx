@@ -9,7 +9,7 @@ import { useSecretMutation } from '@/hooks/use-secret-mutation';
 import { useSessionScope } from '@/lib/session-scope';
 import {
   BACKUP_ACTIVE, RESTORE_ACTIVE, RevealAlreadyShown, RevealUncertain, backupApi, backupQueryKeys, getBackupDownloadAction, prepareBackupDownload, revealRecoveryPasswordOnce,
-  type BackupContents, type BackupDataClass, type BackupImportResult, type BackupJob, type BackupSectionId, type CalendarMode, type ConflictMode, type CredentialsMode, type RestoreJob, type RestoreOptions,
+  type BackupContents, type BackupDataClass, type BackupExportSectionId, type BackupImportResult, type BackupJob, type BackupSectionId, type CalendarMode, type ConflictMode, type CredentialsMode, type RestoreJob, type RestoreOptions,
 } from '@/lib/backup-api';
 import { copyText, downloadTicket, saveFile } from '@/lib/platform';
 import { jobPollInterval } from '@/lib/job-polling';
@@ -146,7 +146,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
   const jobs = jobsQuery.data ?? NO_JOBS;
   const restoreJobs = restoreJobsQuery.data ?? NO_RESTORES;
   const importSections = capabilities?.sections ?? [];
-  const exportSections = (capabilities?.export_sections ?? importSections).filter(section => section.id !== 'accounts');
+  const exportSections = capabilities?.export_sections ?? importSections;
   const sectionLabels = new Map([...importSections, ...exportSections].map(({ id, label }) => [id, label]));
   const sectionLabel = (id: string) => sectionLabels.get(id) || id;
   const refreshJobs = () => { void queryClient.invalidateQueries({ queryKey: backupQueryKeys.jobs }); };
@@ -213,7 +213,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
   const closeRecovery = () => { recoveryOpening.current++; recoveryJobNow.current = null; setRecoveryJob(null); setRecoveryPassword(null); setRecoverySaved(false); setRevealProblem(null); };
 
   const create = useSessionMutation({
-    mutationFn: () => backupApi.create({ sections: exportSelection === 'full' ? 'full' : exportSelection as BackupSectionId[], include_download_mail: downloadMailOn }),
+    mutationFn: () => backupApi.create({ sections: exportSelection === 'full' ? 'full' : exportSelection as BackupExportSectionId[], include_download_mail: downloadMailOn }),
     onSuccess: () => { refreshJobs(); toast({ title: 'Backup started', description: 'It shows below while it is created.' }); },
     onError: failed('Could not start the backup'),
   });

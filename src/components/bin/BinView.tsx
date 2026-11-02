@@ -46,6 +46,11 @@ function itemMeta(lead: BinItem, group: BinItem[]) {
 type Confirm = { title: string; description: string; action: string; run: () => void };
 
 /** Why a calendar cannot take the items asked about: a synced item needs a server calendar, a UniHub item a UniHub list. */
+/** One id per group (a group restores as a unit), in the order given. */
+function oneOfEachGroup(items: readonly BinItem[]) {
+  return [...new Map(items.map(item => [item.group_id ?? item.id, item.id])).values()];
+}
+
 function wrongKind(calendar: CalendarCalendar, kind: DestinationAsk['kind']) {
   const provider = calendar.account_provider ?? 'local';
   if (kind === 'calendar' && provider === 'local') return 'A UniHub list cannot hold a synced item';
@@ -183,7 +188,10 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
             const lead = group[0];
             const Icon = ICONS[lead.item_type];
             const name = lead.title || `Untitled ${KINDS[lead.item_type]}`;
-            const ids = group.map(item => item.id);
+            // One member names its group: the server brings the whole group back
+            // (bin.ts), and a list with hundreds of events stays under the
+            // request's id limit.
+            const ids = [lead.id];
             return (
               <li key={lead.group_id ?? lead.id} className="flex items-start gap-3 px-2 py-3">
                 <Icon aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -214,8 +222,8 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
 
       <DestinationDialog ask={shownAsk} titles={askedTitles} pending={actions.restore.isPending} onClose={() => setAsk(null)} returnFocus={returnFocus}
         onChoose={calendarId => {
-          // Only the items still in the bin at this moment are sent.
-          const ids = shownAsk ? shownAsk.ids.filter(id => binItems.some(item => item.id === id)) : [];
+          // Only the items still in the bin at this moment are sent, one per group.
+          const ids = shownAsk ? oneOfEachGroup(shownAsk.ids.map(id => binItems.find(item => item.id === id)).filter((item): item is BinItem => !!item)) : [];
           if (ids.length) actions.restore.mutate({ ids, modules: shownAsk?.modules, calendarId });
           setAsk(null);
         }} />

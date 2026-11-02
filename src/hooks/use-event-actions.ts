@@ -51,7 +51,13 @@ export function useEventActions() {
     mutationFn: ({ id, scope }: { id: string; scope?: RecurrenceScope }) => calendarApi.deleteEvent(id, scope),
     // Deleted stays deleted, whatever an older reply or an older fetch says (task-order-queue.ts).
     // The event waits in the bin; the notice offers Undo (a server event is created at the provider again).
-    onSuccess: (binItemIds, { id, scope }) => { markDeleted(client, taskKey(id)); refresh(); bin.movedToBin(scope === 'series' ? 'The series' : '1 event', binItemIds); },
+    // One occurrence of a server series is deleted at the server for good and answers no bin ids:
+    // the notice says so plainly, with nothing to undo.
+    onSuccess: (binItemIds, { id, scope: which }) => {
+      markDeleted(client, taskKey(id)); refresh();
+      if (binItemIds.length) bin.movedToBin(which === 'series' ? 'The series' : '1 event', binItemIds);
+      else if (!scope.ended) toast({ title: which === 'occurrence' ? 'Occurrence deleted' : 'Event deleted', description: 'It was deleted for good; nothing went to the bin.' });
+    },
     onError: failed('Could not delete the event'),
   });
 

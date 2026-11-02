@@ -22,7 +22,7 @@ vi.mock('@/lib/backup-api', async importOriginal => {
 
 const SECTIONS = [{ id: 'settings', label: 'Settings' }, { id: 'contacts', label: 'Contacts' }, { id: 'calendar', label: 'Calendar and ToDo' }, { id: 'mail', label: 'Mail' }, { id: 'recordings', label: 'Recordings' }];
 const capabilities = (download_mail: Partial<BackupCapabilities['download_mail']> = {}): BackupCapabilities => ({
-  enabled: true, version: 7, sections: SECTIONS, exclusions: [],
+  enabled: true, version: 7, sections: SECTIONS, export_sections: [...SECTIONS, { id: 'accounts', label: 'Account settings' }], exclusions: [],
   download_mail: { value: true, forced: false, reason: null, forced_account_ids: [], ...download_mail },
 });
 const job = (id: string, fields: Partial<BackupJob> = {}): BackupJob => ({
@@ -85,6 +85,11 @@ describe('Settings → Backup and restore (0.28)', () => {
     fireEvent.click(within(createSection).getByRole('button', { name: 'Contacts' }));
     fireEvent.click(create);
     await waitFor(() => expect(api.post).toHaveBeenLastCalledWith('/backup/jobs', { sections: ['contacts'], include_download_mail: false }));
+    // The connection-only backup the server offers (mail and calendar accounts without their content) stays a choice.
+    fireEvent.click(within(createSection).getByRole('button', { name: 'Contacts' }));
+    fireEvent.click(within(createSection).getByRole('button', { name: 'Account settings' }));
+    fireEvent.click(create);
+    await waitFor(() => expect(api.post).toHaveBeenLastCalledWith('/backup/jobs', { sections: ['accounts'], include_download_mail: false }));
   });
 
   it('a forced downloaded-mail choice is checked and greyed with the reason, and a forbidden create greys the button', async () => {

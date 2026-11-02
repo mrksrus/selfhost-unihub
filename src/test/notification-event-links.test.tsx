@@ -106,15 +106,30 @@ describe('server calendar events', () => {
     await waitFor(() => expect(state.toast).toHaveBeenCalledWith({ title: 'Series updated' }));
   });
 
-  it('confirms deleting one occurrence of a repeating server event', async () => {
+  it('confirms deleting one occurrence of a repeating server event, and says plainly that it is gone when nothing went to the bin', async () => {
     mockServer('caldav', 'FREQ=DAILY');
-    const del = vi.spyOn(api, 'delete').mockResolvedValue({ data: {} });
+    // The server deletes one occurrence of a series at the calendar server for good: no bin ids.
+    const del = vi.spyOn(api, 'delete').mockResolvedValue({ data: { message: 'Event deleted', bin_item_ids: [] } });
     renderPage(<CalendarPage />, '/calendar?event=target');
     const dialog = await screen.findByRole('dialog', { name: 'Edit event' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
     const prompt = await screen.findByRole('alertdialog', { name: 'Delete repeating event' });
     fireEvent.click(within(prompt).getByRole('button', { name: 'This event' }));
     await waitFor(() => expect(del).toHaveBeenCalledWith('/calendar/events/target?scope=occurrence'));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith({ title: 'Occurrence deleted', description: 'It was deleted for good; nothing went to the bin.' }));
+    expect(state.toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Moved to the bin' }));
+  });
+
+  it('a deleted series waits in the bin, with Undo', async () => {
+    mockServer('caldav', 'FREQ=DAILY');
+    const del = vi.spyOn(api, 'delete').mockResolvedValue({ data: { message: 'Event moved to the bin', bin_item_ids: ['bin-series'] } });
+    renderPage(<CalendarPage />, '/calendar?event=target');
+    const dialog = await screen.findByRole('dialog', { name: 'Edit event' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    const prompt = await screen.findByRole('alertdialog', { name: 'Delete repeating event' });
+    fireEvent.click(within(prompt).getByRole('button', { name: 'All events' }));
+    await waitFor(() => expect(del).toHaveBeenCalledWith('/calendar/events/target?scope=series'));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Moved to the bin', description: 'The series', action: expect.anything() })));
   });
 
   it('shows subscription events read-only', async () => {

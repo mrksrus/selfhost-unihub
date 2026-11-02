@@ -5,6 +5,12 @@
 
 /** The sections a person can choose. The request parser still accepts "accounts" from older clients. */
 export type BackupSectionId = 'settings' | 'contacts' | 'calendar' | 'mail' | 'recordings';
+/**
+ * What a backup can be made of: a recovery section, or "accounts" (the
+ * capabilities' export_sections), the mail and calendar accounts without
+ * their content. It is not a section of the archive or of a restore.
+ */
+export type BackupExportSectionId = BackupSectionId | 'accounts';
 
 /**
  * The data classes of F2. A user backup holds UniHub's own data (local, the
@@ -48,7 +54,7 @@ export interface DownloadMailChoice {
 /** POST /api/backup/jobs */
 export interface BackupCreateRequest {
   /** 'full' or the chosen sections. */
-  sections?: 'full' | BackupSectionId[];
+  sections?: 'full' | BackupExportSectionId[];
   /** "Include downloaded mail"; a forced choice wins. */
   include_download_mail?: boolean;
   /** Ignored from 0.28: every new backup is encrypted. Older clients still send it. */
