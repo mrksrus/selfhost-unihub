@@ -297,15 +297,25 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
   }
   const copiesLeft = async (ids: FixtureValue) => (await rows('SELECT id FROM emails WHERE id IN (?, ?)', [ids.a, ids.b])).map(row => row.id === ids.a ? 'a' : 'b').sort();
 
-  await t.test('Gmail merge: the count is what the merge does', async () => {
+  await t.test('Gmail merge: the snooze and filing history of a removed copy go to the kept copy; the count is what the merge does', async () => {
     const accountId = await createAccount('gmail-held', { host: 'imap.gmail.com' });
     const plain = await gmailCopies(accountId, '7100');
     // A draft copy is never merged, and so not counted.
     const draft = await gmailCopies(accountId, '7103', { b: { is_draft: 1 } });
-    assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 1, 'only the groups the merge joins');
-    assert.equal((await prune(accountId)).merged, 1);
+    // b's snooze and filing history go to a.
+    const held = await gmailCopies(accountId, '7101', { b: { snoozed_until: '2030-01-01 09:00:00' } });
+    await pool.execute<ResultSetHeader>(`INSERT INTO mail_folder_recovery_items (email_id,user_id,source_account_id,original_folder,target_folder,action)
+      VALUES (?,?,?,'archive','archive','kept')`, [held.b, userId, accountId]);
+    // Two different snoozes cannot both be kept: the copies stay apart.
+    const twoSnoozes = await gmailCopies(accountId, '7102', { a: { snoozed_until: '2030-01-01 09:00:00' }, b: { snoozed_until: '2030-02-01 09:00:00' } });
+    assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 2, 'only the groups the merge joins');
+    assert.equal((await prune(accountId)).merged, 2);
     assert.deepEqual(await copiesLeft(plain), ['a']);
     assert.deepEqual(await copiesLeft(draft), ['a', 'b']);
+    assert.deepEqual(await copiesLeft(held), ['a']);
+    assert.equal(new Date((await one('SELECT snoozed_until FROM emails WHERE id = ?', [held.a])).snoozed_until).toISOString(), '2030-01-01T09:00:00.000Z', 'the snooze stays');
+    assert.equal((await one('SELECT email_id FROM mail_folder_recovery_items WHERE user_id = ?', [userId])).email_id, held.a, 'the filing history stays');
+    assert.deepEqual(await copiesLeft(twoSnoozes), ['a', 'b']);
     assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 0);
   });
 

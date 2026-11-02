@@ -294,7 +294,8 @@ async function planGmailGroup(cx: SqlExecutor, { userId, accountId, gmailMsgId, 
   const ids = [...new Set([...observed, ...restored.map(row => row.id)])];
   if (ids.length < 2 || !observed.length || occurrences.some(row => row.presence === 'quarantined')) return null;
   const marks = ids.map(() => '?').join(',');
-  const [items] = await cx.execute<RowDataPacket[]>(`SELECT e.id, e.import_complete, e.created_at, e.remote_gmail_msgid FROM emails e
+  const [items] = await cx.execute<RowDataPacket[]>(`SELECT e.id, e.import_complete, e.created_at, e.remote_gmail_msgid,
+      e.snoozed_until, e.snooze_returned_at FROM emails e
     WHERE ${ELIGIBLE_SQL} AND e.id IN (${marks})${locking}`, [userId, accountId, ...ids]);
   if (items.length !== ids.length) return null; // filed elsewhere, legacy, draft or pending change: keep all
   // A copy restored with another X-GM-MSGID is not proven to be this message.
@@ -304,6 +305,14 @@ async function planGmailGroup(cx: SqlExecutor, { userId, accountId, gmailMsgId, 
   const [foreign] = await cx.execute<RowDataPacket[]>(`SELECT id FROM mail_remote_occurrences WHERE user_id = ? AND mail_account_id = ?
     AND email_id IN (${marks}) AND (gmail_msgid IS NULL OR gmail_msgid <> ?) LIMIT 1`, [userId, accountId, ...ids, gmailMsgId]);
   if (foreign.length) return null;
+  // A snooze and filing history are the person's own: they go to the kept
+  // copy. Copies holding different ones are kept apart rather than lose one.
+  const snooze = (item: RowDataPacket) => item.snoozed_until || item.snooze_returned_at
+    ? `${String(item.snoozed_until && new Date(item.snoozed_until).getTime())}|${String(item.snooze_returned_at && new Date(item.snooze_returned_at).getTime())}` : null;
+  if (new Set(items.map(snooze).filter(Boolean)).size > 1) return null;
+  const [filed] = await cx.execute<RowDataPacket[]>(`SELECT email_id FROM mail_folder_recovery_items WHERE user_id = ? AND email_id IN (${marks})${locking}`,
+    [userId, ...ids]);
+  if (filed.length > 1) return null;
   const [[mapped]] = await cx.execute<RowDataPacket[]>(`SELECT email_id FROM mail_gmail_messages WHERE mail_account_id = ? AND user_id = ? AND gmail_msgid = ?${locking}`,
     [accountId, userId, gmailMsgId]);
   // A complete copy first; between complete copies the restored one, which
@@ -315,7 +324,7 @@ async function planGmailGroup(cx: SqlExecutor, { userId, accountId, gmailMsgId, 
     for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return left[i] - right[i];
     return a.id < b.id ? -1 : 1;
   })[0];
-  return { keeper, losers: ids.filter(id => id !== keeper.id) };
+  return { keeper, losers: ids.filter(id => id !== keeper.id), snoozed: items.find(item => snooze(item)) || null, filedFrom: filed[0]?.email_id || null };
 }
 async function mergeGmailGroup({ account, fence, gmailMsgId }: { account: Account; fence: Fence; gmailMsgId: string }) {
   const userId = account.user_id, accountId = account.id;
@@ -339,6 +348,13 @@ async function mergeGmailGroup({ account, fence, gmailMsgId }: { account: Accoun
       [keeper, userId, ...losers]);
     await cx.execute(`UPDATE calendar_overlay_restores SET payload = JSON_SET(payload, '$.source_email_id', ?)
       WHERE user_id = ? AND JSON_VALUE(payload, '$.source_email_id') IN (${loserMarks})`, [keeper, userId, ...losers]);
+    if (plan.filedFrom && plan.filedFrom !== keeper) {
+      await cx.execute('UPDATE mail_folder_recovery_items SET email_id = ? WHERE email_id = ? AND user_id = ?', [keeper, plan.filedFrom, userId]);
+    }
+    if (plan.snoozed && plan.snoozed.id !== keeper) {
+      await cx.execute('UPDATE emails SET snoozed_until = ?, snooze_returned_at = ? WHERE id = ? AND user_id = ? AND mail_account_id = ?',
+        [plan.snoozed.snoozed_until, plan.snoozed.snooze_returned_at, keeper, userId, accountId]);
+    }
     await cx.execute(`INSERT INTO mail_gmail_messages (mail_account_id,gmail_msgid,user_id,email_id) VALUES (?,?,?,?)
       ON DUPLICATE KEY UPDATE email_id = VALUES(email_id)`, [accountId, gmailMsgId, userId, keeper]);
     // Read/star follow the server's latest observation of the message.
