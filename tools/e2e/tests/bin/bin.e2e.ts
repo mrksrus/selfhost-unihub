@@ -56,7 +56,8 @@ test('[28-20] the retention is the person\'s choice, and Empty bin deletes for g
     ok(await pageApi(browser, 'DELETE', `/api/contacts/${contact.id}`), 'delete');
     await browser.reload();
     const list = screen.getByRole('list', 'Deleted items');
-    await expect(list.getByText(`Eli Empty ${run}`, { exact: true })).toBeVisible();
+    // Settings → Bin names each item's module beside its title ("… · Contacts").
+    await expect(list.getByText(new RegExp(`^Eli Empty ${run}\\b`))).toBeVisible();
     await screen.getByRole('button', 'Empty bin').tap();
     await expect(screen.getByRole('alertdialog')).toContainText('deleted for good');
     await screen.getByRole('button', 'Delete for good').tap();
