@@ -178,6 +178,11 @@ test('the upgrade check reads mail in full and fails closed when its contents ar
     assert.notDeepEqual(view, intact, `${what} reads differently`);
     assert.notDeepEqual(seededMailProblems(view.emails, [seed]), [], `${what} fails the seeded mail check`);
   }
+  // A restore gives the exact original back unverified: that passes as restored, and a verified one does not.
+  const unverified = intact.emails.map(email => ({ ...email, original: email.original && { ...email.original, verified: false } }));
+  assert.deepEqual(seededMailProblems(unverified, [seed], { restored: true }), []);
+  assert.match(seededMailProblems(unverified, [seed])[0], /not verified/);
+  assert.match(seededMailProblems(intact.emails, [seed], { restored: true })[0], /verified after a restore/);
   // Missing or duplicated messages fail too, whatever the others hold.
   assert.match(seededMailProblems([], [seed])[0], /0 copies/);
   assert.match(seededMailProblems([...intact.emails, ...intact.emails], [seed])[0], /2 copies/);

@@ -94,8 +94,13 @@ export async function coreView(session: ViewSession, readRaw: RawReader) {
 export type CoreView = Awaited<ReturnType<typeof coreView>>;
 export type MailEntry = CoreView['emails'][number];
 
-/** Why the seeded mail is not all there in full; empty when it is. */
-export function seededMailProblems(emails: readonly MailEntry[], seeds: readonly MailSeed[]) {
+/**
+ * Why the seeded mail is not all there in full; empty when it is. A restored
+ * original keeps its exact octets but is not verified until UniHub checks it
+ * at the provider again (server deletion waits for that), so `restored`
+ * expects it unverified.
+ */
+export function seededMailProblems(emails: readonly MailEntry[], seeds: readonly MailSeed[], { restored = false } = {}) {
   const problems: string[] = [];
   for (const seed of seeds) {
     const label = `${seed.account} ${seed.folder} ${seed.messageId}`;
@@ -109,7 +114,8 @@ export function seededMailProblems(emails: readonly MailEntry[], seeds: readonly
     const original = email.original, octets = sha256(seed.raw);
     if (!original) problems.push(`${label}: no original message is kept`);
     else {
-      if (original.format !== 'exact_octets' || !original.verified) problems.push(`${label}: the original is not kept as verified exact octets (${original.format})`);
+      if (original.format !== 'exact_octets') problems.push(`${label}: the original is not kept as exact octets (${original.format})`);
+      else if (original.verified === restored) problems.push(`${label}: the original is ${restored ? 'verified after a restore' : 'not verified'}`);
       if (original.recorded !== octets || original.stored !== octets || original.bytes !== seed.raw.length) {
         problems.push(`${label}: the original differs from the provider's bytes (recorded ${original.recorded}, stored ${original.stored}, ${original.bytes} bytes)`);
       }
@@ -118,7 +124,7 @@ export function seededMailProblems(emails: readonly MailEntry[], seeds: readonly
   return problems;
 }
 
-export function assertSeededMail(emails: readonly MailEntry[], seeds: readonly MailSeed[], label: string) {
-  const problems = seededMailProblems(emails, seeds);
+export function assertSeededMail(emails: readonly MailEntry[], seeds: readonly MailSeed[], label: string, options: { restored?: boolean } = {}) {
+  const problems = seededMailProblems(emails, seeds, options);
   assert.deepEqual(problems, [], `${label}: the seeded mail is not all there in full`);
 }

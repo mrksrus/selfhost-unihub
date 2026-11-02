@@ -117,6 +117,8 @@ const coreView = (session: Session, installation: Installation, person: string) 
   () => JSON.parse(installation.exec(helper('upgrade-mail-raw.cts'), { RAW_USER_EMAIL: person })) as Record<string, RawEntry>);
 /** The person's own data: what a user backup holds (no Sync-mode mail with a provider copy, no CalDAV event). */
 const ownData = (view: CoreView) => ({ ...view, emails: view.emails.filter(email => email.account !== mail.sync.user), events: view.events.filter(event => event.calendar !== SYNCED_CALENDAR) });
+/** The same data as a restore gives it back: each original kept, not yet verified at the provider again. */
+const asRestored = (view: CoreView): CoreView => ({ ...view, emails: view.emails.map(email => email.original ? { ...email, original: { ...email.original, verified: false } } : email) });
 
 async function until<T>(what: string, read: () => Promise<T>, done: (value: T) => boolean, { seconds = 180, nudge }: { seconds?: number; nudge?: () => Promise<unknown> } = {}) {
   const deadline = Date.now() + seconds * 1000;
@@ -277,8 +279,8 @@ try {
     const contents = await importFull(person, fresh.archive, fresh.password);
     assert.ok(contents && !contents.included.includes('mirror'), `The new backup holds the person's own data: ${JSON.stringify(contents)}`);
     const restored = await coreView(person, installation, second.email);
-    assertSeededMail(restored.emails, downloadSeeds, 'Restored into a second person');
-    assert.deepEqual(ownData(restored), ownData(upgradedView), 'The second person has the first person\'s own data, with its contents');
+    assertSeededMail(restored.emails, downloadSeeds, 'Restored into a second person', { restored: true });
+    assert.deepEqual(ownData(restored), ownData(asRestored(upgradedView)), 'The second person has the first person\'s own data, with its contents');
     evidence.newBackup = { sha256: fresh.sha256, bytes: fresh.archive.length, contents };
   });
   // Only the fresh installation below may talk to the providers from here on.
@@ -303,8 +305,8 @@ try {
     assert.equal(leftOut('calendar'), before.events.filter(event => event.calendar === SYNCED_CALENDAR).length, `CalDAV events are left out: ${JSON.stringify(contents.left_out)}`);
     assert.ok(contents.included.includes('local-by-policy'), 'Downloaded mail is in the restore');
     const restored = await coreView(freshOwner, fresh, freshAdmin.email);
-    assertSeededMail(restored.emails, downloadSeeds, `The ${from} export`);
-    assert.deepEqual(ownData(restored), ownData(before), 'The person\'s own data from the older release is there, with its contents');
+    assertSeededMail(restored.emails, downloadSeeds, `The ${from} export`, { restored: true });
+    assert.deepEqual(ownData(restored), ownData(asRestored(before)), 'The person\'s own data from the older release is there, with its contents');
     evidence.oldExportImport = { contents };
   });
   await step('The provider data comes back from the providers', async () => {

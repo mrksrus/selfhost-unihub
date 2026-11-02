@@ -160,7 +160,7 @@ test('production export and restore jobs round-trip what a backup holds through 
     await fs.mkdir(path.dirname(attachmentPath), { recursive: true });
     await fs.writeFile(rawPath, raw); await fs.writeFile(attachmentPath, attachment);
     originalFiles.set('raw:' + fileKey, raw); originalFiles.set('attachment:' + fileKey, attachment);
-    await insert('emails', { id: emailId, user_id: sourceUser, mail_account_id: accountId, message_id: `<roundtrip-${index}@example.test>`, subject: 'Mail ' + index, from_address: 'sender@example.test', to_addresses: JSON.stringify([emailAddress]), body_text: 'Body Grüße ' + index + ':' + copy, body_html: `<p>Grüße ${index}:${copy}</p><img src="/api/mail/attachments/${attachmentId}">`, folder: folderSlug, source_folder: sourceFolder, imap_uid: 22 + index + copy * 10, imap_uidvalidity: 123, remote_folder: copy ? 'Moved/Current' : sourceFolder, remote_uid: 100 + index + copy, remote_uidvalidity: 456, remote_missing: copy, raw_storage_path: rawPath, raw_sha256: sha256(raw), received_at: '2030-01-02 12:34:56', is_starred: 1, has_attachments: 1, import_complete: 1 });
+    await insert('emails', { id: emailId, user_id: sourceUser, mail_account_id: accountId, message_id: `<roundtrip-${index}@example.test>`, subject: 'Mail ' + index, from_address: 'sender@example.test', to_addresses: JSON.stringify([emailAddress]), body_text: 'Body Grüße ' + index + ':' + copy, body_html: `<p>Grüße ${index}:${copy}</p><img src="/api/mail/attachments/${attachmentId}">`, folder: folderSlug, source_folder: sourceFolder, imap_uid: 22 + index + copy * 10, imap_uidvalidity: 123, remote_folder: copy ? 'Moved/Current' : sourceFolder, remote_uid: 100 + index + copy, remote_uidvalidity: 456, remote_missing: copy, raw_storage_path: rawPath, raw_sha256: sha256(raw), raw_bytes: raw.length, raw_format: 'exact_octets', raw_verified: 1, received_at: '2030-01-02 12:34:56', is_starred: 1, has_attachments: 1, import_complete: 1 });
     await insert('email_attachments', { id: attachmentId, user_id: sourceUser, email_id: emailId, filename: 'data-' + index + '.bin', content_type: 'application/octet-stream', size_bytes: attachment.length, storage_path: attachmentPath, content_id: 'content-' + index });
     if (index === 0 && copy === 0) {
       const secondId = uuid();
@@ -475,6 +475,9 @@ test('production export and restore jobs round-trip what a backup holds through 
       const fileKey = account.email_address + ':' + email.source_folder;
       const raw = await fs.readFile(email.raw_storage_path);
       assert.deepEqual(raw, originalFiles.get('raw:' + fileKey)); assert.equal(sha256(raw), email.raw_sha256);
+      // The exact original comes back, but not as verified: server deletion waits until UniHub checks it at the provider again.
+      assert.equal(email.raw_format, 'exact_octets');
+      assert.equal(Number(email.raw_verified), 0, 'A restore never vouches for the provider\'s copy');
       const oldAccount = original.mail_accounts.find((row: FixtureValue) => row.email_address === account.email_address);
       const oldEmail = original.emails.find((row: FixtureValue) => row.mail_account_id === oldAccount.id && row.source_folder === email.source_folder);
       const oldAttachments = original.email_attachments.filter((row: FixtureValue) => row.email_id === oldEmail.id);
