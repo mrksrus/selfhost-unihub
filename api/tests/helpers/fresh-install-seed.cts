@@ -5,7 +5,9 @@ import type { ResultSetHeader } from 'mysql2/promise';
 // mail with stored files, provider credentials, folder history, a CalDAV
 // account, completed transcripts, data saved by older releases, and the
 // contact details a vCard import or a merge leaves (a kept property, a
-// merged-away UID, a "Not the same person" pair).
+// merged-away UID, a "Not the same person" pair). The mail and the event a
+// provider holds are printed too (providerMail, providerEvent): the gate puts
+// them at its test providers, which serve them again after a restore.
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
 const fs = (require('node:fs') as typeof import('node:fs'));
 const path = (require('node:path') as typeof import('node:path'));
@@ -18,6 +20,8 @@ const recordingId = process.env.SEED_RECORDING_ID!;
 const peer = { host: process.env.SEED_PEER_HOST!, imapPort: Number(process.env.SEED_IMAP_PORT), davPort: Number(process.env.SEED_DAV_PORT) };
 const secrets = JSON.parse(process.env.SEED_SECRETS!) as { mail: string[]; calendar: string };
 const uuid = () => crypto.randomUUID();
+// The image's storage, or a local installation's own (scripts/fresh-installations.mts).
+const UPLOADS = process.env.UNIHUB_UPLOADS_ROOT || '/app/uploads';
 const sha256 = (bytes: Buffer) => crypto.createHash('sha256').update(bytes).digest('hex');
 
 async function main() {
@@ -28,7 +32,7 @@ async function main() {
     `INSERT INTO ${table} (${Object.keys(row).map(name => '`' + name + '`').join(', ')}) VALUES (${Object.keys(row).map(() => '?').join(', ')})`,
     Object.values(row) as (string | number | null)[]);
   const store = (kind: string, name: string, bytes: Buffer) => {
-    const file = path.join('/app/uploads', kind, userId, name);
+    const file = path.join(UPLOADS, kind, userId, name);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, bytes);
     return file;
@@ -53,6 +57,8 @@ async function main() {
     await insert('mail_folders', { id: folders.research, user_id: userId, slug: 'research', display_name: 'Research & Notes', position: 7, is_system: 0 });
     await insert('mail_folders', { id: folders.copies, user_id: userId, slug: 'copies', display_name: 'Archived Copies', position: 8, is_system: 0 });
     const accounts: string[] = [], emails: string[] = [];
+    // The Sync account's messages as its provider holds them.
+    const providerMail: { user: string; mailbox: string; raw: string }[] = [];
     for (const [index, password] of secrets.mail.entries()) {
       const accountId = uuid(), address = `fresh-mail-${index}@example.test`;
       accounts.push(accountId);
@@ -61,7 +67,7 @@ async function main() {
         imap_host: peer.host, imap_port: peer.imapPort, smtp_host: peer.host, smtp_port: peer.imapPort, encrypted_password: encrypt(password),
         is_active: 1, sync_mode: index ? 'sync' : 'download', sync_status: 'idle', delete_emails_on_server: index ? 0 : 1 });
       await insert('mail_sender_rules', { id: uuid(), user_id: userId, mail_account_id: accountId, match_type: 'email', match_value: `sender-${index}@example.test`, target_folder: 'research' });
-      for (const [copy, remote] of ['INBOX/Research', 'Archive/Copies'].entries()) {
+      for (const [copy, remote] of ['Research', 'Copies'].entries()) {
         const emailId = uuid(), attachmentId = uuid(), slug = copy ? 'copies' : 'research';
         emails.push(emailId);
         await insert('mail_folder_remote_boxes', { folder_id: folders[slug], mail_account_id: accountId, remote_name: remote });
@@ -69,6 +75,7 @@ async function main() {
         const raw = Buffer.from(`From: Sender <sender-${index}@example.test>\r\nTo: ${address}\r\nMessage-ID: <fresh-${index}@example.test>\r\nSubject: Fresh mail ${index}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nGrüße from message ${index}, copy ${copy}.\r\n`);
         const attachment = Buffer.from([0, 255, 17, 128, index, copy, 10, 13, 0]);
         const rawPath = store('mail-raw', `${emailId}.eml`, raw);
+        if (index) providerMail.push({ user: address, mailbox: remote, raw: raw.toString('base64') });
         await insert('emails', { id: emailId, user_id: userId, mail_account_id: accountId, message_id: `<fresh-${index}@example.test>`, subject: `Fresh mail ${index}`,
           from_address: `sender-${index}@example.test`, from_name: 'Sender', to_addresses: JSON.stringify([address]), body_text: `Body Grüße ${index}:${copy}`,
           body_html: `<p>Grüße ${index}:${copy}</p><img src="/api/mail/attachments/${attachmentId}">`, folder: slug, source_folder: remote,
@@ -100,7 +107,7 @@ async function main() {
     await insert('mail_templates', { id: uuid(), user_id: userId, name: 'Weekly Grüße', subject: 'Weekly report', body_html: '<p>Numbers attached.</p>', body_text: 'Numbers attached.' });
     for (const accountId of accounts) {
       const [mappings] = await db.execute('SELECT * FROM mail_folder_remote_boxes WHERE mail_account_id = ?', [accountId]);
-      await insert('mail_folder_reconciliations', { mail_account_id: accountId, user_id: userId, inventory: JSON.stringify(['INBOX/Research', 'Archive/Copies']),
+      await insert('mail_folder_reconciliations', { mail_account_id: accountId, user_id: userId, inventory: JSON.stringify(['Research', 'Copies']),
         previous_mappings: JSON.stringify(mappings), completed_at: '2030-01-01 11:00:00' });
     }
     await insert('mail_folder_recovery_items', { email_id: emails[0], user_id: userId, source_account_id: accounts[0], original_folder: 'old-research',
@@ -110,19 +117,28 @@ async function main() {
     // An accepted provider change that never ran. A restore must keep it for
     // inspection but never send it to the provider again.
     await insert('mail_writebacks', { id: uuid(), user_id: userId, mail_account_id: accounts[0], email_id: emails[0], action: 'read',
-      target_value: '1', base_value: '0', remote_folder: 'INBOX/Research', remote_uid: 22, remote_uidvalidity: 123 });
+      target_value: '1', base_value: '0', remote_folder: 'Research', remote_uid: 22, remote_uidvalidity: 123 });
 
+    // A CalDAV account laid out as Radicale serves it (principal /calendar-user/).
+    // Its event is a synced task with UniHub's own state (done, a subtask):
+    // the backup leaves the event out and keeps that state as an overlay.
     const calendarAccountId = uuid(), calendarId = uuid(), eventId = uuid();
-    const dav = `https://${peer.host}:${peer.davPort}/dav/`;
+    const dav = `https://${peer.host}:${peer.davPort}/calendar-user/`;
+    const providerEvent = { user: 'calendar-user', calendar: 'research', displayName: 'Research Calendar', uid: 'fresh-remote-event@example.test',
+      title: 'Remote weekly event', description: 'Preserve Grüße\nSecond line', location: 'Vienna', start: '2030-02-03T10:00:00.000Z', end: '2030-02-03T11:00:00.000Z',
+      attendees: [{ email: 'attendee@example.test', name: 'Attendee', status: 'ACCEPTED' as const }] };
     await insert('calendar_accounts', { id: calendarAccountId, user_id: userId, provider: 'caldav', display_name: 'Fresh calendar', account_email: 'calendar@example.test',
       username: 'calendar-user', discovery_url: dav, base_url: dav, encrypted_password: encrypt(secrets.calendar), is_active: 1 });
-    await insert('calendar_calendars', { id: calendarId, user_id: userId, account_id: calendarAccountId, name: 'Research Calendar', external_id: `${dav}calendar/`, color: '#2244ff', is_visible: 1 });
-    await insert('calendar_events', { id: eventId, user_id: userId, calendar_id: calendarId, title: 'Remote weekly event', description: 'Preserve Grüße\nSecond line',
-      start_time: '2030-02-03 10:00:00', end_time: '2030-02-03 11:00:00', recurrence: 'FREQ=WEEKLY;COUNT=3', reminders: JSON.stringify([10, 60]), reminder_minutes: 10, location: 'Vienna' });
+    await insert('calendar_calendars', { id: calendarId, user_id: userId, account_id: calendarAccountId, name: providerEvent.displayName, external_id: `${dav}${providerEvent.calendar}/`,
+      color: '#2244ff', is_visible: 1, uid: uuid() });
+    await insert('calendar_events', { id: eventId, user_id: userId, calendar_id: calendarId, uid: providerEvent.uid, title: providerEvent.title, description: providerEvent.description,
+      start_time: '2030-02-03 10:00:00', end_time: '2030-02-03 11:00:00', reminders: JSON.stringify([10, 60]), reminder_minutes: 10, location: providerEvent.location,
+      todo_status: 'done', done_at: '2030-02-03 11:05:00' });
+    await insert('calendar_event_subtasks', { id: uuid(), event_id: eventId, user_id: userId, title: 'Check the notes', is_done: 1, position: 0 });
     await insert('calendar_settings', { calendar_id: calendarId, user_id: userId, setting_key: 'notify_enabled', setting_value: 'false' });
     await insert('calendar_event_attendees', { id: uuid(), user_id: userId, event_id: eventId, email: 'attendee@example.test', display_name: 'Attendee', response_status: 'accepted' });
     await insert('calendar_event_external_refs', { id: uuid(), user_id: userId, event_id: eventId, calendar_id: calendarId, account_id: calendarAccountId,
-      provider: 'caldav', external_event_id: 'event.ics', external_etag: 'etag-one' });
+      provider: 'caldav', external_event_id: `/calendar-user/${providerEvent.calendar}/${encodeURIComponent(providerEvent.uid)}.ics`, external_etag: 'etag-one' });
 
     const tagId = uuid(), secondRecording = uuid();
     await insert('recording_tags', { id: tagId, user_id: userId, name: 'Research', color: '#2244ff' });
@@ -130,7 +146,7 @@ async function main() {
     audio.write('RIFF'); audio.writeUInt32LE(68, 4); audio.write('WAVEfmt ', 8); audio.writeUInt32LE(16, 16); audio.writeUInt16LE(1, 20); audio.writeUInt16LE(1, 22);
     audio.writeUInt32LE(8000, 24); audio.writeUInt32LE(16000, 28); audio.writeUInt16LE(2, 32); audio.writeUInt16LE(16, 34); audio.write('data', 36); audio.writeUInt32LE(32, 40);
     for (let index = 0; index < 16; index++) audio.writeInt16LE(Math.round(Math.sin(index) * 1000), 44 + index * 2);
-    await insert('recordings', { id: secondRecording, user_id: userId, title: 'Recorded on a phone', description: 'Keep original audio bytes', original_filename: 'tone.wav',
+    await insert('recordings', { id: secondRecording, user_id: userId, uid: uuid(), title: 'Recorded on a phone', description: 'Keep original audio bytes', original_filename: 'tone.wav',
       content_type: 'audio/wav', size_bytes: audio.length, duration_seconds: 0.002, storage_path: store('recordings', `${secondRecording}.wav`, audio), source: 'recorded',
       category: 'none', recorded_at: '2030-01-01 10:00:00', metadata: JSON.stringify({ sampleRate: 8000 }) });
     for (const [index, id] of [recordingId, secondRecording].entries()) {
@@ -140,7 +156,7 @@ async function main() {
     }
     // A failed transcription is not recovery data.
     await insert('recording_transcription_jobs', { id: uuid(), user_id: userId, recording_id: secondRecording, status: 'failed', provider: 'synthetic', model: 'test', error: 'synthetic failure' });
-    console.log(JSON.stringify({ emails, accounts, calendarAccountId }));
+    console.log(JSON.stringify({ emails, accounts, calendarAccountId, providerMail, providerEvent }));
   } finally { await db.end(); }
 }
 main().catch((error: Error) => { console.error(error.stack || error.message); process.exit(1); });

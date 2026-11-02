@@ -96,7 +96,9 @@ database. No model is configured: tests use locators, not `agent.act`.
 ## In CI
 
 The `e2e` job of `.github/workflows/docker-image.yml` runs the web tests,
-one runner per target, against the image under test: with
+one runner per target (desktop on four: the scheduled-send and snooze files
+alone, every other file split in two by turns), against the image under
+test: with
 `UNIHUB_E2E_IMAGE=<image>`, `stack.sh up` runs that image (its own nginx on
 port 80 and its API on 127.0.0.1:4000, production settings and Secure
 cookies; `127.0.0.1` is a secure context for the browser) and MariaDB 11.8
