@@ -114,6 +114,93 @@ counts too.
 A change holding a task when a calendar restore begins
 writes nothing more (`409 RESTORE_IN_PROGRESS`).
 
+0.28.0 adds the bin (`services/bin.ts`, D13) and the synced-task overlay
+(`services/calendar-overlays.ts`), upgrade step 25:
+
+- A bin item is a verbatim, versioned snapshot of the rows a delete
+  removed (`payload`, `payload_version` 1), with the files it keeps on disk
+  in `file_refs`: a contact's photo hashes, a recording's file in the
+  person's recordings `bin/` folder. Each kind restores its own rows with
+  only known columns, for the person restoring, under the old ids and
+  identities unless they are taken; nothing in a payload is trusted.
+- Archives from data schema 7 carry the bin with its module's section.
+  The import writes them with `restoreBinItems(connection, { userId,
+  section, items, exportedAt, calendarIds, recordingFiles })`: new bin ids,
+  the remaining time kept, groups kept together, an item already there not
+  added twice, a merged contact as an ordinary deleted one (`contact_merges`
+  is not archived), a recording only with its staged file.
+  `exportableBinItems` lists a section's items with their files for export.
+- A synced CalDAV item in the bin was deleted at its provider. Restoring it
+  from the bin creates it there again through the move journal
+  (`calendar_event_moves.bin_item_id`, never archived); a backup restore
+  only writes bin rows and never writes to a provider. A calendar restore
+  that relocates such a journal row ends it like any move; the item stays in
+  the bin.
+- The purge (`bin.purge`, worker owner) deletes per person and module only
+  past `purge_after` and the retention as the settings and policies resolve
+  it at that moment, never while the module is off or its section is being
+  restored, and never an item whose re-creation at a server is under way.
+  It reads due items from a cursor over (`purge_after`, id) that passes
+  every item a batch looked at, so items that must wait never hold back
+  later ones. Each batch locks in the order of the other writers of bin
+  rows: the person's `users` row (shared; a retention change takes it
+  exclusively before it saves, so one saved while the purge runs is either
+  seen by it or applied after it), then the items' restore journals, then
+  the items by primary key. Every restore from the bin takes the same order
+  (`lockBinOwner`): its inserts need the `users` row for their foreign key
+  anyway, so taking it first keeps a restore and a retention change from
+  each holding what the other needs.
+  Recording files are removed after the rows, only inside the person's own
+  folder and only when no recording uses them. The recordings folder and its
+  `bin/` are refused (`RECORDING_FOLDER_UNSAFE`) when a part of the path is a
+  link or leads outside the recordings root; a restore locks its bin row, so
+  two restores of one recording cannot both move its file. A recording's
+  file gets its new name (a hard link, or a copy) inside the transaction and
+  loses the old one only after the commit, so a stop at any point leaves the
+  file where the committed rows name it. A recording's delete, its restore
+  and every removal of one of its names hold the recording's file lock, and
+  a name is removed only if, checked under that lock at removal time, no
+  recording and no bin item names it; a removal decided earlier or run later
+  from a queue never takes a name another change adopted.
+- Names can be left behind: a stop between a commit and the removal of the
+  old name, an interrupted fallback copy, or a removal whose lock stayed
+  busy leaves a file name in the person's recordings folder or its `bin/`
+  that no row names. The listing shows rows only, so it shows nothing; no
+  sweep removes such a name yet, and the admin storage total counts it (an
+  extra hard link is counted again, though it shares the bytes; a leftover
+  copy takes real space).
+- `calendar_overlay_restores` holds a synced item's own state (ToDo state,
+  done time, source email, subtasks) until its row exists: by calendar,
+  exact UID (`utf8mb4_nopad_bin`, never trimmed) and recurrence id, or by
+  title and start for archives without UIDs, only when exactly one stateless
+  row matches (expiring). It keeps every subtask, however many. Step 25
+  also gives synced UIDs that 0.27 stored trimmed the server's own back, from
+  each object's stored ICS (`calendar-uid-upgrade.ts`): the object's rows,
+  and the hand order and open moves of its calendar unless another object
+  there could own them. The pass is one-time and linear: seconds when few
+  UIDs need it, but a calendar where nearly every task's UID needs repair
+  can make the 0.28 upgrade take minutes per 100,000 objects (about 13 in a
+  synthetic benchmark); the server finishes starting afterwards. Meanwhile
+  `/health` does not answer, so Docker marks the container unhealthy after
+  its 360-second start period, but nothing restarts it for that unless a
+  tool that restarts unhealthy containers runs. A stop during the pass
+  rolls the pass back, and the next start runs step 25 again. Where autoheal,
+  Swarm or another controller restarts unhealthy containers, suspend that
+  for the 0.28 upgrade or give the container a start grace longer than the
+  pass (30 minutes for the benchmark's 13); otherwise each restart rolls the
+  pass back and it never finishes. The restore writes it with
+  `insertOverlays` and applies those whose rows exist with
+  `applyOverlaysToLiveRows`; the sync that creates a row takes the rest. It
+  goes with its calendar and never applies to another person's calendar.
+- An archive made before 0.28 holds the UIDs as 0.27 stored them, with
+  surrounding spaces cut, and step 25 cannot repair it later: it carries no
+  server copy to compare with. Restored from such an archive, an item whose
+  provider UID really begins or ends with spaces (rare) is not matched by
+  its overlay or its hand rank. The task then shows as its provider has it,
+  without UniHub's own state (done, subtasks, source email) or its place in
+  the list; that overlay stays pending. UIDs are not matched trimmed instead,
+  because that could give one item's state to another.
+
 A synced task's order is removed only on evidence that the provider deleted
 it: a verified deletion of its server object. An object or occurrence that
 leaves the sync window (the expansion is bounded) keeps its order and gets

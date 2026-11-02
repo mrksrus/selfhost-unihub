@@ -36,7 +36,8 @@ The shapes are in `api/src/contracts/contacts.ts`; the rules live in
 | `contact_photos` | The photo of a contact: the content hashes of the full picture and the thumbnail, size and source |
 | `contact_uid_aliases` | The UIDs of contacts merged into another one, so an import of their old card finds the survivor |
 | `contact_duplicate_dismissals` | "Not the same person" pairs |
-| `contact_merges`, `bin_items` | Merges of the last 30 days and the merged-away contacts, for undo |
+| `contact_merges` | Merges of the last 30 days, with the survivor as it was, for undo |
+| `bin_items` | Deleted and merged-away contacts in the [bin](#the-bin), shared with the other modules |
 | `contact_imports` | Staged and running imports (temporary; never in a backup) |
 
 Upgrade step 22 copied the 0.25 columns `email`, `email2`, `email3`, `phone`,
@@ -58,11 +59,11 @@ need `X-CSRF-Token`. Another person's contact, photo, merge or import answers
 | GET | `/api/contacts/:id` | One contact with its kept properties listed (`properties`) |
 | POST | `/api/contacts` | Create |
 | PUT | `/api/contacts/:id` | Replace (full body) or apply an old app's flat body as a change |
-| DELETE | `/api/contacts/:id` | Delete for good (policy `bin.delete`) |
+| DELETE | `/api/contacts/:id` | Move to the bin |
 | PUT | `/api/contacts/:id/favorite` | Favourite on or off |
-| POST | `/api/contacts/bulk-delete` | Delete up to 5,000 (policy `bin.delete`) |
+| POST | `/api/contacts/bulk-delete` | Move up to 5,000 to the bin, as one group |
 | POST | `/api/contacts/bulk-update` | Set `company`, `department` or `job_title` on many; `null` clears |
-| GET, PUT, DELETE | `/api/contacts/:id/photo` | The photo (`?size=full` or `thumb`), set it (the picture as the raw body), remove it (policy `bin.delete`) |
+| GET, PUT, DELETE | `/api/contacts/:id/photo` | The photo (`?size=full` or `thumb`), set it (the picture as the raw body), remove it for good (policy `bin.delete`) |
 | POST | `/api/contacts/imports` | Stage a file (the raw body) and answer the preview |
 | GET | `/api/contacts/imports/:id` | The import's state and result |
 | POST | `/api/contacts/imports/:id/commit` | Write it with per-group decisions |
@@ -74,6 +75,9 @@ need `X-CSRF-Token`. Another person's contact, photo, merge or import answers
 | POST | `/api/contacts/merges/auto` | "Merge all high-confidence": up to 500 groups |
 | GET | `/api/contacts/merges` | "Recently merged" |
 | POST | `/api/contacts/merges/:id/undo` | Undo a merge |
+
+The bin's own routes (`/api/bin`) list, restore and delete contacts there
+for good; see [the bin](#the-bin).
 
 0.26.0 removed `POST /api/contacts/merge-duplicates`, its `/preview` and the
 JSON `POST /api/contacts/import`. A page of an older version still open in a
@@ -317,8 +321,9 @@ missing). A merge never drops a value:
   than 500 kept properties (256 KB) is refused with 400 `TOO_MANY_VALUES`;
   nothing is cut
 
-The merged-away contacts go to the bin (`bin_items`) for 30 days and their
-UIDs become aliases of the survivor. `POST /api/contacts/merges/auto` merges
+The merged-away contacts go to the bin (`bin_items`) for at least 30 days
+(the person's bin retention when longer) and their UIDs become aliases of
+the survivor. `POST /api/contacts/merges/auto` merges
 each listed group in its own transaction and answers `merged`, `changed`
 (the group is no longer the same), `needs_choice` or `too_many_values` per
 group.
@@ -328,9 +333,31 @@ from "Recently merged") brings the merged contacts back as they were, with
 their ids, UIDs, values, labels, kept properties, photo and version. The
 survivor returns to its state before the merge when it has not changed
 since; otherwise it keeps its later changes and the values it gained, and
-the answer's `message` says so. After 30 days the merge expires and the bin
-entries are deleted for good. An ordinary delete is still permanent in
-0.26.0; 0.28 turns it into a move to the bin.
+the answer's `message` says so. Restoring a merged-away contact from the bin
+within those 30 days is the same undo, for the whole merge. After 30 days
+the undo expires; the merged-away contacts stay in the bin for the rest of
+the person's retention, and restoring one then brings it back on its own:
+it takes its UIDs back from the survivor, which keeps its values.
+
+### The bin
+
+Since 0.28.0 deleting a contact (also from the phone, which uses the same
+route) moves it to the bin, the one of every module (D13, P-31; the
+[architecture](ARCHITECTURE.md) and `services/bin.ts`). The bin item holds
+the contact as stored, with its values, kept properties, photo, the UIDs it
+answered to and its "Not the same person" pairs; its photo files stay on
+disk while it is there. Several contacts deleted at once are one group and
+come back together. Restoring brings the contact back under its id and UID
+unless another contact took them meanwhile (then new ones); the phone gets
+it again with its next sync, like any new contact. The contact leaves every
+list, search, the offline snapshot and the phone as before.
+
+How long the bin keeps items is the person's `bin_retention` setting (7,
+30 or 90 days or forever; 30 by default). Deleting from the bin for good and
+emptying it are refused while the `bin.delete` policy forbids them. The
+hourly `bin.purge` deletes what is past its time, never while Contacts is
+off or being restored, and never what the retention in force then (an
+administrator's minimum included) still keeps.
 
 ## Offline
 
@@ -345,8 +372,10 @@ columns) is read in the same model until it is refreshed.
 
 Data schema 5 carries the contacts with their values, kept properties,
 photos (as archive files), UID aliases and "Not the same person" pairs;
-restore remaps the ids. Merges and the bin are not in a backup: a restore
-brings back contacts, not a 30-day undo. A backup made by 0.26.0 cannot be
+restore remaps the ids. Merges are not in a backup: a restore brings back
+contacts, not a 30-day undo. From data schema 7 the bin's contacts are
+archived with the contacts section (`restoreBinItems` in `services/bin.ts`);
+a merged-away contact comes back as an ordinary deleted one. A backup made by 0.26.0 cannot be
 read by an older UniHub; 0.26.0 reads the older archives. See
 [Backup format](BACKUP_FORMAT.md) and [Backup and restore](BACKUP_RESTORE.md).
 

@@ -118,6 +118,15 @@ function text(component: Component, name: string) {
   return value == null ? '' : String(value).trim();
 }
 
+// A UID as the object has it, byte for byte: UIDs that differ only by
+// surrounding spaces name different items (calendar-overlays.ts compares
+// them exactly). One of only spaces is none.
+function rawUid(component: Component) {
+  const value = component.getFirstPropertyValue('uid');
+  const raw = value == null ? '' : String(value);
+  return raw.trim() ? raw : null;
+}
+
 function alarmMinutes(vevent: Component, startMs: number, endMs: number) {
   const minutes = [];
   for (const alarm of vevent.getAllSubcomponents('valarm')) {
@@ -177,7 +186,7 @@ function expandCalendarObject(ics: unknown, { windowStartMs, windowEndMs, userTi
     if (!vevents.length) return { uid: null, recurring: false, rrule: null, occurrences: [] };
     const master = vevents.find(item => !item.hasProperty('recurrence-id')) || null;
     const exceptions = vevents.filter(item => item !== master && item.hasProperty('recurrence-id'));
-    const uid = text(master || vevents[0], 'uid') || null;
+    const uid = rawUid(master || vevents[0]);
     const occurrences: Occurrence[] = [];
     const add = (vevent: Component, start: Time, end: Time | null, key: string) => {
       const occurrence = occurrenceFromComponent(vevent, start, end, userTimeZone);
@@ -470,7 +479,7 @@ function objectUid(ics: unknown) {
   try {
     const root = parseIcs(ics);
     const vevent = root.getFirstSubcomponent('vevent');
-    return vevent ? text(vevent, 'uid') || null : null;
+    return vevent ? rawUid(vevent) : null;
   } catch {
     return null;
   }

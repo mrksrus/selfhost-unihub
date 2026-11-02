@@ -4,8 +4,9 @@ import { clientError } from '../http/errors';
 import { defineRoutes } from '../http/route';
 import { log } from '../log';
 import {
-  listContacts, getContact, createContact, updateContact, setFavorite, deleteContacts, bulkUpdateContacts,
+  listContacts, getContact, createContact, updateContact, setFavorite, bulkUpdateContacts,
 } from '../services/contacts';
+import { moveContactsToBin } from '../services/contact-merge';
 
 // Contacts: list, read, write, favourite and bulk actions (F12, D17). Import
 // and export are in contacts-transfer.ts, photos in contacts-photos.ts,
@@ -74,21 +75,21 @@ export = defineRoutes({
     } catch (error) { return failed(error, 'Failed to update contact'); }
   } },
 
-  // A delete removes contacts for good, which bin.delete forbids (F13), until
-  // 0.28 turns it into a move to the bin (P-31, D13) and drops the key.
-  'DELETE /api/contacts/:id': { ...contactRoute, destructive: ['bin.delete'], handler: async (req: Request, userId: string) => {
+  // Deleting moves contacts to the bin (P-31, D13), several as one group;
+  // deleting them for good is the bin's (bin.delete, F13).
+  'DELETE /api/contacts/:id': { ...contactRoute, handler: async (req: Request, userId: string) => {
     try {
-      await deleteContacts(userId, [req.params.id]);
-      return { message: 'Contact deleted' };
+      await moveContactsToBin(userId, [req.params.id]);
+      return { message: 'Contact moved to the bin' };
     } catch (error) { return failed(error, 'Failed to delete contact'); }
   } },
 
-  'POST /api/contacts/bulk-delete': { ...contactRoute, destructive: ['bin.delete'], body: { limit: BULK_BODY_LIMIT }, handler: async (_req: Request, userId: string, body: unknown) => {
+  'POST /api/contacts/bulk-delete': { ...contactRoute, body: { limit: BULK_BODY_LIMIT }, handler: async (_req: Request, userId: string, body: unknown) => {
     const ids = bulkIds((body as { ids?: unknown } | null)?.ids);
     if (!Array.isArray(ids)) return ids;
     try {
-      const deleted = await deleteContacts(userId, ids);
-      return { message: `${deleted} contact(s) deleted`, deleted };
+      const deleted = await moveContactsToBin(userId, ids);
+      return { message: `${deleted} contact(s) moved to the bin`, deleted };
     } catch (error) { return failed(error, 'Failed to delete contacts'); }
   } },
 

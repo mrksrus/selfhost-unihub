@@ -12,6 +12,7 @@ import { BASELINE } from './database-baseline';
 import { verifyDatabaseInventory } from './data-inventory';
 import { withTransaction } from './transactions';
 import { addContactModel, copyLegacyContactValues, verifyLegacyContactCopy, dropLegacyContactColumns, verifyLegacyColumnsDropped } from './contacts-migration';
+import { adoptRawCalendarUids } from './calendar-uid-upgrade';
 import { log } from '../log';
 
 type FieldRow = RowDataPacket & { Field: string };
@@ -378,11 +379,16 @@ const MIGRATIONS: readonly Migration[] = [
     // item again after a move or into another installation; archived ToDo
     // state of synced tasks waiting for the sync that brings the task back;
     // the server-kept date of a backup, the download grant of a backup
-    // ticket, the generic bin purge, the users' acknowledged policy notices
-    // and the instance backup's runs.
+    // ticket, the generic bin purge and the bin's re-creation of synced
+    // items at their server, the users' acknowledged policy notices and the
+    // instance backup's runs. Synced UIDs that 0.27 trimmed take the server's
+    // own afterwards (calendar-uid-upgrade.ts).
     id: 25,
     name: 'backup-store-and-safety',
-    up: addDataSafety,
+    up: async (connection: PoolConnection) => {
+      await addDataSafety(connection);
+      await adoptRawCalendarUids(connection);
+    },
     verify: async (connection: PoolConnection) => {
       await verifyDatabaseInventory(connection, { throughMigration: 25 });
       for (const { table, index } of STABLE_IDENTITIES) {
@@ -393,6 +399,8 @@ const MIGRATIONS: readonly Migration[] = [
       for (const [table, name] of [['data_export_jobs', 'idx_data_export_jobs_keep_until'], ['bin_items', 'idx_bin_items_due'], ['emails', 'idx_emails_remote_address'], ['emails', 'idx_emails_remote_gmail']]) {
         if (!await hasIndex(connection, table, name)) throw new Error(`Index ${name} on ${table} is missing`);
       }
+      if (!await hasIndex(connection, 'calendar_event_moves', 'idx_event_moves_bin_item')) throw new Error('calendar_event_moves.bin_item_id is missing');
+      if (!await hasColumn(connection, 'calendar_event_moves', 'counted_before_send')) throw new Error('calendar_event_moves.counted_before_send is missing');
     },
   },
 ];
@@ -762,6 +770,21 @@ async function addDataSafety(connection: SqlExecutor) {
   // that message (mail-sync-policy.ts).
   if (!await hasColumn(connection, 'emails', 'remote_gmail_msgid')) await connection.execute('ALTER TABLE emails ADD COLUMN remote_gmail_msgid VARCHAR(32) NULL');
   if (!await hasIndex(connection, 'emails', 'idx_emails_remote_gmail')) await connection.execute('ALTER TABLE emails ADD KEY idx_emails_remote_gmail (mail_account_id, remote_gmail_msgid)');
+  // A synced event or task restored from the bin is created at its calendar
+  // server again through the move journal (services/calendar-move.ts), which
+  // then has no event row yet but this bin item. One statement, so a partial
+  // run leaves the column with its key and constraint or nothing.
+  if (!await hasColumn(connection, 'calendar_event_moves', 'bin_item_id')) {
+    await connection.execute(`ALTER TABLE calendar_event_moves ADD COLUMN bin_item_id CHAR(36) NULL, ADD KEY idx_event_moves_bin_item (bin_item_id),
+      ADD CONSTRAINT fk_event_moves_bin_item FOREIGN KEY (bin_item_id) REFERENCES bin_items (id) ON DELETE CASCADE`);
+  }
+  // A journal made from 0.28 on counts each attempt before it is sent
+  // (counted_before_send = 1). An older one counted only after a failure, so
+  // its count may miss a copy the server stored: a refusal is checked at the
+  // server before such a journal ends (calendar-move.ts createCopy).
+  if (!await hasColumn(connection, 'calendar_event_moves', 'counted_before_send')) {
+    await connection.execute('ALTER TABLE calendar_event_moves ADD COLUMN counted_before_send BOOLEAN NOT NULL DEFAULT FALSE');
+  }
 
   // The ToDo state and subtasks of a synced task from a restored archive,
   // until the sync that creates the task's row takes them (services/

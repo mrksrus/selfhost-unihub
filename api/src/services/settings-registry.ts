@@ -59,6 +59,10 @@ export const SETTINGS = {
     // A view rule (mail-snooze.ts): which lists show a message while it is
     // snoozed. 'hide' is the behaviour before 0.25.
     snoozed_messages: { scope: 'user', kind: { type: 'enum', values: ['hide', 'keep'] }, default: 'hide' },
+    // How long the bin keeps deleted items (services/bin.ts, D13). Keeping
+    // longer is stricter, so an administrator's policy is a minimum. The
+    // default is a placeholder until D33 is answered.
+    bin_retention: { scope: 'user', kind: { type: 'enum', values: ['7', '30', '90', 'forever'] }, default: '30', strictness: ['7', '30', '90', 'forever'] },
   },
   mail_account: {
     notify_enabled: { scope: 'mail_account', kind: { type: 'boolean' }, default: true },

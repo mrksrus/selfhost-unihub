@@ -40,7 +40,7 @@ function deps(timers: ReturnType<typeof fakeTimers>) {
       runMailThreadBackfill: async () => { calls.push('thread backfill'); },
       runDueScheduledSends: async () => { calls.push('scheduled sends'); },
       returnDueSnoozes: async () => { calls.push('snoozes'); },
-      purgeContactBin: async () => { calls.push('contact bin'); return { items: 0, merges: 0 }; },
+      purgeBin: async () => { calls.push('bin'); return { items: 0, merges: 0 }; },
       sweepContactPhotos: async () => { calls.push('contact photos'); return 0; },
       sweepContactImports: async () => { calls.push('contact imports'); return { expired: 0, orphans: 0 }; },
       isWorkerOwner: () => true,

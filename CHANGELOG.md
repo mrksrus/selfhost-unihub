@@ -12,6 +12,32 @@ Data safety. The first start after the upgrade runs database upgrade 25,
 which takes longer on large calendars (see
 [Upgrading](docs/UPGRADING.md#0280-data-safety)).
 
+### Added
+
+- **A bin for what you delete.** Deleted contacts, events and tasks, lists
+  with their events, and recordings now go to a bin instead of being gone at
+  once; mail keeps its Trash folders. Restore brings an item back as it was:
+  a contact with its photo, values and UIDs, a task with its subtasks, done
+  state and place in the list, a recording with its file. Several contacts
+  deleted together, or a list with its events, come back together. An item
+  whose list is gone comes back into your default list.
+- **Synced events and tasks come back to their calendar.** Deleting an event
+  or task of a CalDAV calendar still deletes it at the provider, and UniHub
+  keeps it in the bin with its own details. Restoring it creates it at the
+  provider again with the same identity, and its done state and subtasks
+  come back. If the calendar is read-only now or gone, it is restored into
+  your default list, unless it is a repeating event whose dates have their own
+  changes or details: that one waits in the bin until its calendar can take
+  it back. Deleting one date of a repeating server event is not kept in the
+  bin, so an administrator's rule against deleting for good covers it too.
+- **Restore to a calendar you choose.** An event or task from the bin can go
+  to another of your calendars, for example when its own calendar went with
+  its account and you connected the account again.
+- **Choose how long the bin keeps items:** 7, 30 or 90 days or forever (30 by
+  default). Changing it applies to what is already in the bin. An
+  administrator can set a minimum, and can forbid deleting from the bin for
+  good or emptying it.
+
 ### Changed
 
 - **A backup holds what only UniHub has.** Contacts, local lists and tasks,
@@ -38,6 +64,10 @@ which takes longer on large calendars (see
   the same title and start for 30 days.
 - **Backups download through a short-lived link** that the Android app can
   resume for an hour, instead of handing the app your session.
+- **Merged contacts are in the same bin.** Undoing a merge works as before for
+  30 days, also by restoring a merged contact from the bin; after that, the
+  merged-away contacts stay for the rest of your retention and come back on
+  their own.
 
 ### Fixed
 
@@ -54,6 +84,19 @@ which takes longer on large calendars (see
   copy whose content never loaded is downloaded. A task made from a copy
   while it is merged away is refused instead of linking a missing email.
   The confirmation counts only the copies the merge actually removes.
+- **A synced task keeps its done state and subtasks through a restore.**
+  After restoring a backup, the first sync of a server calendar brought its
+  tasks back without the ToDo state, done time, subtasks and source email
+  UniHub had kept for them. They now wait for the task, with every subtask
+  however many it has, and are added when the sync brings it back. Moving a task between lists and calendars keeps
+  its identity, so a later restore still finds it.
+- **A move to another calendar no longer leaves the item twice, or writes
+  when it should not.** A move interrupted in 0.27 after the server stored the
+  copy, whose retry the server then refused, ended without looking and left
+  the item in both calendars; it now checks what the server holds and keeps
+  the copy it finds. A move that waited no longer writes to the server after
+  Calendar was switched off, a calendar restore began or the account was
+  paused meanwhile; it waits until they allow it again.
 
 ## 0.27.1
 

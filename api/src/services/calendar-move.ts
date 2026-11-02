@@ -12,10 +12,14 @@ import { canRunModule } from './access-policy';
 import { publishCalendarChanged } from './realtime';
 import { identityOf, rekey } from './task-order';
 import { getCalendarEventWithSubtasks } from './calendar';
-import { movePending, withEventLock, tryEventLock, fenceTaskLocks } from './calendar-move-state';
+import { movePending, withEventLock, tryEventLock, fenceTaskLocks, calendarAdmission } from './calendar-move-state';
 import * as caldav from './caldav';
 import * as ical from './calendar-ical';
 import * as calendarSync from './calendar-sync';
+import { UID_EXACT } from './calendar-overlays';
+
+// The bin finishes a restore it journalled here (bin-calendar.ts requires this file).
+const bin = () => require('./bin-calendar') as typeof import('./bin-calendar');
 
 // Moving an event or task to another calendar or list (0.27). The event row
 // stays the same row, so its ToDo state, done time, subtasks, attendees,
@@ -46,6 +50,14 @@ import * as calendarSync from './calendar-sync';
 // it to the moved row instead of making another (calendar-sync.ts).
 // Removing a calendar or account ends the moves that need it; a move still
 // removing an old copy outlives its task and its new calendar.
+//
+// The item keeps its identity (calendar_events.uid): a move to a server
+// calendar sends its UID, unless that calendar already holds an item with
+// it, and a move from one keeps the server's UID on the row.
+//
+// The bin (bin.ts) uses the same journal to create a synced item at its
+// server again: a 'creating' row with no event row yet, linked to its bin
+// item (bin_item_id), whose commit makes the rows from the new copy.
 
 type MoveState = 'creating' | 'removing';
 interface MoveRow extends RowDataPacket {
@@ -61,11 +73,16 @@ interface MoveRow extends RowDataPacket {
   target_ics: string | null;
   state: MoveState;
   attempts: number;
+  bin_item_id: string | null;
+  /** 0 for a journal from before 0.28, whose count may miss a stored attempt. */
+  counted_before_send: number;
 }
-interface MoveOutcome { pending?: MoveState; sourceKept?: boolean }
+/** ended: its journal ended before anything was sent (a calendar restore overtook it). */
+interface MoveOutcome { pending?: MoveState; sourceKept?: boolean; ended?: true }
 /** The new server copy of a moved event, stored or about to be. */
 interface NewCopy { account: SyncAccount; calendar: SyncCalendar; timeZone: string; object: { id?: string; href: string; etag: string | null; ics: string } }
-type Attempt = { copy: NewCopy } | { refused: unknown } | { wait: unknown };
+type Attempt = { copy: NewCopy } | { refused: unknown } | { wait: unknown } | { ended: true };
+const ENDED = Symbol('ended');
 
 const RETRY_SECONDS = [60, 300, 1800];
 const LATER_SECONDS = 3600;
@@ -101,13 +118,13 @@ async function lockMovedAway(connection: SqlExecutor, objectId: string) {
 /** Before a sync's transaction: the item whose open move creates this object (its calendar and UID), if any. */
 async function creatingMoveItem(executor: SqlExecutor, calendarId: string, uid: string) {
   const [rows] = await executor.execute<RowDataPacket[]>(
-    "SELECT user_id, event_id FROM calendar_event_moves WHERE target_calendar_id = ? AND target_uid = ? AND state = 'creating' AND event_id IS NOT NULL LIMIT 1", [calendarId, uid]);
+    `SELECT user_id, event_id FROM calendar_event_moves WHERE target_calendar_id = ? AND target_uid = ? ${UID_EXACT} AND state = 'creating' AND event_id IS NOT NULL LIMIT 1`, [calendarId, uid]);
   return rows[0] ? { userId: String(rows[0].user_id), eventId: String(rows[0].event_id) } : null;
 }
 
 /** In a sync's transaction: the open move whose new copy is this object (its calendar and UID), locked. */
 async function lockCreatingMove(connection: SqlExecutor, calendarId: string, uid: string) {
-  const [rows] = await connection.execute<MoveRow[]>('SELECT * FROM calendar_event_moves WHERE target_calendar_id = ? AND target_uid = ? FOR UPDATE', [calendarId, uid]);
+  const [rows] = await connection.execute<MoveRow[]>(`SELECT * FROM calendar_event_moves WHERE target_calendar_id = ? AND target_uid = ? ${UID_EXACT} FOR UPDATE`, [calendarId, uid]);
   return rows.find(row => row.state === 'creating') ?? null;
 }
 
@@ -136,6 +153,12 @@ async function commitMove(connection: SqlExecutor, move: MoveRow, copy: NewCopy 
   if (move.state !== 'creating') return false;
   // Every write of a move holds the item's lock, fenced by it (calendar-move-state.ts).
   await fenceTaskLocks(connection);
+  if (move.bin_item_id) {
+    // A restore from the bin: its rows are made from the new copy.
+    const done = !!copy && await bin().finishServerRestore(connection, move.user_id, move.bin_item_id, copy);
+    await connection.execute('DELETE FROM calendar_event_moves WHERE id = ?', [move.id]);
+    return done;
+  }
   const userId = move.user_id;
   const [events] = move.event_id && move.target_calendar_id
     ? await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_events WHERE id = ? AND user_id = ? FOR UPDATE', [move.event_id, userId])
@@ -153,10 +176,11 @@ async function commitMove(connection: SqlExecutor, move: MoveRow, copy: NewCopy 
     const object = await calendarSync.storeObject(connection, copy.account, copy.calendar, copy.object);
     await calendarSync.linkMovedObject(connection, copy.account, copy.calendar, object, eventId, copy.timeZone);
   }
+  // A new server copy gives the row its UID; a UniHub list keeps the one it has.
   await connection.execute(
     `UPDATE calendar_events e JOIN calendar_calendars c ON c.id = ? AND c.user_id = e.user_id
-     SET e.calendar_id = c.id, e.color = COALESCE(c.color, e.color) WHERE e.id = ? AND e.user_id = ?`,
-    [move.target_calendar_id, eventId, userId]
+     SET e.calendar_id = c.id, e.color = COALESCE(c.color, e.color), e.uid = COALESCE(?, e.uid) WHERE e.id = ? AND e.user_id = ?`,
+    [move.target_calendar_id, copy ? move.target_uid : null, eventId, userId]
   );
   if (before) await rekey(connection, userId, eventId, before);
   if (move.source_object_id) {
@@ -196,14 +220,35 @@ async function postpone(move: MoveRow, error: unknown) {
     [attempts, describe(error), RETRY_SECONDS[attempts - 1] ?? LATER_SECONDS, move.id]);
 }
 
-/** Step 3: the new copy at the target server, or null while it waits. */
-async function createCopy(move: MoveRow): Promise<NewCopy | null> {
+/**
+ * Whether a move's attempt may go on now: the Calendar module, a calendar
+ * restore of the person, and its target account (still there, not paused),
+ * read again after every wait (a login, a lock, the server) before its
+ * server is contacted, and inside the commit's transaction before anything
+ * local changes. The error says why not; a move not admitted waits, and an
+ * unknown outcome stays in its journal.
+ */
+async function moveAdmission(move: MoveRow, executor: SqlExecutor = db) {
+  const refusal = await calendarAdmission(move.user_id, executor);
+  if (refusal) return refusal;
+  const [[target]] = move.target_calendar_id ? await executor.execute<RowDataPacket[]>(
+    `SELECT a.is_active FROM calendar_calendars c JOIN calendar_accounts a ON a.id = c.account_id AND a.user_id = c.user_id
+     WHERE c.id = ? AND c.user_id = ?`, [move.target_calendar_id, move.user_id]) : [[]];
+  if (!target) return notFound('CALENDAR_NOT_FOUND', 'The calendar this item was being moved to is gone.');
+  if (!Number(target.is_active)) return conflict('CALENDAR_SYNC_PAUSED', 'Sync is paused for this calendar account, so changes cannot be saved to it.');
+  return null;
+}
+
+/** Step 3: the new copy at the target server, null while it waits, or ENDED once its journal ended. */
+async function createCopy(move: MoveRow): Promise<NewCopy | null | typeof ENDED> {
   const target = move.target_calendar_id ? await calendarSync.loadCalendarContext(move.user_id, move.target_calendar_id) : null;
   if (!target) {
     // Its new calendar was removed from UniHub: the item stays where it is.
     await closeMove(move.id);
     throw notFound('CALENDAR_NOT_FOUND', 'The calendar this item was being moved to is gone.');
   }
+  // Where and as whom it writes, as the context was read: compared again before the PUT.
+  const destination = (await moveDestinations(db, move.user_id)).get(move.id);
   // After about three days of failures, the outcome of the earlier attempts
   // is settled by looking: absent, the move ends and the item stays; present,
   // it is adopted. Unknown, it keeps waiting with the same UID.
@@ -212,24 +257,57 @@ async function createCopy(move: MoveRow): Promise<NewCopy | null> {
   let attempt: Attempt;
   try {
     attempt = await calendarSync.withWriteContext(target, async (ctx): Promise<Attempt> => {
-      calendarSync.assertWritable(target);
+      // The login was a wait: the gates are read again before the server is contacted.
+      const refusal = await moveAdmission(move);
+      if (refusal) throw refusal;
       const url = calendarSync.objectUrl(ctx.account, { href: move.target_href! });
       const copy = (etag: string | null, ics: string) => ({ copy: { account: ctx.account, calendar: ctx.calendar, timeZone: ctx.timeZone, object: { href: move.target_href!, etag, ics } } });
       const look = async (otherwise: Attempt): Promise<Attempt> => {
+        const blocked = await moveAdmission(move);
+        if (blocked) return { wait: blocked };
         const found = await caldav.getCalendarObject({ url, ...ctx.login });
         if (found && ical.objectUid(found.ics) === move.target_uid) return copy(found.etag, found.ics);
         if (found) return { refused: conflict('CALDAV_CONFLICT', 'Another item already uses this address on the calendar server. Nothing was moved.') };
         return otherwise;
       };
+      // A calendar that became read-only cannot take the copy, but an
+      // earlier attempt may have stored it: looking needs no write
+      // permission, so the outcome is settled now (adopted when there, ended
+      // when absent) instead of waiting for a permission that may never come
+      // back. (A paused account was refused above, before any contact.)
+      let blocked: unknown = null;
+      try { calendarSync.assertWritable(target); } catch (error) { blocked = error; }
+      if (blocked) {
+        if ((blocked as ApiError)?.code !== 'CALENDAR_READ_ONLY') throw blocked;
+        return look({ refused: blocked });
+      }
+      // The attempt is on record before it is sent, in its own commit: a
+      // stop after the server stored the copy can never leave a journal
+      // that claims nothing was sent.
+      await db.execute('UPDATE calendar_event_moves SET attempts = GREATEST(attempts, ?) WHERE id = ?', [Number(move.attempts) + 1, move.id]);
+      // That statement waits for whoever holds the journal row (a sync, a
+      // restore): the journal and the gates are read again before sending.
+      // A journal ended meanwhile (a restore overtook it) sends nothing.
+      const current = await loadMove(db, move.id);
+      if (current?.state !== 'creating') return { ended: true };
+      const fields = ['target_calendar_id', 'target_uid', 'target_href', 'target_ics', 'bin_item_id'] as const;
+      if (fields.some(field => current[field] !== move[field]) || (await moveDestinations(db, move.user_id)).get(move.id) !== destination) {
+        return { wait: conflict('CALENDAR_MOVE_CHANGED', 'The move changed while it waited; it is tried again.') };
+      }
+      const late = await moveAdmission(current);
+      if (late) return { wait: late };
       try {
         const { etag } = await caldav.putCalendarObject({ url, ics: move.target_ics!, etag: null, ...ctx.login });
         return copy(etag, move.target_ics!);
       } catch (error) {
         const taken = (error as ApiError)?.code === 'CALDAV_CONFLICT';
         const refused = refusedByServer(error);
-        // Refused on the first attempt: nothing was stored. Otherwise an
-        // earlier attempt may have stored it: look at what is there.
-        if (!taken && !(refused && move.attempts > 0)) {
+        // Refused on the first attempt of a journal that counts each one
+        // before it is sent: nothing was stored. Otherwise an earlier attempt
+        // may have stored it (a journal from before 0.28 counted only after
+        // a failure, so its count proves nothing): look at what is there.
+        const first = Number(move.attempts) === 0 && !!Number(move.counted_before_send);
+        if (!taken && !(refused && !first)) {
           if (refused) return { refused: error };
           return settle ? look({ refused: new HttpError(409, 'CALENDAR_MOVE_FAILED', 'The calendar server did not take the item, so it stays in its calendar.') }) : { wait: error };
         }
@@ -241,6 +319,7 @@ async function createCopy(move: MoveRow): Promise<NewCopy | null> {
     attempt = { wait: error };
   }
   if ('copy' in attempt) return attempt.copy;
+  if ('ended' in attempt) return ENDED;
   if ('refused' in attempt) {
     await closeMove(move.id);
     throw attempt.refused;
@@ -311,10 +390,15 @@ async function advance(moveId: string): Promise<MoveOutcome> {
   let move = await loadMove(db, moveId);
   if (move?.state === 'creating') {
     const copy = move.target_href ? await createCopy(move) : null;
+    if (copy === ENDED) return { ended: true };
     if (move.target_href && !copy) return { pending: 'creating' };
     const committed = await withTransaction(async connection => {
+      // A restore from the bin: the person first, then the journal and the bin row (bin.ts lockBinOwner).
+      if (move!.bin_item_id) await (require('./bin') as typeof import('./bin')).lockBinOwner(connection, move!.user_id);
       const locked = await loadMove(connection, moveId, true);
-      return !!locked && commitMove(connection, locked, copy);
+      // The server was a wait: nothing local changes while the gates say no; the journal stays.
+      if (!locked || await moveAdmission(locked, connection)) return false;
+      return commitMove(connection, locked, copy);
     });
     if (committed) publishCalendarChanged(move.user_id, null, 'local');
     move = await loadMove(db, moveId);
@@ -422,6 +506,21 @@ async function retryChanges(event: CalendarEvent, changes: Partial<CalendarEvent
   return keys.flatMap(key => FIELDS_OF[key] ?? []).some(field => JSON.stringify(asked[field]) !== JSON.stringify(frozen[field]));
 }
 
+// The UID of a new server copy: the item's own, so it keeps its identity
+// across calendars and restores (backup-restore-mapping.ts matches by it),
+// unless the target calendar already holds that UID (an older copy kept
+// there) or another move is creating it, or it does not fit the journal.
+// Then a new one, which the commit records on the row.
+async function copyUid(userId: string, event: CalendarEvent & { uid?: string | null }, targetCalendarId: string) {
+  const own = typeof event.uid === 'string' ? event.uid : '';
+  if (!own || own.length > 255 || /[\r\n]/.test(own)) return crypto.randomUUID();
+  const [held] = await db.execute<RowDataPacket[]>(
+    `SELECT id FROM calendar_remote_objects WHERE calendar_id = ? AND user_id = ? AND uid = ? ${UID_EXACT} LIMIT 1`, [targetCalendarId, userId, own]);
+  const [moving] = await db.execute<RowDataPacket[]>(
+    `SELECT id FROM calendar_event_moves WHERE target_calendar_id = ? AND target_uid = ? ${UID_EXACT} LIMIT 1`, [targetCalendarId, own]);
+  return held.length || moving.length ? crypto.randomUUID() : own;
+}
+
 // What a move freezes of a row: the copy's fields, its kind and its calendar.
 const frozenView = (row: CalendarEvent) => JSON.stringify({
   fields: normalFields(calendarSync.eventFields(row)), todo: !!Number(row.is_todo_only), recurrence: row.recurrence || null, calendar: row.calendar_id || null,
@@ -508,7 +607,7 @@ async function admitMove(userId: string, eventId: string, targetCalendarId: stri
 
   // The journal, with the new copy's UID, address and content fixed before
   // the first server write: every attempt sends exactly this.
-  const uid = crypto.randomUUID();
+  const uid = target.remote ? await copyUid(userId, event, targetCalendarId) : crypto.randomUUID();
   let href: string | null = null;
   let ics: string | null = null;
   if (target.remote) {
@@ -556,8 +655,8 @@ async function admitMove(userId: string, eventId: string, targetCalendarId: stri
       // A move still removing an older copy of this item goes on without it.
       await connection.execute("UPDATE calendar_event_moves SET event_id = NULL WHERE event_id = ? AND user_id = ? AND state = 'removing'", [eventId, userId]);
       await connection.execute(
-        `INSERT INTO calendar_event_moves (id, user_id, event_id, source_calendar_id, source_object_id, source_etag, target_calendar_id, target_uid, target_href, target_ics, state, next_attempt_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', UTC_TIMESTAMP() + INTERVAL 1 MINUTE)`,
+        `INSERT INTO calendar_event_moves (id, user_id, event_id, source_calendar_id, source_object_id, source_etag, target_calendar_id, target_uid, target_href, target_ics, state, next_attempt_at, counted_before_send)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', UTC_TIMESTAMP() + INTERVAL 1 MINUTE, TRUE)`,
         [moveId, userId, eventId, event.calendar_id || null, sourceObjectId, sourceEtag, targetCalendarId, uid, href, ics]
       );
       return 'journal';
@@ -623,6 +722,41 @@ async function cancelMove(userId: string, eventId: string): Promise<TaskMoveCanc
   if (cancelled) publishCalendarChanged(userId, null, 'local');
   const event = await getCalendarEventWithSubtasks(userId, eventId);
   return { event: event as TaskMoveCancelResponse['event'], cancelled };
+}
+
+// --- Restoring a synced item from the bin -----------------------------------
+
+/**
+ * In the bin's transaction, with the bin item locked: the journal row that
+ * creates the item at its server again, with its UID, address and content
+ * fixed before the first write, as a move's. Returns its id for runBinRestore.
+ */
+async function journalBinRestore(connection: SqlExecutor, userId: string, binItemId: string, target: { calendarId: string; uid: string; href: string; ics: string }) {
+  const moveId = crypto.randomUUID();
+  await connection.execute(
+    `INSERT INTO calendar_event_moves (id, user_id, event_id, target_calendar_id, target_uid, target_href, target_ics, state, next_attempt_at, bin_item_id, counted_before_send)
+     VALUES (?, ?, NULL, ?, ?, ?, ?, 'creating', UTC_TIMESTAMP() + INTERVAL 1 MINUTE, ?, TRUE)`,
+    [moveId, userId, target.calendarId, target.uid, target.href, target.ics, binItemId]);
+  return moveId;
+}
+
+/**
+ * Runs a journalled restore now: 'pending' while the server has not
+ * confirmed the copy (the sync pass retries; a lost answer is adopted, never
+ * sent as a second item), else 'settled' (the bin item is gone when it was
+ * restored), or 'ended' when a calendar restore ended its journal before
+ * anything was sent. A refusal throws, and the item stays in the bin.
+ */
+async function runBinRestore(moveId: string): Promise<'pending' | 'settled' | 'ended'> {
+  const outcome = await runMove(moveId);
+  if (outcome.ended) return 'ended';
+  return outcome.pending || await loadMove(db, moveId) ? 'pending' : 'settled';
+}
+
+/** The bin items whose re-creation at a server is under way. */
+async function restoringBinItems(executor: SqlExecutor, userId: string) {
+  const [rows] = await executor.execute<RowDataPacket[]>('SELECT bin_item_id FROM calendar_event_moves WHERE user_id = ? AND bin_item_id IS NOT NULL', [userId]);
+  return new Set(rows.map(row => String(row.bin_item_id)));
 }
 
 /** Refuses an edit or deletion while the item's new copy is being created: it would be lost or come back. */
@@ -736,5 +870,9 @@ export {
   lockCreatingMove,
   creatingMoveItem,
   commitMove,
+  moveAdmission,
+  journalBinRestore,
+  runBinRestore,
+  restoringBinItems,
 };
 export type { MoveOutcome };

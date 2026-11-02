@@ -21,7 +21,9 @@ import { derivedPool } from './side-pools';
 const CALENDAR_EVENT_LOCKS = 10;
 // One sync of a calendar account (calendar-sync.ts); a move's removal of an old copy waits for it briefly.
 const CALENDAR_SYNC_LOCKS = 8;
-const SHARES = { 'calendar-event': CALENDAR_EVENT_LOCKS, 'calendar-sync': CALENDAR_SYNC_LOCKS } as const;
+// The file names of one recording (recordings.ts): its delete, its restore and their cleanups.
+const RECORDING_FILE_LOCKS = 4;
+const SHARES = { 'calendar-event': CALENDAR_EVENT_LOCKS, 'calendar-sync': CALENDAR_SYNC_LOCKS, 'recording-file': RECORDING_FILE_LOCKS } as const;
 type LockKind = keyof typeof SHARES;
 
 const inUse = new Map<LockKind, number>();

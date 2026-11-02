@@ -8,6 +8,13 @@ import { inspectRecordingAudio } from './recording-audio';
 import { createAudioConversionQueue } from './audio-conversion-queue';
 import { MAX_CONVERTED_BYTES, runAudioConversion } from './audio-transcode';
 import { escapeLike } from './sql';
+import { withTransaction } from './transactions';
+import { putInBin, parsePayload, parseRefs, lockBinOwner } from './bin';
+import { withNamedLock, stillHeld } from './named-locks';
+import type { Lease } from './named-locks';
+import type { BinKind, BinRow } from './bin';
+import type { BinRestored } from '../contracts/bin';
+import { ApiError } from '../http/errors';
 
 interface RecordingRow extends RowDataPacket {
   id: string;
@@ -732,13 +739,296 @@ async function updateRecording(userId: string, recordingId: string, input: Uploa
   return { recording: serializeRecording(recording!) };
 }
 
+// --- The bin (bin.ts) ---------------------------------------------------------
+//
+// A deleted recording goes to the bin with its row and tags; its file moves
+// to the bin folder of the person's recordings (<root>/<user>/bin/), out of
+// every listing, and comes back with a restore. A move never leaves a
+// committed row or bin item naming a file that is not there: the file gets
+// its new name first (a hard link, or a copy), the transaction that changes
+// the rows commits, and only then does the old name go. A stop before the
+// commit leaves an extra name, which the next move reuses; one after it
+// leaves the old name, which the purge or the next restore removes. A
+// restore or the purge looks for the file in both places. MP3 copies made
+// for playback are not kept: they are made again.
+//
+// A recording's delete, its restore and every removal of one of its names
+// hold the recording's file lock (withRecordingFiles), and a name is removed
+// only if, checked under that lock, no committed row names it: so a cleanup
+// decided before another change committed (or run later from a queue) never
+// takes a name that change adopted.
+
+const RECORDING_COLUMNS = ['id', 'user_id', 'title', 'description', 'original_filename', 'content_type', 'size_bytes', 'duration_seconds', 'storage_path',
+  'source', 'category', 'recorded_at', 'metadata', 'created_at', 'updated_at', 'uid'] as const;
+const RECORDING_TIMES = new Set(['recorded_at', 'created_at', 'updated_at']);
+const RECORDING_ID = /^[0-9a-f-]{36}$/i;
+interface RecordingBinPayload {
+  provider: 'local';
+  origin: null;
+  recording: Record<string, unknown>;
+  tags: string[];
+  /** Where the file waits; null for a file outside the recordings root, which stays where it is. */
+  bin_path: string | null;
+}
+
+const binFolder = (userId: string) => path.join(RECORDINGS_ROOT, String(userId), 'bin');
+// A path a payload names, only inside the person's own folder: an archive's payload is not trusted.
+function ownPath(userId: string, file: unknown) {
+  if (typeof file !== 'string' || !file) return null;
+  const resolved = path.resolve(file);
+  return resolved.startsWith(`${path.join(path.resolve(RECORDINGS_ROOT), String(userId))}${path.sep}`) ? resolved : null;
+}
+
+const unsafeFolder = () => new ApiError(409, 'RECORDING_FOLDER_UNSAFE', 'The recordings folder on the server is not a plain folder (it is a link or a file), so nothing was changed.');
+
+/**
+ * The person's recordings folder, or its bin folder, as a plain directory:
+ * a component that is a symlink or not a directory is refused, and its real
+ * path must be <real root>/<user>[/bin], so a planted link can never take a
+ * file out of the recordings root. With create, missing folders are made one
+ * level at a time, each checked before the next.
+ */
+async function ownFolder(userId: string, { bin = false, create = false } = {}) {
+  if (!RECORDING_ID.test(String(userId))) throw unsafeFolder();
+  const root = path.resolve(RECORDINGS_ROOT);
+  if (create) await fs.promises.mkdir(root, { recursive: true });
+  const levels = [String(userId), ...(bin ? ['bin'] : [])];
+  let dir = root;
+  for (const level of levels) {
+    dir = path.join(dir, level);
+    let stat = await fs.promises.lstat(dir).catch(() => null);
+    if (!stat && create) {
+      await fs.promises.mkdir(dir).catch(error => { if (error.code !== 'EEXIST') throw error; });
+      stat = await fs.promises.lstat(dir).catch(() => null);
+    }
+    if (!stat) return null;
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw unsafeFolder();
+  }
+  const [realRoot, realDir] = await Promise.all([fs.promises.realpath(root), fs.promises.realpath(dir)]);
+  if (realDir !== path.join(realRoot, ...levels)) throw unsafeFolder();
+  return dir;
+}
+
+// A recording file of the person: a plain file (not a link) directly in their
+// folder or its bin folder, as those folders really are.
+async function ownFile(userId: string, file: string | null | undefined) {
+  const resolved = ownPath(userId, file);
+  if (!resolved) return null;
+  const folder = path.dirname(resolved);
+  const expected = [path.resolve(RECORDINGS_ROOT, String(userId)), path.resolve(binFolder(userId))];
+  if (!expected.includes(folder)) return null;
+  try { await ownFolder(userId, { bin: folder === expected[1] }); } catch { return null; }
+  const stat = await fs.promises.lstat(resolved).catch(() => null);
+  return stat?.isFile() && !stat.isSymbolicLink() ? resolved : null;
+}
+
+const fileInUse = async (executor: SqlExecutor, file: string) => (await executor.execute<RowDataPacket[]>('SELECT id FROM recordings WHERE storage_path = ? LIMIT 1', [file]))[0].length > 0;
+
+/** Whether two names are the same file on disk (a hard link of it). */
+async function sameFile(a: string, b: string) {
+  const [first, second] = await Promise.all([fs.promises.stat(a).catch(() => null), fs.promises.stat(b).catch(() => null)]);
+  return !!first && !!second && first.dev === second.dev && first.ino === second.ino;
+}
+const exists = (file: string) => fs.promises.lstat(file).then(() => true, () => false);
+
+/**
+ * Gives a recording's file a second name in the person's folders: a hard
+ * link, or a copy where the file system has none. The source keeps its name
+ * until the caller's commit (removeRecordingName).
+ */
+async function addName(from: string, to: string) {
+  if (await sameFile(from, to)) return;
+  try {
+    await fs.promises.link(from, to);
+  } catch (error) {
+    if (!['EXDEV', 'EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EMLINK'].includes((error as NodeJS.ErrnoException).code || '')) throw error;
+    await fs.promises.copyFile(from, to, fs.constants.COPYFILE_EXCL);
+  }
+}
+
+const RECORDING_FILE_WAIT_SECONDS = 20;
+const recordingBusy = () => new ApiError(409, 'RECORDING_BUSY', 'This recording is being changed right now. Try again in a moment.');
+
+/** Runs fn holding the file lock of one recording, by its id (a bin item's item_id). */
+async function withRecordingFiles<T>(recordingId: string, fn: (lease: Lease) => Promise<T>) {
+  const held = await withNamedLock('recording-file', String(recordingId), fn, { waitSeconds: RECORDING_FILE_WAIT_SECONDS });
+  if (!held) throw recordingBusy();
+  return held.value;
+}
+
+/** Whether a committed row names this file: a recording, or a bin item that keeps it (file_refs, bin_path). */
+async function nameInUse(executor: SqlExecutor, userId: string, file: string) {
+  if (await fileInUse(executor, file)) return true;
+  const [rows] = await executor.execute<RowDataPacket[]>(
+    `SELECT id FROM bin_items WHERE user_id = ? AND item_type = 'recording'
+       AND (JSON_CONTAINS(COALESCE(file_refs, '[]'), JSON_QUOTE(?)) OR JSON_VALUE(payload, '$.bin_path') = ?) LIMIT 1`, [userId, file, file]);
+  return rows.length > 0;
+}
+
+/**
+ * Removes one of a recording's file names (with remove, also its MP3
+ * copies), under the recording's file lock and only if no committed row
+ * names it then. Called after the commit that stopped using the name, by
+ * the purge, or later from a queue: the check is made at removal time, never
+ * taken from the caller. A lock that stays busy leaves the name for later.
+ */
+async function removeRecordingName(userId: string, recordingId: string, file: string, remove: (name: string) => Promise<unknown> = name => fs.promises.rm(name, { force: true })) {
+  await withNamedLock('recording-file', String(recordingId), async lease => {
+    if (await nameInUse(db, userId, file) || !await stillHeld(db, lease)) return;
+    await remove(file);
+  }, { waitSeconds: RECORDING_FILE_WAIT_SECONDS }).catch(() => null);
+}
+
 async function deleteRecording(userId: string, recordingId: string) {
   const recording = await getRecordingForUser(userId, recordingId);
   if (!recording) return { error: 'Recording not found', status: 404 };
-  await deleteRecordingFiles(recording.storage_path);
-  await db.execute('DELETE FROM recordings WHERE id = ? AND user_id = ?', [recordingId, userId]);
-  return { deleted: true };
+  const converted = path.extname(String(recording.storage_path ?? '')).toLowerCase() !== '.mp3';
+  if (recording.storage_path && converted) await mp3ConversionJobs.get(getConvertedMp3Path(path.resolve(recording.storage_path)))?.catch(() => {});
+  const { found, original, named } = await withRecordingFiles(recordingId, async lease => {
+    // The file moves only from the person's own folder into its bin folder,
+    // both checked before anything changes.
+    const original = await ownFile(userId, recording.storage_path);
+    const binDir = original ? await ownFolder(userId, { bin: true, create: true }) : null;
+    let binPath = original && binDir ? path.join(binDir, path.basename(original)) : null;
+    // A name an earlier, interrupted delete gave the same file is used again.
+    if (binPath && await exists(binPath) && !await sameFile(original!, binPath)) binPath = path.join(binDir!, `${crypto.randomUUID()}${path.extname(original!)}`);
+    // The bin's name of the file is made in the transaction that bins the
+    // row, under its lock, so a restore of the item (which locks its bin row
+    // first) never finds the item without its file.
+    let named = false;
+    try {
+      const found = await withTransaction(async connection => {
+        const [[row]] = await connection.execute<RowDataPacket[]>('SELECT * FROM recordings WHERE id = ? AND user_id = ? FOR UPDATE', [recordingId, userId]);
+        if (!row) return false;
+        const { tags, ...stored } = { ...row, tags: recording.tags };
+        const payload: RecordingBinPayload = {
+          provider: 'local', origin: null, bin_path: binPath, tags: tags ? String(tags).split('\u001f').filter(Boolean) : [],
+          recording: Object.fromEntries(Object.entries(stored).map(([key, value]) => [key, value instanceof Date ? value.toISOString() : value])),
+        };
+        const keepFile = !!(original && binPath && String(row.storage_path) === recording.storage_path && await ownFile(userId, original));
+        await putInBin(connection, userId, [{ module: 'recordings', itemType: 'recording', itemId: recordingId, title: String(row.title ?? ''), reason: 'deleted', payload,
+          fileRefs: keepFile ? [binPath!] : null }]);
+        await connection.execute('DELETE FROM recordings WHERE id = ? AND user_id = ?', [recordingId, userId]);
+        if (keepFile && !named) {
+          if (!await stillHeld(connection, lease)) throw recordingBusy();
+          await addName(original!, binPath!);
+          named = true;
+        }
+        return true;
+      });
+      return { found, original, named };
+    } catch (error) {
+      // Not binned (the row is still there): the bin's name goes again.
+      if (named && binPath && original && await fileInUse(db, original) && !await nameInUse(db, userId, binPath) && await exists(original)) {
+        await fs.promises.rm(binPath, { force: true }).catch(() => {});
+      }
+      throw error;
+    }
+  });
+  if (!found) return { error: 'Recording not found', status: 404 };
+  if (original && named) await removeRecordingName(userId, recordingId, original, deleteRecordingFiles);
+  else if (original && converted) {
+    await Promise.all([getConvertedMp3Path(original), getLegacyConvertedMp3Path(original)].map(file => fs.promises.rm(file, { force: true }).catch(() => {})));
+  }
+  return { deleted: true, binned: true };
 }
+
+async function restoreRecordingItem(userId: string, item: BinRow): Promise<BinRestored> {
+  const { id, from } = await withRecordingFiles(String(item.item_id), lease => restoreUnderLock(userId, item, lease));
+  // The bin's name goes after the commit, checked again then.
+  if (from) await removeRecordingName(userId, String(item.item_id), from);
+  return { id: item.id, item_type: 'recording', item_id: id, note: null };
+}
+
+async function restoreUnderLock(userId: string, item: BinRow, lease: Lease) {
+  const folder = await ownFolder(userId, { create: true });
+  if (!folder) throw unsafeFolder();
+  // The name this attempt gave the file, so a retried transaction finds it
+  // and a failed one removes it again; the bin's name goes after the commit.
+  let named: { from: string; to: string } | null = null;
+  try {
+    const id = await withTransaction(async connection => {
+      // The person first (bin.ts lockBinOwner), then the item: a second
+      // restore, a delete for good or the purge of it waits here, and finds
+      // it gone before it touches any file.
+      await lockBinOwner(connection, userId);
+      const [[locked]] = await connection.execute<BinRow[]>('SELECT * FROM bin_items WHERE id = ? AND user_id = ? AND restored_at IS NULL FOR UPDATE', [item.id, userId]);
+      if (!locked) throw new ApiError(404, 'BIN_ITEM_NOT_FOUND', 'Not in the bin');
+      const payload = parsePayload<RecordingBinPayload>(locked);
+      const stored = payload?.recording;
+      if (!payload || !stored) throw new ApiError(409, 'BIN_ITEM_UNREADABLE', 'This recording cannot be restored.');
+      const original = ownPath(userId, stored.storage_path);
+      // The file is in the bin folder, or still where it was (a delete that
+      // stopped after its commit); never one a live recording uses.
+      let source: string | null = null;
+      for (const candidate of [named?.from, payload.bin_path, stored.storage_path]) {
+        const file = await ownFile(userId, candidate as string | null | undefined);
+        if (file && !await fileInUse(connection, file)) { source = file; break; }
+      }
+      if (!source && payload.bin_path !== null) throw new ApiError(409, 'RECORDING_FILE_MISSING', 'The file of this recording is missing, so it stays in the bin.');
+      const [[idTaken]] = RECORDING_ID.test(String(stored.id)) ? await connection.execute<RowDataPacket[]>('SELECT id FROM recordings WHERE id = ?', [String(stored.id)]) : [[{ id: '' }]];
+      const recordingId = idTaken ? crypto.randomUUID() : String(stored.id);
+      // Back where it was, when that is the person's folder and free (or
+      // already this file); else under its id.
+      let target = source;
+      if (source) {
+        const free = original && path.dirname(original) === folder && (source === original || !await exists(original) || await sameFile(source, original));
+        target = !idTaken && free ? original : path.join(folder, `${recordingId}${path.extname(source) || '.webm'}`);
+        // A copy an interrupted restore left there is not this file's name.
+        if (target !== source && named?.to !== target && await exists(target) && !await sameFile(source, target)) {
+          target = path.join(folder, `${crypto.randomUUID()}${path.extname(source) || '.webm'}`);
+        }
+        if (target !== source && named?.to !== target) {
+          if (!await stillHeld(connection, lease)) throw recordingBusy();
+          await addName(source, target);
+        }
+        if (target !== source) named = { from: source, to: target };
+      }
+      const own = typeof stored.uid === 'string' && RECORDING_ID.test(stored.uid) ? stored.uid : recordingId;
+      const [[uidTaken]] = await connection.execute<RowDataPacket[]>('SELECT id FROM recordings WHERE user_id = ? AND uid = ? LIMIT 1', [userId, own]);
+      const row: Record<string, unknown> = { ...stored, id: recordingId, user_id: userId, uid: uidTaken ? recordingId : own, storage_path: target ?? stored.storage_path };
+      await connection.execute(`INSERT INTO recordings (${RECORDING_COLUMNS.join(', ')}) VALUES (${RECORDING_COLUMNS.map(() => '?').join(', ')})`,
+        RECORDING_COLUMNS.map(column => {
+          const value = row[column];
+          if (value == null) return null;
+          if (RECORDING_TIMES.has(column)) return new Date(String(value));
+          if (column === 'metadata') return typeof value === 'string' ? value : JSON.stringify(value);
+          return typeof value === 'number' || typeof value === 'string' ? value : null;
+        }) as (string | number | Date | null)[]);
+      await ensureRecordingTags(userId, recordingId, payload.tags, connection);
+      await connection.execute('DELETE FROM bin_items WHERE id = ? AND user_id = ?', [item.id, userId]);
+      return recordingId;
+    });
+    const done = named as { from: string; to: string } | null;
+    return { id, from: done?.from ?? null };
+  } catch (error) {
+    // Not restored: the name this attempt made goes again, unless a row
+    // names it (the commit happened after all).
+    const back = named as { from: string; to: string } | null;
+    if (back && !await nameInUse(db, userId, back.to) && await exists(back.from)) await fs.promises.rm(back.to, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+/** Files of recordings deleted for good, in the bin folder or still where they were, unless a recording uses them again. */
+async function releaseRecordingFiles(userId: string, items: readonly BinRow[]) {
+  for (const item of items) {
+    const payload = parsePayload<RecordingBinPayload>(item);
+    for (const candidate of new Set([...parseRefs(item.file_refs), payload?.recording?.storage_path])) {
+      const file = await ownFile(userId, candidate as string | undefined);
+      if (file) await removeRecordingName(userId, String(item.item_id), file, deleteRecordingFiles);
+    }
+  }
+}
+
+const recordingBinKind: BinKind = {
+  async restore(userId, group) {
+    const answers = [];
+    for (const item of group) answers.push(await restoreRecordingItem(userId, item));
+    return answers;
+  },
+  release: releaseRecordingFiles,
+};
 
 async function cleanupExpiredRecordingUploads() {
   const [rows] = await db.execute<RowDataPacket[]>(
@@ -787,5 +1077,6 @@ export {
   abortRecordingUpload,
   updateRecording,
   deleteRecording,
+  recordingBinKind,
   cleanupExpiredRecordingUploads,
 };
