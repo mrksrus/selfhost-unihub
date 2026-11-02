@@ -252,7 +252,20 @@ interface RunHooks {
   afterDump?: () => Promise<void>;
 }
 
-let current: { id: string; abort: AbortController; done: Promise<RunRow | null> } | null = null;
+type Slot = { id: string; abort: AbortController; done: Promise<RunRow | null> };
+let current: Slot | null = null;
+
+/**
+ * Frees the run slot `slot` holds. Every way out of a start or a run ends
+ * here, after its last await. Right before, with no await in between, it
+ * samples the secret files: they are remembered as they are when the run
+ * ends, so bytes it may have copied stay out of the next run.
+ */
+function releaseSlot(slot: Slot) {
+  if (current !== slot) return;
+  try { sampleSecretFiles(); } catch (sampling) { log.error(LOG, 'Could not read the secret files at the end of a run', sampling, { run: slot.id }); }
+  current = null;
+}
 
 /**
  * Starts a run and answers its row (status running) without waiting for it;
@@ -264,7 +277,7 @@ async function startInstanceBackup({ trigger, actorId = null, hooks = {} }: { tr
   if (current) throw conflict('INSTANCE_BACKUP_RUNNING', 'An instance backup is already running.');
   const id = timeOrderedId();
   const abort = new AbortController();
-  const slot = { id, abort, done: Promise.resolve<RunRow | null>(null) };
+  const slot: Slot = { id, abort, done: Promise.resolve<RunRow | null>(null) };
   current = slot;
   let row: RunRow;
   try {
@@ -275,7 +288,7 @@ async function startInstanceBackup({ trigger, actorId = null, hooks = {} }: { tr
       WHERE NOT EXISTS (SELECT 1 FROM instance_backups WHERE status = 'running')`,
     [id, trigger, actorId, appVersion(), Number(migration[0]?.id) || 0, keyFingerprint(settings.key)]);
     if (!inserted.affectedRows) {
-      if (current === slot) current = null;
+      releaseSlot(slot);
       throw conflict('INSTANCE_BACKUP_RUNNING', 'An instance backup is already running.');
     }
     const read = await readRun(id);
@@ -289,11 +302,11 @@ async function startInstanceBackup({ trigger, actorId = null, hooks = {} }: { tr
       await db.execute(`UPDATE instance_backups SET status = 'failed', error = ?, finished_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'running'`,
         ['The backup could not start; the server log has the details.', id])
         .catch(mark => log.error(LOG, 'Could not record a run that could not start', mark, { run: id }));
-      current = null;
+      releaseSlot(slot);
     }
     throw error;
   }
-  slot.done = execute(row, settings, abort.signal, hooks).finally(() => { if (current === slot) current = null; });
+  slot.done = execute(row, settings, abort.signal, hooks).finally(() => releaseSlot(slot));
   return { run: serializeRun(row), done: slot.done };
 }
 
@@ -368,10 +381,6 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
     // The file of a run that does not count goes too.
     if (published && failedRecorded) await fs.promises.rm(finalPath, { force: true }).catch(() => {});
   } finally {
-    // However the run ends (succeeded, failed at any step, stopped), it
-    // remembers the secret files as they are at its exit, after anything that
-    // could still change them: bytes it may have copied stay out of the next.
-    try { sampleSecretFiles(); } catch (sampling) { log.error(LOG, 'Could not read the secret files at the end of a run', sampling, { run: row.id }); }
     clearTimeout(timer);
     signal.removeEventListener('abort', onAbort);
   }

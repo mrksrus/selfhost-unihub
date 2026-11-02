@@ -644,6 +644,97 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     }
   });
 
+  await t.test('a run remembers the secret as it is when its slot is freed, after its last database statement', async () => {
+    // As above, with the rotation to B during one of the last statements a
+    // start or a run waits for; B is configured when the call returns.
+    const state = require('../dist/src/state') as typeof import('../src/state');
+    const config = require('../dist/src/config') as typeof import('../src/config');
+    const shared = state.getDb()!;
+    const secretFile = path.join(scratch, 'last-statement', 'key');
+    process.env.UNIHUB_LAST_STATEMENT_SECRET_FILE = secretFile;
+    const copy = path.join(rootDirs.attachments, users.alex, 'last-statement-copy');
+    let b = Buffer.alloc(0);
+    const rotateToB = () => {
+      b = Buffer.from(`synthetic-b-${crypto.randomBytes(16).toString('hex')}`);
+      fs.writeFileSync(`${secretFile}.next`, b);
+      fs.renameSync(`${secretFile}.next`, secretFile);
+      write(copy, b);
+    };
+    // The statement to rotate during: its pattern, which match of it, and whether it then fails.
+    let armed: { pattern: RegExp; nth: number; fail: boolean } | null = null;
+    let seen = 0;
+    const during = async (sql: string) => {
+      if (!armed || !armed.pattern.test(sql) || ++seen !== armed.nth) return;
+      const { fail } = armed;
+      armed = null;
+      rotateToB();
+      if (fail) throw Object.assign(new Error('synthetic: connection reset'), { code: 'ECONNRESET' });
+    };
+    const intercept = <T extends object>(target: T): T => new Proxy(target, { get: (object, prop) => {
+      const value = Reflect.get(object, prop);
+      if (typeof value !== 'function') return value;
+      if (prop === 'execute') return async (sql: string, ...rest: unknown[]) => { await during(sql); return value.call(object, sql, ...rest); };
+      if (prop === 'getConnection') return async () => intercept(await value.call(object));
+      return value.bind(object);
+    } });
+    const finalRead = /WHERE b\.id = \?/;
+    const exits: [string, { pattern: RegExp; nth: number; fail: boolean }, RunOptions, 'succeeded' | 'failed' | 'rejected' | null][] = [
+      ['the final row read of a success', { pattern: finalRead, nth: 2, fail: false }, {}, 'succeeded'],
+      ['the final row read of a failure', { pattern: finalRead, nth: 2, fail: false }, { hooks: { afterDump: async () => { throw new Error('synthetic copy failure'); } } }, 'failed'],
+      ['a final row read that fails', { pattern: finalRead, nth: 2, fail: true }, {}, null],
+      ['the success transaction', { pattern: /SET status = 'succeeded'/, nth: 1, fail: false }, {}, 'succeeded'],
+      ['the failure recording', { pattern: /SET status = 'failed'/, nth: 1, fail: false }, { hooks: { afterDump: async () => { throw new Error('synthetic copy failure'); } } }, 'failed'],
+      ['the record of a start that failed', { pattern: /SET status = 'failed'/, nth: 1, fail: false }, {}, 'rejected'],
+    ];
+    // Every exit is tried, each on its own: the failures are listed together.
+    const failures: string[] = [];
+    try {
+      for (const [exit, statement, options, outcome] of exits) try {
+        write(secretFile, `synthetic-a-${crypto.randomBytes(16).toString('hex')}`);
+        seen = 0;
+        armed = statement;
+        let startFails = outcome === 'rejected';
+        state.setDb(intercept(new Proxy(shared, { get: (pool, prop) => {
+          const value = Reflect.get(pool, prop);
+          if (prop !== 'execute' || !startFails) return typeof value === 'function' ? value.bind(pool) : value;
+          // A start that fails: its first read of the new row is lost.
+          return async (sql: string, ...rest: unknown[]) => {
+            if (finalRead.test(sql)) { startFails = false; throw Object.assign(new Error('synthetic: connection reset'), { code: 'ECONNRESET' }); }
+            return (value as (...args: unknown[]) => unknown).call(pool, sql, ...rest);
+          };
+        } })));
+        try {
+          if (outcome === 'rejected') {
+            await assert.rejects(backup.startInstanceBackup({ trigger: 'manual', actorId: users.admin }), /connection reset/, exit);
+          } else {
+            const ended = await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin, ...options });
+            assert.equal(ended?.status ?? null, outcome, `${exit}: ${String(ended?.error)}`);
+          }
+        } finally {
+          state.setDb(shared);
+          armed = null;
+        }
+        assert.ok(b.length && config.secretGenerationNames(b.length, crypto.createHash('sha256').update(b).digest('hex')), `${exit}: B is remembered`);
+        write(secretFile, `synthetic-c-${crypto.randomBytes(16).toString('hex')}`);
+        const next = (await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin }))!;
+        assert.equal(next.status, 'succeeded', `${exit}: ${String(next.error)}`);
+        const copied: string[] = [];
+        await format.scanInstanceBackup(path.join(destination, next.file_name!), key, backup.INSTANCE_BACKUP_ROOTS, { onFile: entry => { copied.push(path.join(uploads, entry.root, entry.path)); return null; } });
+        assert.equal(copied.includes(copy), false, `${exit}: the copy of B is left out`);
+      } catch (error) {
+        failures.push((error as Error).message.split('\n')[0]);
+      } finally {
+        fs.rmSync(copy, { force: true });
+        b = Buffer.alloc(0);
+      }
+      assert.deepEqual(failures, []);
+    } finally {
+      state.setDb(shared);
+      delete process.env.UNIHUB_LAST_STATEMENT_SECRET_FILE;
+      fs.rmSync(copy, { force: true });
+    }
+  });
+
   await t.test('a secret file that grows past the bound after its size was checked is not taken as a secret', async () => {
     // The file is small when its size is looked up and large when it is read.
     const secretFile = write(path.join(scratch, 'growing', 'key'), Buffer.alloc(128 * 1024, 'g'));
