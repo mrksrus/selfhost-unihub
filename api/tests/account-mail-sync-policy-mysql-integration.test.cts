@@ -297,6 +297,18 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
   }
   const copiesLeft = async (ids: FixtureValue) => (await rows('SELECT id FROM emails WHERE id IN (?, ?)', [ids.a, ids.b])).map(row => row.id === ids.a ? 'a' : 'b').sort();
 
+  await t.test('Gmail merge: the count is what the merge does', async () => {
+    const accountId = await createAccount('gmail-held', { host: 'imap.gmail.com' });
+    const plain = await gmailCopies(accountId, '7100');
+    // A draft copy is never merged, and so not counted.
+    const draft = await gmailCopies(accountId, '7103', { b: { is_draft: 1 } });
+    assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 1, 'only the groups the merge joins');
+    assert.equal((await prune(accountId)).merged, 1);
+    assert.deepEqual(await copiesLeft(plain), ['a']);
+    assert.deepEqual(await copiesLeft(draft), ['a', 'b']);
+    assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 0);
+  });
+
   await t.test('A task made from a copy the Gmail merge removes meanwhile is refused, not linked to a missing email', async () => {
     const accountId = await createAccount('gmail-race', { host: 'imap.gmail.com' });
     const racing = await gmailCopies(accountId, '7106');
