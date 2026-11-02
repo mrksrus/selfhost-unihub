@@ -406,6 +406,101 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     } finally { paused = false; release(); transports.ready = ready; transports.send = send; }
   });
 
+  await t.test('A snooze that comes back while a fenced prune job runs is delivered, before and after the merge', async () => {
+    const accountId = await createAccount('gmail-fenced', { host: 'imap.gmail.com' });
+    const engine = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
+    const snooze = require('../dist/src/services/mail-snooze') as typeof import('../src/services/mail-snooze');
+    const notifications = require('../dist/src/services/notifications') as typeof import('../src/services/notifications');
+    const transports = (require('../dist/src/services/notification-transports') as FixtureValue).NOTIFICATION_TRANSPORTS.webpush;
+    const due = '2026-01-01 09:00:00';
+    // All Mail is visible, so the slice goes straight to the merge.
+    await repo.withTransaction((cx) => repo.ensureMailbox({ userId, accountId, folderName: '[Gmail]/All Mail', epoch: 9 }, cx), pool);
+    // A prune slice of a claimed job: its fence is the transaction's first
+    // read, so the transaction's snapshot is taken there.
+    const fencedPrune = async () => {
+      await engine.enqueueJob({ userId, accountId, kind: 'prune' });
+      const job = await engine.claimDueJob({ workerId: 'sync-policy-fenced', accountId, kinds: ['prune'], leaseSeconds: 120 });
+      assert.ok(job);
+      try { return await policy.runPruneSlice({ account: await load(accountId), job }); }
+      finally { await engine.completeJob({ accountId, jobId: job.id, workerId: job.lease_owner!, generation: Number(job.worker_generation) }); }
+    };
+    let onSql: ((phase: string, sql: string, params: FixtureValue[]) => Promise<void>) | null = null;
+    const getConnection = pool.getConnection.bind(pool), watched = Symbol('watched');
+    (pool as FixtureValue).getConnection = async () => {
+      const cx: FixtureValue = await getConnection();
+      if (!cx[watched]) {
+        const execute = cx.execute.bind(cx);
+        cx.execute = async (sql: string, params: FixtureValue[] = [], ...rest: FixtureValue[]) => {
+          if (onSql) await onSql('before', String(sql), params);
+          const result = await execute(sql, params, ...rest);
+          if (onSql) await onSql('after', String(sql), params);
+          return result;
+        };
+        cx[watched] = true;
+      }
+      return cx;
+    };
+    const signal = () => { let fire: () => void = () => {}; const fired = new Promise<void>(resolve => { fire = resolve; }); return { fired, fire }; };
+    const { ready, send } = transports;
+    const sent: string[] = [];
+    transports.ready = async () => {};
+    transports.send = async (target: FixtureValue, message: FixtureValue) => { if (message.kind === 'snooze') sent.push(`${message.payload.emailId}/${target.id}`); return { sent: true }; };
+    // Every reminder goes out once, for the copy it came back on; a later
+    // pass merges and nothing is sent again.
+    const deliveredOnceThenMerged = async (ids: FixtureValue) => {
+      const queued = (await rows(`SELECT d.subscription_id FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id
+        WHERE e.user_id = ? AND e.kind = 'snooze' AND e.source_id = ? AND d.status = 'pending'`, [userId, ids.b])).map(row => `${ids.b}/${row.subscription_id}`).sort();
+      assert.ok(queued.length, 'the return queued its reminder');
+      await notifications.processNotificationJobs();
+      assert.deepEqual(sent.filter(entry => entry.startsWith(ids.b)).sort(), queued);
+      assert.equal((await prune(accountId)).merged, 1);
+      assert.deepEqual(await copiesLeft(ids), ['a']);
+      assert.ok((await one('SELECT snooze_returned_at FROM emails WHERE id = ?', [ids.a])).snooze_returned_at, 'the kept copy came back from snooze');
+      await notifications.processNotificationJobs();
+      assert.deepEqual(sent.filter(entry => entry.startsWith(ids.b)).sort(), queued, 'nothing more after the merge');
+    };
+    try {
+      // The return holds b and has not committed when the job's slice takes
+      // its snapshot; the merge waits for b and commits after the return. It
+      // sees b's reminder on its way and keeps the copies apart.
+      const overlap = await gmailCopies(accountId, '7112', { b: { snoozed_until: due } });
+      const returning = signal(), returnMayCommit = signal(), merging = signal();
+      onSql = async (phase, sql, params) => {
+        if (phase === 'after' && sql.startsWith('UPDATE emails SET snoozed_until = NULL, snooze_returned_at') && params[1] === overlap.b) { returning.fire(); await returnMayCommit.fired; }
+        if (phase === 'before' && sql.includes('SELECT e.id, e.import_complete')) merging.fire();
+      };
+      const returned = snooze.returnDueSnoozes();
+      await returning.fired;
+      const pruned = fencedPrune();
+      await Promise.race([merging.fired, pruned]);
+      await new Promise(resolve => setTimeout(resolve, 300));
+      returnMayCommit.fire();
+      assert.equal((await returned).returned, 1);
+      assert.equal((await pruned).merged, 0, 'a reminder on its way keeps the copies apart');
+      onSql = null;
+      await deliveredOnceThenMerged(overlap);
+
+      // A return that starts while the merge holds the copies waits for it;
+      // the merge kept a copy still snoozed, so the return then goes ahead.
+      const waiting = await gmailCopies(accountId, '7113', { b: { snoozed_until: due } });
+      const planned = signal(), mergeMayCommit = signal();
+      onSql = async (phase, sql) => {
+        if (phase === 'after' && sql.includes('FROM notification_events n')) { planned.fire(); await mergeMayCommit.fired; }
+      };
+      const held = fencedPrune();
+      await Promise.race([planned.fired, held]);
+      let settled = false;
+      const late = snooze.returnDueSnoozes().finally(() => { settled = true; });
+      await new Promise(resolve => setTimeout(resolve, 300));
+      assert.equal(settled, false, 'the return waits for the merge');
+      mergeMayCommit.fire();
+      assert.equal((await held).merged, 0, 'a copy still snoozed is kept');
+      assert.equal((await late).returned, 1);
+      onSql = null;
+      await deliveredOnceThenMerged(waiting);
+    } finally { onSql = null; (pool as FixtureValue).getConnection = getConnection; transports.ready = ready; transports.send = send; }
+  });
+
   await t.test('A task made from a copy the Gmail merge removes meanwhile is refused, not linked to a missing email', async () => {
     const accountId = await createAccount('gmail-race', { host: 'imap.gmail.com' });
     const racing = await gmailCopies(accountId, '7106');

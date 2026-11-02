@@ -300,6 +300,10 @@ async function planGmailGroups(cx: SqlExecutor, { userId, accountId, gmailMsgIds
   const plans = new Map<string, GmailPlan | null>(gmailMsgIds.map(id => [id, null]));
   if (!gmailMsgIds.length) return plans;
   const locking = lock ? ' FOR UPDATE' : '';
+  // Under the merge's locks a plain read still sees the snapshot of the
+  // transaction's first read (a job's fence), not what a writer that held a
+  // copy until then committed: the reads the merge decides on are current.
+  const current = lock ? ' LOCK IN SHARE MODE' : '';
   const groupMarks = gmailMsgIds.map(() => '?').join(',');
   const [occurrences] = await cx.execute<RowDataPacket[]>(`SELECT id, email_id, presence, gmail_msgid FROM mail_remote_occurrences
     WHERE user_id = ? AND mail_account_id = ? AND gmail_msgid IN (${groupMarks})${locking}`, [userId, accountId, ...gmailMsgIds]);
@@ -324,7 +328,7 @@ async function planGmailGroups(cx: SqlExecutor, { userId, accountId, gmailMsgIds
   // Every occurrence of a copy must carry this same id; otherwise the copies
   // are not proven to be the same message.
   const [held] = await cx.execute<RowDataPacket[]>(`SELECT email_id, gmail_msgid FROM mail_remote_occurrences WHERE user_id = ? AND mail_account_id = ?
-    AND email_id IN (${marks})`, [userId, accountId, ...ids]);
+    AND email_id IN (${marks})${current}`, [userId, accountId, ...ids]);
   const [filed] = await cx.execute<RowDataPacket[]>(`SELECT email_id FROM mail_folder_recovery_items WHERE user_id = ? AND email_id IN (${marks})${locking}`,
     [userId, ...ids]);
   const [mappings] = await cx.execute<RowDataPacket[]>(`SELECT gmail_msgid, email_id FROM mail_gmail_messages WHERE mail_account_id = ? AND user_id = ?
@@ -333,11 +337,14 @@ async function planGmailGroups(cx: SqlExecutor, { userId, accountId, gmailMsgIds
   // with a delivery pending, or an arrival held until its content comes)
   // keeps the copies apart until a later pass: the notification worker owns
   // delivery, and the merge never moves or deletes its events (F6). A
-  // delivered notice stays as it is, naming the removed copy.
-  const [notices] = await cx.execute<RowDataPacket[]>(`SELECT DISTINCT n.source_id FROM notification_events n
+  // delivered notice stays as it is, naming the removed copy. A writer of a
+  // notice (a snooze's return, an arrival's release) changes its copy first,
+  // so with the copies locked this read sees every notice there will be. The
+  // deliveries are joined rather than a subquery, so the read covers them.
+  const [notices] = await cx.execute<RowDataPacket[]>(`SELECT n.source_id FROM notification_events n
+      LEFT JOIN notification_deliveries d ON d.event_id = n.id AND d.status = 'pending'
     WHERE n.user_id = ? AND n.kind IN ('mail', 'snooze') AND n.source_id IN (${marks}) AND n.expires_at > UTC_TIMESTAMP()
-      AND (JSON_VALUE(n.payload, '$.held') IN ('1', 'true')
-        OR EXISTS (SELECT 1 FROM notification_deliveries d WHERE d.event_id = n.id AND d.status = 'pending'))`, [userId, ...ids]);
+      AND (JSON_VALUE(n.payload, '$.held') IN ('1', 'true') OR d.event_id IS NOT NULL)${current}`, [userId, ...ids]);
   const noticed = new Set(notices.map(row => String(row.source_id)));
   const mapped = new Map(mappings.map(row => [String(row.gmail_msgid), String(row.email_id)]));
   // A snooze and filing history are the person's own. A copy still snoozed
