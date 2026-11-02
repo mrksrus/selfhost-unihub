@@ -292,6 +292,46 @@ describe('the bin', () => {
     await waitFor(() => expect(document.activeElement).not.toBe(document.body));
   });
 
+  it('after a submission focus goes to the view, so a fast answer and a late refetch that drops the row lose nothing', { timeout: 20_000 }, async () => {
+    const client = testClient();
+    let bin = [ITEMS.find(entry => entry.id === 'bin-task')!];
+    let holdList: ((value: unknown) => void) | null = null;
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path.startsWith('/bin')) return holdList ? new Promise(resolve => { holdList = value => resolve(value); }) as never : { data: { items: bin, retention: '30' } };
+      if (path === '/policies/effective') return policiesAnswer();
+      if (path === '/calendar/calendars') return { data: { calendars: CALENDARS } };
+      return { data: {} };
+    });
+    vi.mocked(api.post).mockResolvedValueOnce(refused('bin-task', 'BIN_RESTORE_NEEDS_CALENDAR'));
+    mountSignedIn(<BinView module="calendar" />, { client });
+    const restore = await screen.findByRole('button', { name: 'Restore Reply to Grace' }, { timeout: 10_000 });
+    restore.focus();
+    fireEvent.click(restore);
+    const dialog = await screen.findByRole('dialog', { name: 'Where should it go?' });
+    fireEvent.click(within(dialog).getByRole('combobox', { name: 'Calendar' }));
+    fireEvent.click(await screen.findByRole('option', { name: /Team/ }));
+    // The restore answers at once; the refetched list is held, so the old row stays with its Restore enabled.
+    let release!: (value: unknown) => void;
+    holdList = value => { release = value as never; };
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path.startsWith('/bin')) return new Promise(resolve => { release = resolve; }) as never;
+      if (path === '/policies/effective') return policiesAnswer();
+      if (path === '/calendar/calendars') return { data: { calendars: CALENDARS } };
+      return { data: {} };
+    });
+    vi.mocked(api.post).mockResolvedValueOnce({ data: { restored: [{ id: 'bin-task', item_type: 'task', item_id: 't', note: null }], failed: [] } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore there' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Where should it go?' })).not.toBeInTheDocument());
+    await waitFor(() => expect(restore).toBeEnabled());
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+    expect(document.activeElement).not.toBe(restore);
+    // The late refetch empties the bin: the row goes, focus stays in the view.
+    bin = [];
+    await act(async () => release({ data: { items: [], retention: '30' } }));
+    await screen.findByText('The bin is empty', {}, { timeout: 10_000 });
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
   it('cancelling the destination dialog with the keyboard returns focus to the Restore button that opened it', { timeout: 20_000 }, async () => {
     answerGets(ITEMS);
     vi.mocked(api.post).mockResolvedValueOnce(refused('bin-task', 'BIN_RESTORE_NEEDS_CALENDAR'));

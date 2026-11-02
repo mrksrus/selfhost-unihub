@@ -62,9 +62,10 @@ function wrongKind(calendar: CalendarCalendar, kind: DestinationAsk['kind']) {
  */
 function DestinationDialog({ ask, titles, pending, onClose, onChoose, returnFocus }: {
   ask: DestinationAsk | null; titles: string[]; pending: boolean; onClose: () => void; onChoose: (calendarId: string) => void;
-  /** Where focus goes when the dialog closes: the control that opened it, or the list when its row is gone. */
-  returnFocus: () => void;
+  /** Where focus goes when the dialog closes: after a submission the view, after a plain cancel the control that opened it. */
+  returnFocus: (reason: 'submitted' | 'dismissed') => void;
 }) {
+  const submitted = useRef(false);
   const id = useId();
   const [chosen, setChosen] = useState('');
   const open = !!ask;
@@ -80,7 +81,7 @@ function DestinationDialog({ ask, titles, pending, onClose, onChoose, returnFocu
   const what = titles.length === 1 ? titles[0] : `${titles.length} items`;
   return (
     <Dialog open={open} onOpenChange={next => { if (!next && !pending) { setChosen(''); onClose(); } }}>
-      <DialogContent onCloseAutoFocus={event => { event.preventDefault(); returnFocus(); }}>
+      <DialogContent onCloseAutoFocus={event => { event.preventDefault(); returnFocus(submitted.current ? 'submitted' : 'dismissed'); submitted.current = false; }}>
         <DialogHeader>
           <DialogTitle>Where should {titles.length === 1 ? 'it' : 'they'} go?</DialogTitle>
           <DialogDescription>
@@ -97,7 +98,7 @@ function DestinationDialog({ ask, titles, pending, onClose, onChoose, returnFocu
         </div>
         <DialogFooter className="gap-2 sm:gap-0">
           <Button type="button" variant="outline" onClick={() => { setChosen(''); onClose(); }} disabled={pending}>Not now</Button>
-          <Button type="button" disabled={!eligible || pending} onClick={() => { if (eligible) onChoose(chosen); setChosen(''); }}>
+          <Button type="button" disabled={!eligible || pending} onClick={() => { if (eligible) { submitted.current = true; onChoose(chosen); } setChosen(''); }}>
             {pending && <Loader2 aria-hidden="true" className="animate-spin" />}Restore there
           </Button>
         </DialogFooter>
@@ -120,16 +121,18 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
   const actions = useBinActions(module, { onDestinationAsked: setAsk });
   const deletePolicy = usePolicy('bin.delete');
   const [confirm, setConfirm] = useState<Confirm | null>(null);
-  // Where focus returns when the destination dialog closes: the Restore button that opened it
-  // while it is there and enabled, else an enabled Restore button of a row (never a row's menu:
-  // while a restore runs every Restore is disabled, and the row may be about to go), else the
-  // view itself, which is always there (the list is not when the bin became empty).
+  // Where focus returns when the destination dialog closes. After a submission the row is about to
+  // change or go (a fast answer re-enables its Restore before the refetched list drops it), so focus
+  // goes to the view itself, which is always there, and stays until the list has settled. After a
+  // plain cancel it returns to the Restore button that opened the dialog while it is there and
+  // enabled, else to an enabled Restore button of a row (never a row's menu), else to the view.
   const opener = useRef<HTMLElement | null>(null);
   const list = useRef<HTMLUListElement | null>(null);
   const view = useRef<HTMLDivElement | null>(null);
-  const returnFocus = () => {
+  const returnFocus = (reason: 'submitted' | 'dismissed') => {
     const usable = (element: HTMLElement | null | undefined) => !!element && element.isConnected && !(element as HTMLButtonElement).disabled;
-    const target = usable(opener.current) ? opener.current : list.current?.querySelector<HTMLElement>('button[data-bin-restore]:not(:disabled)') ?? view.current;
+    const target = reason === 'submitted' ? view.current
+      : usable(opener.current) ? opener.current : list.current?.querySelector<HTMLElement>('button[data-bin-restore]:not(:disabled)') ?? view.current;
     target?.focus();
   };
   // An ask names only items still in the bin: one restored or deleted elsewhere since (a refetch
