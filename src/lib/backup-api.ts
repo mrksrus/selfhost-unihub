@@ -7,7 +7,7 @@ import type {
 } from '../../api/src/contracts/backup';
 
 export type {
-  BackupCapabilities, BackupContents, BackupDataClass, BackupImportResult, BackupJob, BackupJobStatus, BackupLeftOut, BackupSectionId, DownloadMailChoice,
+  BackupCapabilities, BackupContents, BackupDataClass, BackupExportSectionId, BackupImportResult, BackupJob, BackupJobStatus, BackupLeftOut, BackupSectionId, DownloadMailChoice,
 } from '../../api/src/contracts/backup';
 
 // The person's backups and restores (Settings → Backup and restore). Every
