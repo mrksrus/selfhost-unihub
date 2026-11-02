@@ -297,7 +297,7 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
   }
   const copiesLeft = async (ids: FixtureValue) => (await rows('SELECT id FROM emails WHERE id IN (?, ?)', [ids.a, ids.b])).map(row => row.id === ids.a ? 'a' : 'b').sort();
 
-  await t.test('Gmail merge: the snooze and filing history of a removed copy go to the kept copy; the count is what the merge does; an incomplete kept copy gets its content', async () => {
+  await t.test('Gmail merge: the snooze and filing history of a removed copy go to the kept copy; the count is what the merge does; an incomplete kept copy gets its content; its notifications open the kept copy', async () => {
     const accountId = await createAccount('gmail-held', { host: 'imap.gmail.com' });
     const plain = await gmailCopies(accountId, '7100');
     // A draft copy is never merged, and so not counted.
@@ -310,8 +310,13 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     const twoSnoozes = await gmailCopies(accountId, '7102', { a: { snoozed_until: '2030-01-01 09:00:00' }, b: { snoozed_until: '2030-02-01 09:00:00' } });
     // Neither copy complete, the kept one never queued (an old import): its content is queued now.
     const incomplete = await gmailCopies(accountId, '7104', { a: { import_complete: 0, content_state: 'legacy' }, b: { import_complete: 0, content_state: 'slow' } });
-    assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 3, 'only the groups the merge joins');
-    assert.equal((await prune(accountId)).merged, 3);
+    // b's notification opens the kept message.
+    const noticed = await gmailCopies(accountId, '7105');
+    await pool.execute<ResultSetHeader>(`INSERT INTO notification_events (id,user_id,event_key,kind,source_id,payload,expires_at)
+      VALUES (?,?,SHA2(?,256),'mail',?,?,UTC_TIMESTAMP() + INTERVAL 1 DAY)`,
+    [uuid(), userId, `mail:${noticed.b}`, noticed.b, JSON.stringify({ dedupeKey: `mail:${noticed.b}`, emailId: noticed.b, url: `/mail?email=${noticed.b}`, title: 'New Email' })]);
+    assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 4, 'only the groups the merge joins');
+    assert.equal((await prune(accountId)).merged, 4);
     assert.deepEqual(await copiesLeft(plain), ['a']);
     assert.deepEqual(await copiesLeft(draft), ['a', 'b']);
     assert.deepEqual(await copiesLeft(held), ['a']);
@@ -321,6 +326,9 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     assert.deepEqual(await copiesLeft(incomplete), ['a']);
     assert.equal((await one('SELECT content_state FROM emails WHERE id = ?', [incomplete.a])).content_state, 'queued');
     assert.ok(await one("SELECT id FROM mail_engine_jobs WHERE mail_account_id = ? AND kind = 'body' AND state = 'queued'", [accountId]), 'its body is queued');
+    assert.deepEqual(await copiesLeft(noticed), ['a']);
+    const event = await one("SELECT source_id, JSON_VALUE(payload, '$.emailId') AS email, JSON_VALUE(payload, '$.url') AS url FROM notification_events WHERE user_id = ?", [userId]);
+    assert.deepEqual([event.source_id, event.email, event.url], [noticed.a, noticed.a, `/mail?email=${noticed.a}`]);
     assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 0);
   });
 

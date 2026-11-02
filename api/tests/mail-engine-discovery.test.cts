@@ -41,6 +41,9 @@ function fixture(t: import('node:test').TestContext, { uids = [1], epoch = 123, 
     if (sql.includes('SELECT e.id FROM emails e') && sql.includes('NOT EXISTS (SELECT 1 FROM mail_remote_occurrences o')) return [[...emails.values()]
       .filter(e => e.remote_uidvalidity === params[2] && e.remote_uid === params[3] && e.remote_folder === params[4]
         && ![...occurrences.values()].some(o => o.email_id === e.id)).slice(0, 2).map(e => ({ id: e.id }))];
+    // A restored item holding this X-GM-MSGID (sync.ts restoredGmailMessage).
+    if (sql.includes('FROM emails WHERE user_id = ? AND mail_account_id = ? AND remote_gmail_msgid = ?')) return [[...emails.values()]
+      .filter(e => e.remote_gmail_msgid === params[2] && e.id !== params[3]).slice(0, 1).map(e => ({ id: e.id }))];
     if (sql.includes('INSERT INTO mail_gmail_messages')) { gmailIds.set(params[1], gmailIds.get(params[1]) || params[3]); return [{ affectedRows: 1 }]; }
     if (sql.includes('INSERT INTO emails')) { emails.set(params[0], { id: params[0], observation_revision: 0,
       is_read: params[10], is_starred: params[11], remote_folder: params[7],

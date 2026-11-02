@@ -256,8 +256,11 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
       const keptLinks = new Set<string>();
       const emailId = current?.email_id || await ensureItem(executor, { userId, accountId, mailboxId: mailbox.id, folder, epoch, item, gmail,
         sync: account.sync_mode === 'sync', mapped, keptLinks });
-      // A MOVE destination is the user's own change, not an arrival; nor is a kept copy found again.
-      if (!current && !mapped && !keptLinks.has(emailId) && arrivalsAbove !== null && item.uid > arrivalsAbove)
+      // A MOVE destination is the user's own change, not an arrival; nor is a
+      // kept copy found again, by its address or, on Gmail, by the X-GM-MSGID
+      // a restore brought (the Gmail merge joins the two later).
+      if (!current && !mapped && !keptLinks.has(emailId) && arrivalsAbove !== null && item.uid > arrivalsAbove
+        && !await restoredGmailMessage(executor, { userId, accountId, gmail, item, emailId }))
         await (require('../notifications') as typeof import('../notifications')).enqueueMailNotification({ userId, emailId, held: true }, executor);
       // A kept item restored without its content gets it from this copy: the
       // body import fills the item itself (its filing and links stay).
@@ -341,6 +344,12 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
       sweepGeneration, coverage: { bounded: true, observed: items.length, upper }, complete: true }, executor);
     return { inserted, updated, skipped };
   }, db);
+}
+async function restoredGmailMessage(executor: SqlExecutor, { userId, accountId, gmail, item, emailId }: { userId: string; accountId: string; gmail: boolean; item: Item; emailId: string }) {
+  if (!gmail || !item.gmailMsgId || !/^[0-9]+$/.test(String(item.gmailMsgId))) return false;
+  const [rows] = await executor.execute<RowDataPacket[]>(`SELECT id FROM emails WHERE user_id = ? AND mail_account_id = ? AND remote_gmail_msgid = ?
+    AND id <> ? LIMIT 1`, [userId, accountId, String(item.gmailMsgId), emailId]);
+  return rows.length > 0;
 }
 async function knownGmailMessage(executor: SqlExecutor, { userId, accountId, gmail, item }: { userId: string; accountId: string; gmail: boolean; item: Item }) {
   if (!gmail || !item.gmailMsgId || !/^[0-9]+$/.test(String(item.gmailMsgId))) return false;

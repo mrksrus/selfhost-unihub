@@ -88,6 +88,8 @@ test('a restored Sync copy is linked when the provider shows its exact address a
     // restored item, with both labels, and the other item's ToDo moves to it.
     { label: 'gmail-address-first', gmail: true, email: {}, providerEpoch: 19, copies: 1, linked: true, labels: 2 },
     { label: 'gmail-other-label-first', gmail: true, otherFirst: true, confirmLater: true, email: {}, providerEpoch: 19, copies: 1, linked: true, labels: 2 },
+    // Above the label's recent boundary the other label's copy is no arrival: the message is the restored one.
+    { label: 'gmail-other-label-first-arrival', gmail: true, otherFirst: true, arrival: true, confirmLater: true, email: {}, providerEpoch: 19, copies: 1, linked: true, labels: 2 },
     { label: 'gmail-other-label-first-with-task', gmail: true, otherFirst: true, otherTask: true, confirmLater: true, email: {}, providerEpoch: 19, copies: 1, linked: true, labels: 2 },
     // A restored item without its content: the merge keeps the complete copy,
     // and the restored item's ToDo moves to it.
@@ -139,11 +141,11 @@ test('a restored Sync copy is linked when the provider shows its exact address a
     await insert('calendar_events', { id: task, user_id: reader, title: 'Synthetic mail task', start_time: '2026-10-25 12:00:00', end_time: '2026-10-25 12:00:00',
       is_todo_only: 1, source_email_id: before.id, source_email_json: JSON.stringify({ subject: `Reappearing ${scenario.label}` }) });
     const raw = raws.get(scenario.label)!;
-    let fetched = 0, mailboxName = 'INBOX', uid = 71;
-    transport.selectMailbox = async () => ({ folder: mailboxName, uidvalidity: scenario.providerEpoch, uidnext: uid + 1, highestmodseq: null, nomodseq: true, readOnly: true,
+    let fetched = 0, mailboxName = 'INBOX', uid = 71, baseline = false;
+    transport.selectMailbox = async () => ({ folder: mailboxName, uidvalidity: scenario.providerEpoch, uidnext: baseline ? uid : uid + 1, highestmodseq: null, nomodseq: true, readOnly: true,
       capabilities: { move: true, condstore: false, uidplus: true, xGmExt1: Boolean(scenario.gmail) } });
     transport.fetchMetadataWindow = async (_connection: unknown, request: FixtureValue) => ({ ...request, complete: true, bytes: 0,
-      items: request.startUid <= uid && request.endUid >= uid ? [{ uid, flags: [], modseq: null, gmailMsgId: scenario.gmail ? '123456789' : null, internalDate: '2026-10-25T12:00:00Z' }] : [] });
+      items: !baseline && request.startUid <= uid && request.endUid >= uid ? [{ uid, flags: [], modseq: null, gmailMsgId: scenario.gmail ? '123456789' : null, internalDate: '2026-10-25T12:00:00Z' }] : [] });
     transport.fetchRawMessage = async () => { fetched += 1; return { raw }; };
     const folder = () => ({ folderName: mailboxName, dbFolderName: mailboxName === 'INBOX' ? 'inbox' : 'archive' });
     const scan = async (stream: string) => { let result; do { result = await engine.scanMailboxSlice({ db: pool, connection: {}, account, folder: folder(), stream }); } while (result.more); };
@@ -153,8 +155,14 @@ test('a restored Sync copy is linked when the provider shows its exact address a
       await content.processBodySlice({ db: pool, connection: {}, account, folder: folder(), mailboxId: mailbox.id });
     };
     let otherTask: string | null = null;
+    const notifications = runtime('services/notifications'), announce = notifications.enqueueMailNotification;
+    let announced = 0;
+    notifications.enqueueMailNotification = async (...args: FixtureValue[]) => { announced += 1; return announce(...args); };
     const otherLabel = async () => {
-      mailboxName = 'Other'; uid = 88; await scanAndImport(); mailboxName = 'INBOX'; uid = 71;
+      mailboxName = 'Other'; uid = 88;
+      // The label's recent stream has covered what it held before (an arrival boundary).
+      if (scenario.arrival) { baseline = true; await scan('recent'); baseline = false; }
+      await scanAndImport(); mailboxName = 'INBOX'; uid = 71;
       if (!scenario.otherTask) return;
       const [[other]] = await pool.query<RowDataPacket[]>('SELECT id FROM emails WHERE user_id = ? AND mail_account_id = ? AND id <> ?', [reader, account.id, before.id]);
       otherTask = uuid();
@@ -167,6 +175,8 @@ test('a restored Sync copy is linked when the provider shows its exact address a
     for (const stream of mode === 'sync' ? ['presence', 'history', 'flags'] : ['history']) await scan(stream);
     if (scenario.gmail && !scenario.otherFirst) await otherLabel();
     for (let pass = 0; pass < 2; pass++) await policy.runPruneSlice({ account });
+    notifications.enqueueMailNotification = announce;
+    assert.equal(announced, 0, `${scenario.label}: nothing is announced as new mail`);
     if (scenario.confirmLater) {
       // Unconfirmed: nothing is merged or removed, files included.
       const [kept] = await pool.query<RowDataPacket[]>('SELECT raw_storage_path FROM emails WHERE user_id = ? AND mail_account_id = ?', [reader, account.id]);

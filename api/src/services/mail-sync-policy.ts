@@ -348,6 +348,10 @@ async function mergeGmailGroup({ account, fence, gmailMsgId }: { account: Accoun
       [keeper, userId, ...losers]);
     await cx.execute(`UPDATE calendar_overlay_restores SET payload = JSON_SET(payload, '$.source_email_id', ?)
       WHERE user_id = ? AND JSON_VALUE(payload, '$.source_email_id') IN (${loserMarks})`, [keeper, userId, ...losers]);
+    // So do a removed copy's notifications: a click opens the kept message.
+    await cx.execute(`UPDATE notification_events SET source_id = ?, payload = JSON_SET(payload, '$.emailId', ?, '$.url', ?)
+      WHERE user_id = ? AND kind = 'mail' AND source_id IN (${loserMarks})`,
+    [keeper, keeper, `/mail?email=${encodeURIComponent(keeper)}`, userId, ...losers]);
     if (plan.filedFrom && plan.filedFrom !== keeper) {
       await cx.execute('UPDATE mail_folder_recovery_items SET email_id = ? WHERE email_id = ? AND user_id = ?', [keeper, plan.filedFrom, userId]);
     }
