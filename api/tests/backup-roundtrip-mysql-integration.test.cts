@@ -931,6 +931,42 @@ test('production export and restore jobs round-trip what a backup holds through 
     assert.deepEqual(await stateOf(doneOnly), ['done', '2030-04-01T11:00:00.000Z', null, null, []], 'no subtasks, as archived');
   });
 
+  await t.test('a binned task keeps its source email through a full restore into another person', async () => {
+    const owner = await newUser('bin-mail-owner'), fresh = await newUser('bin-mail-fresh');
+    const mailAccount = uuid(), email = uuid();
+    await insert('mail_folders', { id: uuid(), user_id: owner, slug: 'inbox', display_name: 'Inbox', is_system: 1 });
+    await insert('mail_accounts', { id: mailAccount, user_id: owner, email_address: 'bin-mail@example.test', provider: 'custom', imap_host: '8.8.8.8', smtp_host: '9.9.9.9', sync_mode: 'download' });
+    await insert('emails', { id: email, user_id: owner, mail_account_id: mailAccount, subject: 'Source of a binned task', from_address: 'sender@example.test', to_addresses: '[]', folder: 'inbox', import_complete: 0 });
+    const snapshot = JSON.stringify({ subject: 'Source of a binned task' });
+    const localAccount = uuid(), list = uuid(), task = uuid();
+    await insert('calendar_accounts', { id: localAccount, user_id: owner, provider: 'local', display_name: 'UniHub', is_active: 1 });
+    await insert('calendar_calendars', { id: list, user_id: owner, account_id: localAccount, name: 'Mail list', is_visible: 1 });
+    await insert('calendar_events', { id: task, user_id: owner, calendar_id: list, title: 'Answer the mail', start_time: '2030-05-01 09:00:00', end_time: '2030-05-01 10:00:00',
+      is_todo_only: 1, source_email_id: email, source_email_json: snapshot });
+    await source('services/transactions').withTransaction((cx: FixtureValue) => source('services/bin-calendar').binLocalEvents(cx, owner, [task]));
+    // A binned synced task whose one date has its own source email (its state waits as an overlay when restored).
+    const [[local]] = await pool.execute<RowDataPacket[]>("SELECT payload FROM bin_items WHERE user_id = ? AND item_type = 'task'", [owner]);
+    const payload = JSON.parse(local.payload);
+    await insert('bin_items', { id: uuid(), user_id: owner, module: 'calendar', item_type: 'task', item_id: uuid(), title: 'Synced date', reason: 'deleted', payload_version: 1,
+      deleted_at: '2030-05-01 12:00:00', payload: JSON.stringify({ ...payload, provider: 'caldav', calendar: { id: null, account_id: null, external_id: null, name: 'Team' },
+        object: { href: '/dav/team/synced-date.ics', uid: 'synced-date@example.test', ics: 'BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n' },
+        occurrences: [{ recurrence_id: '20300501T090000Z', state: { todo_status: null, done_at: null, source_email_id: email, source_email_json: { subject: 'Source of a binned task' }, subtasks: [] } }] }) });
+    const archive = await source('services/backup').buildBackupForUser(owner, { sections: 'full', includeFileData: true });
+    const result = await destination('services/backup').importBackupForUser(fresh, archive, { mode: 'apply', sections: 'full', conflict_mode: 'keep_existing', startAccountSync: async () => {} });
+    assert.equal(result.valid, true, JSON.stringify(result));
+    const [[restoredMail]] = await pool.execute<RowDataPacket[]>("SELECT id FROM emails WHERE user_id = ? AND subject = 'Source of a binned task'", [fresh]);
+    assert.notEqual(restoredMail.id, email, 'the email has an id of its own here');
+    const [items] = await pool.execute<RowDataPacket[]>('SELECT id, payload FROM bin_items WHERE user_id = ? ORDER BY title', [fresh]);
+    const payloads = items.map(row => JSON.parse(row.payload));
+    assert.deepEqual(payloads.map(item => item.event.source_email_id), [restoredMail.id, restoredMail.id], 'each binned item names the restored email');
+    assert.equal(payloads.find(item => item.provider === 'caldav').occurrences[0].state.source_email_id, restoredMail.id, 'and so does the synced date\'s own state');
+    // Back from the bin: linked to the restored email, with its snapshot.
+    const localItem = items[payloads.findIndex(item => item.provider !== 'caldav')];
+    assert.deepEqual((await destination('services/bin').restoreFromBin(fresh, { ids: [localItem.id] })).failed, []);
+    const [[back]] = await pool.execute<RowDataPacket[]>("SELECT source_email_id, source_email_json FROM calendar_events WHERE user_id = ? AND title = 'Answer the mail'", [fresh]);
+    assert.deepEqual([back.source_email_id, typeof back.source_email_json === 'string' ? JSON.parse(back.source_email_json) : back.source_email_json], [restoredMail.id, JSON.parse(snapshot)]);
+  });
+
   await t.test('the bin and synced-task state travel with their sections, for their owner only, and come back once', async () => {
     const owner = await newUser('bin-owner'), stranger = await newUser('bin-stranger');
     const contactMerge = source('services/contact-merge');

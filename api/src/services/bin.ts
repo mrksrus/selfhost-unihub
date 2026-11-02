@@ -513,6 +513,8 @@ interface RestoreArchivedBinOptions {
   calendarIds?: ReadonlyMap<string, string>;
   /** Archive bin item id → where the import staged its recording's file (inside the person's recordings bin folder). */
   recordingFiles?: ReadonlyMap<string, string>;
+  /** Archive email id → restored email id, so a binned task keeps its source email. */
+  emailIds?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -546,6 +548,8 @@ async function restoreBinItems(connection: SqlExecutor, options: RestoreArchived
       payload = { ...payload, bin_path: file };
     }
     if (options.calendarIds) payload = remapCalendars(payload, options.calendarIds);
+    // An email restored under a new id is followed; another keeps its id (the restore of the item checks it is the person's).
+    if (options.emailIds) payload = remapEmails(payload, id => options.emailIds!.get(id));
     const deletedSql = deletedAt.toISOString().slice(0, 19).replace('T', ' ');
     const [present] = await connection.execute<RowDataPacket[]>('SELECT id FROM bin_items WHERE user_id = ? AND item_type = ? AND item_id = ? AND deleted_at = ? LIMIT 1',
       [userId, type, item.item_id, deletedSql]);
@@ -582,6 +586,29 @@ function remapCalendars(payload: Record<string, unknown>, ids: ReadonlyMap<strin
   const calendar = mapped.calendar as Record<string, unknown> | undefined;
   if (calendar && typeof calendar.id === 'string' && mapped.provider === 'caldav') mapped.calendar = { ...calendar, id: ids.get(calendar.id) ?? null };
   return mapped;
+}
+
+/**
+ * The source emails a binned event or task names: its row's, and for a
+ * synced item each date's own state (calendar_overlay_restores' shape).
+ * `to` gives an email's new id, or undefined to keep it. The payload itself
+ * is returned when nothing changes.
+ */
+function remapEmails(payload: Record<string, unknown>, to: (id: string) => string | undefined) {
+  let changed = false;
+  const follow = (holder: unknown) => {
+    if (!holder || typeof holder !== 'object' || Array.isArray(holder)) return holder;
+    const id = (holder as { source_email_id?: unknown }).source_email_id;
+    const next = typeof id === 'string' ? to(id) : undefined;
+    if (!next || next === id) return holder;
+    changed = true;
+    return { ...holder, source_email_id: next };
+  };
+  const event = follow(payload.event);
+  const occurrences = Array.isArray(payload.occurrences)
+    ? payload.occurrences.map(occurrence => occurrence && typeof occurrence === 'object' ? { ...occurrence, state: follow((occurrence as { state?: unknown }).state) } : occurrence)
+    : payload.occurrences;
+  return changed ? { ...payload, event, ...(Array.isArray(payload.occurrences) ? { occurrences } : {}) } : payload;
 }
 
 /**
