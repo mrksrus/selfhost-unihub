@@ -89,6 +89,8 @@ test('[28-02 28-03] restoring the same backup twice brings a deleted contact bac
     await screen.getByRole('button', /From a backup on this server/).first().tap();
     await expect(screen.getByText('The backup checks out', { exact: false })).toBeVisible();
     await screen.getByRole('button', 'Restore', { exact: true }).first().tap();
+    // Every start asks first, with the choices the job was prepared with.
+    await screen.getByRole('alertdialog', 'Restore this backup?').getByRole('button', 'Restore', { exact: true }).tap();
     await waitForRestore(browser, jobs[0].id, ['completed']);
     const copies = (await listContacts(browser)).filter((contact) => contact.name.family === family);
     expect(copies, `round ${round}: one copy`).toHaveLength(1);
