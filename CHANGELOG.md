@@ -136,6 +136,9 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
 - **A download in the Android app no longer closes the app** when Android's
   download service has not started yet, for example right after the phone
   starts; the app says the file could not be saved, and you can try again.
+- **Send later at a picked time no longer sometimes sends the message at
+  once,** and **Save as template no longer sends the message** you are
+  writing. Confirming either dialog was also taken as Send.
 
 ## 0.27.1
 
