@@ -189,11 +189,17 @@ test('contact photos: upload, formats, refusals, ETag, replace, delete, owner sc
   const annRow = await stored(ann.id);
   assert.deepEqual(files('owner'), [`${annRow.sha256}.jpg`, `${annRow.thumb_sha256}.jpg`].sort());
 
-  // ── A deleted contact's photo row goes with it; the sweep removes its files ──
-  await call(owner, 'DELETE', `/api/contacts/${ann.id}`);
+  // ── A deleted contact goes to the bin; the bin keeps its photo files (even
+  // past the sweep's hour) until the item is deleted for good ──
+  const kept = files('owner');
+  const { bin_item_ids: [binItem] } = (await call(owner, 'DELETE', `/api/contacts/${ann.id}`)).body;
   assert.equal(await stored(ann.id), undefined);
   for (const name of files('owner')) fs.utimesSync(path.join(userDir('owner'), name), old, old);
+  assert.equal(await sweepContactPhotos(), 0, 'the bin holds the photo');
+  assert.deepEqual(files('owner'), kept);
+  await upload(owner, ann.id, png, 'image/png', 404);
+  // Deleted for good, nothing names them any more: the sweep removes them.
+  await call(owner, 'DELETE', `/api/bin/${binItem}`);
   assert.equal(await sweepContactPhotos(), 2);
   assert.deepEqual(files('owner'), []);
-  await upload(owner, ann.id, png, 'image/png', 404);
 });
