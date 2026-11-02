@@ -12,7 +12,10 @@ first start: **step 25** gives every event, calendar and recording a stable
 identity (a synced event takes its UID from the calendar server, every other
 item its id), and adds the tables of the bin's purge, the policies' notices,
 the instance backup's runs and the ToDo state of synced tasks waiting after a
-restore. Modification dates are kept. The first start takes longer on large
+restore, and the columns of the move journal that let the bin create a synced
+item at its server again. Synced UIDs that 0.27 stored with their surrounding
+spaces cut take the server's own back, from each object's stored calendar
+data. Modification dates are kept. The first start takes longer on large
 calendars: about 17 seconds for 100,000 events, during which the server does
 not answer yet.
 
@@ -47,6 +50,12 @@ encrypted. An older UniHub cannot read them; 0.28.0 reads every older backup.
   setting.
 - `BACKUP_MASTER_KEY` still falls back to `ENCRYPTION_KEY` when it is blank,
   as before.
+- **Android app.** Install 0.28.0's app when it is offered: its downloads
+  (backups, the app update) no longer give Android's downloader your session.
+  The 0.27.1, 0.27.0 and 0.26.0 apps keep downloading backups from a 0.28.0
+  server. The 0.28.0 app connected to a server older than 0.28 cannot download
+  backups (it says "Could not save the file"): update the server, or download
+  them in a browser.
 
 ## 0.27.1 Follow-up fixes
 
