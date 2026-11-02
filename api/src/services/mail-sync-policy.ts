@@ -294,7 +294,7 @@ async function planGmailGroup(cx: SqlExecutor, { userId, accountId, gmailMsgId, 
   const ids = [...new Set([...observed, ...restored.map(row => row.id)])];
   if (ids.length < 2 || !observed.length || occurrences.some(row => row.presence === 'quarantined')) return null;
   const marks = ids.map(() => '?').join(',');
-  const [items] = await cx.execute<RowDataPacket[]>(`SELECT e.id, e.import_complete, e.created_at, e.remote_gmail_msgid,
+  const [items] = await cx.execute<RowDataPacket[]>(`SELECT e.id, e.import_complete, e.content_state, e.created_at, e.remote_gmail_msgid,
       e.snoozed_until, e.snooze_returned_at FROM emails e
     WHERE ${ELIGIBLE_SQL} AND e.id IN (${marks})${locking}`, [userId, accountId, ...ids]);
   if (items.length !== ids.length) return null; // filed elsewhere, legacy, draft or pending change: keep all
@@ -366,6 +366,14 @@ async function mergeGmailGroup({ account, fence, gmailMsgId }: { account: Accoun
         e.observation_revision = e.observation_revision + 1
       WHERE e.id = ? AND e.user_id = ? AND e.mail_account_id = ?`,
     [flags ? Number(flags.includes('\\Seen')) : null, flags ? Number(flags.includes('\\Flagged')) : null, keeper, userId, accountId]);
+    // A kept copy without its content that no body work ever picked (an old
+    // import, or a restore without its raw message) gets it downloaded now
+    // that it holds the labels; one set aside as slow or deferred stays so.
+    if (!bool(plan.keeper.import_complete) && plan.keeper.content_state === 'legacy') {
+      await cx.execute(`UPDATE emails SET content_state = 'queued' WHERE id = ? AND user_id = ? AND mail_account_id = ? AND import_complete = FALSE`,
+        [keeper, userId, accountId]);
+      await (require('./mail-engine/sync') as typeof import('./mail-engine/sync')).enqueuePendingBodies({ userId, accountId }, cx);
+    }
     await cx.execute(`DELETE FROM mail_engine_quarantine WHERE user_id = ? AND mail_account_id = ? AND source_table = 'emails'
       AND source_id = ? AND reason = 'gmail_identity_conflict'`, [userId, accountId, keeper]);
     return deleteEmailRows(cx, { userId, accountId, ids: losers });

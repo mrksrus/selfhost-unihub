@@ -297,7 +297,7 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
   }
   const copiesLeft = async (ids: FixtureValue) => (await rows('SELECT id FROM emails WHERE id IN (?, ?)', [ids.a, ids.b])).map(row => row.id === ids.a ? 'a' : 'b').sort();
 
-  await t.test('Gmail merge: the snooze and filing history of a removed copy go to the kept copy; the count is what the merge does', async () => {
+  await t.test('Gmail merge: the snooze and filing history of a removed copy go to the kept copy; the count is what the merge does; an incomplete kept copy gets its content', async () => {
     const accountId = await createAccount('gmail-held', { host: 'imap.gmail.com' });
     const plain = await gmailCopies(accountId, '7100');
     // A draft copy is never merged, and so not counted.
@@ -308,14 +308,19 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
       VALUES (?,?,?,'archive','archive','kept')`, [held.b, userId, accountId]);
     // Two different snoozes cannot both be kept: the copies stay apart.
     const twoSnoozes = await gmailCopies(accountId, '7102', { a: { snoozed_until: '2030-01-01 09:00:00' }, b: { snoozed_until: '2030-02-01 09:00:00' } });
-    assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 2, 'only the groups the merge joins');
-    assert.equal((await prune(accountId)).merged, 2);
+    // Neither copy complete, the kept one never queued (an old import): its content is queued now.
+    const incomplete = await gmailCopies(accountId, '7104', { a: { import_complete: 0, content_state: 'legacy' }, b: { import_complete: 0, content_state: 'slow' } });
+    assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 3, 'only the groups the merge joins');
+    assert.equal((await prune(accountId)).merged, 3);
     assert.deepEqual(await copiesLeft(plain), ['a']);
     assert.deepEqual(await copiesLeft(draft), ['a', 'b']);
     assert.deepEqual(await copiesLeft(held), ['a']);
     assert.equal(new Date((await one('SELECT snoozed_until FROM emails WHERE id = ?', [held.a])).snoozed_until).toISOString(), '2030-01-01T09:00:00.000Z', 'the snooze stays');
     assert.equal((await one('SELECT email_id FROM mail_folder_recovery_items WHERE user_id = ?', [userId])).email_id, held.a, 'the filing history stays');
     assert.deepEqual(await copiesLeft(twoSnoozes), ['a', 'b']);
+    assert.deepEqual(await copiesLeft(incomplete), ['a']);
+    assert.equal((await one('SELECT content_state FROM emails WHERE id = ?', [incomplete.a])).content_state, 'queued');
+    assert.ok(await one("SELECT id FROM mail_engine_jobs WHERE mail_account_id = ? AND kind = 'body' AND state = 'queued'", [accountId]), 'its body is queued');
     assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 0);
   });
 
