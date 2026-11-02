@@ -11,6 +11,36 @@ const MAX_SECRET_FILE_BYTES = 64 * 1024;
 
 class SecretConfigError extends Error {}
 
+/** A secret file that is not a regular file, or larger than a secret can be. */
+class SecretFileShapeError extends Error {
+  constructor(readonly reason: 'not a file' | 'too large') { super(reason); }
+}
+
+/**
+ * Reads a secret file through one descriptor: opened without blocking (a FIFO
+ * or a device answers at once instead of hanging the process), refused unless
+ * it is a regular file, and read to at most one byte past the bound, so what
+ * is checked is what is read. System errors (ENOENT, EACCES) are thrown as they are.
+ */
+function readSecretFile(file: string): { bytes: Buffer; dev: number; ino: number } {
+  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+  try {
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile()) throw new SecretFileShapeError('not a file');
+    const buffer = Buffer.alloc(MAX_SECRET_FILE_BYTES + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const read = fs.readSync(descriptor, buffer, length, buffer.length - length, length);
+      if (!read) break;
+      length += read;
+    }
+    if (length > MAX_SECRET_FILE_BYTES) throw new SecretFileShapeError('too large');
+    return { bytes: Buffer.from(buffer.subarray(0, length)), dev: stat.dev, ino: stat.ino };
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
 // Every generation of a secret file this process has seen, by size and
 // SHA-256, never the bytes: what readSecret read and what each instance
 // backup run finds at its start and end (instance-backup.ts). The backup
@@ -253,6 +283,7 @@ export {
   INSTANCE_BACKUP,
   SecretConfigError,
   MAX_SECRET_FILE_BYTES,
+  readSecretFile,
   readSecret,
   rememberSecretGeneration,
   mayBeSecretGeneration,

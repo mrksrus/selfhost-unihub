@@ -9,7 +9,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import packageJson = require('../../package.json');
 import { db } from '../state';
-import { INSTANCE_BACKUP, MAX_SECRET_FILE_BYTES, mayBeSecretGeneration, rememberSecretGeneration, secretGenerationNames } from '../config';
+import { INSTANCE_BACKUP, mayBeSecretGeneration, readSecretFile, rememberSecretGeneration, secretGenerationNames } from '../config';
 import { log } from '../log';
 import { conflict } from '../http/errors';
 import { getDatabaseConfig } from './database-config';
@@ -180,28 +180,13 @@ function sampleSecretFiles(env: NodeJS.ProcessEnv = process.env) {
   const sampled = new Map<string, string>();
   const unreadable: string[] = [];
   for (const secret of secretFiles(env)) {
-    let descriptor: number | null = null;
     try {
-      // One descriptor for the check and the read, which stops one byte past
-      // the bound: what is remembered is what was checked.
-      descriptor = fs.openSync(secret.path, 'r');
-      const stat = fs.fstatSync(descriptor);
-      if (!stat.isFile()) throw new Error('not a file');
-      const buffer = Buffer.alloc(MAX_SECRET_FILE_BYTES + 1);
-      let length = 0;
-      while (length < buffer.length) {
-        const read = fs.readSync(descriptor, buffer, length, buffer.length - length, length);
-        if (!read) break;
-        length += read;
-      }
-      if (length > MAX_SECRET_FILE_BYTES) throw new Error('larger than a secret can be');
-      const bytes = buffer.subarray(0, length);
+      // Bounded and without blocking (config.ts): what is remembered is what was checked.
+      const { bytes, dev, ino } = readSecretFile(secret.path);
       rememberSecretGeneration(secret.name, bytes);
-      sampled.set(secretLabel(secret), `${stat.dev}:${stat.ino}:${bytes.length}:${crypto.createHash('sha256').update(bytes).digest('hex')}`);
+      sampled.set(secretLabel(secret), `${dev}:${ino}:${bytes.length}:${crypto.createHash('sha256').update(bytes).digest('hex')}`);
     } catch {
       unreadable.push(secretLabel(secret));
-    } finally {
-      if (descriptor !== null) fs.closeSync(descriptor);
     }
   }
   return { sampled, unreadable };
@@ -845,6 +830,7 @@ export {
   fileRemovalGate,
   fileRoots,
   leftOut,
+  sampleSecretFiles,
   useInstanceBackupConfig,
   instanceBackupSetupErrors,
   startInstanceBackup,

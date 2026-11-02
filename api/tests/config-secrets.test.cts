@@ -60,6 +60,24 @@ test('a secret file read by the process is remembered by size and hash, also aft
   assert.equal(config.secretGenerationNames(other.length, crypto.createHash('sha256').update(other).digest('hex')), null);
 });
 
+// A secret path that turns into a FIFO (or a device) must not hang the
+// process in a blocking open: it is refused as not a file. In a child, so a
+// hang ends at its timeout instead of stopping this test run.
+test('a backup run refuses a FIFO at a secret path at once instead of hanging', t => {
+  const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'unihub-fifo-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const fifo = path.join(dir, 'key');
+  if (spawnSync('mkfifo', [fifo]).status !== 0) return t.skip('mkfifo is not available');
+  const service = path.join(__dirname, '..', 'dist', 'src', 'services', 'instance-backup.js');
+  const child = spawnSync(process.execPath, ['-e', `process.stdout.write(JSON.stringify(require(${JSON.stringify(service)}).sampleSecretFiles().unreadable))`], {
+    env: { ...process.env, UNIHUB_FIFO_SECRET_FILE: fifo }, timeout: 10_000, encoding: 'utf8',
+  });
+  assert.equal(child.signal, null, 'the sample returned instead of hanging');
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), [`UNIHUB_FIFO_SECRET_FILE (${fifo})`]);
+});
+
 test('the database password and URL may be files, for the API and the readiness wait alike', t => {
   const file = scratch(t);
   const { getDatabaseConfig } = require('../dist/src/services/database-config') as typeof import('../src/services/database-config');
