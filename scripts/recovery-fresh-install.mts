@@ -189,7 +189,7 @@ try {
   const other = new Session(destination.url);
   await other.signIn(otherEmail, otherPassword);
   const otherView = await publicView(other);
-  assert.equal(otherView.contacts.length + otherView.emails.length + otherView.recordings.length + otherView.mailAccounts.length, 0, 'Another user sees nothing restored');
+  assert.equal(otherView.contacts.length + otherView.emails.length + otherView.recordings.length + otherView.mailAccounts.length + otherView.bin.length, 0, 'Another user sees nothing restored');
   await other.send('GET', `/api/recordings/${first.after.ids.recordings[0]}/file`, undefined, { expected: 404 });
 
   // 6. A restart keeps everything, and the signed-in session.

@@ -138,7 +138,25 @@ export async function seedSource(source: Installation, owner: Session, ownerId: 
     .filter(event => event.is_todo_only).sort((a, b) => Number(a.sort_rank) - Number(b.sort_rank));
   assert.ok(undated.length >= 3, 'three tasks without a date');
   await owner.json('PUT', `/api/calendar/events/${undated.at(-1)!.id}/position`, { after: null, before: undated[0].id });
+  await seedBin(owner);
   return seeded;
+}
+
+/**
+ * The bin (0.28): every section that keeps one gets an item, deleted the way
+ * the person deletes it (the recording is in fresh-install-seed.cts). Each
+ * travels with its section and arrives in the restoring person's bin.
+ */
+export async function seedBin(owner: Session) {
+  const binned: string[] = [];
+  const { contact: goneContact } = await owner.json<{ contact: Row }>('POST', '/api/contacts', { first_name: 'Del', last_name: 'Binned', email: 'del.binned@example.test' });
+  binned.push(...(await owner.json<{ bin_item_ids: string[] }>('DELETE', `/api/contacts/${goneContact.id}`)).bin_item_ids);
+  const { event: goneEvent } = await owner.json<{ event: Row }>('POST', '/api/calendar/events', { title: 'Cancelled meeting', start_time: '2030-03-04T10:00:00.000Z',
+    end_time: '2030-03-04T11:00:00.000Z', location: 'Graz' }, { expected: [200, 201] });
+  const { event: goneTask } = await owner.json<{ event: Row }>('POST', '/api/calendar/events', { title: 'Dropped task', is_todo_only: true }, { expected: [200, 201] });
+  await owner.json('POST', `/api/calendar/events/${goneTask.id}/subtasks`, { title: 'Never done' }, { expected: [200, 201] });
+  for (const gone of [goneEvent, goneTask]) binned.push(...(await owner.json<{ bin_item_ids: string[] }>('DELETE', `/api/calendar/events/${gone.id}`)).bin_item_ids);
+  assert.equal(binned.length, 3, 'The deleted contact, event and task are in the bin');
 }
 
 /** Puts the seed's provider data at the test providers: the Sync account's messages and the CalDAV event. */
@@ -235,6 +253,10 @@ export async function publicView(session: Session) {
     recordings: sort(recordings.map(recording => ({ title: recording.title, description: recording.description, original_filename: recording.original_filename,
       content_type: recording.content_type, size: recording.size_bytes, duration: recording.duration_seconds, source: recording.source, recorded_at: recording.recorded_at,
       tags: recording.tags, bytes: recordingBytes.find(item => item.title === recording.title)?.sha256 }))),
+    // The bin (0.28) as the person sees it. A restored item keeps the time it
+    // had left, not the same purge date, so that is not compared.
+    bin: sort((await session.json<{ items: Row[] }>('GET', '/api/bin')).items.map(item => ({ module: item.module, type: item.item_type, title: item.title,
+      reason: item.reason, deleted_at: item.deleted_at }))),
     ids: { user: me.id, accounts: accounts.map(account => account.id), emails: emails.length, events: events.map(event => event.id), recordings: recordings.map(recording => recording.id) },
   };
 }
