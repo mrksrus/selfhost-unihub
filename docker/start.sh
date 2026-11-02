@@ -32,6 +32,10 @@ fi
 
 # Use the API's driver/configuration for an authenticated check. The helper caps
 # elapsed wait time; the API retains its own bounded retry if readiness expires.
+# It reads the secrets as the API does (api/src/config.ts readSecret): a
+# MYSQL_PASSWORD_FILE or DATABASE_URL_FILE (a Docker secret) before the
+# variable. This check runs as root; the API reads the same files as
+# UNIHUB_API_UID, so a secret file must be readable by that user too.
 node /app/api/src/database-readiness.js || true
 
 # The supervisor exits if either service dies, allowing the existing Docker

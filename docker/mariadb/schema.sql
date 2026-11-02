@@ -655,7 +655,9 @@ CREATE TABLE `instance_backups` (
   `started_at` datetime NOT NULL,
   `finished_at` datetime DEFAULT NULL,
   `removed_at` datetime DEFAULT NULL,
+  `completion_seq` bigint(20) unsigned DEFAULT NULL,
   PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_instance_backups_completion` (`completion_seq`),
   KEY `idx_instance_backups_started` (`started_at`),
   KEY `idx_instance_backups_status` (`status`,`started_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

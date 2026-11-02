@@ -8,9 +8,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.28.0
 
-Data safety. The first start after the upgrade runs database upgrade 25,
-which takes longer on large calendars (see
-[Upgrading](docs/UPGRADING.md#0280-data-safety)).
+Data safety: encrypted backups that hold only your own data, a bin for what
+you delete, and rules an administrator can set. The first start after the
+upgrade runs database upgrade 25, which takes longer on large calendars; back
+up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
 
 ### Added
 
@@ -37,6 +38,25 @@ which takes longer on large calendars (see
   default). Changing it applies to what is already in the bin. An
   administrator can set a minimum, and can forbid deleting from the bin for
   good or emptying it.
+- **Instance backup.** With a destination (`INSTANCE_BACKUP_DIR`, a mount of
+  its own) and its own key (`INSTANCE_BACKUP_KEY` or `_FILE`) set, UniHub
+  backs up the whole installation, the database and every stored file,
+  encrypted, daily at `INSTANCE_BACKUP_TIME` (03:30 UTC) and on "Back up
+  now", keeping the newest `INSTANCE_BACKUP_KEEP` (14). A backup counts only
+  after it has been read back whole with the key; a failed one leaves no
+  file, and a run never writes over another run's file (also on a share
+  without hard links). The destination is for UniHub alone. Without the
+  settings it is off and the server runs as before. The backup holds none
+  of the installation's keys; keep them in a password manager. There is no download from the web page.
+- **Restore command.** `node /app/api/src/instance-restore.js --file
+  <backup> --key-file <key>` restores an instance backup into an empty
+  installation and signs everyone out; mail accounts stay paused until
+  reconnected, and no queued provider operation runs again. `--verify-only`
+  checks a backup with the key ([Data recovery](docs/DATA_RECOVERY.md#instance-backup)).
+- **Secrets as files.** Every secret can be a file, `NAME_FILE`, for example a
+  Compose secret; `docker-compose.yml` shows how. Setting both with different
+  values, or an unreadable file, stops the start with a message naming the
+  setting.
 
 ### Changed
 
@@ -68,6 +88,9 @@ which takes longer on large calendars (see
   30 days, also by restoring a merged contact from the bin; after that, the
   merged-away contacts stay for the rest of your retention and come back on
   their own.
+- Startup refuses an instance backup key shorter than 32 bytes or equal to
+  another secret (also written another way, such as base64 for hex), and a
+  backup destination inside the stored files.
 
 ### Fixed
 

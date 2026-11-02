@@ -821,7 +821,8 @@ async function addDataSafety(connection: SqlExecutor) {
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
   // The instance backup's runs (services/instance-backup.ts). actor_id names
   // the admin of a "Back up now" and stays when that account goes;
-  // removed_at marks a file retention deleted.
+  // removed_at marks a file retention deleted; completion_seq numbers the
+  // succeeded runs in the order they counted, which no clock can reorder.
   await connection.execute(`CREATE TABLE IF NOT EXISTS instance_backups (
     id CHAR(36) NOT NULL PRIMARY KEY,
     trigger_kind ENUM('schedule', 'manual') NOT NULL,
@@ -837,6 +838,8 @@ async function addDataSafety(connection: SqlExecutor) {
     started_at DATETIME NOT NULL,
     finished_at DATETIME NULL,
     removed_at DATETIME NULL,
+    completion_seq BIGINT UNSIGNED NULL,
+    UNIQUE KEY uniq_instance_backups_completion (completion_seq),
     KEY idx_instance_backups_started (started_at),
     KEY idx_instance_backups_status (status, started_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);

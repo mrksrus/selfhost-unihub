@@ -25,6 +25,7 @@ import { ApiError, badRequest, notFound } from '../http/errors';
 import { log } from '../log';
 import { withTransaction } from './transactions';
 import { getActiveRestoreSections } from './restore-locks';
+import { fileRemovalGate } from './file-removal-gate';
 
 const PHOTO_SIZE = 512;
 const THUMB_SIZE = 96;
@@ -375,13 +376,20 @@ async function isReferenced(executor: SqlExecutor, userId: string, sha: string) 
 
 /**
  * Deletes the named files that no row references any more. Call inside
- * withContactPhotoLock, after the commit that dropped the references.
+ * withContactPhotoLock, after the commit that dropped the references. While
+ * an instance backup copies files the removal waits for it
+ * (file-removal-gate.ts): it then takes the lock again and checks the
+ * references afresh, since a file is named by its content and another
+ * contact may have got the same photo meanwhile.
  */
 async function releasePhotoFiles(userId: string, shas: readonly string[], executor: SqlExecutor = db) {
-  for (const sha of new Set(shas)) {
-    if (!SHA_PATTERN.test(sha) || await isReferenced(executor, userId, sha)) continue;
-    await fs.promises.rm(photoPath(userId, sha), { force: true });
-  }
+  const remove = async (source: SqlExecutor) => {
+    for (const sha of new Set(shas)) {
+      if (!SHA_PATTERN.test(sha) || await isReferenced(source, userId, sha)) continue;
+      await fs.promises.rm(photoPath(userId, sha), { force: true });
+    }
+  };
+  await fileRemovalGate.run(() => remove(executor), () => withContactPhotoLock(userId, () => remove(db)));
 }
 
 // ── Rows ───────────────────────────────────────────────────────────────
@@ -509,6 +517,8 @@ async function sweepContactPhotos({ now = Date.now(), executor = db as SqlExecut
       let count = 0;
       const files = await fs.promises.readdir(path.join(root, userId), { withFileTypes: true }).catch(() => []);
       for (const file of files) {
+        // An instance backup may start meanwhile: its copy needs these files.
+        if (!active() || fileRemovalGate.isClosed()) break;
         if (!file.isFile()) continue;
         const target = path.join(root, userId, file.name);
         const stat = await fs.promises.lstat(target).catch(() => null);

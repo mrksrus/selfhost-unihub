@@ -60,6 +60,19 @@ services:
       # The key before a change of ENCRYPTION_KEY (docs/INSTALLATION.md, Changing the encryption key)
       ENCRYPTION_KEY_PREVIOUS: ${UNIHUB_ENCRYPTION_KEY_PREVIOUS:-}
       BACKUP_MASTER_KEY: ${UNIHUB_BACKUP_MASTER_KEY:-}
+      # ── Instance backup: the whole installation, encrypted, to a mount ──
+      # Off (and the server runs normally) until both are set. The destination
+      # is its own volume or bind mount (see volumes below), never inside
+      # /app/uploads. The key is 32+ random bytes (openssl rand -base64 48),
+      # not one of the keys above; keep it in a password manager together with
+      # ENCRYPTION_KEY and BACKUP_MASTER_KEY, which the backup does not hold.
+      # docs/DATA_RECOVERY.md "Instance backup".
+      INSTANCE_BACKUP_DIR: ${UNIHUB_INSTANCE_BACKUP_DIR:-}
+      INSTANCE_BACKUP_KEY: ${UNIHUB_INSTANCE_BACKUP_KEY:-}
+      # Daily at this time (HH:MM, UTC) and how many backups are kept; blank
+      # takes the defaults in docs/DATA_RECOVERY.md.
+      INSTANCE_BACKUP_TIME: ${UNIHUB_INSTANCE_BACKUP_TIME:-}
+      INSTANCE_BACKUP_KEEP: ${UNIHUB_INSTANCE_BACKUP_KEEP:-}
       # ── Log lines: readable text by default, "json" for a log collector ──
       LOG_FORMAT: ${UNIHUB_LOG_FORMAT:-text}
       # ── First-run admin bootstrap (required when users table is empty) ──
@@ -88,6 +101,23 @@ services:
       - unihub-network
     volumes:
       - uploads_data:/app/uploads
+      # The instance backup's destination, with INSTANCE_BACKUP_DIR=/backup:
+      # a disk or NAS share of its own, writable by uid 10001.
+      # - /srv/backups/unihub:/backup
+    # ── Secrets as files (recommended) ──────────────────────────────
+    # Every secret can come from a file: NAME_FILE instead of NAME (JWT_SECRET,
+    # ENCRYPTION_KEY, ENCRYPTION_KEY_PREVIOUS, BACKUP_MASTER_KEY, MYSQL_PASSWORD,
+    # BOOTSTRAP_ADMIN_PASSWORD, INSTANCE_BACKUP_KEY). Setting both with
+    # different values stops the start. To use Compose secrets, replace for
+    # example the JWT_SECRET line above with
+    #   JWT_SECRET_FILE: /run/secrets/unihub_jwt_secret
+    # list the secrets here and at the end of this file, and make each file
+    # readable by uid 10001, which runs the API (chown 10001 file; chmod 400 file).
+    # secrets:
+    #   - unihub_jwt_secret
+    #   - unihub_encryption_key
+    #   - unihub_db_password
+    #   - unihub_instance_backup_key
 
   # ── MariaDB Database ────────────────────────────────────────────
   # Everything the database needs is in this file: no config files to download.
@@ -106,6 +136,8 @@ services:
       MARIADB_PASSWORD: ${UNIHUB_DB_PASSWORD:?Set UNIHUB_DB_PASSWORD to a strong database password before starting}
       MARIADB_ROOT_PASSWORD: ${UNIHUB_DB_ROOT_PASSWORD:?Set UNIHUB_DB_ROOT_PASSWORD to a strong root database password before starting}
       MARIADB_AUTO_UPGRADE: "1"
+      # With Compose secrets: MARIADB_PASSWORD_FILE: /run/secrets/unihub_db_password
+      # instead of MARIADB_PASSWORD, and the secret listed for this service too.
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
@@ -142,3 +174,14 @@ volumes:
     driver: local
   uploads_data:
     driver: local
+
+# Secrets as files (see the unihub service): each file holds one value.
+# secrets:
+#   unihub_jwt_secret:
+#     file: ./secrets/jwt_secret
+#   unihub_encryption_key:
+#     file: ./secrets/encryption_key
+#   unihub_db_password:
+#     file: ./secrets/db_password
+#   unihub_instance_backup_key:
+#     file: ./secrets/instance_backup_key

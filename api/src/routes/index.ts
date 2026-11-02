@@ -15,6 +15,7 @@ import mailRoutes = require('./mail');
 import mailEssentialsRoutes = require('./mail-essentials');
 import mailThreadsRoutes = require('./mail-threads');
 import adminRoutes = require('./admin');
+import adminInstanceBackupRoutes = require('./admin-instance-backup');
 import notificationsRoutes = require('./notifications');
 import offlineRoutes = require('./offline');
 import eventsRoutes = require('./events');
@@ -46,6 +47,7 @@ const routes = mergeRouteTables(
   mailEssentialsRoutes,
   mailThreadsRoutes,
   adminRoutes,
+  adminInstanceBackupRoutes,
   notificationsRoutes,
   offlineRoutes,
   eventsRoutes,

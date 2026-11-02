@@ -15,7 +15,7 @@ const AUDIT_ACTIONS = [
   'auth.signin', 'auth.signin_failed', 'auth.password_changed', 'auth.two_factor_enabled', 'auth.two_factor_disabled',
   'auth.recovery_codes_replaced', 'auth.session_revoked', 'auth.account_deleted',
   'admin.password_reset', 'admin.role_changed', 'admin.two_factor_reset', 'admin.user_activated', 'admin.user_deactivated',
-  'admin.user_deleted', 'admin.signup_mode_changed',
+  'admin.user_deleted', 'admin.signup_mode_changed', 'admin.instance_backup_started',
   'mail.account_disconnected', 'mail.account_purged',
 ] as const;
 type AuditAction = typeof AUDIT_ACTIONS[number];

@@ -1,8 +1,9 @@
 import { prepareFolderReconciliation } from './services/mail-folder-reconciliation';
 import http from 'http';
-import { API_LISTEN_HOST, PORT } from './config';
+import { API_LISTEN_HOST, PORT, assertConfiguration } from './config';
 import { db } from './state';
 import { initDatabase } from './services/database';
+import { instanceBackupSetupErrors } from './services/instance-backup';
 import { suspendPendingBackupJobs, DISABLED_BACKUP_ROUTES } from './services/backup-availability';
 import { resumePendingDataExportJobs } from './services/export-jobs';
 import { resumePendingRestoreJobs } from './services/backup-restore-jobs';
@@ -35,6 +36,11 @@ process.on('uncaughtException', error => {
 });
 
 async function start() {
+  // What startup refuses before touching anything (config.ts): a secret file
+  // that cannot be read or disagrees with its variable, and an instance
+  // backup set up wrongly (its key too short or another secret's, its
+  // destination inside the stored files). An unset backup is no refusal.
+  assertConfiguration(instanceBackupSetupErrors());
   await initDatabase();
   await verifyDatabaseInventory(db);
   // The Web Push identity is generated once, at startup rather than on first delivery.

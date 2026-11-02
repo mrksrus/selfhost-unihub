@@ -22,9 +22,10 @@ import { sweepContactPhotos } from './contact-photos';
 import { sweepContactImports } from './contacts-import';
 import { isModuleEnabled } from './module-settings';
 import { isWorkerOwner } from './worker-owner';
+import { fileRemovalGate } from './file-removal-gate';
 import { log } from '../log';
 
-// The periodic work of this API process: the fifteen timers listed in
+// The periodic work of this API process: the sixteen timers listed in
 // docs/ARCHITECTURE.md "Scheduled Jobs", the startup resets they rely on and
 // the mail IDLE supervisor they start. app.ts starts it once after the server
 // listens and stops it on shutdown. UniHub runs one API process; everything
@@ -65,6 +66,9 @@ interface BackgroundWorkDeps {
   sweepContactPhotos: (active: () => boolean) => Promise<number>;
   sweepContactImports: () => Promise<{ expired: number; orphans: number }>;
   isWorkerOwner: () => boolean;
+  recoverInstanceBackups: () => Promise<unknown>;
+  runDueInstanceBackup: () => Promise<unknown>;
+  stopInstanceBackup: () => void;
 }
 interface BackgroundWorkHandle {
   /** Settles when the start-up has finished (or stopped early); rejects when it failed. */
@@ -93,6 +97,9 @@ function defaultDeps(): BackgroundWorkDeps {
     sweepContactPhotos: active => sweepContactPhotos({ active, moduleEnabled: userId => isModuleEnabled(userId, 'contacts'), heldForUndo: userId => photosHeldForUndo(userId) }),
     sweepContactImports: () => sweepContactImports(),
     isWorkerOwner,
+    recoverInstanceBackups: () => (require('./instance-backup') as typeof import('./instance-backup')).recoverInterruptedInstanceBackups(),
+    runDueInstanceBackup: () => (require('./instance-backup') as typeof import('./instance-backup')).runDueInstanceBackup(),
+    stopInstanceBackup: () => (require('./instance-backup') as typeof import('./instance-backup')).stopInstanceBackup(),
     stopCalendarWork: () => (require('./calendar-sync') as typeof import('./calendar-sync')).stopAllCalendarWork(),
     runCalendarSyncPass: (...args) => (require('./calendar-sync') as typeof import('./calendar-sync')).runCalendarSyncPass(...args),
   };
@@ -114,6 +121,8 @@ function startBackgroundWork(overrides: Partial<BackgroundWorkDeps> = {}): Backg
       for (const timer of delayed) deps.timers.clearTimeout(timer);
       for (const interval of intervals) interval.stop();
       deps.idleSupervisor.stop();
+      // A running instance backup removes its partial file and is recorded as failed.
+      deps.stopInstanceBackup();
       // Running calendar syncs write nothing more; the owner syncs them again.
       deps.stopCalendarWork();
     },
@@ -233,8 +242,11 @@ async function runStartup(deps: BackgroundWorkDeps, state: { stopped: boolean },
   // (bin.purge, services/bin.ts). A module that is off or being restored
   // keeps its items for a later hour, and nothing goes that the person's
   // retention, as the policies resolve it now, still keeps.
+  // Sweeps that delete files wait while an instance backup copies them
+  // (file-removal-gate.ts); they run again in an hour.
+  const removing = () => active() && !fileRemovalGate.isClosed();
   every('CLEANUP', 60 * 60 * 1000, async () => {
-    const { items, merges } = await deps.purgeBin(active);
+    const { items, merges } = await deps.purgeBin(removing);
     if (items > 0 || merges > 0) log.info('CLEANUP', 'Deleted bin items past their retention', { items, merges });
   });
 
@@ -248,10 +260,17 @@ async function runStartup(deps: BackgroundWorkDeps, state: { stopped: boolean },
     if (expired > 0 || orphans > 0) log.info('CLEANUP', 'Deleted expired contact imports', { expired, orphans });
   });
   const photoSweep = every('CLEANUP', CONTACT_PHOTO_SWEEP_INTERVAL_MS, async () => {
-    const removed = await deps.sweepContactPhotos(active);
+    const removed = await deps.sweepContactPhotos(removing);
     if (removed > 0) log.info('CLEANUP', 'Deleted contact photo files nothing refers to', { removed });
   });
   after(CONTACT_PHOTO_SWEEP_DELAY_MS, () => { void photoSweep.run(); });
+
+  // The instance backup (instance-backup.ts): a run the last process left
+  // running is recorded as failed, then the daily run at INSTANCE_BACKUP_TIME,
+  // checked every minute (and caught up after the server was down at the time).
+  if (!active()) return;
+  await deps.recoverInstanceBackups().catch(error => log.error('INSTANCE BACKUP', 'Could not record interrupted runs', error));
+  every('INSTANCE BACKUP', 60 * 1000, deps.runDueInstanceBackup);
 
   // Pool counts every 15 minutes, and every minute while work is queueing for
   // a connection: a pile-up then shows in the log as it builds, not after it.
