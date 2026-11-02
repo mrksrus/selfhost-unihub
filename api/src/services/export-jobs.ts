@@ -415,6 +415,34 @@ async function checkExportCancelled(jobId: string, executor: SqlExecutor = db) {
   }
 }
 
+/**
+ * Removes a job's archive once no ready job names it: after the rows are
+ * committed, through the file removal gate, so an instance backup that is
+ * copying files (and whose dump may name the archive) keeps it until its
+ * copy ends; a removal queued for that time checks the rows again.
+ */
+async function removeUnpublishedArchive(file: string) {
+  const remove = async () => {
+    const [named] = await db.execute<RowDataPacket[]>(
+      "SELECT id FROM data_export_jobs WHERE file_path = ? AND status = 'ready' LIMIT 1", [file]);
+    if (!named.length) await fs.promises.rm(file, { force: true });
+  };
+  await fileRemovalGate.run(remove).catch(error => console.error('[BACKUP] Could not remove an unpublished archive:', error));
+}
+
+/**
+ * After the ready update failed: whether it was committed anyway (its answer
+ * lost), was not, or cannot be told now.
+ */
+async function readyOutcome(jobId: string, finalPath: string): Promise<'ready' | 'not-ready' | 'unknown'> {
+  try {
+    const [rows] = await db.execute<ExportRow[]>('SELECT status, file_path FROM data_export_jobs WHERE id = ? LIMIT 1', [jobId]);
+    return rows[0]?.status === 'ready' && rows[0].file_path === finalPath ? 'ready' : 'not-ready';
+  } catch {
+    return 'unknown';
+  }
+}
+
 async function runDataExportJob(jobId: string) {
   if (activeExportJobs.has(jobId)) return;
   activeExportJobs.add(jobId);
@@ -422,6 +450,7 @@ async function runDataExportJob(jobId: string) {
   let temporaryZipPath = null;
   let finalPath = null;
   let backupUuid = null;
+  let readySent = false;
   try {
     const [rows] = await db.execute<ExportRow[]>('SELECT * FROM data_export_jobs WHERE id = ? LIMIT 1', [jobId]);
     const job = rows[0];
@@ -454,6 +483,8 @@ async function runDataExportJob(jobId: string) {
     const contents = manifestContents(entries);
     temporaryZipPath = path.join(targetDir, `${job.id}.zip.partial`);
     finalPath = path.join(targetDir, `${job.id}.unihub-backup`);
+    // Left by an earlier attempt of this job, which is not ready (checked
+    // above): no committed row names either file, so no gate is needed.
     await fs.promises.rm(temporaryZipPath, { force: true }).catch(() => {});
     await fs.promises.rm(finalPath, { force: true }).catch(() => {});
     await writeZip(entries, temporaryZipPath, {
@@ -507,6 +538,7 @@ async function runDataExportJob(jobId: string) {
     if (stat.size > BACKUP_UPLOAD_MAX_SIZE) {
       throw new Error('Backup exceeds the import upload limit. Export smaller sections so the downloaded archive can be restored.');
     }
+    readySent = true;
     await updateJob(jobId!, {
       status: 'ready',
       phase: 'ready',
@@ -520,8 +552,21 @@ async function runDataExportJob(jobId: string) {
       completed_at: new Date(),
     });
   } catch (error) {
+    if (readySent && finalPath) {
+      // The ready update may have been committed though its answer was lost:
+      // then the archive is the job's and stays. When that cannot be told,
+      // the archive, its key and the running row stay too; the next start
+      // (resumePendingDataExportJobs) queues the job again, and the run
+      // returns at once if the row is ready or writes the archive afresh.
+      const outcome = await readyOutcome(jobId, finalPath);
+      if (outcome === 'ready') return;
+      if (outcome === 'unknown') {
+        console.error('[BACKUP] Job outcome unknown; it is checked again at the next start:', error);
+        return;
+      }
+    }
+    // A .partial file no row names and the instance backup leaves out.
     if (temporaryZipPath) await fs.promises.rm(temporaryZipPath, { force: true }).catch(() => {});
-    if (finalPath) await fs.promises.rm(finalPath, { force: true }).catch(() => {});
     if (backupUuid) {
       await db.execute(
         'DELETE FROM backup_archive_keys WHERE backup_uuid = ? AND export_job_id = ?',
@@ -536,16 +581,18 @@ async function runDataExportJob(jobId: string) {
         error: null,
         completed_at: new Date(),
       }).catch(() => {});
-      return;
+    } else {
+      console.error('[BACKUP] Job failed:', error);
+      await updateJob(jobId!, {
+        status: 'failed',
+        phase: 'failed',
+        progress: 100,
+        error: (error as ApiError).message || 'Backup failed',
+        completed_at: new Date(),
+      }).catch(() => {});
     }
-    console.error('[BACKUP] Job failed:', error);
-    await updateJob(jobId!, {
-      status: 'failed',
-      phase: 'failed',
-      progress: 100,
-      error: (error as ApiError).message || 'Backup failed',
-      completed_at: new Date(),
-    }).catch(() => {});
+    // The rows first, then the archive.
+    if (finalPath) await removeUnpublishedArchive(finalPath);
   } finally {
     await Promise.all(
       entries
