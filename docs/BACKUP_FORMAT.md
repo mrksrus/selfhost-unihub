@@ -33,7 +33,7 @@ framing and a password-wrapped data key.
 | 4 | Automatic | Adds durable mail intents, receipts and quarantined provider evidence |
 | 5 | Automatic | Contacts in the vCard model: values, kept properties, photos, merged-away UIDs and dismissed duplicates |
 | 6 | Automatic | The hand order of tasks (`task_order`) and the default task list and calendar settings |
-| 7 | Automatic | Data classes: no provider copies; stable `uid` of calendars, events and recordings; synced-task state as overlays; `contents` |
+| 7 | Automatic | Data classes: no provider copies; stable `uid` of calendars, events and recordings; synced-task state as overlays; the bin (`bin_items`, `recording_bin` files); `contents` |
 | Unknown version | Rejected before restore | Requires a compatible reader |
 
 Schema 3 preserves account-scoped folder metadata, source and filing identities,
@@ -107,9 +107,9 @@ contacts) and `contact_duplicate_dismissals`. Photos are the file kind
 restore refuses a file whose bytes do not match its name, that is not a JPEG
 or that is larger than 2 MiB. Export leaves out, with a warning, a photo
 whose stored file is missing or damaged; the contact itself is archived.
-Not archived: the merge records and the bin of merged-away contacts (a restore
-brings back contacts, not their 30-day undo; 0.28 decides the bin) and staged
-contact imports (temporary).
+Not archived: the merge records (a restore brings back contacts, not their
+30-day undo; from schema 7 a merged-away contact comes back as an ordinary
+deleted one in the bin) and staged contact imports (temporary).
 
 The schema 5 reader converts an archive of schema 1 to 4 before restore,
 after its checksums and fields were validated against that archive's own
@@ -196,11 +196,29 @@ subtasks) travels in `calendar_overlay_restores`, keyed by calendar, UID and
 recurrence id (`match_kind` `uid`). A restore applies it to the live task of
 that identity: Replace takes the archive's state, Keep existing and Keep both
 fill in only what the task has none of. Without a live task it waits in the
-table for the sync that brings the task back. A waiting overlay is carried on
-by the next backup. The payload is limited to the states UniHub writes, with
-any number of subtasks (the size limit of `data/backup.json` bounds them); an
-overlay naming no calendar of the archive is refused. A restore that cannot
-place an overlay (its calendar is not a synced one there) says so in a note.
+table for the sync that brings the task back; outside Replace an overlay
+already waiting for that item stays. The overlay's owner
+(`calendar-overlays.ts`) stores and applies it, matching UID and recurrence id
+byte for byte, after mail is restored, so a source email follows to its
+restored id. A waiting overlay is carried on by the next backup. The payload
+is limited to the states UniHub writes, with any number of subtasks (the size
+limit of `data/backup.json` bounds them); an overlay naming no calendar of the
+archive is refused. A restore that cannot place an overlay (its calendar is
+not a synced one there) says so in a note.
+
+The bin travels in `bin_items`, one table that the Contacts, Calendar and
+Recordings sections share: each row goes with the section of its `module`, so
+a restore of one section takes only that section's items. Only items still in
+the bin are exported, each with its versioned `payload`, its `file_refs`, its
+`deleted_at` and its `purge_after`. A recording's file is the file kind
+`recording_bin` (entry id: the bin item's id), checked as audio like a
+recording; a contact's photos are `contact_photo` files. A restore writes the
+items with `restoreBinItems` (`bin.ts`): new ids and groups, the time each had
+left when the archive was made, a merged contact as an ordinary deleted one,
+nothing added twice, and a recording only with its file, which goes into the
+person's recordings `bin/` folder under a new name. The payloads are checked
+again when an item is restored from the bin. Export leaves out, with a
+warning, a recording in the bin whose file is missing.
 
 An archive of schemas 1 to 6 imports only what the rule keeps. Its synced
 tasks' state becomes `shape` overlays, matched by title and start for 30 days,

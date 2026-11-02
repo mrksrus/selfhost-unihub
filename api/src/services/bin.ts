@@ -592,7 +592,8 @@ async function exportableBinItems(executor: SqlExecutor, userId: string, section
   const modules = MODULES.filter(module => sectionOf(module) === section);
   if (!modules.length) return [];
   const [rows] = await executor.execute<BinRow[]>(
-    `SELECT * FROM bin_items WHERE user_id = ? AND restored_at IS NULL AND module IN (${placeholders(modules)}) ORDER BY deleted_at, id`, [userId, ...modules]);
+    `SELECT id, user_id, module, item_type, item_id, title, reason, group_id, payload, payload_version, file_refs, deleted_at, purge_after
+     FROM bin_items WHERE user_id = ? AND restored_at IS NULL AND module IN (${placeholders(modules)}) ORDER BY deleted_at, id`, [userId, ...modules]);
   return rows.map(row => ({ row, files: parseRefs(row.file_refs) }));
 }
 

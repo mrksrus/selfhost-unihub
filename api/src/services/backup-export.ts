@@ -1,4 +1,5 @@
 import type { RowDataPacket } from 'mysql2/promise';
+import { exportableBinItems, parseRefs } from './bin';
 import type { ApiError, BackupPayload, BackupRow, BackupFile, ArchiveEnvelope, SqlExecutor } from '../types';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -42,7 +43,7 @@ interface SnapshotRow extends BackupRow {
   encrypted_refresh_token?: string | null;
   filing_account_id?: string | null;
 }
-type SnapshotData = BackupPayload['data'] & { mail_accounts?: SnapshotRow[]; calendar_accounts?: SnapshotRow[] };
+type SnapshotData = BackupPayload['data'] & { mail_accounts?: SnapshotRow[]; calendar_accounts?: SnapshotRow[]; bin_items?: SnapshotRow[] };
 interface ExportFile extends BackupFile {
   kind: string;
   id: string;
@@ -121,6 +122,18 @@ const CONTENT_FILE_STORES: Readonly<Record<string, { root: () => string; path: (
   contact_photo: { root: photosRoot, path: photoPath },
 });
 
+// A recording bin item's file under the bin's name; null for any other item.
+function binRecordingFile(row: SnapshotRow) {
+  let payload: Record<string, unknown> | null = null;
+  try { payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload as Record<string, unknown>; } catch { payload = null; }
+  const file = typeof payload?.bin_path === 'string' ? payload.bin_path : parseRefs(row.file_refs)[0];
+  return file || null;
+}
+// The photo files (by SHA-256) of the contacts in the snapshot's bin.
+function binPhotoHashes(data: SnapshotData) {
+  return [...new Set(((data.bin_items || []) as SnapshotRow[]).filter(row => row.item_type === 'contact').flatMap(row => parseRefs(row.file_refs)).filter(ref => /^[0-9a-f]{64}$/.test(ref)))];
+}
+
 // Content-addressed files of the snapshot's rows, each archived once. A row
 // whose files are missing or no longer match their names is left out of the
 // archive with a warning: the picture is already lost, and the rest of the
@@ -130,7 +143,7 @@ async function readContentFileEntries(userId: string, data: SnapshotData, includ
   const warnings: string[] = [];
   for (const [kind, policy] of Object.entries(CONTENT_FILE_POLICIES)) {
     const rows = (data[policy.table] as SnapshotRow[] | undefined) || [];
-    if (!rows.length) continue;
+    if (!rows.length && !(kind === 'contact_photo' && binPhotoHashes(data).length)) continue;
     const store = CONTENT_FILE_STORES[kind];
     if (!store) throw new Error(`Unsupported backup file root: ${kind}`);
     const read = new Map<string, ExportFile | null>();
@@ -153,6 +166,19 @@ async function readContentFileEntries(userId: string, data: SnapshotData, includ
     const lost = rows.length - kept.length;
     data[policy.table] = kept;
     const named = new Set(kept.flatMap(row => policy.columns.map(column => String(row[column]))));
+    // The photos of contacts in the bin, which their restore from the bin puts back.
+    if (kind === 'contact_photo') {
+      for (const sha of binPhotoHashes(data)) {
+        if (!read.has(sha)) {
+          if (checkCancelled) await checkCancelled();
+          let storagePath: string | null = null;
+          try { storagePath = store.path(userId, sha); } catch { storagePath = null; }
+          const entry = await readBackupFileEntry({ kind, id: sha, storagePath, rootPath: store.root(), includeData, checkCancelled });
+          read.set(sha, entry && !entry.missing && entry.sha256 === sha ? entry : null);
+        }
+        named.add(sha);
+      }
+    }
     for (const [sha, entry] of read) if (entry && named.has(sha)) entries.push({ ...entry, filename: `${sha}.jpg` });
     if (lost) warnings.push(`${lost} contact photo${lost === 1 ? ' is' : 's are'} not in this backup because the stored picture is missing or damaged.`);
   }
@@ -394,6 +420,12 @@ async function readBackupSnapshot(userId: string, sections: unknown, checkCancel
       for (const table of accountOnly ? [ACCOUNT_ONLY_TABLES[section]] : SECTION_POLICIES[section].tables) {
         if (checkCancelled) await checkCancelled();
         const policy = TABLE_POLICIES[table];
+        if (table === 'bin_items') {
+          // The person's items still in the bin, of this section's modules (bin.ts).
+          const items = await exportableBinItems(connection, userId, section);
+          data.bin_items = [...(data.bin_items || []), ...normalizeRows(items.map(({ row }) => Object.fromEntries(policy.columns.map(column => [column, row[column]])) as RowDataPacket)) as SnapshotRow[]];
+          continue;
+        }
         const columns = policy.columns.map(column => table === 'emails' && column === 'remote_gmail_msgid' ? `${GMAIL_IDENTITY_SQL} AS remote_gmail_msgid` : `b.\`${column}\``).join(', ');
         let from = `${table === 'user' ? 'users' : table} b`;
         let where = table === 'user' ? 'b.id = ?' : 'b.user_id = ?';
@@ -459,11 +491,12 @@ async function buildBackupForUser(userId: string, {
     const rootPath = (BACKUP_FILE_ROOTS as Readonly<Record<string, string>>)[kind];
     if (!Object.hasOwn(BACKUP_FILE_ROOTS, kind) || !rootPath) throw new Error(`Unsupported backup file root: ${kind}`);
     for (const row of (data[policy.table] as SnapshotRow[] | undefined) || []) {
+      if (policy.table === 'bin_items' && row.item_type !== 'recording') continue;
       if (checkCancelled) await checkCancelled();
       const entry = await readBackupFileEntry({
         kind,
         id: row.id,
-        storagePath: row[policy.column] as string | null | undefined,
+        storagePath: policy.table === 'bin_items' ? binRecordingFile(row) : row[policy.column] as string | null | undefined,
         rootPath,
         includeData: includeFileData,
         checkCancelled,
@@ -471,8 +504,16 @@ async function buildBackupForUser(userId: string, {
       if (entry) fileEntries.push(entry);
     }
   }
+  // A recording in the bin whose file is gone cannot come back; it is left out.
+  const binFiles = new Set(fileEntries.filter(entry => entry.kind === 'recording_bin' && !entry.missing).map(entry => String(entry.id)));
+  const binRecordingsLost = (data.bin_items || []).filter(row => row.item_type === 'recording' && !binFiles.has(String(row.id))).length;
+  if (binRecordingsLost) {
+    data.bin_items = (data.bin_items || []).filter(row => row.item_type !== 'recording' || binFiles.has(String(row.id)));
+    for (let index = fileEntries.length - 1; index >= 0; index -= 1) if (fileEntries[index].kind === 'recording_bin' && fileEntries[index].missing) fileEntries.splice(index, 1);
+  }
   const content = await readContentFileEntries(userId, data, includeFileData, checkCancelled);
   fileEntries.push(...content.entries);
+  if (binRecordingsLost) content.warnings.push(`${binRecordingsLost} recording${binRecordingsLost === 1 ? '' : 's'} in the bin ${binRecordingsLost === 1 ? 'is' : 'are'} not in this backup because the file is missing.`);
 
   let portableCredentials = null;
   if (portableCredentialKey) {

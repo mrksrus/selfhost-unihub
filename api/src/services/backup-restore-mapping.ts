@@ -483,12 +483,13 @@ async function writeFileSource(targetPath: string, source: BackupFileSource, exp
   }
 }
 
+// targetDir: where the file goes instead (a binned recording's, into the bin folder).
 async function writeRestoredFile(userId: string, file: BackupFile, {
   fileBuffersByPath = null,
   fileSourcesByPath = fileBuffersByPath,
   restoreJobId = null,
   checkCancelled = null,
-}: ImportOptions = {}) {
+}: ImportOptions = {}, targetDirOverride: string | null = null) {
   if (file.missing) return null;
   const source = file.archive_path && fileSourcesByPath
     ? fileSourcesByPath.get(file.archive_path)
@@ -496,12 +497,15 @@ async function writeRestoredFile(userId: string, file: BackupFile, {
   if (!source) return null;
   const root = file.kind === 'raw_email'
     ? MAIL_RAW_STORAGE_ROOT
-    : file.kind === 'recording' ? RECORDINGS_ROOT : ATTACHMENTS_ROOT;
-  const targetDir = restoreJobId
+    : file.kind === 'recording' || file.kind === 'recording_bin' ? RECORDINGS_ROOT : ATTACHMENTS_ROOT;
+  const targetDir = targetDirOverride ?? (restoreJobId
     ? path.join(root, String(userId), 'restores', sanitizeArchivePathPart(restoreJobId))
-    : path.join(root, String(userId));
+    : path.join(root, String(userId)));
   const safeId = sanitizeArchivePathPart(file.id || crypto.randomUUID());
-  const safeFilename = `${safeId}-${sanitizeArchivePathPart(file.filename || safeId)}`;
+  // A folder every restore shares (the bin's) gets a name of its own each time.
+  const safeFilename = targetDirOverride
+    ? `${crypto.randomUUID()}${path.extname(sanitizeArchivePathPart(file.filename || '')).slice(0, 16)}`
+    : `${safeId}-${sanitizeArchivePathPart(file.filename || safeId)}`;
   await fs.promises.mkdir(targetDir, { recursive: true });
   let targetPath = path.join(targetDir, safeFilename);
   for (let attempt = 1; attempt < 100; attempt += 1) {

@@ -244,6 +244,7 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
     old.version = 6;
     delete old.contents;
     delete old.data.calendar_overlay_restores;
+    delete old.data.bin_items;
     old.data.calendar_accounts.find((row: FixtureValue) => row.id === accountId).provider = 'caldav';
     for (const table of ['calendar_events', 'calendar_calendars']) for (const row of old.data[table]) delete row.uid;
     assert.equal(old.data.calendar_event_subtasks.length, 501);

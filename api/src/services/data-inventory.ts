@@ -93,10 +93,10 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
     'email email2 email3 phone phone2 phone3 avatar_url'), removedIn: 23 }),
   // Upgrade step 22 (0.26.0).
   ...Object.fromEntries([
-    ['contact_merges', 'deliberately_excluded', 'Merge records are a 30-day undo on this installation; a restore brings back contacts, not their undo (0.28 decides the bin with D13).',
+    ['contact_merges', 'deliberately_excluded', 'Merge records are a 30-day undo on this installation; a merged-away contact in an archive comes back as an ordinary deleted one in the bin.',
       'id user_id survivor_id merged_ids survivor_before survivor_version_after created_at purge_after undone_at'],
-    ['bin_items', 'deliberately_excluded', 'The bin keeps merged-away contacts for 30 days on this installation; 0.28 decides how the bin is backed up (D13).',
-      'id user_id module item_type item_id title reason group_id payload payload_version file_refs deleted_at purge_after restored_at'],
+    // The bin's other columns are archived with each item's section (backup-catalog.ts).
+    ['bin_items', 'rebuilt', 'Only items still in the bin are exported, so a restored item never has this set.', 'restored_at'],
     ['contact_imports', 'temporary', 'A staged import file expires after 24 hours and belongs to this installation.',
       'id user_id status format file_path summary result progress created_at expires_at committed_at'],
   ].map(([name, treatment, reason, columns]) => [name, Object.freeze({ ...excluded(treatment, reason, columns),
@@ -174,7 +174,7 @@ const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.fr
   contact_merges: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Not archived: a restore brings back contacts, not a 30-day undo.' },
   contact_imports: { owner: 'user', shareable: false, dataClass: 'installation', module: 'contacts', restore: 'Never restored: a staged import expires after 24 hours.' },
   // Each item's module column names the module that gates it.
-  bin_items: { owner: 'user', shareable: false, dataClass: 'local', module: null, restore: 'Not archived up to data schema 6; the bin belongs to this installation.' },
+  bin_items: { owner: 'user', shareable: false, dataClass: 'local', module: null, restore: 'From data schema 7 restored with the section of its module, with the time it had left (bin.ts restoreBinItems); not archived before.' },
   // Calendar and ToDo.
   calendar_accounts: { owner: 'user', shareable: false, dataClass: CALENDAR_SETUP, module: 'calendar', restore: 'Restored with the Calendar section; a CalDAV or ICS account comes back paused until it signs in.' },
   calendar_calendars: { owner: 'user', shareable: false, dataClass: CALENDAR_SETUP, module: 'calendar', restore: 'Restored with its account; matched by UID, id, server id, then name.' },

@@ -810,6 +810,13 @@ async function ownFolder(userId: string, { bin = false, create = false } = {}) {
   return dir;
 }
 
+/** The person's recordings bin folder, made when missing, for a backup restore to put a binned recording's file in; refused when it is not a plain folder. */
+async function recordingBinFolder(userId: string) {
+  const folder = await ownFolder(userId, { bin: true, create: true });
+  if (!folder) throw unsafeFolder();
+  return folder;
+}
+
 // A recording file of the person: a plain file (not a link) directly in their
 // folder or its bin folder, as those folders really are.
 async function ownFile(userId: string, file: string | null | undefined) {
@@ -1077,6 +1084,7 @@ async function cleanupExpiredRecordingUploads() {
 
 export {
   RECORDINGS_ROOT,
+  recordingBinFolder,
   MAX_CHUNK_BYTES,
   MAX_RECORDING_BYTES,
   isPathUnderRoot,

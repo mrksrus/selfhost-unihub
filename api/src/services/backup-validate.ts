@@ -1,5 +1,5 @@
 import type { RowDataPacket } from 'mysql2/promise';
-import type { ArchiveEnvelope, BackupPayload, BackupFileSource } from '../types';
+import type { ArchiveEnvelope, BackupPayload, BackupFileSource, BackupRow } from '../types';
 import fs from 'fs';
 import { db } from '../state';
 import { modulesFromValue } from './module-settings';
@@ -171,7 +171,7 @@ function validateBackupPayload(backup: ArchiveEnvelope | null | undefined, {
         continue;
       }
       const buffer = fileBuffer || Buffer.from(String(file.data_base64), 'base64');
-      if (file.kind === 'recording' && !identifyRecordingAudio(buffer.subarray(0, AUDIO_HEADER_BYTES))) {
+      if ((file.kind === 'recording' || file.kind === 'recording_bin') && !identifyRecordingAudio(buffer.subarray(0, AUDIO_HEADER_BYTES))) {
         errors.push(`Recording ${file.id} is not supported audio`);
       }
       if (file.kind === 'contact_photo' && (!isJpeg(buffer) || buffer.length > CONTACT_PHOTO_MAX_BYTES)) errors.push(`Contact photo ${file.id} is not a stored contact photo`);
@@ -239,7 +239,7 @@ async function validateBackupPayloadFromFileSources(backup: ArchiveEnvelope, fil
       const header = await readHeader(source, 3);
       if (!isJpeg(header) || (Buffer.isBuffer(source) ? source.length : source.size) > CONTACT_PHOTO_MAX_BYTES) validation.errors.push(`Contact photo ${file.id} is not a stored contact photo`);
     }
-    if (file.kind === 'recording') {
+    if (file.kind === 'recording' || file.kind === 'recording_bin') {
       let header;
       if (Buffer.isBuffer(source)) header = source.subarray(0, AUDIO_HEADER_BYTES);
       else {
@@ -335,7 +335,11 @@ function scopeBackupForImport(backup: ArchiveEnvelope, sections: unknown) {
   const sourceData = backup?.data || {};
   const data: BackupPayload['data'] = {};
   for (const [key, value] of Object.entries(sourceData)) {
-    if (allowedTables.has(key)) data[key] = value;
+    if (!allowedTables.has(key)) continue;
+    // A table several sections share (the bin) keeps the rows of the chosen
+    // sections; its modules are named as their sections.
+    const shared = TABLE_POLICIES[key]?.rowSection;
+    data[key] = shared && Array.isArray(value) ? value.filter(row => normalizedSections.includes(String((row as BackupRow | null)?.[shared]))) : value;
   }
 
   const files = (backup?.files || []).filter(file => allowedFileKinds.has((file?.kind as string)));

@@ -349,8 +349,9 @@ writes nothing more (`409 RESTORE_IN_PROGRESS`).
   person's recordings `bin/` folder. Each kind restores its own rows with
   only known columns, for the person restoring, under the old ids and
   identities unless they are taken; nothing in a payload is trusted.
-- Archives from data schema 7 carry the bin with its module's section.
-  The import writes them with `restoreBinItems(connection, { userId,
+- Archives from data schema 7 carry the bin with its module's section
+  (`bin_items`; a recording's file as `recording_bin`, see
+  [Backup format](BACKUP_FORMAT.md)). The import writes them with `restoreBinItems(connection, { userId,
   section, items, exportedAt, calendarIds, recordingFiles })`: new bin ids,
   the remaining time kept, groups kept together, an item already there not
   added twice, a merged contact as an ordinary deleted one (`contact_merges`

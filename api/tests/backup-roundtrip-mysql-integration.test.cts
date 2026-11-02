@@ -900,6 +900,86 @@ test('production export and restore jobs round-trip what a backup holds through 
       assert.deepEqual(await readMeaning(), first);
     }
   });
+  await t.test('the bin and synced-task state travel with their sections, for their owner only, and come back once', async () => {
+    const owner = await newUser('bin-owner'), stranger = await newUser('bin-stranger');
+    const contactMerge = source('services/contact-merge');
+    // A contact with its photo, a task of a UniHub list and a recording with its file, each deleted into the bin.
+    const photo = { full: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), crypto.randomBytes(200)]), thumb: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), crypto.randomBytes(30)]) };
+    for (const bytes of Object.values(photo)) {
+      const file = sourcePhotos.photoPath(owner, sha256(bytes));
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, bytes);
+    }
+    const contactId = await insertContact({ user_id: owner, first_name: 'Binned', last_name: 'Contact' }, [['email', 'binned@example.test']]);
+    await insert('contact_photos', { contact_id: contactId, user_id: owner, sha256: sha256(photo.full), width: 512, height: 512, bytes: photo.full.length, thumb_sha256: sha256(photo.thumb), source: 'upload' });
+    assert.equal((await contactMerge.moveContactsToBin(owner, [contactId])).deleted, 1);
+    const theirs = await insertContact({ user_id: stranger, first_name: 'Not', last_name: 'Theirs' });
+    await contactMerge.moveContactsToBin(stranger, [theirs]);
+    const localAccount = uuid(), list = uuid(), task = uuid();
+    await insert('calendar_accounts', { id: localAccount, user_id: owner, provider: 'local', display_name: 'UniHub', is_active: 1 });
+    await insert('calendar_calendars', { id: list, user_id: owner, account_id: localAccount, name: 'Binned list', color: '#22c55e', is_visible: 1 });
+    await insert('calendar_events', { id: task, user_id: owner, calendar_id: list, title: 'Binned task', start_time: '2030-03-01 09:00:00', end_time: '2030-03-01 10:00:00',
+      is_todo_only: 1, todo_status: 'done', done_at: '2030-03-01 11:00:00' });
+    await insert('calendar_event_subtasks', { id: uuid(), user_id: owner, event_id: task, title: 'Binned step', is_done: 1, position: 0 });
+    await source('services/transactions').withTransaction((cx: FixtureValue) => source('services/bin-calendar').binLocalEvents(cx, owner, [task]));
+    const recordingId = uuid(), audio = wav();
+    const audioPath = path.join(sourceRoot, 'recordings', owner, `${recordingId}.wav`);
+    await fs.mkdir(path.dirname(audioPath), { recursive: true });
+    await fs.writeFile(audioPath, audio);
+    await insert('recordings', { id: recordingId, user_id: owner, title: 'Binned memo', original_filename: 'memo.wav', content_type: 'audio/wav', size_bytes: audio.length, storage_path: audioPath, source: 'recorded', category: 'none' });
+    assert.equal((await source('services/recordings').deleteRecording(owner, recordingId)).binned, true);
+    // A synced task with UniHub state: its state travels as an overlay.
+    const davAccount = uuid(), davCalendar = uuid(), synced = uuid();
+    await insert('calendar_accounts', { id: davAccount, user_id: owner, provider: 'caldav', display_name: 'Team', account_email: 'bin-team@example.test', base_url: 'https://dav.example.test/', is_active: 1 });
+    await insert('calendar_calendars', { id: davCalendar, user_id: owner, account_id: davAccount, name: 'Team', external_id: 'https://dav.example.test/bin-team/', color: '#2244ff', is_visible: 1 });
+    await insert('calendar_events', { id: synced, user_id: owner, calendar_id: davCalendar, uid: 'Bin-Synced@example.test', title: 'Synced review', start_time: '2030-03-02 09:00:00', end_time: '2030-03-02 10:00:00',
+      todo_status: 'done', done_at: '2030-03-02 11:00:00' });
+    await insert('calendar_event_external_refs', { id: uuid(), user_id: owner, event_id: synced, calendar_id: davCalendar, account_id: davAccount, provider: 'caldav', external_event_id: 'bin-review.ics', external_etag: 'one' });
+    const strangerBin = await rowsFor('bin_items', stranger);
+
+    // The archive holds the owner's bin with its files, never another person's.
+    const archive = await source('services/backup').buildBackupForUser(owner, { sections: 'full', includeFileData: false });
+    assert.deepEqual(archive.data.bin_items.map((row: FixtureValue) => row.item_type).sort(), ['contact', 'recording', 'task']);
+    assert.ok(archive.data.bin_items.every((row: FixtureValue) => row.user_id === owner));
+    assert.ok(archive.files.some((file: FixtureValue) => file.kind === 'recording_bin' && !file.missing && file.sha256 === sha256(audio)));
+    for (const bytes of Object.values(photo)) assert.ok(archive.files.some((file: FixtureValue) => file.kind === 'contact_photo' && file.id === sha256(bytes)), 'the binned contact\'s photo files');
+    assert.deepEqual(archive.data.calendar_overlay_restores.map((row: FixtureValue) => row.uid), ['Bin-Synced@example.test']);
+
+    // Through the export and restore jobs into a new person, twice: everything once.
+    const started = await exportJobs.startDataExportJob(owner, { sections: 'full' });
+    const ready = await waitFor(() => exportJobs.getDataExportJob(owner, started.id), (job: FixtureValue) => job?.status === 'ready', 'Bin export');
+    const [[key]] = await pool.execute<RowDataPacket[]>('SELECT recovery_password_ciphertext FROM backup_archive_keys WHERE backup_uuid = ? AND user_id = ?', [ready.backup_uuid, owner]);
+    const exported = { bytes: await fs.readFile(ready.file_path), password: source('services/backup-container').revealProtectedRecoveryPassword(key.recovery_password_ciphertext, ready.backup_uuid) };
+    const fresh = await newUser('bin-fresh');
+    for (let round = 0; round < 2; round++) await uploadAndRestore(destination, fresh, exported, 'keep_existing');
+    const items = await rowsFor('bin_items', fresh);
+    assert.deepEqual(items.map(row => row.item_type).sort(), ['contact', 'recording', 'task'], 'once, after two restores');
+    const days = (row: FixtureValue) => (new Date(row.purge_after).getTime() - Date.now()) / 86400000;
+    assert.ok(items.every(row => days(row) > 29 && days(row) <= 30.01), 'each keeps the time it had left');
+    assert.deepEqual(await rowsFor('bin_items', stranger), strangerBin, 'the stranger\'s bin is untouched');
+    const [overlays] = await pool.execute<RowDataPacket[]>('SELECT uid FROM calendar_overlay_restores WHERE user_id = ?', [fresh]);
+    assert.deepEqual(overlays.map(row => row.uid), ['Bin-Synced@example.test'], 'the synced task\'s state waits for its sync, once');
+
+    // Back from the bin as they were: the contact with its photo, the task in its list, the recording with its bytes.
+    const back = await destination('services/bin').restoreFromBin(fresh, { ids: items.map(row => row.id) });
+    assert.deepEqual(back.failed, []);
+    const [[contact]] = await pool.execute<RowDataPacket[]>("SELECT c.id, p.sha256 FROM contacts c LEFT JOIN contact_photos p ON p.contact_id = c.id WHERE c.user_id = ? AND c.first_name = 'Binned'", [fresh]);
+    assert.equal(contact.sha256, sha256(photo.full));
+    assert.deepEqual(await fs.readFile(destination('services/contact-photos').photoPath(fresh, sha256(photo.full))), photo.full);
+    const [[restoredTask]] = await pool.execute<RowDataPacket[]>(`SELECT e.todo_status, c.name, (SELECT COUNT(*) FROM calendar_event_subtasks s WHERE s.event_id = e.id) AS steps
+      FROM calendar_events e JOIN calendar_calendars c ON c.id = e.calendar_id WHERE e.user_id = ? AND e.title = 'Binned task'`, [fresh]);
+    assert.deepEqual([restoredTask.todo_status, restoredTask.name, Number(restoredTask.steps)], ['done', 'Binned list', 1]);
+    const [[recording]] = await pool.execute<RowDataPacket[]>("SELECT storage_path FROM recordings WHERE user_id = ? AND title = 'Binned memo'", [fresh]);
+    assert.deepEqual(await fs.readFile(recording.storage_path), audio);
+    assert.ok(recording.storage_path.startsWith(destinationRoot + path.sep));
+
+    // A restore of Contacts alone takes the contacts' bin and nothing else.
+    const zip = path.join(directory, 'bin-legacy.zip');
+    await exportJobs.writeZip(await source('services/backup').buildBackupArchiveEntriesForUser(owner, 'full', { workDirectory: directory }), zip);
+    const contactsOnly = await newUser('bin-contacts-only');
+    await destination('services/backup').importBackupZipFileForUser(contactsOnly, zip, { mode: 'apply', sections: ['contacts'], conflict_mode: 'keep_existing' });
+    assert.deepEqual((await rowsFor('bin_items', contactsOnly)).map(row => row.item_type), ['contact']);
+  });
   assert.deepEqual(await snapshot(sourceUser), original, 'Source data remains unchanged through every destination restore');
   assert.deepEqual(await snapshot(unrelatedUser), unrelated, 'An unrelated user remains unchanged through every export and restore');
 });

@@ -45,11 +45,12 @@ test('contacts-only schema 3 export never reads mail, credentials or recording t
     ? [[{ id: 'contact', user_id: 'owner', first_name: 'Local' }]] : [[]]));
   const backup = await buildBackupForUser('owner', { sections: 'contacts', includeFileData: false });
   assert.equal(backup.version, BACKUP_VERSION);
-  const tables = ['contacts', 'contact_values', 'contact_properties', 'contact_photos', 'contact_uid_aliases', 'contact_duplicate_dismissals'];
+  const tables = ['contacts', 'contact_values', 'contact_properties', 'contact_photos', 'contact_uid_aliases', 'contact_duplicate_dismissals', 'bin_items'];
   assert.deepEqual(Object.keys(backup.data), tables);
   const selects = calls.filter(call => call.sql.startsWith('SELECT'));
   assert.equal(selects.length, tables.length);
-  selects.forEach((select, index) => assert.match(select.sql, new RegExp(`FROM ${tables[index]} b WHERE b.user_id = \\?`)));
+  // The bin's rows come from bin.ts (exportableBinItems), of the contacts' module only.
+  selects.forEach((select, index) => assert.match(select.sql, tables[index] === 'bin_items' ? /FROM bin_items WHERE user_id = \? AND restored_at IS NULL AND module IN \(\?\)/ : new RegExp(`FROM ${tables[index]} b WHERE b.user_id = \\?`)));
   assert.match(selects[0].sql, /SELECT b.`id`, b.`user_id`/);
   for (const select of selects) assert.doesNotMatch(select.sql, /SELECT \*/);
   assert.ok(calls.findIndex(call => call.sql.startsWith('START TRANSACTION')) < calls.indexOf(selects[0]));

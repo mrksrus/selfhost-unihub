@@ -19,13 +19,18 @@ interface TablePolicy {
   ownership: 'user_id' | 'owned_parents';
   fieldPolicies: Readonly<Record<string, string>>;
   rowPolicy?: string;
+  /**
+   * A table several sections share (section '*'): this column of a row names
+   * its module, whose section the row goes with (the bin, D13).
+   */
+  rowSection?: string;
 }
 const SECTION_POLICIES: Readonly<Record<string, SectionPolicy>> = Object.freeze({
   settings: { tables: ["user", "user_settings"], fileKinds: [] },
-  contacts: { tables: ["contacts", "contact_values", "contact_properties", "contact_photos", "contact_uid_aliases", "contact_duplicate_dismissals"], fileKinds: ["contact_photo"] },
-  calendar: { tables: ["calendar_accounts", "calendar_calendars", "calendar_settings", "calendar_events", "calendar_event_subtasks", "calendar_event_attendees", "calendar_event_external_refs", "task_order", "calendar_overlay_restores"], fileKinds: [] },
+  contacts: { tables: ["contacts", "contact_values", "contact_properties", "contact_photos", "contact_uid_aliases", "contact_duplicate_dismissals", "bin_items"], fileKinds: ["contact_photo"] },
+  calendar: { tables: ["calendar_accounts", "calendar_calendars", "calendar_settings", "calendar_events", "calendar_event_subtasks", "calendar_event_attendees", "calendar_event_external_refs", "task_order", "calendar_overlay_restores", "bin_items"], fileKinds: [] },
   mail: { tables: ["mail_accounts", "mail_account_settings", "mail_templates", "mail_folders", "mail_folder_remote_boxes", "mail_sender_rules", "emails", "email_attachments", "mail_email_scores", "mail_folder_reconciliations", "mail_folder_recovery_items", "mail_folder_rule_overrides", ...Object.keys(ARCHIVE_COLUMNS)], fileKinds: ["email_attachment", "raw_email"] },
-  recordings: { tables: ["recordings", "recording_tags", "recording_tag_links", "recording_transcription_jobs"], fileKinds: ["recording"] },
+  recordings: { tables: ["recordings", "recording_tags", "recording_tag_links", "recording_transcription_jobs", "bin_items"], fileKinds: ["recording", "recording_bin"] },
 });
 
 function table(section: string, columns: string, keyColumns: readonly string[] = ['id'], overrides: Readonly<Record<string, string>> = {}, introducedIn: Readonly<Record<string, number>> = {}): Readonly<TablePolicy> {
@@ -97,6 +102,14 @@ const BASE_TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Obj
   mail_folder_reconciliations: table('mail', 'mail_account_id user_id inventory previous_mappings completed_at', ["mail_account_id"], {"previous_mappings": "remap_journal", "completed_at": "preserve"}),
   mail_folder_recovery_items: table('mail', 'email_id user_id source_account_id original_folder original_filing_account_id target_folder target_account_id action created_at', ["email_id"], { created_at: 'preserve', original_filing_account_id: 'remap_optional_history', target_account_id: 'remap_optional_history' }),
   mail_folder_rule_overrides: table('mail', 'rule_id mail_account_id target_folder', ["rule_id", "mail_account_id"], {}),
+  // Upgrade step 25 (0.28.0): the bin goes with each item's section (row
+  // module), with the time it has left (bin.ts restoreBinItems: new ids and
+  // groups, the payload checked again by its kind's restore). A recording's
+  // file is its own file kind; a contact's photos are content files.
+  bin_items: Object.freeze({ ...table('*', 'id user_id module item_type item_id title reason group_id payload payload_version file_refs deleted_at purge_after', ['id'],
+    { item_id: 'preserve', group_id: 'rebuild', file_refs: 'restored_file', deleted_at: 'preserve', purge_after: 'rebuild' },
+    since(25, 'id user_id module item_type item_id title reason group_id payload payload_version file_refs deleted_at purge_after')),
+  rowSection: 'module', rowPolicy: 'Only items still in the bin are exported; a restored one is not.' }),
   recordings: table('recordings', 'id user_id title description original_filename content_type size_bytes duration_seconds storage_path source category recorded_at metadata created_at updated_at uid', ["id"], {"storage_path": "restored_file", "created_at": "preserve"}, since(25, 'uid')),
   recording_tags: table('recordings', 'id user_id name color created_at updated_at', ["id"], {}),
   recording_tag_links: table('recordings', 'recording_id tag_id user_id created_at', ["recording_id", "tag_id"], {}),
@@ -167,6 +180,8 @@ const FILE_POLICIES: Readonly<Record<string, { table: string; column: string }>>
   email_attachment: { table: 'email_attachments', column: 'storage_path' },
   raw_email: { table: 'emails', column: 'raw_storage_path' },
   recording: { table: 'recordings', column: 'storage_path' },
+  // A recording in the bin: its file under the bin's name (payload.bin_path, also in file_refs).
+  recording_bin: { table: 'bin_items', column: 'file_refs' },
 });
 // Files named by their SHA-256 under a per-user root. Each listed column holds
 // the hash of one file; the archive entry's id is that hash, so one file
@@ -176,12 +191,14 @@ const CONTENT_FILE_POLICIES: Readonly<Record<string, { table: string; columns: r
   contact_photo: { table: 'contact_photos', columns: ['sha256', 'thumb_sha256'] },
 });
 const BACKGROUND_WRITERS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  settings: [], recordings: [],
+  settings: [],
+  // The bin purge (0.28.0) skips a person's module while its section is restored.
+  recordings: ['bin.purge'],
   // The bin purge, the photo sweep and the expiry of staged imports (0.26.0);
   // each skips a user whose contacts restore is running.
-  contacts: ['contacts.purgeBin', 'contacts.sweepPhotos', 'contacts.expireImports'],
+  contacts: ['bin.purge', 'contacts.sweepPhotos', 'contacts.expireImports'],
   mail: ['mail.runDurableMailJob', 'mail.syncMailAccount', 'mail.runMailServerDeletionPass', 'notifications.deliverPending'],
-  calendar: ['calendarSync.runCalendarSyncPass', 'notifications.reconcileReminders', 'notifications.enqueueDueReminders', 'notifications.deliverPending'],
+  calendar: ['calendarSync.runCalendarSyncPass', 'notifications.reconcileReminders', 'notifications.enqueueDueReminders', 'notifications.deliverPending', 'bin.purge'],
 });
 // Fields older archives carry that the current schema no longer has. A
 // reader converts them (the 3+3 contact fields become contact_values,
@@ -200,12 +217,14 @@ function assertRecoveryCatalog({ sections = SECTION_POLICIES, tables = TABLE_POL
   for (const [section, policy] of Object.entries(sections)) {
     if (!Array.isArray(backgroundWriters[section])) fail(`${section} has no background-writer declaration`);
     for (const name of policy.tables) {
-      if (!tables[name] || tables[name].section !== section || seen.has(name)) fail(`invalid or duplicate section table ${name}`);
+      const shared = tables[name]?.section === '*' && !!tables[name].rowSection;
+      if (!tables[name] || (tables[name].section !== section && !shared) || (seen.has(name) && !shared)) fail(`invalid or duplicate section table ${name}`);
       seen.add(name);
     }
     for (const kind of policy.fileKinds) {
       const file = files[kind] || contentFiles[kind];
-      if (!file || (files[kind] && contentFiles[kind]) || tables[file.table]?.section !== section || seenFiles.has(kind)) fail(`invalid file kind ${kind}`);
+      const fileSection = file ? tables[file.table]?.section : undefined;
+      if (!file || (files[kind] && contentFiles[kind]) || (fileSection !== section && fileSection !== '*') || seenFiles.has(kind)) fail(`invalid file kind ${kind}`);
       seenFiles.add(kind);
     }
   }
@@ -219,7 +238,7 @@ function assertRecoveryCatalog({ sections = SECTION_POLICIES, tables = TABLE_POL
     }
   }
   for (const [name, fields] of Object.entries(references)) for (const [column, target] of Object.entries(fields)) {
-    if (!tables[name]?.columns.includes(column) || !tables[target] || tables[name].section !== tables[target].section) fail(`invalid reference ${name}.${column}`);
+    if (!tables[name]?.columns.includes(column) || !tables[target] || tables[name].section !== tables[target].section || tables[name].section === '*') fail(`invalid reference ${name}.${column}`);
   }
   for (const [kind, file] of Object.entries(files)) {
     if (!seenFiles.has(kind) || tables[file.table]?.fieldPolicies[file.column] !== 'restored_file') fail(`unhandled file ${kind}`);

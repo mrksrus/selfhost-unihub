@@ -57,6 +57,8 @@ import { log } from '../log';
 import crypto from 'node:crypto';
 import { archivedContents, filterOldArchive } from './backup-classes';
 import { restoreOverlays, validateOverlayRows } from './backup-overlays';
+import { restoreBinItems, parseRefs } from './bin';
+import { recordingBinFolder } from './recordings';
 
 const accountLabel = (row: BackupRow) => row.email_address || row.account_email || row.display_name || row.id;
 
@@ -289,7 +291,12 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
     const photoFiles = new Set<string>();
     const createdPhotos: string[] = [];
     let releasedPhotos: string[] = [];
-    const photoNames = new Set((Array.isArray(data.contact_photos) ? data.contact_photos as BackupRow[] : []).flatMap(row => [row.sha256, row.thumb_sha256].map(String)));
+    // The bin (data schema 7): its rows of the restored sections, and the files they keep.
+    const binItems = (Array.isArray(data.bin_items) ? data.bin_items as BackupRow[] : []);
+    const binRecordings = new Set(binItems.filter(row => row.item_type === 'recording').map(row => String(row.id)));
+    const photoNames = new Set([...(Array.isArray(data.contact_photos) ? data.contact_photos as BackupRow[] : []).flatMap(row => [row.sha256, row.thumb_sha256].map(String)),
+      ...binItems.filter(row => row.item_type === 'contact').flatMap(row => parseRefs(row.file_refs))]);
+    let binFolder: string | null = null;
     // After a rollback the restore's connection is still held; the photo
     // references are read on it.
     const cleanupCreatedFiles = (executor: SqlExecutor = db) => Promise.all([
@@ -314,12 +321,15 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
           if (created) createdPhotos.push(String(file.id));
           continue;
         }
+        // A binned recording's file goes into the person's bin folder, only for an item of this archive.
+        if (file.kind === 'recording_bin' && !binRecordings.has(String(file.id))) continue;
+        if (file.kind === 'recording_bin' && !binFolder) binFolder = await recordingBinFolder(userId);
         const restoredPath = await writeRestoredFile(userId, file, {
           fileBuffersByPath,
           fileSourcesByPath,
           restoreJobId,
           checkCancelled,
-        });
+        }, file.kind === 'recording_bin' ? binFolder : null);
         if (restoredPath) {
           restoredPaths.set(`${file.kind}:${file.id}`, restoredPath);
           createdRestorePaths.push(restoredPath);
@@ -1103,6 +1113,27 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         );
       }
 
+      // The bin of each restored section, after its calendars (bin.ts): new ids,
+      // the time each item had left, nothing added twice.
+      const unusedBinFiles: string[] = [];
+      if (binItems.length) {
+        const exportedAt = new Date(String(scopedBackup.exported_at ?? ''));
+        const recordingFiles = new Map([...binRecordings].flatMap(id => restoredPaths.has(`recording_bin:${id}`) ? [[id, restoredPaths.get(`recording_bin:${id}`)!] as const] : []));
+        let restoredBin = 0;
+        for (const section of ['contacts', 'calendar', 'recordings']) {
+          if (!scopedBackup.import_sections.includes(section) || accountOnly.has(section)) continue;
+          await checkRestoreCancelled();
+          const outcome = await restoreBinItems(connection, { userId, section, items: binItems, exportedAt: Number.isNaN(exportedAt.getTime()) ? new Date() : exportedAt,
+            calendarIds: calendarIdMap, recordingFiles });
+          restoredBin += outcome.restored;
+          const skipped = outcome.skipped.filter(item => item.reason !== 'not an item of this section');
+          for (const item of skipped) if (recordingFiles.has(item.id)) unusedBinFiles.push(recordingFiles.get(item.id)!);
+          const unrestorable = skipped.filter(item => item.reason !== 'already in the bin').length;
+          if (unrestorable) validation.warnings.push(`${unrestorable} item${unrestorable === 1 ? '' : 's'} of the ${section} bin could not be restored.`);
+        }
+        if (restoredBin) contents.notes.push(`${restoredBin} item${restoredBin === 1 ? ' is' : 's are'} back in the bin, with the time ${restoredBin === 1 ? 'it' : 'they'} had left.`);
+      }
+
       const result = {
         dry_run: false,
         valid: true,
@@ -1129,6 +1160,8 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
       if (beforeCommit) await beforeCommit(connection, result);
       commitAttempted = true;
       await connection.commit();
+      // A binned recording's file whose item was not taken (already in the bin) is no row's.
+      await Promise.all(unusedBinFiles.map(file => fs.promises.rm(file, { force: true }).catch(() => {})));
       // Photo files the restored contacts replaced, and written ones no row took.
       await releasePhotoFiles(userId, [...releasedPhotos, ...createdPhotos], connection)
         .catch(error => log.warn('backup', 'Contact photo files a restore no longer uses stay until the sweep', {}, error));
