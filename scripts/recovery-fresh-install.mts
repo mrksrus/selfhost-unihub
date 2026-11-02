@@ -37,7 +37,7 @@ const SECTIONS = ['settings', 'contacts', 'calendar', 'mail', 'recordings'];
 // Provider evidence the mail engine records while syncing; their restore rules
 // have their own tests (backup-mail-engine, account-mail-engine-recovery).
 // Overlays exist only after a restore, while a synced task waits for its sync.
-const UNSEEDED_TABLES = new Set(['mail.mail_remote_mailboxes', 'mail.mail_remote_occurrences', 'mail.mail_gmail_messages', 'mail.mail_operation_attempts',
+const UNSEEDED_TABLES = new Set(['mail.mail_gmail_messages', 'mail.mail_operation_attempts',
   'mail.mail_command_receipts', 'mail.mail_engine_quarantine', 'calendar.calendar_overlay_restores']);
 const SYNC_ACCOUNT = 'fresh-mail-1@example.test', SYNCED_CALENDAR = 'Research Calendar';
 const evidence: Record<string, unknown> = { kind: factory.describe, started_at: new Date().toISOString() };

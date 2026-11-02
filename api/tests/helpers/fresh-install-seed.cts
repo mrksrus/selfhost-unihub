@@ -59,6 +59,7 @@ async function main() {
     const accounts: string[] = [], emails: string[] = [];
     // The Sync account's messages as its provider holds them.
     const providerMail: { user: string; mailbox: string; raw: string }[] = [];
+    const syncMailboxes = new Map<string, string>();
     for (const [index, password] of secrets.mail.entries()) {
       const accountId = uuid(), address = `fresh-mail-${index}@example.test`;
       accounts.push(accountId);
@@ -79,9 +80,20 @@ async function main() {
         await insert('emails', { id: emailId, user_id: userId, mail_account_id: accountId, message_id: `<fresh-${index}@example.test>`, subject: `Fresh mail ${index}`,
           from_address: `sender-${index}@example.test`, from_name: 'Sender', to_addresses: JSON.stringify([address]), body_text: `Body Grüße ${index}:${copy}`,
           body_html: `<p>Grüße ${index}:${copy}</p><img src="/api/mail/attachments/${attachmentId}">`, folder: slug, source_folder: remote,
-          imap_uid: 22 + index + copy * 10, imap_uidvalidity: 123, remote_folder: copy ? 'Moved/Current' : remote, remote_uid: 100 + index + copy,
-          remote_uidvalidity: 456, remote_missing: copy, raw_storage_path: rawPath, raw_sha256: sha256(raw), received_at: `2030-01-0${2 + index} 12:3${copy}:56`,
+          imap_uid: 22 + index + copy * 10, imap_uidvalidity: 123, remote_folder: copy && !index ? 'Moved/Current' : remote, remote_uid: 100 + index + copy,
+          remote_uidvalidity: 456, remote_missing: index ? 0 : copy, raw_storage_path: rawPath, raw_sha256: sha256(raw), received_at: `2030-01-0${2 + index} 12:3${copy}:56`,
           is_starred: 1, has_attachments: 1, import_complete: 1 });
+        if (index) {
+          // The Sync account's message as the mail engine records it at the
+          // provider: a live occurrence makes it the provider's copy (mirror).
+          const mailboxId = syncMailboxes.get(remote) ?? uuid();
+          if (!syncMailboxes.has(remote)) {
+            syncMailboxes.set(remote, mailboxId);
+            await insert('mail_remote_mailboxes', { id: mailboxId, user_id: userId, mail_account_id: accountId, remote_name: remote, delimiter: '/', uidvalidity: 456, state: 'active' });
+          }
+          await insert('mail_remote_occurrences', { id: uuid(), user_id: userId, mail_account_id: accountId, mailbox_id: mailboxId, uidvalidity: 456, uid: 100 + index + copy,
+            email_id: emailId, observed_flags: JSON.stringify(['\\Flagged']), presence: 'present', observed_at: '2030-01-03 12:00:00' });
+        }
         await insert('email_attachments', { id: attachmentId, user_id: userId, email_id: emailId, filename: `data-${index}.bin`, content_type: 'application/octet-stream',
           size_bytes: attachment.length, storage_path: store('attachments', `${attachmentId}.bin`, attachment), content_id: `content-${index}-${copy}` });
         if (index === 0 && copy === 0) {
