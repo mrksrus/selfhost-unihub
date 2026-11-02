@@ -24,8 +24,9 @@ async function schedule(app: App, screen: Screen, from: string, subject: string,
 }
 
 // 24-18: three messages scheduled for the same minute, about 3 minutes ahead. A is left
-// alone, B is due just after the API restarts, C is cancelled from Drafts. A and B
-// arrive once each, not before that minute; C never arrives and stays in Drafts unscheduled.
+// alone, B is due just after the API restarts, C is cancelled from Drafts. Until a minute
+// before that time none is sent and A and B wait scheduled in Drafts; A and B then arrive
+// once each, not before that minute; C never arrives and stays in Drafts unscheduled.
 test('[24-18] scheduled sends arrive once at their time, across an API restart, and cancel works', { session: 'admin', tags: ['slow'], timeout: 600_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop');
   const id = runId();
@@ -44,6 +45,12 @@ test('[24-18] scheduled sends arrive once at their time, across an API restart, 
 
   // Restart the API one minute before the due time: the schedule is stored, not held in memory.
   await new Promise((resolve) => setTimeout(resolve, Math.max(0, due.getTime() - 60_000 - Date.now())));
+  // Until then nothing is sent: confirming Schedule once also sent the message at once.
+  for (const subject of [a, b, c]) expect((await deliveredWithSubject(outside.sam, subject)).length, `${subject} not sent early`).toBe(0);
+  for (const subject of [a, b]) {
+    const drafts = await emailsWithSubject(browser, 'drafts', subject);
+    expect(drafts.map((draft) => draft.scheduled_send_status), `${subject} waits in Drafts`).toEqual(['scheduled']);
+  }
   restartApi();
 
   for (const subject of [a, b]) {
