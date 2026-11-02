@@ -176,16 +176,16 @@ async function computeModeImpact(account: Account, { mode, syncWindowDays, trash
   const [[outside]] = await executor.execute<RowDataPacket[]>(`SELECT
       COALESCE(SUM(NOT (${ONLY_TRASH_SQL})), 0) AS regular, COALESCE(SUM(${ONLY_TRASH_SQL}), 0) AS trash
     FROM emails e WHERE ${ELIGIBLE_SQL} AND ${OUTSIDE_SQL}`, [...owner, ...params]);
-  // The copies the merge would remove: planned group by group as it does.
+  // The copies the merge would remove, planned as it plans them, a page of groups at a time.
   let gmailDuplicates = 0;
   for (let after = '';;) {
-    const [groups] = await executor.execute<RowDataPacket[]>(`${GMAIL_GROUPS_SQL} ORDER BY m.gmail_msgid LIMIT 100`, [...owner, after, ...owner, after]);
-    for (const { gmail_msgid: gmailMsgId } of groups) {
-      const plan = await planGmailGroup(executor, { userId: account.user_id, accountId: account.id, gmailMsgId, lock: false });
+    const page = await gmailGroupPage(executor, account.user_id, account.id, after);
+    if (!page.ids.length) break;
+    for (const plan of (await planGmailGroups(executor, { userId: account.user_id, accountId: account.id, gmailMsgIds: page.ids, lock: false })).values()) {
       if (plan) gmailDuplicates += plan.losers.length;
-      after = gmailMsgId;
     }
-    if (groups.length < 100) break;
+    after = page.ids[page.ids.length - 1];
+    if (!page.more) break;
   }
   const [[unlinked]] = await executor.execute<RowDataPacket[]>(`SELECT COUNT(*) AS n FROM emails e WHERE ${ELIGIBLE_SQL}
     AND ${UNLINKED_DUPLICATE_SQL}`, owner);
@@ -274,64 +274,96 @@ async function removeMatching({ account, fence, conditionSql, params, limit = PR
 // and the item a label scanned before its address downloaded. Only X-GM-MSGID
 // is proof; Message-ID headers and bodies never join items. A group needs an
 // occurrence: an identity from an archive alone proves nothing at Gmail.
-// Parameters: user, account, lower bound; twice.
-const GMAIL_MEMBERS_SQL = `SELECT o.gmail_msgid AS gmail_msgid, o.email_id AS email_id, 1 AS observed FROM mail_remote_occurrences o
+// The next page of X-GM-MSGIDs with more than one item after `after`: the
+// items with an occurrence of it, and a restored item holding it beside an
+// occurrence on another item. Two index-ordered reads rather than one union
+// over every occurrence of the account, merged in the same order.
+const GMAIL_PAGE = 100;
+async function gmailGroupPage(executor: SqlExecutor, userId: string, accountId: string, after: string) {
+  const [observed] = await executor.execute<RowDataPacket[]>(`SELECT o.gmail_msgid FROM mail_remote_occurrences o
     WHERE o.user_id = ? AND o.mail_account_id = ? AND o.gmail_msgid IS NOT NULL AND o.gmail_msgid > ? AND o.presence IN ('present','absent')
-  UNION SELECT e.remote_gmail_msgid, e.id, 0 FROM emails e
-    WHERE e.user_id = ? AND e.mail_account_id = ? AND e.remote_gmail_msgid IS NOT NULL AND e.remote_gmail_msgid > ?`;
-const GMAIL_GROUPS_SQL = `SELECT m.gmail_msgid, COUNT(DISTINCT m.email_id) AS n FROM (${GMAIL_MEMBERS_SQL}) m
-  GROUP BY m.gmail_msgid HAVING COUNT(DISTINCT m.email_id) > 1 AND MAX(m.observed) = 1`;
-// Which copies of one X-GM-MSGID merge, and which one stays: null keeps every
-// copy. The merge plans under its row locks; the confirmation's count plans
-// the same way without them, so it counts only what the merge would do.
-async function planGmailGroup(cx: SqlExecutor, { userId, accountId, gmailMsgId, lock }: { userId: string; accountId: string; gmailMsgId: string; lock: boolean }) {
+    GROUP BY o.gmail_msgid HAVING COUNT(DISTINCT o.email_id) > 1 ORDER BY o.gmail_msgid LIMIT ${GMAIL_PAGE}`, [userId, accountId, after]);
+  const [restored] = await executor.execute<RowDataPacket[]>(`SELECT DISTINCT e.remote_gmail_msgid AS gmail_msgid FROM emails e
+    JOIN mail_remote_occurrences o ON o.mail_account_id = e.mail_account_id AND o.user_id = e.user_id AND o.gmail_msgid = e.remote_gmail_msgid
+      AND o.email_id <> e.id AND o.presence IN ('present','absent')
+    WHERE e.user_id = ? AND e.mail_account_id = ? AND e.remote_gmail_msgid IS NOT NULL AND e.remote_gmail_msgid > ?
+    ORDER BY e.remote_gmail_msgid LIMIT ${GMAIL_PAGE}`, [userId, accountId, after]);
+  const ids = [...new Set([...observed, ...restored].map(row => String(row.gmail_msgid)))].sort();
+  return { ids: ids.slice(0, GMAIL_PAGE), more: observed.length === GMAIL_PAGE || restored.length === GMAIL_PAGE || ids.length > GMAIL_PAGE };
+}
+// Which copies of each X-GM-MSGID merge, and which one stays: null keeps every
+// copy. The merge plans its one group under its row locks; the confirmation's
+// count plans a page of groups the same way without them, so it counts only
+// what the merge would do, with a few queries per page.
+interface GmailPlan { keeper: RowDataPacket; losers: string[]; snoozed: RowDataPacket | null; filedFrom: string | null }
+async function planGmailGroups(cx: SqlExecutor, { userId, accountId, gmailMsgIds, lock }: { userId: string; accountId: string; gmailMsgIds: string[]; lock: boolean }) {
+  const plans = new Map<string, GmailPlan | null>(gmailMsgIds.map(id => [id, null]));
+  if (!gmailMsgIds.length) return plans;
   const locking = lock ? ' FOR UPDATE' : '';
-  const [occurrences] = await cx.execute<RowDataPacket[]>(`SELECT id, email_id, presence FROM mail_remote_occurrences
-    WHERE user_id = ? AND mail_account_id = ? AND gmail_msgid = ?${locking}`, [userId, accountId, gmailMsgId]);
-  const [restored] = await cx.execute<RowDataPacket[]>(`SELECT id FROM emails WHERE user_id = ? AND mail_account_id = ? AND remote_gmail_msgid = ?${locking}`,
-    [userId, accountId, gmailMsgId]);
-  const observed = occurrences.filter(row => ['present', 'absent'].includes(row.presence)).map(row => row.email_id);
-  const ids = [...new Set([...observed, ...restored.map(row => row.id)])];
-  if (ids.length < 2 || !observed.length || occurrences.some(row => row.presence === 'quarantined')) return null;
+  const groupMarks = gmailMsgIds.map(() => '?').join(',');
+  const [occurrences] = await cx.execute<RowDataPacket[]>(`SELECT id, email_id, presence, gmail_msgid FROM mail_remote_occurrences
+    WHERE user_id = ? AND mail_account_id = ? AND gmail_msgid IN (${groupMarks})${locking}`, [userId, accountId, ...gmailMsgIds]);
+  const [restored] = await cx.execute<RowDataPacket[]>(`SELECT id, remote_gmail_msgid FROM emails WHERE user_id = ? AND mail_account_id = ?
+    AND remote_gmail_msgid IN (${groupMarks})${locking}`, [userId, accountId, ...gmailMsgIds]);
+  const groups = new Map(gmailMsgIds.map(id => [id, { observed: [] as string[], ids: new Set<string>(), quarantined: false }]));
+  for (const row of occurrences) {
+    const group = groups.get(String(row.gmail_msgid));
+    if (!group) continue;
+    if (row.presence === 'quarantined') group.quarantined = true;
+    if (['present', 'absent'].includes(row.presence)) { group.observed.push(row.email_id); group.ids.add(row.email_id); }
+  }
+  for (const row of restored) groups.get(String(row.remote_gmail_msgid))?.ids.add(row.id);
+  const candidates = [...groups].filter(([, group]) => group.ids.size >= 2 && group.observed.length && !group.quarantined);
+  const ids = [...new Set(candidates.flatMap(([, group]) => [...group.ids]))];
+  if (!ids.length) return plans;
   const marks = ids.map(() => '?').join(',');
-  const [items] = await cx.execute<RowDataPacket[]>(`SELECT e.id, e.import_complete, e.content_state, e.created_at, e.remote_gmail_msgid,
+  const [eligible] = await cx.execute<RowDataPacket[]>(`SELECT e.id, e.import_complete, e.content_state, e.created_at, e.remote_gmail_msgid,
       e.snoozed_until, e.snooze_returned_at FROM emails e
     WHERE ${ELIGIBLE_SQL} AND e.id IN (${marks})${locking}`, [userId, accountId, ...ids]);
-  if (items.length !== ids.length) return null; // filed elsewhere, legacy, draft or pending change: keep all
-  // A copy restored with another X-GM-MSGID is not proven to be this message.
-  if (items.some(item => item.remote_gmail_msgid != null && item.remote_gmail_msgid !== gmailMsgId)) return null;
+  const items = new Map(eligible.map(item => [String(item.id), item]));
   // Every occurrence of a copy must carry this same id; otherwise the copies
   // are not proven to be the same message.
-  const [foreign] = await cx.execute<RowDataPacket[]>(`SELECT id FROM mail_remote_occurrences WHERE user_id = ? AND mail_account_id = ?
-    AND email_id IN (${marks}) AND (gmail_msgid IS NULL OR gmail_msgid <> ?) LIMIT 1`, [userId, accountId, ...ids, gmailMsgId]);
-  if (foreign.length) return null;
+  const [held] = await cx.execute<RowDataPacket[]>(`SELECT email_id, gmail_msgid FROM mail_remote_occurrences WHERE user_id = ? AND mail_account_id = ?
+    AND email_id IN (${marks})`, [userId, accountId, ...ids]);
+  const [filed] = await cx.execute<RowDataPacket[]>(`SELECT email_id FROM mail_folder_recovery_items WHERE user_id = ? AND email_id IN (${marks})${locking}`,
+    [userId, ...ids]);
+  const [mappings] = await cx.execute<RowDataPacket[]>(`SELECT gmail_msgid, email_id FROM mail_gmail_messages WHERE mail_account_id = ? AND user_id = ?
+    AND gmail_msgid IN (${groupMarks})${locking}`, [accountId, userId, ...gmailMsgIds]);
+  const mapped = new Map(mappings.map(row => [String(row.gmail_msgid), String(row.email_id)]));
   // A snooze and filing history are the person's own: they go to the kept
   // copy. Copies holding different ones are kept apart rather than lose one.
   const snooze = (item: RowDataPacket) => item.snoozed_until || item.snooze_returned_at
     ? `${String(item.snoozed_until && new Date(item.snoozed_until).getTime())}|${String(item.snooze_returned_at && new Date(item.snooze_returned_at).getTime())}` : null;
-  if (new Set(items.map(snooze).filter(Boolean)).size > 1) return null;
-  const [filed] = await cx.execute<RowDataPacket[]>(`SELECT email_id FROM mail_folder_recovery_items WHERE user_id = ? AND email_id IN (${marks})${locking}`,
-    [userId, ...ids]);
-  if (filed.length > 1) return null;
-  const [[mapped]] = await cx.execute<RowDataPacket[]>(`SELECT email_id FROM mail_gmail_messages WHERE mail_account_id = ? AND user_id = ? AND gmail_msgid = ?${locking}`,
-    [accountId, userId, gmailMsgId]);
-  // A complete copy first; between complete copies the restored one, which
-  // holds the person's own filing and links; then the mapped one.
-  const rank = (item: RowDataPacket) => [bool(item.import_complete) ? 0 : 1, item.remote_gmail_msgid === gmailMsgId ? 0 : 1,
-    item.id === mapped?.email_id ? 0 : 1, new Date(item.created_at).getTime() || 0];
-  const keeper = [...items].sort((a, b) => {
-    const left = rank(a), right = rank(b);
-    for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return left[i] - right[i];
-    return a.id < b.id ? -1 : 1;
-  })[0];
-  return { keeper, losers: ids.filter(id => id !== keeper.id), snoozed: items.find(item => snooze(item)) || null, filedFrom: filed[0]?.email_id || null };
+  for (const [gmailMsgId, group] of candidates) {
+    const members = [...group.ids].map(id => items.get(String(id)));
+    if (members.some(item => !item)) continue; // filed elsewhere, legacy, draft or pending change: keep all
+    const copies = members as RowDataPacket[];
+    // A copy restored with another X-GM-MSGID is not proven to be this message.
+    if (copies.some(item => item.remote_gmail_msgid != null && item.remote_gmail_msgid !== gmailMsgId)) continue;
+    if (held.some(row => group.ids.has(row.email_id) && (row.gmail_msgid == null || String(row.gmail_msgid) !== gmailMsgId))) continue;
+    if (new Set(copies.map(snooze).filter(Boolean)).size > 1) continue;
+    const history = filed.filter(row => group.ids.has(row.email_id));
+    if (history.length > 1) continue;
+    // A complete copy first; between complete copies the restored one, which
+    // holds the person's own filing and links; then the mapped one.
+    const rank = (item: RowDataPacket) => [bool(item.import_complete) ? 0 : 1, item.remote_gmail_msgid === gmailMsgId ? 0 : 1,
+      item.id === mapped.get(gmailMsgId) ? 0 : 1, new Date(item.created_at).getTime() || 0];
+    const keeper = [...copies].sort((a, b) => {
+      const left = rank(a), right = rank(b);
+      for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return left[i] - right[i];
+      return a.id < b.id ? -1 : 1;
+    })[0];
+    plans.set(gmailMsgId, { keeper, losers: [...group.ids].filter(id => id !== keeper.id), snoozed: copies.find(item => snooze(item)) || null,
+      filedFrom: history[0]?.email_id || null });
+  }
+  return plans;
 }
 async function mergeGmailGroup({ account, fence, gmailMsgId }: { account: Account; fence: Fence; gmailMsgId: string }) {
   const userId = account.user_id, accountId = account.id;
   const { withTransaction } = require('./mail-engine/repository') as typeof import('./mail-engine/repository');
   const outcome = await withTransaction(async cx => {
     await fence(cx);
-    const plan = await planGmailGroup(cx, { userId, accountId, gmailMsgId, lock: true });
+    const plan = (await planGmailGroups(cx, { userId, accountId, gmailMsgIds: [gmailMsgId], lock: true })).get(gmailMsgId);
     if (!plan) return null;
     const keeper = plan.keeper.id, losers = plan.losers;
     const loserMarks = losers.map(() => '?').join(',');
@@ -398,17 +430,16 @@ async function mergeGmailGroup({ account, fence, gmailMsgId }: { account: Accoun
 async function mergeGmailDuplicates({ account, fence, signal }: { account: Account; fence: Fence; signal?: AbortSignal | null }) {
   let after = '', merged = 0, removed = 0, scanned = 0;
   while (merged < GMAIL_GROUP_BATCH && scanned < GMAIL_GROUP_SCAN) {
-    const [groups] = await db.execute<RowDataPacket[]>(`${GMAIL_GROUPS_SQL} ORDER BY m.gmail_msgid LIMIT 100`,
-      [account.user_id, account.id, after, account.user_id, account.id, after]);
-    if (!groups.length) break;
-    for (const { gmail_msgid: id } of groups) {
+    const page = await gmailGroupPage(db, account.user_id, account.id, after);
+    if (!page.ids.length) break;
+    for (const id of page.ids) {
       if (signal?.aborted) return { merged, removed, more: true };
       scanned++; after = id;
       const deleted = await mergeGmailGroup({ account, fence, gmailMsgId: id });
       if (deleted) { merged++; removed += deleted; }
       if (merged >= GMAIL_GROUP_BATCH || removed >= PRUNE_BATCH) return { merged, removed, more: true };
     }
-    if (groups.length < 100) break;
+    if (!page.more) break;
   }
   return { merged, removed, more: false };
 }
