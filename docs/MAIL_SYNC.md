@@ -69,7 +69,17 @@ module:
   operation history and mapping move to the kept item, and tasks made from a
   removed copy (also those still waiting as restore overlays) name the kept
   item. A merge group needs an occurrence of that X-GM-MSGID; an identity
-  from an archive alone joins nothing.
+  from an archive alone joins nothing. The removed copy's snooze and filing
+  history go to the kept item (copies holding different ones stay apart),
+  its notifications open the kept item, and a kept item without content
+  that no body work had picked is queued. The scan does not announce the
+  label's copy as new mail.
+- Without that X-GM-MSGID nothing joins the two: the backup had no Gmail
+  mapping for the item, or the restored account is not Gmail by its IMAP
+  host or its sync's Gmail ids, so the restore dropped the id. Both copies
+  then stay visible, also after confirmation. This is by design: only
+  X-GM-MSGID proves two Gmail items are one message, never a Message-ID or
+  matching content.
 - An address of an older UIDVALIDITY links nothing: after the server reset
   the mailbox's UIDVALIDITY between the backup and the restore, that UID may
   be another message now. The restored item and the server's copy, downloaded

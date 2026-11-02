@@ -187,7 +187,9 @@ A kept Gmail message carries its X-GM-MSGID in `emails.remote_gmail_msgid`
 an archive of schemas 1 to 6 gives it from its `mail_gmail_messages`). It is
 provider identity, not a link: the restored item takes no occurrence from it,
 and only the Gmail merge of a confirmed Sync account uses it (see
-[Mail sync](MAIL_SYNC.md)). A value that is not a decimal id is dropped.
+[Mail sync](MAIL_SYNC.md)). A restore keeps it only for an account that is
+Gmail there (Gmail's IMAP host, or Gmail ids its sync already read); it
+drops a value that is not a decimal id, and the API never returns it.
 
 UniHub's state on a synced task (ToDo state, done time, source email and
 subtasks) travels in `calendar_overlay_restores`, keyed by calendar, UID and
