@@ -269,7 +269,9 @@ up() {
     fi
     # Builds the API, then creates and seeds unihub_dev; the seed skips a database it already filled.
     echo "e2e-stack: building the API and starting the database"
-    "$REPO/scripts/local-db.sh" dev >"$STATE/log/db-seed.log" 2>&1 || die "database start or seed failed ($STATE/log/db-seed.log)"
+    # The seed writes its attachments' files where this stack's API reads them.
+    MAIL_ATTACHMENT_UPLOAD_ROOT=$STATE/uploads/attachments \
+      "$REPO/scripts/local-db.sh" dev >"$STATE/log/db-seed.log" 2>&1 || die "database start or seed failed ($STATE/log/db-seed.log)"
   fi
 
   local users="" u

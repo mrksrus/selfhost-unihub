@@ -7,16 +7,15 @@ import { onlyOn } from '../support/ui.ts';
 
 // 28-05 (agent part): an archive from before 0.28 still imports, and the
 // review says what was left out when it was read. The frozen 0.27.1 fixture
-// (api/tests/fixtures/backup-v6-0.27.1.*) is uploaded through the page.
-// Stream A adds the fixture; until then this test skips.
+// (api/tests/fixtures/backups/v6-0.27.1, its password in expected.json) is
+// uploaded through the page.
 
-const FIXTURE = '../../api/tests/fixtures/backup-v6-0.27.1.unihub-backup';
-const PASSWORD_FILE = '../../api/tests/fixtures/backup-v6-0.27.1.password';
+const FIXTURE = '../../api/tests/fixtures/backups/v6-0.27.1/full.unihub-backup';
+const EXPECTED = '../../api/tests/fixtures/backups/v6-0.27.1/expected.json';
 
 test('[28-05] an archive from before 0.28 imports with a note on what was left out', { session: 'blair', timeout: 300_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop');
-  let password: string;
-  try { password = readFileSync(fixturePath(PASSWORD_FILE), 'utf8').trim(); } catch { test.skip(true, 'the frozen 0.27.1 archive is not in the checkout yet'); return; }
+  const password: string = JSON.parse(readFileSync(fixturePath(EXPECTED), 'utf8')).recovery_password;
   await app.open('/settings?section=backup');
   await screen.getByLabel('Backup file').setInputFiles(fixturePath(FIXTURE));
   await screen.getByRole('button', 'Upload and check').tap();

@@ -30,14 +30,16 @@ test('[28-01 28-04] a backup is always encrypted, says what it leaves out, and o
   await expect(screen.getByText('Left out', { exact: true })).toBeVisible();
   await expect(screen.getByText(/mail of Sync-mode accounts/i)).toBeVisible();
   await screen.getByRole('button', 'Create backup').tap();
-  await expect(screen.getByText('Backup started', { exact: false })).toBeVisible();
+  // The toast shows the title and announces it again in its live region.
+  await expect(screen.getByRole('status').filter({ hasText: 'Backup started' })).toHaveCount(1);
   const { jobs } = ok(await pageApi<{ jobs: Job[] }>(browser, 'GET', '/api/backup/jobs'), 'list backups');
   const job = await waitForJob(browser, jobs[0].id, 'ready');
   expect(job.encryption_enabled, 'encrypted without asking').toBe(true);
   // Alex's mail account is Sync mode: its mail is left out and the row says so.
   expect(job.contents?.left_out.some((entry) => /sync/i.test(entry.what)), 'Sync-mode mail left out').toBe(true);
   await browser.reload();
-  await expect(screen.getByText(/^Left out: .*Sync/)).toBeVisible();
+  // The newest backup is the first row; earlier runs and targets leave theirs below.
+  await expect(screen.getByText(/^Left out: .*Sync/).first()).toBeVisible();
   // An old client that still asks for an unencrypted backup gets an encrypted one.
   const legacy = ok(await pageApi<{ job: Job }>(browser, 'POST', '/api/backup/jobs', { sections: 'full', encrypt: false }), 'legacy create').job;
   expect((await waitForJob(browser, legacy.id, 'ready')).encryption_enabled).toBe(true);
@@ -48,6 +50,8 @@ test('[28-17] a backup downloads through a ticket that needs no session cookie',
   await app.open('/settings?section=backup');
   const ready = ok(await pageApi<{ jobs: Job[] }>(browser, 'GET', '/api/backup/jobs'), 'list backups').jobs.find((job) => job.status === 'ready')
     ?? await waitForJob(browser, ok(await pageApi<{ job: Job }>(browser, 'POST', '/api/backup/jobs', { sections: ['contacts'] }), 'create').job.id, 'ready');
+  // The first download waits until the person has seen the recovery password.
+  if (ready.recovery_password_available) ok(await pageApi(browser, 'POST', `/api/backup/jobs/${ready.id}/recovery-password/reveal`), 'reveal');
   const ticket = ok(await pageApi<{ url: string; filename: string; size: number }>(browser, 'POST', '/api/files/tickets', { kind: 'backup-archive', id: ready.id }), 'ticket');
   expect(ticket.filename).toMatch(/\.unihub-backup$/);
   // Fetched from Node without any cookie, as the app's download manager does.

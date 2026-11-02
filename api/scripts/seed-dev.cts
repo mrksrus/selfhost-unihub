@@ -14,6 +14,8 @@
 import type { ExecuteValues, Pool, PoolConnection, RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../src/types';
 const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
+const fs = require('node:fs/promises') as typeof import('node:fs/promises');
+const path = require('node:path') as typeof import('node:path');
 type Repository = typeof import('../src/services/mail-engine/repository');
 type Mailbox = Awaited<ReturnType<Repository['ensureMailbox']>>;
 type WritebackEmail = Parameters<typeof import('../src/services/mail-writebacks')['queueChanges']>[2][number];
@@ -88,6 +90,21 @@ async function dropAllTables() {
 }
 
 const counts: Record<string, number> = {};
+
+// A small synthetic file in the API's attachment root, laid out as the app
+// stores one. Without MAIL_ATTACHMENT_UPLOAD_ROOT (scripts/local-db.sh dev) the
+// seed adds no attachments. The caller draws the id, name and size either way
+// (in the order they were always drawn), so the rest of the seed stays the same.
+async function seedAttachment(userId: string, emailId: string, id: string, filename: string, nominalSize: number) {
+  const root = process.env.MAIL_ATTACHMENT_UPLOAD_ROOT;
+  if (!root) return null;
+  const content = Buffer.from(`Synthetic ${filename} for the dev seed (${nominalSize} bytes nominal).\n`);
+  const directory = path.join(root, userId);
+  await fs.mkdir(directory, { recursive: true });
+  const storagePath = path.join(directory, `${emailId}-${id}-${filename}`);
+  await fs.writeFile(storagePath, content, { mode: 0o600 });
+  return { id, filename, size_bytes: content.length, storage_path: storagePath };
+}
 async function insert(db: SqlExecutor, table: string, row: Row) {
   const keys = Object.keys(row);
   await db.execute(`INSERT INTO ${table} (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`,
@@ -231,11 +248,14 @@ async function seedMailbox(db: PoolConnection, account: Account, people: Person[
       is_read: sent || received < at(-2) ? chance(0.92) || sent : chance(0.3), is_starred: chance(0.08),
       has_attachments: chance(0.06), received_at: sqlDate(received),
     };
+    // The app never keeps an attachment row without its file (a backup refuses
+    // one), so the attachment exists only where the seed can write its bytes.
+    const attachment = row.has_attachments ? await seedAttachment(account.userId, row.id, uuid(),
+      pick(['report.pdf', 'photo.jpg', 'invoice.pdf', 'agenda.docx']), int(20000, 900000)) : null;
+    if (!attachment) row.has_attachments = false;
     await insert(db, 'emails', row);
-    if (row.has_attachments) {
-      await insert(db, 'email_attachments', { id: uuid(), email_id: row.id, user_id: account.userId,
-        filename: pick(['report.pdf', 'photo.jpg', 'invoice.pdf', 'agenda.docx']), content_type: 'application/octet-stream',
-        size_bytes: int(20000, 900000), storage_path: null });
+    if (attachment) {
+      await insert(db, 'email_attachments', { ...attachment, email_id: row.id, user_id: account.userId, content_type: 'application/octet-stream' });
       counts.email_attachments = (counts.email_attachments || 0) + 1;
     }
     if (synced) {
