@@ -822,6 +822,7 @@ export = {
       }
       // The link to the email the task came from: null removes it (and the
       // kept summary); an email id links again, if the email is still here.
+      let relink: { id: string; summary: string } | null = null;
       if (Object.prototype.hasOwnProperty.call(body, 'source_email_id')) {
         if (!body.source_email_id) {
           updates.push('source_email_id = NULL', 'source_email_json = NULL');
@@ -830,10 +831,8 @@ export = {
           if (refusal) return refusal;
           const sourceEmail = await snapshotSourceEmail(userId, body.source_email_id);
           if (!sourceEmail) return { error: 'Email not found', status: 404 };
-          // Read again where the row is written: a copy a Gmail merge removed
-          // meanwhile leaves no link to a missing email.
-          updates.push('source_email_id = (SELECT linked.id FROM emails linked WHERE linked.id = ? AND linked.user_id = ?)', 'source_email_json = ?');
-          params.push(String(body.source_email_id), userId, JSON.stringify(sourceEmail));
+          // Written with the task's row, after the email is locked again (applyLocalEventUpdate).
+          relink = { id: String(body.source_email_id), summary: JSON.stringify(sourceEmail) };
         }
       }
 
@@ -864,7 +863,7 @@ export = {
       const startedMove = has(body, 'calendar_id') && !!body.calendar_id && body.calendar_id !== currentEvent.calendar_id;
       const fieldsOfMove = !startedMove && ['title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'reminders', 'reminder_minutes', 'is_todo_only', 'recurrence', 'calendar_id'].some(key => has(body, key));
       const identity = startedMove ? null : { ...decidedFor, objectId: typeof writeback.objectId === 'string' ? writeback.objectId : decidedFor.objectId };
-      let updatedEvent = await applyLocalEventUpdate(userId, id, { sets: updates, params }, body.attendees, { fieldsOfMove, identity });
+      let updatedEvent = await applyLocalEventUpdate(userId, id, { sets: updates, params }, body.attendees, { fieldsOfMove, identity, sourceEmail: relink });
       if (dateChanged) {
         await taskOrder.clearRank(db, userId, id, orderIdentity);
         if (updatedEvent) updatedEvent = await getCalendarEventWithSubtasks(userId, id);

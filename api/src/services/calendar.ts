@@ -363,11 +363,20 @@ async function replaceEventAttendees(userId: string, eventId: string, attendees:
 // is refused while such a copy is being created. identity: the calendar and
 // server copy the caller's writeback decision was made for; another one
 // (a move finished meanwhile) refuses the write. Both under the row lock.
+// sourceEmail: the email the task is linked to again. It is locked before the
+// task, the order the Gmail merge and a task's creation lock them in
+// (mail-sync-policy.ts), and read again: a copy the merge removed meanwhile
+// leaves the task without a link, keeping its summary.
 async function applyLocalEventUpdate(userId: string, eventId: string, { sets, params }: { sets: string[]; params: ExecuteValues[] }, attendees: unknown,
-  { fieldsOfMove = false, identity = null }: { fieldsOfMove?: boolean; identity?: WritebackIdentity | null } = {}) {
+  { fieldsOfMove = false, identity = null, sourceEmail = null }: { fieldsOfMove?: boolean; identity?: WritebackIdentity | null; sourceEmail?: { id: string; summary: string } | null } = {}) {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
+    if (sourceEmail) {
+      const [linked] = await connection.execute<RowDataPacket[]>('SELECT id FROM emails WHERE id = ? AND user_id = ? LOCK IN SHARE MODE', [sourceEmail.id, userId]);
+      sets = [...sets, 'source_email_id = ?', 'source_email_json = ?'];
+      params = [...params, linked.length ? sourceEmail.id : null, sourceEmail.summary];
+    }
     const [rows] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_events WHERE id = ? AND user_id = ? FOR UPDATE', [eventId, userId]);
     if (rows.length === 0) {
       await connection.rollback();

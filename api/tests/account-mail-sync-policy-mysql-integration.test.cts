@@ -354,6 +354,45 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     assert.deepEqual(await copiesLeft(racing), ['a']);
     assert.equal(created.status, 404);
     assert.deepEqual(await rows("SELECT id FROM calendar_events WHERE user_id = ? AND title = 'Racing task'", [userId]), []);
+
+    // An edit linking a task to b while the merge holds b and is about to
+    // move b's tasks: the edit waits for b before it locks the task, then
+    // finds b gone. Neither deadlocks, and the edit's other change stays.
+    const editing = await gmailCopies(accountId, '7107');
+    const taskId = uuid();
+    await pool.execute<ResultSetHeader>(`INSERT INTO calendar_events (id,user_id,title,start_time,end_time,is_todo_only,source_email_id,source_email_json)
+      VALUES (?,?,'Linked task',UTC_TIMESTAMP(),UTC_TIMESTAMP(),TRUE,?,?)`, [taskId, userId, editing.b, JSON.stringify({ subject: 'Held 7107' })]);
+    let pausing = true, atTasks: () => void = () => {}, resume: () => void = () => {};
+    const mergeAtTasks = new Promise<void>(resolve => { atTasks = resolve; }), mayGoOn = new Promise<void>(resolve => { resume = resolve; });
+    const getConnection = pool.getConnection.bind(pool), paused = Symbol('paused');
+    (pool as FixtureValue).getConnection = async () => {
+      const cx: FixtureValue = await getConnection();
+      if (!cx[paused]) {
+        const execute = cx.execute.bind(cx);
+        cx.execute = async (sql: string, ...rest: FixtureValue[]) => {
+          if (pausing && String(sql).startsWith('UPDATE calendar_events SET source_email_id = ?')) { pausing = false; atTasks(); await mayGoOn; }
+          return execute(sql, ...rest);
+        };
+        cx[paused] = true;
+      }
+      return cx;
+    };
+    let edited: FixtureValue, merging: FixtureValue;
+    try {
+      const pruning = prune(accountId);
+      await mergeAtTasks;
+      const pending = calendarRoutes['PUT /api/calendar/events/:id']({ url: `/api/calendar/events/${taskId}`, params: { id: taskId }, headers: { host: 'localhost' } },
+        userId, { title: 'Edited task', source_email_id: editing.b });
+      await new Promise(resolve => setTimeout(resolve, 300));
+      resume();
+      [edited, merging] = await Promise.all([pending, pruning]);
+    } finally { pausing = false; resume(); (pool as FixtureValue).getConnection = getConnection; }
+    assert.equal(edited.error, undefined, `the edit succeeds: ${JSON.stringify(edited)}`);
+    assert.equal(merging.merged, 1);
+    assert.deepEqual(await copiesLeft(editing), ['a']);
+    const saved = await one('SELECT title, source_email_id FROM calendar_events WHERE id = ?', [taskId]);
+    assert.equal(saved.title, 'Edited task');
+    assert.ok(saved.source_email_id === null || saved.source_email_id === editing.a, 'never the removed copy');
   });
 
   await t.test('Gmail without a visible All Mail keeps missing mail as archived and warns', async () => {
