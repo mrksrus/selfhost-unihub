@@ -661,13 +661,13 @@ test('the instance backup copies the installation, keeps only verified runs, ref
       write(copy, b);
     };
     // The statement to rotate during: its pattern, which match of it, and whether it then fails.
-    let armed: { pattern: RegExp; nth: number; fail: boolean } | null = null;
+    let armed: { pattern: RegExp; nth: number; fail: boolean; act?: () => void } | null = null;
     let seen = 0;
     const during = async (sql: string) => {
       if (!armed || !armed.pattern.test(sql) || ++seen !== armed.nth) return;
-      const { fail } = armed;
+      const { fail, act = rotateToB } = armed;
       armed = null;
-      rotateToB();
+      act();
       if (fail) throw Object.assign(new Error('synthetic: connection reset'), { code: 'ECONNRESET' });
     };
     const intercept = <T extends object>(target: T): T => new Proxy(target, { get: (object, prop) => {
@@ -728,6 +728,30 @@ test('the instance backup copies the installation, keeps only verified runs, ref
         b = Buffer.alloc(0);
       }
       assert.deepEqual(failures, []);
+
+      // Removed during the final row read: the run's outcome stands, and a
+      // warning names the setting it could not read, never a value.
+      const value = `synthetic-removed-${crypto.randomBytes(16).toString('hex')}`;
+      write(secretFile, value);
+      seen = 0;
+      armed = { pattern: finalRead, nth: 2, fail: false, act: () => fs.rmSync(secretFile) };
+      const warnings: string[] = [];
+      const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
+      const restoreLog = captureLog((level, line) => { if (level === 'warn') warnings.push(line); });
+      state.setDb(intercept(shared));
+      let removed;
+      try {
+        removed = await backup.runInstanceBackup({ trigger: 'manual', actorId: users.admin });
+      } finally {
+        state.setDb(shared);
+        restoreLog();
+        armed = null;
+      }
+      assert.equal(removed?.status, 'succeeded', String(removed?.error));
+      const warning = warnings.find(line => /Could not read secret files as the run ended/.test(line));
+      assert.ok(warning, warnings.join('\n'));
+      assert.match(warning, /UNIHUB_LAST_STATEMENT_SECRET_FILE/);
+      assert.equal(warning.includes(value), false, 'no value in the log');
     } finally {
       state.setDb(shared);
       delete process.env.UNIHUB_LAST_STATEMENT_SECRET_FILE;

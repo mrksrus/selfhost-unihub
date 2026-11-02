@@ -263,7 +263,11 @@ let current: Slot | null = null;
  */
 function releaseSlot(slot: Slot) {
   if (current !== slot) return;
-  try { sampleSecretFiles(); } catch (sampling) { log.error(LOG, 'Could not read the secret files at the end of a run', sampling, { run: slot.id }); }
+  try {
+    // Names and paths only, never what a file holds; the run's outcome stands.
+    const { unreadable } = sampleSecretFiles();
+    if (unreadable.length) log.warn(LOG, 'Could not read secret files as the run ended; their current versions are not remembered', { run: slot.id, settings: unreadable });
+  } catch (sampling) { log.error(LOG, 'Could not read the secret files at the end of a run', sampling, { run: slot.id }); }
   current = null;
 }
 
