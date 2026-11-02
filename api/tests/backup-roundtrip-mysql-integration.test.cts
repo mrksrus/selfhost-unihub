@@ -900,6 +900,37 @@ test('production export and restore jobs round-trip what a backup holds through 
       assert.deepEqual(await readMeaning(), first);
     }
   });
+  await t.test('Replace takes a synced task\'s archived state as it is, its empty fields too', async () => {
+    const owner = await newUser('overlay-replace');
+    const account = uuid(), calendar = uuid();
+    await insert('calendar_accounts', { id: account, user_id: owner, provider: 'caldav', display_name: 'Team', account_email: 'replace-team@example.test', base_url: 'https://dav.example.test/', is_active: 1 });
+    await insert('calendar_calendars', { id: calendar, user_id: owner, account_id: account, name: 'Team', external_id: 'https://dav.example.test/replace-team/', is_visible: 1 });
+    const synced = async (title: string, row: FixtureValue = {}) => {
+      const id = uuid();
+      await insert('calendar_events', { id, user_id: owner, calendar_id: calendar, uid: `${title.replace(/\W+/g, '-')}@example.test`, title, start_time: '2030-04-01 09:00:00', end_time: '2030-04-01 10:00:00', ...row });
+      await insert('calendar_event_external_refs', { id: uuid(), user_id: owner, event_id: id, calendar_id: calendar, account_id: account, provider: 'caldav', external_event_id: `${id}.ics`, external_etag: 'one' });
+      return id;
+    };
+    // Archived: one with a subtask and no ToDo state or source email, one done without subtasks.
+    const stepsOnly = await synced('Steps only');
+    await insert('calendar_event_subtasks', { id: uuid(), user_id: owner, event_id: stepsOnly, title: 'Archived step', is_done: 0, position: 0 });
+    const doneOnly = await synced('Done only', { todo_status: 'done', done_at: '2030-04-01 11:00:00' });
+    const archive = await source('services/backup').buildBackupForUser(owner, { sections: ['calendar'], includeFileData: true });
+    // Changed since: done with a source email, and a subtask added.
+    await pool.execute("UPDATE calendar_events SET todo_status = 'done', done_at = '2030-04-02 10:00:00', source_email_id = ?, source_email_json = ? WHERE id = ?",
+      [uuid(), JSON.stringify({ subject: 'Newer mail' }), stepsOnly]);
+    await insert('calendar_event_subtasks', { id: uuid(), user_id: owner, event_id: doneOnly, title: 'Added later', is_done: 0, position: 0 });
+    const result = await source('services/backup').importBackupForUser(owner, archive, { mode: 'apply', sections: ['calendar'], conflict_mode: 'replace', startAccountSync: async () => {} });
+    assert.equal(result.valid, true, JSON.stringify(result));
+    const stateOf = async (id: string) => {
+      const [[row]] = await pool.execute<RowDataPacket[]>('SELECT todo_status, done_at, source_email_id, source_email_json FROM calendar_events WHERE id = ?', [id]);
+      const [steps] = await pool.execute<RowDataPacket[]>('SELECT title FROM calendar_event_subtasks WHERE event_id = ? ORDER BY position', [id]);
+      return [row.todo_status, row.done_at && new Date(row.done_at).toISOString(), row.source_email_id, row.source_email_json, steps.map(step => step.title)];
+    };
+    assert.deepEqual(await stateOf(stepsOnly), [null, null, null, null, ['Archived step']], 'no ToDo state and no source email, as archived');
+    assert.deepEqual(await stateOf(doneOnly), ['done', '2030-04-01T11:00:00.000Z', null, null, []], 'no subtasks, as archived');
+  });
+
   await t.test('the bin and synced-task state travel with their sections, for their owner only, and come back once', async () => {
     const owner = await newUser('bin-owner'), stranger = await newUser('bin-stranger');
     const contactMerge = source('services/contact-merge');
