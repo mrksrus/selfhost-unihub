@@ -8,7 +8,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.27.2
 
-A fix for writing mail. No database upgrade and no configuration change.
+A fix for writing mail. No database upgrade and no configuration change (see
+[Upgrading](docs/UPGRADING.md#0272-send-later-and-save-as-template)).
 
 ### Fixed
 

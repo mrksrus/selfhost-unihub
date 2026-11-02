@@ -86,18 +86,18 @@ needs a current WebView; phones update theirs through the Play Store.
 
 ## Current window
 
-As recorded in `android/support-window.json` for 0.27.1. The CI table is the
+As recorded in `android/support-window.json` for 0.27.2. The CI table is the
 evidence; this table is what it is checked against.
 
 | App | Android 10 | Android 16 | Android 17 |
 | --- | --- | --- | --- |
+| 0.27.2 | starts and connects | starts and connects | starts and connects |
 | 0.27.1 | starts and connects | starts and connects | starts and connects |
 | 0.27.0 | starts and connects | starts and connects | starts and connects |
 | 0.26.0 | starts and connects | starts and connects | starts and connects |
-| 0.25.1 | starts and connects | starts and connects | starts and connects |
 
 All four apps put contacts on the phone and sync them both ways.
-The 0.27.0, 0.26.0 and 0.25.1 apps can lose the "Connect to <server>?" question when Android rebuilds their screen (in the first minutes after the phone starts, or after a theme or font change); the link can simply be opened again. The 0.27.1 app keeps it, and `android/scripts/launch-test.sh --candidate` checks that for the candidate only.
+The 0.27.0 and 0.26.0 apps can lose the "Connect to <server>?" question when Android rebuilds their screen (in the first minutes after the phone starts, or after a theme or font change); the link can simply be opened again. The 0.27.1 and 0.27.2 apps keep it, and `android/scripts/launch-test.sh --candidate` checks that for the candidate only.
 From 0.23.0 the app also reads the handshake `protocol` and `minApp` when
 connecting to a server.
 `android/scripts/contacts-test.sh` checks that on each emulator against a stub
