@@ -329,15 +329,28 @@ async function planGmailGroups(cx: SqlExecutor, { userId, accountId, gmailMsgIds
     [userId, ...ids]);
   const [mappings] = await cx.execute<RowDataPacket[]>(`SELECT gmail_msgid, email_id FROM mail_gmail_messages WHERE mail_account_id = ? AND user_id = ?
     AND gmail_msgid IN (${groupMarks})${locking}`, [accountId, userId, ...gmailMsgIds]);
+  // A notice about a copy still on its way (an arrival or a snooze's return
+  // with a delivery pending, or an arrival held until its content comes)
+  // keeps the copies apart until a later pass: the notification worker owns
+  // delivery, and the merge never moves or deletes its events (F6). A
+  // delivered notice stays as it is, naming the removed copy.
+  const [notices] = await cx.execute<RowDataPacket[]>(`SELECT DISTINCT n.source_id FROM notification_events n
+    WHERE n.user_id = ? AND n.kind IN ('mail', 'snooze') AND n.source_id IN (${marks}) AND n.expires_at > UTC_TIMESTAMP()
+      AND (JSON_VALUE(n.payload, '$.held') IN ('1', 'true')
+        OR EXISTS (SELECT 1 FROM notification_deliveries d WHERE d.event_id = n.id AND d.status = 'pending'))`, [userId, ...ids]);
+  const noticed = new Set(notices.map(row => String(row.source_id)));
   const mapped = new Map(mappings.map(row => [String(row.gmail_msgid), String(row.email_id)]));
-  // A snooze and filing history are the person's own: they go to the kept
-  // copy. Copies holding different ones are kept apart rather than lose one.
+  // A snooze and filing history are the person's own. A copy still snoozed
+  // waits for its return (and its notice); a snooze that came back and filing
+  // history go to the kept copy. Copies holding different ones are kept apart
+  // rather than lose one.
   const snooze = (item: RowDataPacket) => item.snoozed_until || item.snooze_returned_at
     ? `${String(item.snoozed_until && new Date(item.snoozed_until).getTime())}|${String(item.snooze_returned_at && new Date(item.snooze_returned_at).getTime())}` : null;
   for (const [gmailMsgId, group] of candidates) {
     const members = [...group.ids].map(id => items.get(String(id)));
     if (members.some(item => !item)) continue; // filed elsewhere, legacy, draft or pending change: keep all
     const copies = members as RowDataPacket[];
+    if (copies.some(item => item.snoozed_until || noticed.has(String(item.id)))) continue;
     // A copy restored with another X-GM-MSGID is not proven to be this message.
     if (copies.some(item => item.remote_gmail_msgid != null && item.remote_gmail_msgid !== gmailMsgId)) continue;
     if (held.some(row => group.ids.has(row.email_id) && (row.gmail_msgid == null || String(row.gmail_msgid) !== gmailMsgId))) continue;
@@ -380,19 +393,6 @@ async function mergeGmailGroup({ account, fence, gmailMsgId }: { account: Accoun
       [keeper, userId, ...losers]);
     await cx.execute(`UPDATE calendar_overlay_restores SET payload = JSON_SET(payload, '$.source_email_id', ?)
       WHERE user_id = ? AND JSON_VALUE(payload, '$.source_email_id') IN (${loserMarks})`, [keeper, userId, ...losers]);
-    // So do a removed copy's notifications, its arrival and a snooze's return
-    // (the snooze's returnedAt stays, and the kept copy takes that snooze):
-    // a click or a later delivery opens the kept message. One the kept copy
-    // already has (the same snooze's return, an arrival) is not sent twice.
-    for (const loser of losers) {
-      await cx.execute(`DELETE removed FROM notification_events removed JOIN notification_events kept ON kept.user_id = removed.user_id
-          AND kept.kind = removed.kind AND kept.source_id = ?
-          AND (removed.kind <> 'snooze' OR JSON_VALUE(kept.payload, '$.returnedAt') = JSON_VALUE(removed.payload, '$.returnedAt'))
-        WHERE removed.user_id = ? AND removed.kind IN ('mail', 'snooze') AND removed.source_id = ?`, [keeper, userId, loser]);
-      await cx.execute(`UPDATE notification_events SET source_id = ?, payload = JSON_SET(payload, '$.emailId', ?, '$.url', ?)
-        WHERE user_id = ? AND kind IN ('mail', 'snooze') AND source_id = ?`,
-      [keeper, keeper, `/mail?email=${encodeURIComponent(keeper)}`, userId, loser]);
-    }
     if (plan.filedFrom && plan.filedFrom !== keeper) {
       await cx.execute('UPDATE mail_folder_recovery_items SET email_id = ? WHERE email_id = ? AND user_id = ?', [keeper, plan.filedFrom, userId]);
     }

@@ -289,75 +289,121 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
       const id = ids[key] = uuid();
       const row = { import_complete: 1, content_state: 'complete', ...extra };
       await pool.execute<ResultSetHeader>(`INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,subject,folder,import_complete,content_state,
-          is_draft,snoozed_until,created_at) VALUES (?,?,?,'g@example.test','[]',?,'inbox',?,?,?,?,UTC_TIMESTAMP() - INTERVAL ? DAY)`,
-      [id, userId, accountId, `Held ${gmailMsgId}`, row.import_complete, row.content_state, row.is_draft || 0, row.snoozed_until || null, age]);
+          is_draft,snoozed_until,snooze_returned_at,created_at) VALUES (?,?,?,'g@example.test','[]',?,'inbox',?,?,?,?,?,UTC_TIMESTAMP() - INTERVAL ? DAY)`,
+      [id, userId, accountId, `Held ${gmailMsgId}`, row.import_complete, row.content_state, row.is_draft || 0, row.snoozed_until || null, row.snooze_returned_at || null, age]);
       await repo.withTransaction((cx) => repo.upsertOccurrence({ userId, accountId, mailboxId: gmailBoxes.get(accountId + folder).id, epoch: 9, uid: gmailUid++, emailId: id, gmailMsgId }, cx), pool);
     }
     return ids;
   }
   const copiesLeft = async (ids: FixtureValue) => (await rows('SELECT id FROM emails WHERE id IN (?, ?)', [ids.a, ids.b])).map(row => row.id === ids.a ? 'a' : 'b').sort();
 
-  await t.test('Gmail merge: the snooze and filing history of a removed copy go to the kept copy; the count is what the merge does; an incomplete kept copy gets its content; its notifications open the kept copy', async () => {
+  await t.test('Gmail merge: the returned snooze and filing history of a removed copy go to the kept copy; the count is what the merge does; an incomplete kept copy gets its content; a pending notice or snooze waits, a delivered notice stays', async () => {
     const accountId = await createAccount('gmail-held', { host: 'imap.gmail.com' });
     const plain = await gmailCopies(accountId, '7100');
     // A draft copy is never merged, and so not counted.
     const draft = await gmailCopies(accountId, '7103', { b: { is_draft: 1 } });
-    // b's snooze and filing history go to a.
-    const held = await gmailCopies(accountId, '7101', { b: { snoozed_until: '2030-01-01 09:00:00' } });
+    // b's returned snooze and filing history go to a.
+    const held = await gmailCopies(accountId, '7101', { b: { snooze_returned_at: '2026-01-01 09:00:00' } });
     await pool.execute<ResultSetHeader>(`INSERT INTO mail_folder_recovery_items (email_id,user_id,source_account_id,original_folder,target_folder,action)
       VALUES (?,?,?,'archive','archive','kept')`, [held.b, userId, accountId]);
-    // Two different snoozes cannot both be kept: the copies stay apart.
-    const twoSnoozes = await gmailCopies(accountId, '7102', { a: { snoozed_until: '2030-01-01 09:00:00' }, b: { snoozed_until: '2030-02-01 09:00:00' } });
+    // Two different returned snoozes cannot both be kept: the copies stay apart.
+    const twoSnoozes = await gmailCopies(accountId, '7102', { a: { snooze_returned_at: '2026-01-01 09:00:00' }, b: { snooze_returned_at: '2026-02-01 09:00:00' } });
+    // A copy still snoozed waits for its return and its notice.
+    const stillSnoozed = await gmailCopies(accountId, '7110', { b: { snoozed_until: '2030-01-01 09:00:00' } });
     // Neither copy complete, the kept one never queued (an old import): its content is queued now.
     const incomplete = await gmailCopies(accountId, '7104', { a: { import_complete: 0, content_state: 'legacy' }, b: { import_complete: 0, content_state: 'slow' } });
-    // b's notification opens the kept message.
-    const noticed = await gmailCopies(accountId, '7105');
-    await pool.execute<ResultSetHeader>(`INSERT INTO notification_events (id,user_id,event_key,kind,source_id,payload,expires_at)
+    // b's notice has nothing left to deliver: the copies merge, and the
+    // notice stays as it was. A held arrival (its content still coming) waits.
+    const notice = async (emailId: string, payload: FixtureValue = {}) => pool.execute<ResultSetHeader>(`INSERT INTO notification_events (id,user_id,event_key,kind,source_id,payload,expires_at)
       VALUES (?,?,SHA2(?,256),'mail',?,?,UTC_TIMESTAMP() + INTERVAL 1 DAY)`,
-    [uuid(), userId, `mail:${noticed.b}`, noticed.b, JSON.stringify({ dedupeKey: `mail:${noticed.b}`, emailId: noticed.b, url: `/mail?email=${noticed.b}`, title: 'New Email' })]);
+    [uuid(), userId, `mail:${emailId}`, emailId, JSON.stringify({ dedupeKey: `mail:${emailId}`, emailId, url: `/mail?email=${emailId}`, title: 'New Email', ...payload })]);
+    const noticed = await gmailCopies(accountId, '7105');
+    await notice(noticed.b);
+    const arriving = await gmailCopies(accountId, '7111');
+    await notice(arriving.b, { held: true });
     assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 4, 'only the groups the merge joins');
     assert.equal((await prune(accountId)).merged, 4);
     assert.deepEqual(await copiesLeft(plain), ['a']);
     assert.deepEqual(await copiesLeft(draft), ['a', 'b']);
     assert.deepEqual(await copiesLeft(held), ['a']);
-    assert.equal(new Date((await one('SELECT snoozed_until FROM emails WHERE id = ?', [held.a])).snoozed_until).toISOString(), '2030-01-01T09:00:00.000Z', 'the snooze stays');
+    assert.equal(new Date((await one('SELECT snooze_returned_at FROM emails WHERE id = ?', [held.a])).snooze_returned_at).toISOString(), '2026-01-01T09:00:00.000Z', 'the returned snooze stays');
     assert.equal((await one('SELECT email_id FROM mail_folder_recovery_items WHERE user_id = ?', [userId])).email_id, held.a, 'the filing history stays');
     assert.deepEqual(await copiesLeft(twoSnoozes), ['a', 'b']);
+    assert.deepEqual(await copiesLeft(stillSnoozed), ['a', 'b']);
+    assert.deepEqual(await copiesLeft(arriving), ['a', 'b']);
     assert.deepEqual(await copiesLeft(incomplete), ['a']);
     assert.equal((await one('SELECT content_state FROM emails WHERE id = ?', [incomplete.a])).content_state, 'queued');
     assert.ok(await one("SELECT id FROM mail_engine_jobs WHERE mail_account_id = ? AND kind = 'body' AND state = 'queued'", [accountId]), 'its body is queued');
     assert.deepEqual(await copiesLeft(noticed), ['a']);
-    const event = await one("SELECT source_id, JSON_VALUE(payload, '$.emailId') AS email, JSON_VALUE(payload, '$.url') AS url FROM notification_events WHERE user_id = ?", [userId]);
-    assert.deepEqual([event.source_id, event.email, event.url], [noticed.a, noticed.a, `/mail?email=${noticed.a}`]);
+    const event = await one("SELECT JSON_VALUE(payload, '$.emailId') AS email FROM notification_events WHERE user_id = ? AND source_id = ?", [userId, noticed.b]);
+    assert.equal(event?.email, noticed.b, 'the merge leaves notices to the notification worker');
     assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 0);
   });
 
-  await t.test('A snooze that came back on a removed copy is announced for the kept copy, once', async () => {
+  await t.test('Copies with a snooze notice on its way merge once it is delivered; every reminder goes out once', async () => {
     const accountId = await createAccount('gmail-snooze', { host: 'imap.gmail.com' });
     const due = '2026-01-01 09:00:00';
-    // b's snooze comes back; in the second message both copies' snoozes do.
+    const subscribe = async () => {
+      const sessionId = uuid(), id = uuid();
+      await pool.execute<ResultSetHeader>('INSERT INTO sessions (id,user_id,token,expires_at) VALUES (?,?,?,UTC_TIMESTAMP() + INTERVAL 1 DAY)', [sessionId, userId, `synthetic-${sessionId}`]);
+      await pool.execute<ResultSetHeader>(`INSERT INTO push_subscriptions (id,user_id,session_id,endpoint,endpoint_hash,p256dh,auth) VALUES (?,?,?,?,SHA2(?,256),'synthetic','synthetic')`,
+        [id, userId, sessionId, `https://push.example.test/${sessionId}`, sessionId]);
+      return id;
+    };
+    // b's snooze comes back. In the second message both copies' snoozes come
+    // back with the same time, and a second device subscribes in between.
     const single = await gmailCopies(accountId, '7108', { b: { snoozed_until: due } });
-    const both = await gmailCopies(accountId, '7109', { a: { snoozed_until: due }, b: { snoozed_until: due } });
-    const sessionId = uuid();
-    await pool.execute<ResultSetHeader>('INSERT INTO sessions (id,user_id,token,expires_at) VALUES (?,?,?,UTC_TIMESTAMP() + INTERVAL 1 DAY)', [sessionId, userId, `synthetic-${sessionId}`]);
-    await pool.execute<ResultSetHeader>(`INSERT INTO push_subscriptions (id,user_id,session_id,endpoint,endpoint_hash,p256dh,auth) VALUES (?,?,?,?,SHA2(?,256),'synthetic','synthetic')`,
-      [uuid(), userId, sessionId, `https://push.example.test/${sessionId}`, sessionId]);
+    const both = await gmailCopies(accountId, '7109', { a: { snoozed_until: due }, b: { snoozed_until: '2030-01-01 09:00:00' } });
+    const first = await subscribe();
+    const impact = async () => (await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates;
+    assert.equal(await impact(), 0, 'a copy still snoozed waits');
+    assert.equal((await prune(accountId)).merged, 0);
     const snooze = require('../dist/src/services/mail-snooze') as typeof import('../src/services/mail-snooze');
-    assert.equal((await snooze.returnDueSnoozes()).returned, 3);
-    assert.equal((await prune(accountId)).merged, 2);
-    assert.deepEqual([await copiesLeft(single), await copiesLeft(both)], [['a'], ['a']]);
-    // The real worker delivers; only the push transport is a recording stub.
+    const now = new Date();
+    assert.equal((await snooze.returnDueSnoozes(now)).returned, 2);
+    const second = await subscribe();
+    await pool.execute<ResultSetHeader>('UPDATE emails SET snoozed_until = ? WHERE id = ?', [due, both.b]);
+    assert.equal((await snooze.returnDueSnoozes(now)).returned, 1);
+    const pending = await rows(`SELECT e.source_id, d.subscription_id FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id
+      WHERE e.user_id = ? AND e.kind = 'snooze' AND d.status = 'pending'`, [userId]);
+    const key = (source: string, subscription: string) => `${source}/${subscription === first ? 'first' : 'second'}`;
+    const expected = [key(single.b, first), key(both.a, first), key(both.b, first), key(both.b, second)].sort();
+    assert.deepEqual(pending.map(row => key(row.source_id, row.subscription_id)).sort(), expected);
+
+    // The real worker picks the deliveries and waits in the push transport
+    // (a recording stub) while the merge runs: the merge keeps the copies
+    // apart and touches no notice, so nothing is cancelled or lost.
     const transports = (require('../dist/src/services/notification-transports') as FixtureValue).NOTIFICATION_TRANSPORTS.webpush;
+    const notifications = require('../dist/src/services/notifications') as typeof import('../src/services/notifications');
     const { ready, send } = transports;
-    const sent: FixtureValue[] = [];
-    transports.ready = async () => {};
-    transports.send = async (_target: unknown, message: FixtureValue) => { sent.push(message); return { sent: true }; };
-    try { await (require('../dist/src/services/notifications') as typeof import('../src/services/notifications')).processNotificationJobs(); }
-    finally { transports.ready = ready; transports.send = send; }
-    const snoozeNotices = sent.filter(message => message.kind === 'snooze').map(message => message.payload.emailId).sort();
-    assert.deepEqual(snoozeNotices, [single.a, both.a].sort(), 'one notice each, for the kept copy');
-    assert.deepEqual(await rows(`SELECT d.status FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id
-      WHERE e.user_id = ? AND e.kind = 'snooze' AND d.status <> 'sent'`, [userId]), []);
+    const sent: string[] = [];
+    let atReady: () => void = () => {}, release: () => void = () => {}, paused = true;
+    const picked = new Promise<void>(resolve => { atReady = resolve; }), mayGoOn = new Promise<void>(resolve => { release = resolve; });
+    transports.ready = async () => { if (paused) { paused = false; atReady(); await mayGoOn; } };
+    transports.send = async (target: FixtureValue, message: FixtureValue) => {
+      if (message.kind === 'snooze') sent.push(key(message.payload.emailId, target.id));
+      return { sent: true };
+    };
+    try {
+      const working = notifications.processNotificationJobs();
+      await picked;
+      assert.equal((await prune(accountId)).merged, 0, 'a notice on its way keeps the copies apart');
+      assert.equal(await impact(), 0);
+      release();
+      await working;
+      assert.deepEqual([...sent].sort(), expected, 'every reminder once, for the copy it came back on');
+      assert.deepEqual(await rows(`SELECT d.status FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id
+        WHERE e.user_id = ? AND e.kind = 'snooze' AND d.status <> 'sent'`, [userId]), []);
+
+      // Delivered: a later pass merges, and nothing is sent again.
+      assert.equal(await impact(), 2);
+      assert.equal((await prune(accountId)).merged, 2);
+      assert.deepEqual([await copiesLeft(single), await copiesLeft(both)], [['a'], ['a']]);
+      assert.ok((await one('SELECT snooze_returned_at FROM emails WHERE id = ?', [single.a])).snooze_returned_at, 'the kept copy came back from snooze');
+      await notifications.processNotificationJobs();
+      assert.equal((await snooze.returnDueSnoozes()).returned, 0);
+      assert.deepEqual([...sent].sort(), expected, 'nothing more after the merge');
+    } finally { paused = false; release(); transports.ready = ready; transports.send = send; }
   });
 
   await t.test('A task made from a copy the Gmail merge removes meanwhile is refused, not linked to a missing email', async () => {
