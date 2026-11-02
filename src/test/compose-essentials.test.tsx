@@ -383,13 +383,20 @@ describe('optional compose features', () => {
     // The time dialog's form sits inside the composer's form in React, which
     // passes its submit on; the composer must not take it as Send.
     state.settings = { compose_scheduled_send: true };
-    const posts: string[] = [];
+    const calls: string[] = [];
+    const draft = { data: { draft: { id: 'd-1', mail_account_id: 'acc-a', folder: 'drafts', is_draft: true, subject: 'Minutes',
+      from_address: 'alex@example.test', to_addresses: ['sparks@example.test'], body_text: '', body_html: null, is_read: true, is_starred: false, received_at: '2026-10-23T10:00:00.000Z' }, uploaded: [] } };
     vi.mocked(api.post).mockImplementation(async (path: string, body?: unknown) => {
-      posts.push(path);
-      if (path === '/mail/drafts') return { data: { draft: { id: 'd-1', mail_account_id: 'acc-a', folder: 'drafts', is_draft: true, subject: (body as { subject: string }).subject,
-        from_address: 'alex@example.test', to_addresses: ['sparks@example.test'], body_text: '', body_html: null, is_read: true, is_starred: false, received_at: '2026-10-23T10:00:00.000Z' }, uploaded: [] } };
+      calls.push(`POST ${path}`);
+      if (path === '/mail/drafts') return draft;
       if (path === '/mail/drafts/d-1/schedule') return { data: { schedule: { email_id: 'd-1', send_at: (body as { send_at: string }).send_at, status: 'scheduled', last_error: null, created_at: '', updated_at: '' } } };
       return { data: { message: 'sent' } };
+    });
+    // Saves are recorded too: a Send taken by mistake first saves the draft
+    // again, and whether its send then goes out depends on timing.
+    vi.mocked(api.put).mockImplementation(async (path: string) => {
+      calls.push(`PUT ${path}`);
+      return draft;
     });
     await openNew();
     fireEvent.change(screen.getByLabelText('To'), { target: { value: 'sparks@example.test' } });
@@ -407,7 +414,7 @@ describe('optional compose features', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Schedule' }));
     await waitFor(() => expect(screen.queryByLabelText('To')).not.toBeInTheDocument());
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
-    expect(posts).toEqual(['/mail/drafts', '/mail/drafts/d-1/schedule']);
+    expect(calls).toEqual(['POST /mail/drafts', 'POST /mail/drafts/d-1/schedule']);
   });
 
   it('a taken template name is refused in the dialog, which stays open', async () => {
