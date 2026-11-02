@@ -49,9 +49,9 @@ forty-two pictures in all, compared with zero tolerance:
 | `todo-drag-wide-*`, `todo-drag-phone-*` | Wide, Phone | ToDo, the rich task picked up with the keyboard (Space on its ≡ handle): the row lifted with its description, email and subtasks, the handle pressed. Since 0.27.0 (P-29, D31). |
 | `new-task-wide-*`, `new-task-phone-*` | Wide, Phone | ToDo, New task with the List chooser open: the lists grouped by account, the default preselected, the server calendar greyed out with "Tasks without a date stay in UniHub", a list not shown in ToDo marked. Since 0.27.0. |
 | `settings-pages-wide-*` | Wide | Settings → Pages and modules: a handle and a menu per page row. Since 0.27.0. |
-| `settings-backup-wide-*` | Wide | Settings → Backup and restore: the section chips, the downloaded-mail switch, the "In the backup / Left out" ledger, the backup rows (one running, one made before 0.28), the restore options. Since 0.28.0 (P-29, D29). |
+| `settings-backup-wide-*` | Wide | Settings → Backup and restore: the section chips, the downloaded-mail switch, the "In the backup / Left out" ledger and the Create backup action; the backup rows (one running, one made before 0.28) and the restore options are on the page below the picture's fold, checked by `backup-settings.test.tsx`. Since 0.28.0 (P-29, D29). |
 | `bin-wide-*`, `bin-phone-*` | Wide, Phone | Settings → Bin with the retention choice and the fixture bin: a synced task, a contact, a recording, a deleted calendar with its two events as one row, a merged contact; "Empty bin" greyed out with the policy's reason. Since 0.28.0. |
-| `admin-policies-wide-*` | Wide | Server settings → Policies as an administrator: every rule as a row with its choice; one rule set away from its default with its effect under it. Since 0.28.0. |
+| `admin-policies-wide-*` | Wide | Server settings → Policies as an administrator: the Mail accounts and Backups rules as rows with their choice (the Accounts rules, one of them set away from its default with its effect under it, follow below the picture's fold). Since 0.28.0. |
 
 **Behaviour checks.** These run against the same build and the same data.
 
