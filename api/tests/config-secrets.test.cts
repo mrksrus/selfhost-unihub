@@ -78,6 +78,40 @@ test('a backup run refuses a FIFO at a secret path at once instead of hanging', 
   assert.deepEqual(JSON.parse(child.stdout), [`UNIHUB_FIFO_SECRET_FILE (${fifo})`]);
 });
 
+// Startup reads a secret file the same bounded, nonblocking way: a FIFO is
+// refused at once, and a file that grows past the bound after its size was
+// looked up is refused rather than read to its end.
+test('a secret file that is a FIFO, or grows past the bound while it is read, is refused at startup', t => {
+  const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'unihub-startup-secret-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const fifo = path.join(dir, 'fifo');
+  if (spawnSync('mkfifo', [fifo]).status === 0) {
+    const configModule = path.join(__dirname, '..', 'dist', 'src', 'config.js');
+    const child = spawnSync(process.execPath, ['-e', `try { require(${JSON.stringify(configModule)}).readSecret('JWT_SECRET', { JWT_SECRET_FILE: ${JSON.stringify(fifo)} }); } catch (error) { process.stdout.write(error.message); }`], {
+      timeout: 10_000, encoding: 'utf8',
+    });
+    assert.equal(child.signal, null, 'the read returned instead of hanging');
+    assert.match(child.stdout, /JWT_SECRET_FILE \(.+\) is not a file/);
+  }
+  // The file is small when its size is looked up and large when it is read.
+  const grown = path.join(dir, 'grown');
+  fs.writeFileSync(grown, Buffer.alloc(128 * 1024, 'g'));
+  const fstatSync = fs.fstatSync;
+  fs.fstatSync = ((descriptor: number, ...rest: unknown[]) => {
+    const stat = (fstatSync as (...args: unknown[]) => import('node:fs').Stats)(descriptor, ...rest);
+    return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { size: 16 });
+  }) as typeof fs.fstatSync;
+  process.env.UNIHUB_GROWN_SECRET_FILE = grown;
+  try {
+    assert.throws(() => config.readSecret('UNIHUB_GROWN_SECRET'), /UNIHUB_GROWN_SECRET_FILE \(.+\) is larger than a secret can be/);
+  } finally {
+    fs.fstatSync = fstatSync;
+    delete process.env.UNIHUB_GROWN_SECRET_FILE;
+  }
+  assert.equal(config.mayBeSecretGeneration(128 * 1024), false, 'nothing past the bound is remembered');
+});
+
 test('the database password and URL may be files, for the API and the readiness wait alike', t => {
   const file = scratch(t);
   const { getDatabaseConfig } = require('../dist/src/services/database-config') as typeof import('../src/services/database-config');

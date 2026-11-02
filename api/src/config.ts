@@ -76,26 +76,21 @@ function readSecret(name: string, env: NodeJS.ProcessEnv = process.env): string 
   const file = env[`${name}_FILE`];
   if (!file) return direct;
   let value: string;
-  let descriptor: number | null = null;
   try {
-    // One descriptor for the check and the read, so the size checked is that of what was read.
-    descriptor = fs.openSync(file, 'r');
-    const stat = fs.fstatSync(descriptor);
-    if (!stat.isFile()) throw new SecretConfigError(`${name}_FILE (${file}) is not a file.`);
-    if (stat.size > MAX_SECRET_FILE_BYTES) throw new SecretConfigError(`${name}_FILE (${file}) is larger than a secret can be.`);
-    const bytes = fs.readFileSync(descriptor);
+    // Bounded and without blocking, like the instance backup's sample.
+    const { bytes } = readSecretFile(file);
     value = bytes.toString('utf8').replace(/\r?\n$/, '');
     if (env === process.env) rememberSecretGeneration(`${name}_FILE`, bytes);
   } catch (error) {
-    if (error instanceof SecretConfigError) throw error;
+    if (error instanceof SecretFileShapeError) {
+      throw new SecretConfigError(error.reason === 'not a file' ? `${name}_FILE (${file}) is not a file.` : `${name}_FILE (${file}) is larger than a secret can be.`);
+    }
     const code = (error as NodeJS.ErrnoException).code;
     const uid = typeof process.getuid === 'function' ? process.getuid() : null;
     throw new SecretConfigError(code === 'ENOENT' ? `${name}_FILE (${file}) does not exist.`
       : code === 'EACCES' ? `${name}_FILE (${file}) cannot be read${uid === null ? '' : ` by uid ${uid}, which runs the API`}.`
         : code === 'EISDIR' ? `${name}_FILE (${file}) is not a file.`
           : `${name}_FILE (${file}) cannot be read (${code || 'error'}).`);
-  } finally {
-    if (descriptor !== null) fs.closeSync(descriptor);
   }
   if (!value) throw new SecretConfigError(`${name}_FILE (${file}) is empty.`);
   if (direct && direct !== value) throw new SecretConfigError(`${name} and ${name}_FILE are both set and differ; set only one.`);
