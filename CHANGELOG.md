@@ -142,9 +142,9 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
 
 ### Pinned interface pictures
 
-- New pictures `settings-backup` (wide), `bin` (wide and phone) and
-  `admin-policies` (wide), dark and light: Backup and restore, the Bin and
-  Server settings → Policies, designed under P-29 and D29 for 0.28.0.
+- New pictures `settings-backup` (wide) and `bin` (wide and phone), dark
+  and light: Backup and restore and the Bin, designed under P-29 and D29 for
+  0.28.0.
 - Changed pictures: the Settings panel gains its Bin entry
   (`settings-appearance`, `settings-pages`, wide) and the Contacts panel its
   Bin view (`contact-detail`, `contact-editor`, `merge-review`, wide); the
