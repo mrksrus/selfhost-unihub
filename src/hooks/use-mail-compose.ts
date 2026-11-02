@@ -923,6 +923,10 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   }
   const handleSendEmail = (e: FormEvent) => {
     e.preventDefault();
+    // A dialog's form inside the composer (Send later, Save as template) is in
+    // a portal, but React still passes its submit up to this form: only the
+    // composer's own form sends.
+    if (e.target !== e.currentTarget) return;
     void submitCompose();
   };
 

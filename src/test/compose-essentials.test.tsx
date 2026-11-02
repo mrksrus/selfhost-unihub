@@ -379,10 +379,46 @@ describe('optional compose features', () => {
     await waitFor(() => expect(calls).toEqual(['POST /mail/drafts', 'PUT /mail/drafts/d-1 acc-b', 'POST /mail/drafts/d-1/schedule']));
   });
 
+  it('Send later at a picked time schedules the draft and never sends it now', async () => {
+    // The time dialog's form sits inside the composer's form in React, which
+    // passes its submit on; the composer must not take it as Send.
+    state.settings = { compose_scheduled_send: true };
+    const posts: string[] = [];
+    vi.mocked(api.post).mockImplementation(async (path: string, body?: unknown) => {
+      posts.push(path);
+      if (path === '/mail/drafts') return { data: { draft: { id: 'd-1', mail_account_id: 'acc-a', folder: 'drafts', is_draft: true, subject: (body as { subject: string }).subject,
+        from_address: 'alex@example.test', to_addresses: ['sparks@example.test'], body_text: '', body_html: null, is_read: true, is_starred: false, received_at: '2026-10-23T10:00:00.000Z' }, uploaded: [] } };
+      if (path === '/mail/drafts/d-1/schedule') return { data: { schedule: { email_id: 'd-1', send_at: (body as { send_at: string }).send_at, status: 'scheduled', last_error: null, created_at: '', updated_at: '' } } };
+      return { data: { message: 'sent' } };
+    });
+    await openNew();
+    fireEvent.change(screen.getByLabelText('To'), { target: { value: 'sparks@example.test' } });
+    fireEvent.change(screen.getByLabelText('Subject'), { target: { value: 'Minutes' } });
+    const editor = document.getElementById('compose-body')!;
+    await waitFor(() => expect(editor.innerHTML).toContain('Alex <b>Example</b>'));
+    editor.innerHTML = `<p>See you Monday.</p>${editor.innerHTML}`;
+    fireEvent.input(editor);
+    openMenu('Send later');
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Pick a date and time…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Send later' });
+    const at = new Date(Date.now() + 3 * 3600000);
+    const local = new Date(at.getTime() - at.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    fireEvent.change(within(dialog).getByLabelText('Date and time'), { target: { value: local } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Schedule' }));
+    await waitFor(() => expect(screen.queryByLabelText('To')).not.toBeInTheDocument());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+    expect(posts).toEqual(['/mail/drafts', '/mail/drafts/d-1/schedule']);
+  });
+
   it('a taken template name is refused in the dialog, which stays open', async () => {
     state.settings = { compose_templates: true };
     vi.mocked(api.post).mockResolvedValue({ error: 'A template with this name exists', status: 409, code: 'TEMPLATE_NAME_TAKEN' } as never);
     await openNew();
+    // With a recipient and text, so a Save template taken as Send would send.
+    fireEvent.change(screen.getByLabelText('To'), { target: { value: 'sparks@example.test' } });
+    const editor = document.getElementById('compose-body')!;
+    editor.innerHTML = `<p>See you Monday.</p>${editor.innerHTML}`;
+    fireEvent.input(editor);
     fireEvent.change(screen.getByLabelText('Subject'), { target: { value: 'Minutes' } });
     openMenu('Templates');
     expect(await screen.findByRole('menuitem', { name: 'No templates yet' })).toBeInTheDocument();
@@ -393,5 +429,6 @@ describe('optional compose features', () => {
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('A template with this name exists');
     expect(api.post).toHaveBeenCalledWith('/mail/templates', expect.objectContaining({ name: 'Minutes', subject: 'Minutes' }));
     expect(screen.getByRole('dialog', { name: 'Save as template' })).toBeInTheDocument();
+    expect(vi.mocked(api.post).mock.calls.map(([path]) => path).filter(path => /send$/.test(path)), 'Save template sends nothing').toEqual([]);
   });
 });

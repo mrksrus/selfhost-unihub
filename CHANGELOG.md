@@ -6,6 +6,16 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.27.2
+
+A fix for writing mail. No database upgrade and no configuration change.
+
+### Fixed
+
+- **Send later at a picked time no longer sometimes sends the message at
+  once,** and **Save as template no longer sends the message** you are
+  writing. Confirming either dialog was also taken as Send.
+
 ## 0.27.1
 
 Fixes for the Android app and for many changes saved at once. No database
