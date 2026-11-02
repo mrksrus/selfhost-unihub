@@ -93,7 +93,10 @@ const random = (prefix: string) => `${prefix}-${crypto.randomBytes(6).toString('
 const mail = { sync: { user: 'upgrade-sync@example.test', password: random('imap') }, download: { user: 'upgrade-download@example.test', password: random('imap') } };
 const dav: ProviderAccount = { user: 'upgrade-dav', password: random('dav') };
 const SYNCED_CALENDAR = 'Team calendar';
-const providerEvent = { uid: 'upgrade-team-event@example.test', title: 'Team review', start: '2030-05-06T09:00:00.000Z', end: '2030-05-06T10:00:00.000Z',
+// Inside the CalDAV sync window of every release (a year back, two years
+// ahead): a later date never reaches the installations.
+const eventStart = new Date(Date.now() + 30 * 86400000); eventStart.setUTCHours(9, 0, 0, 0);
+const providerEvent = { uid: 'upgrade-team-event@example.test', title: 'Team review', start: eventStart.toISOString(), end: new Date(eventStart.getTime() + 3600000).toISOString(),
   description: 'Synthetic agenda', location: 'Room 1', attendees: [{ email: 'colleague@example.test', name: 'Colleague', status: 'ACCEPTED' as const }] };
 // MIME mail with an attachment at the providers, by the folder it lands in.
 const seeds = {
@@ -216,7 +219,7 @@ try {
     const synced = await owner.json<{ result: Row }>('POST', `/api/calendar/accounts/${calendarAccount.id}/sync`, {});
     assert.equal(synced.result.ok, true, `The CalDAV account syncs: ${JSON.stringify(synced.result)}`);
     // UniHub's own state on the synced event: done, with a subtask.
-    const events = (await owner.json<{ events: Row[] }>('GET', '/api/calendar/events?include_todos=true&include_done=true&range_start=2030-01-01T00:00:00Z&range_end=2031-01-01T00:00:00Z')).events;
+    const events = (await owner.json<{ events: Row[] }>('GET', '/api/calendar/events?include_todos=true&include_done=true&range_start=2000-01-01T00:00:00Z&range_end=2100-01-01T00:00:00Z')).events;
     const team = events.find(event => event.title === providerEvent.title);
     assert.ok(team, 'The CalDAV event arrived');
     await owner.json('PUT', `/api/calendar/events/${team.id}/todo-status`, { todo_status: 'done' });

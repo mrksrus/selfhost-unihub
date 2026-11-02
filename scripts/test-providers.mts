@@ -141,6 +141,24 @@ async function waitForPort(port: number, name: string, alive: () => boolean, sec
   throw new Error(`${name} did not listen on ${port} within ${seconds} seconds`);
 }
 
+async function waitForMailLogin(ImapFlow: typeof import('imapflow').ImapFlow, port: number, account: ProviderAccount, alive: () => boolean, seconds = 60) {
+  const deadline = Date.now() + seconds * 1000;
+  for (;;) {
+    if (!alive()) throw new Error('GreenMail stopped before its accounts could sign in');
+    const client = new ImapFlow({ host: '127.0.0.1', port, secure: false, auth: { user: account.user, pass: account.password }, logger: false });
+    client.on('error', () => {});
+    try {
+      await client.connect();
+      await client.logout().catch(() => client.close());
+      return;
+    } catch (error) {
+      client.close();
+      if (Date.now() > deadline) throw new Error(`GreenMail did not accept ${account.user} within ${seconds} seconds: ${(error as Error).message}`);
+      await sleep(250);
+    }
+  }
+}
+
 /**
  * Starts GreenMail and Radicale with these accounts and the proxies in front
  * of them. `host` is where the proxies listen (0.0.0.0 when containers reach
@@ -157,6 +175,7 @@ export async function startProviders({ work, certificates, host, mail, calendar,
   for (const account of [...mail, ...calendar]) {
     if (/[:@,\s]/.test(account.password) || /[,\s]/.test(account.user)) throw new Error(`Provider account ${account.user}: passwords must not contain : @ , or spaces`);
   }
+  const { ImapFlow } = createRequire(path.join(repo, 'api/package.json'))('imapflow') as typeof import('imapflow');
   const dir = path.join(work, 'providers');
   fs.mkdirSync(path.join(dir, 'collections'), { recursive: true });
   const ports = { imap: await freePort(), smtp: await freePort(), api: await freePort(), dav: await freePort() };
@@ -207,6 +226,10 @@ level = warning
     await waitForPort(ports.imap, 'GreenMail', alive(greenmail));
     await waitForPort(ports.smtp, 'GreenMail', alive(greenmail));
     await waitForPort(ports.dav, 'Radicale', alive(dav));
+    // GreenMail opens its ports before it creates the configured users
+    // (GreenMail.start: the services, then doConfigure), so a sign-in right
+    // after the port opens can be refused. Wait until every account signs in.
+    for (const account of mail) await waitForMailLogin(ImapFlow, ports.imap, account, alive(greenmail));
 
     const track = (socket: net.Socket) => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); socket.on('error', () => {}); };
     const listen = async (server: net.Server, port: number) => {
@@ -270,7 +293,6 @@ level = warning
     await new Promise<void>((resolve, reject) => { davServer.once('error', reject); davServer.listen(davPort, host, () => resolve()); });
 
     // Seeding talks to the providers directly, outside the proxies' log.
-    const { ImapFlow } = createRequire(path.join(repo, 'api/package.json'))('imapflow') as typeof import('imapflow');
     const imap = async <T,>(account: ProviderAccount, work_: (client: import('imapflow').ImapFlow) => Promise<T>) => {
       const client = new ImapFlow({ host: '127.0.0.1', port: ports.imap, secure: false, auth: { user: account.user, pass: account.password }, logger: false });
       await client.connect();
