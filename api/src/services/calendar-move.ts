@@ -866,6 +866,7 @@ export {
   lockCreatingMove,
   creatingMoveItem,
   commitMove,
+  moveAdmission,
   journalBinRestore,
   runBinRestore,
   restoringBinItems,

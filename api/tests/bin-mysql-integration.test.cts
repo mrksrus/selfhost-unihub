@@ -995,6 +995,44 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     assert.equal(server.copiesOf(title).length, 0);
   });
 
+  for (const kind of ['module', 'restore', 'paused'] as const) {
+    await t.test(`${{ module: 'Calendar switched off', restore: 'a calendar restore begun', paused: 'the account paused' }[kind]} while a sync fetches a restore's stored copy: the sync does not adopt it, the item stays in the bin`, async () => {
+      const title = `Sync gated ${kind}`;
+      const item = await pendingRestore(title, 'store-then-lose');
+      const [fetched, go] = [gate(), gate()];
+      const realFetch = caldavService.fetchCalendarObjects;
+      caldavService.fetchCalendarObjects = async (args: FixtureValue) => {
+        const objects = await realFetch(args);
+        if (objects.some((object: FixtureValue) => object.ics.includes(`SUMMARY:${title}\r\n`))) { fetched.open(); await within(go.reached, 10000); }
+        return objects;
+      };
+      const lock = crypto.randomUUID();
+      const syncing = calendarSync.syncCalendarAccount(accountId, { userId: users.alex, full: true }).catch(() => undefined);
+      try {
+        assert.ok((await within(fetched.reached, 10000)).done, 'the sync has the copy');
+        if (kind === 'module') await call(alex, 'PUT', '/api/modules', { modules: { calendar: { enabled: false } } });
+        else if (kind === 'restore') await pool.execute("INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', '[\"calendar\"]')", [lock, users.alex]);
+        else await call(alex, 'PUT', `/api/calendar/accounts/${accountId}`, { is_active: false });
+        go.open();
+        assert.ok((await within(syncing, 15000)).done);
+        assert.equal((await rowsTitled(title)).length, 0, 'not adopted, nor made an item of its own');
+        assert.equal(await journalOf(item.id), 1, 'the journal stays');
+        assert.equal(await count('SELECT COUNT(*) AS n FROM bin_items WHERE id = ?', [item.id]), 1, 'the item stays in the bin');
+      } finally {
+        go.open(); caldavService.fetchCalendarObjects = realFetch;
+        await syncing;
+        if (kind === 'module') await call(alex, 'PUT', '/api/modules', { modules: { calendar: { enabled: true } } });
+        else if (kind === 'restore') await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [lock]);
+        else await call(alex, 'PUT', `/api/calendar/accounts/${accountId}`, { is_active: true });
+      }
+      await sync();
+      assert.deepEqual((await rowsTitled(title)).map(row => row.calendar_id), [work], 'the gate open again: the next sync adopts it');
+      assert.equal(await journalOf(item.id), 0);
+      assert.equal(await count('SELECT COUNT(*) AS n FROM bin_items WHERE id = ?', [item.id]), 0);
+      assert.equal(server.copiesOf(title).length, 1);
+    });
+  }
+
   await t.test('UIDs 0.27 stored trimmed: upgrade step 25 gives them back the server\'s spaces, so the bin and the hand order still find the task', async context => {
     const { runMigrations } = require('../dist/src/services/database-migrations') as typeof import('../src/services/database-migrations');
     const { MIGRATIONS } = require('../dist/src/services/database') as typeof import('../src/services/database');

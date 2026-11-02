@@ -704,6 +704,11 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       if (known && await moves().lockMovedAway(connection, String(known.id))) return null;
       const move = uid ? await moves().lockCreatingMove(connection, calendar.id, uid) : null;
       if (move?.event_id && move.event_id !== heldEventId) return DEFERRED;
+      // The move's gates (the Calendar module, a calendar restore, its
+      // account) again, under its locks: a move they hold back is not
+      // adopted, nor its copy made an item of its own; it waits with its
+      // journal (and bin item) for the next sync.
+      if (move && await moves().moveAdmission(move, connection)) return DEFERRED;
       // The stored copy changed after this sync read it (an edit's new
       // version, or removed by a deletion): what was downloaded may be older,
       // so it is left for the next sync, which lists the calendar again.
