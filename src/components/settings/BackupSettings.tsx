@@ -96,7 +96,8 @@ export function BackupContentsList({ contents, notes, className }: { contents: B
           ))}.
         </p>
       )}
-      {[...contents.notes, ...(notes ?? [])].map(note => <p key={note} className="text-muted-foreground">{note}</p>)}
+      {/* A 0.28 server repeats the archive's notes in the result's own. */}
+      {[...new Set([...contents.notes, ...(notes ?? [])])].map(note => <p key={note} className="text-muted-foreground">{note}</p>)}
     </div>
   );
 }
