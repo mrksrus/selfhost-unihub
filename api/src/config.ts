@@ -13,7 +13,11 @@ class SecretConfigError extends Error {}
 
 /** A secret file that is not a regular file, or larger than a secret can be. */
 class SecretFileShapeError extends Error {
-  constructor(readonly reason: 'not a file' | 'too large') { super(reason); }
+  readonly reason: 'not a file' | 'too large';
+  constructor(reason: 'not a file' | 'too large') {
+    super(reason);
+    this.reason = reason;
+  }
 }
 
 /**
