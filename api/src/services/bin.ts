@@ -612,6 +612,32 @@ function remapEmails(payload: Record<string, unknown>, to: (id: string) => strin
 }
 
 /**
+ * In a Gmail merge's transaction (mail-sync-policy.ts mergeGmailGroup), after
+ * it locked the copies and redirected the live tasks: the person's binned
+ * events and tasks that name a removed copy name the kept one, so a restore
+ * from the bin keeps the link. Their rows are locked here, after the tasks
+ * (emails, tasks, bin rows); a bin restore of such a task racing the merge
+ * is a deadlock that both transactions retry.
+ */
+async function redirectBinEmails(cx: SqlExecutor, userId: string, removed: readonly string[], kept: string) {
+  if (!removed.length) return 0;
+  const [rows] = await cx.execute<BinRow[]>(
+    `SELECT id, payload FROM bin_items WHERE user_id = ? AND item_type IN ('event', 'task') AND restored_at IS NULL
+     AND (${removed.map(() => 'payload LIKE ?').join(' OR ')}) FOR UPDATE`, [userId, ...removed.map(id => `%${id}%`)]);
+  const from = new Set(removed);
+  let redirected = 0;
+  for (const row of rows) {
+    const payload = parsePayload<Record<string, unknown>>(row);
+    if (!payload || typeof payload !== 'object') continue;
+    const next = remapEmails(payload, id => from.has(id) ? kept : undefined);
+    if (next === payload) continue;
+    await cx.execute('UPDATE bin_items SET payload = ? WHERE id = ? AND user_id = ?', [JSON.stringify(next), row.id, userId]);
+    redirected += 1;
+  }
+  return redirected;
+}
+
+/**
  * For backup export: the person's open bin items of a section, with what each
  * keeps on disk (a recording's file, a contact's photo hashes).
  */
@@ -636,6 +662,7 @@ export {
   applyBinRetention,
   changeUserSettings,
   lockBinOwner,
+  redirectBinEmails,
   retentionDays,
   restoreBinItems,
   exportableBinItems,

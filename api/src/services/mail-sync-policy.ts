@@ -407,6 +407,8 @@ async function mergeGmailGroup({ account, fence, gmailMsgId }: { account: Accoun
       [keeper, userId, ...losers]);
     await cx.execute(`UPDATE calendar_overlay_restores SET payload = JSON_SET(payload, '$.source_email_id', ?)
       WHERE user_id = ? AND JSON_VALUE(payload, '$.source_email_id') IN (${loserMarks})`, [keeper, userId, ...losers]);
+    // So do the binned ones, for a restore from the bin (bin.ts).
+    await (require('./bin') as typeof import('./bin')).redirectBinEmails(cx, userId, losers, keeper);
     if (plan.filedFrom && plan.filedFrom !== keeper) {
       await cx.execute('UPDATE mail_folder_recovery_items SET email_id = ? WHERE email_id = ? AND user_id = ?', [keeper, plan.filedFrom, userId]);
     }
