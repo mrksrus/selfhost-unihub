@@ -134,7 +134,9 @@ try {
   await waitForJob(user, `/api/backup/restore-jobs/${imported.id}`, 'completed', job => !job.archive_available);
 
   // 4. The same data less the provider data, under new IDs, owned by the destination user.
-  const isProviderMail = (email: Row) => email.account === SYNC_ACCOUNT;
+  // The list shows a message under the account it is filed to: the Download
+  // message filed into the Sync account's folder is shown there but is UniHub's own.
+  const isProviderMail = (email: Row) => email.account === SYNC_ACCOUNT && email.filing !== SYNC_ACCOUNT;
   const isProviderEvent = (event: Row) => event.calendar === SYNCED_CALENDAR;
   const withoutIds = ({ ids: _ids, ...view }: PublicView) => view;
   const expected = { ...withoutIds(before), emails: before.emails.filter(email => !isProviderMail(email)), events: before.events.filter(event => !isProviderEvent(event)) };
