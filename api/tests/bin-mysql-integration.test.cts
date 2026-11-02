@@ -960,40 +960,44 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     });
   }
 
-  await t.test('a calendar restore that ends a restore\'s journal while its attempt waits to be counted: nothing is sent, the item stays in the bin', async () => {
-    const title = 'Counted retired';
-    const item = await pendingRestore(title, 'lose');
-    const [[{ id: moveId }]] = await pool.query<RowDataPacket[]>('SELECT id FROM calendar_event_moves WHERE bin_item_id = ?', [item.id]);
-    const [[{ external_id: collection }]] = await pool.query<RowDataPacket[]>('SELECT external_id FROM calendar_calendars WHERE id = ?', [work]);
-    // The restore's own steps (backup-import.ts): the person, the moves locked, the calendar pointed elsewhere, the moves it overtook ended.
-    const restoring = await pool.getConnection();
-    await restoring.beginTransaction();
-    await (require('../dist/src/services/bin') as typeof import('../src/services/bin')).lockBinOwner(restoring, users.alex);
-    const before = await calendarMove.lockMovesForRestore(restoring, users.alex);
-    const counting = gate();
-    hooks.once({ match: /^UPDATE calendar_event_moves SET attempts = GREATEST/, params: (params: unknown[]) => params[1] === moveId, before: () => counting.open() });
-    const from = server.remote.writes.length;
-    const retry = alex.request('POST', `/api/bin/${item.id}/restore`);
-    try {
-      assert.ok((await within(counting.reached, 10000)).done, 'the attempt is being counted');
-      await restoring.execute('UPDATE calendar_calendars SET external_id = ? WHERE id = ?', [`${collection}elsewhere/`, work]);
-      assert.equal(await calendarMove.settleMovesForRestore(restoring, users.alex, { overwrittenEventIds: new Set(), before }), 1, 'the journal ends');
-      await restoring.commit();
-      const reply = await within(retry, 15000);
-      assert.ok(reply.done);
-      assert.equal(putsSince(from), 0, 'nothing sent for an ended journal');
-      assert.equal(reply.value!.status, 409);
-      assert.equal(await journalOf(item.id), 0);
-      assert.equal(await count('SELECT COUNT(*) AS n FROM bin_items WHERE id = ?', [item.id]), 1, 'still in the bin');
-    } finally {
-      await restoring.rollback().catch(() => undefined); restoring.release(); hooks.clear();
-      await retry.catch(() => undefined);
-      await pool.execute('UPDATE calendar_calendars SET external_id = ? WHERE id = ?', [collection, work]);
-    }
-    await sync();
-    assert.equal((await rowsTitled(title)).length, 0, 'no copy turned up');
-    assert.equal(server.copiesOf(title).length, 0);
-  });
+  for (const via of ['single', 'bulk'] as const) {
+    await t.test(`a calendar restore that ends a restore's journal while its attempt waits to be counted (${via}): nothing is sent, the item stays in the bin`, async () => {
+      const title = `Counted retired ${via}`;
+      const item = await pendingRestore(title, 'lose');
+      const [[{ id: moveId }]] = await pool.query<RowDataPacket[]>('SELECT id FROM calendar_event_moves WHERE bin_item_id = ?', [item.id]);
+      const [[{ external_id: collection }]] = await pool.query<RowDataPacket[]>('SELECT external_id FROM calendar_calendars WHERE id = ?', [work]);
+      // The restore's own steps (backup-import.ts): the person, the moves locked, the calendar pointed elsewhere, the moves it overtook ended.
+      const restoring = await pool.getConnection();
+      await restoring.beginTransaction();
+      await (require('../dist/src/services/bin') as typeof import('../src/services/bin')).lockBinOwner(restoring, users.alex);
+      const before = await calendarMove.lockMovesForRestore(restoring, users.alex);
+      const counting = gate();
+      hooks.once({ match: /^UPDATE calendar_event_moves SET attempts = GREATEST/, params: (params: unknown[]) => params[1] === moveId, before: () => counting.open() });
+      const from = server.remote.writes.length;
+      const retry = via === 'single' ? alex.request('POST', `/api/bin/${item.id}/restore`) : alex.request('POST', '/api/bin/restore', { ids: [item.id] });
+      try {
+        assert.ok((await within(counting.reached, 10000)).done, 'the attempt is being counted');
+        await restoring.execute('UPDATE calendar_calendars SET external_id = ? WHERE id = ?', [`${collection}elsewhere/`, work]);
+        assert.equal(await calendarMove.settleMovesForRestore(restoring, users.alex, { overwrittenEventIds: new Set(), before }), 1, 'the journal ends');
+        await restoring.commit();
+        const reply = await within(retry, 15000);
+        assert.ok(reply.done);
+        assert.equal(putsSince(from), 0, 'nothing sent for an ended journal');
+        // Said as what it is, a calendar restore, not as a server failure.
+        if (via === 'single') assert.deepEqual([reply.value!.status, reply.value!.body.code], [409, 'RESTORE_IN_PROGRESS']);
+        else assert.deepEqual([reply.value!.status, reply.value!.body.failed.map((entry: FixtureValue) => [entry.id, entry.code])], [200, [[item.id, 'RESTORE_IN_PROGRESS']]]);
+        assert.equal(await journalOf(item.id), 0);
+        assert.equal(await count('SELECT COUNT(*) AS n FROM bin_items WHERE id = ?', [item.id]), 1, 'still in the bin');
+      } finally {
+        await restoring.rollback().catch(() => undefined); restoring.release(); hooks.clear();
+        await retry.catch(() => undefined);
+        await pool.execute('UPDATE calendar_calendars SET external_id = ? WHERE id = ?', [collection, work]);
+      }
+      await sync();
+      assert.equal((await rowsTitled(title)).length, 0, 'no copy turned up');
+      assert.equal(server.copiesOf(title).length, 0);
+    });
+  }
 
   for (const kind of ['module', 'restore', 'paused'] as const) {
     await t.test(`${{ module: 'Calendar switched off', restore: 'a calendar restore begun', paused: 'the account paused' }[kind]} while a sync fetches a restore's stored copy: the sync does not adopt it, the item stays in the bin`, async () => {

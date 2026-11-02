@@ -517,6 +517,8 @@ async function finishJournal(userId: string, row: BinRow, moveId: string, calend
     return restoredOf(row, row.id, 'Being created on its calendar server again; it shows there once the server confirms.', { pending: true });
   }
   const [[still]] = await db.execute<RowDataPacket[]>('SELECT id FROM bin_items WHERE id = ?', [row.id]);
+  // Nothing was sent: the server is not to blame. (A sync that adopted the copy meanwhile took the item out of the bin.)
+  if (state === 'ended' && still) throw conflict('RESTORE_IN_PROGRESS', 'A calendar restore ended this attempt before anything was sent. The item stays in the bin; restore it again once the restore has finished.');
   if (still) throw conflict('BIN_RESTORE_FAILED', 'The calendar could not take the item back, so it stays in the bin.');
   return restoredOf(row, await restoredEventId(userId, calendarId, uid) ?? row.item_id, null);
 }

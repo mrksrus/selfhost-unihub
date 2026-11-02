@@ -77,10 +77,12 @@ interface MoveRow extends RowDataPacket {
   /** 0 for a journal from before 0.28, whose count may miss a stored attempt. */
   counted_before_send: number;
 }
-interface MoveOutcome { pending?: MoveState; sourceKept?: boolean }
+/** ended: its journal ended before anything was sent (a calendar restore overtook it). */
+interface MoveOutcome { pending?: MoveState; sourceKept?: boolean; ended?: true }
 /** The new server copy of a moved event, stored or about to be. */
 interface NewCopy { account: SyncAccount; calendar: SyncCalendar; timeZone: string; object: { id?: string; href: string; etag: string | null; ics: string } }
 type Attempt = { copy: NewCopy } | { refused: unknown } | { wait: unknown } | { ended: true };
+const ENDED = Symbol('ended');
 
 const RETRY_SECONDS = [60, 300, 1800];
 const LATER_SECONDS = 3600;
@@ -237,8 +239,8 @@ async function moveAdmission(move: MoveRow, executor: SqlExecutor = db) {
   return null;
 }
 
-/** Step 3: the new copy at the target server, or null while it waits (or once its journal ended). */
-async function createCopy(move: MoveRow): Promise<NewCopy | null> {
+/** Step 3: the new copy at the target server, null while it waits, or ENDED once its journal ended. */
+async function createCopy(move: MoveRow): Promise<NewCopy | null | typeof ENDED> {
   const target = move.target_calendar_id ? await calendarSync.loadCalendarContext(move.user_id, move.target_calendar_id) : null;
   if (!target) {
     // Its new calendar was removed from UniHub: the item stays where it is.
@@ -317,7 +319,7 @@ async function createCopy(move: MoveRow): Promise<NewCopy | null> {
     attempt = { wait: error };
   }
   if ('copy' in attempt) return attempt.copy;
-  if ('ended' in attempt) return null;
+  if ('ended' in attempt) return ENDED;
   if ('refused' in attempt) {
     await closeMove(move.id);
     throw attempt.refused;
@@ -388,8 +390,8 @@ async function advance(moveId: string): Promise<MoveOutcome> {
   let move = await loadMove(db, moveId);
   if (move?.state === 'creating') {
     const copy = move.target_href ? await createCopy(move) : null;
-    // No copy: waiting in the journal, or ended with it.
-    if (move.target_href && !copy) return await loadMove(db, moveId) ? { pending: 'creating' } : {};
+    if (copy === ENDED) return { ended: true };
+    if (move.target_href && !copy) return { pending: 'creating' };
     const committed = await withTransaction(async connection => {
       // A restore from the bin: the person first, then the journal and the bin row (bin.ts lockBinOwner).
       if (move!.bin_item_id) await (require('./bin') as typeof import('./bin')).lockBinOwner(connection, move!.user_id);
@@ -742,10 +744,12 @@ async function journalBinRestore(connection: SqlExecutor, userId: string, binIte
  * Runs a journalled restore now: 'pending' while the server has not
  * confirmed the copy (the sync pass retries; a lost answer is adopted, never
  * sent as a second item), else 'settled' (the bin item is gone when it was
- * restored). A refusal throws, and the item stays in the bin.
+ * restored), or 'ended' when a calendar restore ended its journal before
+ * anything was sent. A refusal throws, and the item stays in the bin.
  */
-async function runBinRestore(moveId: string): Promise<'pending' | 'settled'> {
+async function runBinRestore(moveId: string): Promise<'pending' | 'settled' | 'ended'> {
   const outcome = await runMove(moveId);
+  if (outcome.ended) return 'ended';
   return outcome.pending || await loadMove(db, moveId) ? 'pending' : 'settled';
 }
 
