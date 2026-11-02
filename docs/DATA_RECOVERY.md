@@ -162,8 +162,11 @@ writes nothing more (`409 RESTORE_IN_PROGRESS`).
   `/health` does not answer, so Docker marks the container unhealthy after
   its 360-second start period, but nothing restarts it for that unless a
   tool that restarts unhealthy containers runs. A stop during the pass
-  rolls the pass back, and the next start runs step 25 again. The restore
-  writes it with
+  rolls the pass back, and the next start runs step 25 again. Where autoheal,
+  Swarm or another controller restarts unhealthy containers, suspend that
+  for the 0.28 upgrade or give the container a start grace longer than the
+  pass (30 minutes for the benchmark's 13); otherwise each restart rolls the
+  pass back and it never finishes. The restore writes it with
   `insertOverlays` and applies those whose rows exist with
   `applyOverlaysToLiveRows`; the sync that creates a row takes the rest. It
   goes with its calendar and never applies to another person's calendar.
