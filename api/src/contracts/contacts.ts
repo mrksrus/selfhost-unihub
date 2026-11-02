@@ -111,8 +111,9 @@ export interface Contact {
 /**
  * @deprecated The 3+3 projection for the Android apps 0.24.3 to 0.25.1 and
  * hand-written 0.23 clients (P-21): the first three emails and phones by
- * position, the given and family name and the organisation. Removed when the
- * last 3+3 app leaves the support window (ANDROID_COMPATIBILITY.md).
+ * position, the given and family name and the organisation. The last 3+3 app
+ * left the support window with 0.28.0; this stays until a separate
+ * compatibility decision retires it (ANDROID_COMPATIBILITY.md).
  */
 export interface LegacyContactFields {
   first_name: string;

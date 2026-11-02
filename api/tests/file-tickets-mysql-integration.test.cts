@@ -55,7 +55,8 @@ test('file tickets: one use without a cookie, owner-bound, refused when expired,
         if (result.csrfToken) csrf = result.csrfToken;
         return result;
       };
-      return request;
+      // The Cookie header an Android app before 0.28 adds to a ticket URL.
+      return Object.assign(request, { cookie: () => [...cookies].map(([key, value]) => `${key}=${value}`).join('; ') });
     }
     // What the Android app does with the URL: a plain GET, no cookie.
     const fetchTicket = async (url: string, headers: Record<string, string> = {}) => {
@@ -114,6 +115,20 @@ test('file tickets: one use without a cookie, owner-bound, refused when expired,
     assert.equal((await fetchTicket(ticket.url)).status, 410, 'a second use is refused');
     assert.equal((await fetchTicket('/api/files/tickets/not-a-ticket')).status, 410);
     assert.equal((await fetchTicket(`/api/files/tickets/${crypto.randomBytes(32).toString('base64url')}`)).status, 410);
+
+    // An app before 0.28 adds its session cookie to the ticket URL: the ticket
+    // still decides, and a cookie whose session has ended is no refusal.
+    const withCookie = await owner('POST', '/files/tickets', forAttachment);
+    const oldApp = await fetchTicket(withCookie.url, { Cookie: owner.cookie() });
+    assert.equal(oldApp.status, 200);
+    assert.ok(oldApp.body.equals(bytes), 'the stored bytes, with the session cookie');
+    const ended = await signIn('owner');
+    const endedCookie = ended.cookie();
+    await ended('POST', '/auth/signout', {});
+    const afterSignOut = await owner('POST', '/files/tickets', forAttachment);
+    const staleCookie = await fetchTicket(afterSignOut.url, { Cookie: endedCookie });
+    assert.equal(staleCookie.status, 200, 'a signed-out session\'s cookie does not refuse the ticket');
+    assert.ok(staleCookie.body.equals(bytes));
 
     // Two requests at once: only one gets the file.
     const racing = await owner('POST', '/files/tickets', forAttachment);
@@ -177,6 +192,10 @@ test('file tickets: one use without a cookie, owner-bound, refused when expired,
     const resumed = await fetchTicket(backupTicket.url, { Range: 'bytes=10-20', 'If-Range': etag! });
     assert.equal(resumed.status, 206);
     assert.ok(resumed.body.equals(whole.body.subarray(10, 21)), 'the resumed bytes');
+    // An app before 0.28 resumes with its session cookie as well.
+    const resumedWithCookie = await fetchTicket(backupTicket.url, { Range: 'bytes=0-9', 'If-Range': etag!, Cookie: owner.cookie() });
+    assert.equal(resumedWithCookie.status, 206);
+    assert.ok(resumedWithCookie.body.equals(whole.body.subarray(0, 10)));
     assert.notEqual((await pool.query<RowDataPacket[]>('SELECT downloaded_at FROM data_export_jobs WHERE id = ?', [backupId]))[0][0].downloaded_at, null);
     // The grant is for this archive and this session only, and ends with it.
     const strangerJob = crypto.randomUUID();

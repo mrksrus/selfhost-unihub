@@ -29,6 +29,29 @@ class SharedFilesTest {
     }
 
     @Test
+    fun onlyTheServersOwnAppUpdateIsDownloadedWithoutATicket() {
+        assertTrue(SharedFiles.isAppUpdate(origin, "$origin/downloads/unihub.apk"))
+        assertTrue(SharedFiles.isAppUpdate(origin, "https://HUB.example.com:443/downloads/unihub.apk"))
+        assertTrue(SharedFiles.isAppUpdate("http://127.0.0.1:8092", "http://127.0.0.1:8092/downloads/unihub.apk"))
+        // Another server, scheme, port or user.
+        assertFalse(SharedFiles.isAppUpdate(origin, "https://evil.example.org/downloads/unihub.apk"))
+        assertFalse(SharedFiles.isAppUpdate(origin, "http://hub.example.com/downloads/unihub.apk"))
+        assertFalse(SharedFiles.isAppUpdate(origin, "https://hub.example.com:8443/downloads/unihub.apk"))
+        assertFalse(SharedFiles.isAppUpdate(origin, "https://user@hub.example.com/downloads/unihub.apk"))
+        // Anything that could make it another address: query, fragment, encoded or relative aliases.
+        assertFalse(SharedFiles.isAppUpdate(origin, "$origin/downloads/unihub.apk?x=1"))
+        assertFalse(SharedFiles.isAppUpdate(origin, "$origin/downloads/unihub.apk#x"))
+        assertFalse(SharedFiles.isAppUpdate(origin, "$origin/downloads%2Funihub.apk"))
+        assertFalse(SharedFiles.isAppUpdate(origin, "$origin/downloads/unihub%2Eapk"))
+        assertFalse(SharedFiles.isAppUpdate(origin, "$origin/api/../downloads/unihub.apk"))
+        assertFalse(SharedFiles.isAppUpdate(origin, "$origin//downloads/unihub.apk"))
+        assertFalse(SharedFiles.isAppUpdate(origin, "$origin/downloads/unihub.apk/"))
+        // Other server addresses, which would need the session.
+        assertFalse(SharedFiles.isAppUpdate(origin, "$origin/api/backup/jobs/1/download"))
+        assertFalse(SharedFiles.isAppUpdate(origin, "not a url"))
+    }
+
+    @Test
     fun theMostSpecificWellFormedTypeIsUsed() {
         assertEquals("application/pdf", SharedFiles.mimeType("application/pdf", "image/png", null))
         assertEquals("image/jpeg", SharedFiles.mimeType("Image/JPEG; name=x.jpg", null, null))

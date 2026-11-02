@@ -3,6 +3,7 @@
 // debug build enables WebView debugging); Android's own screens (file picker,
 // permission dialogs, notifications) through adb and uiautomator.
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { _android as android } from 'playwright-core';
 
 const SDK = process.env.ANDROID_HOME ?? `${process.env.HOME}/Android/Sdk`;
@@ -243,3 +244,23 @@ export async function screenPoint(page, locator, { dy = 0 } = {}) {
   if (!web) throw new Error('the WebView is not on screen');
   return { x: Math.round(+web[1] + (box.x + box.width / 2) * ratio), y: Math.round(+web[2] + (box.y + box.height / 2 + dy) * ratio), ratio };
 }
+
+/** This instance's state folder (tools/e2e/stack.sh). */
+export function stackState() {
+  const instance = process.env.UNIHUB_E2E_INSTANCE ?? '1';
+  return process.env.UNIHUB_E2E_STATE ?? `${process.env.HOME}/.local/state/unihub-e2e${instance === '1' ? '' : `-${instance}`}`;
+}
+
+/**
+ * The stack's nginx log of download ticket requests (tools/e2e/stack.sh), in
+ * order: the token's first eight characters, status, Range and whether a
+ * Cookie header came. `ticketOf(url)` gives the prefix of a ticket URL.
+ */
+export function ticketLog() {
+  let text = '';
+  try { text = readFileSync(`${stackState()}/log/nginx-tickets.log`, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  return text.split('\n').map(line => /ticket=(\S+) (\d+) bytes=(\d+) range="([^"]*)" cookie=(absent|present)$/.exec(line)).filter(Boolean)
+    .map(([, ticket, status, bytes, range, cookie]) => ({ ticket, status: Number(status), bytes: Number(bytes), range, cookie }));
+}
+
+export const ticketOf = url => new URL(url, 'http://ticket.invalid').pathname.split('/').pop().slice(0, 8);

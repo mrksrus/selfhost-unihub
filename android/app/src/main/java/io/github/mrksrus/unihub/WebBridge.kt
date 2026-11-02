@@ -10,7 +10,6 @@ import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Base64
-import android.webkit.CookieManager
 import android.webkit.WebView
 import android.widget.Toast
 import androidx.webkit.JavaScriptReplyProxy
@@ -197,23 +196,35 @@ class WebBridge(
     }
 
     /**
-     * Downloads a file the server streams (backups, attachments) with the
-     * system download manager, which shows progress and survives the app
-     * closing. Only the server's own addresses, with this app's session.
+     * Downloads a file the server streams (backups) with the system download
+     * manager, which shows progress and survives the app closing. Never with
+     * the session cookie (F9): the download manager is another app. The
+     * request it starts with is a download ticket or the public app update of
+     * the server's own address; a page of a server before 0.28 passes
+     * addresses that need the session, and they are refused here. The
+     * download manager follows redirects without asking the app, so this
+     * relies on those two endpoints never redirecting (they do not); a
+     * redirect would still carry no cookie, and an update is only installed
+     * once UpdateCheck has found it signed by this app's signers.
      */
     fun download(url: String, name: String, userAgent: String) {
         if (!ServerAddress.sameOrigin(origin, url)) return
         val fileName = safeFileName(name)
         // The app update shows no "complete" notification: opened from there,
         // Android refuses to install it; the app opens the installer (AppUpdate).
-        val update = AppUpdate.isUpdate(url)
-        val request = DownloadManager.Request(Uri.parse(url))
-            .setTitle(fileName)
-            .setNotificationVisibility(if (update) DownloadManager.Request.VISIBILITY_VISIBLE else DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
-            .addRequestHeader("User-Agent", userAgent)
-        CookieManager.getInstance().getCookie(url)?.let { request.addRequestHeader("Cookie", it) }
+        val update = SharedFiles.isAppUpdate(origin, url)
+        if (!update && !SharedFiles.isTicket(origin, url)) {
+            Toast.makeText(activity, R.string.download_failed, Toast.LENGTH_SHORT).show()
+            return
+        }
         try {
+            // Setting the destination asks Android's downloads provider, which
+            // throws while that provider is not (yet) running.
+            val request = DownloadManager.Request(Uri.parse(url))
+                .setTitle(fileName)
+                .setNotificationVisibility(if (update) DownloadManager.Request.VISIBILITY_VISIBLE else DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+                .addRequestHeader("User-Agent", userAgent)
             val id = activity.getSystemService(DownloadManager::class.java).enqueue(request)
             if (update) AppUpdate.downloading(activity, id)
             Toast.makeText(activity, activity.getString(R.string.download_started, fileName), Toast.LENGTH_SHORT).show()

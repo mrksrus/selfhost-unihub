@@ -22,10 +22,20 @@
   ],
   "releases": [
     {
+      "version": "0.28.0",
+      "apk": {
+        "versionCode": 28000,
+        "sha256": null,
+        "signing": "release"
+      },
+      "shell": "supported",
+      "note": "From this app the download manager starts only from download tickets and the public app update (/downloads/unihub.apk), without the session cookie; it follows redirects by itself, so neither endpoint may redirect. The earlier apps in the window add the cookie to the same ticket URLs. So the server must answer a ticket the same with or without a Cookie header, whether the cookie's session is live or has ended, and keep the app update public."
+    },
+    {
       "version": "0.27.1",
       "apk": {
         "versionCode": 27001,
-        "sha256": null,
+        "sha256": "8739e6229c9bce20017d0c5413def3719d61183800de4380118b65d97b593d8e",
         "signing": "release"
       },
       "shell": "supported"
@@ -44,15 +54,6 @@
       "apk": {
         "versionCode": 26000,
         "sha256": "5aba1f5f403dde222928abbdc34d63d936af311d4145dfbb8985ed959aa1322a",
-        "signing": "release"
-      },
-      "shell": "supported"
-    },
-    {
-      "version": "0.25.1",
-      "apk": {
-        "versionCode": 25001,
-        "sha256": "28ca335e9a264951006729f1a00712eac892e82d0f7392c9d61db25f62fa3043",
         "signing": "release"
       },
       "shell": "supported"

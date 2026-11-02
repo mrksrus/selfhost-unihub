@@ -91,6 +91,11 @@ up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
 - Startup refuses an instance backup key shorter than 32 bytes or equal to
   another secret (also written another way, such as base64 for hex), and a
   backup destination inside the stored files.
+- **The Android app no longer gives your session to Android's downloader.**
+  The system download manager gets only a backup's short-lived link or the
+  app update, which needs no sign-in, never the app's session cookie. Install
+  the new app when it is offered; older apps keep downloading with the new
+  links.
 
 ### Fixed
 
@@ -120,6 +125,9 @@ up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   the copy it finds. A move that waited no longer writes to the server after
   Calendar was switched off, a calendar restore began or the account was
   paused meanwhile; it waits until they allow it again.
+- **A download in the Android app no longer closes the app** when Android's
+  download service has not started yet, for example right after the phone
+  starts; the app says the file could not be saved, and you can try again.
 
 ## 0.27.1
 
