@@ -348,10 +348,19 @@ async function mergeGmailGroup({ account, fence, gmailMsgId }: { account: Accoun
       [keeper, userId, ...losers]);
     await cx.execute(`UPDATE calendar_overlay_restores SET payload = JSON_SET(payload, '$.source_email_id', ?)
       WHERE user_id = ? AND JSON_VALUE(payload, '$.source_email_id') IN (${loserMarks})`, [keeper, userId, ...losers]);
-    // So do a removed copy's notifications: a click opens the kept message.
-    await cx.execute(`UPDATE notification_events SET source_id = ?, payload = JSON_SET(payload, '$.emailId', ?, '$.url', ?)
-      WHERE user_id = ? AND kind = 'mail' AND source_id IN (${loserMarks})`,
-    [keeper, keeper, `/mail?email=${encodeURIComponent(keeper)}`, userId, ...losers]);
+    // So do a removed copy's notifications, its arrival and a snooze's return
+    // (the snooze's returnedAt stays, and the kept copy takes that snooze):
+    // a click or a later delivery opens the kept message. One the kept copy
+    // already has (the same snooze's return, an arrival) is not sent twice.
+    for (const loser of losers) {
+      await cx.execute(`DELETE removed FROM notification_events removed JOIN notification_events kept ON kept.user_id = removed.user_id
+          AND kept.kind = removed.kind AND kept.source_id = ?
+          AND (removed.kind <> 'snooze' OR JSON_VALUE(kept.payload, '$.returnedAt') = JSON_VALUE(removed.payload, '$.returnedAt'))
+        WHERE removed.user_id = ? AND removed.kind IN ('mail', 'snooze') AND removed.source_id = ?`, [keeper, userId, loser]);
+      await cx.execute(`UPDATE notification_events SET source_id = ?, payload = JSON_SET(payload, '$.emailId', ?, '$.url', ?)
+        WHERE user_id = ? AND kind IN ('mail', 'snooze') AND source_id = ?`,
+      [keeper, keeper, `/mail?email=${encodeURIComponent(keeper)}`, userId, loser]);
+    }
     if (plan.filedFrom && plan.filedFrom !== keeper) {
       await cx.execute('UPDATE mail_folder_recovery_items SET email_id = ? WHERE email_id = ? AND user_id = ?', [keeper, plan.filedFrom, userId]);
     }

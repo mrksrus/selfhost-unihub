@@ -332,6 +332,34 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 0);
   });
 
+  await t.test('A snooze that came back on a removed copy is announced for the kept copy, once', async () => {
+    const accountId = await createAccount('gmail-snooze', { host: 'imap.gmail.com' });
+    const due = '2026-01-01 09:00:00';
+    // b's snooze comes back; in the second message both copies' snoozes do.
+    const single = await gmailCopies(accountId, '7108', { b: { snoozed_until: due } });
+    const both = await gmailCopies(accountId, '7109', { a: { snoozed_until: due }, b: { snoozed_until: due } });
+    const sessionId = uuid();
+    await pool.execute<ResultSetHeader>('INSERT INTO sessions (id,user_id,token,expires_at) VALUES (?,?,?,UTC_TIMESTAMP() + INTERVAL 1 DAY)', [sessionId, userId, `synthetic-${sessionId}`]);
+    await pool.execute<ResultSetHeader>(`INSERT INTO push_subscriptions (id,user_id,session_id,endpoint,endpoint_hash,p256dh,auth) VALUES (?,?,?,?,SHA2(?,256),'synthetic','synthetic')`,
+      [uuid(), userId, sessionId, `https://push.example.test/${sessionId}`, sessionId]);
+    const snooze = require('../dist/src/services/mail-snooze') as typeof import('../src/services/mail-snooze');
+    assert.equal((await snooze.returnDueSnoozes()).returned, 3);
+    assert.equal((await prune(accountId)).merged, 2);
+    assert.deepEqual([await copiesLeft(single), await copiesLeft(both)], [['a'], ['a']]);
+    // The real worker delivers; only the push transport is a recording stub.
+    const transports = (require('../dist/src/services/notification-transports') as FixtureValue).NOTIFICATION_TRANSPORTS.webpush;
+    const { ready, send } = transports;
+    const sent: FixtureValue[] = [];
+    transports.ready = async () => {};
+    transports.send = async (_target: unknown, message: FixtureValue) => { sent.push(message); return { sent: true }; };
+    try { await (require('../dist/src/services/notifications') as typeof import('../src/services/notifications')).processNotificationJobs(); }
+    finally { transports.ready = ready; transports.send = send; }
+    const snoozeNotices = sent.filter(message => message.kind === 'snooze').map(message => message.payload.emailId).sort();
+    assert.deepEqual(snoozeNotices, [single.a, both.a].sort(), 'one notice each, for the kept copy');
+    assert.deepEqual(await rows(`SELECT d.status FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id
+      WHERE e.user_id = ? AND e.kind = 'snooze' AND d.status <> 'sent'`, [userId]), []);
+  });
+
   await t.test('A task made from a copy the Gmail merge removes meanwhile is refused, not linked to a missing email', async () => {
     const accountId = await createAccount('gmail-race', { host: 'imap.gmail.com' });
     const racing = await gmailCopies(accountId, '7106');
