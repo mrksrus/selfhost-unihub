@@ -61,10 +61,23 @@ encrypted. An older UniHub cannot read them; 0.28.0 reads every older backup.
   as before.
 - **Android app.** Install 0.28.0's app when it is offered: its downloads
   (backups, the app update) no longer give Android's downloader your session.
-  The 0.27.1, 0.27.0 and 0.26.0 apps keep downloading backups from a 0.28.0
+  The 0.27.2, 0.27.1 and 0.27.0 apps keep downloading backups from a 0.28.0
   server. The 0.28.0 app connected to a server older than 0.28 cannot download
   backups (it says "Could not save the file"): update the server, or download
-  them in a browser.
+  them in a browser. The window is 0.28.0, 0.27.2, 0.27.1 and 0.27.0: the
+  0.26.0 app leaves it, so update a phone that still has it.
+
+## 0.27.2 Send later and Save as template
+
+No database upgrade and no configuration change. Going back to 0.27.1 is
+possible.
+
+- **Mail.** Confirming a time in Send later, or saving a message as a
+  template, no longer also sends the message. Nothing to do; a message
+  already sent too early by 0.27.0 or 0.27.1 cannot be called back.
+- **Android app.** 0.27.2's app is 0.27.1's app with the new version number;
+  install it when it is offered. The window is 0.27.2, 0.27.1, 0.27.0 and
+  0.26.0: the 0.25.1 app leaves it, so update a phone that still has it.
 
 ## 0.27.1 Follow-up fixes
 
