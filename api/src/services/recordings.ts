@@ -888,6 +888,8 @@ async function deleteRecording(userId: string, recordingId: string) {
   const recording = await getRecordingForUser(userId, recordingId);
   if (!recording) return { error: 'Recording not found', status: 404 };
   const converted = path.extname(String(recording.storage_path ?? '')).toLowerCase() !== '.mp3';
+  // The bin item of the committed attempt (a deadlock retry starts again), for Undo.
+  let binItemIds: string[] = [];
   if (recording.storage_path && converted) await mp3ConversionJobs.get(getConvertedMp3Path(path.resolve(recording.storage_path)))?.catch(() => {});
   const { found, original, named } = await withRecordingFiles(recordingId, async lease => {
     // The file moves only from the person's own folder into its bin folder,
@@ -903,6 +905,7 @@ async function deleteRecording(userId: string, recordingId: string) {
     let named = false;
     try {
       const found = await withTransaction(async connection => {
+        binItemIds = [];
         const [[row]] = await connection.execute<RowDataPacket[]>('SELECT * FROM recordings WHERE id = ? AND user_id = ? FOR UPDATE', [recordingId, userId]);
         if (!row) return false;
         const { tags, ...stored } = { ...row, tags: recording.tags };
@@ -911,7 +914,7 @@ async function deleteRecording(userId: string, recordingId: string) {
           recording: Object.fromEntries(Object.entries(stored).map(([key, value]) => [key, value instanceof Date ? value.toISOString() : value])),
         };
         const keepFile = !!(original && binPath && String(row.storage_path) === recording.storage_path && await ownFile(userId, original));
-        await putInBin(connection, userId, [{ module: 'recordings', itemType: 'recording', itemId: recordingId, title: String(row.title ?? ''), reason: 'deleted', payload,
+        binItemIds = await putInBin(connection, userId, [{ module: 'recordings', itemType: 'recording', itemId: recordingId, title: String(row.title ?? ''), reason: 'deleted', payload,
           fileRefs: keepFile ? [binPath!] : null }]);
         await connection.execute('DELETE FROM recordings WHERE id = ? AND user_id = ?', [recordingId, userId]);
         if (keepFile && !named) {
@@ -933,7 +936,7 @@ async function deleteRecording(userId: string, recordingId: string) {
   if (!found) return { error: 'Recording not found', status: 404 };
   if (original && named) await removeRecordingName(userId, recordingId, original, deleteRecordingFiles);
   else if (original && converted) await removeRecordingName(userId, recordingId, original, removeMp3Copies);
-  return { deleted: true, binned: true };
+  return { deleted: true, binned: true, bin_item_ids: binItemIds };
 }
 
 /**

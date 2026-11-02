@@ -229,11 +229,11 @@ async function deleteCalendarToBin(userId: string, calendarId: string) {
     const settings = Object.fromEntries(resolved.filter(([, setting]) => setting.source === 'user').map(([key, setting]) => [key, setting.value]));
     const groupId = crypto.randomUUID();
     const payload: CalendarPayload = { provider: 'local', origin: null, calendar: toStored(calendar), settings };
-    await putInBin(cx, userId, [{ module: 'calendar', itemType: 'calendar', itemId: calendarId, title: String(calendar.name ?? ''), reason: 'deleted', groupId, payload }]);
+    const binItemIds = await putInBin(cx, userId, [{ module: 'calendar', itemType: 'calendar', itemId: calendarId, title: String(calendar.name ?? ''), reason: 'deleted', groupId, payload }]);
     const [events] = await cx.execute<RowDataPacket[]>('SELECT id FROM calendar_events WHERE calendar_id = ? AND user_id = ? ORDER BY start_time, id FOR UPDATE', [calendarId, userId]);
-    await binLocalEvents(cx, userId, events.map(row => String(row.id)), { reason: 'calendar_deleted', groupId });
+    binItemIds.push(...await binLocalEvents(cx, userId, events.map(row => String(row.id)), { reason: 'calendar_deleted', groupId }));
     await cx.execute('DELETE FROM calendar_calendars WHERE id = ? AND user_id = ?', [calendarId, userId]);
-    return { deletedEvents: events.length };
+    return { deletedEvents: events.length, binItemIds };
   });
 }
 

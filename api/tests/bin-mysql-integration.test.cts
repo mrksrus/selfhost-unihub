@@ -180,6 +180,48 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     assert.deepEqual(await bin(alex, 'calendar'), []);
   });
 
+  await t.test('every delete answers its bin items, and restoring them is the Undo; a stranger cannot use them', async () => {
+    const restoreIds = (ids: string[], client = alex) => call(client, 'POST', '/api/bin/restore', { ids });
+    const contact = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Undo one' } })).contact;
+    const first = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Undo two' } })).contact;
+    const second = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Undo three' } })).contact;
+    const one = await call(alex, 'DELETE', `/api/contacts/${contact.id}`);
+    const several = await call(alex, 'POST', '/api/contacts/bulk-delete', { ids: [first.id, second.id] });
+    const task = await localTask('Undo task');
+    const event = await call(alex, 'DELETE', `/api/calendar/events/${task}`);
+    const list = crypto.randomUUID();
+    await pool.execute("INSERT INTO calendar_calendars (id, user_id, account_id, name, color) VALUES (?, ?, ?, 'Undo list', '#22c55e')", [list, users.alex, localAccount]);
+    const listed = await localTask('Undo listed', list);
+    const calendar = await call(alex, 'DELETE', `/api/calendar/calendars/${list}`);
+    const recordingId = crypto.randomUUID();
+    const folder = path.join(recordingsRoot, users.alex);
+    fs.mkdirSync(folder, { recursive: true });
+    const file = path.join(folder, `${recordingId}.webm`);
+    fs.writeFileSync(file, 'undo recording bytes');
+    await pool.execute("INSERT INTO recordings (id, user_id, title, content_type, size_bytes, storage_path) VALUES (?, ?, 'Undo memo', 'audio/webm', 20, ?)", [recordingId, users.alex, file]);
+    const recording = await call(alex, 'DELETE', `/api/recordings/${recordingId}`);
+    assert.deepEqual([one, several, event, calendar, recording].map(answer => answer.bin_item_ids.length), [1, 2, 1, 2, 1]);
+    const answered = [one, several, event, calendar, recording].flatMap(answer => answer.bin_item_ids as string[]);
+    assert.equal(await count(`SELECT COUNT(*) AS n FROM bin_items WHERE user_id = ? AND id IN (${answered.map(() => '?').join(', ')})`, [users.alex, ...answered]), answered.length,
+      'each answered id is a committed bin item of the person');
+    // Blair holds the ids but restores nothing.
+    const refused = await restoreIds(answered, blair);
+    assert.deepEqual([refused.restored, refused.failed.map((entry: FixtureValue) => entry.code)], [[], answered.map(() => 'BIN_ITEM_NOT_FOUND')]);
+    // Undo: each answer's ids bring its items back (the list with its task as one group).
+    for (const answer of [one, several, event, recording]) assert.deepEqual((await restoreIds(answer.bin_item_ids)).failed, []);
+    assert.deepEqual((await restoreIds([calendar.bin_item_ids[0]])).failed, [], 'one id of a group brings back the group');
+    assert.deepEqual((await call(alex, 'GET', '/api/contacts')).contacts.map((entry: FixtureValue) => entry.id).filter((id: string) => [contact.id, first.id, second.id].includes(id)).sort(),
+      [contact.id, first.id, second.id].sort());
+    assert.ok(await eventRow(task) && await eventRow(listed));
+    assert.equal(fs.readFileSync(file, 'utf8'), 'undo recording bytes');
+    assert.deepEqual((await bin(alex)).filter(entry => entry.title.startsWith('Undo')), []);
+    await pool.execute('DELETE FROM contacts WHERE id IN (?, ?, ?)', [contact.id, first.id, second.id]);
+    await pool.execute('DELETE FROM calendar_events WHERE id IN (?, ?)', [task, listed]);
+    await pool.execute('DELETE FROM calendar_calendars WHERE id = ?', [list]);
+    await pool.execute('DELETE FROM recordings WHERE id = ?', [recordingId]);
+    fs.rmSync(file, { force: true });
+  });
+
   await t.test('recordings: the file waits in the bin folder, comes back, and goes with a delete for good', async () => {
     const id = crypto.randomUUID();
     const folder = path.join(recordingsRoot, users.alex);
@@ -726,11 +768,11 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     };
     const answer = await call(alex, 'DELETE', `/api/calendar/events/${task.id}`);
     await within(racing, 10000);
-    assert.ok(answer.bin_item_id, 'kept in the bin');
+    assert.equal(answer.bin_item_ids.length, 1, 'kept in the bin');
     assert.equal(server.copiesOf('Raced delete').length, 0);
     assert.equal((await rowsTitled('Raced delete')).length, 0);
     const item = (await bin(alex, 'calendar')).find(entry => entry.title === 'Raced delete');
-    assert.equal(item?.id, answer.bin_item_id);
+    assert.equal(item?.id, answer.bin_item_ids[0]);
     await restore(item.id);
     await assertBack('Raced delete', task.uid);
   });
@@ -741,9 +783,9 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     hooks.once({ match: /^DELETE FROM calendar_events WHERE user_id = \? AND id IN/, before: () => { fired = true; throw deadlock(); } });
     const answer = await call(alex, 'DELETE', `/api/calendar/events/${task.id}`);
     assert.ok(fired, 'the first attempt was a deadlock victim');
-    assert.equal(await count('SELECT COUNT(*) AS n FROM bin_items WHERE id = ?', [answer.bin_item_id]), 1, 'the answered bin item is the committed one');
+    assert.equal(await count('SELECT COUNT(*) AS n FROM bin_items WHERE id = ?', [answer.bin_item_ids[0]]), 1, 'the answered bin item is the committed one');
     assert.equal((await rowsTitled('Deadlocked delete')).length, 0);
-    await restore(answer.bin_item_id);
+    await restore(answer.bin_item_ids[0]);
     await assertBack('Deadlocked delete', task.uid);
   });
 
@@ -762,7 +804,7 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
       assert.deepEqual(server.remote.writes, [], 'nothing written to the server');
       assert.equal((await rowsTitled('Daily standup')).length, 3);
       // The whole series goes to the bin, which the policy allows.
-      assert.ok((await call(alex, 'DELETE', `/api/calendar/events/${dates[0].id}?scope=series`)).bin_item_id);
+      assert.ok((await call(alex, 'DELETE', `/api/calendar/events/${dates[0].id}?scope=series`)).bin_item_ids[0]);
     } finally {
       await pool.execute("DELETE FROM setting_policies WHERE setting_key = 'policy.bin.delete'");
     }
@@ -770,7 +812,7 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     await restore(item.id);
     const back = await rowsTitled('Daily standup');
     assert.equal(back.length, 3);
-    assert.equal((await call(alex, 'DELETE', `/api/calendar/events/${back[1].id}?scope=occurrence`)).bin_item_id, null, 'one date, allowed again, is not kept in the bin');
+    assert.deepEqual((await call(alex, 'DELETE', `/api/calendar/events/${back[1].id}?scope=occurrence`)).bin_item_ids, [], 'one date, allowed again, is not kept in the bin');
     assert.equal((await rowsTitled('Daily standup')).length, 2);
   });
 

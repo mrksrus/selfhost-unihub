@@ -79,8 +79,8 @@ export = defineRoutes({
   // deleting them for good is the bin's (bin.delete, F13).
   'DELETE /api/contacts/:id': { ...contactRoute, handler: async (req: Request, userId: string) => {
     try {
-      await moveContactsToBin(userId, [req.params.id]);
-      return { message: 'Contact moved to the bin' };
+      const { binItemIds } = await moveContactsToBin(userId, [req.params.id]);
+      return { message: 'Contact moved to the bin', bin_item_ids: binItemIds };
     } catch (error) { return failed(error, 'Failed to delete contact'); }
   } },
 
@@ -88,8 +88,8 @@ export = defineRoutes({
     const ids = bulkIds((body as { ids?: unknown } | null)?.ids);
     if (!Array.isArray(ids)) return ids;
     try {
-      const deleted = await moveContactsToBin(userId, ids);
-      return { message: `${deleted} contact(s) moved to the bin`, deleted };
+      const { deleted, binItemIds } = await moveContactsToBin(userId, ids);
+      return { message: `${deleted} contact(s) moved to the bin`, deleted, bin_item_ids: binItemIds };
     } catch (error) { return failed(error, 'Failed to delete contacts'); }
   } },
 

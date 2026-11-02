@@ -675,14 +675,15 @@ async function undoMerge(userId: string, mergeId: string): Promise<UndoMergeResu
  * transaction, several as one group (one undo). Another person's ids are
  * not found. Returns how many were moved.
  */
-async function moveContactsToBin(userId: string, ids: readonly string[]) {
+/** Deletes the person's contacts among ids into the bin, several as one group: how many went, and their bin items (for Undo). */
+async function moveContactsToBin(userId: string, ids: readonly string[]): Promise<{ deleted: number; binItemIds: string[] }> {
   const sorted = [...new Set(ids)].sort();
-  if (!sorted.length) return 0;
+  if (!sorted.length) return { deleted: 0, binItemIds: [] };
   return withTransaction(async cx => {
     const [locked] = await cx.execute<(RowDataPacket & { id: string })[]>(
       `SELECT id FROM contacts WHERE user_id = ? AND id IN (${placeholders(sorted)}) ORDER BY id FOR UPDATE`, [userId, ...sorted]);
     const present = locked.map(row => row.id);
-    if (!present.length) return 0;
+    if (!present.length) return { deleted: 0, binItemIds: [] };
     const snapshots = await snapshotContacts(cx, userId, present);
     const [aliases] = await cx.execute<(RowDataPacket & { uid_hash: string; uid: string; merge_id: string | null; contact_id: string })[]>(
       `SELECT uid_hash, uid, merge_id, contact_id FROM contact_uid_aliases WHERE user_id = ? AND contact_id IN (${placeholders(present)})`, [userId, ...present]);
@@ -690,7 +691,7 @@ async function moveContactsToBin(userId: string, ids: readonly string[]) {
       `SELECT contact_a, contact_b FROM contact_duplicate_dismissals WHERE user_id = ? AND (contact_a IN (${placeholders(present)}) OR contact_b IN (${placeholders(present)}))`,
       [userId, ...present, ...present]);
     const groupId = present.length > 1 ? crypto.randomUUID() : null;
-    await putInBin(cx, userId, present.map(id => {
+    const binItemIds = await putInBin(cx, userId, present.map(id => {
       const snapshot = snapshots.get(id)!;
       const payload: BinContactPayload = {
         ...snapshot,
@@ -701,7 +702,7 @@ async function moveContactsToBin(userId: string, ids: readonly string[]) {
         payload, fileRefs: snapshot.photo ? [snapshot.photo.sha256, snapshot.photo.thumb_sha256] : null };
     }));
     const [removed] = await cx.execute<ResultSetHeader>(`DELETE FROM contacts WHERE user_id = ? AND id IN (${placeholders(present)})`, [userId, ...present]);
-    return removed.affectedRows || 0;
+    return { deleted: removed.affectedRows || 0, binItemIds };
   });
 }
 

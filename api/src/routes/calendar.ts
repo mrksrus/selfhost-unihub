@@ -514,10 +514,11 @@ export = {
       }
 
       // The list and its events go to the bin together (bin-calendar.ts).
-      const { deletedEvents } = await binCalendar.deleteCalendarToBin(userId, id);
+      const { deletedEvents, binItemIds } = await binCalendar.deleteCalendarToBin(userId, id);
       return {
         message: `Calendar moved to the bin with its ${deletedEvents} event(s).`,
         deleted_events: deletedEvents,
+        bin_item_ids: binItemIds,
       };
     } catch (error) {
       console.error('Delete calendar error:', error);
@@ -1200,7 +1201,7 @@ export = {
       const id = getCalendarEventIdFromReq(req)!;
       if (!id) return { error: 'Invalid event id', status: 400 };
       const [events] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
-      if (!events.length) return { message: 'Event deleted' };
+      if (!events.length) return { message: 'Event deleted', bin_item_ids: [] };
       const scope = new URL(req.url, 'http://localhost').searchParams.get('scope');
       // To the bin; a synced one is deleted at its server first, and a
       // refusal there leaves it as it is (bin-calendar.ts).
@@ -1211,7 +1212,7 @@ export = {
       }
       const outcome = await binCalendar.deleteEventToBin(userId, events[0], scope === 'series' ? 'series' : 'occurrence');
       if ('refused' in outcome) return outcome.refused;
-      return { message: outcome.binned ? 'Event moved to the bin' : 'Event deleted', bin_item_id: outcome.binned };
+      return { message: outcome.binned ? 'Event moved to the bin' : 'Event deleted', bin_item_ids: outcome.binned ? [outcome.binned] : [] };
     } catch (error) {
       console.error('Delete event error:', error);
       return clientError(error, 'Failed to delete event');
