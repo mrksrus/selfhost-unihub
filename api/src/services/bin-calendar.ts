@@ -11,7 +11,7 @@ import { ApiError, conflict, notFound } from '../http/errors';
 import { withTransaction } from './transactions';
 import { putInBin, parsePayload, lockBinOwner } from './bin';
 import { UID_EXACT, overlayStateOf, insertOverlays, applyOverlaysToLiveRows } from './calendar-overlays';
-import { fencedWrite } from './calendar-move-state';
+import { fencedWrite, calendarAdmission } from './calendar-move-state';
 import { itemKey } from './task-order';
 import { publishCalendarChanged } from './realtime';
 import { ensureDefaultLocalCalendarForUser, resolveCalendarDefaults } from './calendar';
@@ -316,6 +316,8 @@ const restoredOf = (row: BinRow, itemId: string, note: string | null, extra: Par
 async function restoreGroupWithCalendar(userId: string, group: readonly BinRow[]) {
   const restored = await withTransaction(async cx => {
     await lockBinOwner(cx, userId);
+    const refusal = await calendarAdmission(userId, cx);
+    if (refusal) throw refusal;
     const locked = await lockItems(cx, userId, group);
     const calendarRow = locked.find(row => row.item_type === 'calendar');
     if (!calendarRow) throw conflict('BIN_ITEM_CHANGED', 'These items changed in the meantime. Try again.');
@@ -353,6 +355,8 @@ async function chosenCalendar(userId: string, calendarId: string) {
 async function restoreLocalItem(userId: string, row: BinRow, note?: string | null, chosenList?: string) {
   const answer = await withTransaction(async cx => {
     await lockBinOwner(cx, userId);
+    const refusal = await calendarAdmission(userId, cx);
+    if (refusal) throw refusal;
     // A synced item whose re-creation at a server began meanwhile goes there, not here.
     if (await restoreJournal(cx, userId, row.id, { lock: true })) throw restorePending();
     const [locked] = await lockItems(cx, userId, [row]);
@@ -462,6 +466,12 @@ async function restoreSyncedItem(userId: string, row: BinRow, choice: RestoreCho
   const calendarId = target.calendar.id;
   const plan = await withTransaction(async cx => {
     await lockBinOwner(cx, userId);
+    // The login was a wait: the gates again, under the person's lock.
+    const refusal = await calendarAdmission(userId, cx);
+    if (refusal) throw refusal;
+    const [[account]] = await cx.execute<RowDataPacket[]>('SELECT is_active FROM calendar_accounts WHERE id = ? AND user_id = ?', [target.account.id, userId]);
+    if (!account) throw listGone();
+    if (!Number(account.is_active)) throw conflict('CALENDAR_SYNC_PAUSED', 'Sync is paused for this calendar account. Resume it to restore this item to its calendar.');
     const journal = await restoreJournal(cx, userId, row.id, { lock: true });
     const [locked] = await lockItems(cx, userId, [row]);
     if (!locked) throw notFound('BIN_ITEM_NOT_FOUND', 'Not in the bin');
@@ -501,6 +511,9 @@ const restorePending = () => conflict('BIN_RESTORE_PENDING', 'This item is being
 async function finishJournal(userId: string, row: BinRow, moveId: string, calendarId: string, uid: string) {
   const state = await calendarMove.runBinRestore(moveId).catch(serverRefusal);
   if (state === 'pending') {
+    // Held back by a gate (module off, a calendar restore): it says so; the journal waits.
+    const refusal = await calendarAdmission(userId);
+    if (refusal) throw refusal;
     return restoredOf(row, row.id, 'Being created on its calendar server again; it shows there once the server confirms.', { pending: true });
   }
   const [[still]] = await db.execute<RowDataPacket[]>('SELECT id FROM bin_items WHERE id = ?', [row.id]);

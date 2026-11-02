@@ -84,17 +84,23 @@ const heldEventLocks = new AsyncLocalStorage<{ key: string; userId: string; held
 // A change that waited may find the Calendar module turned off or a calendar
 // restore begun meanwhile: the request boundary's checks, made again.
 async function assertStillAdmitted(userId: string) {
-  if (!await isModuleEnabled(userId, 'calendar')) throw forbidden('MODULE_DISABLED', 'This module is disabled. Enable it in Settings.');
-  await assertNoCalendarRestore(userId);
+  const refusal = await calendarAdmission(userId);
+  if (refusal) throw refusal;
 }
+
+/** Why the person's calendar work may not go on now (module off, a calendar restore), or null; read on executor. */
+async function calendarAdmission(userId: string, executor: SqlExecutor = db) {
+  if (!await isModuleEnabled(userId, 'calendar', executor)) return forbidden('MODULE_DISABLED', 'This module is disabled. Enable it in Settings.');
+  if ((await getActiveRestoreSectionsByUser(executor, userId)).get(userId)?.has('calendar')) return restoreRunning();
+  return null;
+}
+const restoreRunning = () => conflict('RESTORE_IN_PROGRESS', 'Restore in progress for calendar. This section is temporarily read-only.');
 
 // Read on executor: inside a fenced write, the write's own connection. A
 // second connection taken from the pool while the write holds one would let
 // as many writes as the pool has connections wait for each other for ever.
 async function assertNoCalendarRestore(userId: string, executor: SqlExecutor = db) {
-  if ((await getActiveRestoreSectionsByUser(executor, userId)).get(userId)?.has('calendar')) {
-    throw conflict('RESTORE_IN_PROGRESS', 'Restore in progress for calendar. This section is temporarily read-only.');
-  }
+  if ((await getActiveRestoreSectionsByUser(executor, userId)).get(userId)?.has('calendar')) throw restoreRunning();
 }
 
 /**
@@ -160,5 +166,5 @@ async function tryEventLock<T>(userId: string, eventId: string, fn: () => Promis
   return underEventLock(userId, eventId, fn, { waitSeconds: 0, request: false });
 }
 
-export { attachMoveState, refuseWhileMoving, refuseIfMoved, writebackIdentity, movePending, eventChanged, withEventLock, tryEventLock, fenceTaskLocks, fencedWrite };
+export { attachMoveState, refuseWhileMoving, refuseIfMoved, writebackIdentity, movePending, eventChanged, withEventLock, tryEventLock, fenceTaskLocks, fencedWrite, calendarAdmission };
 export type { WritebackIdentity };

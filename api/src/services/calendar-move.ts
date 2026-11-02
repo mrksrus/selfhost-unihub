@@ -12,7 +12,7 @@ import { canRunModule } from './access-policy';
 import { publishCalendarChanged } from './realtime';
 import { identityOf, rekey } from './task-order';
 import { getCalendarEventWithSubtasks } from './calendar';
-import { movePending, withEventLock, tryEventLock, fenceTaskLocks } from './calendar-move-state';
+import { movePending, withEventLock, tryEventLock, fenceTaskLocks, calendarAdmission } from './calendar-move-state';
 import * as caldav from './caldav';
 import * as ical from './calendar-ical';
 import * as calendarSync from './calendar-sync';
@@ -216,6 +216,25 @@ async function postpone(move: MoveRow, error: unknown) {
     [attempts, describe(error), RETRY_SECONDS[attempts - 1] ?? LATER_SECONDS, move.id]);
 }
 
+/**
+ * Whether a move's attempt may go on now: the Calendar module, a calendar
+ * restore of the person, and its target account (still there, not paused),
+ * read again after every wait (a login, a lock, the server) before its
+ * server is contacted, and inside the commit's transaction before anything
+ * local changes. The error says why not; a move not admitted waits, and an
+ * unknown outcome stays in its journal.
+ */
+async function moveAdmission(move: MoveRow, executor: SqlExecutor = db) {
+  const refusal = await calendarAdmission(move.user_id, executor);
+  if (refusal) return refusal;
+  const [[target]] = move.target_calendar_id ? await executor.execute<RowDataPacket[]>(
+    `SELECT a.is_active FROM calendar_calendars c JOIN calendar_accounts a ON a.id = c.account_id AND a.user_id = c.user_id
+     WHERE c.id = ? AND c.user_id = ?`, [move.target_calendar_id, move.user_id]) : [[]];
+  if (!target) return notFound('CALENDAR_NOT_FOUND', 'The calendar this item was being moved to is gone.');
+  if (!Number(target.is_active)) return conflict('CALENDAR_SYNC_PAUSED', 'Sync is paused for this calendar account, so changes cannot be saved to it.');
+  return null;
+}
+
 /** Step 3: the new copy at the target server, or null while it waits. */
 async function createCopy(move: MoveRow): Promise<NewCopy | null> {
   const target = move.target_calendar_id ? await calendarSync.loadCalendarContext(move.user_id, move.target_calendar_id) : null;
@@ -232,19 +251,24 @@ async function createCopy(move: MoveRow): Promise<NewCopy | null> {
   let attempt: Attempt;
   try {
     attempt = await calendarSync.withWriteContext(target, async (ctx): Promise<Attempt> => {
+      // The login was a wait: the gates are read again before the server is contacted.
+      const refusal = await moveAdmission(move);
+      if (refusal) throw refusal;
       const url = calendarSync.objectUrl(ctx.account, { href: move.target_href! });
       const copy = (etag: string | null, ics: string) => ({ copy: { account: ctx.account, calendar: ctx.calendar, timeZone: ctx.timeZone, object: { href: move.target_href!, etag, ics } } });
       const look = async (otherwise: Attempt): Promise<Attempt> => {
+        const blocked = await moveAdmission(move);
+        if (blocked) return { wait: blocked };
         const found = await caldav.getCalendarObject({ url, ...ctx.login });
         if (found && ical.objectUid(found.ics) === move.target_uid) return copy(found.etag, found.ics);
         if (found) return { refused: conflict('CALDAV_CONFLICT', 'Another item already uses this address on the calendar server. Nothing was moved.') };
         return otherwise;
       };
-      // A calendar that became read-only cannot take the copy, but an earlier
-      // attempt may have stored it: looking needs no write permission, so the
-      // outcome is settled now (adopted when there, ended when absent) instead
-      // of waiting for a permission that may never come back. A paused
-      // account is not contacted: it waits.
+      // A calendar that became read-only cannot take the copy, but an
+      // earlier attempt may have stored it: looking needs no write
+      // permission, so the outcome is settled now (adopted when there, ended
+      // when absent) instead of waiting for a permission that may never come
+      // back. (A paused account was refused above, before any contact.)
       let blocked: unknown = null;
       try { calendarSync.assertWritable(target); } catch (error) { blocked = error; }
       if (blocked) {
@@ -351,7 +375,9 @@ async function advance(moveId: string): Promise<MoveOutcome> {
       // A restore from the bin: the person first, then the journal and the bin row (bin.ts lockBinOwner).
       if (move!.bin_item_id) await (require('./bin') as typeof import('./bin')).lockBinOwner(connection, move!.user_id);
       const locked = await loadMove(connection, moveId, true);
-      return !!locked && commitMove(connection, locked, copy);
+      // The server was a wait: nothing local changes while the gates say no; the journal stays.
+      if (!locked || await moveAdmission(locked, connection)) return false;
+      return commitMove(connection, locked, copy);
     });
     if (committed) publishCalendarChanged(move.user_id, null, 'local');
     move = await loadMove(db, moveId);

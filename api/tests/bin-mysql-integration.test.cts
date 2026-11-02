@@ -840,6 +840,58 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     assert.equal(server.copiesOf('Uncounted restore').length, 1);
   });
 
+  await t.test('a paused account is not contacted while a restore waits for it, also when its calendar became read-only', async () => {
+    const item = await pendingRestore('Paused restore', 'store-then-lose');
+    await setReadOnly(work, true);
+    await call(alex, 'PUT', `/api/calendar/accounts/${accountId}`, { is_active: false });
+    const looks = countLooks();
+    try {
+      assert.equal((await restore(item.id)).restored[0].pending, true, 'the request waits');
+      await pool.execute('UPDATE calendar_event_moves SET next_attempt_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE bin_item_id = ?', [item.id]);
+      await calendarMove.resumeDueMoves();
+      assert.equal(looks.count, 0, 'neither the request nor the worker asked the paused account');
+      assert.equal(await journalOf(item.id), 1, 'the outcome stays pinned');
+      assert.equal((await rowsTitled('Paused restore')).length, 0);
+    } finally {
+      looks.stop();
+      await call(alex, 'PUT', `/api/calendar/accounts/${accountId}`, { is_active: true });
+      await setReadOnly(work, false);
+    }
+    assert.equal((await restore(item.id)).restored[0].pending, undefined, 'resumed: its copy adopted');
+    assert.deepEqual((await rowsTitled('Paused restore')).map(row => row.calendar_id), [work]);
+  });
+
+  for (const kind of ['module', 'restore'] as const) {
+    await t.test(`${kind === 'module' ? 'Calendar switched off' : 'a calendar restore begun'} while a restore waits for its login: the server is not asked, nothing is adopted`, async () => {
+      const title = `Gated ${kind}`;
+      const item = await pendingRestore(title, 'store-then-lose');
+      await setReadOnly(work, true);
+      const [held, go] = [gate(), gate()];
+      const lock = crypto.randomUUID();
+      hooks.once({ match: /SELECT ca\.provider, ca\.provider_config, ca\.account_email/, after: async () => { held.open(); await within(go.reached, 10000); } });
+      const looks = countLooks();
+      try {
+        const restoring = alex.request('POST', `/api/bin/${item.id}/restore`);
+        assert.ok((await within(held.reached, 10000)).done, 'the restore looks up its login');
+        if (kind === 'module') await call(alex, 'PUT', '/api/modules', { modules: { calendar: { enabled: false } } });
+        else await pool.execute("INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', '[\"calendar\"]')", [lock, users.alex]);
+        go.open();
+        const reply = await restoring;
+        assert.equal(looks.count, 0, 'no contact after the gate closed');
+        assert.equal(reply.body.code, kind === 'module' ? 'MODULE_DISABLED' : 'RESTORE_IN_PROGRESS');
+        assert.equal(await journalOf(item.id), 1, 'the outcome stays pinned');
+        assert.equal((await rowsTitled(title)).length, 0, 'nothing written meanwhile');
+      } finally {
+        go.open(); hooks.clear(); looks.stop();
+        if (kind === 'module') await call(alex, 'PUT', '/api/modules', { modules: { calendar: { enabled: true } } });
+        else await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [lock]);
+        await setReadOnly(work, false);
+      }
+      assert.equal((await restore(item.id)).restored[0].pending, undefined, 'the gate open again: its copy adopted');
+      assert.deepEqual((await rowsTitled(title)).map(row => row.calendar_id), [work]);
+    });
+  }
+
   await t.test('UIDs 0.27 stored trimmed: upgrade step 25 gives them back the server\'s spaces, so the bin and the hand order still find the task', async context => {
     const { runMigrations } = require('../dist/src/services/database-migrations') as typeof import('../src/services/database-migrations');
     const { MIGRATIONS } = require('../dist/src/services/database') as typeof import('../src/services/database');
@@ -986,5 +1038,31 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     const localItem = (await bin(alex, 'calendar')).find(entry => entry.title === 'List only');
     assert.equal((await call(alex, 'POST', `/api/bin/${localItem.id}/restore`, { calendar_id: chosen }, 409)).code, 'BIN_RESTORE_NEEDS_LIST');
     await restore(localItem.id);
+  });
+
+  await t.test('an account removed while a restore waits for its login is not contacted, and the item stays in the bin', async () => {
+    const [[{ id: account }]] = await pool.query<RowDataPacket[]>("SELECT id FROM calendar_accounts WHERE user_id = ? AND provider = 'caldav' LIMIT 1", [users.alex]);
+    const [[{ id: calendarOf }]] = await pool.query<RowDataPacket[]>("SELECT id FROM calendar_calendars WHERE account_id = ? AND name = 'Work'", [account]);
+    clock += 3600000;
+    server.store(`${WORK}removed-during-login.ics`, eventIcs(`${crypto.randomUUID()}@example.test`, 'Removed during login', clock));
+    await calendarSync.syncCalendarAccount(account, { userId: users.alex, full: true });
+    const [row] = await rowsTitled('Removed during login');
+    await call(alex, 'DELETE', `/api/calendar/events/${row.id}`);
+    const item = (await bin(alex, 'calendar')).find(entry => entry.title === 'Removed during login');
+    server.faults.put = () => 'store-then-lose';
+    try { assert.equal((await restore(item.id)).restored[0].pending, true); } finally { delete server.faults.put; }
+    await setReadOnly(calendarOf, true);
+    const [held, go] = [gate(), gate()];
+    hooks.once({ match: /SELECT ca\.provider, ca\.provider_config, ca\.account_email/, after: async () => { held.open(); await within(go.reached, 10000); } });
+    const looks = countLooks();
+    try {
+      const restoring = alex.request('POST', `/api/bin/${item.id}/restore`);
+      assert.ok((await within(held.reached, 10000)).done);
+      await call(alex, 'DELETE', `/api/calendar/accounts/${account}`);
+      go.open();
+      await restoring;
+      assert.equal(looks.count, 0, 'the removed account was not contacted');
+    } finally { go.open(); hooks.clear(); looks.stop(); }
+    assert.ok((await bin(alex, 'calendar')).some(entry => entry.id === item.id), 'it stays in the bin');
   });
 });
