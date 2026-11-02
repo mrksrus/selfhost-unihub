@@ -47,8 +47,10 @@ which takes longer on large calendars (see
   it was in the backup, Keep existing leaves it where you moved it.
 - **Merging Gmail copies of one message keeps what the removed copy held.**
   When a confirmed Sync account merges copies of one Gmail message, the
-  removed copy's snooze, filing history, tasks and notifications now go to
-  the kept message. Copies with two different snoozes stay apart. A kept
+  removed copy's snooze, filing history and tasks now go to the kept
+  message. Copies with two different snoozes stay apart, and copies with a
+  reminder or notification still pending merge once it has been delivered,
+  so none is lost or sent twice. A kept
   copy whose content never loaded is downloaded. A task made from a copy
   while it is merged away is refused instead of linking a missing email.
   The confirmation counts only the copies the merge actually removes.

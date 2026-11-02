@@ -69,11 +69,15 @@ module:
   operation history and mapping move to the kept item, and tasks made from a
   removed copy (also those still waiting as restore overlays) name the kept
   item. A merge group needs an occurrence of that X-GM-MSGID; an identity
-  from an archive alone joins nothing. The removed copy's snooze and filing
-  history go to the kept item (copies holding different ones stay apart),
-  its notifications open the kept item, and a kept item without content
-  that no body work had picked is queued. The scan does not announce the
-  label's copy as new mail.
+  from an archive alone joins nothing. Copies with a reminder or notification
+  still pending merge after it has been delivered: while a copy is snoozed,
+  or a notice about it (an arrival, a snooze's return) has a delivery pending
+  or waits for its content, the merge keeps them apart and a later pass joins
+  them. The merge never moves or deletes a notification; a delivered one
+  stays as it was. The removed copy's returned snooze and filing history go
+  to the kept item (copies holding different ones stay apart), and a kept
+  item without content that no body work had picked is queued. The scan does
+  not announce the label's copy as new mail.
 - Without that X-GM-MSGID nothing joins the two: the backup had no Gmail
   mapping for the item, or the restored account is not Gmail by its IMAP
   host or its sync's Gmail ids, so the restore dropped the id. Both copies
