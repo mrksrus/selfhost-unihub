@@ -24,6 +24,9 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
   const recordingsRoot = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'unihub-bin-recordings-'));
   process.env.RECORDINGS_ROOT = recordingsRoot;
   t.after(() => fs.rmSync(recordingsRoot, { recursive: true, force: true }));
+  const backupsRoot = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'unihub-bin-backups-'));
+  process.env.BACKUP_ARCHIVES_ROOT = backupsRoot;
+  t.after(() => fs.rmSync(backupsRoot, { recursive: true, force: true }));
   const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
   t.after(captureLog(() => {}));
   const pool = await withTestDatabase(t);
@@ -344,6 +347,50 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     assert.ok(fs.existsSync(path.join(binFolder, `${id}.webm`)), 'a plain folder works again');
     const [item] = await bin(alex, 'recordings');
     await call(alex, 'DELETE', `/api/bin/${item.id}`);
+  });
+
+  await t.test('an instance backup copying files defers every removal; afterwards they run, and a name a row took back stays', async () => {
+    const { fileRemovalGate } = require('../dist/src/services/file-removal-gate') as typeof import('../src/services/file-removal-gate');
+    const folder = path.join(recordingsRoot, users.alex);
+    fs.mkdirSync(folder, { recursive: true });
+    const recording = async (title: string) => {
+      const id = crypto.randomUUID();
+      const file = path.join(folder, `${id}.webm`);
+      fs.writeFileSync(file, `${title} bytes`);
+      await pool.execute("INSERT INTO recordings (id, user_id, title, content_type, size_bytes, storage_path) VALUES (?, ?, ?, 'audio/webm', 10, ?)", [id, users.alex, title, file]);
+      return { id, file, binName: path.join(folder, 'bin', `${id}.webm`) };
+    };
+    const itemOf = async (title: string) => (await bin(alex, 'recordings')).find(entry => entry.title === title);
+    const back = await recording('Back again'), forGood = await recording('For good'), purged = await recording('Purged'), cleared = await recording('Cleared');
+    await call(alex, 'DELETE', `/api/recordings/${forGood.id}`);
+    await call(alex, 'DELETE', `/api/recordings/${purged.id}`);
+    await pool.execute('UPDATE bin_items SET purge_after = UTC_TIMESTAMP() - INTERVAL 1 MINUTE, deleted_at = UTC_TIMESTAMP() - INTERVAL 400 DAY WHERE user_id = ? AND item_id = ?', [users.alex, purged.id]);
+    const archive = path.join(backupsRoot, `${crypto.randomUUID()}.unihub-backup`);
+    fs.writeFileSync(archive, 'synthetic archive');
+    const jobId = crypto.randomUUID();
+    await pool.execute("INSERT INTO data_export_jobs (id, user_id, status, phase, progress, file_path) VALUES (?, ?, 'completed', 'completed', 100, ?)", [jobId, users.alex, archive]);
+
+    // The copy runs: every removal waits, the rows change as they always do.
+    const copied = fileRemovalGate.close();
+    try {
+      await call(alex, 'DELETE', `/api/recordings/${back.id}`);
+      assert.deepEqual(await call(alex, 'DELETE', `/api/bin/${(await itemOf('For good')).id}`), { deleted: 1 });
+      assert.equal((await purgeBin()).items, 1);
+      assert.equal((await call(alex, 'POST', '/api/settings/clear-recordings')).deleted, 1);
+      assert.deepEqual(await call(alex, 'DELETE', `/api/backup/jobs/${jobId}`), { deleted: true });
+      // Restored while its first name still waits for removal: the row names it again.
+      await restore((await itemOf('Back again')).id);
+      assert.equal(await count('SELECT COUNT(*) AS n FROM recordings WHERE user_id = ?', [users.alex]), 1);
+      assert.equal(await count('SELECT COUNT(*) AS n FROM data_export_jobs WHERE id = ?', [jobId]), 0);
+      for (const file of [back.file, back.binName, forGood.binName, purged.binName, cleared.file, archive]) assert.ok(fs.existsSync(file), `${file} waits for the copy`);
+    } finally { await copied(); }
+
+    // Copied: the queued removals ran, each checking again what names its file.
+    assert.equal(fs.readFileSync(back.file, 'utf8'), 'Back again bytes', 'the restored recording keeps its file');
+    assert.equal((await pool.query<RowDataPacket[]>('SELECT storage_path FROM recordings WHERE id = ?', [back.id]))[0][0].storage_path, back.file);
+    for (const file of [back.binName, forGood.binName, purged.binName, cleared.file, archive]) assert.ok(!fs.existsSync(file), `${file} is removed after the copy`);
+    await pool.execute('DELETE FROM recordings WHERE id = ?', [back.id]);
+    fs.rmSync(back.file, { force: true });
   });
 
   await t.test('deleting for good and emptying obey bin.delete; empty takes one module or all', async () => {

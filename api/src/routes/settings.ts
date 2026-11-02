@@ -11,7 +11,7 @@ import {
   normalizeSenderDomain,
 } from '../services/mail';
 import {
-  deleteRecordingFiles,
+  clearRecordings,
 } from '../services/recordings';
 import { deleteUser } from '../services/user-lifecycle';
 import { getScopedSettings, getSettings, getUserPreferences, setUserPreferences, updateSettings } from '../services/settings';
@@ -185,12 +185,8 @@ export = defineRoutes({
   } },
   'POST /api/settings/clear-recordings': { auth: 'user', module: 'recordings', restoreSection: 'recordings', destructive: ['data.clear'], handler: async (req: Request, userId: string) => {
     try {
-      const [recordings] = await db.execute<RowDataPacket[]>('SELECT storage_path FROM recordings WHERE user_id = ?', [userId]);
-      for (const row of recordings || []) {
-        await deleteRecordingFiles(row.storage_path);
-      }
-      const [result] = await db.execute<ResultSetHeader>('DELETE FROM recordings WHERE user_id = ?', [userId]);
-      return { message: `Deleted ${result.affectedRows || 0} recording(s)`, deleted: result.affectedRows || 0 };
+      const deleted = await clearRecordings(userId);
+      return { message: `Deleted ${deleted} recording(s)`, deleted };
     } catch (error) {
       console.error('Clear recordings error:', error);
       return { error: 'Failed to delete recordings', status: 500 };

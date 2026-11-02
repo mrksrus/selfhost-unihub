@@ -15,6 +15,7 @@ import type { Lease } from './named-locks';
 import type { BinKind, BinRow } from './bin';
 import type { BinRestored } from '../contracts/bin';
 import { ApiError } from '../http/errors';
+import { fileRemovalGate } from './file-removal-gate';
 
 interface RecordingRow extends RowDataPacket {
   id: string;
@@ -871,13 +872,17 @@ async function nameInUse(executor: SqlExecutor, userId: string, file: string) {
  * names it then. Called after the commit that stopped using the name, by
  * the purge, or later from a queue: the check is made at removal time, never
  * taken from the caller. A lock that stays busy leaves the name for later.
+ * While an instance backup copies files the whole removal waits for it
+ * (file-removal-gate.ts), lock and check included; the caller holds neither.
  */
 async function removeRecordingName(userId: string, recordingId: string, file: string, remove: (name: string) => Promise<unknown> = name => fs.promises.rm(name, { force: true })) {
-  await withNamedLock('recording-file', String(recordingId), async lease => {
+  await fileRemovalGate.run(() => withNamedLock('recording-file', String(recordingId), async lease => {
     if (await nameInUse(db, userId, file) || !await stillHeld(db, lease)) return;
     await remove(file);
-  }, { waitSeconds: RECORDING_FILE_WAIT_SECONDS }).catch(() => null);
+  }, { waitSeconds: RECORDING_FILE_WAIT_SECONDS }).catch(() => null));
 }
+
+const removeMp3Copies = (file: string) => Promise.all([getConvertedMp3Path(file), getLegacyConvertedMp3Path(file)].map(copy => fs.promises.rm(copy, { force: true }).catch(() => {})));
 
 async function deleteRecording(userId: string, recordingId: string) {
   const recording = await getRecordingForUser(userId, recordingId);
@@ -927,10 +932,26 @@ async function deleteRecording(userId: string, recordingId: string) {
   });
   if (!found) return { error: 'Recording not found', status: 404 };
   if (original && named) await removeRecordingName(userId, recordingId, original, deleteRecordingFiles);
-  else if (original && converted) {
-    await Promise.all([getConvertedMp3Path(original), getLegacyConvertedMp3Path(original)].map(file => fs.promises.rm(file, { force: true }).catch(() => {})));
-  }
+  else if (original && converted) await removeRecordingName(userId, recordingId, original, removeMp3Copies);
   return { deleted: true, binned: true };
+}
+
+/**
+ * Settings → Delete data → Recordings: every recording of the person for
+ * good (data.clear); the bin keeps what is in it. The rows go first, then
+ * each file as a recording's delete removes it (removeRecordingName).
+ */
+async function clearRecordings(userId: string) {
+  const removed = await withTransaction(async connection => {
+    const [rows] = await connection.execute<RowDataPacket[]>('SELECT id, storage_path FROM recordings WHERE user_id = ? FOR UPDATE', [userId]);
+    if (rows.length) await connection.execute('DELETE FROM recordings WHERE user_id = ?', [userId]);
+    return rows;
+  });
+  for (const row of removed) {
+    const file = await ownFile(userId, row.storage_path);
+    if (file) await removeRecordingName(userId, String(row.id), file, deleteRecordingFiles);
+  }
+  return removed.length;
 }
 
 async function restoreRecordingItem(userId: string, item: BinRow): Promise<BinRestored> {
@@ -1070,6 +1091,7 @@ export {
   getRecordingForUser,
   ensureRecordingMp3,
   deleteRecordingFiles,
+  clearRecordings,
   startRecordingUpload,
   getRecordingUploadStatus,
   appendRecordingUploadChunk,

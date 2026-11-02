@@ -16,6 +16,7 @@ import { controlPool } from './side-pools';
 import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
 import { resolvePolicy } from './settings';
 import { conflict, notFound } from '../http/errors';
+import { fileRemovalGate } from './file-removal-gate';
 import type { BackupContents } from '../contracts/backup';
 
 type CheckCancelled = (() => Promise<unknown>) | null;
@@ -753,11 +754,15 @@ async function deleteDataExportJob(userId: string, jobId: string | null) {
      WHERE source_export_job_id = ? AND user_id = ?`,
     [jobId, userId]
   );
-  if (job.file_path && isBackupPathUnderRoot(job.file_path)) {
-    await fs.promises.rm(path.resolve(job.file_path), { force: true }).catch(() => {});
-  }
   await db.execute('DELETE FROM data_export_jobs WHERE id = ? AND user_id = ?', [jobId, userId]);
   await pruneArchiveKeyIfUnreferenced(userId, job.backup_uuid);
+  // The row first; the file then, after an instance backup's copy when one
+  // runs (file-removal-gate.ts). Its name is the job's own, so nothing can
+  // name it again.
+  if (job.file_path && isBackupPathUnderRoot(job.file_path)) {
+    const file = path.resolve(job.file_path);
+    await fileRemovalGate.run(() => fs.promises.rm(file, { force: true }).catch(() => {}));
+  }
   return { deleted: true };
 }
 
