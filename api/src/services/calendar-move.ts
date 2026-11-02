@@ -78,7 +78,7 @@ interface MoveRow extends RowDataPacket {
 interface MoveOutcome { pending?: MoveState; sourceKept?: boolean }
 /** The new server copy of a moved event, stored or about to be. */
 interface NewCopy { account: SyncAccount; calendar: SyncCalendar; timeZone: string; object: { id?: string; href: string; etag: string | null; ics: string } }
-type Attempt = { copy: NewCopy } | { refused: unknown } | { wait: unknown };
+type Attempt = { copy: NewCopy } | { refused: unknown } | { wait: unknown } | { ended: true };
 
 const RETRY_SECONDS = [60, 300, 1800];
 const LATER_SECONDS = 3600;
@@ -235,7 +235,7 @@ async function moveAdmission(move: MoveRow, executor: SqlExecutor = db) {
   return null;
 }
 
-/** Step 3: the new copy at the target server, or null while it waits. */
+/** Step 3: the new copy at the target server, or null while it waits (or once its journal ended). */
 async function createCopy(move: MoveRow): Promise<NewCopy | null> {
   const target = move.target_calendar_id ? await calendarSync.loadCalendarContext(move.user_id, move.target_calendar_id) : null;
   if (!target) {
@@ -243,6 +243,8 @@ async function createCopy(move: MoveRow): Promise<NewCopy | null> {
     await closeMove(move.id);
     throw notFound('CALENDAR_NOT_FOUND', 'The calendar this item was being moved to is gone.');
   }
+  // Where and as whom it writes, as the context was read: compared again before the PUT.
+  const destination = (await moveDestinations(db, move.user_id)).get(move.id);
   // After about three days of failures, the outcome of the earlier attempts
   // is settled by looking: absent, the move ends and the item stays; present,
   // it is adopted. Unknown, it keeps waiting with the same UID.
@@ -279,6 +281,17 @@ async function createCopy(move: MoveRow): Promise<NewCopy | null> {
       // stop after the server stored the copy can never leave a journal
       // that claims nothing was sent.
       await db.execute('UPDATE calendar_event_moves SET attempts = GREATEST(attempts, ?) WHERE id = ?', [Number(move.attempts) + 1, move.id]);
+      // That statement waits for whoever holds the journal row (a sync, a
+      // restore): the journal and the gates are read again before sending.
+      // A journal ended meanwhile (a restore overtook it) sends nothing.
+      const current = await loadMove(db, move.id);
+      if (current?.state !== 'creating') return { ended: true };
+      const fields = ['target_calendar_id', 'target_uid', 'target_href', 'target_ics', 'bin_item_id'] as const;
+      if (fields.some(field => current[field] !== move[field]) || (await moveDestinations(db, move.user_id)).get(move.id) !== destination) {
+        return { wait: conflict('CALENDAR_MOVE_CHANGED', 'The move changed while it waited; it is tried again.') };
+      }
+      const late = await moveAdmission(current);
+      if (late) return { wait: late };
       try {
         const { etag } = await caldav.putCalendarObject({ url, ics: move.target_ics!, etag: null, ...ctx.login });
         return copy(etag, move.target_ics!);
@@ -300,6 +313,7 @@ async function createCopy(move: MoveRow): Promise<NewCopy | null> {
     attempt = { wait: error };
   }
   if ('copy' in attempt) return attempt.copy;
+  if ('ended' in attempt) return null;
   if ('refused' in attempt) {
     await closeMove(move.id);
     throw attempt.refused;
@@ -370,7 +384,8 @@ async function advance(moveId: string): Promise<MoveOutcome> {
   let move = await loadMove(db, moveId);
   if (move?.state === 'creating') {
     const copy = move.target_href ? await createCopy(move) : null;
-    if (move.target_href && !copy) return { pending: 'creating' };
+    // No copy: waiting in the journal, or ended with it.
+    if (move.target_href && !copy) return await loadMove(db, moveId) ? { pending: 'creating' } : {};
     const committed = await withTransaction(async connection => {
       // A restore from the bin: the person first, then the journal and the bin row (bin.ts lockBinOwner).
       if (move!.bin_item_id) await (require('./bin') as typeof import('./bin')).lockBinOwner(connection, move!.user_id);
