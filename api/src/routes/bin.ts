@@ -29,7 +29,8 @@ export = defineRoutes({
     } catch (error) { return failed(error, 'Failed to list the bin'); }
   } },
 
-  'POST /api/bin/restore': { ...binRoute, handler: async (_req: Request, userId: string, body: unknown) => {
+  // A list's whole group may be sent: up to 5000 ids (bin.ts parseIds).
+  'POST /api/bin/restore': { ...binRoute, body: { limit: 262144 }, handler: async (_req: Request, userId: string, body: unknown) => {
     try {
       const answer: BinRestoreResponse = await restoreFromBin(userId, body);
       return { ...answer };

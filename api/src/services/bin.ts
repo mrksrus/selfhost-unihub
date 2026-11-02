@@ -65,7 +65,10 @@ interface BinKind {
 
 const PAYLOAD_VERSION = 1;
 const LIST_MAX = 2000;
+// A restore takes up to 500 items or groups; the ids of a group's members
+// count once, so a list with all its events can be sent whole (up to 5000 ids).
 const IDS_MAX = 500;
+const IDS_SENT_MAX = 5000;
 const PURGE_BATCH = 200;
 /** The undo of a merge (0.26) is promised for 30 days, whatever the retention. */
 const MERGE_UNDO_DAYS = 30;
@@ -189,11 +192,12 @@ async function moduleGates(userId: string, executor: SqlExecutor = db) {
 
 function parseIds(input: unknown): string[] {
   const ids = (input && typeof input === 'object' && !Array.isArray(input) ? (input as { ids?: unknown }).ids : null);
-  if (!Array.isArray(ids) || !ids.length || ids.length > IDS_MAX || !ids.every(id => typeof id === 'string' && ID_PATTERN.test(id))) {
-    throw badRequest('BIN_INVALID', `Expected { ids: [...] }: up to ${IDS_MAX} bin item ids`);
+  if (!Array.isArray(ids) || !ids.length || ids.length > IDS_SENT_MAX || !ids.every(id => typeof id === 'string' && ID_PATTERN.test(id))) {
+    throw tooMany();
   }
   return [...new Set(ids as string[])];
 }
+const tooMany = () => badRequest('BIN_INVALID', `Expected { ids: [...] }: up to ${IDS_MAX} bin items or groups`);
 
 // The optional destination of a restore: calendar_id, one of the person's
 // calendars (the calendar kind checks it is theirs and can take the item).
@@ -257,7 +261,10 @@ async function restoreFromBin(userId: string, input: unknown): Promise<BinRestor
   const choice = parseChoice(input);
   const found = await ownedItems(db, userId, ids);
   const groups = new Map<string, BinRow[]>();
-  const failed: BinRestoreResponse['failed'] = ids.filter(id => !found.some(row => row.id === id)).map(id => ({ id, error: 'Not in the bin', code: 'BIN_ITEM_NOT_FOUND' }));
+  const foundIds = new Set(found.map(row => row.id));
+  const failed: BinRestoreResponse['failed'] = ids.filter(id => !foundIds.has(id)).map(id => ({ id, error: 'Not in the bin', code: 'BIN_ITEM_NOT_FOUND' }));
+  // Counted once grouped: each group, each single item, each id not found.
+  if (new Set(found.map(row => row.group_id || row.id)).size + failed.length > IDS_MAX) throw tooMany();
   const groupIds = [...new Set(found.map(row => row.group_id).filter((id): id is string => !!id))];
   const [members] = groupIds.length ? await db.execute<BinRow[]>(
     `SELECT * FROM bin_items WHERE user_id = ? AND restored_at IS NULL AND group_id IN (${placeholders(groupIds)}) ORDER BY deleted_at, id`, [userId, ...groupIds]) : [[] as BinRow[]];
