@@ -117,14 +117,17 @@ async function applyOverlayState(connection: SqlExecutor, userId: string, eventI
     if (!owned.length) emailId = null;
   }
   const replace = mode !== 'fill';
+  // A restore's Replace takes the archive's state as it is: what the archive
+  // has none of (no ToDo state, no source email, no subtasks) is cleared too.
+  const exact = mode === 'replace';
   const sets: string[] = []; const values: (string | null)[] = [];
-  if (state.todo_status && (replace || !row.todo_status)) { sets.push('todo_status = ?', 'done_at = ?'); values.push(state.todo_status, state.done_at); }
-  if ((emailId || state.source_email_json) && (replace || (!row.source_email_id && !row.source_email_json))) {
+  if (exact || (state.todo_status && (replace || !row.todo_status))) { sets.push('todo_status = ?', 'done_at = ?'); values.push(state.todo_status, state.done_at); }
+  if (exact || ((emailId || state.source_email_json) && (replace || (!row.source_email_id && !row.source_email_json)))) {
     sets.push('source_email_id = ?', 'source_email_json = ?');
     values.push(emailId, state.source_email_json ? JSON.stringify(state.source_email_json) : null);
   }
   if (sets.length) await connection.execute(`UPDATE calendar_events SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`, [...values, eventId, userId]);
-  if (state.subtasks.length) {
+  if (exact || state.subtasks.length) {
     const [[{ count }]] = await connection.execute<RowDataPacket[]>('SELECT COUNT(*) AS count FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ?', [eventId, userId]);
     if (mode === 'replace' || !Number(count)) {
       if (Number(count)) await connection.execute('DELETE FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ?', [eventId, userId]);

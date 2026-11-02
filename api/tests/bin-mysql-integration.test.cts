@@ -222,6 +222,32 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     fs.rmSync(file, { force: true });
   });
 
+  await t.test('a list with 500 events comes back whole by all its ids, from Undo and from the bin; more than 500 groups are refused', async () => {
+    const list = crypto.randomUUID();
+    await pool.execute("INSERT INTO calendar_calendars (id, user_id, account_id, name, color) VALUES (?, ?, ?, 'Large list', '#22c55e')", [list, users.alex, localAccount]);
+    const events = Array.from({ length: 500 }, (_, index) => [crypto.randomUUID(), users.alex, list, `Large ${index}`, at(clock + index * 60000), at(clock + index * 60000 + 1800000)]);
+    await pool.query('INSERT INTO calendar_events (id, user_id, calendar_id, title, start_time, end_time) VALUES ?', [events]);
+    const inList = () => count('SELECT COUNT(*) AS n FROM calendar_events WHERE calendar_id = ?', [list]);
+    // Undo: the delete's answer, every id of the group (501, over the 500 limit and the default body size).
+    const deleted = await call(alex, 'DELETE', `/api/calendar/calendars/${list}`);
+    assert.equal(deleted.bin_item_ids.length, 501);
+    const undone = await call(alex, 'POST', '/api/bin/restore', { ids: deleted.bin_item_ids });
+    assert.deepEqual([undone.failed, undone.restored.length, await inList()], [[], 501, 500]);
+    // From the bin: every listed item of the group.
+    await call(alex, 'DELETE', `/api/calendar/calendars/${list}`);
+    const items = await bin(alex, 'calendar');
+    const group = items.find(item => item.item_type === 'calendar' && item.title === 'Large list').group_id;
+    const listed = items.filter(item => item.group_id === group);
+    assert.equal(listed.length, 501);
+    const back = await call(alex, 'POST', '/api/bin/restore', { ids: listed.map(item => item.id) });
+    assert.deepEqual([back.failed, back.restored.length, await inList()], [[], 501, 500]);
+    // Unrelated ids still count one by one: 501 of them are refused, nothing looked up for a stranger.
+    const unrelated = Array.from({ length: 501 }, () => crypto.randomUUID());
+    assert.equal((await call(alex, 'POST', '/api/bin/restore', { ids: unrelated }, 400)).code, 'BIN_INVALID');
+    assert.equal((await call(blair, 'POST', '/api/bin/restore', { ids: deleted.bin_item_ids }, 400)).code, 'BIN_INVALID');
+    assert.equal(await inList(), 500);
+  });
+
   await t.test('recordings: the file waits in the bin folder, comes back, and goes with a delete for good', async () => {
     const id = crypto.randomUUID();
     const folder = path.join(recordingsRoot, users.alex);

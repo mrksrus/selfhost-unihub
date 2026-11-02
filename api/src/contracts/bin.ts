@@ -39,7 +39,8 @@ export interface BinListResponse {
 
 /**
  * POST /api/bin/restore; POST /api/bin/:id/restore takes the same without ids
- * (or no body). A group is restored as a unit.
+ * (or no body). A group is restored as a unit. Up to 500 items or groups,
+ * the ids of one group's members counting once (up to 5000 ids in all).
  */
 export interface BinRestoreRequest {
   ids: string[];

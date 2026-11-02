@@ -212,6 +212,14 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     const operation = uuid();
     await pool.execute<ResultSetHeader>(`INSERT INTO mail_writebacks (id,user_id,mail_account_id,email_id,action,target_value,base_value,remote_folder,remote_uid,remote_uidvalidity,status,state)
       VALUES (?,?,?,?,'read','1','0','Work',7,9,'done','confirmed')`, [operation, userId, accountId, copy]);
+    // A task made from the copy the merge removes, deleted into the bin.
+    const list = uuid(), listAccount = uuid(), binnedTask = uuid();
+    await pool.execute("INSERT INTO calendar_accounts (id,user_id,provider,display_name) VALUES (?,?,'local','UniHub')", [listAccount, userId]);
+    await pool.execute("INSERT INTO calendar_calendars (id,user_id,account_id,name) VALUES (?,?,?,'Gmail tasks')", [list, userId, listAccount]);
+    await pool.execute(`INSERT INTO calendar_events (id,user_id,calendar_id,title,start_time,end_time,is_todo_only,source_email_id,source_email_json)
+      VALUES (?,?,?,'Reply to the label copy','2030-01-01 10:00:00','2030-01-01 11:00:00',TRUE,?,?)`, [binnedTask, userId, list, copy, JSON.stringify({ subject: 'Labelled mail' })]);
+    await (require('../dist/src/services/transactions') as typeof import('../src/services/transactions'))
+      .withTransaction(cx => (require('../dist/src/services/bin-calendar') as typeof import('../src/services/bin-calendar')).binLocalEvents(cx, userId, [binnedTask]));
     const files = await storeFiles(copy);
     assert.equal(((await rows("SELECT source_id FROM mail_engine_quarantine WHERE mail_account_id = ? AND reason = 'gmail_identity_conflict'", [accountId]))).length, 1);
     await scan(accountId, '[Gmail]/All Mail', 'recent');
@@ -234,6 +242,12 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     assert.equal(((await rows("SELECT source_id FROM mail_engine_quarantine WHERE mail_account_id = ? AND reason = 'gmail_identity_conflict'", [accountId]))).length, 0);
     assert.equal(await exists(files.raw), false);
     assert.equal(await exists(files.attachment), false);
+    // The binned task names the kept copy, and comes back from the bin linked to it.
+    const binned = await one("SELECT id, payload FROM bin_items WHERE user_id = ? AND item_id = ?", [userId, binnedTask]);
+    assert.equal(JSON.parse(binned.payload).event.source_email_id, keeper, 'the bin follows the merge');
+    const bin = require('../dist/src/services/bin') as typeof import('../src/services/bin');
+    assert.deepEqual((await bin.restoreFromBin(userId, { ids: [binned.id] })).failed, []);
+    assert.equal((await one('SELECT source_email_id FROM calendar_events WHERE id = ?', [binnedTask])).source_email_id, keeper);
 
     // Archived in Gmail: removed from INBOX and Work, still in All Mail.
     provider.get('INBOX').items.delete(5); provider.get('Work').items.delete(7);

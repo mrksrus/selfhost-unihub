@@ -17,7 +17,16 @@ item at its server again. Synced UIDs that 0.27 stored with their surrounding
 spaces cut take the server's own back, from each object's stored calendar
 data. Modification dates are kept. The first start takes longer on large
 calendars: about 17 seconds for 100,000 events, during which the server does
-not answer yet.
+not answer yet. Where nearly every synced task's UID needs that repair, it
+takes minutes per 100,000 objects instead (about 13 in a synthetic
+benchmark). Docker then marks the container unhealthy after its 360-second
+start period, which restarts nothing by itself. **Where autoheal, Swarm or
+another controller restarts unhealthy containers, suspend that for the
+upgrade, or give the container a start grace longer than the pass (30
+minutes for the benchmark's 13):** a stop during the pass rolls it back and
+the next start runs it again, so with each restart it never finishes. See
+[Data recovery](DATA_RECOVERY.md#backup-versions-and-restore-behavior) for the
+details.
 
 Going back to 0.27.x means restoring that backup: 0.27.x does not know step
 25 and refuses to start ("Database upgrade history is unknown or out of

@@ -1124,7 +1124,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
           if (!scopedBackup.import_sections.includes(section) || accountOnly.has(section)) continue;
           await checkRestoreCancelled();
           const outcome = await restoreBinItems(connection, { userId, section, items: binItems, exportedAt: Number.isNaN(exportedAt.getTime()) ? new Date() : exportedAt,
-            calendarIds: calendarIdMap, recordingFiles });
+            calendarIds: calendarIdMap, recordingFiles, emailIds: emailIdMap });
           restoredBin += outcome.restored;
           const skipped = outcome.skipped.filter(item => item.reason !== 'not an item of this section');
           for (const item of skipped) if (recordingFiles.has(item.id)) unusedBinFiles.push(recordingFiles.get(item.id)!);
