@@ -2,7 +2,7 @@
 ARG UNIHUB_ANDROID=1
 
 # ── Stage 1: Build the React frontend ──────────────────────────────
-FROM node:26.12.1-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS frontend-builder
+FROM node:26.13.0-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94 AS frontend-builder
 
 WORKDIR /build
 
@@ -16,7 +16,7 @@ RUN node scripts/collect-frontend-notices.mts /build/frontend-dependency-notices
 # ── Stage 2: Compile the API ───────────────────────────────────────
 # The compiler is a development dependency; the production image below installs
 # only runtime dependencies and copies the compiled CommonJS tree.
-FROM node:26.12.1-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS api-builder
+FROM node:26.13.0-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94 AS api-builder
 WORKDIR /build/api
 COPY api/package*.json ./
 RUN npm ci
@@ -55,13 +55,13 @@ ARG UNIHUB_ANDROID_SIGNER=none
 RUN --mount=type=secret,id=android_keystore --mount=type=secret,id=android_keystore_password \
     bash android/scripts/build-apk.sh /out
 
-FROM --platform=$BUILDPLATFORM node:26.12.1-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS android-0
+FROM --platform=$BUILDPLATFORM node:26.13.0-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94 AS android-0
 RUN mkdir /out
 
 FROM android-${UNIHUB_ANDROID} AS android-app
 
 # ── Stage 4: Production image (Nginx + Node.js API) ───────────────
-FROM node:26.12.1-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797
+FROM node:26.13.0-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94
 
 # Install runtime services plus ffmpeg for recording conversion and temporary build deps for native node modules
 RUN apk add --no-cache nginx wget netcat-openbsd mariadb-client ffmpeg \
