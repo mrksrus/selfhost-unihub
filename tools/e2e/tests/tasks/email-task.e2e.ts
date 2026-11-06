@@ -68,3 +68,38 @@ test('[23-07 0-04 B-25] a message opened from its task settles and stays unread 
   await expect(screen.getByRole('button', 'Mark read')).toBeVisible();
   expect(readCommands.slice(before), 'one unread command, not unread then read').toEqual([expect.stringContaining('false')]);
 });
+
+// B-38: the Add task dialog keeps a long subject inside its width. The dialog never
+// scrolls sideways (also not when the title takes focus), and Cancel and Add task
+// stay inside it, on desktop and on a phone.
+test('[B-38] the Add task dialog fits a long subject on desktop and phone', { session: 'admin' }, async ({ app, screen, browser }) => {
+  await onlyOn(browser, 'desktop', 'phone');
+  const subject = `Long subject ${runId()}: quarterly planning notes for the platform, infrastructure and documentation working groups, with the revised schedule and the follow-up actions`;
+  await sendMail({ from: `Sam Sender <${outside.sam}>`, to: [mailbox], subject, text: 'A message whose subject is longer than the dialog.' });
+  await app.open('/mail');
+  await openMessage(screen, subject, mailbox);
+  await screen.getByRole('button', 'Add task').tap();
+  const dialog = screen.getByRole('dialog', 'Add task');
+  await expect(dialog.getByText(subject)).toBeVisible();
+  await expect(dialog.getByLabel('Title', { exact: true })).toHaveValue(subject);
+
+  const geometry = await browser.evaluate(() => {
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-state="open"]')!;
+    const box = dialog.getBoundingClientRect();
+    const actions = [...dialog.querySelectorAll('button')]
+      .filter(button => /^(Cancel|Add task)$/.test(button.textContent?.trim() ?? ''))
+      .map(button => ({ text: button.textContent?.trim(), ...button.getBoundingClientRect().toJSON() }));
+    return { scrollWidth: dialog.scrollWidth, clientWidth: dialog.clientWidth, scrollLeft: dialog.scrollLeft, left: box.left, right: box.right, screen: window.innerWidth, page: document.documentElement.scrollWidth, actions };
+  });
+  expect(geometry.scrollWidth, 'the dialog has no sideways overflow').toBeLessThanOrEqual(geometry.clientWidth);
+  expect(geometry.scrollLeft, 'focusing the title did not scroll the dialog sideways').toBe(0);
+  expect(geometry.right, 'the dialog is within the screen').toBeLessThanOrEqual(geometry.screen);
+  expect(geometry.page, 'the page has no sideways scrolling').toBeLessThanOrEqual(geometry.screen);
+  expect(geometry.actions.map(action => action.text), 'both footer actions are in the dialog').toEqual(['Cancel', 'Add task']);
+  for (const action of geometry.actions) {
+    expect(action.left, `${action.text} starts inside the dialog`).toBeGreaterThanOrEqual(geometry.left);
+    expect(action.right, `${action.text} ends inside the dialog`).toBeLessThanOrEqual(geometry.right);
+  }
+  await dialog.getByRole('button', 'Cancel').tap();
+  await expect(dialog).toBeHidden();
+});
