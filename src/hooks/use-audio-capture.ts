@@ -272,10 +272,12 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
     const holds: (() => void)[] = [];
     let disposed = false;
     let committed = false;
-    const hold = (release: () => void) => { if (disposed) release(); else holds.push(release); };
+    // One release that throws must not keep the others (the microphone above all) held.
+    const letGo = (release: () => void) => { try { release(); } catch { /* the rest still run */ } };
+    const hold = (release: () => void) => { if (disposed) letGo(release); else holds.push(release); };
     const dispose = () => {
       disposed = true;
-      holds.splice(0).forEach((release) => release());
+      holds.splice(0).forEach(letGo);
     };
     // Cancelled: nothing of this attempt may reach the refs any more.
     const cancelled = () => {
