@@ -475,6 +475,12 @@ async function restoreSyncedItem(userId: string, row: BinRow, choice: RestoreCho
     const journal = await restoreJournal(cx, userId, row.id, { lock: true });
     const [locked] = await lockItems(cx, userId, [row]);
     if (!locked) throw notFound('BIN_ITEM_NOT_FOUND', 'Not in the bin');
+    // The item as it is now, not as read before the login: a Gmail merge
+    // may have pointed its source emails at the kept copy meanwhile
+    // (bin.ts redirectBinEmails). Where it is created stays as decided.
+    const current = parsePayload<SyncedPayload>(locked);
+    if (!current?.event || current.object?.uid !== uid || current.object?.href !== payload.object.href || current.object?.ics !== payload.object.ics
+      || (current.calendar?.id ?? null) !== (payload.calendar?.id ?? null)) throw conflict('BIN_ITEM_CHANGED', 'This item changed in the meantime. Try again.');
     // Another request journalled it meanwhile: it goes where that one sends it.
     if (journal) {
       if (journal.calendarId !== calendarId && choice.calendarId) throw restorePending();
@@ -483,13 +489,13 @@ async function restoreSyncedItem(userId: string, row: BinRow, choice: RestoreCho
     const [held] = await cx.execute<RowDataPacket[]>(`SELECT id FROM calendar_remote_objects WHERE calendar_id = ? AND user_id = ? AND uid = ? ${UID_EXACT} LIMIT 1`, [calendarId, userId, uid]);
     if (held.length) {
       // Back on the server already (another app, an earlier attempt): it gets UniHub's own details.
-      await addOverlays(cx, userId, payload, calendarId, uid);
+      await addOverlays(cx, userId, current, calendarId, uid);
       await applyOverlaysToLiveRows(cx, userId, { calendarIds: [calendarId], uid });
-      await restoreRemoteRanks(cx, userId, payload.task_order, calendarId, uid);
+      await restoreRemoteRanks(cx, userId, current.task_order, calendarId, uid);
       await dropItems(cx, userId, [row.id]);
       return { adopted: true };
     }
-    return { moveId: await calendarMove.journalBinRestore(cx, userId, row.id, { calendarId, uid, href: copyHref(target, payload.object.href, uid), ics: payload.object.ics }), calendarId };
+    return { moveId: await calendarMove.journalBinRestore(cx, userId, row.id, { calendarId, uid, href: copyHref(target, current.object.href, uid), ics: current.object.ics }), calendarId };
   });
   if ('adopted' in plan) {
     publishCalendarChanged(userId, target.account.id, 'local');
