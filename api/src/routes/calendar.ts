@@ -85,6 +85,7 @@ const taskOrder = require('../services/task-order') as typeof import('../service
 const { attachMoveState, movePending, eventChanged, writebackIdentity, withEventLock, fenceTaskLocks, fencedWrite } = require('../services/calendar-move-state') as typeof import('../services/calendar-move-state');
 const calendarSync = require('../services/calendar-sync') as typeof import('../services/calendar-sync');
 const calendarMove = require('../services/calendar-move') as typeof import('../services/calendar-move');
+const binCalendar = require('../services/bin-calendar') as typeof import('../services/bin-calendar');
 const calendarAccounts = require('../services/calendar-accounts') as typeof import('../services/calendar-accounts');
 
 const has = (body: Record<string, unknown>, key: string) => Object.prototype.hasOwnProperty.call(body, key);
@@ -512,18 +513,12 @@ export = {
         return { error: 'Cannot delete the last calendar in this account. Delete the account instead.', status: 400 };
       }
 
-      const [eventsCountRows] = await db.execute<CountRow[]>(
-        'SELECT COUNT(*) AS count FROM calendar_events WHERE user_id = ? AND calendar_id = ?',
-        [userId, id]
-      );
-      const eventsCount = Number(eventsCountRows[0]?.count || 0);
-      // Events reference their calendar with ON DELETE SET NULL; remove them first.
-      await db.execute('DELETE FROM calendar_events WHERE calendar_id = ? AND user_id = ?', [id, userId]);
-      await db.execute('DELETE FROM calendar_calendars WHERE id = ? AND user_id = ?', [id, userId]);
-
+      // The list and its events go to the bin together (bin-calendar.ts).
+      const { deletedEvents, binItemIds } = await binCalendar.deleteCalendarToBin(userId, id);
       return {
-        message: `Calendar deleted. ${eventsCount} linked event(s) were removed.`,
-        deleted_events: eventsCount,
+        message: `Calendar moved to the bin with its ${deletedEvents} event(s).`,
+        deleted_events: deletedEvents,
+        bin_item_ids: binItemIds,
       };
     } catch (error) {
       console.error('Delete calendar error:', error);
@@ -648,6 +643,13 @@ export = {
         try {
           await connection.beginTransaction();
           await fenceTaskLocks(connection);
+          // The email stays for the insert: a Gmail merge removing that copy
+          // waits and then names the kept one in this task, or it has
+          // removed it already (mail-sync-policy.ts).
+          if (sourceEmail) {
+            const [still] = await connection.execute<RowDataPacket[]>('SELECT id FROM emails WHERE id = ? AND user_id = ? LOCK IN SHARE MODE', [String(source_email_id), userId]);
+            if (!still.length) { await connection.rollback(); return { error: 'Email not found', status: 404 }; }
+          }
           await connection.execute(
             `INSERT INTO calendar_events
               (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only,
@@ -815,6 +817,7 @@ export = {
       }
       // The link to the email the task came from: null removes it (and the
       // kept summary); an email id links again, if the email is still here.
+      let relink: { id: string; summary: string } | null = null;
       if (Object.prototype.hasOwnProperty.call(body, 'source_email_id')) {
         if (!body.source_email_id) {
           updates.push('source_email_id = NULL', 'source_email_json = NULL');
@@ -823,8 +826,8 @@ export = {
           if (refusal) return refusal;
           const sourceEmail = await snapshotSourceEmail(userId, body.source_email_id);
           if (!sourceEmail) return { error: 'Email not found', status: 404 };
-          updates.push('source_email_id = ?', 'source_email_json = ?');
-          params.push(String(body.source_email_id), JSON.stringify(sourceEmail));
+          // Written with the task's row, after the email is locked again (applyLocalEventUpdate).
+          relink = { id: String(body.source_email_id), summary: JSON.stringify(sourceEmail) };
         }
       }
 
@@ -855,7 +858,7 @@ export = {
       const startedMove = has(body, 'calendar_id') && !!body.calendar_id && body.calendar_id !== currentEvent.calendar_id;
       const fieldsOfMove = !startedMove && ['title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'reminders', 'reminder_minutes', 'is_todo_only', 'recurrence', 'calendar_id'].some(key => has(body, key));
       const identity = startedMove ? null : { ...decidedFor, objectId: typeof writeback.objectId === 'string' ? writeback.objectId : decidedFor.objectId };
-      let updatedEvent = await applyLocalEventUpdate(userId, id, { sets: updates, params }, body.attendees, { fieldsOfMove, identity });
+      let updatedEvent = await applyLocalEventUpdate(userId, id, { sets: updates, params }, body.attendees, { fieldsOfMove, identity, sourceEmail: relink });
       if (dateChanged) {
         await taskOrder.clearRank(db, userId, id, orderIdentity);
         if (updatedEvent) updatedEvent = await getCalendarEventWithSubtasks(userId, id);
@@ -1198,16 +1201,18 @@ export = {
       const id = getCalendarEventIdFromReq(req)!;
       if (!id) return { error: 'Invalid event id', status: 400 };
       const [events] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
-      if (!events.length) return { message: 'Event deleted' };
+      if (!events.length) return { message: 'Event deleted', bin_item_ids: [] };
       const scope = new URL(req.url, 'http://localhost').searchParams.get('scope');
+      // To the bin; a synced one is deleted at its server first, and a
+      // refusal there leaves it as it is (bin-calendar.ts).
       try {
         await calendarMove.assertNotMoving(userId, id);
-        await calendarSync.pushEventDelete({ userId, event: events[0], scope: scope === 'series' ? 'series' : 'occurrence' });
       } catch (error) {
         return calendarSync.calendarErrorResponse(error, 'Could not delete the event on the calendar server');
       }
-      await fencedWrite(connection => connection.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]));
-      return { message: 'Event deleted' };
+      const outcome = await binCalendar.deleteEventToBin(userId, events[0], scope === 'series' ? 'series' : 'occurrence');
+      if ('refused' in outcome) return outcome.refused;
+      return { message: outcome.binned ? 'Event moved to the bin' : 'Event deleted', bin_item_ids: outcome.binned ? [outcome.binned] : [] };
     } catch (error) {
       console.error('Delete event error:', error);
       return clientError(error, 'Failed to delete event');

@@ -2,6 +2,7 @@ import { format, parseISO, type Locale } from 'date-fns';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import type { QueryClient } from '@tanstack/react-query';
 import { api, type ApiResponse } from '@/lib/api';
+import type { BinnedResponse } from '../../api/src/contracts/bin';
 import type { CalendarChoiceFields, CalendarWriteBlock, TaskMoveCancelResponse, TaskMovePending, TaskMoveRequest, TaskMoveResponse, TaskPositionRequest, TaskPositionResponse, TaskRankFields } from '../../api/src/contracts/tasks';
 
 export type { CalendarWriteBlock, TaskPositionRequest, TaskPositionResponse } from '../../api/src/contracts/tasks';
@@ -463,9 +464,11 @@ export const calendarApi = {
     return { event: response.data.event ? normalizeEvent(response.data.event) : null, cancelled: response.data.cancelled === true };
   },
 
-  async deleteCalendar(id: string): Promise<void> {
-    const response = await api.delete(`/calendar/calendars/${id}`);
+  /** Deletes a local calendar with its events into the bin; the answer is the bin items to restore for Undo. */
+  async deleteCalendar(id: string): Promise<string[]> {
+    const response = await api.delete<BinnedResponse>(`/calendar/calendars/${id}`);
     if (response.error) throw new Error(response.error);
+    return response.data?.bin_item_ids ?? [];
   },
 
   async updateRsvp(id: string, payload: { response_status: CalendarRsvpStatus; email?: string }): Promise<CalendarEvent> {
@@ -501,9 +504,11 @@ export const calendarApi = {
     return normalizeEvent(event);
   },
 
-  async deleteEvent(id: string, scope?: RecurrenceScope): Promise<void> {
-    const response = await api.delete(`/calendar/events/${id}${scope ? `?scope=${scope}` : ''}`);
+  /** Deletes an event or task into the bin (a server event is deleted at the provider first); the answer is the bin items to restore for Undo. */
+  async deleteEvent(id: string, scope?: RecurrenceScope): Promise<string[]> {
+    const response = await api.delete<BinnedResponse>(`/calendar/events/${id}${scope ? `?scope=${scope}` : ''}`);
     if (response.error) throw new CalendarRequestError(response, 'Could not delete the event');
+    return response.data?.bin_item_ids ?? [];
   },
 
   async createSubtask(eventId: string, payload: { title: string; position?: number; is_done?: boolean }): Promise<CalendarSubtask> {

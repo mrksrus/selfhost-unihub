@@ -15,6 +15,7 @@ import { canRunModule } from './access-policy';
 import { toBooleanFlag, buildImapConnectionConfig } from './mail-host-policy';
 import { normalizeMailAccountId, isMailAccountSyncRunning } from './mail-durable-jobs';
 import { rawRoot, mailPathUnderRoot } from './mail-storage';
+import { fileRemovalGate } from './file-removal-gate';
 
 interface QueueInput {
   connection?: SqlExecutor;
@@ -55,7 +56,14 @@ function isAttachmentPathUnderUploads(storagePath: string | null | undefined) {
   return mailPathUnderRoot('attachment', storagePath) !== null;
 }
 
+// Attachment files have unique names, so a removal queued while an instance
+// backup copies files (file-removal-gate.ts) needs no second check.
 async function deleteStoredAttachmentFiles(storagePaths: readonly (string | null | undefined)[]) {
+  const removal = await fileRemovalGate.run(() => deleteStoredAttachmentFilesNow(storagePaths));
+  return removal === 'deferred' ? { deletedFiles: 0, failedFiles: 0 } : removal;
+}
+
+async function deleteStoredAttachmentFilesNow(storagePaths: readonly (string | null | undefined)[]) {
   const uniquePaths = Array.from(new Set((storagePaths || []).filter(Boolean)));
   let deletedFiles = 0;
   let failedFiles = 0;

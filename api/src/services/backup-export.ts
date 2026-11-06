@@ -1,5 +1,6 @@
 import type { RowDataPacket } from 'mysql2/promise';
-import type { ApiError, BackupPayload, BackupRow, BackupFile, ArchiveEnvelope } from '../types';
+import { exportableBinItems, parseRefs } from './bin';
+import type { ApiError, BackupPayload, BackupRow, BackupFile, ArchiveEnvelope, SqlExecutor } from '../types';
 import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
@@ -30,6 +31,10 @@ import {
 } from './backup-common';
 import { scopeBackupForImport } from './backup-validate';
 import { photoPath, photosRoot } from './contact-photos';
+import { rowKeyKind } from './calendar-overlays';
+import { accountIdentity, backupContents, includedDownloadAccounts, keptEmailSql, localEventSql, overlayPayload, serverLinkedEmailSql, syncAccountSql } from './backup-classes';
+import type { LeftOutKind } from './backup-classes';
+import type { BackupContents } from '../contracts/backup';
 
 type CheckCancelled = (() => Promise<unknown>) | null;
 interface SnapshotRow extends BackupRow {
@@ -39,7 +44,7 @@ interface SnapshotRow extends BackupRow {
   encrypted_refresh_token?: string | null;
   filing_account_id?: string | null;
 }
-type SnapshotData = BackupPayload['data'] & { mail_accounts?: SnapshotRow[]; calendar_accounts?: SnapshotRow[] };
+type SnapshotData = BackupPayload['data'] & { mail_accounts?: SnapshotRow[]; calendar_accounts?: SnapshotRow[]; bin_items?: SnapshotRow[] };
 interface ExportFile extends BackupFile {
   kind: string;
   id: string;
@@ -55,9 +60,14 @@ interface ExportBackup extends ArchiveEnvelope {
   exported_at: string;
   portable_credentials: ReturnType<typeof encryptPortableCredentialBundle> | null;
   data: SnapshotData;
+  contents: BackupContents;
 }
 interface BackupOptions {
   includeFileData?: boolean;
+  // "Include downloaded mail" (backup-classes.ts); a policy or provider deletion can force it.
+  includeDownloadMail?: boolean;
+  // Where the archive's data document is written while the archive is made.
+  workDirectory?: string;
   portableCredentialKey?: Buffer | null;
   checkCancelled?: CheckCancelled;
   sections?: unknown;
@@ -113,6 +123,18 @@ const CONTENT_FILE_STORES: Readonly<Record<string, { root: () => string; path: (
   contact_photo: { root: photosRoot, path: photoPath },
 });
 
+// A recording bin item's file under the bin's name; null for any other item.
+function binRecordingFile(row: SnapshotRow) {
+  let payload: Record<string, unknown> | null = null;
+  try { payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload as Record<string, unknown>; } catch { payload = null; }
+  const file = typeof payload?.bin_path === 'string' ? payload.bin_path : parseRefs(row.file_refs)[0];
+  return file || null;
+}
+// The photo files (by SHA-256) of the contacts in the snapshot's bin.
+function binPhotoHashes(data: SnapshotData) {
+  return [...new Set(((data.bin_items || []) as SnapshotRow[]).filter(row => row.item_type === 'contact').flatMap(row => parseRefs(row.file_refs)).filter(ref => /^[0-9a-f]{64}$/.test(ref)))];
+}
+
 // Content-addressed files of the snapshot's rows, each archived once. A row
 // whose files are missing or no longer match their names is left out of the
 // archive with a warning: the picture is already lost, and the rest of the
@@ -122,7 +144,7 @@ async function readContentFileEntries(userId: string, data: SnapshotData, includ
   const warnings: string[] = [];
   for (const [kind, policy] of Object.entries(CONTENT_FILE_POLICIES)) {
     const rows = (data[policy.table] as SnapshotRow[] | undefined) || [];
-    if (!rows.length) continue;
+    if (!rows.length && !(kind === 'contact_photo' && binPhotoHashes(data).length)) continue;
     const store = CONTENT_FILE_STORES[kind];
     if (!store) throw new Error(`Unsupported backup file root: ${kind}`);
     const read = new Map<string, ExportFile | null>();
@@ -145,6 +167,19 @@ async function readContentFileEntries(userId: string, data: SnapshotData, includ
     const lost = rows.length - kept.length;
     data[policy.table] = kept;
     const named = new Set(kept.flatMap(row => policy.columns.map(column => String(row[column]))));
+    // The photos of contacts in the bin, which their restore from the bin puts back.
+    if (kind === 'contact_photo') {
+      for (const sha of binPhotoHashes(data)) {
+        if (!read.has(sha)) {
+          if (checkCancelled) await checkCancelled();
+          let storagePath: string | null = null;
+          try { storagePath = store.path(userId, sha); } catch { storagePath = null; }
+          const entry = await readBackupFileEntry({ kind, id: sha, storagePath, rootPath: store.root(), includeData, checkCancelled });
+          read.set(sha, entry && !entry.missing && entry.sha256 === sha ? entry : null);
+        }
+        named.add(sha);
+      }
+    }
     for (const [sha, entry] of read) if (entry && named.has(sha)) entries.push({ ...entry, filename: `${sha}.jpg` });
     if (lost) warnings.push(`${lost} contact photo${lost === 1 ? ' is' : 's are'} not in this backup because the stored picture is missing or damaged.`);
   }
@@ -285,6 +320,12 @@ const ACCOUNT_MAIL_FILTERS: Readonly<Record<string, string>> = Object.freeze({
   mail_engine_quarantine: 'b.mail_account_id = ?',
 });
 
+// A kept Gmail item carries its X-GM-MSGID: the account's one mapping of the
+// item, else the identity an earlier restore brought (a second backup before
+// the first sync). A backup leaves the mapping table out for Sync accounts.
+const GMAIL_IDENTITY_SQL = `COALESCE((SELECT IF(COUNT(*) = 1, MIN(g.gmail_msgid), NULL) FROM mail_gmail_messages g
+    WHERE g.email_id = b.id AND g.user_id = b.user_id AND g.mail_account_id = b.mail_account_id), b.remote_gmail_msgid)`;
+
 // Account settings keep only connections a restore can sign in with again:
 // every mail account and the remote calendar accounts. Local calendars have
 // nothing to download, so they belong to the complete Calendar section.
@@ -293,7 +334,85 @@ const ACCOUNT_ONLY_FILTERS: Readonly<Record<string, string>> = Object.freeze({
   calendar_accounts: "b.provider IN ('caldav', 'ics')",
 });
 
-async function readBackupSnapshot(userId: string, sections: unknown, checkCancelled: CheckCancelled, mailAccountId: string | null = null): Promise<SnapshotData> {
+// The rows of a section table a user backup keeps, by data class
+// (backup-classes.ts): mirrored provider rows are left out. `included` are
+// the Download-mode accounts whose mail the backup holds.
+function classFilter(table: string, included: readonly string[]): { sql: string; params: string[] } | null {
+  const event = (alias: string) => `EXISTS (SELECT 1 FROM calendar_events ce WHERE ce.id = ${alias}.event_id AND ce.user_id = ${alias}.user_id AND ${localEventSql('ce')})`;
+  const email = (alias: string) => {
+    const kept = keptEmailSql('ke', included);
+    return { sql: `EXISTS (SELECT 1 FROM emails ke WHERE ke.id = ${alias}.email_id AND ke.user_id = ${alias}.user_id AND ${kept.sql})`, params: kept.params };
+  };
+  const accounts = included.length ? { sql: `b.mail_account_id IN (${included.map(() => '?').join(', ')})`, params: [...included] } : { sql: 'FALSE', params: [] };
+  switch (table) {
+    case 'calendar_events': return { sql: localEventSql('b'), params: [] };
+    case 'calendar_event_subtasks': case 'calendar_event_attendees': return { sql: event('b'), params: [] };
+    case 'calendar_event_external_refs': return { sql: 'FALSE', params: [] };
+    case 'emails': return keptEmailSql('b', included);
+    case 'email_attachments': case 'mail_email_scores': case 'mail_folder_recovery_items': return email('b');
+    case 'mail_remote_mailboxes': case 'mail_remote_occurrences': case 'mail_gmail_messages': case 'mail_writebacks':
+    case 'mail_operation_attempts': case 'mail_engine_quarantine': return accounts;
+    default: return null;
+  }
+}
+
+// UniHub's state on the person's synced tasks, as overlays keyed by the
+// calendar and the task's UID and recurrence id: the restore applies them
+// to the task the provider sends again. A pending overlay of an earlier
+// restore is already among the rows (a second backup before the first sync
+// keeps it); a live task replaces one of the same identity.
+async function syncedTaskOverlays(connection: SqlExecutor, userId: string, pending: readonly BackupRow[]) {
+  const [events] = await connection.execute<RowDataPacket[]>(`SELECT e.id, e.calendar_id, e.uid, e.title, e.start_time, e.todo_status, e.done_at, e.source_email_id, e.source_email_json,
+      COALESCE(r.recurrence_id, '') AS recurrence_id, o.uid AS object_uid, a.provider, a.account_email, a.base_url, a.discovery_url
+    FROM calendar_events e
+    JOIN calendar_calendars c ON c.id = e.calendar_id AND c.user_id = e.user_id
+    JOIN calendar_accounts a ON a.id = c.account_id AND a.user_id = e.user_id
+    LEFT JOIN calendar_event_external_refs r ON r.event_id = e.id AND r.user_id = e.user_id
+    LEFT JOIN calendar_remote_objects o ON o.id = r.remote_object_id AND o.user_id = e.user_id
+    WHERE e.user_id = ? AND a.provider <> 'local'
+    ORDER BY e.calendar_id, e.uid, recurrence_id, e.id`, [userId]);
+  if (!events.length) return [...pending];
+  const [subtasks] = await connection.execute<RowDataPacket[]>(`SELECT s.event_id, s.title, s.is_done, s.position FROM calendar_event_subtasks s
+    JOIN calendar_events e ON e.id = s.event_id AND e.user_id = s.user_id
+    WHERE s.user_id = ? AND NOT ${localEventSql('e')} ORDER BY s.event_id, s.position, s.id`, [userId]);
+  const [attendees] = await connection.execute<RowDataPacket[]>(`SELECT t.event_id, t.email, t.display_name, t.response_status, t.is_organizer, t.optional_attendee, t.comment
+    FROM calendar_event_attendees t JOIN calendar_events e ON e.id = t.event_id AND e.user_id = t.user_id
+    WHERE t.user_id = ? AND NOT ${localEventSql('e')} ORDER BY t.event_id, t.created_at, t.id`, [userId]);
+  const byEvent = new Map<string, BackupRow[]>(), attendeesByEvent = new Map<string, BackupRow[]>();
+  for (const row of normalizeRows(subtasks)) byEvent.set(String(row.event_id), [...(byEvent.get(String(row.event_id)) || []), row]);
+  for (const row of normalizeRows(attendees)) attendeesByEvent.set(String(row.event_id), [...(attendeesByEvent.get(String(row.event_id)) || []), row]);
+  // The kind of key is part of the item's identity: a row id and a provider UID that agree as text are two items.
+  const key = (row: BackupRow) => JSON.stringify([row.calendar_id, row.match_kind, row.uid, String(row.recurrence_id ?? '')]);
+  const overlays = new Map<string, BackupRow>();
+  // One set aside as failed travels as it is, beside whatever the item has now.
+  for (const row of pending) overlays.set(row.failed_at != null ? `failed:${row.id}` : row.match_kind !== 'shape' ? key(row) : `pending:${row.id}`, row);
+  for (const event of normalizeRows(events)) {
+    const payload = overlayPayload(event, byEvent.get(String(event.id)) || [], attendeesByEvent.get(String(event.id)) || []);
+    if (!payload) continue;
+    const overlay = { id: crypto.randomUUID(), user_id: userId, calendar_id: event.calendar_id, account_identity: accountIdentity(event), uid: event.uid,
+      recurrence_id: String(event.recurrence_id ?? ''), match_kind: rowKeyKind({ id: event.id, uid: event.uid, object_uid: event.object_uid }), shape_title: event.title ?? '', shape_start: event.start_time ?? null,
+      payload: JSON.stringify(payload), created_at: new Date().toISOString().slice(0, 19).replace('T', ' '), expires_at: null, failed_at: null, failure: null };
+    overlays.set(key(overlay), overlay);
+  }
+  return [...overlays.values()];
+}
+
+// How many rows of each kind the backup leaves out, for its contents.
+async function leftOutCounts(connection: SqlExecutor, userId: string, sections: readonly string[], included: readonly string[], mailAccountId: string | null) {
+  const counts: Partial<Record<LeftOutKind, number>> = {};
+  const count = async (sql: string, params: unknown[]) => Number((await connection.execute<RowDataPacket[]>(sql, params as string[]))[0][0].n) || 0;
+  if (sections.includes('calendar')) counts.synced_events = await count(`SELECT COUNT(*) AS n FROM calendar_events b WHERE b.user_id = ? AND NOT ${localEventSql('b')}`, [userId]);
+  if (sections.includes('mail')) {
+    const account = mailAccountId === null ? '' : ' AND b.mail_account_id = ?';
+    const scope = mailAccountId === null ? [] : [mailAccountId];
+    counts.sync_mail = await count(`SELECT COUNT(*) AS n FROM emails b WHERE b.user_id = ?${account} AND ${syncAccountSql('b.mail_account_id')} AND ${serverLinkedEmailSql('b')}`, [userId, ...scope]);
+    const kept = included.length ? ` AND b.mail_account_id NOT IN (${included.map(() => '?').join(', ')})` : '';
+    counts.download_mail = await count(`SELECT COUNT(*) AS n FROM emails b WHERE b.user_id = ?${account} AND NOT ${syncAccountSql('b.mail_account_id')}${kept}`, [userId, ...scope, ...included]);
+  }
+  return counts;
+}
+
+async function readBackupSnapshot(userId: string, sections: unknown, checkCancelled: CheckCancelled, mailAccountId: string | null = null, includeDownloadMail = true): Promise<{ data: SnapshotData; contents: BackupContents }> {
   const request = normalizeBackupRequest(sections);
   if (mailAccountId !== null && request.accountOnlySections.length) throw new Error('An account backup cannot also export account settings only');
   const connection = await db.getConnection();
@@ -301,13 +420,22 @@ async function readBackupSnapshot(userId: string, sections: unknown, checkCancel
     if (checkCancelled) await checkCancelled();
     await connection.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
     await connection.query('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY');
+    // An account backup (offered before switching that account to Sync) keeps its mail.
+    const exportsMail = request.sections.includes('mail') && !request.accountOnlySections.includes('mail');
+    const included = mailAccountId !== null ? [mailAccountId] : exportsMail ? await includedDownloadAccounts(userId, includeDownloadMail, connection) : [];
     const data: SnapshotData = {};
     for (const section of request.sections) {
       const accountOnly = request.accountOnlySections.includes(section);
       for (const table of accountOnly ? [ACCOUNT_ONLY_TABLES[section]] : SECTION_POLICIES[section].tables) {
         if (checkCancelled) await checkCancelled();
         const policy = TABLE_POLICIES[table];
-        const columns = policy.columns.map(column => `b.\`${column}\``).join(', ');
+        if (table === 'bin_items') {
+          // The person's items still in the bin, of this section's modules (bin.ts).
+          const items = await exportableBinItems(connection, userId, section);
+          data.bin_items = [...(data.bin_items || []), ...normalizeRows(items.map(({ row }) => Object.fromEntries(policy.columns.map(column => [column, row[column]])) as RowDataPacket)) as SnapshotRow[]];
+          continue;
+        }
+        const columns = policy.columns.map(column => table === 'emails' && column === 'remote_gmail_msgid' ? `${GMAIL_IDENTITY_SQL} AS remote_gmail_msgid` : `b.\`${column}\``).join(', ');
         let from = `${table === 'user' ? 'users' : table} b`;
         let where = table === 'user' ? 'b.id = ?' : 'b.user_id = ?';
         let params = [userId];
@@ -326,11 +454,14 @@ async function readBackupSnapshot(userId: string, sections: unknown, checkCancel
           where += ` AND ${filter}`;
           if (filter.includes('?')) params = [...params, mailAccountId];
         }
+        const byClass = classFilter(table, included);
+        if (byClass) { where += ` AND ${byClass.sql}`; params = [...params, ...byClass.params]; }
         const order = policy.keyColumns.map(column => `b.\`${column}\``).join(', ');
         const [rows] = await connection.execute<RowDataPacket[]>(`SELECT ${columns} FROM ${from} WHERE ${where} ORDER BY ${order}`, params);
         if (table === 'user' && !rows.length) throw new Error('User not found');
         data[table] = table === 'user' ? normalizeRows(rows)[0] : normalizeRows(rows);
       }
+      if (section === 'calendar' && !accountOnly) data.calendar_overlay_restores = await syncedTaskOverlays(connection, userId, (data.calendar_overlay_restores || []) as BackupRow[]);
     }
     // Filing in another account is local organisation outside this export;
     // the restored copy is filed under its own account instead.
@@ -339,8 +470,13 @@ async function readBackupSnapshot(userId: string, sections: unknown, checkCancel
         if (email.filing_account_id && email.filing_account_id !== mailAccountId) email.filing_account_id = null;
       }
     }
+    const complete = request.sections.filter(section => !request.accountOnlySections.includes(section));
+    const counts = await leftOutCounts(connection, userId, complete, included, mailAccountId);
     await connection.commit();
-    return data;
+    const contents = backupContents(complete, counts, { downloadMail: included.length > 0 && complete.includes('mail') });
+    // Account settings hold only the connections.
+    if (request.accountOnlySections.length && !contents.included.includes('config')) contents.included.push('config');
+    return { data, contents };
   } catch (error) {
     await connection.rollback().catch(() => {});
     throw error;
@@ -355,19 +491,21 @@ async function buildBackupForUser(userId: string, {
   checkCancelled = null,
   sections = 'full',
   mailAccountId = null,
+  includeDownloadMail = true,
 }: BackupOptions = {}): Promise<ExportBackup> {
-  const data = await readBackupSnapshot(userId, sections, checkCancelled, mailAccountId);
+  const { data, contents } = await readBackupSnapshot(userId, sections, checkCancelled, mailAccountId, includeDownloadMail);
   const { accountOnlySections } = normalizeBackupRequest(sections);
   const fileEntries = [];
   for (const [kind, policy] of Object.entries(FILE_POLICIES)) {
     const rootPath = (BACKUP_FILE_ROOTS as Readonly<Record<string, string>>)[kind];
     if (!Object.hasOwn(BACKUP_FILE_ROOTS, kind) || !rootPath) throw new Error(`Unsupported backup file root: ${kind}`);
     for (const row of (data[policy.table] as SnapshotRow[] | undefined) || []) {
+      if (policy.table === 'bin_items' && row.item_type !== 'recording') continue;
       if (checkCancelled) await checkCancelled();
       const entry = await readBackupFileEntry({
         kind,
         id: row.id,
-        storagePath: row[policy.column] as string | null | undefined,
+        storagePath: policy.table === 'bin_items' ? binRecordingFile(row) : row[policy.column] as string | null | undefined,
         rootPath,
         includeData: includeFileData,
         checkCancelled,
@@ -375,8 +513,16 @@ async function buildBackupForUser(userId: string, {
       if (entry) fileEntries.push(entry);
     }
   }
+  // A recording in the bin whose file is gone cannot come back; it is left out.
+  const binFiles = new Set(fileEntries.filter(entry => entry.kind === 'recording_bin' && !entry.missing).map(entry => String(entry.id)));
+  const binRecordingsLost = (data.bin_items || []).filter(row => row.item_type === 'recording' && !binFiles.has(String(row.id))).length;
+  if (binRecordingsLost) {
+    data.bin_items = (data.bin_items || []).filter(row => row.item_type !== 'recording' || binFiles.has(String(row.id)));
+    for (let index = fileEntries.length - 1; index >= 0; index -= 1) if (fileEntries[index].kind === 'recording_bin' && fileEntries[index].missing) fileEntries.splice(index, 1);
+  }
   const content = await readContentFileEntries(userId, data, includeFileData, checkCancelled);
   fileEntries.push(...content.entries);
+  if (binRecordingsLost) content.warnings.push(`${binRecordingsLost} recording${binRecordingsLost === 1 ? '' : 's'} in the bin ${binRecordingsLost === 1 ? 'is' : 'are'} not in this backup because the file is missing.`);
 
   let portableCredentials = null;
   if (portableCredentialKey) {
@@ -423,6 +569,7 @@ async function buildBackupForUser(userId: string, {
       ...content.warnings,
     ],
     data,
+    contents,
     files: fileEntries,
     portable_credentials: portableCredentials,
   };
@@ -437,11 +584,14 @@ async function buildBackupArchiveEntriesForUser(userId: string, sections: unknow
   portableCredentialKey = null,
   checkCancelled = null,
   mailAccountId = null,
+  includeDownloadMail = true,
+  workDirectory = os.tmpdir(),
 }: BackupOptions = {}) {
   const fullBackup = await buildBackupForUser(userId, {
     includeFileData: false,
     sections,
     mailAccountId,
+    includeDownloadMail,
     portableCredentialKey,
     checkCancelled,
   });
@@ -508,11 +658,14 @@ async function buildBackupArchiveEntriesForUser(userId: string, sections: unknow
     exported_at: scopedBackup.exported_at,
     warnings: scopedBackup.warnings,
     data: scopedBackup.data,
+    contents: scopedBackup.contents,
     files: archiveFiles,
     portable_credentials: scopedBackup.portable_credentials || null,
     ...(scopedBackup.account_only_sections ? { account_only_sections: scopedBackup.account_only_sections } : {}),
   };
-  const dataPath = path.join(os.tmpdir(), `unihub-backup-data-${crypto.randomUUID()}.json`);
+  // The export job writes it beside its archive, never in the system's
+  // temporary directory (a small tmpfs on some hosts); other callers choose.
+  const dataPath = path.join(workDirectory, `unihub-backup-data-${crypto.randomUUID()}.json.partial`);
   try {
     await writeBackupJsonFile(backupPayload, dataPath);
     const checksums: { generated_at: string; algorithm: string; entries: Record<string, string> } = {
@@ -536,6 +689,8 @@ async function buildBackupArchiveEntriesForUser(userId: string, sections: unknow
       sections: scopedBackup.import_sections,
       ...(backupPayload.account_only_sections ? { account_only_sections: backupPayload.account_only_sections } : {}),
       row_counts: getBackupRowCounts(backupPayload),
+      // What the archive holds by data class, and what it left out (schema 7).
+      contents: scopedBackup.contents,
       file_count: archiveFiles.filter(file => file.archive_path).length,
       missing_files: missingFiles,
       warnings: [

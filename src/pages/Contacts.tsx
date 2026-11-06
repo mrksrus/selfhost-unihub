@@ -22,6 +22,8 @@ import { BulkEditDialog } from '@/components/contacts/BulkEditDialog';
 import { DuplicatesView } from '@/components/contacts/DuplicatesView';
 import { MergeReviewDialog } from '@/components/contacts/MergeReviewDialog';
 import { RecentlyMergedView } from '@/components/contacts/RecentlyMergedView';
+import { BinView } from '@/components/bin/BinView';
+import { binQueryOptions } from '@/lib/bin-api';
 import { ContactImportDialog } from '@/components/contacts/ContactImportDialog';
 import { ContactExportDialog } from '@/components/contacts/ContactExportDialog';
 
@@ -53,6 +55,7 @@ const Contacts = () => {
   // The panel counts for the two server-side views; their bodies read the same queries.
   const duplicatesQuery = useQuery({ ...duplicatesQueryOptions('low'), enabled: !!contactsQuery.data });
   const mergesQuery = useQuery({ ...mergesQueryOptions, enabled: !!contactsQuery.data });
+  const binQuery = useQuery({ ...binQueryOptions('contacts'), enabled: !!contactsQuery.data });
   const { data: emailLinkBehavior } = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('email_link_behavior') });
   const allContacts = useMemo(() => contactsQuery.data ?? [], [contactsQuery.data]);
   const contacts = useMemo(() => filterContacts(allContacts, LIST_VIEWS.includes(view) ? view : 'all', debouncedSearch), [allContacts, view, debouncedSearch]);
@@ -61,7 +64,8 @@ const Contacts = () => {
     ...Object.fromEntries(LIST_VIEWS.map(id => [id, allContacts.filter(contact => inContactView(contact, id)).length])),
     duplicates: duplicatesQuery.data?.groups.length ?? 0,
     merged: mergesQuery.data?.filter(merge => !merge.undone_at).length ?? 0,
-  }) as Record<ContactView, number>, [allContacts, duplicatesQuery.data, mergesQuery.data]);
+    bin: binQuery.data?.items.length ?? 0,
+  }) as Record<ContactView, number>, [allContacts, duplicatesQuery.data, mergesQuery.data, binQuery.data]);
 
   const updateParams = (change: (next: URLSearchParams) => void, replace = false) => {
     const next = new URLSearchParams(params);
@@ -109,11 +113,11 @@ const Contacts = () => {
   const toggleFavorite = (contact: Contact) => actions.setFavorite.mutate({ id: contact.id, favorite: !contact.is_favorite });
 
   const confirmDelete = (contact: Contact) => setConfirm({
-    title: `Delete ${contactName(contact)}?`, description: 'This cannot be undone.', action: 'Delete', destructive: true,
+    title: `Delete ${contactName(contact)}?`, description: 'It goes to the bin and can be restored from there.', action: 'Delete', destructive: true,
     run: () => actions.remove.mutate(contact.id, { onSuccess: () => { if (activeId === contact.id) openContact(null); } }),
   });
   const confirmDeleteSelected = () => setConfirm({
-    title: selectedIds.size === 1 ? 'Delete 1 contact?' : `Delete ${selectedIds.size} contacts?`, description: 'This cannot be undone.', action: 'Delete', destructive: true,
+    title: selectedIds.size === 1 ? 'Delete 1 contact?' : `Delete ${selectedIds.size} contacts?`, description: 'They go to the bin and can be restored from there.', action: 'Delete', destructive: true,
     run: () => actions.removeMany.mutate([...selectedIds], { onSuccess: () => {
       if (activeId && selectedIds.has(activeId)) openContact(null);
       setSelectedIds(new Set());
@@ -151,7 +155,7 @@ const Contacts = () => {
       <PanelGroup>
         {(Object.keys(CONTACT_VIEWS) as ContactView[]).map(id => (id === 'all' || counts[id] > 0 || view === id) && (
           <PanelItem key={id} icon={CONTACT_VIEWS[id].icon} active={view === id} onSelect={() => selectView(id)}
-            count={counts[id]} countLabel={id === 'duplicates' ? 'groups' : id === 'merged' ? 'merges' : 'contacts'} countTone={id === 'duplicates' ? 'warning' : 'default'}>
+            count={counts[id]} countLabel={id === 'duplicates' ? 'groups' : id === 'merged' ? 'merges' : id === 'bin' ? 'deleted' : 'contacts'} countTone={id === 'duplicates' ? 'warning' : 'default'}>
             {CONTACT_VIEWS[id].label}
           </PanelItem>
         ))}
@@ -171,6 +175,7 @@ const Contacts = () => {
       <DuplicatesView contacts={allContacts} activeId={activeId} selectedIds={selectedIds} actions={actions}
         onOpen={clickContact} onToggleSelect={toggleSelect} onToggleFavorite={toggleFavorite} onReview={setReview} onMergeAll={confirmMergeAll} />
     ) : view === 'merged' ? <RecentlyMergedView actions={actions} />
+    : view === 'bin' ? <BinView module="contacts" />
     : (
       <>
         {view !== 'all' && CONTACT_VIEWS[view].hint && contacts.length > 0 && (
@@ -197,7 +202,7 @@ const Contacts = () => {
             <>
               <Button variant="ghost" size="icon" aria-label="Clear selection" onClick={() => setSelectedIds(new Set())}><X aria-hidden="true" /></Button>
               <span className="text-sm font-medium">{selectedIds.size} selected</span>
-              {!allSelected && view !== 'duplicates' && <Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set(contacts.map(contact => contact.id)))}>Select all {contacts.length}</Button>}
+              {!allSelected && view !== 'duplicates' && view !== 'bin' && <Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set(contacts.map(contact => contact.id)))}>Select all {contacts.length}</Button>}
               {/* Bulk editing is a desk job; on phones the toolbar keeps its old width. */}
               <Button variant="outline" size="sm" className="ml-auto hidden md:inline-flex" onClick={editSelected}>Set company…</Button>
               <Button variant="outline" size="sm" className="hidden md:inline-flex" onClick={() => setExporting([...selectedIds])}>Export selected</Button>
@@ -207,7 +212,7 @@ const Contacts = () => {
             <div className="relative w-full max-w-md">
               <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search contacts" aria-label="Search contacts" className="h-9 pl-9 touch:h-10"
-                disabled={view === 'duplicates' || view === 'merged'} />
+                disabled={view === 'duplicates' || view === 'merged' || view === 'bin'} />
             </div>
           )}
         </div>

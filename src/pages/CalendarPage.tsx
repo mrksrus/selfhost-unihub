@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { ErrorState, LoadingState } from '@/components/ui/page-states';
 import { NarrowOnly, PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { CalendarPanel } from '@/components/calendar/CalendarPanel';
+import { BinView } from '@/components/bin/BinView';
 import { CalendarGrid, SelectedDay } from '@/components/calendar/CalendarGrid';
 import { EventDialog, type EventDialogTarget } from '@/components/calendar/EventDialog';
 import { AddCalendarAccountDialog, AddCalendarDialog, CalendarSettingsDialog } from '@/components/calendar/CalendarAccountDialogs';
@@ -68,6 +69,14 @@ const CalendarPage = () => {
     setParams(next, { replace: true });
   }, [params, setParams]);
 
+  // ?view=bin shows the deleted events, tasks and calendars in place of the grid.
+  const binOpen = params.get('view') === 'bin';
+  const setBinOpen = (open: boolean) => {
+    const next = new URLSearchParams(params);
+    if (open) next.set('view', 'bin'); else next.delete('view');
+    setParams(next, { replace: true });
+  };
+
   const calendarsReady = !data.accountsQuery.isLoading && !data.calendarsQuery.isLoading;
   const newEvent = (date?: Date) => setDialog({ kind: 'new', date: date ?? view.selectedDate });
   const longTitle = view.viewMode === 'month' ? format(view.currentDate, 'MMMM yyyy')
@@ -91,8 +100,20 @@ const CalendarPage = () => {
 
   const panel = (
     <CalendarPanel data={data} shownIds={view.selectedCalendarIds} onShow={view.showCalendar} onNewEvent={() => newEvent()}
-      onAddAccount={() => setAddingAccount(true)} onAddCalendar={setAddingCalendarTo} onCalendarSettings={setSettingsFor} />
+      onAddAccount={() => setAddingAccount(true)} onAddCalendar={setAddingCalendarTo} onCalendarSettings={setSettingsFor}
+      binOpen={binOpen} onOpenBin={() => setBinOpen(true)} />
   );
+
+  if (binOpen) {
+    return (
+      <PageShell panel={panel} panelLabel="Calendars" panelId="calendar">
+        <PageHeader title="Calendar" scope="Bin" back={
+          <Button variant="ghost" size="icon" aria-label="Back to the calendar" onClick={() => setBinOpen(false)}><ChevronLeft aria-hidden="true" /></Button>
+        } />
+        <PageBody width="reading"><BinView module="calendar" /></PageBody>
+      </PageShell>
+    );
+  }
 
   return (
     <PageShell panel={panel} panelLabel="Calendars" panelId="calendar">

@@ -12,6 +12,8 @@ export type ThemeMode = 'dark' | 'light' | 'system';
 interface Options {
   /** Stored theme mode on this device before the first load (next-themes `theme` key). */
   theme: ThemeMode;
+  /** The synthetic person is an administrator (the server pages). */
+  admin: boolean;
 }
 
 interface Fixtures {
@@ -23,13 +25,14 @@ interface Fixtures {
 
 export const test = base.extend<Options & Fixtures>({
   theme: ['dark', { option: true }],
+  admin: [false, { option: true }],
   // Global setup picks a free loopback port after the config has loaded.
   baseURL: async ({}, use) => use(process.env.UNIHUB_UI_ORIGIN),
 
-  api: async ({ context, page, theme }, use) => {
+  api: async ({ context, page, theme, admin }, use) => {
     const origin = process.env.UNIHUB_UI_ORIGIN;
     if (!origin) throw new Error('UNIHUB_UI_ORIGIN is not set; run through playwright.config.ts (global setup starts the server).');
-    const router = createApiRouter();
+    const router = createApiRouter({ admin });
     const refused: string[] = [];
     const pageErrors: string[] = [];
 

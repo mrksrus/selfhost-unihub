@@ -1,5 +1,5 @@
 import type { RowDataPacket } from 'mysql2/promise';
-import type { ArchiveEnvelope, BackupPayload, BackupFileSource } from '../types';
+import type { ArchiveEnvelope, BackupPayload, BackupFileSource, BackupRow } from '../types';
 import fs from 'fs';
 import { db } from '../state';
 import { modulesFromValue } from './module-settings';
@@ -8,6 +8,7 @@ import { AUDIO_HEADER_BYTES, identifyRecordingAudio } from './recording-audio';
 import { archiveCarriesStep, validateBackupVersionFields } from './backup-format';
 import { countContactConflicts } from './backup-contacts';
 import { isOrderKey } from './task-order';
+import { validateOverlayRows } from './backup-overlays';
 import {
   ACCOUNT_ONLY_TABLES,
   CONTENT_FILE_POLICIES,
@@ -120,11 +121,13 @@ function validateBackupPayload(backup: ArchiveEnvelope | null | undefined, {
     if (!policy) { errors.push(`Unsupported backup table: ${table}`); continue; }
     // A table every field of which is newer than the archive's schema.
     if (!policy.columns.some(column => carriedField(table, column, backup.version))) { errors.push(`Unsupported backup table: ${table}`); continue; }
-    if (backup.version >= 3) {
-      for (const row of table === 'user' ? [rows] : Array.isArray(rows) ? rows : []) {
-        for (const column of Object.keys(row || {})) {
-          if (!(policy.columns.includes(column) && carriedField(table, column, backup.version)) && !retiredField(table, column, backup.version)) errors.push(`Unsupported backup field: ${table}.${column}`);
-        }
+    // From schema 3 on an archive carries only known fields. Earlier ones may
+    // carry fields that are no longer read, but never one a later upgrade step
+    // added (an identity a restore would match by, for example).
+    for (const row of table === 'user' ? [rows] : Array.isArray(rows) ? rows : []) {
+      for (const column of Object.keys(row || {})) {
+        if (retiredField(table, column, backup.version) || (policy.columns.includes(column) && carriedField(table, column, backup.version))) continue;
+        if (backup.version >= 3 || policy.columns.includes(column)) errors.push(`Unsupported backup field: ${table}.${column}`);
       }
     }
   }
@@ -140,6 +143,7 @@ function validateBackupPayload(backup: ArchiveEnvelope | null | undefined, {
   }
   errors.push(...validateRestoreRows(backup.data));
   errors.push(...validateTaskOrder(backup.data));
+  errors.push(...validateOverlayRows(backup.data));
   errors.push(...validateAccountOnlySections(backup));
   for (const row of Array.isArray(backup.data?.user_settings) ? backup.data.user_settings : []) {
     if (row?.setting_key === 'module_preferences') {
@@ -167,7 +171,7 @@ function validateBackupPayload(backup: ArchiveEnvelope | null | undefined, {
         continue;
       }
       const buffer = fileBuffer || Buffer.from(String(file.data_base64), 'base64');
-      if (file.kind === 'recording' && !identifyRecordingAudio(buffer.subarray(0, AUDIO_HEADER_BYTES))) {
+      if ((file.kind === 'recording' || file.kind === 'recording_bin') && !identifyRecordingAudio(buffer.subarray(0, AUDIO_HEADER_BYTES))) {
         errors.push(`Recording ${file.id} is not supported audio`);
       }
       if (file.kind === 'contact_photo' && (!isJpeg(buffer) || buffer.length > CONTACT_PHOTO_MAX_BYTES)) errors.push(`Contact photo ${file.id} is not a stored contact photo`);
@@ -235,7 +239,7 @@ async function validateBackupPayloadFromFileSources(backup: ArchiveEnvelope, fil
       const header = await readHeader(source, 3);
       if (!isJpeg(header) || (Buffer.isBuffer(source) ? source.length : source.size) > CONTACT_PHOTO_MAX_BYTES) validation.errors.push(`Contact photo ${file.id} is not a stored contact photo`);
     }
-    if (file.kind === 'recording') {
+    if (file.kind === 'recording' || file.kind === 'recording_bin') {
       let header;
       if (Buffer.isBuffer(source)) header = source.subarray(0, AUDIO_HEADER_BYTES);
       else {
@@ -331,7 +335,11 @@ function scopeBackupForImport(backup: ArchiveEnvelope, sections: unknown) {
   const sourceData = backup?.data || {};
   const data: BackupPayload['data'] = {};
   for (const [key, value] of Object.entries(sourceData)) {
-    if (allowedTables.has(key)) data[key] = value;
+    if (!allowedTables.has(key)) continue;
+    // A table several sections share (the bin) keeps the rows of the chosen
+    // sections; its modules are named as their sections.
+    const shared = TABLE_POLICIES[key]?.rowSection;
+    data[key] = shared && Array.isArray(value) ? value.filter(row => normalizedSections.includes(String((row as BackupRow | null)?.[shared]))) : value;
   }
 
   const files = (backup?.files || []).filter(file => allowedFileKinds.has((file?.kind as string)));

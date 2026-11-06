@@ -10,6 +10,8 @@ export interface ApiResponse<T> {
   data?: T;
   error?: string;
   status?: number;
+  /** The answer was not the API's JSON (another content type, or a body that would not parse): a proxy or a cut connection, not the server's own answer. */
+  undecodable?: true;
   [key: string]: unknown;
 }
 
@@ -170,6 +172,7 @@ class ApiClient {
         const preview = text.slice(0, 80).replace(/\s+/g, ' ');
         return {
           status: response.status,
+          undecodable: true,
           error: getUnexpectedResponseMessage(response, contentType, endpoint),
           details: preview,
         };
@@ -181,6 +184,7 @@ class ApiClient {
       } catch {
         return {
           status: response.status,
+          undecodable: true,
           error: 'The server responded with invalid JSON. Check the API logs or proxy configuration.',
         };
       }

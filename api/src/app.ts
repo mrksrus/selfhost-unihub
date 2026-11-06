@@ -1,8 +1,9 @@
 import { prepareFolderReconciliation } from './services/mail-folder-reconciliation';
 import http from 'http';
-import { API_LISTEN_HOST, PORT } from './config';
+import { API_LISTEN_HOST, PORT, assertConfiguration } from './config';
 import { db } from './state';
 import { initDatabase } from './services/database';
+import { instanceBackupSetupErrors } from './services/instance-backup';
 import { suspendPendingBackupJobs, DISABLED_BACKUP_ROUTES } from './services/backup-availability';
 import { resumePendingDataExportJobs } from './services/export-jobs';
 import { resumePendingRestoreJobs } from './services/backup-restore-jobs';
@@ -17,7 +18,7 @@ import { drainProcess } from './services/shutdown';
 import { durableScheduler } from './services/mail-durable-jobs';
 import { expireWorkerLeases } from './services/mail-engine/runtime';
 import { startWorkerOwnership } from './services/worker-owner';
-import { controlPool } from './services/side-pools';
+import { controlPool, endSidePools } from './services/side-pools';
 import { log } from './log';
 
 // Both are logged with their stack, so a container restart has a cause in its
@@ -35,6 +36,11 @@ process.on('uncaughtException', error => {
 });
 
 async function start() {
+  // What startup refuses before touching anything (config.ts): a secret file
+  // that cannot be read or disagrees with its variable, and an instance
+  // backup set up wrongly (its key too short or another secret's, its
+  // destination inside the stored files). An unset backup is no refusal.
+  assertConfiguration(instanceBackupSetupErrors());
   await initDatabase();
   await verifyDatabaseInventory(db);
   // The Web Push identity is generated once, at startup rather than on first delivery.
@@ -68,7 +74,9 @@ async function start() {
   const serverClosed = new Promise(resolve => server.once('close', resolve));
   installShutdownHandler({ server, onShutdown: [() => { stopping = true; work?.stop(); }, closeAndroidStreams], drainMs: 8000,
     drain: () => drainProcess({ serverClosed, scheduler: durableScheduler, expireWorkerLeases,
-      closePool: async () => { await ownership?.stop(); await db.end(); } }) });
+      // Releasing the worker role first frees its lock session on the control
+      // pool; the side pools then end with the main pool.
+      closePool: async () => { await ownership?.stop(); try { await endSidePools(); } finally { await db.end(); } } }) });
   server.listen({ port: Number(PORT), ...(API_LISTEN_HOST ? { host: API_LISTEN_HOST } : {}) }, () => {
     log.info('STARTUP', 'UniHub API listening', { port: PORT, ...(API_LISTEN_HOST ? { host: API_LISTEN_HOST } : {}) });
   });

@@ -1,7 +1,7 @@
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const routes = require('../dist/src/routes') as typeof import('../src/routes');
-const { PUBLIC_ROUTE_KEYS, BACKGROUND_HEADER_CSRF_KEYS, DESTRUCTIVE_BY_ROUTE, bodyLimitFor } = require('../dist/src/routes/legacy-spec') as typeof import('../src/routes/legacy-spec');
+const { PUBLIC_ROUTE_KEYS, BACKGROUND_HEADER_CSRF_KEYS, POLICIES_BY_ROUTE, bodyLimitFor } = require('../dist/src/routes/legacy-spec') as typeof import('../src/routes/legacy-spec');
 const { getModuleForPath } = require('../dist/src/services/module-catalog') as typeof import('../src/services/module-catalog');
 
 // Route files converted to defineRoutes() declare their own policy; the rest
@@ -10,14 +10,13 @@ const { getModuleForPath } = require('../dist/src/services/module-catalog') as t
 // the boundary applied them, and shrinks as files are converted.
 // The restore mapping the backup catalog's WRITE_PATHS gave the derived files.
 function oldRestoreSection(pathname: string) {
-  if (pathname.startsWith('/api/backup/')) return null;
   for (const [section, prefix] of [['calendar', '/api/calendar'], ['mail', '/api/mail'], ['recordings', '/api/recordings']]) {
     if (pathname === prefix || pathname.startsWith(prefix + '/')) return section;
   }
   return null;
 }
-const NATIVE_ROUTE_FILES = ['calendar-tasks', 'notifications', 'admin', 'auth', 'settings', 'modules', 'system', 'offline', 'search', 'events', 'mail-essentials', 'mail-threads', 'files',
-  'contacts', 'contacts-transfer', 'contacts-photos', 'contacts-merge'];
+const NATIVE_ROUTE_FILES = ['calendar-tasks', 'notifications', 'admin', 'admin-instance-backup', 'auth', 'settings', 'modules', 'system', 'offline', 'search', 'events', 'mail-essentials', 'mail-threads', 'files', 'backup',
+  'contacts', 'contacts-transfer', 'contacts-photos', 'contacts-merge', 'bin'];
 const nativeKeys = new Set(NATIVE_ROUTE_FILES.flatMap(name => Object.keys(require(`../dist/src/routes/${name}`))));
 
 test('every derived route spec equals the policy the boundary looked up before specs existed', () => {
@@ -31,10 +30,10 @@ test('every derived route spec equals the policy the boundary looked up before s
       auth: PUBLIC_ROUTE_KEYS.has(key) ? 'public' : 'user',
       module: getModuleForPath(pathname),
       restoreSection: mutating ? oldRestoreSection(pathname) : undefined,
-      body: { limit: bodyLimitFor(key), kind: key === 'POST /api/backup/import' ? 'backup-upload' : 'json' },
+      body: { limit: bodyLimitFor(key), kind: 'json' },
       ...(BACKGROUND_HEADER_CSRF_KEYS.has(key) ? { csrf: 'background-header' } : {}),
-      // Declared since F13 (0.25), not derived from an older lookup.
-      ...(DESTRUCTIVE_BY_ROUTE[key] ? { destructive: DESTRUCTIVE_BY_ROUTE[key] } : {}),
+      // Declared since F13 (0.25 and 0.28), not derived from an older lookup.
+      ...POLICIES_BY_ROUTE[key],
     };
     const { handler, ...policy } = spec;
     assert.equal(typeof handler, 'function', key);
@@ -42,6 +41,6 @@ test('every derived route spec equals the policy the boundary looked up before s
   }
 });
 
-test('the derived public, background-header and destructive sets name routes that exist', () => {
-  for (const key of [...PUBLIC_ROUTE_KEYS, ...BACKGROUND_HEADER_CSRF_KEYS, ...Object.keys(DESTRUCTIVE_BY_ROUTE)]) assert.ok(key in routes, `${key} is listed but has no route`);
+test('the derived public, background-header and policy sets name routes that exist', () => {
+  for (const key of [...PUBLIC_ROUTE_KEYS, ...BACKGROUND_HEADER_CSRF_KEYS, ...Object.keys(POLICIES_BY_ROUTE)]) assert.ok(key in routes, `${key} is listed but has no route`);
 });

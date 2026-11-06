@@ -1,14 +1,14 @@
 // 25-07 / 25-08 / 25-01 (0.25.0): in the app, a mailed PDF and photo open in
 // another app, are shared and saved to Downloads through Android's own sheets,
-// fetched with a download ticket (F9) rather than the session; signing out
-// deletes the copies handed to other apps, as does accepting another server
-// from a connect link; and the composer's message stays above the on-screen
-// keyboard.
+// fetched with a download ticket (F9) rather than the session (the stack's
+// ticket log shows no Cookie header); signing out deletes the copies handed
+// to other apps, as does accepting another server from a connect link; and
+// the composer's message stays above the on-screen keyboard.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { PACKAGE, adb, answerSlowDialogs, deviceScreenshot, navigate, openApp, sleep, tapNative } from '../support/android.mjs';
+import { PACKAGE, adb, answerSlowDialogs, deviceScreenshot, navigate, openApp, sleep, tapNative, ticketLog } from '../support/android.mjs';
 import { sendMail } from '../tests/support/mail.ts';
 
 const fixture = name => fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url));
@@ -68,6 +68,7 @@ test('[25-07 25-08 25-01] open with, share and save a mailed PDF and photo; sign
     { filename: jpgName, content: readFileSync(fixture('synthetic-photo.jpg')), contentType: 'image/jpeg' },
   ] });
   adb('logcat', '-c');
+  const ticketsBefore = ticketLog().length;
   const { device, page } = await openApp();
   try {
     await navigate(page, '/mail');
@@ -114,6 +115,10 @@ test('[25-07 25-08 25-01] open with, share and save a mailed PDF and photo; sign
     assert.equal(saved, jpgName, 'saved under its own name');
     const bytes = execBytes(`/sdcard/Download/${jpgName}`);
     assert.ok(bytes.equals(readFileSync(fixture('synthetic-photo.jpg'))), 'the saved photo has the mailed bytes');
+    // Open with, both Shares and Save each fetched a ticket, never with the session cookie (stack.sh's ticket log).
+    const fetched = ticketLog().slice(ticketsBefore);
+    console.log(`ticket requests: ${JSON.stringify(fetched)}`);
+    assert.ok(fetched.length >= 4 && fetched.every(request => request.status === 200 && request.cookie === 'absent'), 'four ticket fetches, none with the session cookie');
     await page.keyboard.press('Escape');
     // Leave the open message (it covers the list and Compose on a phone).
     await page.getByRole('button', { name: /^Back to / }).filter({ visible: true }).first().click();

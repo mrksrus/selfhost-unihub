@@ -118,6 +118,15 @@ function text(component: Component, name: string) {
   return value == null ? '' : String(value).trim();
 }
 
+// A UID as the object has it, byte for byte: UIDs that differ only by
+// surrounding spaces name different items (calendar-overlays.ts compares
+// them exactly). One of only spaces is none.
+function rawUid(component: Component) {
+  const value = component.getFirstPropertyValue('uid');
+  const raw = value == null ? '' : String(value);
+  return raw.trim() ? raw : null;
+}
+
 function alarmMinutes(vevent: Component, startMs: number, endMs: number) {
   const minutes = [];
   for (const alarm of vevent.getAllSubcomponents('valarm')) {
@@ -177,7 +186,7 @@ function expandCalendarObject(ics: unknown, { windowStartMs, windowEndMs, userTi
     if (!vevents.length) return { uid: null, recurring: false, rrule: null, occurrences: [] };
     const master = vevents.find(item => !item.hasProperty('recurrence-id')) || null;
     const exceptions = vevents.filter(item => item !== master && item.hasProperty('recurrence-id'));
-    const uid = text(master || vevents[0], 'uid') || null;
+    const uid = rawUid(master || vevents[0]);
     const occurrences: Occurrence[] = [];
     const add = (vevent: Component, start: Time, end: Time | null, key: string) => {
       const occurrence = occurrenceFromComponent(vevent, start, end, userTimeZone);
@@ -466,11 +475,26 @@ function removeOccurrenceIcs(ics: unknown, recurrenceId: string, { userTimeZone 
   });
 }
 
+const UID_MAX = 500;
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/**
+ * An object's iCal UID as UniHub stores it (the uid columns hold 500
+ * characters): exactly, never shortened, since a shortened UID names another
+ * item. Null for none, and for one the columns cannot hold: such an object
+ * syncs like one without a UID, each row keyed by its own id and matched by
+ * no UID (calendar-sync.ts storeObject, calendar-uid-upgrade.ts).
+ */
+function storableObjectUid(ics: unknown) {
+  const uid = objectUid(ics);
+  return uid && !LONE_SURROGATE.test(uid) && Array.from(uid).length <= UID_MAX ? uid : null;
+}
+
 function objectUid(ics: unknown) {
   try {
     const root = parseIcs(ics);
     const vevent = root.getFirstSubcomponent('vevent');
-    return vevent ? text(vevent, 'uid') || null : null;
+    return vevent ? rawUid(vevent) : null;
   } catch {
     return null;
   }
@@ -488,5 +512,6 @@ export {
   updateEventIcs,
   removeOccurrenceIcs,
   objectUid,
+  storableObjectUid,
   MAX_OCCURRENCES_PER_SERIES,
 };

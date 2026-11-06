@@ -1,4 +1,4 @@
-import { Server, Users } from 'lucide-react';
+import { HardDriveDownload, Server, ShieldCheck, Users } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { useModules } from '@/hooks/use-modules';
 import { PanelGroup, PanelHeader, PanelItem } from '@/components/layout/PageShell';
@@ -19,6 +19,8 @@ export function SettingsPanel({ active }: { active: string }) {
       {user?.role === 'admin' && (
         <PanelGroup label="Server" className="border-t border-border pt-3">
           <PanelItem icon={Server} href="/admin/settings" active={active === 'admin-settings'}>Server settings</PanelItem>
+          <PanelItem icon={ShieldCheck} href="/admin/policies" active={active === 'admin-policies'}>Policies</PanelItem>
+          <PanelItem icon={HardDriveDownload} href="/admin/instance-backup" active={active === 'admin-instance-backup'}>Instance backup</PanelItem>
           <PanelItem icon={Users} href="/admin/users" active={active === 'admin-users'}>Users</PanelItem>
         </PanelGroup>
       )}

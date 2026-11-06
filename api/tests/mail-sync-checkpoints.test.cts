@@ -26,6 +26,8 @@ function scanFixture(t: import('node:test').TestContext, { uids = [1, 2, 3], epo
       .map(o => ({ uid: o.uid, observation_revision: o.observation_revision, email_revision: 0, observed_modseq: null }))];
     if (sql.includes('SELECT o.email_id FROM mail_remote_occurrences')) return [[occurrences.get(params[4])].filter(Boolean)];
     if (sql.includes('FROM mail_writebacks w JOIN')) return [[]];
+    // No restored item holds a provider address here (sync.ts keptItemAtAddress).
+    if (sql.includes('SELECT e.id FROM emails e') && sql.includes('NOT EXISTS (SELECT 1 FROM mail_remote_occurrences o')) return [[]];
     if (sql.includes('INSERT INTO emails')) { writes.push(['email', params[0], params[5]]); return [{ affectedRows: 1 }]; }
     if (sql.includes('UPDATE emails')) return [{ affectedRows: 1 }];
     // A finished flags/presence sweep starts over once its throttle has passed

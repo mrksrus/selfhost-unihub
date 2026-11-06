@@ -117,6 +117,12 @@ async function settleBox(cx: SqlExecutor, { userId, slug, box }: { userId: strin
  * folder discovery whose LIST ran just before the DELETE can register the
  * folder once more; the next discovery retires it again.
  */
+// The values of DELETE /api/mail/folders/:slug?server= that delete the
+// folder at the provider too. The route reads them, and its spec names the
+// mail.provider_delete policy (F13) for exactly these values, so no spelling
+// the route accepts escapes the policy.
+const SERVER_DELETE_VALUES: readonly string[] = ['1', 'true'];
+
 async function deleteMailFolder({ userId, slug, server = false }: { userId: string; slug: string; server?: boolean }, { pool = db, connect = connectToAccount }: Options = {}) {
   const [folders] = await pool.execute<RowDataPacket[]>('SELECT * FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1', [userId, slug]);
   const folder = folders[0];
@@ -169,4 +175,4 @@ async function deleteMailFolder({ userId, slug, server = false }: { userId: stri
   return { slug, server: removed, deletedMessages: outcome.deleted, movedMessages: outcome.moved };
 }
 
-export { deleteMailFolder };
+export { deleteMailFolder, SERVER_DELETE_VALUES };

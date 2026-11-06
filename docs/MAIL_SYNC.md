@@ -45,6 +45,53 @@ module:
   an active mailbox. The twin carries the server state; nothing is linked or
   merged. Unlinked items without a twin are kept. The mode impact counts them
   as `local_duplicates`.
+- An item that holds a full provider address but no occurrence (Sync mail a
+  backup kept, restored with its address; archived occurrences are evidence
+  only) is linked when a scan finds exactly that address again: same account,
+  mailbox, UIDVALIDITY and UID, which IMAP never gives to another message.
+  The item takes the occurrence and the server's flags, and its content is
+  not downloaded again (`keptItemAtAddress` in `mail-engine/sync.ts`); an
+  item restored without its content gets it downloaded into the item. Only
+  Sync accounts link this way: in a Download account read, star and filing are
+  UniHub's own, so a restored item stays unlinked there and the server's copy
+  downloads beside it, also after the account is switched to Download before
+  its first scan. Drafts, Legacy, cross-filed and missing-marked items are
+  never linked this way, and nothing is matched by Message-ID.
+- On Gmail another label of a restored message may be scanned before the
+  restored item's address. That label downloads its own item, the address
+  then follows it, and the restored item stays beside it. The restored item
+  keeps its X-GM-MSGID (`emails.remote_gmail_msgid`, carried by the backup),
+  so the existing Gmail merge treats the two as copies of one message
+  ([Mail modes](MAIL_MODES.md#gmail)): nothing merges before the account's
+  Sync policy is confirmed, and a restore never confirms it; afterwards the
+  merge keeps one item. It prefers a complete copy, between complete copies
+  the restored one, which keeps its id, filing and links; the labels,
+  operation history and mapping move to the kept item, and tasks made from a
+  removed copy (also those still waiting as restore overlays) name the kept
+  item. A merge group needs an occurrence of that X-GM-MSGID; an identity
+  from an archive alone joins nothing. Copies with a reminder or notification
+  still pending merge after it has been delivered: while a copy is snoozed,
+  or a notice about it (an arrival, a snooze's return) has a delivery pending
+  or waits for its content, the merge keeps them apart and a later pass joins
+  them. The merge never moves or deletes a notification; a delivered one
+  stays as it was. The removed copy's returned snooze and filing history go
+  to the kept item (copies holding different ones stay apart), and a kept
+  item without content that no body work had picked is queued. The scan does
+  not announce the label's copy as new mail.
+- Without that X-GM-MSGID nothing joins the two: the backup had no Gmail
+  mapping for the item, or the restored account is not Gmail by its IMAP
+  host or its sync's Gmail ids, so the restore dropped the id. Both copies
+  then stay visible, also after confirmation. This is by design: only
+  X-GM-MSGID proves two Gmail items are one message, never a Message-ID or
+  matching content.
+- An address of an older UIDVALIDITY links nothing: after the server reset
+  the mailbox's UIDVALIDITY between the backup and the restore, that UID may
+  be another message now. The restored item and the server's copy, downloaded
+  again, then both stay visible, and prune removes neither: the restored item
+  holds a full address, so it is no unlinked twin, and no occurrence ever
+  showed it gone. This is the safe choice. A visible duplicate the person can
+  delete is better than attaching the restored item to another message, or
+  removing it on a guess and losing what only it held.
 - Folder discovery records a mailbox flagged `\All` as `special_use = 'all'`
   on `mail_remote_mailboxes` (the local folder mapping still uses `archive`).
 
@@ -68,7 +115,9 @@ All mail; nothing is deleted, and a later LIST that shows the folder again
 makes it active through `ensureMailbox`.
 
 Deleting a custom folder on the server (`DELETE /api/mail/folders/:slug?server=1`,
-`mail-folder-delete.ts`) stops the account's read jobs, sends IMAP DELETE and
+`mail-folder-delete.ts`; `server=true` as well) is refused with `POLICY_FORBIDS`
+while an administrator's `mail.provider_delete` policy forbids deleting mail at
+the provider. Otherwise it stops the account's read jobs, sends IMAP DELETE and
 only then changes local rows, in one transaction. A login or connection failure,
 or a refusal, changes nothing; a DELETE reply with `NONEXISTENT` (or a "does not
 exist" reply for a folder the server no longer lists) counts as deleted. The

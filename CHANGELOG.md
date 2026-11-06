@@ -6,6 +6,156 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.28.0
+
+Data safety: encrypted backups that hold only your own data, a bin for what
+you delete, and a backup of the whole installation. The first start after
+the upgrade runs database upgrade 25, which takes longer on large calendars;
+back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
+
+### Added
+
+- **A bin for what you delete.** Deleted contacts, events and tasks (also
+  synced ones), lists with their events, and recordings go to the bin instead
+  of being gone at once; mail keeps its Trash folders. Every delete says
+  "Moved to the bin" with Undo. Each page's panel has a Bin entry to restore
+  or delete for good, and Settings → Bin shows everything together. Restore
+  brings an item back as it was: a contact with its photo, values and UIDs, a
+  task with its subtasks, done state and place in the list, a recording with
+  its file. Several contacts deleted together, a merge, or a list with its
+  events come back together.
+- **Synced events and tasks come back to their calendar.** Deleting an event
+  or task of a CalDAV calendar still deletes it at the provider, and UniHub
+  keeps it in the bin with its own details. Restoring it creates it at the
+  provider again with the same identity, and its done state and subtasks
+  come back. When its calendar is read-only now or gone, the bin asks which
+  of your calendars or lists it should go to, for example when its calendar
+  went with its account and you connected the account again. A repeating
+  event whose dates have their own changes or details waits in the bin until
+  a calendar can take it whole. Deleting one date of a repeating server event
+  is not kept in the bin.
+- **Choose how long the bin keeps items:** 7, 30 or 90 days or until you
+  delete them (30 to start with). Changing it applies to what is already in
+  the bin.
+- **The bin is in your backups.** Items in the bin travel with their section
+  (contacts, calendar, recordings) and come back into the bin with the time
+  they had left: a recording with its file, a contact with its photo.
+- **Instance backup.** With a destination (`INSTANCE_BACKUP_DIR`, a mount of
+  its own) and its own key (`INSTANCE_BACKUP_KEY` or `_FILE`) set, UniHub
+  backs up the whole installation, the database and every stored file,
+  encrypted, daily at `INSTANCE_BACKUP_TIME` (03:30 UTC) and on "Back up
+  now", keeping the newest `INSTANCE_BACKUP_KEEP` (14). A backup counts only
+  after it has been read back whole with the key; a failed one leaves no
+  file, and a run never writes over another run's file (also on a share
+  without hard links). Files deleted while a backup copies are removed after
+  it. The destination is for UniHub alone. Without the settings it is off and
+  the server runs as before. The backup holds none of the installation's
+  keys; keep them in a password manager. Server settings → Instance backup
+  shows its status, its configuration, the last and next run and "Back up
+  now"; there is no download from the web page.
+- **Restore command.** `node /app/api/src/instance-restore.js --file
+  <backup> --key-file <key>` restores an instance backup into an empty
+  installation and signs everyone out; mail accounts stay paused until
+  reconnected, and no queued provider operation runs again. `--verify-only`
+  checks a backup with the key ([Data recovery](docs/DATA_RECOVERY.md#instance-backup)).
+- **Secrets as files.** Every secret can be a file, `NAME_FILE`, for example a
+  Compose secret; `docker-compose.yml` shows how. Setting both with different
+  values, or an unreadable file, stops the start with a message naming the
+  setting.
+
+### Changed
+
+- **A backup holds what only UniHub has.** Contacts, local lists and tasks,
+  recordings, settings and the connections of your accounts are in it. So is
+  UniHub's own state on synced events and tasks: ToDo state, done time,
+  subtasks, the email a task was made from, and your replies to invitations
+  (UniHub keeps those to itself). What a provider holds downloads again after
+  the accounts reconnect and is no longer copied: CalDAV and subscription
+  events, and Sync-mode mail that is on the server. A Sync-mode message that
+  UniHub keeps on its own stays in the backup: a draft or UniHub's own sent
+  copy, Legacy mail, mail filed in another account, and mail that is gone from
+  the server.
+- **"Include downloaded mail"** decides whether Download-mode mail is in a
+  backup; it starts on, because that mail may be the only copy. An account
+  that deletes mail at the provider always includes its mail; the choice is
+  then checked and greyed with the reason.
+- **Every backup is encrypted** and needs its recovery password to restore
+  on another server. The "Encrypt backups" switch is gone; a backup from
+  before 0.28 is marked "Not encrypted, made before 0.28" and still downloads
+  and restores.
+- **Backup and restore is a list of settings:** what to back up, "Include
+  downloaded mail", what the backup holds and what it leaves out with counts,
+  and the backups on this server with when the server removes them. The
+  review of a backup to restore lists the same, with the server's notes, also
+  for old archives.
+- **Restoring an older backup** brings back only what a new backup would
+  hold and says what it left out. The ToDo state, subtasks and replies of its
+  synced items wait for the calendar's next sync and are applied to the item
+  with the same title and start for 30 days.
+- **Backups download through a single-use download ticket** instead of a link
+  that needs the session; the Android app can resume the download for an
+  hour. The Android app no longer gives your session to Android's downloader:
+  it gets only the ticket or the app update, which needs no sign-in. Install
+  the new app when it is offered; older apps keep downloading with the
+  tickets.
+- **Merged contacts are in the same bin.** Undoing a merge works as before for
+  30 days, also by restoring a merged contact from the bin; after that, the
+  merged-away contacts stay for the rest of your retention and come back on
+  their own.
+- Startup refuses an instance backup key shorter than 32 bytes or equal to
+  another secret (also written another way, such as base64 for hex), and a
+  backup destination inside the stored files.
+
+### Fixed
+
+- **Turning on a calendar for a second mail account keeps the first one's
+  task state.** When two mail accounts or aliases share a calendar login,
+  turning the calendar on for the second deleted the calendars of the first
+  and downloaded them again, losing the ToDo state, subtasks and replies
+  UniHub kept on their events. The calendars now move to the second mail
+  account with everything on them.
+- **A task moved to another list before a restore no longer comes back
+  twice.** Local tasks, lists and recordings now carry a stable identity, and
+  a restore finds them by it wherever they are: Replace puts the task back as
+  it was in the backup, Keep existing leaves it where you moved it. Moving a
+  task between lists and calendars keeps its identity.
+- **A synced task keeps its done state and subtasks through a restore.**
+  After restoring a backup, the first sync of a server calendar brought its
+  tasks back without the ToDo state, done time, subtasks and source email
+  UniHub had kept for them. They now wait for the task, with every subtask
+  however many it has, and are added when the sync brings it back.
+- **Merging Gmail copies of one message keeps what the removed copy held.**
+  When a confirmed Sync account merges copies of one Gmail message, the
+  removed copy's snooze, filing history and tasks now go to the kept
+  message. Copies with two different snoozes stay apart, and copies with a
+  reminder or notification still pending merge once it has been delivered,
+  so none is lost or sent twice. A kept copy whose content never loaded is
+  downloaded. A task made from a copy while it is merged away is refused
+  instead of linking a missing email. The confirmation counts only the
+  copies the merge actually removes.
+- **A move to another calendar no longer leaves the item twice, or writes
+  when it should not.** A move interrupted in 0.27 after the server stored the
+  copy, whose retry the server then refused, ended without looking and left
+  the item in both calendars; it now checks what the server holds and keeps
+  the copy it finds. A move that waited no longer writes to the server after
+  Calendar was switched off, a calendar restore began or the account was
+  paused meanwhile; it waits until they allow it again.
+- **A download in the Android app no longer closes the app** when Android's
+  download service has not started yet, for example right after the phone
+  starts; the app says the file could not be saved, and you can try again.
+
+### Pinned interface pictures
+
+- New pictures `settings-backup` (wide) and `bin` (wide and phone), dark
+  and light: Backup and restore and the Bin, designed under P-29 and D29 for
+  0.28.0.
+- Changed pictures: the Settings panel gains its Bin entry
+  (`settings-appearance`, `settings-pages`, wide) and the Contacts panel its
+  Bin view (`contact-detail`, `contact-editor`, `merge-review`, wide); the
+  list chooser (`new-task`, wide and phone) keeps the chosen list's name in
+  front and puts the account annotation at the end of the control, and its
+  options wrap a long name with the dot on the first line.
+
 ## 0.27.2
 
 A fix for writing mail. No database upgrade and no configuration change (see

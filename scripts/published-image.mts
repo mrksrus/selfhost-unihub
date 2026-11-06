@@ -97,3 +97,38 @@ export function writeFiles(files: Map<string, Buffer>, directory: string) {
     fs.writeFileSync(target, bytes);
   }
 }
+
+/** Whether a release's image is in the registry under its version tag. */
+export async function isPublished(version: string, repository = IMAGE_REPOSITORY) {
+  const response = await (await registry(repository))(`manifests/${version}`, MANIFESTS);
+  await response.body?.cancel();
+  if (response.status === 404) return false;
+  if (!response.ok) throw new Error(`${repository}:${version}: manifest ${response.status}`);
+  return true;
+}
+
+const parseVersion = (version: string) => /^v?(\d+)\.(\d+)\.(\d+)$/.exec(version)?.slice(1).map(Number) ?? null;
+export const compareVersions = (a: string, b: string) => {
+  const [x, y] = [parseVersion(a), parseVersion(b)];
+  if (!x || !y) throw new Error(`Not a release version: ${x ? b : a}`);
+  return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+};
+
+/**
+ * The newest `count` published releases up to the candidate's version, newest
+ * first: the releases an installation upgrades from. A release tag counts
+ * only once its image is published, so a release run, whose own version is
+ * not published yet, starts at the release before it; a candidate whose
+ * version is already published (the version is not bumped yet) is newer code
+ * than that release and upgrades from it too. Pre-releases are not releases.
+ */
+export async function previousReleases(candidate: string, tags: readonly string[], count: number, published: (version: string) => Promise<boolean>) {
+  const versions = [...new Set(tags.filter(tag => parseVersion(tag)).map(tag => tag.replace(/^v/, '')))]
+    .filter(version => compareVersions(version, candidate) <= 0).sort((a, b) => compareVersions(b, a));
+  const found: string[] = [];
+  for (const version of versions) {
+    if (found.length === count) break;
+    if (await published(version)) found.push(version);
+  }
+  return found;
+}

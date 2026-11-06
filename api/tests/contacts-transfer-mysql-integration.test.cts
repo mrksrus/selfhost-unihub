@@ -452,7 +452,7 @@ test('contacts review probes: long values, undo and purge under the photo lock, 
   const pool = await withTestDatabase(t);
   const api = await startTestApi(t);
   const { withContactPhotoLock } = require('../dist/src/services/contact-photos') as typeof import('../src/services/contact-photos');
-  const { purgeExpiredMerges } = require('../dist/src/services/contact-merge') as typeof import('../src/services/contact-merge');
+  const { purgeBin } = require('../dist/src/services/bin') as typeof import('../src/services/bin');
   const password = 'synthetic-review-password';
   const userId = crypto.randomUUID();
   await pool.execute('INSERT INTO users (id, email, password_hash, full_name) VALUES (?, ?, ?, ?)',
@@ -506,7 +506,7 @@ test('contacts review probes: long values, undo and purge under the photo lock, 
   const binned = async () => Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM bin_items WHERE group_id = ?', [second.merge_id]))[0][0].n);
   let purge!: Promise<{ items: number; merges: number }>;
   await withContactPhotoLock(userId, async () => {
-    purge = purgeExpiredMerges({ now: new Date(Date.now() + 40 * 24 * 3600 * 1000) });
+    purge = purgeBin({ now: new Date(Date.now() + 40 * 24 * 3600 * 1000) });
     await sleep(500);
     assert.equal(await binned(), 1, 'the purge waits for the lock too');
   });

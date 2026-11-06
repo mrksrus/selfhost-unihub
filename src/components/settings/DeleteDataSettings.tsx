@@ -16,6 +16,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
+import { usePolicy } from '@/hooks/use-policies';
 
 interface Target {
   id: string;
@@ -56,8 +57,14 @@ export default function DeleteDataSettings() {
   const { toast } = useToast();
   const { isEnabled } = useModules();
   const [target, setTarget] = useState<Target | null>(null);
+  // Greyed with the policy's reason (F13); the server refuses the request anyway.
+  const clearPolicy = usePolicy('data.clear');
+  const accountPolicy = usePolicy('account.delete');
 
   const remove = useMutation({
+    // D41 (open): whether deleting one's own account asks for the password
+    // again. Until decided, DELETE /settings/account sends no body; the
+    // confirmation would then take the password and pass it here.
     mutationFn: async (entry: Target) => {
       const response = entry.method === 'delete' ? await api.delete<{ message?: string }>(entry.path) : await api.post<{ message?: string }>(entry.path);
       if (response.error) throw new Error(response.error);
@@ -76,14 +83,14 @@ export default function DeleteDataSettings() {
     <>
       <SettingsSection title="Delete data" description="Only a backup can bring it back.">
         {TARGETS.filter(entry => !entry.module || isEnabled(entry.module)).map(entry => (
-          <SettingsRow key={entry.id} label={entry.label} description={entry.description || undefined}>
-            <Button variant="outline" className="text-destructive hover:text-destructive" onClick={() => setTarget(entry)}>Delete all</Button>
+          <SettingsRow key={entry.id} label={entry.label} description={entry.description || undefined} lock={clearPolicy.lock}>
+            <Button variant="outline" className="text-destructive hover:text-destructive" onClick={() => setTarget(entry)} disabled={!!clearPolicy.lock}>Delete all</Button>
           </SettingsRow>
         ))}
       </SettingsSection>
       <SettingsSection title="Account">
-        <SettingsRow label="Delete your account" tone="destructive">
-          <Button variant="destructive" onClick={() => setTarget(ACCOUNT)}>Delete account</Button>
+        <SettingsRow label="Delete your account" tone="destructive" lock={accountPolicy.lock}>
+          <Button variant="destructive" onClick={() => setTarget(ACCOUNT)} disabled={!!accountPolicy.lock}>Delete account</Button>
         </SettingsRow>
       </SettingsSection>
 

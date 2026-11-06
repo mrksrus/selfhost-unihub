@@ -28,7 +28,7 @@ export const ROUTES_USING_DB = {
 // Frontend views and hooks that call the raw API client instead of a feature
 // module in src/lib/ (calendar-api.ts, mail-api.ts, ...).
 export const VIEWS_USING_API_CLIENT = {
-  ceiling: 23,
+  ceiling: 22,
   files: [
     "src/components/GlobalCommandPalette.tsx",
     "src/components/mail/AttachmentViewer.tsx",
@@ -39,7 +39,6 @@ export const VIEWS_USING_API_CLIENT = {
     "src/components/offline/OfflineSettings.tsx",
     "src/components/pwa/NotificationSettings.tsx",
     "src/components/settings/AccountSettings.tsx",
-    "src/components/settings/BackupSettings.tsx",
     "src/components/settings/DeleteDataSettings.tsx",
     "src/hooks/use-attachment-download.ts",
     "src/hooks/use-mail-account-backup.ts",

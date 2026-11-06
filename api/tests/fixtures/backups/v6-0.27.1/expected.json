@@ -1,0 +1,27 @@
+{
+  "tag": "v0.27.1",
+  "commit": "ba80ca202adb250cb3ea4e50c6f0a44b17a798ac",
+  "version": 6,
+  "sha256": "83c39d555621b1357cabcf1ceb3776f046c99940ce02070542993b88bc1ae425",
+  "recovery_password": "YYyjHJAW082xXX1tRipfP0ICZFfeKavDJOdmKtXPx8c",
+  "source_sha256": {
+    "services/backup-export.ts": "02d6850cc16bb58efde9162477db5fa59d67ee3ca0a86b878e71e3a264dcd86b",
+    "services/backup-format.ts": "8421c36c2e9a4726ba69e8806835a6e6f723ec5cef139f94efc3fbee1e14fe7c",
+    "services/export-jobs.ts": "6a48e76a3eb71a3ec3882b4ddd8c377ed2ce86e043f9435894606e0f303c03c4",
+    "services/backup-catalog.ts": "d74722db3b2bbaa258aa4a679455637e61f0b9d15c637308c6a4128a74d64a5d",
+    "services/backup-container.ts": "d351839ec67efe0d6da6d4e1dc115d4e8c5c8b438824f3fdc08961442d079f36"
+  },
+  "user": "02710000-0000-4000-8000-000000000001",
+  "rows": {
+    "contacts": 1,
+    "calendar_events": 6,
+    "local_events": 3,
+    "synced_events": 3,
+    "synced_done": 1,
+    "emails": 3,
+    "sync_linked_emails": 1,
+    "sync_local_emails": 1,
+    "download_emails": 1,
+    "recordings": 1
+  }
+}

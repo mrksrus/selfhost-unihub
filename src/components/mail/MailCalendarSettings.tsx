@@ -13,6 +13,8 @@ import {
 } from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
 import { useModules } from '@/hooks/use-modules';
+import { usePolicy } from '@/hooks/use-policies';
+import { PolicyNote } from '@/components/ui/policy-note';
 import { browserTimeZone, calendarApi, calendarQueryKeys, type CalendarAccount, type MailCalendarLink } from '@/lib/calendar-api';
 import type { MailAccount } from '@/lib/mail-api';
 import { calendarSubscriptionHints, type AccountFormState } from '@/components/mail/mail-page-model';
@@ -57,6 +59,10 @@ export function MailCalendarSettings({ account }: { account: MailAccount }) {
   const calendarModule = !modulesPending && isEnabled('calendar');
   const [address, setAddress] = useState('');
   const [confirmOff, setConfirmOff] = useState(false);
+  // The linked calendar is a calendar account: turning it on adds one and
+  // turning it off removes one, so the same rules grey the switch (F13).
+  const addPolicy = usePolicy('accounts.add');
+  const removePolicy = usePolicy('accounts.remove');
   const queryKey = mailCalendarQueryKey(account.id);
   const linkQuery = useQuery({
     queryKey,
@@ -103,7 +109,8 @@ export function MailCalendarSettings({ account }: { account: MailAccount }) {
   const typed = address.trim();
   const addressChanged = calendarAccount ? typed !== manualAddress(link) || (calendarAccount.provider === 'ics' && typed !== '') : false;
   const needsAddress = Boolean(subscriptionHint) && !typed;
-  const connect = () => change.mutate({ enabled: true, ...(typed ? { caldav_url: typed } : {}) });
+  const lock = link?.enabled ? removePolicy.lock : addPolicy.lock;
+  const connect = () => { if (!addPolicy.lock) change.mutate({ enabled: true, ...(typed ? { caldav_url: typed } : {}) }); };
 
   return (
     <section className="rounded-md border border-border p-3 space-y-3" aria-labelledby={`mail-calendar-${account.id}`}>
@@ -120,15 +127,16 @@ export function MailCalendarSettings({ account }: { account: MailAccount }) {
         {linkQuery.isLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-label="Loading calendar settings" /> : (
           <Switch
             checked={link?.enabled === true}
-            disabled={busy || !link || (!link.enabled && needsAddress)}
+            disabled={busy || !link || (!link.enabled && needsAddress) || !!lock}
             aria-labelledby={`mail-calendar-${account.id}`}
             onCheckedChange={(checked) => {
-              if (!checked) { setConfirmOff(true); return; }
+              if (!checked) { if (!removePolicy.lock) setConfirmOff(true); return; }
               connect();
             }}
           />
         )}
       </div>
+      {link && lock && <PolicyNote reason={lock} className="mt-0" />}
 
       {linkQuery.error && (
         <p className="text-xs text-destructive">Could not load the calendar settings: {(linkQuery.error as Error).message}</p>
@@ -181,7 +189,7 @@ export function MailCalendarSettings({ account }: { account: MailAccount }) {
 
       {link && !link.enabled && (
         <div className="space-y-2">
-          <Button type="button" size="sm" disabled={busy || needsAddress} onClick={connect}>
+          <Button type="button" size="sm" disabled={busy || needsAddress || !!addPolicy.lock} onClick={connect}>
             {change.isPending && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
             Connect calendar
           </Button>
@@ -224,7 +232,7 @@ export function MailCalendarSettings({ account }: { account: MailAccount }) {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Keep</AlertDialogCancel>
-            <AlertDialogAction onClick={() => change.mutate({ enabled: false })}>Turn off</AlertDialogAction>
+            <AlertDialogAction disabled={!!removePolicy.lock} onClick={() => { if (!removePolicy.lock) change.mutate({ enabled: false }); }}>Turn off</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

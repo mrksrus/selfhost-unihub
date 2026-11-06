@@ -320,12 +320,15 @@ boundary checks it before the handler runs.
 | GET | `/api/admin/settings/signup-mode` | Read signup mode |
 | PUT | `/api/admin/settings/signup-mode` | Set signup mode |
 | GET | `/api/admin/audit` | Activity log, newest first; `?before=<cursor>` for the next page |
+| GET | `/api/admin/instance-backup` | Instance backup: on or off (and what is missing), the read-only configuration, the key's fingerprint, next run, kept count and size, the latest runs and the restore command (`server.settings`) |
+| POST | `/api/admin/instance-backup/run` | "Back up now": `202` with the started run; `409 INSTANCE_BACKUP_OFF` or `INSTANCE_BACKUP_RUNNING`, `503 INSTANCE_BACKUP_NOT_READY` while the process does not run the background work yet (`server.settings`) |
 
 ### Activity log
 
 `audit_log` (upgrade step 19) records sign-ins and failed sign-ins, password,
 2FA and recovery-code changes, signing out another device, account deletion,
-every admin action on a user or on sign-up, and the removal of a person's mail
+every admin action on a user or on sign-up, starting an instance backup
+(`admin.instance_backup_started`), and the removal of a person's mail
 data: disconnecting a mail account (`mail.account_disconnected`) and deleting
 it with UniHub's copy of its mail (`mail.account_purged`). Each entry names
 the actor, the account concerned, the address and the request id; details hold
@@ -388,6 +391,18 @@ both; Settings only reflects them: a locked setting is greyed out with "Set by
 your administrator", never hidden, and under a floor the less private choices
 are greyed out the same way. The shared types are in
 `api/src/contracts/settings.ts`.
+
+Data-safety policies (F13) are rules on actions, not settings of a person:
+`policy.<key>` rows of the installation in `setting_policies`, with their keys,
+defaults and plain reasons in `settings-registry.ts` (`POLICIES`) and their
+shapes in `api/src/contracts/policies.ts`. Every default allows what UniHub
+does today. A route names the policies of its action on its spec
+(`destructive`, `requires`; [Request Handling](ARCHITECTURE.md#request-handling)),
+and the request boundary refuses a forbidden action with 403 `POLICY_FORBIDS`
+and `details: { policy, reason }` before anything changes, for every person,
+administrators included on their own data. A locked policy stands; a policy
+of a key with an order is a floor that later group policies can only make
+stricter. No route writes them yet.
 
 ### User scope
 

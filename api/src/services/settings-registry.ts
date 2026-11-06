@@ -1,4 +1,5 @@
 import type { SettingScope } from '../contracts/settings';
+import type { PolicyKey, PolicyValues } from '../contracts/policies';
 
 // The settings registry (F1): every option of every scope, with its type,
 // default and, where an administrator may set a minimum, how strict each
@@ -58,6 +59,10 @@ export const SETTINGS = {
     // A view rule (mail-snooze.ts): which lists show a message while it is
     // snoozed. 'hide' is the behaviour before 0.25.
     snoozed_messages: { scope: 'user', kind: { type: 'enum', values: ['hide', 'keep'] }, default: 'hide' },
+    // How long the bin keeps deleted items (services/bin.ts, D13). Keeping
+    // longer is stricter, so an administrator's policy is a minimum. The
+    // default is a placeholder until D33 is answered.
+    bin_retention: { scope: 'user', kind: { type: 'enum', values: ['7', '30', '90', 'forever'] }, default: '30', strictness: ['7', '30', '90', 'forever'] },
   },
   mail_account: {
     notify_enabled: { scope: 'mail_account', kind: { type: 'boolean' }, default: true },
@@ -70,3 +75,66 @@ export const SETTINGS = {
     notify_enabled: { scope: 'calendar', kind: { type: 'boolean' }, default: true },
   },
 } as const satisfies Record<SettingScope, Record<string, Entry>>;
+
+// Data-safety policies (F13): rules on actions, not settings of a person.
+// Each key's default allows what UniHub does today, so nothing changes until
+// an administrator sets a policy (stored in setting_policies as
+// policy.<key>). services/settings.ts resolves them; the boundary and the
+// services refuse a forbidden action with POLICY_FORBIDS and the key's reason.
+export interface PolicyEntry<V extends Value = Value> {
+  kind: Kind;
+  default: V;
+  // Values from the least to the most strict, where the key has an order.
+  strictness?: readonly string[];
+  // The values that refuse the action the key names.
+  refuses: readonly V[];
+  // A plain sentence for each value other than the default, shown beside a
+  // greyed control and in the notice of the rules in force.
+  reasons: Readonly<Record<string, string>>;
+  // The key also refuses while this one does.
+  impliedBy?: PolicyKey;
+}
+
+const ALLOWANCE: Kind = { type: 'enum', values: ['allowed', 'forbidden'] };
+const allowance = (reason: string, impliedBy?: PolicyKey): PolicyEntry<'allowed' | 'forbidden'> => ({
+  kind: ALLOWANCE, default: 'allowed', strictness: ['allowed', 'forbidden'], refuses: ['forbidden'], reasons: { forbidden: reason }, ...(impliedBy ? { impliedBy } : {}),
+});
+
+export const POLICIES: { readonly [K in PolicyKey]: PolicyEntry<PolicyValues[K]> } = {
+  'mail.mode.download': allowance('Your administrator does not allow Download mode for mail accounts.'),
+  'mail.mode.sync': allowance('Your administrator does not allow Sync mode for mail accounts.'),
+  'mail.mode.new_accounts': {
+    kind: { type: 'enum', values: ['user_choice', 'download', 'download_delete', 'sync'] }, default: 'user_choice', refuses: [],
+    reasons: {
+      download: 'New mail accounts use Download mode, as your administrator set.',
+      download_delete: 'New mail accounts use Download mode and delete downloaded mail at the provider, as your administrator set.',
+      sync: 'New mail accounts use Sync mode, as your administrator set.',
+    },
+  },
+  'mail.provider_delete': {
+    kind: { type: 'enum', values: ['user_choice', 'forbidden', 'required'] }, default: 'user_choice', refuses: ['forbidden'],
+    reasons: {
+      forbidden: 'Your administrator does not allow deleting mail at the provider.',
+      required: 'New mail accounts delete downloaded mail at the provider, as your administrator requires.',
+    },
+  },
+  'backup.download_mail': {
+    kind: { type: 'enum', values: ['user_choice', 'always'] }, default: 'user_choice', strictness: ['user_choice', 'always'], refuses: [],
+    reasons: { always: 'Your backups always include downloaded mail, as your administrator requires.' },
+  },
+  'backup.create': allowance('Your administrator does not allow creating backups.'),
+  'backup.restore': allowance('Your administrator does not allow restoring backups.'),
+  'backup.delete': allowance('Your administrator does not allow deleting backups.'),
+  'backup.server_retention_days': {
+    kind: { type: 'integer', min: 30, max: 365, values: [30, 90, 365], nullable: true }, default: null, refuses: [],
+    reasons: Object.fromEntries([30, 90, 365].map(days => [String(days), `The server keeps each of your backups for ${days} days, then removes it.`])),
+  },
+  'accounts.add': allowance('Your administrator does not allow adding accounts.'),
+  'accounts.remove': allowance('Your administrator does not allow removing accounts.'),
+  'accounts.reset': allowance('Your administrator does not allow deleting UniHub\'s copy of an account\'s mail.'),
+  // The administrator's path for a person (F13) is always there.
+  'accounts.admin_manage': { kind: { type: 'enum', values: ['available'] }, default: 'available', refuses: [], reasons: {} },
+  'account.delete': allowance('Your administrator does not allow deleting your UniHub account.'),
+  'data.clear': allowance('Your administrator does not allow deleting data.', 'bin.delete'),
+  'bin.delete': allowance('Your administrator does not allow deleting items from the bin for good.'),
+};

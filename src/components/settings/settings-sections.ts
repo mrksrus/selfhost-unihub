@@ -1,7 +1,7 @@
-import { Archive, Bell, CloudOff, LayoutGrid, ListFilter, Mail, Palette, Shield, SlidersHorizontal, Trash2, UserRound } from 'lucide-react';
+import { Archive, ArchiveRestore, Bell, CloudOff, LayoutGrid, ListFilter, Mail, Palette, Shield, SlidersHorizontal, Trash2, UserRound } from 'lucide-react';
 import type { ModuleId } from '@/lib/modules';
 
-export type SettingsSectionId = 'general' | 'appearance' | 'account' | 'security' | 'notifications' | 'offline' | 'pages' | 'mail' | 'mail-rules' | 'backup' | 'delete';
+export type SettingsSectionId = 'general' | 'appearance' | 'account' | 'security' | 'notifications' | 'offline' | 'pages' | 'mail' | 'mail-rules' | 'backup' | 'bin' | 'delete';
 
 export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; icon: typeof Bell; module?: ModuleId }[] = [
   { id: 'general', label: 'General', icon: SlidersHorizontal },
@@ -14,6 +14,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; icon: ty
   { id: 'mail', label: 'Mail', icon: Mail, module: 'mail' },
   { id: 'mail-rules', label: 'Mail rules', icon: ListFilter, module: 'mail' },
   { id: 'backup', label: 'Backup and restore', icon: Archive },
+  { id: 'bin', label: 'Bin', icon: ArchiveRestore },
   { id: 'delete', label: 'Delete data', icon: Trash2 },
 ];
 

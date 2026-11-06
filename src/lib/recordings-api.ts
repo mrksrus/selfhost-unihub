@@ -1,4 +1,5 @@
 import { api } from '@/lib/api';
+import type { BinnedResponse } from '../../api/src/contracts/bin';
 
 export const recordingCategories = ['none', 'music', 'journal', 'memory', 'reminder'] as const;
 
@@ -126,8 +127,10 @@ export const recordingsApi = {
     return response.data.recording;
   },
 
-  async delete(id: string): Promise<void> {
-    const response = await api.delete(`/recordings/${id}`);
+  /** Moves a recording to the bin; the answer is the bin items to restore for Undo. */
+  async delete(id: string): Promise<string[]> {
+    const response = await api.delete<BinnedResponse>(`/recordings/${id}`);
     if (response.error) throw new Error(response.error);
+    return response.data?.bin_item_ids ?? [];
   },
 };

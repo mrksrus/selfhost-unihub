@@ -1,10 +1,13 @@
-// Merging contacts, the 30-day undo and its purge (0.26.0 slice 6, F12). A
-// merge never drops a value: every list value, kept property, unique note
-// and category of every member stays on the survivor, and the single values
-// the person did not choose stay in the bin for 30 days with the
-// merged-away contacts. The bin (bin_items) is the generic one of 0.28 (D13,
-// P-31); a merge puts its merged-away contacts there as one group, and the
-// undo is a restore of that group.
+// Merging contacts and the 30-day undo (0.26.0 slice 6, F12), and contacts
+// in the bin (0.28, D13, P-31). A merge never drops a value: every list
+// value, kept property, unique note and category of every member stays on
+// the survivor, and the single values the person did not choose stay in the
+// bin with the merged-away contacts, at least 30 days (the person's
+// retention when longer). The bin is the generic one (bin.ts); a merge puts
+// its merged-away contacts there as one group, and the undo is a restore of
+// that group. A deleted contact goes there too, with everything an undo
+// needs (its rows, the UIDs it answered to, its "Not the same person"
+// pairs), and its photo stays on disk until the purge.
 //
 // Bin payloads and the survivor's snapshot are the stored rows verbatim
 // (ids, positions, import details, versions and times), because an undo puts
@@ -22,16 +25,18 @@ import { withTransaction } from './transactions';
 import { displayName, loadContacts, newUid, replaceContact, uidHash, KEPT_PROPERTIES_MAX, KEPT_PROPERTIES_MAX_BYTES, VALUES_PER_KIND } from './contacts';
 import { contactIdList, findDuplicates, singleFieldConflicts, singleFieldValue } from './contact-duplicates';
 import { valueIdentity as sameValueIdentity } from './contact-keys';
-import { getActiveRestoreSectionsByUser } from './restore-locks';
-import { isModuleEnabled } from './module-settings';
 import { withContactPhotoLock } from './contact-photos';
+import { putInBin, parsePayload, lockBinOwner } from './bin';
+import type { BinKind, BinRow } from './bin';
+import type { BinRestored } from '../contracts/bin';
 
 const UNDO_DAYS = 30;
 const MERGE_MAX = 50;
 const AUTO_MERGE_MAX = 500;
 const NOTES_MAX_BYTES = 65535;
-const PAYLOAD_VERSION = 1;
 const PURGE_BATCH = 500;
+const ID_PATTERN = /^[0-9a-f-]{36}$/i;
+const SHA256 = /^[a-f0-9]{64}$/;
 const CHOICE_FIELDS: readonly ContactSingleField[] = ['name', 'display_name', 'organization', 'department', 'job_title', 'birthday', 'anniversary', 'photo'];
 
 // ── Stored rows, verbatim ──────────────────────────────────────────────
@@ -118,11 +123,13 @@ async function freeIds(cx: SqlExecutor, table: string, rows: readonly StoredRow[
   return rows.map(row => used.has(String(row.id)) ? { ...row, id: crypto.randomUUID() } : row);
 }
 
-/** Writes a snapshot's children onto `contactId` (its own rows of those tables are already gone). */
-async function insertChildren(cx: SqlExecutor, contactId: string, snapshot: ContactSnapshot) {
-  await insertStored(cx, 'contact_values', VALUE_COLUMNS, await freeIds(cx, 'contact_values', snapshot.values.map(row => ({ ...row, contact_id: contactId }))));
-  await insertStored(cx, 'contact_properties', PROPERTY_COLUMNS, await freeIds(cx, 'contact_properties', snapshot.properties.map(row => ({ ...row, contact_id: contactId }))));
-  if (snapshot.photo) await insertStored(cx, 'contact_photos', PHOTO_COLUMNS, [{ ...snapshot.photo, contact_id: contactId }]);
+/** Writes a snapshot's children onto `contactId` of `userId` (its own rows of those tables are already gone). */
+async function insertChildren(cx: SqlExecutor, userId: string, contactId: string, snapshot: ContactSnapshot) {
+  const owned = (rows: readonly StoredRow[]) => rows.map(row => ({ ...row, contact_id: contactId, user_id: userId }));
+  await insertStored(cx, 'contact_values', VALUE_COLUMNS, await freeIds(cx, 'contact_values', owned(snapshot.values || [])));
+  await insertStored(cx, 'contact_properties', PROPERTY_COLUMNS, await freeIds(cx, 'contact_properties', owned(snapshot.properties || [])));
+  const photo = snapshot.photo;
+  if (photo && SHA256.test(String(photo.sha256)) && SHA256.test(String(photo.thumb_sha256))) await insertStored(cx, 'contact_photos', PHOTO_COLUMNS, owned([photo]));
 }
 
 function parseJson<T>(value: unknown): T | null {
@@ -483,18 +490,17 @@ async function mergeLocked(cx: SqlExecutor, userId: string, { ids, survivorId, c
   // photo sweep keeps what a bin item's file_refs name, so the group's first
   // item names it too.
   const replacedPhoto = plan.photoFrom && plan.photoFrom !== survivor && survivor.photo ? [survivor.photo.sha256, survivor.photo.thumb_sha256] : [];
-  for (const [index, member] of others.entries()) {
+  await putInBin(cx, userId, others.map((member, index) => {
     const payload: BinContactPayload = {
       ...member,
       aliases: aliases.filter(alias => alias.contact_id === member.contact.id).map(alias => ({ uid_hash: alias.uid_hash, uid: alias.uid, merge_id: alias.merge_id })),
       dismissed_with: dismissedWith.get(member.contact.id) || [],
     };
     const own = member.photo ? [member.photo.sha256, member.photo.thumb_sha256] : [];
-    const files = [...own, ...(index === 0 ? replacedPhoto : [])];
-    await cx.execute(`INSERT INTO bin_items (id, user_id, module, item_type, item_id, title, reason, group_id, payload, payload_version, file_refs, deleted_at, purge_after)
-      VALUES (?, ?, 'contacts', 'contact', ?, ?, 'merged', ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP() + INTERVAL ${UNDO_DAYS} DAY)`,
-    [crypto.randomUUID(), userId, member.contact.id, Array.from(snapshotName(member)).slice(0, 255).join(''), mergeId, JSON.stringify(payload), PAYLOAD_VERSION,
-      files.length ? JSON.stringify(files) : null]);
+    return { module: 'contacts' as const, itemType: 'contact' as const, itemId: member.contact.id, title: snapshotName(member), reason: 'merged' as const, groupId: mergeId,
+      payload, fileRefs: [...own, ...(index === 0 ? replacedPhoto : [])] };
+  }));
+  for (const member of others) {
     await cx.execute(`INSERT INTO contact_uid_aliases (user_id, uid_hash, uid, contact_id, merge_id) VALUES (?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE contact_id = VALUES(contact_id), merge_id = VALUES(merge_id)`,
     [userId, member.contact.uid_hash, member.contact.uid, survivorId, mergeId]);
@@ -574,6 +580,8 @@ async function listMerges(userId: string, executor: SqlExecutor = db): Promise<M
 }
 
 async function undoLocked(cx: SqlExecutor, userId: string, mergeId: string): Promise<UndoMergeResult> {
+  // The person before the merge's bin rows, as every restore from the bin (bin.ts lockBinOwner).
+  await lockBinOwner(cx, userId);
   const [[merge]] = await cx.execute<MergeRow[]>(`SELECT id, survivor_id, survivor_before, survivor_version_after, undone_at, purge_after <= UTC_TIMESTAMP() AS expired
     FROM contact_merges WHERE id = ? AND user_id = ? FOR UPDATE`, [mergeId, userId]);
   if (!merge) throw notFound('MERGE_NOT_FOUND', 'Merge not found');
@@ -598,7 +606,7 @@ async function undoLocked(cx: SqlExecutor, userId: string, mergeId: string): Pro
     const [[uidTaken]] = await cx.execute<RowDataPacket[]>('SELECT id FROM contacts WHERE user_id = ? AND uid_hash = ?', [userId, original.uid_hash]);
     const uid = uidTaken ? newUid(id) : original.uid;
     await insertStored(cx, 'contacts', CONTACT_COLUMNS, [{ ...original, id, user_id: userId, uid, uid_hash: uidTaken ? uidHash(uid) : original.uid_hash }]);
-    await insertChildren(cx, id, payload);
+    await insertChildren(cx, userId, id, payload);
     // The UIDs it held as aliases come back to it from the survivor.
     const held = (payload.aliases || []).map(alias => alias.uid_hash);
     if (held.length) {
@@ -633,7 +641,7 @@ async function undoLocked(cx: SqlExecutor, userId: string, mergeId: string): Pro
       for (const table of ['contact_values', 'contact_properties', 'contact_photos']) {
         await cx.execute(`DELETE FROM ${table} WHERE user_id = ? AND contact_id = ?`, [userId, merge.survivor_id]);
       }
-      await insertChildren(cx, merge.survivor_id, before);
+      await insertChildren(cx, userId, merge.survivor_id, before);
       survivorRestored = true;
     }
   }
@@ -660,55 +668,141 @@ async function undoMerge(userId: string, mergeId: string): Promise<UndoMergeResu
   return withContactPhotoLock(userId, () => withTransaction(cx => undoLocked(cx, userId, mergeId)));
 }
 
-// ── Purge (worker owner) ───────────────────────────────────────────────
+// ── Deleting and restoring contacts (the bin) ──────────────────────────
 
-interface PurgeOptions {
-  now?: Date;
-  executor?: SqlExecutor;
-  /** Per user: false while the Contacts module is off, so its bin waits too. */
-  moduleEnabled?: (userId: string) => Promise<boolean>;
-  /** Stops between users (the worker lost its lock or shuts down). */
-  active?: () => boolean;
+/**
+ * DELETE /api/contacts/:id and bulk-delete: the contacts into the bin, in one
+ * transaction, several as one group (one undo). Another person's ids are
+ * not found. Returns how many were moved.
+ */
+/** Deletes the person's contacts among ids into the bin, several as one group: how many went, and their bin items (for Undo). */
+async function moveContactsToBin(userId: string, ids: readonly string[]): Promise<{ deleted: number; binItemIds: string[] }> {
+  const sorted = [...new Set(ids)].sort();
+  if (!sorted.length) return { deleted: 0, binItemIds: [] };
+  return withTransaction(async cx => {
+    const [locked] = await cx.execute<(RowDataPacket & { id: string })[]>(
+      `SELECT id FROM contacts WHERE user_id = ? AND id IN (${placeholders(sorted)}) ORDER BY id FOR UPDATE`, [userId, ...sorted]);
+    const present = locked.map(row => row.id);
+    if (!present.length) return { deleted: 0, binItemIds: [] };
+    const snapshots = await snapshotContacts(cx, userId, present);
+    const [aliases] = await cx.execute<(RowDataPacket & { uid_hash: string; uid: string; merge_id: string | null; contact_id: string })[]>(
+      `SELECT uid_hash, uid, merge_id, contact_id FROM contact_uid_aliases WHERE user_id = ? AND contact_id IN (${placeholders(present)})`, [userId, ...present]);
+    const [pairs] = await cx.execute<(RowDataPacket & { contact_a: string; contact_b: string })[]>(
+      `SELECT contact_a, contact_b FROM contact_duplicate_dismissals WHERE user_id = ? AND (contact_a IN (${placeholders(present)}) OR contact_b IN (${placeholders(present)}))`,
+      [userId, ...present, ...present]);
+    const groupId = present.length > 1 ? crypto.randomUUID() : null;
+    const binItemIds = await putInBin(cx, userId, present.map(id => {
+      const snapshot = snapshots.get(id)!;
+      const payload: BinContactPayload = {
+        ...snapshot,
+        aliases: aliases.filter(alias => alias.contact_id === id).map(alias => ({ uid_hash: alias.uid_hash, uid: alias.uid, merge_id: alias.merge_id })),
+        dismissed_with: pairs.flatMap(pair => pair.contact_a === id ? [pair.contact_b] : pair.contact_b === id ? [pair.contact_a] : []),
+      };
+      return { module: 'contacts' as const, itemType: 'contact' as const, itemId: id, title: snapshotName(snapshot), reason: 'deleted' as const, groupId,
+        payload, fileRefs: snapshot.photo ? [snapshot.photo.sha256, snapshot.photo.thumb_sha256] : null };
+    }));
+    const [removed] = await cx.execute<ResultSetHeader>(`DELETE FROM contacts WHERE user_id = ? AND id IN (${placeholders(present)})`, [userId, ...present]);
+    return { deleted: removed.affectedRows || 0, binItemIds };
+  });
 }
 
 /**
- * Deletes the contacts bin items and merge records past their purge time,
- * as the retention job of the worker owner (contacts.purgeBin). It skips the
- * people whose contacts are being restored or whose Contacts module is off.
- * The aliases stay: a later import still finds the survivor.
+ * Contacts back from the bin as they were, with their UIDs, the UIDs they
+ * answered to and their "Not the same person" pairs; under a new id when the
+ * old one is taken, a new UID when the UID is. A merged-away contact whose
+ * undo window has passed comes back on its own, taking its UIDs back from
+ * the survivor. A payload is not trusted (it may come from an archive): only
+ * known columns are written, for this person.
  */
-async function purgeExpiredMerges({ now = new Date(), executor = db, moduleEnabled = userId => isModuleEnabled(userId, 'contacts'), active = () => true }: PurgeOptions = {}) {
-  const [due] = await executor.execute<(RowDataPacket & { user_id: string })[]>(`SELECT user_id FROM bin_items WHERE module = 'contacts' AND purge_after IS NOT NULL AND purge_after <= ?
-    UNION SELECT user_id FROM contact_merges WHERE purge_after <= ?`, [now, now]);
-  if (!due.length) return { items: 0, merges: 0 };
-  const restoring = await getActiveRestoreSectionsByUser(executor);
-  let items = 0; let merges = 0;
-  for (const { user_id: userId } of due) {
-    if (!active()) break;
-    if (restoring.get(userId)?.has('contacts') || !await moduleEnabled(userId)) continue;
-    // Purging drops photo references (bin file_refs); like an undo it runs
-    // under the user's photo lock, never between a cleanup's reads.
-    await withContactPhotoLock(userId, async () => {
-      for (;;) {
-        const [expired] = await executor.execute<(RowDataPacket & { id: string })[]>(
-          `SELECT id FROM contact_merges WHERE user_id = ? AND purge_after <= ? ORDER BY purge_after, id LIMIT ${PURGE_BATCH}`, [userId, now]);
-        if (!expired.length) break;
-        const ids = expired.map(row => row.id);
-        await executor.execute(`UPDATE contact_uid_aliases SET merge_id = NULL WHERE user_id = ? AND merge_id IN (${placeholders(ids)})`, [userId, ...ids]);
-        const [removed] = await executor.execute<ResultSetHeader>(`DELETE FROM contact_merges WHERE user_id = ? AND id IN (${placeholders(ids)})`, [userId, ...ids]);
-        merges += removed.affectedRows || 0;
-        if (expired.length < PURGE_BATCH) break;
+async function restoreContactItems(cx: SqlExecutor, userId: string, group: readonly BinRow[]): Promise<BinRestored[]> {
+  await lockBinOwner(cx, userId);
+  const ids = group.map(row => row.id);
+  const [items] = await cx.execute<BinRow[]>(
+    `SELECT * FROM bin_items WHERE user_id = ? AND restored_at IS NULL AND item_type = 'contact' AND id IN (${placeholders(ids)}) ORDER BY deleted_at, id FOR UPDATE`, [userId, ...ids]);
+  if (!items.length) throw notFound('BIN_ITEM_NOT_FOUND', 'Not in the bin');
+  const restored: BinRestored[] = [];
+  const newIds = new Map<string, string>();
+  const restoredPairs: [string, string[]][] = [];
+  for (const item of items) {
+    const payload = parsePayload<BinContactPayload>(item);
+    const original = payload?.contact;
+    if (!original || !payload) throw conflict('BIN_ITEM_UNREADABLE', 'This contact cannot be restored.');
+    const [[idTaken]] = ID_PATTERN.test(String(original.id)) ? await cx.execute<RowDataPacket[]>('SELECT id FROM contacts WHERE id = ?', [original.id]) : [[{ id: '' }]];
+    const id = idTaken ? crypto.randomUUID() : String(original.id);
+    const ownUid = typeof original.uid === 'string' && original.uid ? original.uid : newUid(id);
+    const [[uidTaken]] = await cx.execute<RowDataPacket[]>('SELECT id FROM contacts WHERE user_id = ? AND uid_hash = ?', [userId, uidHash(ownUid)]);
+    const uid = uidTaken ? newUid(id) : ownUid;
+    await insertStored(cx, 'contacts', CONTACT_COLUMNS, [{ ...original, id, user_id: userId, uid, uid_hash: uidHash(uid), version: Number(original.version) || 1 }]);
+    await insertChildren(cx, userId, id, payload);
+    // Its own UID names it again, not the survivor of an ended merge.
+    if (!uidTaken) await cx.execute('DELETE FROM contact_uid_aliases WHERE user_id = ? AND uid_hash = ?', [userId, uidHash(uid)]);
+    for (const alias of payload.aliases || []) {
+      if (typeof alias?.uid !== 'string' || !alias.uid) continue;
+      const hash = uidHash(alias.uid);
+      const [[current]] = await cx.execute<RowDataPacket[]>('SELECT contact_id FROM contact_uid_aliases WHERE user_id = ? AND uid_hash = ?', [userId, hash]);
+      if (!current) {
+        await cx.execute('INSERT INTO contact_uid_aliases (user_id, uid_hash, uid, contact_id, merge_id) VALUES (?, ?, ?, ?, NULL)', [userId, hash, Array.from(alias.uid).slice(0, 255).join(''), id]);
+      } else if (item.reason === 'merged') {
+        await cx.execute('UPDATE contact_uid_aliases SET contact_id = ?, merge_id = NULL WHERE user_id = ? AND uid_hash = ?', [id, userId, hash]);
       }
-      for (;;) {
-        const [removed] = await executor.execute<ResultSetHeader>(`DELETE FROM bin_items WHERE user_id = ? AND module = 'contacts' AND purge_after IS NOT NULL AND purge_after <= ?
-          ORDER BY purge_after, id LIMIT ${PURGE_BATCH}`, [userId, now]);
-        items += removed.affectedRows || 0;
-        if ((removed.affectedRows || 0) < PURGE_BATCH) break;
-      }
-    });
+    }
+    newIds.set(String(original.id), id);
+    restoredPairs.push([id, (payload.dismissed_with || []).filter(other => typeof other === 'string')]);
+    restored.push({ id: item.id, item_type: 'contact', item_id: id, note: null });
   }
-  return { items, merges };
+  for (const [id, others] of restoredPairs) {
+    const targets = [...new Set(others.map(other => newIds.get(other) ?? other))].filter(other => other !== id && ID_PATTERN.test(other));
+    if (!targets.length) continue;
+    const [present] = await cx.execute<(RowDataPacket & { id: string })[]>(`SELECT id FROM contacts WHERE user_id = ? AND id IN (${placeholders(targets)})`, [userId, ...targets]);
+    if (!present.length) continue;
+    await cx.execute(`INSERT INTO contact_duplicate_dismissals (contact_a, contact_b, user_id) VALUES ${present.map(() => '(?, ?, ?)').join(', ')}
+      ON DUPLICATE KEY UPDATE user_id = user_id`, present.flatMap(row => [id < row.id ? id : row.id, id < row.id ? row.id : id, userId]));
+  }
+  await cx.execute(`DELETE FROM bin_items WHERE user_id = ? AND id IN (${placeholders(items.map(item => item.id))})`, [userId, ...items.map(item => item.id)]);
+  return restored;
 }
+
+const contactBinKind: BinKind = {
+  // A merge's group within its undo window is the merge's undo; anything
+  // else comes back contact by contact, the group together.
+  async restore(userId, group) {
+    const lead = group[0];
+    if (lead.reason === 'merged' && lead.group_id) {
+      const [[merge]] = await db.execute<RowDataPacket[]>(
+        'SELECT id FROM contact_merges WHERE id = ? AND user_id = ? AND undone_at IS NULL AND purge_after > UTC_TIMESTAMP()', [lead.group_id, userId]);
+      if (merge) {
+        const result = await undoMerge(userId, lead.group_id);
+        return group.map((row, index) => ({ id: row.id, item_type: 'contact' as const, item_id: result.restored_ids[index] ?? row.item_id, note: index === 0 ? result.message : null }));
+      }
+    }
+    return withContactPhotoLock(userId, () => withTransaction(cx => restoreContactItems(cx, userId, group)));
+  },
+};
+
+// ── Purge (bin.ts, worker owner) ───────────────────────────────────────
+
+/**
+ * The merge records whose undo window has ended and which the person's
+ * retention lets go (at least minDays old), for the bin's purge, inside its
+ * photo lock. The aliases stay: a later import still finds the survivor.
+ */
+async function purgeMergeRecords(executor: SqlExecutor, userId: string, { now, minDays }: { now: Date; minDays: number }) {
+  let merges = 0;
+  for (;;) {
+    const [expired] = await executor.execute<(RowDataPacket & { id: string })[]>(
+      `SELECT id FROM contact_merges WHERE user_id = ? AND purge_after <= ? AND created_at <= ? - INTERVAL ? DAY ORDER BY purge_after, id LIMIT ${PURGE_BATCH}`,
+      [userId, now, now, minDays]);
+    if (!expired.length) break;
+    const ids = expired.map(row => row.id);
+    await executor.execute(`UPDATE contact_uid_aliases SET merge_id = NULL WHERE user_id = ? AND merge_id IN (${placeholders(ids)})`, [userId, ...ids]);
+    const [removed] = await executor.execute<ResultSetHeader>(`DELETE FROM contact_merges WHERE user_id = ? AND id IN (${placeholders(ids)})`, [userId, ...ids]);
+    merges += removed.affectedRows || 0;
+    if (expired.length < PURGE_BATCH) break;
+  }
+  return merges;
+}
+
+const withPhotoLock = withContactPhotoLock;
 
 /**
  * Photo hashes the bin and the merge records still need, for the photo
@@ -735,7 +829,10 @@ export {
   autoMerge,
   listMerges,
   undoMerge,
-  purgeExpiredMerges,
+  moveContactsToBin,
+  contactBinKind,
+  purgeMergeRecords,
+  withPhotoLock,
   photosHeldForUndo,
   parseMergeRequest,
   UNDO_DAYS,

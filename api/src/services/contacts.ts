@@ -822,12 +822,6 @@ async function setFavorite(userId: string, id: string, favorite: boolean) {
   await db.execute('UPDATE contacts SET is_favorite = ?, version = version + 1 WHERE id = ? AND user_id = ?', [favorite ? 1 : 0, id, userId]);
 }
 
-async function deleteContacts(userId: string, ids: readonly string[]) {
-  if (!ids.length) return 0;
-  const [result] = await db.execute<ResultSetHeader>(`DELETE FROM contacts WHERE user_id = ? AND id IN (${placeholders(ids)})`, [userId, ...ids]);
-  return result.affectedRows || 0;
-}
-
 const BULK_COLUMNS: Readonly<Record<string, { column: string; name: string }>> = {
   company: { column: 'company', name: 'Organisation' }, department: { column: 'department', name: 'Department' }, job_title: { column: 'job_title', name: 'Job title' },
 };
@@ -861,7 +855,6 @@ export {
   createContact,
   updateContact,
   setFavorite,
-  deleteContacts,
   bulkUpdateContacts,
   insertContact,
   replaceContact,

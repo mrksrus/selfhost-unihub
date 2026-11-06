@@ -3,6 +3,7 @@ import { ToastAction } from '@/components/ui/toast';
 import { useToast } from '@/hooks/use-toast';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { useSessionScope } from '@/lib/session-scope';
+import { useBinActions } from '@/hooks/use-bin-actions';
 import { contactsApi, contactsQueryKeys, ContactVersionConflict, invalidateContactQueries, MergeRefused, type AutoMergeResult, type BulkContactChange, type ContactInput, type ExportFormat, type MergeRequest } from '@/lib/contacts-api';
 import { saveFile } from '@/lib/platform';
 
@@ -16,6 +17,7 @@ export function useContactActions() {
   const client = useQueryClient();
   const scope = useSessionScope();
   const { toast } = useToast();
+  const bin = useBinActions('contacts');
   const refresh = () => { void invalidateContactQueries(client); };
   const failed = (title: string) => (error: Error) => toast({ title, description: error.message, variant: 'destructive' });
 
@@ -36,13 +38,14 @@ export function useContactActions() {
 
   const remove = useSessionMutation({
     mutationFn: (id: string) => contactsApi.remove(id),
-    onSuccess: () => { refresh(); toast({ title: 'Contact deleted' }); },
+    // Deleted contacts wait in the bin; the notice offers Undo.
+    onSuccess: binItemIds => { refresh(); bin.movedToBin('1 contact', binItemIds); },
     onError: failed('Could not delete the contact'),
   });
 
   const removeMany = useSessionMutation({
     mutationFn: (ids: string[]) => contactsApi.removeMany(ids),
-    onSuccess: deleted => { refresh(); toast({ title: `${plural(deleted, 'contact')} deleted` }); },
+    onSuccess: ({ deleted, binItemIds }) => { refresh(); bin.movedToBin(plural(deleted, 'contact'), binItemIds); },
     onError: failed('Could not delete the contacts'),
   });
 

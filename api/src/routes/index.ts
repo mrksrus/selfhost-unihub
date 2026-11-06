@@ -15,14 +15,17 @@ import mailRoutes = require('./mail');
 import mailEssentialsRoutes = require('./mail-essentials');
 import mailThreadsRoutes = require('./mail-threads');
 import adminRoutes = require('./admin');
+import adminInstanceBackupRoutes = require('./admin-instance-backup');
 import notificationsRoutes = require('./notifications');
 import offlineRoutes = require('./offline');
 import eventsRoutes = require('./events');
 import filesRoutes = require('./files');
+import binRoutes = require('./bin');
 import { assertRouteTable, mergeRouteTables } from '../http/route';
 import { legacyRoutes } from './legacy-spec';
 import { MODULE_CATALOG } from '../services/module-catalog';
 import { SECTION_POLICIES } from '../services/backup-catalog';
+import { POLICIES } from '../services/settings';
 
 // The production route table: every key once, each with its spec. Files still
 // exporting plain handlers are wrapped with the derived legacy policy.
@@ -35,7 +38,7 @@ const routes = mergeRouteTables(
   contactsPhotosRoutes,
   contactsMergeRoutes,
   settingsRoutes,
-  legacyRoutes(backupRoutes),
+  backupRoutes,
   searchRoutes,
   legacyRoutes(recordingsRoutes),
   legacyRoutes(calendarRoutes),
@@ -44,11 +47,15 @@ const routes = mergeRouteTables(
   mailEssentialsRoutes,
   mailThreadsRoutes,
   adminRoutes,
+  adminInstanceBackupRoutes,
   notificationsRoutes,
   offlineRoutes,
   eventsRoutes,
   filesRoutes,
+  binRoutes,
 );
-assertRouteTable(routes, { moduleIds: MODULE_CATALOG.map(module => module.id), sections: Object.keys(SECTION_POLICIES) });
+// A route declares only policy keys that can refuse an action.
+const refusablePolicies = Object.entries(POLICIES).filter(([, entry]) => entry.refuses.length).map(([key]) => key);
+assertRouteTable(routes, { moduleIds: MODULE_CATALOG.map(module => module.id), sections: Object.keys(SECTION_POLICIES), policyKeys: refusablePolicies });
 
 export = routes;

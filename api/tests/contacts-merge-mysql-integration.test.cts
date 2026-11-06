@@ -16,7 +16,8 @@ test('contact duplicates and merges: detection, merge review, Merge all, undo, p
   t.after(captureLog(() => {}));
   const pool = await withTestDatabase(t);
   const api = await startTestApi(t);
-  const { purgeExpiredMerges, photosHeldForUndo } = require('../dist/src/services/contact-merge') as typeof import('../src/services/contact-merge');
+  const { photosHeldForUndo } = require('../dist/src/services/contact-merge') as typeof import('../src/services/contact-merge');
+  const { purgeBin } = require('../dist/src/services/bin') as typeof import('../src/services/bin');
   const password = 'synthetic-merge-password';
   const passwordHash = await (require('bcryptjs') as typeof import('bcryptjs')).hash(password, 4);
   const users: Record<string, string> = {};
@@ -257,11 +258,13 @@ test('contact duplicates and merges: detection, merge review, Merge all, undo, p
   const later = new Date(Date.now() + 31 * 24 * 3600 * 1000);
   const [[{ binBefore }]] = await pool.execute<RowDataPacket[]>('SELECT COUNT(*) AS binBefore FROM bin_items WHERE user_id = ?', [users.owner]);
   assert.ok(Number(binBefore) >= 3);
-  assert.deepEqual(await purgeExpiredMerges({ now: later }), { items: 0, merges: 0 }, 'a running restore waits');
+  assert.deepEqual(await purgeBin({ now: later }), { items: 0, merges: 0 }, 'a running restore waits');
   await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restoreId]);
-  assert.deepEqual(await purgeExpiredMerges({ now: later, moduleEnabled: async () => false }), { items: 0, merges: 0 }, 'a paused module waits');
-  assert.deepEqual(await purgeExpiredMerges(), { items: 0, merges: 0 }, 'nothing is due today');
-  const purged = await purgeExpiredMerges({ now: later });
+  await call(owner, 'PUT', '/api/modules', { modules: { contacts: { enabled: false } } });
+  assert.deepEqual(await purgeBin({ now: later }), { items: 0, merges: 0 }, 'a paused module waits');
+  await call(owner, 'PUT', '/api/modules', { modules: { contacts: { enabled: true } } });
+  assert.deepEqual(await purgeBin(), { items: 0, merges: 0 }, 'nothing is due today');
+  const purged = await purgeBin({ now: later });
   assert.equal(purged.items, Number(binBefore));
   assert.ok(purged.merges >= 4);
   for (const table of ['bin_items', 'contact_merges']) {

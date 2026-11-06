@@ -1,7 +1,7 @@
-import { Copy, History, Star, UserRound, UserX, Users } from 'lucide-react';
+import { Copy, History, Star, Trash2, UserRound, UserX, Users } from 'lucide-react';
 import { contactEmails, contactName, contactPhones, type Contact } from '@/lib/contacts-api';
 
-export type ContactView = 'all' | 'favorites' | 'missing_name' | 'missing_details' | 'duplicates' | 'merged';
+export type ContactView = 'all' | 'favorites' | 'missing_name' | 'missing_details' | 'duplicates' | 'merged' | 'bin';
 
 export const CONTACT_VIEWS: Record<ContactView, { label: string; icon: typeof Users; hint?: string }> = {
   all: { label: 'All contacts', icon: Users },
@@ -10,9 +10,10 @@ export const CONTACT_VIEWS: Record<ContactView, { label: string; icon: typeof Us
   missing_details: { label: 'Name only', icon: UserX, hint: 'These have a name but no email or phone number.' },
   duplicates: { label: 'Possible duplicates', icon: Copy },
   merged: { label: 'Recently merged', icon: History },
+  bin: { label: 'Bin', icon: Trash2 },
 };
 
-/** Views that list contacts from the page's own list; the other two read their own routes. */
+/** Views that list contacts from the page's own list; the other three read their own routes. */
 export const LIST_VIEWS: ContactView[] = ['all', 'favorites', 'missing_name', 'missing_details'];
 
 export const isContactView = (value: string | null): value is ContactView => !!value && value in CONTACT_VIEWS;

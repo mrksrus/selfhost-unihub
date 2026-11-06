@@ -26,6 +26,9 @@ const Recordings = lazy(() => import("./pages/Recordings"));
 const Music = lazy(() => import("./pages/Music"));
 const More = lazy(() => import("./pages/More"));
 const AdminSettings = lazy(() => import("./pages/AdminSettings"));
+const AdminPolicies = lazy(() => import("./pages/AdminPolicies"));
+const AdminInstanceBackup = lazy(() => import("./pages/AdminInstanceBackup"));
+const AdminUserDetail = lazy(() => import("./pages/AdminUserDetail"));
 
 const AuthenticatedApp = () => {
   const { user, session, isOffline } = useAuth();
@@ -51,7 +54,10 @@ const AuthenticatedApp = () => {
               <Route path="/more" element={<More />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/admin/users" element={<AdminUsers />} />
+              <Route path="/admin/users/:id" element={<AdminUserDetail />} />
               <Route path="/admin/settings" element={<AdminSettings />} />
+              <Route path="/admin/policies" element={<AdminPolicies />} />
+              <Route path="/admin/instance-backup" element={<AdminInstanceBackup />} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>

@@ -8,7 +8,7 @@ const mailWritebacks = require('../dist/src/services/mail-writebacks') as typeof
 
 const request = (url: string) => ({ url, headers: { host: 'localhost' } });
 const recovered = () => ({ id: 'message', user_id: 'user', mail_account_id: 'source', filing_account_id: 'receiving',
-  folder: 'inbox', source_folder: 'Provider/Original', imap_uid: 41, imap_uidvalidity: 12, is_legacy: 0,
+  folder: 'inbox', source_folder: 'Provider/Original', imap_uid: 41, imap_uidvalidity: 12, remote_gmail_msgid: '123456789', is_legacy: 0,
   from_address: 'sender@example.test', to_addresses: '[]', received_at_cursor: '2026-09-12 09:00:00.000000' });
 
 function installDb(t: import('node:test').TestContext, db: FixtureValue) {
@@ -46,6 +46,7 @@ test('list and detail preserve provider identity while presenting the receiving 
     assert.equal((email as FixtureValue).source_folder, undefined);
     assert.equal((email as FixtureValue).imap_uid, undefined);
     assert.equal((email as FixtureValue).imap_uidvalidity, undefined);
+    assert.equal((email as FixtureValue).remote_gmail_msgid, undefined, 'a restored Gmail identity is recovery data, not shown');
     assert.equal(email.is_legacy, false);
     assert.equal(email.is_read, true);
     assert.equal(email.is_starred, false);

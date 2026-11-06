@@ -9,7 +9,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -40,8 +39,6 @@ import java.util.concurrent.Executors
  */
 object AppUpdate {
     private const val TAG = "UniHubUpdate"
-    /** The server's APK (api/src/services/app-version.ts ANDROID_APK_URL). */
-    private const val PATH = "/downloads/unihub.apk"
     private const val MIME = "application/vnd.android.package-archive"
     private const val PREFS = "app_update"
     private const val KEY_DOWNLOADING = "downloading"
@@ -55,8 +52,6 @@ object AppUpdate {
 
     /** Whether the main screen is in front, so the installer may be opened at once. */
     @Volatile var inFront = false
-
-    fun isUpdate(url: String) = Uri.parse(url).path == PATH
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 

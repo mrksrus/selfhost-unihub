@@ -5,6 +5,69 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.28.0 Data safety
+
+**Make a database backup first.** One automatic database upgrade runs at the
+first start: **step 25** gives every event, calendar and recording a stable
+identity (a synced event takes its UID from the calendar server, every other
+item its id), and adds the tables of the bin's purge, the policies' notices,
+the instance backup's runs and the ToDo state of synced tasks waiting after a
+restore, and the columns of the move journal that let the bin create a synced
+item at its server again. Synced UIDs that 0.27 stored altered (surrounding
+spaces cut, or cut short, which could give two items one UID) take the
+server's own back, from each object's stored calendar data; one longer than
+UniHub stores leaves its item keyed by its own row. Modification dates are kept. The first start takes longer on large
+calendars: about 17 seconds for 100,000 events, during which the server does
+not answer yet. Where nearly every synced task's UID needs that repair, it
+takes minutes per 100,000 objects instead (about 13 in a synthetic
+benchmark). Docker then marks the container unhealthy after its 360-second
+start period, which restarts nothing by itself. **Where autoheal, Swarm or
+another controller restarts unhealthy containers, suspend that for the
+upgrade, or give the container a start grace longer than the pass (30
+minutes for the benchmark's 13):** a stop during the pass rolls it back and
+the next start runs it again, so with each restart it never finishes. See
+[Data recovery](DATA_RECOVERY.md#backup-versions-and-restore-behavior) for the
+details.
+
+Going back to 0.27.x means restoring that backup: 0.27.x does not know step
+25 and refuses to start ("Database upgrade history is unknown or out of
+order"). Backups made by 0.28.0 use **data schema 7** and are always
+encrypted. An older UniHub cannot read them; 0.28.0 reads every older backup.
+
+- **Instance backup, off until you set it up.** UniHub can now back up the
+  whole installation itself: the database and every stored file, encrypted,
+  daily to a disk or share you mount. Mount a destination of its own (not
+  inside `/app/uploads`, writable by uid 10001) and set
+  `UNIHUB_INSTANCE_BACKUP_DIR` and `UNIHUB_INSTANCE_BACKUP_KEY` (a new random
+  key, `openssl rand -base64 48`, never one of your other keys); see
+  [Installation, section 5](INSTALLATION.md#5-keep-storage-and-startup-defaults)
+  and [Data recovery](DATA_RECOVERY.md#instance-backup). Without them nothing
+  changes. Store the instance key, `ENCRYPTION_KEY` and `BACKUP_MASTER_KEY` in
+  a password manager: the backup holds none of them and cannot be used
+  without them.
+- **Secrets as files.** Each secret may now be a file, `NAME_FILE` (Compose
+  `secrets:`, shown in `docker-compose.yml`). Nothing to do if you keep the
+  variables. If you move a secret to a file, remove its variable or keep both
+  equal: different values stop the start, as does an unreadable file. Files
+  must be readable by uid 10001 and lie outside `/app/uploads`.
+- **After restoring an instance backup**, mail accounts are paused until
+  each person reconnects theirs; nothing the old server still had to do at
+  a provider is replayed.
+- **Startup refuses an instance backup set up wrongly**: a key shorter than
+  32 bytes or equal to `JWT_SECRET`, `ENCRYPTION_KEY`,
+  `ENCRYPTION_KEY_PREVIOUS` or `BACKUP_MASTER_KEY`, a destination inside the
+  stored files, or a bad `INSTANCE_BACKUP_TIME`/`_KEEP`. The log names the
+  setting.
+- `BACKUP_MASTER_KEY` still falls back to `ENCRYPTION_KEY` when it is blank,
+  as before.
+- **Android app.** Install 0.28.0's app when it is offered: its downloads
+  (backups, the app update) no longer give Android's downloader your session.
+  The 0.27.2, 0.27.1 and 0.27.0 apps keep downloading backups from a 0.28.0
+  server. The 0.28.0 app connected to a server older than 0.28 cannot download
+  backups (it says "Could not save the file"): update the server, or download
+  them in a browser. The window is 0.28.0, 0.27.2, 0.27.1 and 0.27.0: the
+  0.26.0 app leaves it, so update a phone that still has it.
+
 ## 0.27.2 Send later and Save as template
 
 No database upgrade and no configuration change. Going back to 0.27.1 is

@@ -9,7 +9,9 @@ const path = (require('node:path') as typeof import('node:path'));
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
 const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts');
 
-test('authenticated HTTP encrypted backup download, upload and restore work after re-enabling', { skip: !process.env.MYSQL_TEST_HOST, timeout: 60000 }, async () => {
+// Most of the time goes to building the fresh schema (every upgrade step), on
+// a slow disk over a minute; the bound is the one of the other tests that build it.
+test('authenticated HTTP encrypted backup download, upload and restore work after re-enabling', { skip: !process.env.MYSQL_TEST_HOST, timeout: 300000 }, async () => {
   const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
   assert.match((process.env.MYSQL_TEST_DATABASE as string), /_test$/);
   const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306), database: process.env.MYSQL_TEST_DATABASE, user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD, connectionLimit: 8 });

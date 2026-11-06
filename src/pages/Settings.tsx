@@ -16,6 +16,7 @@ import ModuleSettings from '@/components/settings/ModuleSettings';
 import MailSettings from '@/components/settings/MailSettings';
 import MailRuleSettings from '@/components/settings/MailRuleSettings';
 import DeleteDataSettings from '@/components/settings/DeleteDataSettings';
+import BinSettings from '@/components/settings/BinSettings';
 
 const BackupSettings = lazy(() => import('@/components/settings/BackupSettings'));
 
@@ -34,6 +35,7 @@ const SECTION_VIEWS = {
   pages: ModuleSettings,
   mail: MailSettings,
   'mail-rules': MailRuleSettings,
+  bin: BinSettings,
   delete: DeleteDataSettings,
 } as const;
 

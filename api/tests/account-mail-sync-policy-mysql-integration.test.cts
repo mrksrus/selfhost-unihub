@@ -212,6 +212,14 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     const operation = uuid();
     await pool.execute<ResultSetHeader>(`INSERT INTO mail_writebacks (id,user_id,mail_account_id,email_id,action,target_value,base_value,remote_folder,remote_uid,remote_uidvalidity,status,state)
       VALUES (?,?,?,?,'read','1','0','Work',7,9,'done','confirmed')`, [operation, userId, accountId, copy]);
+    // A task made from the copy the merge removes, deleted into the bin.
+    const list = uuid(), listAccount = uuid(), binnedTask = uuid();
+    await pool.execute("INSERT INTO calendar_accounts (id,user_id,provider,display_name) VALUES (?,?,'local','UniHub')", [listAccount, userId]);
+    await pool.execute("INSERT INTO calendar_calendars (id,user_id,account_id,name) VALUES (?,?,?,'Gmail tasks')", [list, userId, listAccount]);
+    await pool.execute(`INSERT INTO calendar_events (id,user_id,calendar_id,title,start_time,end_time,is_todo_only,source_email_id,source_email_json)
+      VALUES (?,?,?,'Reply to the label copy','2030-01-01 10:00:00','2030-01-01 11:00:00',TRUE,?,?)`, [binnedTask, userId, list, copy, JSON.stringify({ subject: 'Labelled mail' })]);
+    await (require('../dist/src/services/transactions') as typeof import('../src/services/transactions'))
+      .withTransaction(cx => (require('../dist/src/services/bin-calendar') as typeof import('../src/services/bin-calendar')).binLocalEvents(cx, userId, [binnedTask]));
     const files = await storeFiles(copy);
     assert.equal(((await rows("SELECT source_id FROM mail_engine_quarantine WHERE mail_account_id = ? AND reason = 'gmail_identity_conflict'", [accountId]))).length, 1);
     await scan(accountId, '[Gmail]/All Mail', 'recent');
@@ -224,7 +232,42 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     assert.equal(await emailCount(accountId), 2);
 
     await pool.execute<ResultSetHeader>('UPDATE mail_accounts SET sync_policy_confirmed_at = UTC_TIMESTAMP() WHERE id = ?', [accountId]);
-    const merged = await prune(accountId);
+    // A synced task made from the same copy, in the bin; its server object is back already (another app restored it), as a row without UniHub's state.
+    const davAccount = uuid(), davCalendar = uuid(), object = uuid(), returned = uuid(), syncedBin = uuid(), syncedUid = 'gmail-merge-race@example.test';
+    const href = '/dav/team/merge-race.ics';
+    const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'BEGIN:VEVENT', `UID:${syncedUid}`, 'DTSTART:20301110T100000Z', 'DTEND:20301110T110000Z', 'SUMMARY:Merge race', 'END:VEVENT', 'END:VCALENDAR', ''].join('\r\n');
+    const { encrypt } = require('../dist/src/security/encryption') as typeof import('../src/security/encryption');
+    await pool.execute(`INSERT INTO calendar_accounts (id,user_id,provider,display_name,account_email,username,encrypted_password,base_url,is_active)
+      VALUES (?,?,'caldav','Team','person@example.test','person',?,'https://dav.example.test/',1)`, [davAccount, userId, encrypt('synthetic-dav-password')]);
+    await pool.execute("INSERT INTO calendar_calendars (id,user_id,account_id,name,external_id) VALUES (?,?,?,'Team','https://dav.example.test/dav/team/')", [davCalendar, userId, davAccount]);
+    await pool.execute('INSERT INTO calendar_remote_objects (id,user_id,account_id,calendar_id,href,href_hash,uid,ics) VALUES (?,?,?,?,?,?,?,?)',
+      [object, userId, davAccount, davCalendar, href, crypto.createHash('sha256').update(href).digest('hex'), syncedUid, ics]);
+    await pool.execute("INSERT INTO calendar_events (id,user_id,calendar_id,uid,title,start_time,end_time) VALUES (?,?,?,?,'Merge race','2030-11-10 10:00:00','2030-11-10 11:00:00')",
+      [returned, userId, davCalendar, syncedUid]);
+    await pool.execute("INSERT INTO calendar_event_external_refs (id,user_id,event_id,calendar_id,account_id,provider,external_event_id,remote_object_id) VALUES (?,?,?,?,?,'caldav',?,?)",
+      [uuid(), userId, returned, davCalendar, davAccount, `${object}|`, object]);
+    const syncedState = { todo_status: 'done', done_at: '2030-11-10 12:00:00', source_email_id: copy, source_email_json: { subject: 'Labelled mail' }, subtasks: [] };
+    await pool.execute("INSERT INTO bin_items (id,user_id,module,item_type,item_id,title,reason,payload,payload_version) VALUES (?,?,'calendar','task',?,'Merge race','deleted',?,1)",
+      [syncedBin, userId, uuid(), JSON.stringify({ provider: 'caldav', origin: 'Team', calendar: { id: davCalendar, account_id: davAccount, external_id: 'https://dav.example.test/dav/team/', name: 'Team' },
+        object: { href, uid: syncedUid, ics }, event: { title: 'Merge race', source_email_id: copy }, subtasks: [], attendees: [], task_order: [], occurrences: [{ recurrence_id: '', state: syncedState }] })]);
+    // Its restore reads the item and waits for the account's login; the merge runs meanwhile.
+    const calendarSync = require('../dist/src/services/calendar-sync') as FixtureValue;
+    const realLogin = calendarSync.resolveLogin;
+    let atLogin!: () => void, goOn!: () => void;
+    const loginReached = new Promise<void>(resolve => { atLogin = resolve; }), loginAllowed = new Promise<void>(resolve => { goOn = resolve; });
+    calendarSync.resolveLogin = async (account: FixtureValue) => { atLogin(); await loginAllowed; return realLogin(account); };
+    let merged: FixtureValue, restoring: Promise<FixtureValue> | null = null;
+    try {
+      restoring = (require('../dist/src/services/bin') as typeof import('../src/services/bin')).restoreFromBin(userId, { ids: [syncedBin] });
+      await loginReached;
+      merged = await prune(accountId);
+      const waiting = JSON.parse((await one('SELECT payload FROM bin_items WHERE id = ?', [syncedBin])).payload);
+      assert.equal(waiting.occurrences[0].state.source_email_id, keeper, 'the merge pointed the waiting item at the kept copy');
+      goOn();
+      assert.deepEqual((await restoring).failed, []);
+    } finally { goOn(); calendarSync.resolveLogin = realLogin; await restoring?.catch(() => undefined); }
+    const adopted = await one('SELECT todo_status, source_email_id FROM calendar_events WHERE id = ?', [returned]);
+    assert.deepEqual([adopted.todo_status, adopted.source_email_id], ['done', keeper], 'the returned task takes its state with the kept copy, not the removed one');
     assert.equal(merged.merged, 1);
     assert.equal(await emailCount(accountId), 1);
     assert.deepEqual(((await rows('SELECT DISTINCT email_id FROM mail_remote_occurrences WHERE mail_account_id = ?', [accountId]))).map((row) => row.email_id), [keeper]);
@@ -234,6 +277,12 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     assert.equal(((await rows("SELECT source_id FROM mail_engine_quarantine WHERE mail_account_id = ? AND reason = 'gmail_identity_conflict'", [accountId]))).length, 0);
     assert.equal(await exists(files.raw), false);
     assert.equal(await exists(files.attachment), false);
+    // The binned task names the kept copy, and comes back from the bin linked to it.
+    const binned = await one("SELECT id, payload FROM bin_items WHERE user_id = ? AND item_id = ?", [userId, binnedTask]);
+    assert.equal(JSON.parse(binned.payload).event.source_email_id, keeper, 'the bin follows the merge');
+    const bin = require('../dist/src/services/bin') as typeof import('../src/services/bin');
+    assert.deepEqual((await bin.restoreFromBin(userId, { ids: [binned.id] })).failed, []);
+    assert.equal((await one('SELECT source_email_id FROM calendar_events WHERE id = ?', [binnedTask])).source_email_id, keeper);
 
     // Archived in Gmail: removed from INBOX and Work, still in All Mail.
     provider.get('INBOX').items.delete(5); provider.get('Work').items.delete(7);
@@ -276,6 +325,292 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     assert.equal(await exists(files.attachment), false);
     assert.equal((await prune(accountId)).removed, 0, 'Nothing more to remove on a second run');
     assert.equal(((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })) as FixtureValue).local_duplicates, 0);
+  });
+
+  // Two copies of one message as imported per label before 0.12: a (older,
+  // holding the Gmail mapping) under INBOX and b under Work.
+  const gmailBoxes = new Map<string, FixtureValue>();
+  let gmailUid = 100;
+  async function gmailCopies(accountId: string, gmailMsgId: string, { a = {}, b = {} }: FixtureValue = {}) {
+    const ids: FixtureValue = {};
+    for (const [key, folder, extra, age] of [['a', 'INBOX', a, 2], ['b', 'Work', b, 1]] as const) {
+      if (!gmailBoxes.has(accountId + folder)) gmailBoxes.set(accountId + folder, await repo.withTransaction((cx) => repo.ensureMailbox({ userId, accountId, folderName: folder, epoch: 9 }, cx), pool));
+      const id = ids[key] = uuid();
+      const row = { import_complete: 1, content_state: 'complete', ...extra };
+      await pool.execute<ResultSetHeader>(`INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,subject,folder,import_complete,content_state,
+          is_draft,snoozed_until,snooze_returned_at,created_at) VALUES (?,?,?,'g@example.test','[]',?,'inbox',?,?,?,?,?,UTC_TIMESTAMP() - INTERVAL ? DAY)`,
+      [id, userId, accountId, `Held ${gmailMsgId}`, row.import_complete, row.content_state, row.is_draft || 0, row.snoozed_until || null, row.snooze_returned_at || null, age]);
+      await repo.withTransaction((cx) => repo.upsertOccurrence({ userId, accountId, mailboxId: gmailBoxes.get(accountId + folder).id, epoch: 9, uid: gmailUid++, emailId: id, gmailMsgId }, cx), pool);
+    }
+    return ids;
+  }
+  const copiesLeft = async (ids: FixtureValue) => (await rows('SELECT id FROM emails WHERE id IN (?, ?)', [ids.a, ids.b])).map(row => row.id === ids.a ? 'a' : 'b').sort();
+
+  await t.test('Gmail merge: the returned snooze and filing history of a removed copy go to the kept copy; the count is what the merge does; an incomplete kept copy gets its content; a pending notice or snooze waits, a delivered notice stays', async () => {
+    const accountId = await createAccount('gmail-held', { host: 'imap.gmail.com' });
+    const plain = await gmailCopies(accountId, '7100');
+    // A draft copy is never merged, and so not counted.
+    const draft = await gmailCopies(accountId, '7103', { b: { is_draft: 1 } });
+    // b's returned snooze and filing history go to a.
+    const held = await gmailCopies(accountId, '7101', { b: { snooze_returned_at: '2026-01-01 09:00:00' } });
+    await pool.execute<ResultSetHeader>(`INSERT INTO mail_folder_recovery_items (email_id,user_id,source_account_id,original_folder,target_folder,action)
+      VALUES (?,?,?,'archive','archive','kept')`, [held.b, userId, accountId]);
+    // Two different returned snoozes cannot both be kept: the copies stay apart.
+    const twoSnoozes = await gmailCopies(accountId, '7102', { a: { snooze_returned_at: '2026-01-01 09:00:00' }, b: { snooze_returned_at: '2026-02-01 09:00:00' } });
+    // A copy still snoozed waits for its return and its notice.
+    const stillSnoozed = await gmailCopies(accountId, '7110', { b: { snoozed_until: '2030-01-01 09:00:00' } });
+    // Neither copy complete, the kept one never queued (an old import): its content is queued now.
+    const incomplete = await gmailCopies(accountId, '7104', { a: { import_complete: 0, content_state: 'legacy' }, b: { import_complete: 0, content_state: 'slow' } });
+    // b's notice has nothing left to deliver: the copies merge, and the
+    // notice stays as it was. A held arrival (its content still coming) waits.
+    const notice = async (emailId: string, payload: FixtureValue = {}) => pool.execute<ResultSetHeader>(`INSERT INTO notification_events (id,user_id,event_key,kind,source_id,payload,expires_at)
+      VALUES (?,?,SHA2(?,256),'mail',?,?,UTC_TIMESTAMP() + INTERVAL 1 DAY)`,
+    [uuid(), userId, `mail:${emailId}`, emailId, JSON.stringify({ dedupeKey: `mail:${emailId}`, emailId, url: `/mail?email=${emailId}`, title: 'New Email', ...payload })]);
+    const noticed = await gmailCopies(accountId, '7105');
+    await notice(noticed.b);
+    const arriving = await gmailCopies(accountId, '7111');
+    await notice(arriving.b, { held: true });
+    assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 4, 'only the groups the merge joins');
+    assert.equal((await prune(accountId)).merged, 4);
+    assert.deepEqual(await copiesLeft(plain), ['a']);
+    assert.deepEqual(await copiesLeft(draft), ['a', 'b']);
+    assert.deepEqual(await copiesLeft(held), ['a']);
+    assert.equal(new Date((await one('SELECT snooze_returned_at FROM emails WHERE id = ?', [held.a])).snooze_returned_at).toISOString(), '2026-01-01T09:00:00.000Z', 'the returned snooze stays');
+    assert.equal((await one('SELECT email_id FROM mail_folder_recovery_items WHERE user_id = ?', [userId])).email_id, held.a, 'the filing history stays');
+    assert.deepEqual(await copiesLeft(twoSnoozes), ['a', 'b']);
+    assert.deepEqual(await copiesLeft(stillSnoozed), ['a', 'b']);
+    assert.deepEqual(await copiesLeft(arriving), ['a', 'b']);
+    assert.deepEqual(await copiesLeft(incomplete), ['a']);
+    assert.equal((await one('SELECT content_state FROM emails WHERE id = ?', [incomplete.a])).content_state, 'queued');
+    assert.ok(await one("SELECT id FROM mail_engine_jobs WHERE mail_account_id = ? AND kind = 'body' AND state = 'queued'", [accountId]), 'its body is queued');
+    assert.deepEqual(await copiesLeft(noticed), ['a']);
+    const event = await one("SELECT JSON_VALUE(payload, '$.emailId') AS email FROM notification_events WHERE user_id = ? AND source_id = ?", [userId, noticed.b]);
+    assert.equal(event?.email, noticed.b, 'the merge leaves notices to the notification worker');
+    assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 0);
+  });
+
+  await t.test('Copies with a snooze notice on its way merge once it is delivered; every reminder goes out once', async () => {
+    const accountId = await createAccount('gmail-snooze', { host: 'imap.gmail.com' });
+    const due = '2026-01-01 09:00:00';
+    const subscribe = async () => {
+      const sessionId = uuid(), id = uuid();
+      await pool.execute<ResultSetHeader>('INSERT INTO sessions (id,user_id,token,expires_at) VALUES (?,?,?,UTC_TIMESTAMP() + INTERVAL 1 DAY)', [sessionId, userId, `synthetic-${sessionId}`]);
+      await pool.execute<ResultSetHeader>(`INSERT INTO push_subscriptions (id,user_id,session_id,endpoint,endpoint_hash,p256dh,auth) VALUES (?,?,?,?,SHA2(?,256),'synthetic','synthetic')`,
+        [id, userId, sessionId, `https://push.example.test/${sessionId}`, sessionId]);
+      return id;
+    };
+    // b's snooze comes back. In the second message both copies' snoozes come
+    // back with the same time, and a second device subscribes in between.
+    const single = await gmailCopies(accountId, '7108', { b: { snoozed_until: due } });
+    const both = await gmailCopies(accountId, '7109', { a: { snoozed_until: due }, b: { snoozed_until: '2030-01-01 09:00:00' } });
+    const first = await subscribe();
+    const impact = async () => (await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates;
+    assert.equal(await impact(), 0, 'a copy still snoozed waits');
+    assert.equal((await prune(accountId)).merged, 0);
+    const snooze = require('../dist/src/services/mail-snooze') as typeof import('../src/services/mail-snooze');
+    const now = new Date();
+    assert.equal((await snooze.returnDueSnoozes(now)).returned, 2);
+    const second = await subscribe();
+    await pool.execute<ResultSetHeader>('UPDATE emails SET snoozed_until = ? WHERE id = ?', [due, both.b]);
+    assert.equal((await snooze.returnDueSnoozes(now)).returned, 1);
+    const pending = await rows(`SELECT e.source_id, d.subscription_id FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id
+      WHERE e.user_id = ? AND e.kind = 'snooze' AND d.status = 'pending'`, [userId]);
+    const key = (source: string, subscription: string) => `${source}/${subscription === first ? 'first' : 'second'}`;
+    const expected = [key(single.b, first), key(both.a, first), key(both.b, first), key(both.b, second)].sort();
+    assert.deepEqual(pending.map(row => key(row.source_id, row.subscription_id)).sort(), expected);
+
+    // The real worker picks the deliveries and waits in the push transport
+    // (a recording stub) while the merge runs: the merge keeps the copies
+    // apart and touches no notice, so nothing is cancelled or lost.
+    const transports = (require('../dist/src/services/notification-transports') as FixtureValue).NOTIFICATION_TRANSPORTS.webpush;
+    const notifications = require('../dist/src/services/notifications') as typeof import('../src/services/notifications');
+    const { ready, send } = transports;
+    const sent: string[] = [];
+    let atReady: () => void = () => {}, release: () => void = () => {}, paused = true;
+    const picked = new Promise<void>(resolve => { atReady = resolve; }), mayGoOn = new Promise<void>(resolve => { release = resolve; });
+    transports.ready = async () => { if (paused) { paused = false; atReady(); await mayGoOn; } };
+    transports.send = async (target: FixtureValue, message: FixtureValue) => {
+      if (message.kind === 'snooze') sent.push(key(message.payload.emailId, target.id));
+      return { sent: true };
+    };
+    try {
+      const working = notifications.processNotificationJobs();
+      await picked;
+      assert.equal((await prune(accountId)).merged, 0, 'a notice on its way keeps the copies apart');
+      assert.equal(await impact(), 0);
+      release();
+      await working;
+      assert.deepEqual([...sent].sort(), expected, 'every reminder once, for the copy it came back on');
+      assert.deepEqual(await rows(`SELECT d.status FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id
+        WHERE e.user_id = ? AND e.kind = 'snooze' AND d.status <> 'sent'`, [userId]), []);
+
+      // Delivered: a later pass merges, and nothing is sent again.
+      assert.equal(await impact(), 2);
+      assert.equal((await prune(accountId)).merged, 2);
+      assert.deepEqual([await copiesLeft(single), await copiesLeft(both)], [['a'], ['a']]);
+      assert.ok((await one('SELECT snooze_returned_at FROM emails WHERE id = ?', [single.a])).snooze_returned_at, 'the kept copy came back from snooze');
+      await notifications.processNotificationJobs();
+      assert.equal((await snooze.returnDueSnoozes()).returned, 0);
+      assert.deepEqual([...sent].sort(), expected, 'nothing more after the merge');
+    } finally { paused = false; release(); transports.ready = ready; transports.send = send; }
+  });
+
+  await t.test('A snooze that comes back while a fenced prune job runs is delivered, before and after the merge', async () => {
+    const accountId = await createAccount('gmail-fenced', { host: 'imap.gmail.com' });
+    const engine = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
+    const snooze = require('../dist/src/services/mail-snooze') as typeof import('../src/services/mail-snooze');
+    const notifications = require('../dist/src/services/notifications') as typeof import('../src/services/notifications');
+    const transports = (require('../dist/src/services/notification-transports') as FixtureValue).NOTIFICATION_TRANSPORTS.webpush;
+    const due = '2026-01-01 09:00:00';
+    // All Mail is visible, so the slice goes straight to the merge.
+    await repo.withTransaction((cx) => repo.ensureMailbox({ userId, accountId, folderName: '[Gmail]/All Mail', epoch: 9 }, cx), pool);
+    // A prune slice of a claimed job: its fence is the transaction's first
+    // read, so the transaction's snapshot is taken there.
+    const fencedPrune = async () => {
+      await engine.enqueueJob({ userId, accountId, kind: 'prune' });
+      const job = await engine.claimDueJob({ workerId: 'sync-policy-fenced', accountId, kinds: ['prune'], leaseSeconds: 120 });
+      assert.ok(job);
+      try { return await policy.runPruneSlice({ account: await load(accountId), job }); }
+      finally { await engine.completeJob({ accountId, jobId: job.id, workerId: job.lease_owner!, generation: Number(job.worker_generation) }); }
+    };
+    let onSql: ((phase: string, sql: string, params: FixtureValue[]) => Promise<void>) | null = null;
+    const getConnection = pool.getConnection.bind(pool), watched = Symbol('watched');
+    (pool as FixtureValue).getConnection = async () => {
+      const cx: FixtureValue = await getConnection();
+      if (!cx[watched]) {
+        const execute = cx.execute.bind(cx);
+        cx.execute = async (sql: string, params: FixtureValue[] = [], ...rest: FixtureValue[]) => {
+          if (onSql) await onSql('before', String(sql), params);
+          const result = await execute(sql, params, ...rest);
+          if (onSql) await onSql('after', String(sql), params);
+          return result;
+        };
+        cx[watched] = true;
+      }
+      return cx;
+    };
+    const signal = () => { let fire: () => void = () => {}; const fired = new Promise<void>(resolve => { fire = resolve; }); return { fired, fire }; };
+    const { ready, send } = transports;
+    const sent: string[] = [];
+    transports.ready = async () => {};
+    transports.send = async (target: FixtureValue, message: FixtureValue) => { if (message.kind === 'snooze') sent.push(`${message.payload.emailId}/${target.id}`); return { sent: true }; };
+    // Every reminder goes out once, for the copy it came back on; a later
+    // pass merges and nothing is sent again.
+    const deliveredOnceThenMerged = async (ids: FixtureValue) => {
+      const queued = (await rows(`SELECT d.subscription_id FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id
+        WHERE e.user_id = ? AND e.kind = 'snooze' AND e.source_id = ? AND d.status = 'pending'`, [userId, ids.b])).map(row => `${ids.b}/${row.subscription_id}`).sort();
+      assert.ok(queued.length, 'the return queued its reminder');
+      await notifications.processNotificationJobs();
+      assert.deepEqual(sent.filter(entry => entry.startsWith(ids.b)).sort(), queued);
+      assert.equal((await prune(accountId)).merged, 1);
+      assert.deepEqual(await copiesLeft(ids), ['a']);
+      assert.ok((await one('SELECT snooze_returned_at FROM emails WHERE id = ?', [ids.a])).snooze_returned_at, 'the kept copy came back from snooze');
+      await notifications.processNotificationJobs();
+      assert.deepEqual(sent.filter(entry => entry.startsWith(ids.b)).sort(), queued, 'nothing more after the merge');
+    };
+    try {
+      // The return holds b and has not committed when the job's slice takes
+      // its snapshot; the merge waits for b and commits after the return. It
+      // sees b's reminder on its way and keeps the copies apart.
+      const overlap = await gmailCopies(accountId, '7112', { b: { snoozed_until: due } });
+      const returning = signal(), returnMayCommit = signal(), merging = signal();
+      onSql = async (phase, sql, params) => {
+        if (phase === 'after' && sql.startsWith('UPDATE emails SET snoozed_until = NULL, snooze_returned_at') && params[1] === overlap.b) { returning.fire(); await returnMayCommit.fired; }
+        if (phase === 'before' && sql.includes('SELECT e.id, e.import_complete')) merging.fire();
+      };
+      const returned = snooze.returnDueSnoozes();
+      await returning.fired;
+      const pruned = fencedPrune();
+      await Promise.race([merging.fired, pruned]);
+      await new Promise(resolve => setTimeout(resolve, 300));
+      returnMayCommit.fire();
+      assert.equal((await returned).returned, 1);
+      assert.equal((await pruned).merged, 0, 'a reminder on its way keeps the copies apart');
+      onSql = null;
+      await deliveredOnceThenMerged(overlap);
+
+      // A return that starts while the merge holds the copies waits for it;
+      // the merge kept a copy still snoozed, so the return then goes ahead.
+      const waiting = await gmailCopies(accountId, '7113', { b: { snoozed_until: due } });
+      const planned = signal(), mergeMayCommit = signal();
+      onSql = async (phase, sql) => {
+        if (phase === 'after' && sql.includes('FROM notification_events n')) { planned.fire(); await mergeMayCommit.fired; }
+      };
+      const held = fencedPrune();
+      await Promise.race([planned.fired, held]);
+      let settled = false;
+      const late = snooze.returnDueSnoozes().finally(() => { settled = true; });
+      await new Promise(resolve => setTimeout(resolve, 300));
+      assert.equal(settled, false, 'the return waits for the merge');
+      mergeMayCommit.fire();
+      assert.equal((await held).merged, 0, 'a copy still snoozed is kept');
+      assert.equal((await late).returned, 1);
+      onSql = null;
+      await deliveredOnceThenMerged(waiting);
+    } finally { onSql = null; (pool as FixtureValue).getConnection = getConnection; transports.ready = ready; transports.send = send; }
+  });
+
+  await t.test('A task made from a copy the Gmail merge removes meanwhile is refused, not linked to a missing email', async () => {
+    const accountId = await createAccount('gmail-race', { host: 'imap.gmail.com' });
+    const racing = await gmailCopies(accountId, '7106');
+    // The create reads b, then waits while the merge removes b; its insert
+    // then finds b gone. A create that locked b first is moved by the merge.
+    const tasks = require('../dist/src/services/email-tasks') as typeof import('../src/services/email-tasks');
+    const calendarRoutes = require('../dist/src/routes/calendar') as FixtureValue;
+    const snapshot = tasks.snapshotSourceEmail;
+    let reached: () => void = () => {}, release: () => void = () => {};
+    const atSnapshot = new Promise<void>(resolve => { reached = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+    (tasks as FixtureValue).snapshotSourceEmail = async (...args: FixtureValue[]) => { const result = await (snapshot as FixtureValue)(...args); reached(); await gate; return result; };
+    let created: FixtureValue;
+    try {
+      const pending = calendarRoutes['POST /api/calendar/events']({ headers: { host: 'localhost' } }, userId, { title: 'Racing task', is_todo_only: true, source_email_id: racing.b });
+      await atSnapshot;
+      assert.equal((await prune(accountId)).merged, 1);
+      release();
+      created = await pending;
+    } finally { (tasks as FixtureValue).snapshotSourceEmail = snapshot; release(); }
+    assert.deepEqual(await copiesLeft(racing), ['a']);
+    assert.equal(created.status, 404);
+    assert.deepEqual(await rows("SELECT id FROM calendar_events WHERE user_id = ? AND title = 'Racing task'", [userId]), []);
+
+    // An edit linking a task to b while the merge holds b and is about to
+    // move b's tasks: the edit waits for b before it locks the task, then
+    // finds b gone. Neither deadlocks, and the edit's other change stays.
+    const editing = await gmailCopies(accountId, '7107');
+    const taskId = uuid();
+    await pool.execute<ResultSetHeader>(`INSERT INTO calendar_events (id,user_id,title,start_time,end_time,is_todo_only,source_email_id,source_email_json)
+      VALUES (?,?,'Linked task',UTC_TIMESTAMP(),UTC_TIMESTAMP(),TRUE,?,?)`, [taskId, userId, editing.b, JSON.stringify({ subject: 'Held 7107' })]);
+    let pausing = true, atTasks: () => void = () => {}, resume: () => void = () => {};
+    const mergeAtTasks = new Promise<void>(resolve => { atTasks = resolve; }), mayGoOn = new Promise<void>(resolve => { resume = resolve; });
+    const getConnection = pool.getConnection.bind(pool), paused = Symbol('paused');
+    (pool as FixtureValue).getConnection = async () => {
+      const cx: FixtureValue = await getConnection();
+      if (!cx[paused]) {
+        const execute = cx.execute.bind(cx);
+        cx.execute = async (sql: string, ...rest: FixtureValue[]) => {
+          if (pausing && String(sql).startsWith('UPDATE calendar_events SET source_email_id = ?')) { pausing = false; atTasks(); await mayGoOn; }
+          return execute(sql, ...rest);
+        };
+        cx[paused] = true;
+      }
+      return cx;
+    };
+    let edited: FixtureValue, merging: FixtureValue;
+    try {
+      const pruning = prune(accountId);
+      await mergeAtTasks;
+      const pending = calendarRoutes['PUT /api/calendar/events/:id']({ url: `/api/calendar/events/${taskId}`, params: { id: taskId }, headers: { host: 'localhost' } },
+        userId, { title: 'Edited task', source_email_id: editing.b });
+      await new Promise(resolve => setTimeout(resolve, 300));
+      resume();
+      [edited, merging] = await Promise.all([pending, pruning]);
+    } finally { pausing = false; resume(); (pool as FixtureValue).getConnection = getConnection; }
+    assert.equal(edited.error, undefined, `the edit succeeds: ${JSON.stringify(edited)}`);
+    assert.equal(merging.merged, 1);
+    assert.deepEqual(await copiesLeft(editing), ['a']);
+    const saved = await one('SELECT title, source_email_id FROM calendar_events WHERE id = ?', [taskId]);
+    assert.equal(saved.title, 'Edited task');
+    assert.ok(saved.source_email_id === null || saved.source_email_id === editing.a, 'never the removed copy');
   });
 
   await t.test('Gmail without a visible All Mail keeps missing mail as archived and warns', async () => {
@@ -441,8 +776,13 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
       assert.notEqual(job.status, 'failed', job.error);
       return job.status === 'ready';
     }, 'account backup ready');
-    const archive = await call('GET', `/backup/jobs/${started.job.id}/download`, undefined, 200, true);
-    const entries = isolated('services/backup-zip-reader').readZipEntries(archive);
+    // Encrypted although the client asked otherwise; readable with the revealed recovery password.
+    const { recovery_password: recoveryPassword } = await call('POST', `/backup/jobs/${started.job.id}/recovery-password/reveal`, {});
+    const sealed = path.join(directory, 'account-backup.unihub-backup'), opened = path.join(directory, 'account-backup.zip');
+    await fs.writeFile(sealed, await call('GET', `/backup/jobs/${started.job.id}/download`, undefined, 200, true));
+    const container = isolated('services/backup-container');
+    await container.decryptBackupFile(sealed, opened, (await container.unlockContainerWithPassword(sealed, recoveryPassword)).dataKey);
+    const entries = isolated('services/backup-zip-reader').readZipEntries(await fs.readFile(opened));
     const backup = JSON.parse(entries.get('data/backup.json').toString('utf8'));
     assert.deepEqual(backup.data.mail_accounts.map((account: FixtureValue) => account.id), [switching]);
     assert.deepEqual(backup.data.emails.map((email: FixtureValue) => email.id).sort(), [...switchingMail].sort(), 'Only this account\'s mail');

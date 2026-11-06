@@ -48,15 +48,263 @@ step's columns. Keep bootstrap/runtime work distinct from historical repairs.
 The authenticated MariaDB readiness wait remains 300 seconds maximum and ends as
 soon as a connection succeeds.
 
+## Instance backup
+
+The instance backup (0.28.0) copies the whole installation: the database and
+every stored file, encrypted, to a destination the administrator mounts. It is
+the disaster-recovery copy; the account backups below move one person's data.
+`api/src/services/instance-backup.ts` runs it, `instance-backup-format.ts`
+defines the file, `instance-restore.ts` restores it.
+
+**Configuration, from the environment only** (`api/src/config.ts`). The admin
+page (Settings > Server settings > Instance backup) shows it and can start a
+run; it cannot change it, and no backup file is ever offered for download, so
+a stolen admin session can neither redirect the backups nor read them.
+
+| Variable | Meaning |
+| --- | --- |
+| `INSTANCE_BACKUP_DIR` | An absolute directory inside the container on a volume or mount of its own (another disk, a NAS share). Unset: the backup is off. Inside `/app/uploads` or a stored-file root: startup refuses it. It must exist and be writable by uid 10001; UniHub never creates it, so a missing mount fails the run instead of filling the container. Nothing else writes there: it is UniHub's alone. |
+| `INSTANCE_BACKUP_KEY` or `INSTANCE_BACKUP_KEY_FILE` | At least 32 random bytes as hex or base64 (`openssl rand -base64 48`). Unset: the backup is off. Shorter, or the value of `JWT_SECRET`, `ENCRYPTION_KEY`, `ENCRYPTION_KEY_PREVIOUS` or `BACKUP_MASTER_KEY`: startup refuses it. Never derived from another key. |
+| `INSTANCE_BACKUP_TIME` | The daily run, `HH:MM` in UTC; default `03:30`. |
+| `INSTANCE_BACKUP_KEEP` | How many succeeded backups stay, 1 to 1000; default 14. |
+
+Without a destination and a key the server runs normally and the admin page
+says what is missing. The defaults are `INSTANCE_BACKUP_DEFAULT_TIME_UTC` and
+`INSTANCE_BACKUP_DEFAULT_KEEP` in `config.ts`.
+
+**A run.** The worker owner runs one at a time: daily, once the set time has
+passed without a scheduled run (so a server that was down at that time catches
+up when it starts), and on "Back up now" (`POST /api/admin/instance-backup/run`,
+permission `server.settings`, activity-log entry `admin.instance_backup_started`).
+Each run is a row of `instance_backups`.
+
+1. It checks the destination and its free space (about the last backup's size,
+   or the database's before the first, plus 64 MiB), and again the start's
+   checks of the secret files (see what is in the file).
+2. It closes the file removal gate (`file-removal-gate.ts`), then streams
+   `mariadb-dump --single-transaction --routines --triggers --hex-blob` (one
+   consistent snapshot) and then the stored files into
+   `unihub-instance-<UTC time>-<version>-<run id>.uhib.partial`, encrypted as
+   it is written. Nothing is staged in `/tmp` or elsewhere.
+3. It opens the gate again, writes the manifest and seals the file.
+4. It reads the whole file back with the key and checks every hash, and
+   checks that no configured secret file changed during the run. Only then
+   is it published as `.uhib`, with a link that never replaces a file already
+   there (a run that finds one fails and leaves it alone). On a destination
+   without hard links (the link fails with `EOPNOTSUPP`, `EPERM` or `ENOSYS`,
+   as on some NAS shares, FUSE mounts and FAT) it checks that the name is
+   free and then renames the file to it. The name holds the run id, so no
+   other run uses it; the check and the rename are two steps, so this relies
+   on the destination being UniHub's alone (anything else that writes there
+   could create the name in between, and could change the backups anyway).
+5. In one transaction it records the run as succeeded with the next
+   completion number (`completion_seq`) and marks the oldest succeeded
+   backups beyond `INSTANCE_BACKUP_KEEP` removed (`removed_at`), then removes
+   their files. Newest means the higher completion number, never a time, so
+   a clock set back does not make retention remove the latest backup. The run
+   counts as running until those files are gone.
+
+A failed run (no space, a missing mount, a dump error, a stop) removes its
+partial file and records the reason; it never counts, and nothing is removed
+for it. A run that a stopped process left running is recorded as failed, and
+its partial file removed, when the next worker owner starts. A run is stopped
+after 12 hours. A failed scheduled run is not tried again until the next
+day's time; "Back up now" runs one at once.
+
+**Consistency.** The dump is one snapshot; the files are copied after it. A
+file whose row is deleted after the dump is still needed by the backup, so
+file removals pass through the gate: while it is closed, removals by user
+deletion, removing a mail account with its mail, Sync-mode pruning and folder
+deletion, contact photos, mail attachments and the raw file a re-import
+replaces are queued and run, in order, when the copy ends, and the contact
+sweeps skip their turn. A removal never waits at the gate (its caller may hold
+a lock a queued removal needs): until the queue has drained, a new one joins
+it. The queue lives in the server's memory. If the server stops while a
+backup runs, the removals queued so far never run, and their files stay on
+the disk as orphans, never a row without its file: the files of a deleted
+person or a removed mail account, mail files Sync-mode pruning or a folder
+deletion gave up, deleted attachments, the raw file a re-import replaced and
+released contact photos. The contact-photo sweep removes those photos later;
+the others stay in their storage roots, with no row referring to them, and
+are copied by later backups. Files added during the copy may be in the backup without a row;
+they are harmless. A file that changes while it is read (stored files are
+written once, so this is rare) is marked in the index and left out by a
+restore. For a very large installation a volume snapshot stays the faster
+copy.
+
+**What is in the file.** Every table, including users, policies, the
+activity log, the push identity and the runs of `instance_backups`, and the
+stored files: mail attachments and originals, recordings, contact photos and
+the account backups kept on the server, under any name a person gave them
+(an attachment called `report.tmp` is data). Not in it: the app's own work in
+progress, by the exact names its writers use (a raw message being written,
+a recording being converted or uploaded in chunks, a contact photo being
+written, an unfinished export, backup uploads being received and uploaded
+restore archives), and **no key**. A configured secret file (`NAME_FILE`)
+inside `/app/uploads` or a stored-file root stops the start, also through a
+symbolic link or an aliased path. Compose `.env` files are left out. Beyond
+that the server remembers, by size and SHA-256 and never the bytes, every
+version of each secret file it has read: at its start, and at the start
+and end of each run, also of a run that fails (a file larger than 64 KiB is
+no secret and is not read past that), until it stops. A stored file with the same bytes (a hard
+link, a copy, a second mount of a secret, also of a version rotated away
+since) is left out, and the log names the setting. A run that cannot read a
+configured secret file at its start (it was removed) does not run and says
+which. A run during which a secret file changed (another file or other bytes
+at the end than at the start) does not count and says which; the next run
+knows the new version and leaves it out.
+
+This is a second line of defence for the versions UniHub has seen, not a
+guarantee. A version that comes and goes within one run is never seen: a
+secret rotated to a new version and back again while a backup runs, with a
+hard link of the new version among the stored files, can end up in that
+backup. Whoever can arrange that can read the secret anyway. The setup that
+keeps secrets out:
+
+- keep every `*_FILE` secret outside `/app/uploads` and outside the backup
+  destination; startup refuses the first;
+- Docker and Compose secrets and secrets given as environment variables are
+  fine as they are;
+- on Kubernetes, give UniHub's own secrets a projected volume of their own.
+  A projection shared with something that changes on its own (a rotating
+  service-account token, a certificate) replaces every file in it when that
+  changes, so a long backup sees its secret files change and fails again and
+  again.
+`ENCRYPTION_KEY`,
+`ENCRYPTION_KEY_PREVIOUS`, `BACKUP_MASTER_KEY`, `JWT_SECRET` and the instance
+key stay outside, so no single key opens everything (F10). Keep them in a
+password manager: without `ENCRYPTION_KEY` a restored installation cannot read
+stored mail and calendar passwords or two-step sign-in, without
+`BACKUP_MASTER_KEY` (or `ENCRYPTION_KEY` when it is unset) not the account
+backups' server unlock.
+
+**The file** (`instance-backup-format.ts`): the magic `UNIHUBIB1`, a JSON
+header (backup id, time, app version, upgrade step, key fingerprint, salt),
+then AES-256-GCM frames of 1 MiB under a key derived with HKDF-SHA256 from the
+instance key and the header's random salt. Each frame's nonce and additional
+data carry its index, the header's hash and whether it is the last, so a
+changed byte, reordered frames, a cut-off file or bytes after the end are
+refused. The key fingerprint is the key version: a file names the key that
+opens it. The plaintext is a POSIX tar: `db/NNNNNN.sql` (the dump in 8 MiB
+parts), `files/<root>/<path>` with `index/NNNNNN.ndjson` parts (size and
+SHA-256 of each file), and `manifest.json` (versions, table row counts at the
+dump's start, file counts and the hashes of the dump and the index).
+
+**Restore** is a command in the image, never the web. Into an empty
+installation: the same image version or a newer one, its own new database
+volume and uploads volume, the old installation's `ENCRYPTION_KEY` and
+`BACKUP_MASTER_KEY`, and the destination mounted to read the file.
+
+```bash
+docker compose up -d unihub-db          # the database only, not the app
+docker compose run --rm --no-deps unihub \
+  node /app/api/src/instance-restore.js \
+  --file /backup/unihub-instance-20261101T033000Z-0.28.0-019a3d6e-1f40-7000-8000-000000000000.uhib \
+  --key-file /run/secrets/unihub_instance_backup_key
+docker compose up -d                    # the app migrates an older backup on start
+```
+
+The command checks the whole file with the key first and writes nothing on
+a mismatch. It refuses a database with tables and storage with files. It loads
+the dump with the `mariadb` client and writes the files (owned by the API
+user), then changes what belonged to the old installation's running life, as
+listed in [After an instance restore](#after-an-instance-restore). A failure
+during the load drops the tables and removes the files it wrote, leaving the
+installation empty for another try. `--verify-only` only checks a backup with
+the key. From a checkout, `node api/scripts/instance-restore.cts` runs the
+same code after `npm --prefix api run build`, with `MYSQL_*` and the storage
+roots pointing at the empty installation.
+
+### After an instance restore
+
+The restore changes these rows in the same transaction, after the load
+(`services/instance-restore.ts`). Everything else comes back as the dump had
+it: users, their data, policies, the activity log and the push identity, so
+phones keep receiving notifications.
+
+The old installation's sessions and credentials of the moment:
+
+- **Sessions** are deleted: everyone signs in again.
+- **Download tickets** and **two-step sign-in challenges** are deleted.
+- **Mail worker leases** (`mail_engine_accounts`, `mail_engine_jobs`) are
+  cleared.
+- **Account restores** that had not finished fail: their archives are not in
+  an instance backup.
+- **Instance backup runs**: the run that wrote this backup shows as
+  succeeded with this file; any other run still marked running shows as
+  failed.
+
+Provider work the old installation had accepted is never replayed: it may
+have been done, changed or cancelled after the backup. The restore applies
+the account restore's policy (`pauseMailRestore` in
+`services/backup-mail-engine.ts`) to every person with a mail account, and
+retires the queues an account restore never brings back:
+
+- **Mail accounts are paused.** Each is inactive (`is_active` off), deletion
+  at the provider is off (`delete_emails_on_server` off, its enable time and
+  grace period cleared), and the confirmation of its mail policy
+  (`sync_policy_confirmed_at`) is cleared. Its owner reconnects it and
+  confirms the policy again before UniHub talks to the provider.
+- **Mail engine work is paused.** The account's engine generation moves on
+  with a pause reason; queued, running and failed engine jobs are paused and
+  cancelled.
+- **Accepted mail operations need attention.** Moves and read or star
+  changes not yet done are taken off the queue (`needs_attention`, not current) with
+  evidence that the provider must be checked. Only a read-only check of the
+  provider follows; nothing is sent again by itself.
+- **Pending calendar moves are cleared.** The journal of moves between
+  calendars (`calendar_event_moves`) is deleted. A copy a move left at a
+  server shows with the next sync as an event of its own; nothing is deleted
+  at a server.
+- **Scheduled sends are cancelled.** A scheduled send is removed, so its
+  draft comes back unscheduled; a send that had started is marked `unknown`
+  and is never sent again.
+- **Queued deletions at the provider are dropped**
+  (`mail_server_messages` still pending). Once deletion is on again, the next
+  pass queues afresh.
+
+**The drill.** Restore a recent backup on a spare machine or a second Compose
+project now and then, and sign in. The release gate runs the same restore:
+`api/tests/instance-backup-mysql-integration.test.cts` restores into an
+emptied test database and empty storage and compares every table and file,
+and [the drill](RELEASE_CONTRACT.md#what-the-instance-backup-drill-proves)
+(`scripts/instance-backup-drill.mts`) runs the restore command of the image
+under test into an empty installation, compares the people, the mail
+accounts and every installation-owned table with the source, allowing only
+the changes [after an instance restore](#after-an-instance-restore), and signs
+in.
+
 ## Backup versions and restore behavior
 
-New exports write data schema 6. Readers for schemas 1 to 5 remain; the manifest
+New exports write data schema 7, always encrypted. Readers for schemas 1 to 6 remain; the manifest
 selects automatically. ZIP layout and encrypted framing remain version 1.
 Database upgrade IDs, data schema and application release are separate numbers.
 Preserve historical readers and frozen fixtures when evolving the format. Starting
 with 1.0, retain imports for every released stable backup format throughout 1.x.
 A later major release must retain old readers or provide a maintained conversion
 path before retiring one. Do not silently omit unsupported modules from a full restore.
+
+0.28.0 writes data schema 7: a backup holds data by class (local,
+configuration, Download-mode mail by choice or policy), never a provider's
+copy, and matches local items by their stable `uid` (see
+[Backup format](BACKUP_FORMAT.md)). Older archives import only what that
+rule keeps. A table's class is declared in `data-inventory.ts`; a new table
+or column decides its class there, with `backup-classes.ts` filtering export
+and old imports alike.
+
+Sync mail a backup kept comes back with its provider address and is linked
+when the server shows that exact address again ([Mail sync](MAIL_SYNC.md)).
+When the server reset the mailbox's UIDVALIDITY between the backup and the
+restore, nothing links: the restored message and the server's copy both stay
+visible. A duplicate is the safe outcome; linking by a guess could attach the
+restored message to another one, and removing it could lose data only it held.
+
+An export job stages its data in the person's backup directory and records
+`keep_until` (from `backup.server_retention_days`) and `contents`. A ready
+archive leaves the server by the browser download or a `backup-archive`
+ticket (F9, `file-tickets.ts`), issued only after its recovery password was
+revealed. The ticket's first use opens a 60-minute grant with Range for that
+archive, bound to the session that asked for it.
 
 0.27.0 writes data schema 6: the calendar section adds `task_order`, the hand
 order of tasks, an overlay keyed by the item's identity (event id for a task
@@ -91,6 +339,102 @@ credential scope). An account restored to another server, login or mail link
 counts too.
 A change holding a task when a calendar restore begins
 writes nothing more (`409 RESTORE_IN_PROGRESS`).
+
+0.28.0 adds the bin (`services/bin.ts`, D13) and the synced-task overlay
+(`services/calendar-overlays.ts`), upgrade step 25:
+
+- A bin item is a verbatim, versioned snapshot of the rows a delete
+  removed (`payload`, `payload_version` 1), with the files it keeps on disk
+  in `file_refs`: a contact's photo hashes, a recording's file in the
+  person's recordings `bin/` folder. Each kind restores its own rows with
+  only known columns, for the person restoring, under the old ids and
+  identities unless they are taken; nothing in a payload is trusted.
+- Archives from data schema 7 carry the bin with its module's section
+  (`bin_items`; a recording's file as `recording_bin`, see
+  [Backup format](BACKUP_FORMAT.md)). The import writes them with `restoreBinItems(connection, { userId,
+  section, items, exportedAt, calendarIds, recordingFiles })`: new bin ids,
+  the remaining time kept, groups kept together, an item already there not
+  added twice, a merged contact as an ordinary deleted one (`contact_merges`
+  is not archived), a recording only with its staged file.
+  `exportableBinItems` lists a section's items with their files for export.
+- A synced CalDAV item in the bin was deleted at its provider. Restoring it
+  from the bin creates it there again through the move journal
+  (`calendar_event_moves.bin_item_id`, never archived); a backup restore
+  only writes bin rows and never writes to a provider. A calendar restore
+  that relocates such a journal row ends it like any move; the item stays in
+  the bin.
+- The purge (`bin.purge`, worker owner) deletes per person and module only
+  past `purge_after` and the retention as the settings and policies resolve
+  it at that moment, never while the module is off or its section is being
+  restored, and never an item whose re-creation at a server is under way.
+  It reads due items from a cursor over (`purge_after`, id) that passes
+  every item a batch looked at, so items that must wait never hold back
+  later ones. Each batch locks in the order of the other writers of bin
+  rows: the person's `users` row (shared; a retention change takes it
+  exclusively before it saves, so one saved while the purge runs is either
+  seen by it or applied after it), then the items' restore journals, then
+  the items by primary key. Every restore from the bin takes the same order
+  (`lockBinOwner`): its inserts need the `users` row for their foreign key
+  anyway, so taking it first keeps a restore and a retention change from
+  each holding what the other needs.
+  Recording files are removed after the rows, only inside the person's own
+  folder and only when no recording uses them. The recordings folder and its
+  `bin/` are refused (`RECORDING_FOLDER_UNSAFE`) when a part of the path is a
+  link or leads outside the recordings root; a restore locks its bin row, so
+  two restores of one recording cannot both move its file. A recording's
+  file gets its new name (a hard link, or a copy) inside the transaction and
+  loses the old one only after the commit, so a stop at any point leaves the
+  file where the committed rows name it. A recording's delete, its restore
+  and every removal of one of its names hold the recording's file lock, and
+  a name is removed only if, checked under that lock at removal time, no
+  recording and no bin item names it; a removal decided earlier or run later
+  from a queue never takes a name another change adopted.
+- Names can be left behind: a stop between a commit and the removal of the
+  old name, an interrupted fallback copy, or a removal whose lock stayed
+  busy leaves a file name in the person's recordings folder or its `bin/`
+  that no row names. The listing shows rows only, so it shows nothing; no
+  sweep removes such a name yet, and the admin storage total counts it (an
+  extra hard link is counted again, though it shares the bytes; a leftover
+  copy takes real space).
+- `calendar_overlay_restores` holds a synced item's own state (ToDo state,
+  done time, source email, subtasks) until its row exists: by calendar,
+  exact UID (`utf8mb4_nopad_bin`, never trimmed) and recurrence id, or by
+  title and start for archives without UIDs, only when exactly one stateless
+  row matches (expiring). It keeps every subtask, however many. A row's UID
+  counts for matching only when its server copy has the same one. Step 25
+  also gives synced UIDs that 0.27 stored altered (trimmed, or cut to 500
+  UTF-16 code units, so two items could share one) the server's own back,
+  from each object's stored ICS (`calendar-uid-upgrade.ts`): the object's
+  rows, and the hand order and open moves of its calendar unless another
+  object there could own them. A UID longer than the 500 characters the
+  columns hold is not kept at all: the object has none and its rows are
+  keyed by their own ids, as the sync keys them; the state on each row stays
+  on it. A backup keys such a row's state by the row's id as a `row` key
+  (`match_kind`), so a restore into the same installation brings it back to
+  that row, and never to another item whose real UID equals the id; a `uid`
+  key never reaches a row keyed by its own id. The pass is one-time and linear: seconds when few
+  UIDs need it, but a calendar where nearly every task's UID needs repair
+  can make the 0.28 upgrade take minutes per 100,000 objects (about 13 in a
+  synthetic benchmark); the server finishes starting afterwards. Meanwhile
+  `/health` does not answer, so Docker marks the container unhealthy after
+  its 360-second start period, but nothing restarts it for that unless a
+  tool that restarts unhealthy containers runs. A stop during the pass
+  rolls the pass back, and the next start runs step 25 again. Where autoheal,
+  Swarm or another controller restarts unhealthy containers, suspend that
+  for the 0.28 upgrade or give the container a start grace longer than the
+  pass (30 minutes for the benchmark's 13); otherwise each restart rolls the
+  pass back and it never finishes. The restore writes it with
+  `insertOverlays` and applies those whose rows exist with
+  `applyOverlaysToLiveRows`; the sync that creates a row takes the rest. It
+  goes with its calendar and never applies to another person's calendar.
+- An archive made before 0.28 holds the UIDs as 0.27 stored them, with
+  surrounding spaces cut, and step 25 cannot repair it later: it carries no
+  server copy to compare with. Restored from such an archive, an item whose
+  provider UID really begins or ends with spaces (rare) is not matched by
+  its overlay or its hand rank. The task then shows as its provider has it,
+  without UniHub's own state (done, subtasks, source email) or its place in
+  the list; that overlay stays pending. UIDs are not matched trimmed instead,
+  because that could give one item's state to another.
 
 A synced task's order is removed only on evidence that the provider deleted
 it: a verified deletion of its server object. An object or occurrence that
@@ -153,8 +497,11 @@ Every release also runs the [fresh-install recovery gate](RELEASE_CONTRACT.md#wh
 `npm --prefix api run build && node scripts/recovery-fresh-install.mts --local`
 locally. It exports all supported sections, destroys the source installation,
 imports into a separate database/storage/key set, restarts, compares restored
-files and ownership, and reconnects credentials to controlled provider peers.
-The integration tests below remain required; they do not substitute for that gate.
+files and ownership, and reconnects credentials to test providers, from which
+the provider data the backup left out comes back. The
+[upgrade check](RELEASE_CONTRACT.md#what-the-upgrade-check-proves) restores the
+exports of the three previous releases the same way. The integration tests
+below remain required; they do not substitute for these gates.
 
 Run `npm --prefix api run test:recovery` before releasing a data/recovery change.
 This gate checks connectivity, MariaDB and an empty disposable `_test` database,

@@ -2,6 +2,8 @@
 // imports these as types only; the registry that checks the values lives in
 // services/settings-registry.ts.
 
+import type { BinRetention } from './bin';
+
 export type SettingScope = 'user' | 'mail_account' | 'calendar';
 
 /**
@@ -60,6 +62,8 @@ export interface UserSettingValues {
   mail_preview_lines: number;
   snooze_choices: SnoozeChoice[];
   snoozed_messages: SnoozedMessages;
+  /** How long the bin keeps deleted items, in days or 'forever' (contracts/bin.ts). */
+  bin_retention: BinRetention;
 }
 
 /** A folder by its role (inbox, sent, drafts, archive, trash, junk, ...) or by id. */

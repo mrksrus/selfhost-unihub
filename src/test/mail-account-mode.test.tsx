@@ -60,7 +60,7 @@ const impactCalls = () => vi.mocked(api.get).mock.calls.map(([endpoint]) => endp
 const saveButton = (dialog: HTMLElement) => within(dialog).getByRole('button', { name: 'Save Changes' });
 
 describe('pre-save impact for an existing account', () => {
-  it('fetches the impact of a window change and requires the typed address before saving', async () => {
+  it('fetches the impact of a window change and requires the typed address before saving', { timeout: 20_000 }, async () => {
     vi.mocked(api.get).mockResolvedValue({ data: impact({ outside_window: 1200, outside_trash_window: 34, total_removals: 1234, notes: ['Starred mail is kept.'] }) });
     const dialog = mountEditor(syncAccount);
     expect(saveButton(dialog)).toBeEnabled();

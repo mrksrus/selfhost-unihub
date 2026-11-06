@@ -11,6 +11,7 @@ import { addressConfirmed } from './mail-account-mode';
 import { UNRESOLVED, sqlStates } from './mail-engine/operation-states';
 import { sqlList } from './mail-engine/job-kinds';
 import { recordAudit } from './audit';
+import { fileRemovalGate } from './file-removal-gate';
 
 type IdRow = RowDataPacket & { id: string };
 interface CalendarCounts { calendar_accounts: number | string; calendar_events: number | string }
@@ -181,8 +182,13 @@ async function purgeAccount(userId: string, accountId: string, confirmation: unk
       const [[used]] = await db.execute<RowDataPacket[]>('SELECT id FROM email_attachments WHERE storage_path = ? LIMIT 1', [stored]);
       if (!used) safeAttachments.push(stored);
     }
-    const files = await (require('./mail') as typeof import('./mail')).deleteStoredAttachmentFiles(safeAttachments);
-    const raw = await removeUnreferencedRaw(userId, rawPaths);
+    // While an instance backup copies files, they go after it (the names are unique, so nothing can refer to them again).
+    const removal = await fileRemovalGate.run(async () => ({
+      files: await (require('./mail') as typeof import('./mail')).deleteStoredAttachmentFiles(safeAttachments),
+      raw: await removeUnreferencedRaw(userId, rawPaths),
+    }));
+    const { files, raw } = removal === 'deferred'
+      ? { files: { deletedFiles: 0, failedFiles: 0 }, raw: { deletedFiles: 0, failedFiles: 0 } } : removal;
     return { message: 'Disconnected account and its retained local mail and linked calendar permanently removed. Provider mail and events were not changed.', purged: true,
       email_count: preview!.email_count, deletedAttachmentFiles: files.deletedFiles, failedAttachmentFiles: files.failedFiles,
       deletedRawFiles: raw.deletedFiles, failedRawFiles: raw.failedFiles };

@@ -11,10 +11,14 @@ const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts')
 
 // Download tickets (F9, services/file-tickets.ts) through the real request
 // handler and database: the page asks with its session, the Android app
-// fetches without one. A ticket answers once, for its owner's file, while its
-// session is live, its user active, the module on and no restore of the
-// section runs; it is never stored as the token itself.
-test('file tickets: one use without a cookie, owner-bound, refused when expired, revoked, module off or restoring', { skip: !process.env.MYSQL_TEST_HOST, timeout: 60000 }, async () => {
+// fetches without one. A ticket answers once (a backup archive's opens a
+// grant), for its owner's file, while its session is live, its user active,
+// the module on and no restore of the section runs; it is never stored as the
+// token itself.
+// Building the fresh schema (every upgrade step) takes most of the time: about
+// 100 s on a slow disk against some 15 s for the checks themselves, so the
+// bound is the one of the other tests that build it.
+test('file tickets: one use without a cookie, owner-bound, refused when expired, revoked, module off or restoring', { skip: !process.env.MYSQL_TEST_HOST, timeout: 300000 }, async () => {
   const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
   assert.match((process.env.MYSQL_TEST_DATABASE as string), /_test$/);
   const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306), database: process.env.MYSQL_TEST_DATABASE, user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD, connectionLimit: 8, timezone: 'Z' });
@@ -51,7 +55,8 @@ test('file tickets: one use without a cookie, owner-bound, refused when expired,
         if (result.csrfToken) csrf = result.csrfToken;
         return result;
       };
-      return request;
+      // The Cookie header an Android app before 0.28 adds to a ticket URL.
+      return Object.assign(request, { cookie: () => [...cookies].map(([key, value]) => `${key}=${value}`).join('; ') });
     }
     // What the Android app does with the URL: a plain GET, no cookie.
     const fetchTicket = async (url: string, headers: Record<string, string> = {}) => {
@@ -111,6 +116,20 @@ test('file tickets: one use without a cookie, owner-bound, refused when expired,
     assert.equal((await fetchTicket('/api/files/tickets/not-a-ticket')).status, 410);
     assert.equal((await fetchTicket(`/api/files/tickets/${crypto.randomBytes(32).toString('base64url')}`)).status, 410);
 
+    // An app before 0.28 adds its session cookie to the ticket URL: the ticket
+    // still decides, and a cookie whose session has ended is no refusal.
+    const withCookie = await owner('POST', '/files/tickets', forAttachment);
+    const oldApp = await fetchTicket(withCookie.url, { Cookie: owner.cookie() });
+    assert.equal(oldApp.status, 200);
+    assert.ok(oldApp.body.equals(bytes), 'the stored bytes, with the session cookie');
+    const ended = await signIn('owner');
+    const endedCookie = ended.cookie();
+    await ended('POST', '/auth/signout', {});
+    const afterSignOut = await owner('POST', '/files/tickets', forAttachment);
+    const staleCookie = await fetchTicket(afterSignOut.url, { Cookie: endedCookie });
+    assert.equal(staleCookie.status, 200, 'a signed-out session\'s cookie does not refuse the ticket');
+    assert.ok(staleCookie.body.equals(bytes));
+
     // Two requests at once: only one gets the file.
     const racing = await owner('POST', '/files/tickets', forAttachment);
     const statuses = (await Promise.all([fetchTicket(racing.url), fetchTicket(racing.url)])).map(answer => answer.status).sort();
@@ -142,6 +161,58 @@ test('file tickets: one use without a cookie, owner-bound, refused when expired,
     await fs.rename(stored, `${stored}.moved`);
     assert.equal((await fetchTicket(missing.url)).status, 404);
     await fs.rename(`${stored}.moved`, stored);
+
+    // A backup archive: a real encrypted export of the owner's. Its ticket is
+    // issued once the recovery password was seen; the first use opens a grant
+    // in which the same URL answers again, with Range, while the session lives.
+    const created = await owner('POST', '/backup/jobs', { sections: 'contacts', encrypt: false }, 202);
+    const backupId = created.job.id;
+    let job = created.job;
+    for (let attempt = 0; job.status !== 'ready' && attempt < 150; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      job = (await owner('GET', `/backup/jobs/${backupId}`)).job;
+    }
+    assert.equal(job.status, 'ready');
+    assert.equal(job.encryption_enabled, true, 'encrypted although the client asked otherwise');
+    const forBackup = { kind: 'backup-archive', id: backupId };
+    assert.equal((await owner('POST', '/files/tickets', forBackup, 409)).code, 'BACKUP_PASSWORD_UNSEEN');
+    await owner('POST', `/backup/jobs/${backupId}/recovery-password/reveal`, {});
+    await stranger('POST', '/files/tickets', forBackup, 404);
+    const backupTicket = await owner('POST', '/files/tickets', forBackup);
+    assert.equal(backupTicket.content_type, 'application/vnd.unihub.backup');
+    const whole = await fetchTicket(backupTicket.url);
+    assert.equal(whole.status, 200);
+    assert.equal(whole.body.length, backupTicket.size);
+    assert.equal(crypto.createHash('sha256').update(whole.body).digest('hex'), job.file_sha256, 'the stored archive');
+    assert.equal(whole.headers.get('accept-ranges'), 'bytes');
+    const etag = whole.headers.get('etag');
+    assert.ok(etag);
+    const [[grant]] = await pool.query<RowDataPacket[]>("SELECT redeemed_at, TIMESTAMPDIFF(MINUTE, UTC_TIMESTAMP(), expires_at) AS minutes FROM file_tickets WHERE kind = 'backup-archive'");
+    assert.ok(grant.redeemed_at && grant.minutes >= 58 && grant.minutes <= 60, 'the grant runs for an hour from the first use');
+    const resumed = await fetchTicket(backupTicket.url, { Range: 'bytes=10-20', 'If-Range': etag! });
+    assert.equal(resumed.status, 206);
+    assert.ok(resumed.body.equals(whole.body.subarray(10, 21)), 'the resumed bytes');
+    // An app before 0.28 resumes with its session cookie as well.
+    const resumedWithCookie = await fetchTicket(backupTicket.url, { Range: 'bytes=0-9', 'If-Range': etag!, Cookie: owner.cookie() });
+    assert.equal(resumedWithCookie.status, 206);
+    assert.ok(resumedWithCookie.body.equals(whole.body.subarray(0, 10)));
+    assert.notEqual((await pool.query<RowDataPacket[]>('SELECT downloaded_at FROM data_export_jobs WHERE id = ?', [backupId]))[0][0].downloaded_at, null);
+    // The grant is for this archive and this session only, and ends with it.
+    const strangerJob = crypto.randomUUID();
+    await pool.execute("INSERT INTO data_export_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'ready', '[\"contacts\"]')", [strangerJob, ids.stranger]);
+    await owner('POST', '/files/tickets', { kind: 'backup-archive', id: strangerJob }, 404);
+    await pool.execute("UPDATE file_tickets SET expires_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE kind = 'backup-archive'");
+    assert.equal((await fetchTicket(backupTicket.url)).status, 410, 'an expired grant is refused');
+    const unused = await owner('POST', '/files/tickets', forBackup);
+    await pool.execute("UPDATE file_tickets SET expires_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE kind = 'backup-archive'");
+    assert.equal((await fetchTicket(unused.url)).status, 410, 'a grant opens only within the first minute');
+    const revoked = await owner('POST', '/files/tickets', forBackup);
+    assert.equal((await fetchTicket(revoked.url)).status, 200);
+    const [[grantSession]] = await pool.query<RowDataPacket[]>("SELECT session_id FROM file_tickets WHERE kind = 'backup-archive'");
+    await pool.execute('UPDATE sessions SET expires_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE id = ?', [grantSession.session_id]);
+    assert.equal((await fetchTicket(revoked.url, { Range: 'bytes=0-9' })).status, 410, 'an ended session ends its grant');
+    await pool.execute('UPDATE sessions SET expires_at = UTC_TIMESTAMP() + INTERVAL 1 DAY WHERE id = ?', [grantSession.session_id]);
+    await pool.execute("DELETE FROM file_tickets WHERE kind = 'backup-archive'");
 
     // A deactivated user, an expired session, and signing out (the tickets go with the session).
     const deactivated = await owner('POST', '/files/tickets', forAttachment);

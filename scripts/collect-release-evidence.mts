@@ -20,12 +20,19 @@ const partsDir = argument('--parts'), out = argument('--out'), previousDir = arg
 if (!partsDir || !out) throw new Error('usage: --parts <dir> --out <dir> [--previous <dir>]');
 
 const readJson = (file: string) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return undefined; } };
-// What each part must contain: the job that uploads it and how its pass is recorded.
-const SERVER_PARTS = 4;
-const expected: Record<string, { file: string; passed: (data: { result?: string; passed?: boolean } | undefined) => boolean }> = {
-  container: { file: 'recovery.json', passed: data => data?.result === 'passed' },
+// What each part must contain: the job that uploads it, its files and how
+// each records its pass. The upgrade parts are the k-th previous releases
+// (scripts/upgrade-check.mts --previous k); each names its release, and no
+// two parts may name the same one.
+type Evidence = { result?: string; passed?: boolean; from?: string } | undefined;
+const SERVER_PARTS = 4, UPGRADE_PARTS = 3;
+const passedResult = (data: Evidence) => data?.result === 'passed';
+const expected: Record<string, { file: string; passed: (data: Evidence) => boolean }[]> = {
+  container: [{ file: 'recovery.json', passed: passedResult }, { file: 'instance-drill.json', passed: passedResult }],
   ...Object.fromEntries(Array.from({ length: SERVER_PARTS }, (_, index) => [`android-server-${index + 1}`,
-    { file: `android-server/android-36-part${index + 1}of${SERVER_PARTS}.json`, passed: (data: { passed?: boolean } | undefined) => data?.passed === true }])),
+    [{ file: `android-server/android-36-part${index + 1}of${SERVER_PARTS}.json`, passed: (data: Evidence) => data?.passed === true }]])),
+  ...Object.fromEntries(Array.from({ length: UPGRADE_PARTS }, (_, index) => [`upgrade-${index + 1}`,
+    [{ file: `upgrade/previous-${index + 1}.json`, passed: (data: Evidence) => passedResult(data) && typeof data?.from === 'string' }]])),
 };
 
 const files = (dir: string, base = dir): string[] => fs.readdirSync(dir, { withFileTypes: true })
@@ -50,7 +57,7 @@ for (const entry of fs.existsSync(partsDir) ? fs.readdirSync(partsDir, { withFil
 }
 
 fs.mkdirSync(out, { recursive: true });
-const parts: Record<string, { attempt?: number; files: string[]; problem?: string }> = {};
+const parts: Record<string, { attempt?: number; files: string[]; problem?: string; release?: string }> = {};
 for (const [part, source] of [...latest].sort(([a], [b]) => a.localeCompare(b))) {
   for (const file of source.files) {
     fs.mkdirSync(path.dirname(path.join(out, file)), { recursive: true });
@@ -58,11 +65,23 @@ for (const [part, source] of [...latest].sort(([a], [b]) => a.localeCompare(b)))
   }
   parts[part] = { attempt: source.attempt, files: source.files };
 }
-for (const [part, rule] of Object.entries(expected)) {
+const upgradedFrom = new Map<string, string>();
+for (const [part, rules] of Object.entries(expected)) {
   const entry = parts[part] ??= { files: [] };
-  if (entry.attempt === undefined) entry.problem = 'missing: no upload in any attempt';
-  else if (!entry.files.includes(rule.file)) entry.problem = `missing ${rule.file}`;
-  else if (!rule.passed(readJson(path.join(latest.get(part)!.dir, rule.file)))) entry.problem = `${rule.file} does not record a pass`;
+  if (entry.attempt === undefined) { entry.problem = 'missing: no upload in any attempt'; continue; }
+  const problems = rules.flatMap(rule => {
+    if (!entry.files.includes(rule.file)) return [`missing ${rule.file}`];
+    const data = readJson(path.join(latest.get(part)!.dir, rule.file)) as Evidence;
+    if (!rule.passed(data)) return [`${rule.file} does not record a pass`];
+    if (part.startsWith('upgrade-')) {
+      const other = [...upgradedFrom].find(([, version]) => version === data!.from)?.[0];
+      if (other) return [`${rule.file} checks ${data!.from} again (as ${other} does)`];
+      upgradedFrom.set(part, data!.from!);
+      entry.release = data!.from;
+    }
+    return [];
+  });
+  if (problems.length) entry.problem = problems.join('; ');
 }
 const problems = [...Object.entries(parts).filter(([, entry]) => entry.problem).map(([part, entry]) => `${part}: ${entry.problem}`),
   ...unexpected.map(name => `${partsDir}: unexpected entry ${name} (each part must be a directory named after its upload)`)];
@@ -70,7 +89,7 @@ const complete = problems.length === 0;
 fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify({ run: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT, complete, parts }, null, 2) + '\n');
 
 const lines = ['### Release evidence', '', '| Part | Attempt | Files | Result |', '| --- | --- | --- | --- |',
-  ...Object.entries(parts).map(([part, entry]) => `| ${part} | ${entry.attempt ?? '-'} | ${entry.files.length} | ${entry.problem ?? 'passed'} |`),
+  ...Object.entries(parts).map(([part, entry]) => `| ${part}${entry.release ? ` (from ${entry.release})` : ''} | ${entry.attempt ?? '-'} | ${entry.files.length} | ${entry.problem ?? 'passed'} |`),
   '', complete ? 'Complete: every expected part is present and passed.' : `Incomplete:\n- ${problems.join('\n- ')}`, ''];
 console.log(lines.join('\n'));
 if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');

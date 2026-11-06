@@ -13,7 +13,7 @@ type DateValue = string | number | Date | null | undefined;
 
 const ATTACHMENTS_ROOT = attachmentsRoot();
 
-const BACKUP_FILE_ROOTS = Object.freeze({ email_attachment: ATTACHMENTS_ROOT, raw_email: rawRoot(), recording: RECORDINGS_ROOT });
+const BACKUP_FILE_ROOTS = Object.freeze({ email_attachment: ATTACHMENTS_ROOT, raw_email: rawRoot(), recording: RECORDINGS_ROOT, recording_bin: RECORDINGS_ROOT });
 
 const BACKUP_CONFLICT_MODES = new Set(['keep_existing', 'replace', 'keep_both']);
 

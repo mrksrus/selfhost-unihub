@@ -50,16 +50,19 @@ shown before publishing and how.
 
 ## How CI runs the checks
 
-A run uses only standard `ubuntu-latest` runners of the free plan and takes
-about 16 to 18 minutes. `api-tests`, `frontend`, `build` and `android-window`
-start together; once `build` has pushed the image, `container`, `android-10`,
-`android-16` (one job per script), `android-16-servers` (the real-server
-pairings over four emulators, `--part k/4`) and `e2e` (one job per target;
-desktop in three: the scheduled-send and snooze files, which wait on server
-timers, each alone, and every other file) start together.
+A run uses only standard `ubuntu-latest` runners of the free plan, up to the
+20 a free account runs at once, and takes about 18 to 21 minutes.
+`api-tests`, `frontend`, `build` and `android-window` start together; once
+`build` has pushed the image, `container`, `android-10`, `android-16` (one
+job per script), `android-16-servers` (the real-server pairings over four
+emulators, `--part k/4`), `upgrade` (one job per previous release) and `e2e`
+(one job per target; desktop in four: the scheduled-send and snooze files,
+which wait on server timers, each alone, and every other file split in two
+by turns) start together. Its only caches are npm's downloads and one
+GreenMail entry, shared by the jobs that run the test providers.
 
-`evidence` gathers the evidence of `container` and the four server parts and
-checks that every part is present and records a pass
+`evidence` gathers the evidence of `container`, the four server parts and the
+three upgrade parts, and checks that every part is present and records a pass
 (`scripts/collect-release-evidence.mts`); `publish` needs that check. Each
 part is uploaded per attempt (`unihub-evidence-part-<part>-attempt<n>`, kept
 up to 7 days), so re-running jobs replaces the parts they re-ran and keeps the
@@ -87,19 +90,24 @@ tags back the same way. Neither job waits for a lock.
 
 Between jobs only small artifacts travel (the Android app and the support
 window's earlier apps, kept a day; the release-signed app is also kept 14 days
-for trying it on a phone); the image travels only through the registry. A pull
-request from a fork cannot push, so its test jobs build the same commit
-themselves; nothing from it is kept or published.
+for trying it on a phone; the evidence parts, a few kilobytes each); the image
+travels only through the registry. The earlier releases' images come from the
+registry by their version tags. A pull request from a fork cannot push, so its
+test jobs build the same commit themselves; nothing from it is kept or
+published.
 
 ## Required for every release
 
 | Promise | Check (CI step) | Run it locally |
 | --- | --- | --- |
-| API, database and recovery tests pass with no skipped test | `npm --prefix api run test:ci` (`api-tests`; this CI step is the promise, PROJECT-PREFERENCES P-34) | focused files with `scripts/local-db.sh test <file>`; the whole suite with `npm run test:db` ([development](DEVELOPMENT.md)) |
+| API, database and recovery tests pass with no skipped test | `npm --prefix api run test:ci` (`api-tests`; this CI step is the promise, PROJECT-PREFERENCES P-34; the instance backup's test runs the MariaDB client tools of the database container) | focused files with `scripts/local-db.sh test <file>`; the whole suite with `npm run test:db` ([development](DEVELOPMENT.md)) |
 | Frontend tests, lint and production build | Run frontend checks | `npm test -- --run && npm run lint && npm run build` |
+| The release checks' own logic (evidence, release window, provider log) | Test the release checks | `npm run typecheck:scripts && node --test scripts/release-checks.test.mts` |
 | Pinned interface reference pictures and browser behavior | Verify the pinned interface | `npm --prefix tools/ui-regression run verify` ([setup](UI_BASELINES.md#commands)) |
 | The image starts as in production, serves the app and the Android download, isolates users, and survives a stop and an API crash | `scripts/container-smoke.sh` | needs Docker and a disposable `_test` database |
-| A full backup moves to a fresh, independent installation | `scripts/recovery-fresh-install.mts --image unihub:ci` | `npm --prefix api run build && node scripts/recovery-fresh-install.mts --local` |
+| A user backup moves to a fresh, independent installation, and the provider data it leaves out comes back from the providers | `scripts/recovery-fresh-install.mts --image unihub:ci` | `npm --prefix api run build && node scripts/recovery-fresh-install.mts --local` (needs `bwrap` and the [test providers](#the-test-providers)) |
+| An instance backup restores the whole installation into an empty one with the command in the image | `scripts/instance-backup-drill.mts --image unihub:ci` (`container`) | `npm --prefix api run build && node scripts/instance-backup-drill.mts --local` (without `bwrap`: `UNIHUB_LOCAL_WITHOUT_SANDBOX=1`) |
+| The three previous releases upgrade to this one with their data, and their exports import into a fresh installation | `scripts/upgrade-check.mts --previous k` (`upgrade`, k = 1 to 3) | needs Docker: `node scripts/upgrade-check.mts --from <version> --image <image>` |
 | An open web app updates without losing work, and earlier releases in the support window update to this one | `scripts/pwa-update-check.mts` | `npm run build && node scripts/pwa-update-check.mts --local` |
 | The Android apps of the support window behave as recorded on Android 10, 16 and 17 (17 on a real phone while its emulator image is broken, see [Android compatibility](ANDROID_COMPATIBILITY.md)), and updating keeps the saved server | `scripts/android-support-window.mts`, then `android/scripts/window-test.sh` on each emulator | an emulator and `adb` ([Android compatibility](ANDROID_COMPATIBILITY.md)) |
 | The candidate app's contacts sync both ways with the server (added, edited, joined and deleted on either side, many deletions held for an answer), survive the update from the previous release's app, and follow a session end and a server change | `android/scripts/contacts-test.sh` on each emulator | an emulator and `adb` ([Android](ANDROID.md#contacts-on-the-phone)) |
@@ -133,69 +141,220 @@ rows. Do not describe a green CI run as full release acceptance.
   upgrade path instead, and is reported as an exception, never as compatible.
   Next release's candidate supplies the forward pairing; unknown future
   server versions cannot be tested today.
-- **Upgrade and recovery across versions, for persisted-data or format changes.**
-  Start each of the previous three server releases with synthetic supported
-  data, retain its volumes and keys, update to the candidate image and verify
-  migration completion, core reads/writes and a new backup. Separately import
-  that earlier release's export into a fresh candidate installation. Preserve
-  an independent snapshot before upgrading; an older container cannot undo a
-  database migration. Include the source versions and archive hashes.
 - **Pinned interface behavior, for UI changes.** Run the relevant scenarios
   in [UI acceptance](UI_ACCEPTANCE.md), including desktop/phone and dark/light.
   A source check or launch stub cannot substitute for those results.
 
 `--local` runs use the built API from `api/dist`, MariaDB from the tarball that
 `scripts/local-db.sh` uses (`UNIHUB_DB_HOME`) and `bwrap` to give each
-installation its own `/app/uploads`. They create and delete their own
+installation its own `/app/uploads`. Without `bwrap`,
+`UNIHUB_LOCAL_WITHOUT_SANDBOX=1` points every storage root that can be
+configured into the installation's own directory; a user backup's import keeps
+fixed paths under `/app/uploads`, which would then be this machine's own, so
+only the instance backup drill accepts it; the other checks, and every check
+when `CI` is set, refuse it. They create and delete their own
 databases and directories and never touch `unihub_dev` or a live server.
+
+## The test providers
+
+The recovery checks reach mail and calendar providers that exist only for the
+check (`scripts/test-providers.mts`): GreenMail for IMAP and SMTP and Radicale
+for CalDAV, the providers of the [end-to-end suite](../tools/e2e/README.md),
+on loopback ports of their own. Each sits behind a proxy of the check with a
+certificate from a test CA only the installations trust, under the name
+`peer.unihub.test`. Only the installations' traffic passes the proxies, so
+their log is what an installation sent: IMAP command names (never their
+arguments), each sign-in and whether the provider accepted it, and CalDAV
+requests. A command that changes or removes mail at the provider (STORE, MOVE,
+COPY, EXPUNGE, APPEND, DELETE, RENAME) is recorded as destructive. A proxy can
+also answer as a provider that is temporarily down. They need
+`UNIHUB_E2E_GREENMAIL_JAR`, `UNIHUB_E2E_RADICALE` and `JAVA`, as the
+end-to-end stack does; CI installs them with
+`scripts/install-test-providers.sh`.
 
 ## What the recovery check proves
 
 `scripts/recovery-fresh-install.mts` starts two installations, each with its
 own MariaDB server, uploads, `ENCRYPTION_KEY`, `BACKUP_MASTER_KEY` and
-`JWT_SECRET`.
+`JWT_SECRET`, and the [test providers](#the-test-providers), which stay down
+while the source runs. A user backup holds UniHub's own data by data class
+([data recovery](DATA_RECOVERY.md)): what only UniHub holds, the settings and
+connections, Download-mode mail, and UniHub's state on synced tasks as
+overlays; Sync-mode mail with a provider copy and the events of CalDAV and ICS
+calendars are provider data, which comes back from the provider.
 
-1. The source gets synthetic data in every recovery section: through the API
-   (profile, preferences, contacts, an uploaded recording, a ToDo made from an
-   email with subtasks, a local event) and on the server
-   (`api/tests/helpers/fresh-install-seed.cts`: synced mail with raw files and
-   attachments, two mail accounts and a CalDAV account with passwords, folder
-   history, an unsent provider change, completed and failed transcripts,
-   settings and scores from removed modules).
+1. The source gets synthetic data in every recovery section
+   (`scripts/recovery-data.mts`): through the API (profile, preferences,
+   contacts with a photo, an uploaded recording, a ToDo made from an email with
+   subtasks, a local event, tasks in a hand order) and on the server
+   (`api/tests/helpers/fresh-install-seed.cts`: a Download-mode and a Sync-mode
+   mail account with passwords and synced mail with raw files and attachments,
+   folder history, an unsent provider change, a CalDAV account whose event is a
+   synced task with UniHub's own state (done, a subtask), completed and failed
+   transcripts, settings and scores from removed modules).
 2. The sections offered by `GET /api/backup/capabilities` must be exactly the
    ones the check knows, and every recovery table except a short, named list
-   of rare provider-evidence tables must hold source rows. A new section or
-   table fails the check until it is seeded and compared.
+   (rare provider evidence, and overlays, which exist only while a restored
+   task waits for its sync) must hold source rows. A new section or table
+   fails the check until it is seeded and compared. The installation's own
+   class rules must count the Sync-mode mail and the CalDAV event as provider
+   data.
 3. A full encrypted backup is made, revealed and downloaded as in the browser.
    It must not contain a plain password. The source installation, its database
    and keys are then deleted.
-4. Another user of the destination imports the file with the recovery password.
-   Everything the API shows (texts, dates, links between sections, folders,
-   rules, file bytes) must equal the source, under new IDs. On the server
-   (`fresh-install-inspect.cts`): row counts per table, every reference owned by
-   the user, files inside the user's directories with the recorded bytes (and
-   owned by the API user in the image), no leftover upload or staging file,
-   credentials re-encrypted with the destination key, no provider job, worker
-   lease or runnable provider change, server deletion off, mail accounts paused.
+4. Another user of the destination imports the file with the recovery
+   password. The restore must state what the archive holds (UniHub's own data,
+   settings, downloaded mail, never provider data) and what it left out, with
+   the counts of the Sync-mode mail and the CalDAV event. Everything the API
+   shows (texts, dates, links between sections, folders, rules, file bytes)
+   must equal the source less that provider data, under new IDs. On the server
+   (`fresh-install-inspect.cts`): row counts per table (the source's less its
+   provider rows, and one waiting overlay), every reference owned by the user,
+   files inside the user's directories with the recorded bytes (and owned by
+   the API user in the image) and none of the provider mail's files, no
+   leftover upload or staging file, credentials re-encrypted with the
+   destination key, no provider job, worker lease or runnable provider change,
+   server deletion off, mail accounts paused.
 5. A second destination user sees none of it.
 6. The destination restarts (app and database); all of step 4 is checked again
    with the session from before the restart.
-7. Test peers start: an IMAP server and a CalDAV server with certificates from a
-   test CA that only the installations trust. Reconnecting each restored mail
-   account must log in with its restored password; a calendar sync must
-   authenticate with the restored calendar password. The peers then report a
-   temporary outage; no restored mail or event may disappear, and no
-   destructive IMAP command (STORE, MOVE, COPY, EXPUNGE, DELETE, APPEND) may
-   arrive.
+7. The providers come up holding what the source's providers held: the
+   Sync-mode messages in their mailboxes and the CalDAV event. Reconnecting
+   each restored mail account must sign in with its restored password, and a
+   calendar sync must authenticate with the restored calendar password and
+   succeed. The Sync-mode mail must come back into its folders and the CalDAV
+   event once, as the provider has it, with the task's ToDo state and subtask
+   from its overlay, which is then used up. The restored data must not change.
+8. The providers then answer as if temporarily down; no mail or event may
+   disappear. No destructive IMAP command may have arrived.
 
 With `UNIHUB_RECOVERY_EVIDENCE=<file>` it writes the image ID, archive hash,
-restored row counts and the commands the peers saw. CI keeps it in the
-release evidence (`unihub-release-evidence-attempt<n>`).
+the contents the restore stated, restored row counts, the provider rows left
+out, and the commands the providers saw. CI keeps it in the release evidence
+(`unihub-release-evidence-attempt<n>`).
 
-The frozen old-archive tests in `api/tests/` (0.9.23 and 0.10.3 exports) stay
-part of `test:ci`. When the stored data or backup format changes, also restore
-an archive exported by the previous release (start that release's image as the
-source); this check does not do that yet.
+The frozen old-archive tests in `api/tests/` (0.9.23, 0.10.3 and 0.27.1
+exports) stay part of `test:ci`. Archives of the three previous releases,
+exported by those releases' own images, are restored by the
+[upgrade check](#what-the-upgrade-check-proves).
+
+## What the instance backup drill proves
+
+`scripts/instance-backup-drill.mts` runs the instance backup the way an
+administrator does ([data recovery](DATA_RECOVERY.md#instance-backup)), with
+test values for the key and the destination (the schedule and the number
+kept do not matter to it).
+
+1. The source runs with the instance backup on (a destination volume of its
+   own and the key as a file). Three people get data: the owner and a second
+   person get the synthetic data of the recovery check, each with mail
+   accounts whose mail has originals, and a second administrator, promoted by
+   the owner, gets a contact. The installation gets a policy that is not the
+   default (`backup.download_mail` forced, locked), which must apply to the
+   second person, two earlier backup runs, and mail upgrade progress other
+   than a new database's, one value past 2^53. The test providers stay
+   down, so nothing changes the data.
+   The daily time of the backup is set half a day before the drill starts,
+   and the drill waits until the schedule's catch-up run for that slot has
+   succeeded: no scheduled run can then start before the snapshot below.
+2. An administrator presses Back up now; the drill follows that run by its
+   id until it has succeeded and nothing else runs. The file must
+   hold no password or key in plain text. Every person's tables must be
+   unchanged by the run. It is copied off the destination, and the source,
+   its database and storage are deleted.
+3. A new installation with the source's `ENCRYPTION_KEY` and
+   `BACKUP_MASTER_KEY` and a JWT secret of its own is prepared without
+   starting the app. The restore command of the image
+   (`node /app/api/src/instance-restore.js`, run as `docker compose run`
+   would) must refuse a wrong key, pass `--verify-only`, restore, and refuse a
+   second restore into the now full installation.
+4. The app starts. What belongs to the whole installation must equal the
+   source (`api/tests/helpers/instance-drill-state.cts`). The people come back
+   with their roles, passwords and two-step sign-in. Every table the data
+   inventory of the release under test declares as owned by the installation
+   or an organisation is compared row by row, every column of every row
+   (`scripts/instance-drill-compare.mts`): the activity log, the installation
+   settings and policies, the push identity, the backup runs, the database
+   upgrade history and the mail upgrade progress. Nothing may be added, and
+   a newly declared table fails the drill until it gets a rule there. The
+   rules allow only what the restore is documented to change
+   ([after an instance restore](DATA_RECOVERY.md#after-an-instance-restore)):
+   the run that wrote the backup is finished at a time within the restore
+   command's run, never left without one. The
+   push identity's reminder scan cursors may move, as on any running server.
+   Each mail account row must be the source's except for the pause listed
+   there: inactive, deletion at the provider off and its policy
+   confirmation cleared. The other changes listed there must leave nothing
+   after the restore: sessions, file tickets, sign-in challenges, worker
+   leases, runnable mail engine jobs, provider changes that could run,
+   pending calendar moves, scheduled sends and provider deletions.
+   For each person, every recovery table holds the source's rows under the same IDs,
+   every stored file has its bytes (owned by the API user in the image),
+   every original message has its exact bytes, the stored passwords are the
+   same ciphertexts and read with the old key, and no session of the old
+   installation is left. Each person signs in again and sees exactly what
+   they saw on the source; the policy still applies to the second person, and
+   the second administrator still reaches the instance backup settings.
+5. The providers come up and the owners turn their mail accounts back on;
+   each restored mail password signs in, and a calendar sync succeeds with the
+   restored calendar password.
+
+With `UNIHUB_INSTANCE_DRILL_EVIDENCE=<file>` it writes the backup's name,
+size, hash and key fingerprint and what was restored; CI keeps it with the
+recovery evidence (`container` part).
+
+## What the upgrade check proves
+
+`scripts/upgrade-check.mts --previous k` takes the k-th newest published
+release up to the candidate's version: release tags whose image is in the
+registry, so a release run starts at the release before it, and a candidate
+whose version is not bumped yet also upgrades from the release of that
+version. CI runs k = 1, 2 and 3 side by side (`upgrade`), each with its
+release's image from the registry, the image under test by digest, MariaDB
+11.8 containers on private networks and the [test providers](#the-test-providers)
+(SMTP on 465, where the API uses implicit TLS).
+
+1. The earlier release starts as in production with its own database, storage
+   and keys, and gets synthetic data through its own API: contacts with a
+   photo, local tasks with done state and subtasks (from 0.27.0 one moved to
+   another list), a local event, a recording, a Sync-mode and a
+   Download-mode mail account that download their mail from the providers
+   (MIME messages with a text part and a binary attachment), a CalDAV account that syncs an event, and UniHub's state on that event (done,
+   a subtask). It makes an encrypted full export.
+2. Its app stops, and the database and storage are copied with the database
+   stopped: a snapshot to go back to, since an earlier release cannot undo a
+   database upgrade (kept until the check ends).
+3. The candidate starts on the same database, storage, keys and settings.
+   Every upgrade step must have run and the data inventory check must pass on
+   the upgraded database. The session from before the upgrade still works,
+   and everything the person saw reads the same (contacts with photo bytes,
+   events and tasks with state and subtasks, recordings with their bytes,
+   accounts, and each message by folder with its body, its attachments' bytes
+   and its original as the server keeps it). Every seeded message must be
+   there once, in full: its text, its attachment's exact bytes and its original
+   as the provider's exact octets, before the upgrade and after it, so mail
+   that keeps its subject but loses its contents fails. Writes work: a contact, an event, a task with a
+   subtask, a recording, and a message sent through the Sync-mode account that
+   arrives at the provider and in the Download-mode account. A new full backup
+   holds no plain password and restores into a second person, who then has
+   the first person's own data, mail contents included.
+4. A fresh candidate installation imports the earlier release's export. The
+   restore must state what the archive holds and what it left out (the
+   Sync-mode mail and the CalDAV event, with their counts), and the person's
+   own data from the earlier release must be there, the Download-mode mail in
+   full. Reconnected, the Sync-mode mail comes back from the provider with the
+   same contents and originals, the CalDAV event comes back
+   once with its ToDo state and subtask, every restored password signs in, and
+   no destructive IMAP command is sent.
+
+With `--evidence <file>` it writes the release and its image digest, the image
+under test, the upgrade steps before and after and the last one the
+candidate knows, the snapshot's size, what was seeded, the hashes of both
+archives, the contents each restore stated, the steps with their durations
+and the result. CI keeps one per release
+(`unihub-evidence-part-upgrade-<k>-attempt<n>`, 7 days) in the release
+evidence; the evidence check requires all three, each passed and each from a
+different release.
 
 ## What the update check proves
 
@@ -292,7 +451,8 @@ as working.
 Report, for the exact commit and image:
 
 - the CI run and its result for each step above, the image digest and its
-  newest `unihub-release-evidence-attempt<n>` artifact;
+  newest `unihub-release-evidence-attempt<n>` artifact, which names the three
+  releases the upgrade check started from;
 - the Android table printed by each emulator job, and the real-server
   tables of the four `android-16-servers` parts;
 - anything verified outside CI (a real phone, a real mail provider), named as
@@ -322,9 +482,16 @@ These are not covered yet; do not report them as passing.
   side by `android-notifications-mysql-integration.test.cts`, not the app and
   the real server together, nor battery-saving behaviour of real phones
   (Doze, manufacturer task killers).
-- **Server upgrades.** Starting an earlier release with data, then updating its
-  image and checking migrations, reads, writes and a backup, is not automated.
-- **Restores across versions.** Only frozen 0.9.23/0.10.3 archives and
-  same-version backups are restored by the checks.
+- **Upgrades from further back.** The upgrade check starts from the three
+  previous releases only; an installation more than three releases behind
+  follows [the upgrade guide](UPGRADING.md) release by release, and archives
+  older than those are covered by the frozen archives in `test:ci` only.
+- **Providers.** The recovery and upgrade checks use GreenMail and Radicale,
+  not real providers; Gmail labels, provider quotas and other providers'
+  CalDAV dialects stay with [live mail testing](LIVE_MAIL_TESTING.md) and the
+  maintainer's real accounts.
+- **The instance backup's schedule.** The drill uses Back up now; the daily
+  run at `INSTANCE_BACKUP_TIME`, the number kept and a destination on another
+  machine are checked on the live server.
 - **Real devices and providers.** Manufacturer-specific Android behaviour and
   live mail or calendar providers stay manual ([live mail testing](LIVE_MAIL_TESTING.md)).
