@@ -13,9 +13,10 @@ identity (a synced event takes its UID from the calendar server, every other
 item its id), and adds the tables of the bin's purge, the policies' notices,
 the instance backup's runs and the ToDo state of synced tasks waiting after a
 restore, and the columns of the move journal that let the bin create a synced
-item at its server again. Synced UIDs that 0.27 stored with their surrounding
-spaces cut take the server's own back, from each object's stored calendar
-data. Modification dates are kept. The first start takes longer on large
+item at its server again. Synced UIDs that 0.27 stored altered (surrounding
+spaces cut, or cut short, which could give two items one UID) take the
+server's own back, from each object's stored calendar data; one longer than
+UniHub stores leaves its item keyed by its own row. Modification dates are kept. The first start takes longer on large
 calendars: about 17 seconds for 100,000 events, during which the server does
 not answer yet. Where nearly every synced task's UID needs that repair, it
 takes minutes per 100,000 objects instead (about 13 in a synthetic

@@ -437,10 +437,13 @@ async function applyOverlaysToLiveRows(connection: SqlExecutor, userId: string, 
   if (calendarIds && !calendarIds.length) return 0;
   const scope = `${calendarIds ? ` AND p.calendar_id IN (${calendarIds.map(() => '?').join(', ')})` : ''}${uid !== undefined ? ` AND p.uid = ? ${EXACT}` : ''}`;
   const scopeValues = [...(calendarIds ?? []), ...(uid !== undefined ? [uid] : [])];
+  // A row's UID counts only as its server copy has it: one kept from before
+  // (0.27 cut UIDs) could name another item.
   const [byUid] = await connection.execute<RowDataPacket[]>(
     `SELECT p.id, p.payload, e.id AS event_id FROM calendar_overlay_restores p
      JOIN calendar_events e ON e.user_id = p.user_id AND e.calendar_id = p.calendar_id AND e.uid = p.uid ${EXACT}
      JOIN calendar_event_external_refs r ON r.event_id = e.id AND r.user_id = e.user_id AND COALESCE(r.recurrence_id, '') = p.recurrence_id ${EXACT}
+     JOIN calendar_remote_objects o ON o.id = r.remote_object_id AND o.user_id = e.user_id AND o.uid = e.uid ${EXACT}
      WHERE p.user_id = ? AND p.match_kind = 'uid' AND p.failed_at IS NULL${scope} ORDER BY p.created_at, p.id FOR UPDATE`, [userId, ...scopeValues]);
   // Every row with the shape counts, also one that keeps state: the match must be the only one.
   const [shapes] = uid !== undefined ? [[] as RowDataPacket[]] : await connection.execute<RowDataPacket[]>(

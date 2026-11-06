@@ -149,3 +149,90 @@ test('upgrade 25: an export queued before it still includes downloaded mail', { 
     await fs.rm(directory, { recursive: true, force: true });
   }
 });
+
+// 0.27 cut a synced object's UID to 500 UTF-16 code units, so two items whose
+// UIDs agree that far (250 and 251 emoji; 500 and 501 letters) shared one.
+// After the upgrade each is keyed by its own UID, or by its own row when no
+// column holds it: a backup and a Replace restore, before and after a full
+// sync, give neither the other's ToDo state or subtasks.
+test('upgrade 25: items 0.27 gave one cut UID are told apart, and a restore gives neither the other\'s state', { skip: !process.env.MYSQL_TEST_HOST, timeout: 300000 }, async t => {
+  const fs = require('node:fs/promises') as typeof import('node:fs/promises');
+  const os = require('node:os') as typeof import('node:os');
+  const path = require('node:path') as typeof import('node:path');
+  const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts');
+  const { installCalDavFake, insertCalDavAccount, eventIcs, WORK } = require('./helpers/caldav-fake.cts');
+  const pool = await withTestDatabase(t, { migrate: false });
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-cut-uid-'));
+  const runtime = createBackupRuntime(directory, 'cut-uid-synthetic-key', pool);
+  t.after(async () => {
+    await runtime('services/side-pools').endSidePools(pool);
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+  const { runMigrations } = runtime('services/database-migrations');
+  const { MIGRATIONS } = runtime('services/database');
+  const { BASELINE } = runtime('services/database-baseline');
+  await runMigrations(pool, MIGRATIONS.filter((step: { id: number }) => step.id <= 24), BASELINE);
+  const id = () => crypto.randomUUID();
+  const hash = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
+  const [owner, account, calendar] = [id(), id(), id()];
+  await pool.execute("INSERT INTO users (id, email, password_hash) VALUES (?, 'cut-uid@example.test', 'x')", [owner]);
+  const { encrypt } = runtime('security/encryption');
+  await insertCalDavAccount(pool, encrypt, owner, account);
+  await pool.execute("INSERT INTO calendar_calendars (id, user_id, account_id, name, external_id, read_only) VALUES (?, ?, ?, 'Work', ?, 0)", [calendar, owner, account, WORK]);
+  const server = installCalDavFake(runtime('services/caldav'));
+  // A synced item as 0.27 left it: its object with the UID cut, the event row, the link.
+  const item = async (uid: string, title: string, hour: number, done: boolean) => {
+    const [eventId, objectId, href] = [id(), id(), `${WORK}${hash(title).slice(0, 12)}.ics`];
+    const ics = eventIcs(uid, title, Date.UTC(2026, 10, 12, hour));
+    server.store(href, ics);
+    await pool.execute(`INSERT INTO calendar_events (id, user_id, calendar_id, title, start_time, end_time, todo_status, done_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [eventId, owner, calendar, title, `2026-11-12 ${hour}:00:00`, `2026-11-12 ${hour}:30:00`, done ? 'done' : null, done ? '2026-11-01 08:00:00' : null]);
+    if (done) await pool.execute("INSERT INTO calendar_event_subtasks (id, user_id, event_id, title, is_done, position) VALUES (?, ?, ?, ?, 1, 0)", [id(), owner, eventId, `Step of ${title}`]);
+    await pool.execute('INSERT INTO calendar_remote_objects (id, user_id, account_id, calendar_id, href, href_hash, etag, uid, ics) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [objectId, owner, account, calendar, href, hash(href), server.remote.objects.get(href).etag, uid.slice(0, 500), ics]);
+    await pool.execute(`INSERT INTO calendar_event_external_refs (id, user_id, event_id, calendar_id, account_id, provider, external_event_id, remote_object_id)
+      VALUES (?, ?, ?, ?, ?, 'caldav', ?, ?)`, [id(), owner, eventId, calendar, account, `${objectId}|`, objectId]);
+    return eventId;
+  };
+  const cases = [
+    { label: 'emoji', short: '🦊'.repeat(250), long: '🦊'.repeat(251), keepable: true },
+    { label: 'letters', short: 'q'.repeat(500), long: 'q'.repeat(501), keepable: false },
+  ].map(entry => ({ ...entry, shortId: '', longId: '' }));
+  for (const [index, entry] of cases.entries()) {
+    // Only the item whose UID is the short one has UniHub state.
+    entry.shortId = await item(entry.short, `Short ${entry.label}`, 9 + index * 2, true);
+    entry.longId = await item(entry.long, `Long ${entry.label}`, 10 + index * 2, false);
+  }
+  await runMigrations(pool, MIGRATIONS, BASELINE);
+
+  const rowOf = async (eventId: string) => {
+    const [[row]] = await pool.query<RowDataPacket[]>('SELECT uid, todo_status, (SELECT COUNT(*) FROM calendar_event_subtasks s WHERE s.event_id = e.id) AS steps FROM calendar_events e WHERE id = ?', [eventId]);
+    return row;
+  };
+  const check = async (moment: string) => {
+    for (const entry of cases) {
+      const short = await rowOf(entry.shortId), long = await rowOf(entry.longId);
+      assert.deepEqual([short.uid, short.todo_status, Number(short.steps)], [entry.short, 'done', 1], `${moment}, ${entry.label}: the short item keeps its own`);
+      assert.equal(long.uid, entry.keepable ? entry.long : entry.longId, `${moment}, ${entry.label}: the long item by its own UID, or its own row`);
+      assert.deepEqual([long.todo_status, Number(long.steps)], [null, 0], `${moment}, ${entry.label}: and none of the short item's state`);
+    }
+  };
+  await check('after the upgrade');
+  const [[unkept]] = await pool.query<RowDataPacket[]>("SELECT COUNT(*) AS n FROM calendar_remote_objects WHERE user_id = ? AND uid IS NULL", [owner]);
+  assert.equal(Number(unkept.n), 1, 'the object whose UID no column holds has none');
+
+  // An unmodified backup, restored with Replace, then again after a full sync.
+  const backup = runtime('services/backup');
+  const archive = await backup.buildBackupForUser(owner, { sections: ['calendar'], includeFileData: false });
+  const restore = async () => {
+    const result = await backup.importBackupForUser(owner, structuredClone(archive), { mode: 'apply', sections: ['calendar'], conflict_mode: 'replace', startAccountSync: async () => {} });
+    assert.equal(result.valid, true, JSON.stringify(result));
+  };
+  await restore();
+  await check('after a Replace restore');
+  await pool.execute('UPDATE calendar_accounts SET is_active = TRUE, encrypted_password = ? WHERE id = ?', [encrypt('synthetic-dav-password'), account]);
+  await runtime('services/calendar-sync').syncCalendarAccount(account, { userId: owner, full: true });
+  await check('after a full sync');
+  await restore();
+  await check('after the restore that follows it');
+});

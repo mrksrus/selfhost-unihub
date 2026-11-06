@@ -501,9 +501,12 @@ async function applyObjectRows(connection: PoolConnection, ctx: Context, calenda
     ];
     const eventId = existing.get(key);
     if (eventId) {
+      // A row takes its object's UID; one the sync cannot key it by (none,
+      // or too long to keep) leaves it keyed by its own id, never by a UID it
+      // had before, which could be another item's.
       await connection.execute(
         `UPDATE calendar_events SET calendar_id = ?, title = ?, description = ?, start_time = ?, end_time = ?, all_day = ?,
-           location = ?, color = ?, reminders = ?, recurrence = ?, uid = COALESCE(?, uid) WHERE id = ? AND user_id = ?`,
+           location = ?, color = ?, reminders = ?, recurrence = ?, uid = COALESCE(?, id) WHERE id = ? AND user_id = ?`,
         [...values, uid, eventId, ctx.account.user_id]
       );
       await connection.execute(

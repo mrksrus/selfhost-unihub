@@ -1,15 +1,21 @@
 import type { PoolConnection, RowDataPacket } from 'mysql2/promise';
 
-// Upgrade step 25: the UIDs 0.27 kept trimmed take the calendar server's own.
+// Upgrade step 25: the UIDs 0.27 stored altered take the calendar server's own.
 //
-// 0.27 stored a synced object's UID with its surrounding spaces cut
-// (calendar_remote_objects.uid, and from it task_order.remote_uid and the
-// move journal's target_uid; step 25 copies it into calendar_events.uid).
+// 0.27 stored a synced object's UID with its surrounding spaces cut and cut
+// to 500 UTF-16 code units (calendar_remote_objects.uid, and from it
+// task_order.remote_uid and the move journal's target_uid; step 25 copies it
+// into calendar_events.uid). Two items whose UIDs agree in their first 500
+// code units (250 and 251 emoji, 500 and 501 letters) had the same one.
 // 0.28 keeps a UID byte for byte (calendar-ical.ts rawUid) and compares it
 // exactly, so an object whose ICS says "foo " would no longer match the rows
 // keyed by "foo": a bin restore would leave its state in a pending overlay,
-// and its hand rank would no longer show. The object's own ICS is the
-// provenance: its record and its event rows take the raw UID. What is keyed
+// and its hand rank would no longer show; a cut one would name another item.
+// The object's own ICS is the provenance: its record and its event rows take
+// the exact UID, whatever altered it, or, when no column can hold it (over
+// 500 characters), none: the object's UID is cleared and its rows are keyed
+// by their own ids, as a sync keys an object it cannot key by UID. The state
+// on each row stays on that row. What is keyed
 // by (calendar, UID) instead, the hand order and open moves, moves only when
 // no other object of the calendar has the trimmed or the raw UID; where two
 // items could own the key, it stays as it is. Overlays and bin items are new
@@ -34,10 +40,11 @@ const EXACT = 'COLLATE utf8mb4_nopad_bin';
 const BATCH = 500;
 const UID_PAGE = 5000;
 
-interface Change { id: string; userId: string; calendarId: string; trimmed: string; raw: string }
+/** stored: the UID as 0.27 kept it; raw: the exact one, or null when it cannot be kept. */
+interface Change { id: string; userId: string; calendarId: string; trimmed: string; raw: string | null }
 
 async function adoptRawCalendarUids(connection: PoolConnection) {
-  const { storableObjectUid } = require('./calendar-ical') as typeof import('./calendar-ical');
+  const { objectUid, storableObjectUid } = require('./calendar-ical') as typeof import('./calendar-ical');
   const { itemKey } = require('./task-order') as typeof import('./task-order');
   const byCalendar = new Map<string, Change[]>();
   for (let after = '';;) {
@@ -46,10 +53,13 @@ async function adoptRawCalendarUids(connection: PoolConnection) {
     if (!objects.length) break;
     after = String(objects[objects.length - 1].id);
     for (const object of objects) {
-      // As the sync stores it (calendar-sync.ts storeObject): exactly, or not at all.
-      const raw = storableObjectUid(object.ics) || '';
+      // As the sync stores it (calendar-sync.ts storeObject): exactly, or not
+      // at all when it is too long; an ICS that names no UID (or cannot be
+      // read) changes nothing.
+      if (!objectUid(object.ics)) continue;
+      const raw = storableObjectUid(object.ics);
       const trimmed = String(object.uid);
-      if (!raw || raw === trimmed || raw.trim() !== trimmed) continue;
+      if (raw === trimmed) continue;
       const calendarId = String(object.calendar_id);
       const list = byCalendar.get(calendarId) || [];
       list.push({ id: String(object.id), userId: String(object.user_id), calendarId, trimmed, raw });
@@ -62,7 +72,7 @@ async function adoptRawCalendarUids(connection: PoolConnection) {
     for (const [calendarId, changes] of byCalendar) {
       // How many of the calendar's objects hold each UID that matters here,
       // before any change: a change's own object holds its trimmed UID once.
-      const owners = new Map<string, number>(changes.flatMap(change => [[change.trimmed, 0], [change.raw, 0]]));
+      const owners = new Map<string, number>(changes.flatMap(change => [[change.trimmed, 0], ...(change.raw === null ? [] : [[change.raw, 0] as [string, number]])]));
       for (let after = '';;) {
         const [page] = await connection.execute<RowDataPacket[]>(
           `SELECT href_hash, uid FROM calendar_remote_objects WHERE calendar_id = ? AND href_hash > ? ORDER BY href_hash LIMIT ${UID_PAGE}`, [calendarId, after]);
@@ -73,7 +83,7 @@ async function adoptRawCalendarUids(connection: PoolConnection) {
           if (uid !== null && owners.has(uid)) owners.set(uid, owners.get(uid)! + 1);
         }
       }
-      const shared = (change: Change) => owners.get(change.trimmed)! + (change.raw === change.trimmed ? 0 : owners.get(change.raw)!) > 1;
+      const shared = (change: Change) => owners.get(change.trimmed)! + (change.raw === null ? 0 : owners.get(change.raw)!) > 1;
       // The calendar's hand ranks and moves once, by (person, UID).
       const keyed = (rows: RowDataPacket[], uid: string) => {
         const map = new Map<string, RowDataPacket[]>();
@@ -90,6 +100,14 @@ async function adoptRawCalendarUids(connection: PoolConnection) {
       const moves = keyed(moveRows, 'target_uid');
       for (const change of changes) {
         const { id, userId, trimmed, raw } = change;
+        if (raw === null) {
+          // No column holds its UID: no key, so nothing keyed by the old one
+          // is taken over (a hand rank or move under it stays with the key).
+          await connection.execute(`UPDATE calendar_events e JOIN calendar_event_external_refs r ON r.event_id = e.id AND r.user_id = e.user_id
+            SET e.uid = e.id, e.updated_at = e.updated_at WHERE r.remote_object_id = ? AND e.user_id = ? AND e.uid ${EXACT} = ?`, [id, userId, trimmed]);
+          await connection.execute(`UPDATE calendar_remote_objects SET uid = NULL, updated_at = updated_at WHERE id = ? AND uid ${EXACT} = ?`, [id, trimmed]);
+          continue;
+        }
         await connection.execute(`UPDATE calendar_events e JOIN calendar_event_external_refs r ON r.event_id = e.id AND r.user_id = e.user_id
           SET e.uid = ?, e.updated_at = e.updated_at WHERE r.remote_object_id = ? AND e.user_id = ? AND e.uid ${EXACT} = ?`, [raw, id, userId, trimmed]);
         await connection.execute(`UPDATE calendar_remote_objects SET uid = ?, updated_at = updated_at WHERE id = ? AND uid ${EXACT} = ?`, [raw, id, trimmed]);

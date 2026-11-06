@@ -400,11 +400,16 @@ writes nothing more (`409 RESTORE_IN_PROGRESS`).
   done time, source email, subtasks) until its row exists: by calendar,
   exact UID (`utf8mb4_nopad_bin`, never trimmed) and recurrence id, or by
   title and start for archives without UIDs, only when exactly one stateless
-  row matches (expiring). It keeps every subtask, however many. Step 25
-  also gives synced UIDs that 0.27 stored trimmed the server's own back, from
-  each object's stored ICS (`calendar-uid-upgrade.ts`): the object's rows,
-  and the hand order and open moves of its calendar unless another object
-  there could own them. The pass is one-time and linear: seconds when few
+  row matches (expiring). It keeps every subtask, however many. A row's UID
+  counts for matching only when its server copy has the same one. Step 25
+  also gives synced UIDs that 0.27 stored altered (trimmed, or cut to 500
+  UTF-16 code units, so two items could share one) the server's own back,
+  from each object's stored ICS (`calendar-uid-upgrade.ts`): the object's
+  rows, and the hand order and open moves of its calendar unless another
+  object there could own them. A UID longer than the 500 characters the
+  columns hold is not kept at all: the object has none and its rows are
+  keyed by their own ids, as the sync keys them; the state on each row stays
+  on it. The pass is one-time and linear: seconds when few
   UIDs need it, but a calendar where nearly every task's UID needs repair
   can make the 0.28 upgrade take minutes per 100,000 objects (about 13 in a
   synthetic benchmark); the server finishes starting afterwards. Meanwhile
