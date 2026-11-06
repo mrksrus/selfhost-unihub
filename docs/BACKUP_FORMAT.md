@@ -194,8 +194,16 @@ drops a value that is not a decimal id, and the API never returns it.
 UniHub's state on a synced event or task (ToDo state, done time, source email,
 subtasks, and the attendees with the person's replies, which UniHub never
 writes to the server) travels in `calendar_overlay_restores`, keyed by
-calendar, UID and recurrence id (`match_kind` `uid`). A restore applies it to
-the live item of that identity: Replace takes the archive's state, Keep
+calendar, key and recurrence id. The key's kind is `match_kind`: `uid` for a
+provider UID; `row` for the id of the row it was taken from, when that row
+was keyed by its own id because its provider UID could not be kept (over 500
+characters); `shape` for title and start (archives before schema 7). A `uid`
+key reaches only a row whose identity is that provider UID (the one its
+server copy has), a `row` key only that same row while it is still keyed by
+its id, so a row id and a UID that agree as text never stand for each other.
+Any other `match_kind` is refused; schema 7
+archives written before `row` existed hold only `uid` and `shape` keys, read
+as written. A restore applies it to the live item of that identity: Replace takes the archive's state, Keep
 existing and Keep both fill in only what the task has none of. Without a live
 task it waits in the table for the sync that brings the task back; outside
 Replace an overlay already waiting for that item stays. The overlay's owner

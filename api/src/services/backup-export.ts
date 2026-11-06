@@ -31,6 +31,7 @@ import {
 } from './backup-common';
 import { scopeBackupForImport } from './backup-validate';
 import { photoPath, photosRoot } from './contact-photos';
+import { rowKeyKind } from './calendar-overlays';
 import { accountIdentity, backupContents, includedDownloadAccounts, keptEmailSql, localEventSql, overlayPayload, serverLinkedEmailSql, syncAccountSql } from './backup-classes';
 import type { LeftOutKind } from './backup-classes';
 import type { BackupContents } from '../contracts/backup';
@@ -362,11 +363,12 @@ function classFilter(table: string, included: readonly string[]): { sql: string;
 // keeps it); a live task replaces one of the same identity.
 async function syncedTaskOverlays(connection: SqlExecutor, userId: string, pending: readonly BackupRow[]) {
   const [events] = await connection.execute<RowDataPacket[]>(`SELECT e.id, e.calendar_id, e.uid, e.title, e.start_time, e.todo_status, e.done_at, e.source_email_id, e.source_email_json,
-      COALESCE(r.recurrence_id, '') AS recurrence_id, a.provider, a.account_email, a.base_url, a.discovery_url
+      COALESCE(r.recurrence_id, '') AS recurrence_id, o.uid AS object_uid, a.provider, a.account_email, a.base_url, a.discovery_url
     FROM calendar_events e
     JOIN calendar_calendars c ON c.id = e.calendar_id AND c.user_id = e.user_id
     JOIN calendar_accounts a ON a.id = c.account_id AND a.user_id = e.user_id
     LEFT JOIN calendar_event_external_refs r ON r.event_id = e.id AND r.user_id = e.user_id
+    LEFT JOIN calendar_remote_objects o ON o.id = r.remote_object_id AND o.user_id = e.user_id
     WHERE e.user_id = ? AND a.provider <> 'local'
     ORDER BY e.calendar_id, e.uid, recurrence_id, e.id`, [userId]);
   if (!events.length) return [...pending];
@@ -379,16 +381,18 @@ async function syncedTaskOverlays(connection: SqlExecutor, userId: string, pendi
   const byEvent = new Map<string, BackupRow[]>(), attendeesByEvent = new Map<string, BackupRow[]>();
   for (const row of normalizeRows(subtasks)) byEvent.set(String(row.event_id), [...(byEvent.get(String(row.event_id)) || []), row]);
   for (const row of normalizeRows(attendees)) attendeesByEvent.set(String(row.event_id), [...(attendeesByEvent.get(String(row.event_id)) || []), row]);
-  const key = (row: BackupRow) => JSON.stringify([row.calendar_id, row.uid, String(row.recurrence_id ?? '')]);
+  // The kind of key is part of the item's identity: a row id and a provider UID that agree as text are two items.
+  const key = (row: BackupRow) => JSON.stringify([row.calendar_id, row.match_kind, row.uid, String(row.recurrence_id ?? '')]);
   const overlays = new Map<string, BackupRow>();
   // One set aside as failed travels as it is, beside whatever the item has now.
-  for (const row of pending) overlays.set(row.failed_at != null ? `failed:${row.id}` : row.match_kind === 'uid' ? key(row) : `pending:${row.id}`, row);
+  for (const row of pending) overlays.set(row.failed_at != null ? `failed:${row.id}` : row.match_kind !== 'shape' ? key(row) : `pending:${row.id}`, row);
   for (const event of normalizeRows(events)) {
     const payload = overlayPayload(event, byEvent.get(String(event.id)) || [], attendeesByEvent.get(String(event.id)) || []);
     if (!payload) continue;
-    overlays.set(key(event), { id: crypto.randomUUID(), user_id: userId, calendar_id: event.calendar_id, account_identity: accountIdentity(event), uid: event.uid,
-      recurrence_id: String(event.recurrence_id ?? ''), match_kind: 'uid', shape_title: event.title ?? '', shape_start: event.start_time ?? null,
-      payload: JSON.stringify(payload), created_at: new Date().toISOString().slice(0, 19).replace('T', ' '), expires_at: null, failed_at: null, failure: null });
+    const overlay = { id: crypto.randomUUID(), user_id: userId, calendar_id: event.calendar_id, account_identity: accountIdentity(event), uid: event.uid,
+      recurrence_id: String(event.recurrence_id ?? ''), match_kind: rowKeyKind({ id: event.id, uid: event.uid, object_uid: event.object_uid }), shape_title: event.title ?? '', shape_start: event.start_time ?? null,
+      payload: JSON.stringify(payload), created_at: new Date().toISOString().slice(0, 19).replace('T', ' '), expires_at: null, failed_at: null, failure: null };
+    overlays.set(key(overlay), overlay);
   }
   return [...overlays.values()];
 }

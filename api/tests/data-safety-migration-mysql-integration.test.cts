@@ -195,18 +195,21 @@ test('upgrade 25: items 0.27 gave one cut UID are told apart, and a restore give
     return eventId;
   };
   const cases = [
-    { label: 'emoji', short: '🦊'.repeat(250), long: '🦊'.repeat(251), keepable: true },
-    { label: 'letters', short: 'q'.repeat(500), long: 'q'.repeat(501), keepable: false },
+    { label: 'emoji', short: '🦊'.repeat(250), long: '🦊'.repeat(251), keepable: true, longState: false },
+    { label: 'letters', short: 'q'.repeat(500), long: 'q'.repeat(501), keepable: false, longState: false },
+    // The long item has its own state: keyed by its own row, a restore brings it back to that row.
+    { label: 'own letters', short: 'w'.repeat(500), long: 'w'.repeat(501), keepable: false, longState: true },
   ].map(entry => ({ ...entry, shortId: '', longId: '' }));
   for (const [index, entry] of cases.entries()) {
-    // Only the item whose UID is the short one has UniHub state.
+    // The item whose UID is the short one has UniHub state; the long one only where it says so.
     entry.shortId = await item(entry.short, `Short ${entry.label}`, 9 + index * 2, true);
-    entry.longId = await item(entry.long, `Long ${entry.label}`, 10 + index * 2, false);
+    entry.longId = await item(entry.long, `Long ${entry.label}`, 10 + index * 2, entry.longState);
   }
   await runMigrations(pool, MIGRATIONS, BASELINE);
 
   const rowOf = async (eventId: string) => {
-    const [[row]] = await pool.query<RowDataPacket[]>('SELECT uid, todo_status, (SELECT COUNT(*) FROM calendar_event_subtasks s WHERE s.event_id = e.id) AS steps FROM calendar_events e WHERE id = ?', [eventId]);
+    const [[row]] = await pool.query<RowDataPacket[]>(`SELECT uid, todo_status, (SELECT COUNT(*) FROM calendar_event_subtasks s WHERE s.event_id = e.id) AS steps,
+      (SELECT GROUP_CONCAT(s.title) FROM calendar_event_subtasks s WHERE s.event_id = e.id) AS titles FROM calendar_events e WHERE id = ?`, [eventId]);
     return row;
   };
   const check = async (moment: string) => {
@@ -214,17 +217,23 @@ test('upgrade 25: items 0.27 gave one cut UID are told apart, and a restore give
       const short = await rowOf(entry.shortId), long = await rowOf(entry.longId);
       assert.deepEqual([short.uid, short.todo_status, Number(short.steps)], [entry.short, 'done', 1], `${moment}, ${entry.label}: the short item keeps its own`);
       assert.equal(long.uid, entry.keepable ? entry.long : entry.longId, `${moment}, ${entry.label}: the long item by its own UID, or its own row`);
-      assert.deepEqual([long.todo_status, Number(long.steps)], [null, 0], `${moment}, ${entry.label}: and none of the short item's state`);
+      assert.deepEqual([long.todo_status, Number(long.steps), long.titles], entry.longState ? ['done', 1, `Step of Long ${entry.label}`] : [null, 0, null],
+        `${moment}, ${entry.label}: its own state only, none of the short item's`);
     }
   };
   await check('after the upgrade');
   const [[unkept]] = await pool.query<RowDataPacket[]>("SELECT COUNT(*) AS n FROM calendar_remote_objects WHERE user_id = ? AND uid IS NULL", [owner]);
-  assert.equal(Number(unkept.n), 1, 'the object whose UID no column holds has none');
+  assert.equal(Number(unkept.n), 2, 'the objects whose UIDs no column holds have none');
 
   // An unmodified backup, restored with Replace, then again after a full sync.
   const backup = runtime('services/backup');
   const archive = await backup.buildBackupForUser(owner, { sections: ['calendar'], includeFileData: false });
   const restore = async () => {
+    // The long item's own state lost here: the restore brings it back.
+    for (const entry of cases.filter(entry => entry.longState)) {
+      await pool.execute('UPDATE calendar_events SET todo_status = NULL, done_at = NULL WHERE id = ?', [entry.longId]);
+      await pool.execute('DELETE FROM calendar_event_subtasks WHERE event_id = ?', [entry.longId]);
+    }
     const result = await backup.importBackupForUser(owner, structuredClone(archive), { mode: 'apply', sections: ['calendar'], conflict_mode: 'replace', startAccountSync: async () => {} });
     assert.equal(result.valid, true, JSON.stringify(result));
   };

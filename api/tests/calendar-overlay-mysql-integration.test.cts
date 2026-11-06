@@ -394,3 +394,95 @@ test('synced tasks keep their own state through a restore and the first sync, by
     assert.match(moved.uid, /^[0-9a-f-]{36}$/, 'the new UID is recorded on the row');
   });
 });
+
+// A row keyed by its own id (its provider UID is too long to keep) and
+// another provider item whose real UID is that id: two items whose keys
+// agree as text. Their states travel with the kind of key (match_kind 'row'
+// and 'uid'), so a restore brings each back to its own row only, and a
+// backup keeps both. Through the real export and restore, sync and MariaDB.
+test('a row id and a provider UID that agree as text are two items through backup, restore and sync', {
+  skip: !process.env.MYSQL_TEST_HOST, timeout: 300000,
+}, async t => {
+  const fs = require('node:fs/promises') as typeof import('node:fs/promises');
+  const os = require('node:os') as typeof import('node:os');
+  const path = require('node:path') as typeof import('node:path');
+  const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts');
+  const pool = await withTestDatabase(t);
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-key-kind-'));
+  const runtime = createBackupRuntime(directory, 'key-kind-synthetic-key', pool);
+  t.after(async () => {
+    await runtime('services/side-pools').endSidePools(pool);
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+  const owner = crypto.randomUUID(), accountId = crypto.randomUUID();
+  await pool.execute("INSERT INTO users (id, email, password_hash) VALUES (?, 'key-kind@example.test', 'x')", [owner]);
+  await insertCalDavAccount(pool, runtime('security/encryption').encrypt, owner, accountId);
+  const server = installCalDavFake(runtime('services/caldav'));
+  const calendarSync = runtime('services/calendar-sync');
+  calendarSync.syncCalendarAccountInBackground = () => {};
+  const sync = async () => {
+    await pool.execute('UPDATE calendar_accounts SET is_active = TRUE WHERE id = ?', [accountId]);
+    await calendarSync.syncCalendarAccount(accountId, { userId: owner, full: true });
+  };
+  const backup = runtime('services/backup');
+  const rowOf = async (title: string) => (await pool.query<RowDataPacket[]>('SELECT * FROM calendar_events WHERE user_id = ? AND title = ?', [owner, title]))[0][0];
+  const stateOf = async (eventId: string) => {
+    const [[row]] = await pool.query<RowDataPacket[]>('SELECT todo_status FROM calendar_events WHERE id = ?', [eventId]);
+    const [steps] = await pool.query<RowDataPacket[]>('SELECT title FROM calendar_event_subtasks WHERE event_id = ? ORDER BY position', [eventId]);
+    return [row.todo_status, steps.map(step => step.title)];
+  };
+  const give = async (eventId: string, step: string) => {
+    await pool.execute("UPDATE calendar_events SET todo_status = 'done', done_at = '2026-11-01 08:00:00' WHERE id = ?", [eventId]);
+    await pool.execute('INSERT INTO calendar_event_subtasks (id, user_id, event_id, title, is_done, position) VALUES (?, ?, ?, ?, 1, 0)', [crypto.randomUUID(), owner, eventId, step]);
+  };
+  const clear = async (eventId: string) => {
+    await pool.execute('UPDATE calendar_events SET todo_status = NULL, done_at = NULL WHERE id = ?', [eventId]);
+    await pool.execute('DELETE FROM calendar_event_subtasks WHERE event_id = ?', [eventId]);
+  };
+  const replace = async (archive: FixtureValue) => {
+    const result = await backup.importBackupForUser(owner, structuredClone(archive), { mode: 'apply', sections: ['calendar'], conflict_mode: 'replace', startAccountSync: async () => {} });
+    assert.equal(result.valid, true, JSON.stringify(result));
+  };
+  const keysOf = (archive: FixtureValue) => archive.data.calendar_overlay_restores.map((row: FixtureValue) =>
+    [row.match_kind, row.uid, (typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload).subtasks.map((step: FixtureValue) => step.title)]).sort();
+  const waiting = async () => (await pool.query<RowDataPacket[]>('SELECT match_kind, uid, payload FROM calendar_overlay_restores WHERE user_id = ?', [owner]))[0]
+    .map(row => [row.match_kind, row.uid, (typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload).subtasks.map((step: FixtureValue) => step.title)]);
+
+  // A: a provider UID too long to keep, so its row is keyed by its own id; it has state of its own.
+  server.store(`${WORK}long.ics`, eventIcs('L'.repeat(501), 'A long UID', Date.UTC(2026, 10, 12, 10)));
+  await sync();
+  const a = await rowOf('A long UID');
+  assert.equal(a.uid, a.id);
+  await give(a.id, 'Only A');
+  const first = await backup.buildBackupForUser(owner, { sections: ['calendar'], includeFileData: false });
+  assert.deepEqual(keysOf(first), [['row', a.id, ['Only A']]], 'A\'s state is keyed by its row');
+
+  // B: another provider item whose real UID is A's id. Restoring A's lost state brings it back to A, never to B.
+  server.store(`${WORK}other.ics`, eventIcs(a.id, 'B real UID', Date.UTC(2026, 10, 12, 12)));
+  await sync();
+  const b = await rowOf('B real UID');
+  assert.equal(b.uid, a.id);
+  await clear(a.id);
+  await replace(first);
+  assert.deepEqual(await stateOf(a.id), ['done', ['Only A']], 'A takes its own state back');
+  assert.deepEqual(await stateOf(b.id), [null, []], 'B takes none of it');
+  assert.deepEqual(await waiting(), []);
+
+  // B gets state of its own and is backed up, then deleted at the provider: its state waits, and a backup keeps both.
+  await give(b.id, 'Only B');
+  const second = await backup.buildBackupForUser(owner, { sections: ['calendar'], includeFileData: false });
+  assert.deepEqual(keysOf(second), [['row', a.id, ['Only A']], ['uid', a.id, ['Only B']]]);
+  server.remote.objects.delete(`${WORK}other.ics`);
+  server.remote.version += 1;
+  await sync();
+  assert.equal(await rowOf('B real UID'), undefined);
+  await replace(second);
+  assert.deepEqual(await stateOf(a.id), ['done', ['Only A']], 'A keeps its own, not B\'s');
+  assert.deepEqual(await waiting(), [['uid', a.id, ['Only B']]], 'B\'s state waits for B');
+  const third = await backup.buildBackupForUser(owner, { sections: ['calendar'], includeFileData: false });
+  assert.deepEqual(keysOf(third), [['row', a.id, ['Only A']], ['uid', a.id, ['Only B']]], 'the waiting state is not shadowed by A\'s');
+  await replace(third);
+  assert.deepEqual(await waiting(), [['uid', a.id, ['Only B']]], 'and a restore of that backup keeps it');
+  await sync();
+  assert.deepEqual(await stateOf(a.id), ['done', ['Only A']], 'a full sync gives A none of B\'s');
+});

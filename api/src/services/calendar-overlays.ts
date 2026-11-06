@@ -64,7 +64,12 @@ interface PendingOverlay extends OverlayTarget {
   state: OverlayState;
   /** The account the calendar belonged to, as the archive names it, for the restore's own matching. */
   accountIdentity?: string;
-  matchKind?: 'uid' | 'shape';
+  /**
+   * uid: a provider UID; row: the row's own id, for a row keyed by it because
+   * its provider UID cannot be kept (never another item's UID, even when the
+   * strings agree); shape: title and start, from archives without UIDs.
+   */
+  matchKind?: 'uid' | 'shape' | 'row';
   shape?: { title: string; start: string };
   expiresAt?: string | null;
 }
@@ -226,6 +231,16 @@ function overlayKeyProblem({ uid, recurrenceId, accountIdentity, shapeTitle }: {
   return null;
 }
 
+/**
+ * How a synced row is keyed, for the kind of its overlay's key: 'row' when
+ * it is keyed by its own id because it has no provider UID to go by (its
+ * server copy has none, or it has no server copy), else 'uid'. The same
+ * rule as applyOverlaysToLiveRows.
+ */
+function rowKeyKind(row: { id: unknown; uid: unknown; object_uid?: unknown }): 'uid' | 'row' {
+  return row.uid === row.id && row.object_uid == null ? 'row' : 'uid';
+}
+
 /** An attendee row as an overlay holds it. */
 const overlayAttendee = (row: Record<string, unknown>) => ({ email: row.email, display_name: row.display_name, response_status: row.response_status,
   is_organizer: !!Number(row.is_organizer), optional_attendee: !!Number(row.optional_attendee), comment: row.comment });
@@ -308,14 +323,15 @@ async function insertOverlays(connection: SqlExecutor, overlays: readonly Pendin
   let stored = 0;
   for (const overlay of overlays) {
     const kind = overlay.matchKind ?? 'uid';
-    if (kind === 'uid' && !overlay.uid) continue;
+    if (kind !== 'shape' && !overlay.uid) continue;
     if (kind === 'shape' && (!overlay.shape?.title || !sqlTime(overlay.shape.start))) continue;
     const key = keyOf(overlay);
     const [owned] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_calendars WHERE id = ? AND user_id = ? FOR UPDATE', [overlay.calendarId, overlay.userId]);
     if (!owned.length) continue;
-    if (kind === 'uid') {
-      await connection.execute(`DELETE FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = 'uid' AND uid = ? ${EXACT} AND recurrence_id = ? ${EXACT}
-        AND failed_at IS NULL`, [overlay.userId, overlay.calendarId, key.uid, key.recurrenceId]);
+    // Only the same kind of key is the same item: a row id and a UID that agree as text name two.
+    if (kind !== 'shape') {
+      await connection.execute(`DELETE FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = ? AND uid = ? ${EXACT} AND recurrence_id = ? ${EXACT}
+        AND failed_at IS NULL`, [overlay.userId, overlay.calendarId, kind, key.uid, key.recurrenceId]);
     } else {
       await connection.execute(`DELETE FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = 'shape' AND shape_title = ? ${EXACT} AND shape_start = ?
         AND failed_at IS NULL`, [overlay.userId, overlay.calendarId, key.shapeTitle, key.shapeStart]);
@@ -334,7 +350,7 @@ async function insertOverlays(connection: SqlExecutor, overlays: readonly Pendin
 /** An overlay's key as its columns store it, exactly; refused when it does not fit. */
 function keyOf(overlay: Omit<PendingOverlay, 'state'>) {
   const kind = overlay.matchKind ?? 'uid';
-  const key = { uid: kind === 'uid' ? overlay.uid : null, recurrenceId: String(overlay.recurrenceId || ''), accountIdentity: String(overlay.accountIdentity || ''),
+  const key = { uid: kind !== 'shape' ? overlay.uid : null, recurrenceId: String(overlay.recurrenceId || ''), accountIdentity: String(overlay.accountIdentity || ''),
     shapeTitle: kind === 'shape' ? overlay.shape!.title : null, shapeStart: kind === 'shape' ? sqlTime(overlay.shape!.start) : null };
   const problem = overlayKeyProblem(key);
   if (problem) throw Object.assign(new Error(`A synced-task state cannot be stored: ${problem}`), { status: 422 });
@@ -350,7 +366,7 @@ async function insertFailedOverlays(connection: SqlExecutor, overlays: readonly 
   let kept = 0;
   for (const overlay of overlays) {
     const key = keyOf(overlay);
-    if ((overlay.matchKind ?? 'uid') === 'uid' ? !key.uid : !key.shapeTitle || !key.shapeStart) continue;
+    if ((overlay.matchKind ?? 'uid') !== 'shape' ? !key.uid : !key.shapeTitle || !key.shapeStart) continue;
     const [owned] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_calendars WHERE id = ? AND user_id = ? FOR UPDATE', [overlay.calendarId, overlay.userId]);
     if (!owned.length) continue;
     kept += 1;
@@ -437,19 +453,24 @@ async function applyOverlaysToLiveRows(connection: SqlExecutor, userId: string, 
   if (calendarIds && !calendarIds.length) return 0;
   const scope = `${calendarIds ? ` AND p.calendar_id IN (${calendarIds.map(() => '?').join(', ')})` : ''}${uid !== undefined ? ` AND p.uid = ? ${EXACT}` : ''}`;
   const scopeValues = [...(calendarIds ?? []), ...(uid !== undefined ? [uid] : [])];
-  // A row with a server copy counts only with the UID that copy has: one kept
-  // from before (0.27 cut UIDs) could name another item. A copy with a UID
-  // too long to keep has none, so its row (keyed by its own id) takes no
-  // state by UID: another item's real UID can equal that id, so its own
-  // restored state waits instead. A row whose link has no server copy (from
-  // before UniHub kept them) goes by its own UID, and only as the one row
-  // with it (below).
+  // Each kind of key reaches only rows keyed that way (rowKeyKind below):
+  // - uid: a row whose identity is a provider UID: the one its server copy
+  //   has (one kept from before, as 0.27 cut UIDs, could name another item),
+  //   or, for a row whose link has no server copy (from before UniHub kept
+  //   them), its own UID when that is not its id;
+  // - row: the row with that id, while it is still keyed by its own id (its
+  //   server copy has no UID, or it has none).
+  // A row id and a provider UID that agree as text are two items, so neither
+  // kind ever takes the other's row (rowKeyKind says which a row has). Among
+  // them, only the one row (below).
   const [byUid] = await connection.execute<RowDataPacket[]>(
     `SELECT p.id, p.payload, e.id AS event_id FROM calendar_overlay_restores p
      JOIN calendar_events e ON e.user_id = p.user_id AND e.calendar_id = p.calendar_id AND e.uid = p.uid ${EXACT}
      JOIN calendar_event_external_refs r ON r.event_id = e.id AND r.user_id = e.user_id AND COALESCE(r.recurrence_id, '') = p.recurrence_id ${EXACT}
      LEFT JOIN calendar_remote_objects o ON o.id = r.remote_object_id AND o.user_id = e.user_id
-     WHERE p.user_id = ? AND p.match_kind = 'uid' AND p.failed_at IS NULL AND (o.id IS NULL OR o.uid = e.uid ${EXACT})${scope}
+     WHERE p.user_id = ? AND p.failed_at IS NULL
+       AND ((p.match_kind = 'uid' AND (o.uid = e.uid ${EXACT} OR (o.id IS NULL AND e.uid <> e.id ${EXACT})))
+         OR (p.match_kind = 'row' AND e.id = p.uid ${EXACT} AND e.uid = e.id ${EXACT} AND o.uid IS NULL))${scope}
      ORDER BY p.created_at, p.id FOR UPDATE`, [userId, ...scopeValues]);
   // Every row with the shape counts, also one that keeps state: the match must be the only one.
   const [shapes] = uid !== undefined ? [[] as RowDataPacket[]] : await connection.execute<RowDataPacket[]>(
@@ -500,6 +521,7 @@ export {
   EXACT as UID_EXACT,
   parseOverlayState,
   overlayPayloadProblem,
+  rowKeyKind,
   overlayKeyProblem,
   insertFailedOverlays,
   sqlTime as overlaySqlTime,

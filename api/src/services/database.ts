@@ -790,8 +790,9 @@ async function addDataSafety(connection: SqlExecutor) {
   // The ToDo state and subtasks of a synced task from a restored archive,
   // until the sync that creates the task's row takes them (services/
   // calendar-sync.ts). match_kind 'uid' keys it by (calendar, UID,
-  // recurrence id); 'shape' (archives before schema 7, without UIDs) by the
-  // title and start. It goes with its calendar. failed_at and failure mark
+  // recurrence id); 'row' by the row's own id, for a row keyed by it because
+  // its provider UID cannot be kept; 'shape' (archives before schema 7,
+  // without UIDs) by the title and start. It goes with its calendar. failed_at and failure mark
   // one the database refused to write: kept, never tried again or expired,
   // carried by backups as it is (calendar-overlays.ts applyWaitingOverlay).
   await connection.execute(`CREATE TABLE IF NOT EXISTS calendar_overlay_restores (
@@ -801,7 +802,7 @@ async function addDataSafety(connection: SqlExecutor) {
     account_identity VARCHAR(500) NOT NULL DEFAULT '',
     uid VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NULL,
     recurrence_id VARCHAR(64) NOT NULL DEFAULT '',
-    match_kind ENUM('uid', 'shape') NOT NULL,
+    match_kind ENUM('uid', 'shape', 'row') NOT NULL,
     shape_title VARCHAR(255) NULL,
     shape_start DATETIME NULL,
     payload LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(payload)),

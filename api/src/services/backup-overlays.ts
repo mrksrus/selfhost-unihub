@@ -13,6 +13,9 @@ import { UID_EXACT, applyOverlaysToLiveRows, insertFailedOverlays, insertOverlay
 import type { FailedOverlay, PendingOverlay } from './calendar-overlays';
 
 const storableTime = (value: unknown) => overlaySqlTime(value) !== null;
+const ROW_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** The kind of an archived overlay's key; 'uid' for an archive written before 'row' existed. */
+const keyKind = (row: BackupRow) => (row.match_kind === 'shape' || row.match_kind === 'row' ? row.match_kind : 'uid') as 'uid' | 'shape' | 'row';
 /** A failed overlay's payload as JSON text, kept as it was; null when it is not JSON. */
 function failedPayload(value: unknown) {
   if (typeof value !== 'string') return value && typeof value === 'object' ? JSON.stringify(value) : null;
@@ -35,7 +38,9 @@ function validateOverlayRows(data: Record<string, unknown> | undefined): string[
   const errors = new Set<string>();
   for (const row of rows as BackupRow[]) {
     if (!row || typeof row !== 'object' || !calendars.has(row.calendar_id as string)) { errors.add('Backup has a synced-task state that names no calendar of this backup'); continue; }
+    // A row key is the id of the row it was taken from (a UUID); a uid key the provider's UID.
     const keyed = (row.match_kind === 'uid' ? typeof row.uid === 'string' && row.uid !== ''
+        : row.match_kind === 'row' ? typeof row.uid === 'string' && ROW_ID.test(row.uid)
         : row.match_kind === 'shape' && typeof row.shape_title === 'string' && storableTime(row.shape_start))
       && (row.recurrence_id == null || typeof row.recurrence_id === 'string')
       && (row.account_identity == null || typeof row.account_identity === 'string')
@@ -85,7 +90,7 @@ async function restoreOverlays(connection: SqlExecutor, userId: string, rows: re
     const recurrenceId = String(row.recurrence_id ?? '');
     const shape = row.match_kind === 'shape' ? { title: String(row.shape_title ?? ''), start: String(overlaySqlTime(row.shape_start) ?? '') } : undefined;
     if (setAside) {
-      failed.push({ userId, calendarId, uid: String(row.uid ?? ''), recurrenceId, accountIdentity: String(row.account_identity ?? ''), matchKind: shape ? 'shape' : 'uid', shape,
+      failed.push({ userId, calendarId, uid: String(row.uid ?? ''), recurrenceId, accountIdentity: String(row.account_identity ?? ''), matchKind: keyKind(row), shape,
         expiresAt: overlaySqlTime(row.expires_at), payload: failedPayload(row.payload)!, failedAt: overlaySqlTime(row.failed_at)!, failure: String(row.failure) });
       continue;
     }
@@ -94,12 +99,12 @@ async function restoreOverlays(connection: SqlExecutor, userId: string, rows: re
       const [waiting] = shape
         ? await connection.execute<RowDataPacket[]>(`SELECT id FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = 'shape' AND shape_title = ? ${UID_EXACT} AND shape_start = ? AND failed_at IS NULL LIMIT 1`,
           [userId, calendarId, shape.title, shape.start])
-        : await connection.execute<RowDataPacket[]>(`SELECT id FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = 'uid' AND uid = ? ${UID_EXACT} AND recurrence_id = ? ${UID_EXACT} AND failed_at IS NULL LIMIT 1`,
-          [userId, calendarId, String(row.uid), recurrenceId]);
+        : await connection.execute<RowDataPacket[]>(`SELECT id FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = ? AND uid = ? ${UID_EXACT} AND recurrence_id = ? ${UID_EXACT} AND failed_at IS NULL LIMIT 1`,
+          [userId, calendarId, keyKind(row), String(row.uid), recurrenceId]);
       if (waiting.length) { targets.add(calendarId); continue; }
     }
     if (state.source_email_id) state.source_email_id = emailIds.get(state.source_email_id) ?? state.source_email_id;
-    pending.push({ userId, calendarId, uid: String(row.uid ?? ''), recurrenceId, state, accountIdentity: String(row.account_identity ?? ''), matchKind: shape ? 'shape' : 'uid', shape,
+    pending.push({ userId, calendarId, uid: String(row.uid ?? ''), recurrenceId, state, accountIdentity: String(row.account_identity ?? ''), matchKind: keyKind(row), shape,
       expiresAt: shape ? overlaySqlTime(row.expires_at) ?? normalizeMysqlDateTime(new Date(now.getTime() + OVERLAY_SHAPE_DAYS * 86400000).toISOString()) : null });
     targets.add(calendarId);
   }

@@ -297,7 +297,7 @@ CREATE TABLE `calendar_overlay_restores` (
   `account_identity` varchar(500) NOT NULL DEFAULT '',
   `uid` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin DEFAULT NULL,
   `recurrence_id` varchar(64) NOT NULL DEFAULT '',
-  `match_kind` enum('uid','shape') NOT NULL,
+  `match_kind` enum('uid','shape','row') NOT NULL,
   `shape_title` varchar(255) DEFAULT NULL,
   `shape_start` datetime DEFAULT NULL,
   `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`payload`)),

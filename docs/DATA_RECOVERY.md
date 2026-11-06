@@ -409,9 +409,10 @@ writes nothing more (`409 RESTORE_IN_PROGRESS`).
   object there could own them. A UID longer than the 500 characters the
   columns hold is not kept at all: the object has none and its rows are
   keyed by their own ids, as the sync keys them; the state on each row stays
-  on it. Such a row takes no state by UID: its own state restored from a
-  backup waits in `calendar_overlay_restores`, complete, and is not applied,
-  because another item's real UID could equal the row's id. The pass is one-time and linear: seconds when few
+  on it. A backup keys such a row's state by the row's id as a `row` key
+  (`match_kind`), so a restore into the same installation brings it back to
+  that row, and never to another item whose real UID equals the id; a `uid`
+  key never reaches a row keyed by its own id. The pass is one-time and linear: seconds when few
   UIDs need it, but a calendar where nearly every task's UID needs repair
   can make the 0.28 upgrade take minutes per 100,000 objects (about 13 in a
   synthetic benchmark); the server finishes starting afterwards. Meanwhile
