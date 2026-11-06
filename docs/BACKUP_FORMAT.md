@@ -204,12 +204,18 @@ byte for byte, after mail is restored, so a source email follows to its
 restored id. A waiting overlay is carried on by the next backup. The payload
 is limited to the states UniHub writes, with any number of subtasks and
 attendees (the size limit of `data/backup.json` bounds them). Titles, names
-and replies travel and are written back exactly as stored, spaces included;
-an overlay with a value its table cannot hold (a subtask title, address or
-name over 255 characters, a reply over 65,535 bytes, counted as written)
-refuses the restore by name rather than being cut, as does an overlay naming
-no calendar of the archive. A restore that cannot place an overlay (its
-calendar is not a synced one there) says so in a note.
+and replies travel and are written back exactly as stored, spaces included.
+Every value is held to its column's type as written: a subtask title,
+address or name of at most 255 characters, a reply of at most 65,535 bytes,
+a position in the INT range, a done time that is a real date and time,
+booleans, valid Unicode and the ToDo states and replies UniHub has. An
+overlay outside them refuses the restore by name rather than being cut or
+corrected, as does an overlay naming no calendar of the archive. A restore
+that cannot place an overlay (its calendar is not a synced one there) says
+so in a note. A waiting overlay the database still refuses to write is
+applied on its own: the item syncs, and the overlay stays marked failed
+(`failed_at`, `failure`), is not tried again, and is left out of later
+backups, which list it under what they left out.
 
 The bin travels in `bin_items`, one table that the Contacts, Calendar and
 Recordings sections share: each row goes with the section of its `module`, so
