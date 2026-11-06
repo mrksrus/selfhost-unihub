@@ -570,20 +570,30 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
     await step('microphone', async () => {
       const before = new Set((await recordings()).map(item => item.id));
       await navigateTo('Recordings');
-      // A tap right after the page opens can miss Record while the page is still
-      // moving (seen on fast CI runners). Record is tapped once, when two screen
-      // reads a second apart show it in the same place: a second tap could start
-      // a second capture while the first still waits for the question.
-      let last = '';
-      await waitFor('Record to stay in place', nodes => {
-        const record = find(/^Record$/, /Button/)(nodes);
-        const place = record ? `${record.x},${record.y},${record.top},${record.bottom}` : '';
-        const settled = place !== '' && place === last;
-        last = place;
-        return settled;
-      });
-      await tapOn('Record', /^Record$/, { cls: /Button/ });
-      const allow = await waitFor('Android\'s microphone question', find(/^(While using the app|Allow|ALLOW|Only this time)$/), 60_000);
+      // On a freshly started emulator the first start can fail before Android asks
+      // (seen on CI); the page then says "Could not start recording" for a few
+      // seconds. Only that message proves no start is pending, so only then is
+      // Record tapped again: a second tap while the question is pending could
+      // start a second capture.
+      const question = find(/^(While using the app|Allow|ALLOW|Only this time)$/);
+      const failures: string[] = [];
+      let allow: UiNode | undefined;
+      for (let attempt = 0; attempt < 3 && !allow; attempt++) {
+        if (attempt > 0) await waitFor('the failed start\'s message to close', nodes => nodes.length > 0 && !nodes.some(node => node.text === 'Could not start recording'), 30_000);
+        await tapOn('Record', /^Record$/, { cls: /Button/ });
+        const outcome = await waitFor('Android\'s microphone question', nodes => {
+          const asked = question(nodes);
+          if (asked) return { asked };
+          const failed = nodes.findIndex(node => node.text === 'Could not start recording');
+          return failed >= 0 ? { failed: nodes.slice(failed + 1).find(node => node.text)?.text || 'no reason shown' } : undefined;
+        }, 60_000);
+        if ('asked' in outcome) allow = outcome.asked;
+        else {
+          failures.push(outcome.failed);
+          log(`       recording could not start: ${outcome.failed}`);
+        }
+      }
+      if (!allow) throw new Error(`recording could not start (${failures.join('; ')})`);
       tap(allow);
       await waitFor('the running recorder', find(/^Stop$/, /Button/), 60_000);
       const granted = shell(`dumpsys package ${PACKAGE}`).includes('android.permission.RECORD_AUDIO: granted=true');
@@ -594,7 +604,7 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
       await tapUntil('Save recording', /^Save recording$/, nodes => !find(/^Save the recording$/)(nodes), { cls: /Button/ });
       recorded = await until('the recording on the server', async () => (await recordings()).find(item => !before.has(item.id)), 120_000);
       if (!(Number(recorded.size_bytes) > 0)) throw new Error('the recording reached the server empty');
-      return `permission asked and granted; ${recorded.size_bytes} bytes recorded with the microphone reached the server`;
+      return `permission asked and granted${failures.length ? ` after ${failures.length} failed start(s): ${failures.join('; ')}` : ''}; ${recorded.size_bytes} bytes recorded with the microphone reached the server`;
     });
     await step('download', async () => {
       if (!recorded) throw new Error('no recording on the server to download (the microphone step failed)');
