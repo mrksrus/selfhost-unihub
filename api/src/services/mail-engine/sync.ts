@@ -247,10 +247,15 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
       if (!current || String(occurrence?.observation_revision) === String(revision)) {
         await executor.execute(`UPDATE emails SET remote_missing = FALSE
           WHERE id = ? AND user_id = ? AND mail_account_id = ?`, [emailId, userId, accountId]);
-        await executor.execute(`UPDATE emails SET is_read = ?, is_starred = ?, observed_modseq = ?,
+        // Sync follows the provider's read/star. Download keeps UniHub's own:
+        // an item takes the provider's flags once, when ensureItem creates it,
+        // and a later window (history, a reconnect, another Gmail label of a
+        // known message) never repaints them.
+        const followFlags = account.sync_mode === 'sync';
+        await executor.execute(`UPDATE emails SET ${followFlags ? 'is_read = ?, is_starred = ?, ' : ''}observed_modseq = ?,
           observation_revision = observation_revision + 1, remote_missing = FALSE
           WHERE id = ? AND user_id = ? AND mail_account_id = ? AND observation_revision = ?`,
-        [item.flags.includes('\\Seen') ? 1 : 0, item.flags.includes('\\Flagged') ? 1 : 0,
+        [...followFlags ? [item.flags.includes('\\Seen') ? 1 : 0, item.flags.includes('\\Flagged') ? 1 : 0] : [],
           item.modseq || null, emailId, userId, accountId, String(started?.email_revision || 0)]);
       }
       // Only the validated provider COPYUID stored on an exact dispatched
