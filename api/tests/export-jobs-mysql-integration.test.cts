@@ -38,14 +38,18 @@ test('a failed export removes its archive through the removal gate, and keeps it
   const rowOf = async (jobId: string) => (await pool.query<RowDataPacket[]>('SELECT status, file_path FROM data_export_jobs WHERE id = ?', [jobId]))[0][0];
   const keysOf = async (jobId: string) => Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS count FROM backup_archive_keys WHERE export_job_id = ?', [jobId]))[0][0].count);
 
-  // Statements of the job run through `fault`, which may run them, fail them or both.
+  // Statements of the job, on the pool and on its connections, run through
+  // `fault`, which may run them, fail them or both.
   type Fault = (sql: string, values: unknown[], run: () => Promise<unknown>) => Promise<unknown>;
   async function runWith(jobId: string, fault: Fault) {
-    state.setDb(new Proxy(pool, { get: (target: FixtureValue, prop: string | symbol) => {
-      const value = Reflect.get(target, prop);
-      if (prop !== 'execute') return typeof value === 'function' ? value.bind(target) : value;
-      return (sql: string, values: unknown[] = []) => fault(sql, values, () => value.call(target, sql, values));
-    } }));
+    const through = (target: FixtureValue): FixtureValue => new Proxy(target, { get: (object: FixtureValue, prop: string | symbol) => {
+      const value = Reflect.get(object, prop);
+      if (typeof value !== 'function') return value;
+      if (prop === 'execute') return (sql: string, values: unknown[] = []) => fault(sql, values, () => value.call(object, sql, values));
+      if (prop === 'getConnection') return async () => through(await value.call(object));
+      return value.bind(object);
+    } });
+    state.setDb(through(pool));
     try {
       await jobs.runDataExportJob(jobId);
     } finally {
@@ -99,6 +103,35 @@ test('a failed export removes its archive through the removal gate, and keeps it
     assert.deepEqual([row.status, row.file_path], ['ready', archiveOf(jobId)]);
     assert.equal(fs.existsSync(archiveOf(jobId)), true);
     assert.equal(await keysOf(jobId), 1);
+  });
+
+  await t.test('a ready update still running when its answer is lost is waited for, and keeps the archive and its key', async () => {
+    const jobId = await queueJob();
+    // Another transaction holds the job's row, so the ready update waits at
+    // the server after its client has given up on it.
+    const holder = await pool.getConnection();
+    let publication: Promise<unknown> | null = null;
+    try {
+      await runWith(jobId, async (sql, values, run) => {
+        if (!isReadyUpdate(sql, values)) return run();
+        await holder.beginTransaction();
+        await holder.execute('SELECT id FROM data_export_jobs WHERE id = ? FOR UPDATE', [jobId]);
+        publication = run();
+        publication.catch(() => {});
+        // Released while the job settles its failure: the ready update goes first.
+        setTimeout(() => { holder.commit().catch(() => {}); }, 500);
+        await new Promise(resolve => setTimeout(resolve, 100));
+        throw lost();
+      });
+      await publication;
+    } finally {
+      await holder.rollback().catch(() => {});
+      holder.release();
+    }
+    const row = await rowOf(jobId);
+    assert.deepEqual([row.status, row.file_path], ['ready', archiveOf(jobId)], 'the ready update was committed and stands');
+    assert.equal(await keysOf(jobId), 1, 'the ready archive keeps its unlock key');
+    assert.equal(fs.existsSync(archiveOf(jobId)), true, 'and its file');
   });
 
   await t.test('a job that fails before its ready row is committed removes its archive, after an instance backup copy when one runs', async () => {
