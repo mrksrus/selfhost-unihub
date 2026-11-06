@@ -570,22 +570,20 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
     await step('microphone', async () => {
       const before = new Set((await recordings()).map(item => item.id));
       await navigateTo('Recordings');
-      // A tap right after the page opens can land before Record listens (seen on
-      // fast CI runners). Tap again only while Record is still on screen and the
-      // question is not: a question that comes late is taken as it is.
-      const question = find(/^(While using the app|Allow|ALLOW|Only this time)$/);
+      // A tap right after the page opens can miss Record while the page is still
+      // moving (seen on fast CI runners). Record is tapped once, when two screen
+      // reads a second apart show it in the same place: a second tap could start
+      // a second capture while the first still waits for the question.
+      let last = '';
+      await waitFor('Record to stay in place', nodes => {
+        const record = find(/^Record$/, /Button/)(nodes);
+        const place = record ? `${record.x},${record.y},${record.top},${record.bottom}` : '';
+        const settled = place !== '' && place === last;
+        last = place;
+        return settled;
+      });
       await tapOn('Record', /^Record$/, { cls: /Button/ });
-      for (let retry = 0; retry < 2; retry++) {
-        const retryAt = Date.now() + 20_000;
-        const outcome = await waitFor('Android\'s microphone question or Record', nodes => {
-          if (question(nodes)) return 'question';
-          return Date.now() >= retryAt ? find(/^Record$/, /Button/)(nodes) : undefined;
-        }, 30_000).catch(() => undefined);
-        if (!outcome || outcome === 'question') break;
-        log('       tap Record again: no microphone question yet');
-        tap(outcome);
-      }
-      const allow = await waitFor('Android\'s microphone question', question, 60_000);
+      const allow = await waitFor('Android\'s microphone question', find(/^(While using the app|Allow|ALLOW|Only this time)$/), 60_000);
       tap(allow);
       await waitFor('the running recorder', find(/^Stop$/, /Button/), 60_000);
       const granted = shell(`dumpsys package ${PACKAGE}`).includes('android.permission.RECORD_AUDIO: granted=true');
