@@ -570,11 +570,12 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
     await step('microphone', async () => {
       const before = new Set((await recordings()).map(item => item.id));
       await navigateTo('Recordings');
-      // On a freshly started emulator the first start can fail before Android asks
-      // (seen on CI); the page then says "Could not start recording" for a few
-      // seconds. Only that message proves no start is pending, so only then is
-      // Record tapped again: a second tap while the question is pending could
-      // start a second capture.
+      // On CI the first pairing on a fresh emulator sometimes got no question at
+      // all; one explanation is a start that fails before Android asks, which the
+      // page shows as "Could not start recording" for a few seconds. That message
+      // means the start has given up, so only then is Record tapped again: a
+      // second tap while the question is pending could start a second capture.
+      // The reason is the text after the title, best effort.
       const question = find(/^(While using the app|Allow|ALLOW|Only this time)$/);
       const failures: string[] = [];
       let allow: UiNode | undefined;
