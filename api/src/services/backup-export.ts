@@ -381,13 +381,14 @@ async function syncedTaskOverlays(connection: SqlExecutor, userId: string, pendi
   for (const row of normalizeRows(attendees)) attendeesByEvent.set(String(row.event_id), [...(attendeesByEvent.get(String(row.event_id)) || []), row]);
   const key = (row: BackupRow) => JSON.stringify([row.calendar_id, row.uid, String(row.recurrence_id ?? '')]);
   const overlays = new Map<string, BackupRow>();
-  for (const row of pending) overlays.set(row.match_kind === 'uid' ? key(row) : `pending:${row.id}`, row);
+  // One set aside as failed travels as it is, beside whatever the item has now.
+  for (const row of pending) overlays.set(row.failed_at != null ? `failed:${row.id}` : row.match_kind === 'uid' ? key(row) : `pending:${row.id}`, row);
   for (const event of normalizeRows(events)) {
     const payload = overlayPayload(event, byEvent.get(String(event.id)) || [], attendeesByEvent.get(String(event.id)) || []);
     if (!payload) continue;
     overlays.set(key(event), { id: crypto.randomUUID(), user_id: userId, calendar_id: event.calendar_id, account_identity: accountIdentity(event), uid: event.uid,
       recurrence_id: String(event.recurrence_id ?? ''), match_kind: 'uid', shape_title: event.title ?? '', shape_start: event.start_time ?? null,
-      payload: JSON.stringify(payload), created_at: new Date().toISOString().slice(0, 19).replace('T', ' '), expires_at: null });
+      payload: JSON.stringify(payload), created_at: new Date().toISOString().slice(0, 19).replace('T', ' '), expires_at: null, failed_at: null, failure: null });
   }
   return [...overlays.values()];
 }
@@ -396,10 +397,7 @@ async function syncedTaskOverlays(connection: SqlExecutor, userId: string, pendi
 async function leftOutCounts(connection: SqlExecutor, userId: string, sections: readonly string[], included: readonly string[], mailAccountId: string | null) {
   const counts: Partial<Record<LeftOutKind, number>> = {};
   const count = async (sql: string, params: unknown[]) => Number((await connection.execute<RowDataPacket[]>(sql, params as string[]))[0][0].n) || 0;
-  if (sections.includes('calendar')) {
-    counts.synced_events = await count(`SELECT COUNT(*) AS n FROM calendar_events b WHERE b.user_id = ? AND NOT ${localEventSql('b')}`, [userId]);
-    counts.failed_overlays = await count('SELECT COUNT(*) AS n FROM calendar_overlay_restores b WHERE b.user_id = ? AND b.failed_at IS NOT NULL', [userId]);
-  }
+  if (sections.includes('calendar')) counts.synced_events = await count(`SELECT COUNT(*) AS n FROM calendar_events b WHERE b.user_id = ? AND NOT ${localEventSql('b')}`, [userId]);
   if (sections.includes('mail')) {
     const account = mailAccountId === null ? '' : ' AND b.mail_account_id = ?';
     const scope = mailAccountId === null ? [] : [mailAccountId];
@@ -445,7 +443,6 @@ async function readBackupSnapshot(userId: string, sections: unknown, checkCancel
           where = 'r.user_id = ? AND a.user_id = ?'; params = [userId, userId];
         }
         if (table === 'recording_transcription_jobs') where += " AND b.status = 'completed'";
-        if (table === 'calendar_overlay_restores') where += ' AND b.failed_at IS NULL';
         if (accountOnly) where += ` AND ${ACCOUNT_ONLY_FILTERS[table]}`;
         if (mailAccountId !== null && SECTION_POLICIES.mail.tables.includes(table)) {
           const filter = ACCOUNT_MAIL_FILTERS[table];

@@ -957,8 +957,25 @@ test('production export and restore jobs round-trip what a backup holds through 
       }
     }
     assert.deepEqual(await rowsFor('calendar_overlay_restores', absent), [], 'nothing waits for a sync it would break');
+    // A key is held to its column as written, in characters: 500 emoji fit, 501 do not.
+    for (const [uid, refused] of [['😀'.repeat(501), true], ['😀'.repeat(251), false]] as const) {
+      const copy = structuredClone(archive);
+      copy.data.calendar_overlay_restores.find((row: FixtureValue) => row.uid === 'Invited@example.test').uid = uid;
+      const checked = await source('services/backup').importBackupForUser(absent, copy, { mode: 'validate', sections: ['calendar'], conflict_mode: 'replace', startAccountSync: async () => {} });
+      assert.equal(checked.valid, !refused, JSON.stringify(checked.errors));
+      if (refused) assert.match(checked.errors.join('\n'), /cannot store: an item identity is longer than its column/);
+    }
     const [[untouched]] = await pool.execute<RowDataPacket[]>('SELECT comment FROM calendar_event_attendees WHERE event_id = ?', [invited]);
     assert.equal(untouched.comment, 'Changed my mind', 'a refused archive changes nothing');
+    // A state set aside as failed here: a restore in any mode leaves it as it is, beside the archive's.
+    const failedPayload = JSON.stringify({ todo_status: 'done', subtasks: [{ title: 'Far', is_done: false, position: 2147483648 }] });
+    await insert('calendar_overlay_restores', { id: uuid(), user_id: owner, calendar_id: calendar, uid: 'Invited@example.test', recurrence_id: '', match_kind: 'uid',
+      payload: failedPayload, failed_at: '2030-04-01 12:00:00', failure: 'ER_WARN_DATA_OUT_OF_RANGE' });
+    const failedOf = async (person: string) => (await pool.execute<RowDataPacket[]>('SELECT uid, payload, failure FROM calendar_overlay_restores WHERE user_id = ? AND failed_at IS NOT NULL', [person]))[0]
+      .map(row => [row.uid, typeof row.payload === 'string' ? row.payload : JSON.stringify(row.payload), row.failure]);
+    const kept = await source('services/backup').importBackupForUser(owner, archive, { mode: 'apply', sections: ['calendar'], conflict_mode: 'keep_existing', startAccountSync: async () => {} });
+    assert.equal(kept.valid, true, JSON.stringify(kept));
+    assert.deepEqual(await failedOf(owner), [['Invited@example.test', failedPayload, 'ER_WARN_DATA_OUT_OF_RANGE']], 'Keep existing keeps it');
     const result = await source('services/backup').importBackupForUser(owner, archive, { mode: 'apply', sections: ['calendar'], conflict_mode: 'replace', startAccountSync: async () => {} });
     assert.equal(result.valid, true, JSON.stringify(result));
     const stateOf = async (id: string) => {
@@ -971,6 +988,16 @@ test('production export and restore jobs round-trip what a backup holds through 
     assert.equal(overlayOf(archive).attendees[0].comment, reply, 'the archive holds the reply as stored');
     const [[restored]] = await pool.execute<RowDataPacket[]>('SELECT display_name, response_status, comment FROM calendar_event_attendees WHERE event_id = ?', [invited]);
     assert.deepEqual([restored.display_name, restored.response_status, restored.comment.length, restored.comment === reply], [' Organizer ', 'tentative', reply.length, true], 'and Replace writes it back exactly');
+    assert.deepEqual(await failedOf(owner), [['Invited@example.test', failedPayload, 'ER_WARN_DATA_OUT_OF_RANGE']], 'so does Replace');
+    // It travels in a backup and comes back set aside, as it was, once after two restores, never applied.
+    const withFailed = await source('services/backup').buildBackupForUser(owner, { sections: ['calendar'], includeFileData: true });
+    const elsewhere = await newUser('overlay-kept');
+    for (let round = 0; round < 2; round++) {
+      const again = await source('services/backup').importBackupForUser(elsewhere, withFailed, { mode: 'apply', sections: ['calendar'], conflict_mode: 'keep_existing', startAccountSync: async () => {} });
+      assert.equal(again.valid, true, JSON.stringify(again));
+      assert.ok(again.notes.some((note: string) => /1 synced item keeps its state that could not be applied/.test(note)), JSON.stringify(again.notes));
+    }
+    assert.deepEqual(await failedOf(elsewhere), [['Invited@example.test', failedPayload, 'ER_WARN_DATA_OUT_OF_RANGE']]);
   });
 
   await t.test('a binned task keeps its source email through a full restore into another person', async () => {

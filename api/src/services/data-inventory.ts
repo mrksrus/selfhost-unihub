@@ -42,10 +42,6 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
     ['calendar_remote_objects', 'Server copies of calendar entries are downloaded again by the next calendar sync.', 'id user_id account_id calendar_id href href_hash etag uid ics created_at updated_at'],
   ].map(([name, reason, columns]) => [name, Object.freeze({ ...excluded('rebuilt', reason, columns),
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 12])) })])),
-  // A synced-task state the database refused to write (calendar-overlays.ts):
-  // kept here to look at; a backup leaves the row out and counts it.
-  calendar_overlay_restores: Object.freeze({ ...excluded('deliberately_excluded', 'A synced-task state that could not be applied stays on this installation; backups leave it out and count it.', 'failed_at failure'),
-    introducedIn: Object.freeze({ failed_at: 25, failure: 25 }) }),
   sessions: excluded('security_only', 'A restore must not resurrect authenticated sessions.', 'id user_id token expires_at ip_address user_agent created_at'),
   audit_log: Object.freeze({ ...excluded('deliberately_excluded', 'The audit trail records what happened on this installation; a restore must neither carry it elsewhere nor rewrite it.',
     'id created_at actor_id action target_user_id ip_address request_id details'),

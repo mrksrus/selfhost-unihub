@@ -10,7 +10,7 @@ import { db } from '../state';
 import { ApiError, conflict, notFound } from '../http/errors';
 import { withTransaction } from './transactions';
 import { putInBin, parsePayload, lockBinOwner } from './bin';
-import { UID_EXACT, overlayStateOf, insertOverlays, applyOverlaysToLiveRows } from './calendar-overlays';
+import { UID_EXACT, overlayStateOf, insertOverlays, applyOverlaysToLiveRows, overlayKeyProblem } from './calendar-overlays';
 import { fencedWrite, calendarAdmission } from './calendar-move-state';
 import { itemKey } from './task-order';
 import { publishCalendarChanged } from './realtime';
@@ -385,7 +385,9 @@ function copyHref(target: SyncTarget, href: string, uid: string) {
 async function restoreRemoteRanks(cx: SqlExecutor, userId: string, ranks: readonly Stored[], calendarId: string, uid: string) {
   for (const rank of ranks || []) {
     if (!Number.isSafeInteger(Number(rank.sort_rank))) continue;
-    const recurrenceId = String(rank.recurrence_id ?? '').slice(0, 64);
+    const recurrenceId = String(rank.recurrence_id ?? '');
+    // Stored exactly or not at all: a shortened key would order another item.
+    if (overlayKeyProblem({ uid, recurrenceId })) throw new Error('A task order key in the bin does not fit its column');
     await cx.execute('INSERT IGNORE INTO task_order (user_id, item_key, calendar_id, event_id, remote_uid, recurrence_id, sort_rank) VALUES (?, ?, ?, NULL, ?, ?, ?)',
       [userId, itemKey({ calendar_id: calendarId, remote_uid: uid, recurrence_id: recurrenceId }), calendarId, uid, recurrenceId, Number(rank.sort_rank)]);
   }

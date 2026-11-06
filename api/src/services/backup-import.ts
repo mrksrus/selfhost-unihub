@@ -1017,6 +1017,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         const overlays = await restoreOverlays(connection, userId, (data.calendar_overlay_restores || []) as BackupRow[],
           { calendarIds: calendarIdMap, emailIds: emailIdMap, conflictMode, checkCancelled: checkRestoreCancelled });
         if (overlays.waiting) contents.notes.push(`${overlays.waiting} synced item${overlays.waiting === 1 ? ' gets its' : 's get their'} ToDo state, subtasks and replies back when the calendar syncs.`);
+        if (overlays.failed) contents.notes.push(`${overlays.failed} synced item${overlays.failed === 1 ? ' keeps its' : 's keep their'} state that could not be applied; it stays set aside, as it was.`);
         if (overlays.unplaced) contents.notes.push(`The ToDo state, subtasks and replies of ${overlays.unplaced} synced item${overlays.unplaced === 1 ? '' : 's'} could not be restored: ${overlays.unplaced === 1 ? 'its calendar is' : 'their calendars are'} not a synced calendar here.`);
       }
 

@@ -95,7 +95,6 @@ const LEFT_OUT = Object.freeze({
   synced_events: { section: 'calendar' as const, what: 'CalDAV and subscription events', reason: 'They download again from the provider after the accounts reconnect; UniHub\'s ToDo state, subtasks and replies of synced items are in the backup.' },
   sync_mail: { section: 'mail' as const, what: 'Sync-mode mail', reason: 'It downloads again from the provider after the account signs in.' },
   download_mail: { section: 'mail' as const, what: 'Downloaded mail', reason: '"Include downloaded mail" was off.' },
-  failed_overlays: { section: 'calendar' as const, what: 'Synced-item state that could not be applied', reason: 'The database refused to write it to its item; it stays on this server.' },
 });
 type LeftOutKind = keyof typeof LEFT_OUT;
 

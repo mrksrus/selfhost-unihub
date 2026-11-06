@@ -792,8 +792,8 @@ async function addDataSafety(connection: SqlExecutor) {
   // calendar-sync.ts). match_kind 'uid' keys it by (calendar, UID,
   // recurrence id); 'shape' (archives before schema 7, without UIDs) by the
   // title and start. It goes with its calendar. failed_at and failure mark
-  // one the database refused to write: kept to look at, never tried again
-  // and left out of backups (calendar-overlays.ts applyWaitingOverlay).
+  // one the database refused to write: kept, never tried again or expired,
+  // carried by backups as it is (calendar-overlays.ts applyWaitingOverlay).
   await connection.execute(`CREATE TABLE IF NOT EXISTS calendar_overlay_restores (
     id CHAR(36) NOT NULL PRIMARY KEY,
     user_id CHAR(36) NOT NULL,

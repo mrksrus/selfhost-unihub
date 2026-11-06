@@ -68,6 +68,13 @@ interface PendingOverlay extends OverlayTarget {
   shape?: { title: string; start: string };
   expiresAt?: string | null;
 }
+/** An overlay the database refused to write, as it was set aside: never applied, kept until its calendar goes. */
+interface FailedOverlay extends Omit<PendingOverlay, 'state'> {
+  /** The payload as it was, JSON text. */
+  payload: string;
+  failedAt: string;
+  failure: string;
+}
 /** new: a row the sync just made; fill: only what the row lacks; replace: as the overlay has it. */
 type ApplyMode = 'new' | 'fill' | 'replace';
 
@@ -205,6 +212,20 @@ function overlayPayloadProblem(value: unknown): { kind: 'form' | 'capacity'; pro
   return null;
 }
 
+/**
+ * Why an overlay's key cannot be stored exactly, or null: each part must be
+ * valid Unicode and fit its column in characters (uid and account_identity
+ * VARCHAR(500), recurrence_id VARCHAR(64), shape_title VARCHAR(255)). A key
+ * is never shortened: a shorter one names another item.
+ */
+function overlayKeyProblem({ uid, recurrenceId, accountIdentity, shapeTitle }: { uid?: unknown; recurrenceId?: unknown; accountIdentity?: unknown; shapeTitle?: unknown }) {
+  for (const [value, max] of [[uid, 500], [recurrenceId, 64], [accountIdentity, 500], [shapeTitle, TITLE_MAX]] as const) {
+    if (value == null) continue;
+    if (typeof value !== 'string' || LONE_SURROGATE.test(value) || Array.from(value).length > max) return 'an item identity is longer than its column or not valid text';
+  }
+  return null;
+}
+
 /** An attendee row as an overlay holds it. */
 const overlayAttendee = (row: Record<string, unknown>) => ({ email: row.email, display_name: row.display_name, response_status: row.response_status,
   is_organizer: !!Number(row.is_organizer), optional_attendee: !!Number(row.optional_attendee), comment: row.comment });
@@ -279,7 +300,9 @@ async function applyOverlayState(connection: SqlExecutor, userId: string, eventI
 /**
  * Stores overlays that wait for their item. The calendar must be the
  * person's own; one already waiting for the same item is replaced, so a
- * second restore of the same archive leaves one.
+ * second restore of the same archive leaves one. One set aside as failed is
+ * not waiting and stays. Keys are stored exactly; one that does not fit is
+ * refused (validation refuses such an archive first).
  */
 async function insertOverlays(connection: SqlExecutor, overlays: readonly PendingOverlay[]) {
   let stored = 0;
@@ -287,26 +310,62 @@ async function insertOverlays(connection: SqlExecutor, overlays: readonly Pendin
     const kind = overlay.matchKind ?? 'uid';
     if (kind === 'uid' && !overlay.uid) continue;
     if (kind === 'shape' && (!overlay.shape?.title || !sqlTime(overlay.shape.start))) continue;
+    const key = keyOf(overlay);
     const [owned] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_calendars WHERE id = ? AND user_id = ? FOR UPDATE', [overlay.calendarId, overlay.userId]);
     if (!owned.length) continue;
-    const recurrenceId = String(overlay.recurrenceId || '').slice(0, 64);
     if (kind === 'uid') {
-      await connection.execute(`DELETE FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = 'uid' AND uid = ? ${EXACT} AND recurrence_id = ? ${EXACT}`,
-        [overlay.userId, overlay.calendarId, overlay.uid, recurrenceId]);
+      await connection.execute(`DELETE FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = 'uid' AND uid = ? ${EXACT} AND recurrence_id = ? ${EXACT}
+        AND failed_at IS NULL`, [overlay.userId, overlay.calendarId, key.uid, key.recurrenceId]);
     } else {
-      await connection.execute(`DELETE FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = 'shape' AND shape_title = ? ${EXACT} AND shape_start = ?`,
-        [overlay.userId, overlay.calendarId, overlay.shape!.title, sqlTime(overlay.shape!.start)]);
+      await connection.execute(`DELETE FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = 'shape' AND shape_title = ? ${EXACT} AND shape_start = ?
+        AND failed_at IS NULL`, [overlay.userId, overlay.calendarId, key.shapeTitle, key.shapeStart]);
     }
     await connection.execute(`INSERT INTO calendar_overlay_restores
       (id, user_id, calendar_id, account_identity, uid, recurrence_id, match_kind, shape_title, shape_start, payload, expires_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
-      crypto.randomUUID(), overlay.userId, overlay.calendarId, String(overlay.accountIdentity || '').slice(0, 500), kind === 'uid' ? overlay.uid.slice(0, 500) : null,
-      recurrenceId, kind, kind === 'shape' ? Array.from(overlay.shape!.title).slice(0, TITLE_MAX).join('') : null, kind === 'shape' ? sqlTime(overlay.shape!.start) : null,
+      crypto.randomUUID(), overlay.userId, overlay.calendarId, key.accountIdentity, key.uid, key.recurrenceId, kind, key.shapeTitle, key.shapeStart,
       JSON.stringify(overlay.state), overlay.expiresAt ? sqlTime(overlay.expiresAt) : null,
     ]);
     stored += 1;
   }
   return stored;
+}
+
+/** An overlay's key as its columns store it, exactly; refused when it does not fit. */
+function keyOf(overlay: Omit<PendingOverlay, 'state'>) {
+  const kind = overlay.matchKind ?? 'uid';
+  const key = { uid: kind === 'uid' ? overlay.uid : null, recurrenceId: String(overlay.recurrenceId || ''), accountIdentity: String(overlay.accountIdentity || ''),
+    shapeTitle: kind === 'shape' ? overlay.shape!.title : null, shapeStart: kind === 'shape' ? sqlTime(overlay.shape!.start) : null };
+  const problem = overlayKeyProblem(key);
+  if (problem) throw Object.assign(new Error(`A synced-task state cannot be stored: ${problem}`), { status: 422 });
+  return key;
+}
+
+/**
+ * Keeps overlays an archive carries as set aside (failed): as they were,
+ * never applied, never replaced by a waiting one. The same one twice (a
+ * second restore of the archive) is kept once. Returns how many it holds.
+ */
+async function insertFailedOverlays(connection: SqlExecutor, overlays: readonly FailedOverlay[]) {
+  let kept = 0;
+  for (const overlay of overlays) {
+    const key = keyOf(overlay);
+    if ((overlay.matchKind ?? 'uid') === 'uid' ? !key.uid : !key.shapeTitle || !key.shapeStart) continue;
+    const [owned] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_calendars WHERE id = ? AND user_id = ? FOR UPDATE', [overlay.calendarId, overlay.userId]);
+    if (!owned.length) continue;
+    kept += 1;
+    const [same] = await connection.execute<RowDataPacket[]>(`SELECT id FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND failed_at IS NOT NULL
+      AND match_kind = ? AND uid <=> ? AND recurrence_id = ? ${EXACT} AND shape_title <=> ? AND shape_start <=> ? AND payload = ? LIMIT 1`,
+    [overlay.userId, overlay.calendarId, overlay.matchKind ?? 'uid', key.uid, key.recurrenceId, key.shapeTitle, key.shapeStart, overlay.payload]);
+    if (same.length) continue;
+    await connection.execute(`INSERT INTO calendar_overlay_restores
+      (id, user_id, calendar_id, account_identity, uid, recurrence_id, match_kind, shape_title, shape_start, payload, expires_at, failed_at, failure)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+      crypto.randomUUID(), overlay.userId, overlay.calendarId, key.accountIdentity, key.uid, key.recurrenceId, overlay.matchKind ?? 'uid', key.shapeTitle, key.shapeStart,
+      overlay.payload, overlay.expiresAt ? sqlTime(overlay.expiresAt) : null, overlay.failedAt, overlay.failure,
+    ]);
+  }
+  return kept;
 }
 
 /**
@@ -331,9 +390,10 @@ async function takeOverlayForNewRow(connection: SqlExecutor, target: OverlayTarg
  * the bin's), or a transaction of their own outside one. An overlay that
  * cannot be written undoes only them, and stays, marked failed with the
  * reason, so the item still syncs, the overlay is not tried again and is
- * still there to look at. A backup leaves it out and counts it
- * (backup-classes.ts). Any other error (the connection, a lock) goes to the
- * caller as before.
+ * still there to look at. It is never expired or replaced by a waiting one,
+ * backups carry it as it is, and it goes only with its calendar, account or
+ * person. Any other error (the connection, a lock) goes to the caller as
+ * before.
  */
 async function applyWaitingOverlay(connection: SqlExecutor, userId: string, overlay: RowDataPacket, eventId: string, mode: ApplyMode) {
   const setAside = async (reason: string) => {
@@ -412,9 +472,13 @@ async function hasPendingOverlays(executor: SqlExecutor, calendarId: string) {
   return rows.length > 0;
 }
 
-/** Shape overlays past their time (the restore note counted them as not matched). */
+/**
+ * Shape overlays past their time (the restore note counted them as not
+ * matched). One set aside as failed has no such time: it stays until its
+ * calendar, account or person is removed.
+ */
 async function sweepExpiredOverlays(executor: SqlExecutor = db) {
-  const [result] = await executor.execute<ResultSetHeader>('DELETE FROM calendar_overlay_restores WHERE expires_at IS NOT NULL AND expires_at <= UTC_TIMESTAMP() LIMIT 1000');
+  const [result] = await executor.execute<ResultSetHeader>('DELETE FROM calendar_overlay_restores WHERE expires_at IS NOT NULL AND expires_at <= UTC_TIMESTAMP() AND failed_at IS NULL LIMIT 1000');
   return result.affectedRows || 0;
 }
 
@@ -423,6 +487,8 @@ export {
   EXACT as UID_EXACT,
   parseOverlayState,
   overlayPayloadProblem,
+  overlayKeyProblem,
+  insertFailedOverlays,
   sqlTime as overlaySqlTime,
   overlayStateOf,
   applyOverlayState,
@@ -432,4 +498,4 @@ export {
   hasPendingOverlays,
   sweepExpiredOverlays,
 };
-export type { OverlayAttendee, OverlayState, OverlaySubtask, OverlayTarget, PendingOverlay };
+export type { FailedOverlay, OverlayAttendee, OverlayState, OverlaySubtask, OverlayTarget, PendingOverlay };

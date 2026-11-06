@@ -160,11 +160,45 @@ test('synced tasks keep their own state through a restore and the first sync, by
     assert.deepEqual([written.display_name, written.comment], [' Guest ', '  as it is  '], 'name and reply as the overlay has them');
     assert.equal(await pending(), bad.length, 'only the failed ones are left');
     assert.equal(await overlays.hasPendingOverlays(pool, work), false, 'and none of them is waiting');
-    // A backup leaves them out and says so.
+    // A backup carries them as they are.
     const archive = await (require('../dist/src/services/backup') as FixtureValue).buildBackupForUser(users.owner, { sections: ['calendar'], includeFileData: false });
-    assert.equal(archive.data.calendar_overlay_restores.some((row: FixtureValue) => [...uids.values()].includes(row.uid)), false);
-    assert.deepEqual(archive.contents.left_out.find((entry: FixtureValue) => entry.what === 'Synced-item state that could not be applied')?.count, bad.length);
-    await pool.execute('DELETE FROM calendar_overlay_restores WHERE user_id = ? AND failed_at IS NOT NULL', [users.owner]);
+    const carried = archive.data.calendar_overlay_restores.filter((row: FixtureValue) => [...uids.values()].includes(row.uid));
+    assert.equal(carried.length, bad.length);
+    assert.ok(carried.every((row: FixtureValue) => row.failed_at && row.failure));
+    // Their own lifetime: no expiry takes them, and a new state for the item waits beside them and replaces only a waiting one.
+    const failedCount = async () => Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM calendar_overlay_restores WHERE user_id = ? AND failed_at IS NOT NULL', [users.owner]))[0][0].n);
+    await pool.execute("UPDATE calendar_overlay_restores SET expires_at = '2020-01-01 00:00:00' WHERE user_id = ?", [users.owner]);
+    const expiring = crypto.randomUUID();
+    await pool.execute(`INSERT INTO calendar_overlay_restores (id, user_id, calendar_id, recurrence_id, match_kind, shape_title, shape_start, payload, expires_at)
+      VALUES (?, ?, ?, '', 'shape', 'Never matched', '2026-01-01 09:00:00', ?, '2020-01-01 00:00:00')`, [expiring, users.owner, work, JSON.stringify(state('Never matched'))]);
+    await overlays.sweepExpiredOverlays(pool);
+    assert.equal(await failedCount(), bad.length, 'expiry leaves the failed ones');
+    assert.equal(await pending(), bad.length, 'and takes the waiting one past its time');
+    const later = { userId: users.owner, calendarId: work, uid: uids.get('Far position')!, recurrenceId: '', state: state('Not here yet') };
+    await write([later]);
+    await write([later]);
+    assert.equal(await failedCount(), bad.length, 'a new state never replaces a failed one');
+    assert.equal(await pending(), bad.length + 1, 'it replaces only the one waiting');
+    await pool.execute('DELETE FROM calendar_overlay_restores WHERE user_id = ?', [users.owner]);
+  });
+
+  await t.test('a key is stored exactly: a UID of 251 emoji never takes the item whose UID is its first 250', async () => {
+    clock += 86400000;
+    const long = '😀'.repeat(251), short = '😀'.repeat(250);
+    server.store(`${WORK}emoji-short.ics`, eventIcs(short, 'Emoji short', clock));
+    assert.equal(await write([{ userId: users.owner, calendarId: work, uid: long, recurrenceId: '', state: state('Emoji') }]), 1);
+    const [[stored]] = await pool.query<RowDataPacket[]>('SELECT uid FROM calendar_overlay_restores WHERE user_id = ?', [users.owner]);
+    assert.equal(stored.uid, long, 'as written');
+    await sync();
+    const [row] = await rowOf('Emoji short');
+    assert.equal(row.uid, short);
+    assert.equal(row.todo_status, null, 'another item keeps none of its state');
+    assert.equal(await pending(), 1, 'it waits for its own item');
+    // Longer than the column, or a key part that is no valid text: refused, never cut.
+    await assert.rejects(write([{ userId: users.owner, calendarId: work, uid: '😀'.repeat(501), recurrenceId: '', state: state('Emoji') }]), /identity is longer than its column/);
+    await assert.rejects(write([{ userId: users.owner, calendarId: work, uid: long, recurrenceId: 'r'.repeat(65), state: state('Emoji') }]), /identity is longer than its column/);
+    assert.equal(await pending(), 1);
+    await pool.execute('DELETE FROM calendar_overlay_restores WHERE user_id = ?', [users.owner]);
   });
 
   await t.test('a recurring task keys each date by its recurrence id; an archive without UIDs matches by title and start', async () => {
