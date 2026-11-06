@@ -82,6 +82,11 @@ test('[B-38] the Add task dialog fits a long subject on desktop and phone', { se
   const dialog = screen.getByRole('dialog', 'Add task');
   await expect(dialog.getByText(subject)).toBeVisible();
   await expect(dialog.getByLabel('Title', { exact: true })).toHaveValue(subject);
+  // Measure the settled dialog: it opens with a short zoom and slide.
+  await browser.evaluate(() => Promise.all([...document.querySelectorAll('[role="dialog"]')]
+    .flatMap(element => element.getAnimations({ subtree: true }))
+    .filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity)
+    .map(animation => animation.finished.catch(() => undefined))).then(() => true));
 
   const geometry = await browser.evaluate(() => {
     const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-state="open"]')!;
