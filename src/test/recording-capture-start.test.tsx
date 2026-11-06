@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Recordings from '@/pages/Recordings';
 import { useAudioCapture } from '@/hooks/use-audio-capture';
 import { api } from '@/lib/api';
+import { createCapture, deleteCapture } from '@/lib/recording-queue';
 
 // B-42: Record while the browser or Android still asks for the microphone.
 // Only getUserMedia, the audio context and the worklet are faked; the page,
@@ -34,11 +35,13 @@ const fakeStream = (track: FakeTrack): FakeStream => ({ getTracks: () => [track]
 
 const contexts: FakeAudioContext[] = [];
 class FakeAudioContext {
+  // Loading the worklet module: the test can hold it open.
+  static addModule: () => Promise<void> = async () => {};
   sampleRate = 48000;
   state = 'running';
   destination = {};
   onstatechange: (() => void) | null = null;
-  audioWorklet = { addModule: async () => {} };
+  audioWorklet = { addModule: () => FakeAudioContext.addModule() };
   close = vi.fn(async () => { this.state = 'closed'; });
   resume = async () => {};
   constructor() { contexts.push(this); }
@@ -69,6 +72,7 @@ const flush = () => act(async () => { await Promise.resolve(); await Promise.res
 beforeEach(() => {
   contexts.length = 0;
   pending = [];
+  FakeAudioContext.addModule = async () => {};
   getUserMedia.mockImplementation(() => new Promise<FakeStream>((resolve, reject) => { pending.push({ resolve, reject }); }));
   Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } });
   Object.defineProperty(window, 'AudioContext', { configurable: true, writable: true, value: FakeAudioContext });
@@ -171,5 +175,122 @@ describe('Record while the microphone question is pending', () => {
     fireEvent.click(record);
     expect(getUserMedia).toHaveBeenCalledTimes(2);
     expect(await screen.findByRole('button', { name: 'Starting recording' })).toBeDisabled();
+  });
+});
+
+// A start that already holds the microphone and its audio context while the
+// worklet module or the device capture is still loading: cancelling it must
+// let go of both at once, not when that wait ends (which may be never).
+describe('cancelling a start that already holds the microphone', () => {
+  const options = (userId: string) => ({ userId, draftTitle: '', onStart: () => {}, onCaptured: () => {} });
+  let settleModule: () => void = () => {};
+  const holdModule = () => {
+    FakeAudioContext.addModule = () => new Promise<void>((resolve) => { settleModule = resolve; });
+  };
+
+  // Starts, grants the microphone and leaves the attempt waiting in addModule.
+  async function startUntilModule(start: () => Promise<void>) {
+    const track = fakeTrack();
+    let run: Promise<void> | undefined;
+    act(() => { run = start(); });
+    await act(async () => { pending[0].resolve(fakeStream(track)); });
+    await flush();
+    expect(contexts).toHaveLength(1);
+    expect(track.stop).not.toHaveBeenCalled();
+    return { track, run: run! };
+  }
+
+  it('Stop lets go of them at once while the worklet module is still loading', async () => {
+    holdModule();
+    const hook = renderHook(() => useAudioCapture(options('owner')));
+    const { track, run } = await startUntilModule(hook.result.current.start);
+    await act(async () => { await hook.result.current.stop(); });
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(contexts[0].close).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.starting).toBe(false);
+    expect(hook.result.current.state).toBe('idle');
+    await act(async () => { settleModule(); await run; });
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(contexts[0].close).toHaveBeenCalledTimes(1);
+    expect(createCapture).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
+  it('leaving the page lets go of them at once while the worklet module is still loading', async () => {
+    holdModule();
+    const view = mount();
+    fireEvent.click(await screen.findByRole('button', { name: 'Record' }));
+    const track = fakeTrack();
+    await act(async () => { pending[0].resolve(fakeStream(track)); });
+    await flush();
+    expect(contexts).toHaveLength(1);
+    expect(track.stop).not.toHaveBeenCalled();
+    view.unmount();
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(contexts[0].close).toHaveBeenCalledTimes(1);
+    await act(async () => { settleModule(); });
+    await flush();
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(contexts[0].close).toHaveBeenCalledTimes(1);
+    expect(createCapture).not.toHaveBeenCalled();
+  });
+
+  it('switching accounts lets go of them at once and opens no capture for the old account', async () => {
+    holdModule();
+    const hook = renderHook((props: { userId: string }) => useAudioCapture(options(props.userId)), { initialProps: { userId: 'owner' } });
+    const { track, run } = await startUntilModule(hook.result.current.start);
+    hook.rerender({ userId: 'other' });
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(contexts[0].close).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.starting).toBe(false);
+    await act(async () => { settleModule(); await run; });
+    expect(createCapture).not.toHaveBeenCalled();
+    expect(hook.result.current.state).toBe('idle');
+    hook.unmount();
+  });
+
+  it('Stop while the device capture is being created lets go at once and removes the capture when it lands', async () => {
+    let settleCapture: () => void = () => {};
+    vi.mocked(createCapture).mockImplementationOnce(() => new Promise<void>((resolve) => { settleCapture = resolve; }));
+    const hook = renderHook(() => useAudioCapture(options('owner')));
+    const { track, run } = await startUntilModule(hook.result.current.start);
+    await flush();
+    expect(createCapture).toHaveBeenCalledTimes(1);
+    await act(async () => { await hook.result.current.stop(); });
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(contexts[0].close).toHaveBeenCalledTimes(1);
+    expect(deleteCapture).not.toHaveBeenCalled();
+    await act(async () => { settleCapture(); await run; });
+    const captureId = vi.mocked(createCapture).mock.calls[0][0].id;
+    expect(deleteCapture).toHaveBeenCalledWith(captureId);
+    expect(hook.result.current.state).toBe('idle');
+    hook.unmount();
+  });
+
+  it('a cancelled start never touches the start that replaces it', async () => {
+    holdModule();
+    const hook = renderHook(() => useAudioCapture(options('owner')));
+    const { track: oldTrack, run: oldRun } = await startUntilModule(hook.result.current.start);
+    const settleOldModule = settleModule;
+    await act(async () => { await hook.result.current.stop(); });
+    expect(oldTrack.stop).toHaveBeenCalledTimes(1);
+    expect(contexts[0].close).toHaveBeenCalledTimes(1);
+
+    FakeAudioContext.addModule = async () => {};
+    act(() => { void hook.result.current.start(); });
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    const track = fakeTrack();
+    await act(async () => { pending[1].resolve(fakeStream(track)); });
+    await waitFor(() => expect(hook.result.current.state).toBe('recording'));
+    expect(contexts).toHaveLength(2);
+
+    await act(async () => { settleOldModule(); await oldRun; });
+    expect(hook.result.current.state).toBe('recording');
+    expect(track.stop).not.toHaveBeenCalled();
+    expect(contexts[1].close).not.toHaveBeenCalled();
+    expect(oldTrack.stop).toHaveBeenCalledTimes(1);
+    expect(contexts[0].close).toHaveBeenCalledTimes(1);
+    expect(createCapture).toHaveBeenCalledTimes(1);
+    hook.unmount();
   });
 });

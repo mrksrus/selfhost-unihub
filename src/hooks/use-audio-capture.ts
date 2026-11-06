@@ -84,6 +84,9 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
   // (page left, account switched) to release what it got and touch nothing.
   const startInFlightRef = useRef<Promise<void> | null>(null);
   const startTokenRef = useRef(0);
+  // Releases what the pending start holds so far (stream, context, capture)
+  // the moment it is cancelled, without waiting for its next await to settle.
+  const pendingDisposeRef = useRef<(() => void) | null>(null);
   const [state, setState] = useState<CaptureState>('idle');
   const [starting, setStarting] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -232,19 +235,23 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
     streamRef.current = null;
   };
 
-  // Forgets the start waiting for the microphone. When its stream arrives,
-  // that start stops the tracks it was given and leaves the refs alone, so a
-  // later start is never mixed with it.
+  // Forgets the start waiting for the microphone and releases at once what it
+  // already holds; what still arrives later (a stream, the capture record) is
+  // released on arrival. The refs are left alone, so a later start is never
+  // mixed with it.
   const cancelPendingStart = () => {
     if (!startInFlightRef.current) return;
     startTokenRef.current += 1;
     startInFlightRef.current = null;
+    pendingDisposeRef.current?.();
+    pendingDisposeRef.current = null;
     setStarting(false);
   };
 
   // One start at a time: Record while the browser (or Android) still asks for
   // the microphone joins the pending start instead of asking again. The
-  // stream, context and worklet stay local until the last await is over, so a
+  // stream, context and worklet stay the attempt's own until the last await is
+  // over, each released by the attempt's disposer as soon as it is held, so a
   // start that fails, or was cancelled meanwhile, releases only its own.
   const start = (): Promise<void> => {
     if (startInFlightRef.current) return startInFlightRef.current;
@@ -260,19 +267,24 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
     const token = ++startTokenRef.current;
     const stale = () => token !== startTokenRef.current;
     setStarting(true);
+    // What this attempt holds, with how to let go of it. Disposing is
+    // idempotent; a resource held after disposal is let go of at once.
+    const holds: (() => void)[] = [];
+    let disposed = false;
+    let committed = false;
+    const hold = (release: () => void) => { if (disposed) release(); else holds.push(release); };
+    const dispose = () => {
+      disposed = true;
+      holds.splice(0).forEach((release) => release());
+    };
+    // Cancelled: nothing of this attempt may reach the refs any more.
+    const cancelled = () => {
+      if (!stale()) return false;
+      dispose();
+      return true;
+    };
+    pendingDisposeRef.current = dispose;
     const run = (async () => {
-      let stream: MediaStream | null = null;
-      let audioContext: AudioContext | null = null;
-      let capture: Awaited<ReturnType<typeof openCapture>> = null;
-      let committed = false;
-      const discard = async () => {
-        stream?.getTracks().forEach((track) => track.stop());
-        await audioContext?.close().catch(() => {});
-        if (capture) {
-          capture.release?.();
-          void deleteCapture(capture.id).catch(() => {});
-        }
-      };
       try {
         const mediaStream = await navigator.mediaDevices.getUserMedia({
           audio: {
@@ -282,11 +294,11 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
             noiseSuppression: false,
           },
         });
-        stream = mediaStream;
-        if (stale()) return await discard();
+        hold(() => mediaStream.getTracks().forEach((track) => track.stop()));
+        if (cancelled()) return;
         const track = mediaStream.getAudioTracks()[0];
         const processing = track ? await disableVoiceProcessing(track) : [];
-        if (stale()) return await discard();
+        if (cancelled()) return;
         if (processing.length) {
           toast({
             title: 'The browser keeps audio processing on',
@@ -300,9 +312,9 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
           ...(sampleRate ? { sampleRate } : {}),
           latencyHint: 'balanced',
         });
-        audioContext = context;
+        hold(() => { void context.close().catch(() => {}); });
         await context.audioWorklet.addModule('/audio-recorder-worklet.js');
-        if (stale()) return await discard();
+        if (cancelled()) return;
         const source = context.createMediaStreamSource(mediaStream);
         const worklet = new AudioWorkletNode(context, 'pcm-recorder', {
           numberOfInputs: 1,
@@ -317,12 +329,16 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
         worklet.connect(silentGain);
         silentGain.connect(context.destination);
         await context.resume();
-        if (stale()) return await discard();
-        capture = await openCapture(context.sampleRate);
-        if (stale()) return await discard();
+        if (cancelled()) return;
+        const capture = await openCapture(context.sampleRate);
+        if (capture) hold(() => { capture.release?.(); void deleteCapture(capture.id).catch(() => {}); });
+        if (cancelled()) return;
 
-        // Current and complete: from here on the recording is the hook's.
+        // Current and complete: from here on the recording is the hook's, and
+        // its refs let go of what the attempt held.
         committed = true;
+        holds.length = 0;
+        pendingDisposeRef.current = null;
         streamRef.current = mediaStream;
         audioContextRef.current = context;
         audioSourceRef.current = source;
@@ -386,7 +402,7 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
           if (captureId) void deleteCapture(captureId).catch(() => {});
           await releaseRecordingResources();
         } else {
-          await discard();
+          dispose();
         }
         if (stale()) return;
         const message = error instanceof Error ? error.message : 'Microphone access failed';
@@ -394,6 +410,7 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
       } finally {
         if (!stale()) {
           startInFlightRef.current = null;
+          pendingDisposeRef.current = null;
           setStarting(false);
         }
       }
