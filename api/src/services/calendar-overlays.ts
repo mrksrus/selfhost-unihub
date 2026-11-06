@@ -34,8 +34,9 @@ const TITLE_MAX = 255;
 const DATETIME = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 const ID_PATTERN = /^[0-9a-f-]{36}$/i;
 const RESPONSES = new Set(['accepted', 'tentative', 'declined', 'needsAction']);
-const TEXT_MAX = 255;
-const COMMENT_MAX = 10000;
+// What the subtask and attendee columns hold: varchar(255) counts characters,
+// the comment is TEXT (65,535 bytes).
+const COMMENT_MAX_BYTES = 65535;
 
 interface OverlaySubtask { title: string; is_done: boolean; position: number }
 interface OverlayAttendee { email: string; display_name: string | null; response_status: string; is_organizer: boolean; optional_attendee: boolean; comment: string | null }
@@ -88,26 +89,41 @@ function parseOverlayState(value: unknown): OverlayState | null {
   const email = json(input.source_email_json);
   const subtasks = (Array.isArray(input.subtasks) ? input.subtasks : []).flatMap((item, index) => {
     if (!item || typeof item !== 'object' || typeof (item as OverlaySubtask).title !== 'string') return [];
-    const title = Array.from((item as OverlaySubtask).title).slice(0, TITLE_MAX).join('');
+    const title = (item as OverlaySubtask).title;
     if (!title.trim()) return [];
     const position = Number.isSafeInteger((item as OverlaySubtask).position) ? (item as OverlaySubtask).position : index;
     return [{ title, is_done: !!(item as OverlaySubtask).is_done, position }];
   });
-  const text = (value: unknown, max: number) => typeof value === 'string' && value.trim() ? Array.from(value.trim()).slice(0, max).join('') : null;
+  // Names and replies are carried as they are stored, never cut or trimmed;
+  // the address takes the writer's form (replaceEventAttendees), which is
+  // also how two entries for one person are told apart.
+  const text = (value: unknown) => typeof value === 'string' && value !== '' ? value : null;
   const seen = new Set<string>();
   const attendees = (Array.isArray(input.attendees) ? input.attendees : []).flatMap(item => {
     if (!item || typeof item !== 'object') return [];
     const attendee = item as Record<string, unknown>;
     const address = typeof attendee.email === 'string' ? attendee.email.trim().toLowerCase() : '';
-    // An address the column cannot hold is not shortened into another one.
-    if (!address || address.length > TEXT_MAX || seen.has(address)) return [];
+    if (!address || seen.has(address)) return [];
     seen.add(address);
     const response = typeof attendee.response_status === 'string' && RESPONSES.has(attendee.response_status) ? attendee.response_status : 'needsAction';
-    return [{ email: address, display_name: text(attendee.display_name, TEXT_MAX), response_status: response, is_organizer: !!attendee.is_organizer,
-      optional_attendee: !!attendee.optional_attendee, comment: text(attendee.comment, COMMENT_MAX) }];
+    return [{ email: address, display_name: text(attendee.display_name), response_status: response, is_organizer: !!attendee.is_organizer,
+      optional_attendee: !!attendee.optional_attendee, comment: text(attendee.comment) }];
   });
   const state = { todo_status: status, done_at: status ? doneAt : null, source_email_id: emailId, source_email_json: email && typeof email === 'object' ? email : null, subtasks, attendees };
   return state.todo_status || state.source_email_id || state.source_email_json || state.subtasks.length || state.attendees.length ? state : null;
+}
+
+/**
+ * What of an overlay its tables cannot hold, or null. Nothing UniHub stored
+ * is beyond them; an archive that is refuses its restore (backup-overlays.ts)
+ * rather than have the value cut.
+ */
+function overlayStateProblem(state: OverlayState): string | null {
+  const longer = (value: string | null) => !!value && Array.from(value).length > TITLE_MAX;
+  if (state.subtasks.some(subtask => longer(subtask.title.trim()))) return 'a subtask title is longer than 255 characters';
+  if (state.attendees.some(attendee => longer(attendee.email) || longer(attendee.display_name?.trim() ?? null))) return 'an attendee address or name is longer than 255 characters';
+  if (state.attendees.some(attendee => attendee.comment && Buffer.byteLength(attendee.comment, 'utf8') > COMMENT_MAX_BYTES)) return 'a reply comment is longer than 65,535 bytes';
+  return null;
 }
 
 /** An attendee row as an overlay holds it. */
@@ -283,6 +299,7 @@ export {
   overlayAttendee,
   EXACT as UID_EXACT,
   parseOverlayState,
+  overlayStateProblem,
   overlayStateOf,
   applyOverlayState,
   insertOverlays,

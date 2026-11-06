@@ -9,7 +9,7 @@ import type { RowDataPacket } from 'mysql2/promise';
 import type { BackupRow, SqlExecutor } from '../types';
 import { OVERLAY_SHAPE_DAYS, TODO_STATUSES } from './backup-classes';
 import { normalizeMysqlDateTime } from './backup-common';
-import { UID_EXACT, applyOverlaysToLiveRows, insertOverlays, parseOverlayState } from './calendar-overlays';
+import { UID_EXACT, applyOverlaysToLiveRows, insertOverlays, overlayStateProblem, parseOverlayState } from './calendar-overlays';
 import type { PendingOverlay } from './calendar-overlays';
 
 
@@ -32,13 +32,14 @@ function parseOverlayPayload(value: unknown): OverlayState | null {
   if (input.todo_status != null && !TODO_STATUSES.has(String(input.todo_status))) return null;
   if (input.source_email_id != null && !/^[0-9a-f-]{36}$/i.test(String(input.source_email_id))) return null;
   if (input.subtasks !== undefined && !Array.isArray(input.subtasks)) return null;
+  if (input.attendees !== undefined && !Array.isArray(input.attendees)) return null;
   let sourceEmail: string | null = null;
   if (input.source_email_json != null) {
     try { sourceEmail = JSON.stringify(typeof input.source_email_json === 'string' ? JSON.parse(input.source_email_json) : input.source_email_json); } catch { return null; }
   }
   const subtasks = ((input.subtasks ?? []) as unknown[]).map((item, index) => {
     const entry = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>;
-    return { title: String(entry.title ?? '').slice(0, 255), is_done: !!entry.is_done, position: Number.isSafeInteger(entry.position) ? Number(entry.position) : index };
+    return { title: String(entry.title ?? ''), is_done: !!entry.is_done, position: Number.isSafeInteger(entry.position) ? Number(entry.position) : index };
   });
   return { todo_status: input.todo_status == null ? null : String(input.todo_status), done_at: normalizeMysqlDateTime(input.done_at as string | undefined),
     source_email_id: input.source_email_id == null ? null : String(input.source_email_id), source_email_json: sourceEmail, subtasks };
@@ -57,7 +58,11 @@ function validateOverlayRows(data: Record<string, unknown> | undefined): string[
         : row.match_kind === 'shape' && typeof row.shape_title === 'string' && row.shape_title.length <= 255 && typeof row.shape_start === 'string')
       && (row.recurrence_id == null || (typeof row.recurrence_id === 'string' && row.recurrence_id.length <= 64))
       && parseOverlayPayload(row.payload) !== null;
-    if (!valid) errors.add('Backup has a synced-task state in a form UniHub does not write');
+    if (!valid) { errors.add('Backup has a synced-task state in a form UniHub does not write'); continue; }
+    // A value its table cannot hold refuses the restore; it is never cut to fit.
+    const state = parseOverlayState(row.payload);
+    const problem = state && overlayStateProblem(state);
+    if (problem) errors.add(`Backup has a synced-task state UniHub cannot store: ${problem}`);
   }
   return [...errors];
 }

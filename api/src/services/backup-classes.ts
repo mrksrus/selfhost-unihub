@@ -121,9 +121,10 @@ const toMysqlDate = (date: Date) => date.toISOString().slice(0, 19).replace('T',
 const TODO_STATUSES: ReadonlySet<string> = new Set(['done', 'changed', 'time_moved', 'cancelled']);
 
 // UniHub's own state on a task, as an overlay payload in the overlay owner's
-// form (calendar-overlays.ts); null when there is none. A value outside what
-// the overlay reader (backup-overlays.ts) accepts is left out, so converting
-// an older archive never writes a state its own restore would refuse.
+// form (calendar-overlays.ts); null when there is none. A form the overlay
+// reader does not accept is left out; a value its tables cannot hold is
+// carried as it is, so the restore refuses it (backup-import.ts) rather than
+// cut it.
 function overlayPayload(event: BackupRow, subtasks: readonly BackupRow[], attendees: readonly BackupRow[] = []) {
   return parseOverlayState({ todo_status: event.todo_status, done_at: event.done_at, source_email_id: event.source_email_id, source_email_json: event.source_email_json,
     subtasks: subtasks.map(row => ({ title: String(row.title ?? ''), is_done: !!row.is_done, position: Number(row.position) || 0 })),
