@@ -189,15 +189,29 @@ test('synced tasks keep their own state through a restore and the first sync, by
     assert.equal(await write([{ userId: users.owner, calendarId: work, uid: long, recurrenceId: '', state: state('Emoji') }]), 1);
     const [[stored]] = await pool.query<RowDataPacket[]>('SELECT uid FROM calendar_overlay_restores WHERE user_id = ?', [users.owner]);
     assert.equal(stored.uid, long, 'as written');
+    // The other way round: the sync keeps a provider UID of 251 emoji as it is, so a state for its first 250 does not take it.
+    const fox = '🦊'.repeat(251);
+    server.store(`${WORK}fox.ics`, eventIcs(fox, 'Fox long', clock + 3600000));
+    await write([{ userId: users.owner, calendarId: work, uid: '🦊'.repeat(250), recurrenceId: '', state: state('Fox') }]);
+    // A provider UID longer than the column: the item syncs keyed by its own row and is matched by nothing.
+    server.store(`${WORK}huge.ics`, eventIcs('u'.repeat(501), 'Huge UID', clock + 7200000));
+    await write([{ userId: users.owner, calendarId: work, uid: 'u'.repeat(500), recurrenceId: '', state: state('Huge') }]);
     await sync();
     const [row] = await rowOf('Emoji short');
     assert.equal(row.uid, short);
     assert.equal(row.todo_status, null, 'another item keeps none of its state');
-    assert.equal(await pending(), 1, 'it waits for its own item');
+    const [foxRow] = await rowOf('Fox long');
+    assert.equal(foxRow.uid, fox, 'the provider UID, exactly');
+    assert.equal(foxRow.todo_status, null);
+    const [hugeRow] = await rowOf('Huge UID');
+    assert.ok(hugeRow, 'the item with a UID too long to keep still arrives');
+    assert.equal(hugeRow.uid, hugeRow.id);
+    assert.equal(hugeRow.todo_status, null);
+    assert.equal(await pending(), 3, 'each waits for its own item');
     // Longer than the column, or a key part that is no valid text: refused, never cut.
     await assert.rejects(write([{ userId: users.owner, calendarId: work, uid: '😀'.repeat(501), recurrenceId: '', state: state('Emoji') }]), /identity is longer than its column/);
     await assert.rejects(write([{ userId: users.owner, calendarId: work, uid: long, recurrenceId: 'r'.repeat(65), state: state('Emoji') }]), /identity is longer than its column/);
-    assert.equal(await pending(), 1);
+    assert.equal(await pending(), 3);
     await pool.execute('DELETE FROM calendar_overlay_restores WHERE user_id = ?', [users.owner]);
   });
 

@@ -216,10 +216,14 @@ so in a note. Keys (UID, recurrence id, account identity, shape title) are
 stored exactly and counted in characters; one longer than its column refuses
 the restore. A waiting overlay the database still refuses to write is
 applied on its own: the item syncs, and the overlay stays marked failed
-(`failed_at`, `failure`). A failed overlay is never applied, expired or
-replaced by a waiting one; backups carry it as it is and a restore keeps it
-set aside, once, with a note. It goes only with its calendar, account or
-person.
+(`failed_at`, `failure`). A failed overlay is local state that never runs:
+it is never applied, never expires and is never replaced by a waiting one.
+Backups carry it as it is, and a restore keeps it set aside, once, with a
+note. It is removed only together with its calendar, its calendar account
+or the person; there is no way yet to clear or retry a single failed
+overlay. Turning on the calendar of another mail account with the same
+calendar login moves the existing calendar account to it, overlays
+included, instead of replacing it.
 
 The bin travels in `bin_items`, one table that the Contacts, Calendar and
 Recordings sections share: each row goes with the section of its `module`, so

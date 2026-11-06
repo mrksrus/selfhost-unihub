@@ -228,11 +228,13 @@ async function connectCalDavAccount({ userId, emailAddress, displayName, usernam
   if (duplicate && !mailAccountId) {
     throw fail(`These calendars are already connected as "${duplicate.display_name || 'Calendar'}".`, 409, 'CALENDAR_ALREADY_CONNECTED');
   }
-  // Turning on a mail account's calendar takes over an unlinked account with
-  // the same login (one restored from a 0.17.0 backup has no link). One that
-  // belongs to another mail account is replaced.
-  const existing = duplicate && ([null, mailAccountId] as (string | null | undefined)[]).includes(duplicate.mail_account_id) ? duplicate : null;
-  if (duplicate && !existing) await calendarSync.deleteCalendarAccount(userId, duplicate.id);
+  // Turning on a mail account's calendar takes over an account with the same
+  // login and server: an unlinked one (one restored from a 0.17.0 backup has
+  // no link), or one another mail account had, which is moved to this one.
+  // It is the same calendar data, so the account and its calendars stay with
+  // all UniHub keeps on them (ToDo state, subtasks, replies, waiting and
+  // failed overlays, hand order); only the link and the login change.
+  const existing = duplicate;
   const { account, calendars } = await saveCalDavAccount({ userId, emailAddress, displayName, username: login, password, mailAccountId, timeZone, found, existing });
   startFirstSync(account);
   return { account: serializeCalendarAccount(account), calendars, server: found.server, hint: found.hint || null };

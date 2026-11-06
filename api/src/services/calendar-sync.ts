@@ -467,10 +467,11 @@ async function inTransaction<T>(ctx: Pick<Context, 'signal'>, work: (connection:
   }
 }
 
-// The identity of an object's rows: its iCal UID, else (an object without
-// one) each row's own id, as upgrade step 25 gave the rows it found.
+// The identity of an object's rows: its iCal UID, exactly, else (an object
+// without one, or with one too long to store) each row's own id, as upgrade
+// step 25 gave the rows it found.
 function objectIdentity(object: Pick<ObjectRecord, 'ics'>) {
-  return (ical.objectUid(object.ics) || '').slice(0, 500) || null;
+  return ical.storableObjectUid(object.ics);
 }
 
 async function applyObjectRows(connection: PoolConnection, ctx: Context, calendar: Calendar, object: ObjectRecord, expanded: NonNullable<ReturnType<typeof expandObject>>) {
@@ -580,7 +581,8 @@ async function removeObjects(ctx: Context, objectIds: string[], outsideWindow: R
 // downloads the object again.
 async function storeObject(connection: SqlExecutor, account: Account, calendar: Calendar, { id, href, etag, ics }: { id?: string; href: string; etag?: string | null; ics: string }): Promise<ObjectRecord> {
   const objectId = id || crypto.randomUUID();
-  const uid = (ical.objectUid(ics) || '').slice(0, 500) || null;
+  const uid = ical.storableObjectUid(ics);
+  if (!uid && ical.objectUid(ics)) console.warn(`[CALENDAR] An entry of calendar ${calendar.id} has a UID longer than UniHub stores; it syncs without being matched by its UID.`);
   await connection.execute(
     `INSERT INTO calendar_remote_objects (id, user_id, account_id, calendar_id, href, href_hash, etag, uid, ics)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)

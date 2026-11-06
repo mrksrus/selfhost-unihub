@@ -53,7 +53,11 @@ account added on the Calendar page is never taken over by looking alone.
 Turning the calendar on in the mail account's settings takes over an unlinked
 account with the same server and login in place, keeping its events and their
 ToDo state; this also relinks one restored from a 0.17.0 backup, which kept
-neither the link nor the mark.
+neither the link nor the mark. One that another mail account has (two mail
+accounts or aliases with the same calendar login) moves to this mail account
+the same way, with its calendars, events, ToDo state and the synced-task
+state waiting or set aside for them; the other mail account's calendar is
+then off.
 
 A linked CalDAV account has no password of its own: each sync and event
 change reads the mail account's login at that moment. A new mail password or

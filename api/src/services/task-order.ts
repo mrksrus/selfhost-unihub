@@ -357,8 +357,8 @@ async function sweepRemoteRanks(executor: SqlExecutor, userId: string, calendarI
     const chunk = present.slice(index, index + CHUNK);
     await executor.execute(
       `DELETE t FROM task_order t
-       WHERE t.user_id = ? AND t.calendar_id = ? AND t.remote_uid IN (${chunk.map(() => '?').join(', ')})
-         AND NOT EXISTS (SELECT 1 FROM calendar_remote_objects o WHERE o.calendar_id = t.calendar_id AND o.uid = t.remote_uid)`,
+       WHERE t.user_id = ? AND t.calendar_id = ? AND t.remote_uid COLLATE utf8mb4_nopad_bin IN (${chunk.map(() => '?').join(', ')})
+         AND NOT EXISTS (SELECT 1 FROM calendar_remote_objects o WHERE o.calendar_id = t.calendar_id AND o.uid = t.remote_uid COLLATE utf8mb4_nopad_bin)`,
       [userId, calendarId, ...chunk]
     );
   }

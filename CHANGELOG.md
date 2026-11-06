@@ -108,6 +108,12 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
 
 ### Fixed
 
+- **Turning on a calendar for a second mail account keeps the first one's
+  task state.** When two mail accounts or aliases share a calendar login,
+  turning the calendar on for the second deleted the calendars of the first
+  and downloaded them again, losing the ToDo state, subtasks and replies
+  UniHub kept on their events. The calendars now move to the second mail
+  account with everything on them.
 - **A task moved to another list before a restore no longer comes back
   twice.** Local tasks, lists and recordings now carry a stable identity, and
   a restore finds them by it wherever they are: Replace puts the task back as

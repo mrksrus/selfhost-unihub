@@ -475,6 +475,21 @@ function removeOccurrenceIcs(ics: unknown, recurrenceId: string, { userTimeZone 
   });
 }
 
+const UID_MAX = 500;
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/**
+ * An object's iCal UID as UniHub stores it (the uid columns hold 500
+ * characters): exactly, never shortened, since a shortened UID names another
+ * item. Null for none, and for one the columns cannot hold: such an object
+ * syncs like one without a UID, each row keyed by its own id and matched by
+ * no UID (calendar-sync.ts storeObject, calendar-uid-upgrade.ts).
+ */
+function storableObjectUid(ics: unknown) {
+  const uid = objectUid(ics);
+  return uid && !LONE_SURROGATE.test(uid) && Array.from(uid).length <= UID_MAX ? uid : null;
+}
+
 function objectUid(ics: unknown) {
   try {
     const root = parseIcs(ics);
@@ -497,5 +512,6 @@ export {
   updateEventIcs,
   removeOccurrenceIcs,
   objectUid,
+  storableObjectUid,
   MAX_OCCURRENCES_PER_SERIES,
 };

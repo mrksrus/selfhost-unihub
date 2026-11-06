@@ -355,7 +355,7 @@ async function insertFailedOverlays(connection: SqlExecutor, overlays: readonly 
     if (!owned.length) continue;
     kept += 1;
     const [same] = await connection.execute<RowDataPacket[]>(`SELECT id FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND failed_at IS NOT NULL
-      AND match_kind = ? AND uid <=> ? AND recurrence_id = ? ${EXACT} AND shape_title <=> ? AND shape_start <=> ? AND payload = ? LIMIT 1`,
+      AND match_kind = ? AND uid <=> ? ${EXACT} AND recurrence_id = ? ${EXACT} AND shape_title <=> ? ${EXACT} AND shape_start <=> ? AND payload = ? ${EXACT} LIMIT 1`,
     [overlay.userId, overlay.calendarId, overlay.matchKind ?? 'uid', key.uid, key.recurrenceId, key.shapeTitle, key.shapeStart, overlay.payload]);
     if (same.length) continue;
     await connection.execute(`INSERT INTO calendar_overlay_restores

@@ -475,6 +475,25 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       assert.equal(readded.account.id, restoredLogin);
       assert.equal((await mailLink(restoredLogin)).mail_account_id, readdedMail);
       assert.equal((await connection.execute<RowDataPacket[]>('SELECT todo_status FROM calendar_events WHERE id = ?', [restoredEvent.id]))[0][0].todo_status, 'done');
+      // A second mail account (an alias) with the same calendar login: turning
+      // its calendar on moves the account to it with everything UniHub keeps
+      // on it, a set-aside synced-task state too; nothing is deleted.
+      const aliasMail = await insertMail(userId, 'alias@example.test');
+      await connection.execute<ResultSetHeader>("UPDATE mail_accounts SET username = 'second-login' WHERE id = ?", [aliasMail]);
+      const [[aliasCalendar]] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_calendars WHERE account_id = ? LIMIT 1', [restoredLogin]);
+      await connection.execute<ResultSetHeader>(`INSERT INTO calendar_overlay_restores (id, user_id, calendar_id, uid, recurrence_id, match_kind, payload, failed_at, failure)
+        VALUES (?, ?, ?, 'set-aside@example.test', '', 'uid', ?, UTC_TIMESTAMP(), 'ER_DUP_ENTRY')`, [crypto.randomUUID(), userId, aliasCalendar.id, JSON.stringify({ todo_status: 'done' })]);
+      calendarSync.syncCalendarAccountInBackground = () => {};
+      try {
+        link = await calendarAccounts.setMailCalendar(userId, aliasMail, { enabled: true });
+      } finally { calendarSync.syncCalendarAccountInBackground = backgroundSync; }
+      assert.equal(link.account!.id, restoredLogin, 'the same account, moved');
+      assert.equal((await mailLink(restoredLogin)).mail_account_id, aliasMail);
+      assert.equal((await connection.execute<RowDataPacket[]>('SELECT todo_status FROM calendar_events WHERE id = ?', [restoredEvent.id]))[0][0].todo_status, 'done', 'with its ToDo state');
+      assert.equal(Number((await connection.execute<RowDataPacket[]>('SELECT COUNT(*) AS n FROM calendar_overlay_restores WHERE calendar_id = ? AND failed_at IS NOT NULL', [aliasCalendar.id]))[0][0].n), 1,
+        'and its set-aside state');
+      assert.equal(Number((await connection.execute<RowDataPacket[]>('SELECT COUNT(*) AS n FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ?', [userId, readdedMail]))[0][0].n), 0,
+        'the first mail account\'s calendar is off');
 
       // Linked by 0.17.0 without the mark: the 0.17.1 upgrade adds it, so a
       // backup taken right after upgrading can link it again.

@@ -37,7 +37,7 @@ const UID_PAGE = 5000;
 interface Change { id: string; userId: string; calendarId: string; trimmed: string; raw: string }
 
 async function adoptRawCalendarUids(connection: PoolConnection) {
-  const { objectUid } = require('./calendar-ical') as typeof import('./calendar-ical');
+  const { storableObjectUid } = require('./calendar-ical') as typeof import('./calendar-ical');
   const { itemKey } = require('./task-order') as typeof import('./task-order');
   const byCalendar = new Map<string, Change[]>();
   for (let after = '';;) {
@@ -46,8 +46,8 @@ async function adoptRawCalendarUids(connection: PoolConnection) {
     if (!objects.length) break;
     after = String(objects[objects.length - 1].id);
     for (const object of objects) {
-      // As the sync stores it (calendar-sync.ts storeObject).
-      const raw = (objectUid(object.ics) || '').slice(0, 500);
+      // As the sync stores it (calendar-sync.ts storeObject): exactly, or not at all.
+      const raw = storableObjectUid(object.ics) || '';
       const trimmed = String(object.uid);
       if (!raw || raw === trimmed || raw.trim() !== trimmed) continue;
       const calendarId = String(object.calendar_id);
@@ -99,7 +99,7 @@ async function adoptRawCalendarUids(connection: PoolConnection) {
           await connection.execute('UPDATE IGNORE task_order SET item_key = ?, remote_uid = ?, updated_at = updated_at WHERE user_id = ? AND item_key = ?',
             [itemKey({ calendar_id: calendarId, remote_uid: raw, recurrence_id: rank.recurrence_id }), raw, userId, rank.item_key]);
         }
-        if (raw.length > 255) continue;
+        if (Array.from(raw).length > 255) continue;
         for (const move of moves.get(`${userId}\n${trimmed}`) || []) {
           await connection.execute('UPDATE calendar_event_moves SET target_uid = ?, updated_at = updated_at WHERE id = ?', [raw, move.id]);
         }
