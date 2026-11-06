@@ -212,10 +212,14 @@ booleans, valid Unicode and the ToDo states and replies UniHub has. An
 overlay outside them refuses the restore by name rather than being cut or
 corrected, as does an overlay naming no calendar of the archive. A restore
 that cannot place an overlay (its calendar is not a synced one there) says
-so in a note. A waiting overlay the database still refuses to write is
+so in a note. Keys (UID, recurrence id, account identity, shape title) are
+stored exactly and counted in characters; one longer than its column refuses
+the restore. A waiting overlay the database still refuses to write is
 applied on its own: the item syncs, and the overlay stays marked failed
-(`failed_at`, `failure`), is not tried again, and is left out of later
-backups, which list it under what they left out.
+(`failed_at`, `failure`). A failed overlay is never applied, expired or
+replaced by a waiting one; backups carry it as it is and a restore keeps it
+set aside, once, with a note. It goes only with its calendar, account or
+person.
 
 The bin travels in `bin_items`, one table that the Contacts, Calendar and
 Recordings sections share: each row goes with the section of its `module`, so
