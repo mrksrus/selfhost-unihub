@@ -232,7 +232,42 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     assert.equal(await emailCount(accountId), 2);
 
     await pool.execute<ResultSetHeader>('UPDATE mail_accounts SET sync_policy_confirmed_at = UTC_TIMESTAMP() WHERE id = ?', [accountId]);
-    const merged = await prune(accountId);
+    // A synced task made from the same copy, in the bin; its server object is back already (another app restored it), as a row without UniHub's state.
+    const davAccount = uuid(), davCalendar = uuid(), object = uuid(), returned = uuid(), syncedBin = uuid(), syncedUid = 'gmail-merge-race@example.test';
+    const href = '/dav/team/merge-race.ics';
+    const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'BEGIN:VEVENT', `UID:${syncedUid}`, 'DTSTART:20301110T100000Z', 'DTEND:20301110T110000Z', 'SUMMARY:Merge race', 'END:VEVENT', 'END:VCALENDAR', ''].join('\r\n');
+    const { encrypt } = require('../dist/src/security/encryption') as typeof import('../src/security/encryption');
+    await pool.execute(`INSERT INTO calendar_accounts (id,user_id,provider,display_name,account_email,username,encrypted_password,base_url,is_active)
+      VALUES (?,?,'caldav','Team','person@example.test','person',?,'https://dav.example.test/',1)`, [davAccount, userId, encrypt('synthetic-dav-password')]);
+    await pool.execute("INSERT INTO calendar_calendars (id,user_id,account_id,name,external_id) VALUES (?,?,?,'Team','https://dav.example.test/dav/team/')", [davCalendar, userId, davAccount]);
+    await pool.execute('INSERT INTO calendar_remote_objects (id,user_id,account_id,calendar_id,href,href_hash,uid,ics) VALUES (?,?,?,?,?,?,?,?)',
+      [object, userId, davAccount, davCalendar, href, crypto.createHash('sha256').update(href).digest('hex'), syncedUid, ics]);
+    await pool.execute("INSERT INTO calendar_events (id,user_id,calendar_id,uid,title,start_time,end_time) VALUES (?,?,?,?,'Merge race','2030-11-10 10:00:00','2030-11-10 11:00:00')",
+      [returned, userId, davCalendar, syncedUid]);
+    await pool.execute("INSERT INTO calendar_event_external_refs (id,user_id,event_id,calendar_id,account_id,provider,external_event_id,remote_object_id) VALUES (?,?,?,?,?,'caldav',?,?)",
+      [uuid(), userId, returned, davCalendar, davAccount, `${object}|`, object]);
+    const syncedState = { todo_status: 'done', done_at: '2030-11-10 12:00:00', source_email_id: copy, source_email_json: { subject: 'Labelled mail' }, subtasks: [] };
+    await pool.execute("INSERT INTO bin_items (id,user_id,module,item_type,item_id,title,reason,payload,payload_version) VALUES (?,?,'calendar','task',?,'Merge race','deleted',?,1)",
+      [syncedBin, userId, uuid(), JSON.stringify({ provider: 'caldav', origin: 'Team', calendar: { id: davCalendar, account_id: davAccount, external_id: 'https://dav.example.test/dav/team/', name: 'Team' },
+        object: { href, uid: syncedUid, ics }, event: { title: 'Merge race', source_email_id: copy }, subtasks: [], attendees: [], task_order: [], occurrences: [{ recurrence_id: '', state: syncedState }] })]);
+    // Its restore reads the item and waits for the account's login; the merge runs meanwhile.
+    const calendarSync = require('../dist/src/services/calendar-sync') as FixtureValue;
+    const realLogin = calendarSync.resolveLogin;
+    let atLogin!: () => void, goOn!: () => void;
+    const loginReached = new Promise<void>(resolve => { atLogin = resolve; }), loginAllowed = new Promise<void>(resolve => { goOn = resolve; });
+    calendarSync.resolveLogin = async (account: FixtureValue) => { atLogin(); await loginAllowed; return realLogin(account); };
+    let merged: FixtureValue, restoring: Promise<FixtureValue> | null = null;
+    try {
+      restoring = (require('../dist/src/services/bin') as typeof import('../src/services/bin')).restoreFromBin(userId, { ids: [syncedBin] });
+      await loginReached;
+      merged = await prune(accountId);
+      const waiting = JSON.parse((await one('SELECT payload FROM bin_items WHERE id = ?', [syncedBin])).payload);
+      assert.equal(waiting.occurrences[0].state.source_email_id, keeper, 'the merge pointed the waiting item at the kept copy');
+      goOn();
+      assert.deepEqual((await restoring).failed, []);
+    } finally { goOn(); calendarSync.resolveLogin = realLogin; await restoring?.catch(() => undefined); }
+    const adopted = await one('SELECT todo_status, source_email_id FROM calendar_events WHERE id = ?', [returned]);
+    assert.deepEqual([adopted.todo_status, adopted.source_email_id], ['done', keeper], 'the returned task takes its state with the kept copy, not the removed one');
     assert.equal(merged.merged, 1);
     assert.equal(await emailCount(accountId), 1);
     assert.deepEqual(((await rows('SELECT DISTINCT email_id FROM mail_remote_occurrences WHERE mail_account_id = ?', [accountId]))).map((row) => row.email_id), [keeper]);
