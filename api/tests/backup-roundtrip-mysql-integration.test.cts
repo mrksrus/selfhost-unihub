@@ -928,21 +928,29 @@ test('production export and restore jobs round-trip what a backup holds through 
       [uuid(), JSON.stringify({ subject: 'Newer mail' }), stepsOnly]);
     await insert('calendar_event_subtasks', { id: uuid(), user_id: owner, event_id: doneOnly, title: 'Added later', is_done: 0, position: 0 });
     await pool.execute("UPDATE calendar_event_attendees SET comment = 'Changed my mind' WHERE event_id = ?", [invited]);
-    // An archive whose state its tables cannot hold is refused by name, not cut to fit, and changes nothing.
+    // An archive whose state its tables cannot hold is refused by name, not cut to fit, and changes nothing:
+    // into the person whose task is here (applied at once) and into one without it (it would wait for the sync).
+    const absent = await newUser('overlay-refused');
     const overlayOf = (copy: FixtureValue) => JSON.parse(copy.data.calendar_overlay_restores.find((row: FixtureValue) => row.uid === 'Invited@example.test').payload);
     for (const [change, refusal] of [
       [(state: FixtureValue) => { state.attendees[0].comment = 'é'.repeat(32768); }, /cannot store: a reply comment is longer than 65,535 bytes/],
       [(state: FixtureValue) => { state.attendees[0].display_name = 'n'.repeat(256); }, /cannot store: an attendee address or name is longer than 255 characters/],
+      [(state: FixtureValue) => { state.attendees[0].display_name = ` ${'n'.repeat(255)}`; }, /cannot store: an attendee address or name is longer than 255 characters/],
       [(state: FixtureValue) => { state.subtasks = [{ title: 't'.repeat(256), is_done: false, position: 0 }]; }, /cannot store: a subtask title is longer than 255 characters/],
+      // Counted as written: a space is a character too.
+      [(state: FixtureValue) => { state.subtasks = [{ title: ` ${'t'.repeat(255)}`, is_done: false, position: 0 }]; }, /cannot store: a subtask title is longer than 255 characters/],
     ] as const) {
       const copy = structuredClone(archive);
       const state = overlayOf(copy);
       change(state);
       copy.data.calendar_overlay_restores.find((row: FixtureValue) => row.uid === 'Invited@example.test').payload = JSON.stringify(state);
-      const refused = await source('services/backup').importBackupForUser(owner, copy, { mode: 'apply', sections: ['calendar'], conflict_mode: 'replace', startAccountSync: async () => {} });
-      assert.equal(refused.valid, false);
-      assert.match(refused.errors.join('\n'), refusal);
+      for (const person of [owner, absent]) {
+        const refused = await source('services/backup').importBackupForUser(person, copy, { mode: 'apply', sections: ['calendar'], conflict_mode: 'replace', startAccountSync: async () => {} });
+        assert.equal(refused.valid, false);
+        assert.match(refused.errors.join('\n'), refusal);
+      }
     }
+    assert.deepEqual(await rowsFor('calendar_overlay_restores', absent), [], 'nothing waits for a sync it would break');
     const [[untouched]] = await pool.execute<RowDataPacket[]>('SELECT comment FROM calendar_event_attendees WHERE event_id = ?', [invited]);
     assert.equal(untouched.comment, 'Changed my mind', 'a refused archive changes nothing');
     const result = await source('services/backup').importBackupForUser(owner, archive, { mode: 'apply', sections: ['calendar'], conflict_mode: 'replace', startAccountSync: async () => {} });
@@ -956,7 +964,7 @@ test('production export and restore jobs round-trip what a backup holds through 
     assert.deepEqual(await stateOf(doneOnly), ['done', '2030-04-01T11:00:00.000Z', null, null, []], 'no subtasks, as archived');
     assert.equal(overlayOf(archive).attendees[0].comment, reply, 'the archive holds the reply as stored');
     const [[restored]] = await pool.execute<RowDataPacket[]>('SELECT display_name, response_status, comment FROM calendar_event_attendees WHERE event_id = ?', [invited]);
-    assert.deepEqual([restored.display_name, restored.response_status, restored.comment.length, restored.comment === reply], ['Organizer', 'tentative', reply.length, true], 'and Replace writes it back exactly');
+    assert.deepEqual([restored.display_name, restored.response_status, restored.comment.length, restored.comment === reply], [' Organizer ', 'tentative', reply.length, true], 'and Replace writes it back exactly');
   });
 
   await t.test('a binned task keeps its source email through a full restore into another person', async () => {

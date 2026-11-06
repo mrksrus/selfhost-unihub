@@ -1,8 +1,8 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import crypto from 'node:crypto';
+import { log } from '../log';
 import { db } from '../state';
-import { replaceEventAttendees } from './calendar';
 
 // UniHub's own additions to a synced event or task (F2 `local` overlay): its
 // ToDo state, done time, source email, subtasks, and the attendees with their
@@ -95,8 +95,9 @@ function parseOverlayState(value: unknown): OverlayState | null {
     return [{ title, is_done: !!(item as OverlaySubtask).is_done, position }];
   });
   // Names and replies are carried as they are stored, never cut or trimmed;
-  // the address takes the writer's form (replaceEventAttendees), which is
-  // also how two entries for one person are told apart.
+  // the address takes the attendee writer's form (calendar.ts
+  // replaceEventAttendees), which is also how two entries for one person are
+  // told apart.
   const text = (value: unknown) => typeof value === 'string' && value !== '' ? value : null;
   const seen = new Set<string>();
   const attendees = (Array.isArray(input.attendees) ? input.attendees : []).flatMap(item => {
@@ -114,14 +115,15 @@ function parseOverlayState(value: unknown): OverlayState | null {
 }
 
 /**
- * What of an overlay its tables cannot hold, or null. Nothing UniHub stored
- * is beyond them; an archive that is refuses its restore (backup-overlays.ts)
- * rather than have the value cut.
+ * What of an overlay its tables cannot hold, or null, measured on the exact
+ * values applyOverlayState writes. Nothing UniHub stored is beyond them; an
+ * archive that is refuses its restore (backup-overlays.ts) rather than have
+ * the value cut.
  */
 function overlayStateProblem(state: OverlayState): string | null {
   const longer = (value: string | null) => !!value && Array.from(value).length > TITLE_MAX;
-  if (state.subtasks.some(subtask => longer(subtask.title.trim()))) return 'a subtask title is longer than 255 characters';
-  if (state.attendees.some(attendee => longer(attendee.email) || longer(attendee.display_name?.trim() ?? null))) return 'an attendee address or name is longer than 255 characters';
+  if (state.subtasks.some(subtask => longer(subtask.title))) return 'a subtask title is longer than 255 characters';
+  if (state.attendees.some(attendee => longer(attendee.email) || longer(attendee.display_name))) return 'an attendee address or name is longer than 255 characters';
   if (state.attendees.some(attendee => attendee.comment && Buffer.byteLength(attendee.comment, 'utf8') > COMMENT_MAX_BYTES)) return 'a reply comment is longer than 65,535 bytes';
   return null;
 }
@@ -154,6 +156,10 @@ async function applyOverlayState(connection: SqlExecutor, userId: string, eventI
   const [[row]] = await connection.execute<RowDataPacket[]>(
     'SELECT todo_status, source_email_id, source_email_json FROM calendar_events WHERE id = ? AND user_id = ? FOR UPDATE', [eventId, userId]);
   if (!row) return false;
+  // Validation refuses such a state before it is stored; one that got here
+  // anyway would fail the sync's transaction on every run, so it is left out.
+  const problem = overlayStateProblem(state);
+  if (problem) { log.warn('calendar', 'Synced-task state not applied: its tables cannot hold it', { eventId, problem }); return false; }
   let emailId = state.source_email_id;
   if (emailId) {
     const [owned] = await connection.execute<RowDataPacket[]>('SELECT id FROM emails WHERE id = ? AND user_id = ? LIMIT 1', [emailId, userId]);
@@ -183,7 +189,16 @@ async function applyOverlayState(connection: SqlExecutor, userId: string, eventI
   }
   if (exact || state.attendees.length) {
     const [[{ count }]] = await connection.execute<RowDataPacket[]>('SELECT COUNT(*) AS count FROM calendar_event_attendees WHERE event_id = ? AND user_id = ?', [eventId, userId]);
-    if (mode === 'replace' || !Number(count)) await replaceEventAttendees(userId, eventId, state.attendees, connection);
+    if (mode === 'replace' || !Number(count)) {
+      // As the overlay has them: the attendee writer's input normalisation
+      // (trimmed names) is for edits, not for state UniHub stored already.
+      await connection.execute('DELETE FROM calendar_event_attendees WHERE event_id = ? AND user_id = ?', [eventId, userId]);
+      for (const attendee of state.attendees) {
+        await connection.execute(`INSERT INTO calendar_event_attendees (id, user_id, event_id, email, display_name, response_status, is_organizer, optional_attendee, comment)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [crypto.randomUUID(), userId, eventId, attendee.email, attendee.display_name, attendee.response_status,
+          attendee.is_organizer ? 1 : 0, attendee.optional_attendee ? 1 : 0, attendee.comment]);
+      }
+    }
   }
   return true;
 }

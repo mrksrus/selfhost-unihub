@@ -113,6 +113,30 @@ test('synced tasks keep their own state through a restore and the first sync, by
     assert.equal((await overlays.overlayStateOf(pool, users.owner, row.id))!.subtasks.length, 501);
   });
 
+  await t.test('a state its tables cannot hold never stops the sync; one they can is written as it is', async () => {
+    clock += 86400000;
+    const [bad, good] = [`${crypto.randomUUID()}@example.test`, `${crypto.randomUUID()}@example.test`];
+    server.store(`${WORK}padded-bad.ics`, eventIcs(bad, 'Padded too long', clock));
+    server.store(`${WORK}padded-good.ics`, eventIcs(good, 'Padded to fit', clock + 3600000));
+    const fits = ` ${'x'.repeat(254)}`;
+    const spaced = { ...state('Padded to fit', [fits]), attendees: [{ ...state('').attendees[0], display_name: ' Guest ', comment: '  as it is  ' }] };
+    // Past validation, as a state written before it was checked would be: one character more than the column holds.
+    assert.equal(await write([
+      { userId: users.owner, calendarId: work, uid: bad, recurrenceId: '', state: state('Padded too long', [` ${'x'.repeat(255)}`]) },
+      { userId: users.owner, calendarId: work, uid: good, recurrenceId: '', state: spaced },
+    ]), 2);
+    for (let round = 0; round < 2; round++) await sync();
+    const [badRow] = await rowOf('Padded too long');
+    assert.ok(badRow, 'the provider item arrives');
+    assert.equal(badRow.todo_status, null);
+    assert.deepEqual(await subtasksOf(badRow.id), []);
+    const [goodRow] = await rowOf('Padded to fit');
+    assert.deepEqual(await subtasksOf(goodRow.id), [[fits, true]], 'a title of exactly 255 characters, its space kept');
+    const [[guest]] = await pool.query<RowDataPacket[]>('SELECT display_name, comment FROM calendar_event_attendees WHERE event_id = ?', [goodRow.id]);
+    assert.deepEqual([guest.display_name, guest.comment], [' Guest ', '  as it is  '], 'name and reply as the overlay has them');
+    assert.equal(await pending(), 0);
+  });
+
   await t.test('a recurring task keys each date by its recurrence id; an archive without UIDs matches by title and start', async () => {
     clock += 86400000 * 3;
     const start = clock;
