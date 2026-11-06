@@ -312,8 +312,9 @@ test('production export and restore jobs round-trip what a backup holds through 
     const failed = await waitFor(() => service.getDataExportJob(sourceUser, started.id), (job: FixtureValue) => job?.status === 'failed', 'Oversized archive rejection', { allowFailure: true });
     assert.match(failed.error, /exceeds the import upload limit/i);
     assert.equal(failed.file_path, null);
-    const files = await fs.readdir(path.join(sourceRoot, 'backups', sourceUser));
-    assert.equal(files.some(filename => filename.startsWith(started.id)), false, 'Remove unusable archive and temporary ZIP');
+    // The row settles first, then the archive goes through the file removal gate.
+    await waitFor(async () => (await fs.readdir(path.join(sourceRoot, 'backups', sourceUser))).some(filename => filename.startsWith(started.id)),
+      (left: boolean) => !left, 'Remove unusable archive and temporary ZIP');
     const [[keys]] = await pool.execute<RowDataPacket[]>('SELECT COUNT(*) AS total FROM backup_archive_keys WHERE export_job_id = ?', [started.id]);
     assert.equal(keys.total, 0, 'Remove unusable archive key metadata');
   });
