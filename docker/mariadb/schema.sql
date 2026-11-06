@@ -303,6 +303,8 @@ CREATE TABLE `calendar_overlay_restores` (
   `payload` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`payload`)),
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `expires_at` datetime DEFAULT NULL,
+  `failed_at` datetime DEFAULT NULL,
+  `failure` varchar(255) DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_overlay_restores_item` (`calendar_id`,`uid`,`recurrence_id`),
   KEY `idx_overlay_restores_user` (`user_id`),

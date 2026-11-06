@@ -401,6 +401,7 @@ const MIGRATIONS: readonly Migration[] = [
       }
       if (!await hasIndex(connection, 'calendar_event_moves', 'idx_event_moves_bin_item')) throw new Error('calendar_event_moves.bin_item_id is missing');
       if (!await hasColumn(connection, 'calendar_event_moves', 'counted_before_send')) throw new Error('calendar_event_moves.counted_before_send is missing');
+      if (!await hasColumn(connection, 'calendar_overlay_restores', 'failed_at')) throw new Error('calendar_overlay_restores.failed_at is missing');
     },
   },
 ];
@@ -790,7 +791,9 @@ async function addDataSafety(connection: SqlExecutor) {
   // until the sync that creates the task's row takes them (services/
   // calendar-sync.ts). match_kind 'uid' keys it by (calendar, UID,
   // recurrence id); 'shape' (archives before schema 7, without UIDs) by the
-  // title and start. It goes with its calendar.
+  // title and start. It goes with its calendar. failed_at and failure mark
+  // one the database refused to write: kept to look at, never tried again
+  // and left out of backups (calendar-overlays.ts applyWaitingOverlay).
   await connection.execute(`CREATE TABLE IF NOT EXISTS calendar_overlay_restores (
     id CHAR(36) NOT NULL PRIMARY KEY,
     user_id CHAR(36) NOT NULL,
@@ -804,6 +807,8 @@ async function addDataSafety(connection: SqlExecutor) {
     payload LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(payload)),
     created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
     expires_at DATETIME NULL,
+    failed_at DATETIME NULL,
+    failure VARCHAR(255) NULL,
     KEY idx_overlay_restores_item (calendar_id, uid, recurrence_id),
     KEY idx_overlay_restores_user (user_id),
     KEY idx_overlay_restores_expires (expires_at),

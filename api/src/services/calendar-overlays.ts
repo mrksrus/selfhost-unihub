@@ -35,8 +35,16 @@ const DATETIME = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 const ID_PATTERN = /^[0-9a-f-]{36}$/i;
 const RESPONSES = new Set(['accepted', 'tentative', 'declined', 'needsAction']);
 // What the subtask and attendee columns hold: varchar(255) counts characters,
-// the comment is TEXT (65,535 bytes).
+// the comment is TEXT (65,535 bytes), the position a signed INT.
 const COMMENT_MAX_BYTES = 65535;
+const INT_MIN = -2147483648;
+const INT_MAX = 2147483647;
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+// Errors in which MariaDB refuses a value an overlay holds: the overlay is at
+// fault, not the connection, so it is set aside instead of tried again.
+// Data too long, out of range, incorrect value, duplicate entry, NULL, check
+// constraint, foreign key.
+const VALUE_ERRORS = new Set([1406, 1264, 1292, 1366, 1062, 1048, 4025, 1452]);
 
 interface OverlaySubtask { title: string; is_done: boolean; position: number }
 interface OverlayAttendee { email: string; display_name: string | null; response_status: string; is_organizer: boolean; optional_attendee: boolean; comment: string | null }
@@ -63,11 +71,30 @@ interface PendingOverlay extends OverlayTarget {
 /** new: a row the sync just made; fill: only what the row lacks; replace: as the overlay has it. */
 type ApplyMode = 'new' | 'fill' | 'replace';
 
-const sqlTime = (value: unknown) => {
-  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString().slice(0, 19).replace('T', ' ');
+/**
+ * Whether a DATETIME column takes this 'YYYY-MM-DD HH:MM:SS' as it is: a real
+ * date and time from the year 1000 to 9999. JavaScript dates roll a 30
+ * February over into March, so the parts are compared after the round trip.
+ */
+function isStorableDateTime(text: string) {
+  if (!DATETIME.test(text)) return false;
+  const [year, month, day, hour, minute, second] = text.split(/[- :]/).map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  return year >= 1000 && date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+    && date.getUTCHours() === hour && date.getUTCMinutes() === minute && date.getUTCSeconds() === second;
+}
+/** A time as a UTC DATETIME, or null; an ISO time with a zone is converted, never a date that does not exist. */
+const sqlTime = (value: unknown): string | null => {
+  if (value instanceof Date) {
+    const text = Number.isNaN(value.getTime()) ? '' : value.toISOString().slice(0, 19).replace('T', ' ');
+    return isStorableDateTime(text) ? text : null;
+  }
   if (typeof value !== 'string') return null;
-  const text = value.includes('T') ? new Date(value).toISOString().slice(0, 19).replace('T', ' ') : value;
-  return DATETIME.test(text) ? text : null;
+  if (!value.includes('T')) return isStorableDateTime(value) ? value : null;
+  const iso = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})?$/.exec(value);
+  if (!iso || !isStorableDateTime(`${iso[1]} ${iso[2]}`)) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : sqlTime(date);
 };
 function json(value: unknown) {
   if (typeof value !== 'string') return value ?? null;
@@ -83,8 +110,8 @@ function parseOverlayState(value: unknown): OverlayState | null {
   const input = json(value) as Record<string, unknown> | null;
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   const status = typeof input.todo_status === 'string' && TODO_STATUSES.has(input.todo_status) ? input.todo_status : null;
-  let doneAt: string | null = null;
-  try { doneAt = sqlTime(input.done_at); } catch { doneAt = null; }
+  // A time a DATETIME cannot take stays as it is, so the check refuses it (overlayPayloadProblem).
+  const doneAt = input.done_at == null ? null : sqlTime(input.done_at) ?? String(input.done_at);
   const emailId = typeof input.source_email_id === 'string' && ID_PATTERN.test(input.source_email_id) ? input.source_email_id : null;
   const email = json(input.source_email_json);
   const subtasks = (Array.isArray(input.subtasks) ? input.subtasks : []).flatMap((item, index) => {
@@ -114,17 +141,67 @@ function parseOverlayState(value: unknown): OverlayState | null {
   return state.todo_status || state.source_email_id || state.source_email_json || state.subtasks.length || state.attendees.length ? state : null;
 }
 
+const storableText = (value: string, max: number) => Array.from(value).length <= max;
+const isBoolean = (value: unknown) => typeof value === 'boolean';
+const isTextOrNull = (value: unknown) => value === null || value === undefined || typeof value === 'string';
+
 /**
- * What of an overlay its tables cannot hold, or null, measured on the exact
- * values applyOverlayState writes. Nothing UniHub stored is beyond them; an
- * archive that is refuses its restore (backup-overlays.ts) rather than have
- * the value cut.
+ * Why an overlay payload cannot be written as it is, or null. 'form': not as
+ * UniHub writes one (every overlay comes from its own export, the bin or the
+ * conversion of an older archive, which write exactly this form); 'capacity':
+ * a value its column cannot take, judged on the exact value applyOverlayState
+ * writes (parseOverlayState). An archive with either refuses its restore
+ * (backup-overlays.ts); a waiting one is set aside (applyWaitingOverlay).
+ * What it checks, per written column:
+ * - calendar_events: todo_status one of the ToDo states; done_at a real
+ *   DATETIME; source_email_id a UUID (the email must be the person's own,
+ *   applyOverlayState); source_email_json an object.
+ * - calendar_event_subtasks: title a non-blank string of at most 255
+ *   characters; is_done a boolean; position an integer in the INT range.
+ * - calendar_event_attendees: email a non-empty string of at most 255
+ *   characters as written (trimmed, lower case), once per overlay;
+ *   display_name null or at most 255 characters; response_status one of the
+ *   replies; is_organizer and optional_attendee booleans; comment null or at
+ *   most 65,535 UTF-8 bytes. Text must be valid Unicode, which utf8mb4 stores
+ *   unchanged.
  */
-function overlayStateProblem(state: OverlayState): string | null {
-  const longer = (value: string | null) => !!value && Array.from(value).length > TITLE_MAX;
-  if (state.subtasks.some(subtask => longer(subtask.title))) return 'a subtask title is longer than 255 characters';
-  if (state.attendees.some(attendee => longer(attendee.email) || longer(attendee.display_name))) return 'an attendee address or name is longer than 255 characters';
-  if (state.attendees.some(attendee => attendee.comment && Buffer.byteLength(attendee.comment, 'utf8') > COMMENT_MAX_BYTES)) return 'a reply comment is longer than 65,535 bytes';
+function overlayPayloadProblem(value: unknown): { kind: 'form' | 'capacity'; problem: string } | null {
+  const input = json(value) as Record<string, unknown> | null;
+  const form = (problem: string) => ({ kind: 'form' as const, problem });
+  const capacity = (problem: string) => ({ kind: 'capacity' as const, problem });
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return form('the state is not an object');
+  if (input.todo_status != null && !TODO_STATUSES.has(input.todo_status as string)) return form('a ToDo state UniHub does not have');
+  if (input.done_at != null && (typeof input.done_at !== 'string' || !isStorableDateTime(input.done_at))) return capacity('a done time that is not a real date and time');
+  if (input.source_email_id != null && (typeof input.source_email_id !== 'string' || !ID_PATTERN.test(input.source_email_id))) return form('a source email that is not an id');
+  if (input.source_email_json != null) {
+    const email = json(input.source_email_json);
+    if (!email || typeof email !== 'object') return form('a source email snapshot that is not an object');
+  }
+  if (input.subtasks !== undefined && !Array.isArray(input.subtasks)) return form('subtasks that are not a list');
+  if (input.attendees !== undefined && !Array.isArray(input.attendees)) return form('attendees that are not a list');
+  const texts = [...((input.subtasks ?? []) as Record<string, unknown>[]).map(item => item?.title),
+    ...((input.attendees ?? []) as Record<string, unknown>[]).flatMap(item => [item?.email, item?.display_name, item?.comment])];
+  if (texts.some(text => typeof text === 'string' && LONE_SURROGATE.test(text))) return capacity('text that is not valid Unicode');
+  for (const item of (input.subtasks ?? []) as unknown[]) {
+    const subtask = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>;
+    if (typeof subtask.title !== 'string' || !subtask.title.trim() || !isBoolean(subtask.is_done) || !Number.isInteger(subtask.position)) return form('a subtask UniHub does not write');
+    if (!storableText(subtask.title, TITLE_MAX)) return capacity('a subtask title is longer than 255 characters');
+    if ((subtask.position as number) < INT_MIN || (subtask.position as number) > INT_MAX) return capacity('a subtask position is outside the range its column holds');
+  }
+  const addresses = new Set<string>();
+  for (const item of (input.attendees ?? []) as unknown[]) {
+    const attendee = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>;
+    const address = typeof attendee.email === 'string' ? attendee.email.trim().toLowerCase() : '';
+    if (!address || addresses.has(address) || !isTextOrNull(attendee.display_name) || !RESPONSES.has(attendee.response_status as string)
+      || !isBoolean(attendee.is_organizer) || !isBoolean(attendee.optional_attendee) || !isTextOrNull(attendee.comment)) return form('an attendee UniHub does not write');
+    addresses.add(address);
+    if (!storableText(address, TITLE_MAX) || (typeof attendee.display_name === 'string' && !storableText(attendee.display_name, TITLE_MAX))) {
+      return capacity('an attendee address or name is longer than 255 characters');
+    }
+    if (typeof attendee.comment === 'string' && Buffer.byteLength(attendee.comment, 'utf8') > COMMENT_MAX_BYTES) {
+      return capacity('a reply comment is longer than 65,535 bytes');
+    }
+  }
   return null;
 }
 
@@ -156,10 +233,6 @@ async function applyOverlayState(connection: SqlExecutor, userId: string, eventI
   const [[row]] = await connection.execute<RowDataPacket[]>(
     'SELECT todo_status, source_email_id, source_email_json FROM calendar_events WHERE id = ? AND user_id = ? FOR UPDATE', [eventId, userId]);
   if (!row) return false;
-  // Validation refuses such a state before it is stored; one that got here
-  // anyway would fail the sync's transaction on every run, so it is left out.
-  const problem = overlayStateProblem(state);
-  if (problem) { log.warn('calendar', 'Synced-task state not applied: its tables cannot hold it', { eventId, problem }); return false; }
   let emailId = state.source_email_id;
   if (emailId) {
     const [owned] = await connection.execute<RowDataPacket[]>('SELECT id FROM emails WHERE id = ? AND user_id = ? LIMIT 1', [emailId, userId]);
@@ -247,11 +320,48 @@ async function takeOverlayForNewRow(connection: SqlExecutor, target: OverlayTarg
   if (!target.uid) return false;
   const [[found]] = await connection.execute<RowDataPacket[]>(
     `SELECT id, payload FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = 'uid' AND uid = ? ${EXACT} AND recurrence_id = ? ${EXACT}
-     ORDER BY created_at, id LIMIT 1 FOR UPDATE`, [target.userId, target.calendarId, target.uid, target.recurrenceId || '']);
+     AND failed_at IS NULL ORDER BY created_at, id LIMIT 1 FOR UPDATE`, [target.userId, target.calendarId, target.uid, target.recurrenceId || '']);
   if (!found) return false;
-  await connection.execute('DELETE FROM calendar_overlay_restores WHERE id = ?', [found.id]);
-  const state = parseOverlayState(found.payload);
-  return state ? applyOverlayState(connection, target.userId, target.eventId, state, 'new') : false;
+  return applyWaitingOverlay(connection, target.userId, found, target.eventId, 'new');
+}
+
+/**
+ * Applies one waiting overlay to its row and removes it. Its writes are its
+ * own: a savepoint in the caller's transaction (the sync's, the restore's,
+ * the bin's), or a transaction of their own outside one. An overlay that
+ * cannot be written undoes only them, and stays, marked failed with the
+ * reason, so the item still syncs, the overlay is not tried again and is
+ * still there to look at. A backup leaves it out and counts it
+ * (backup-classes.ts). Any other error (the connection, a lock) goes to the
+ * caller as before.
+ */
+async function applyWaitingOverlay(connection: SqlExecutor, userId: string, overlay: RowDataPacket, eventId: string, mode: ApplyMode) {
+  const setAside = async (reason: string) => {
+    await connection.execute('UPDATE calendar_overlay_restores SET failed_at = UTC_TIMESTAMP(), failure = ? WHERE id = ?', [reason.slice(0, 255), overlay.id]);
+    log.warn('calendar', 'Synced-task state could not be applied; it is kept as failed', { overlayId: overlay.id, reason });
+    return false;
+  };
+  const problem = overlayPayloadProblem(overlay.payload);
+  if (problem) return setAside(problem.problem);
+  const state = parseOverlayState(overlay.payload);
+  const [[{ open }]] = await connection.query<RowDataPacket[]>('SELECT @@in_transaction AS open');
+  const nested = Number(open) === 1;
+  await connection.query(nested ? 'SAVEPOINT overlay_apply' : 'START TRANSACTION');
+  let applied = false;
+  try {
+    if (state) applied = await applyOverlayState(connection, userId, eventId, state, mode);
+    await connection.execute('DELETE FROM calendar_overlay_restores WHERE id = ?', [overlay.id]);
+  } catch (error) {
+    const errno = Number((error as { errno?: number }).errno);
+    if (!VALUE_ERRORS.has(errno)) {
+      if (!nested) await connection.query('ROLLBACK').catch(() => {});
+      throw error;
+    }
+    await connection.query(nested ? 'ROLLBACK TO SAVEPOINT overlay_apply' : 'ROLLBACK');
+    return setAside(String((error as { code?: string }).code || `MariaDB error ${errno}`));
+  }
+  await connection.query(nested ? 'RELEASE SAVEPOINT overlay_apply' : 'COMMIT');
+  return applied;
 }
 
 /**
@@ -271,12 +381,12 @@ async function applyOverlaysToLiveRows(connection: SqlExecutor, userId: string, 
     `SELECT p.id, p.payload, e.id AS event_id FROM calendar_overlay_restores p
      JOIN calendar_events e ON e.user_id = p.user_id AND e.calendar_id = p.calendar_id AND e.uid = p.uid ${EXACT}
      JOIN calendar_event_external_refs r ON r.event_id = e.id AND r.user_id = e.user_id AND COALESCE(r.recurrence_id, '') = p.recurrence_id ${EXACT}
-     WHERE p.user_id = ? AND p.match_kind = 'uid'${scope} ORDER BY p.created_at, p.id FOR UPDATE`, [userId, ...scopeValues]);
+     WHERE p.user_id = ? AND p.match_kind = 'uid' AND p.failed_at IS NULL${scope} ORDER BY p.created_at, p.id FOR UPDATE`, [userId, ...scopeValues]);
   // Every row with the shape counts, also one that keeps state: the match must be the only one.
   const [shapes] = uid !== undefined ? [[] as RowDataPacket[]] : await connection.execute<RowDataPacket[]>(
     `SELECT p.id, p.payload, MIN(e.id) AS event_id, COUNT(e.id) AS matches FROM calendar_overlay_restores p
      JOIN calendar_events e ON e.user_id = p.user_id AND e.calendar_id = p.calendar_id AND e.title = p.shape_title ${EXACT} AND e.start_time = p.shape_start
-     WHERE p.user_id = ? AND p.match_kind = 'shape' AND (p.expires_at IS NULL OR p.expires_at > UTC_TIMESTAMP())${scope}
+     WHERE p.user_id = ? AND p.match_kind = 'shape' AND p.failed_at IS NULL AND (p.expires_at IS NULL OR p.expires_at > UTC_TIMESTAMP())${scope}
      GROUP BY p.id, p.payload, p.created_at ORDER BY p.created_at, p.id`, [userId, ...scopeValues]);
   const byShape = [];
   for (const row of shapes) {
@@ -291,16 +401,14 @@ async function applyOverlaysToLiveRows(connection: SqlExecutor, userId: string, 
   for (const row of [...byUid, ...byShape]) {
     if (claimed.has(String(row.event_id))) continue;
     claimed.add(String(row.event_id));
-    await connection.execute('DELETE FROM calendar_overlay_restores WHERE id = ?', [row.id]);
-    const state = parseOverlayState(row.payload);
-    if (state && await applyOverlayState(connection, userId, String(row.event_id), state, mode)) applied += 1;
+    if (await applyWaitingOverlay(connection, userId, row, String(row.event_id), mode)) applied += 1;
   }
   return applied;
 }
 
 /** Whether a calendar has overlays waiting, so a sync applies them only when there are some. */
 async function hasPendingOverlays(executor: SqlExecutor, calendarId: string) {
-  const [rows] = await executor.execute<RowDataPacket[]>('SELECT 1 FROM calendar_overlay_restores WHERE calendar_id = ? LIMIT 1', [calendarId]);
+  const [rows] = await executor.execute<RowDataPacket[]>('SELECT 1 FROM calendar_overlay_restores WHERE calendar_id = ? AND failed_at IS NULL LIMIT 1', [calendarId]);
   return rows.length > 0;
 }
 
@@ -314,7 +422,8 @@ export {
   overlayAttendee,
   EXACT as UID_EXACT,
   parseOverlayState,
-  overlayStateProblem,
+  overlayPayloadProblem,
+  sqlTime as overlaySqlTime,
   overlayStateOf,
   applyOverlayState,
   insertOverlays,

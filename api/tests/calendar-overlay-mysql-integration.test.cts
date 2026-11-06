@@ -113,28 +113,58 @@ test('synced tasks keep their own state through a restore and the first sync, by
     assert.equal((await overlays.overlayStateOf(pool, users.owner, row.id))!.subtasks.length, 501);
   });
 
-  await t.test('a state its tables cannot hold never stops the sync; one they can is written as it is', async () => {
+  await t.test('a state its tables cannot hold never stops the sync: the item arrives, the state is kept as failed; one they can is written as it is', async () => {
     clock += 86400000;
-    const [bad, good] = [`${crypto.randomUUID()}@example.test`, `${crypto.randomUUID()}@example.test`];
-    server.store(`${WORK}padded-bad.ics`, eventIcs(bad, 'Padded too long', clock));
+    // Written past validation, as a state from before a check or one only the database refuses would be.
+    const raw = async (uid: string, payload: FixtureValue) => {
+      await pool.execute("INSERT INTO calendar_overlay_restores (id, user_id, calendar_id, uid, recurrence_id, match_kind, payload) VALUES (?, ?, ?, ?, '', 'uid', ?)",
+        [crypto.randomUUID(), users.owner, work, uid, JSON.stringify(payload)]);
+    };
+    const guest = state('').attendees[0];
+    const bad: [string, FixtureValue, RegExp][] = [
+      ['Padded title', state('Padded title', [` ${'x'.repeat(255)}`]), /subtask title is longer than 255/],
+      ['Far position', { ...state('Far position'), subtasks: [{ title: 'Step', is_done: false, position: 2147483648 }] }, /subtask position is outside/],
+      ['Unreal date', { ...state('Unreal date'), done_at: '2026-99-01 08:00:00' }, /done time that is not a real date/],
+      // Two addresses its unique key holds to be one (the collation ignores accents): only the database can tell.
+      ['Same guest', { ...state('Same guest'), attendees: [guest, { ...guest, email: 'guést@example.test' }] }, /ER_DUP_ENTRY/],
+    ];
+    const uids = new Map<string, string>();
+    for (const [title, payload] of bad) {
+      const uid = `${crypto.randomUUID()}@example.test`;
+      uids.set(title, uid);
+      server.store(`${WORK}${uid}.ics`, eventIcs(uid, title, clock));
+      await raw(uid, payload);
+    }
+    const good = `${crypto.randomUUID()}@example.test`;
     server.store(`${WORK}padded-good.ics`, eventIcs(good, 'Padded to fit', clock + 3600000));
     const fits = ` ${'x'.repeat(254)}`;
-    const spaced = { ...state('Padded to fit', [fits]), attendees: [{ ...state('').attendees[0], display_name: ' Guest ', comment: '  as it is  ' }] };
-    // Past validation, as a state written before it was checked would be: one character more than the column holds.
-    assert.equal(await write([
-      { userId: users.owner, calendarId: work, uid: bad, recurrenceId: '', state: state('Padded too long', [` ${'x'.repeat(255)}`]) },
-      { userId: users.owner, calendarId: work, uid: good, recurrenceId: '', state: spaced },
-    ]), 2);
-    for (let round = 0; round < 2; round++) await sync();
-    const [badRow] = await rowOf('Padded too long');
-    assert.ok(badRow, 'the provider item arrives');
-    assert.equal(badRow.todo_status, null);
-    assert.deepEqual(await subtasksOf(badRow.id), []);
+    await raw(good, { ...state('Padded to fit', [fits]), attendees: [{ ...guest, display_name: ' Guest ', comment: '  as it is  ' }] });
+    for (let round = 0; round < 2; round++) {
+      await sync();
+      const [[account]] = await pool.query<RowDataPacket[]>('SELECT sync_status, sync_error FROM calendar_accounts WHERE id = ?', [accountId]);
+      assert.equal(account.sync_error, null, `round ${round + 1}: the account syncs`);
+    }
+    for (const [title, , reason] of bad) {
+      const [row] = await rowOf(title);
+      assert.ok(row, `${title}: the provider item arrives`);
+      assert.equal(row.todo_status, null, `${title}: none of its state is written`);
+      assert.deepEqual([await subtasksOf(row.id), await attendeesOf(row.id)], [[], []]);
+      const [[kept]] = await pool.query<RowDataPacket[]>('SELECT failed_at, failure, payload FROM calendar_overlay_restores WHERE user_id = ? AND uid = ?', [users.owner, uids.get(title)]);
+      assert.ok(kept?.failed_at, `${title}: the state is kept, marked failed`);
+      assert.match(kept.failure, reason);
+      assert.equal((typeof kept.payload === 'string' ? JSON.parse(kept.payload) : kept.payload).todo_status, 'done', 'as it was');
+    }
     const [goodRow] = await rowOf('Padded to fit');
     assert.deepEqual(await subtasksOf(goodRow.id), [[fits, true]], 'a title of exactly 255 characters, its space kept');
-    const [[guest]] = await pool.query<RowDataPacket[]>('SELECT display_name, comment FROM calendar_event_attendees WHERE event_id = ?', [goodRow.id]);
-    assert.deepEqual([guest.display_name, guest.comment], [' Guest ', '  as it is  '], 'name and reply as the overlay has them');
-    assert.equal(await pending(), 0);
+    const [[written]] = await pool.query<RowDataPacket[]>('SELECT display_name, comment FROM calendar_event_attendees WHERE event_id = ?', [goodRow.id]);
+    assert.deepEqual([written.display_name, written.comment], [' Guest ', '  as it is  '], 'name and reply as the overlay has them');
+    assert.equal(await pending(), bad.length, 'only the failed ones are left');
+    assert.equal(await overlays.hasPendingOverlays(pool, work), false, 'and none of them is waiting');
+    // A backup leaves them out and says so.
+    const archive = await (require('../dist/src/services/backup') as FixtureValue).buildBackupForUser(users.owner, { sections: ['calendar'], includeFileData: false });
+    assert.equal(archive.data.calendar_overlay_restores.some((row: FixtureValue) => [...uids.values()].includes(row.uid)), false);
+    assert.deepEqual(archive.contents.left_out.find((entry: FixtureValue) => entry.what === 'Synced-item state that could not be applied')?.count, bad.length);
+    await pool.execute('DELETE FROM calendar_overlay_restores WHERE user_id = ? AND failed_at IS NOT NULL', [users.owner]);
   });
 
   await t.test('a recurring task keys each date by its recurrence id; an archive without UIDs matches by title and start', async () => {

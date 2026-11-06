@@ -7,45 +7,20 @@
 // expires after OVERLAY_SHAPE_DAYS.
 import type { RowDataPacket } from 'mysql2/promise';
 import type { BackupRow, SqlExecutor } from '../types';
-import { OVERLAY_SHAPE_DAYS, TODO_STATUSES } from './backup-classes';
+import { OVERLAY_SHAPE_DAYS } from './backup-classes';
 import { normalizeMysqlDateTime } from './backup-common';
-import { UID_EXACT, applyOverlaysToLiveRows, insertOverlays, overlayStateProblem, parseOverlayState } from './calendar-overlays';
+import { UID_EXACT, applyOverlaysToLiveRows, insertOverlays, overlayPayloadProblem, overlaySqlTime, parseOverlayState } from './calendar-overlays';
 import type { PendingOverlay } from './calendar-overlays';
 
+const fits = (value: unknown, max: number) => typeof value === 'string' && Array.from(value).length <= max;
+const storableTime = (value: unknown) => overlaySqlTime(value) !== null;
 
-interface OverlayState {
-  todo_status: string | null;
-  done_at: string | null;
-  source_email_id: string | null;
-  source_email_json: string | null;
-  subtasks: { title: string; is_done: boolean; position: number }[];
-}
-
-// The payload as UniHub wrote it, or null for anything else. A task may
-// have any number of subtasks (the app sets no limit); the archive's size
-// limit for data/backup.json bounds them.
-function parseOverlayPayload(value: unknown): OverlayState | null {
-  let raw: unknown = value;
-  if (typeof value === 'string') { try { raw = JSON.parse(value); } catch { return null; } }
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const input = raw as Record<string, unknown>;
-  if (input.todo_status != null && !TODO_STATUSES.has(String(input.todo_status))) return null;
-  if (input.source_email_id != null && !/^[0-9a-f-]{36}$/i.test(String(input.source_email_id))) return null;
-  if (input.subtasks !== undefined && !Array.isArray(input.subtasks)) return null;
-  if (input.attendees !== undefined && !Array.isArray(input.attendees)) return null;
-  let sourceEmail: string | null = null;
-  if (input.source_email_json != null) {
-    try { sourceEmail = JSON.stringify(typeof input.source_email_json === 'string' ? JSON.parse(input.source_email_json) : input.source_email_json); } catch { return null; }
-  }
-  const subtasks = ((input.subtasks ?? []) as unknown[]).map((item, index) => {
-    const entry = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>;
-    return { title: String(entry.title ?? ''), is_done: !!entry.is_done, position: Number.isSafeInteger(entry.position) ? Number(entry.position) : index };
-  });
-  return { todo_status: input.todo_status == null ? null : String(input.todo_status), done_at: normalizeMysqlDateTime(input.done_at as string | undefined),
-    source_email_id: input.source_email_id == null ? null : String(input.source_email_id), source_email_json: sourceEmail, subtasks };
-}
-
-/** Validation of an archive's overlay rows: each names an archived calendar and carries a payload UniHub wrote. */
+/**
+ * Validation of an archive's overlay rows: each names an archived calendar,
+ * has a key its columns hold, and carries a payload as UniHub writes it whose
+ * values its tables hold (calendar-overlays.ts overlayPayloadProblem). A
+ * value beyond them refuses the restore by name; it is never cut to fit.
+ */
 function validateOverlayRows(data: Record<string, unknown> | undefined): string[] {
   const rows = data?.calendar_overlay_restores;
   if (rows === undefined) return [];
@@ -54,15 +29,14 @@ function validateOverlayRows(data: Record<string, unknown> | undefined): string[
   const errors = new Set<string>();
   for (const row of rows as BackupRow[]) {
     if (!row || typeof row !== 'object' || !calendars.has(row.calendar_id as string)) { errors.add('Backup has a synced-task state that names no calendar of this backup'); continue; }
-    const valid = (row.match_kind === 'uid' ? typeof row.uid === 'string' && row.uid !== '' && row.uid.length <= 500
-        : row.match_kind === 'shape' && typeof row.shape_title === 'string' && row.shape_title.length <= 255 && typeof row.shape_start === 'string')
-      && (row.recurrence_id == null || (typeof row.recurrence_id === 'string' && row.recurrence_id.length <= 64))
-      && parseOverlayPayload(row.payload) !== null;
-    if (!valid) { errors.add('Backup has a synced-task state in a form UniHub does not write'); continue; }
-    // A value its table cannot hold refuses the restore; it is never cut to fit.
-    const state = parseOverlayState(row.payload);
-    const problem = state && overlayStateProblem(state);
-    if (problem) errors.add(`Backup has a synced-task state UniHub cannot store: ${problem}`);
+    const keyed = (row.match_kind === 'uid' ? fits(row.uid, 500) && row.uid !== ''
+        : row.match_kind === 'shape' && fits(row.shape_title, 255) && storableTime(row.shape_start))
+      && (row.recurrence_id == null || fits(row.recurrence_id, 64))
+      && (row.account_identity == null || fits(row.account_identity, 500))
+      && (row.expires_at == null || storableTime(row.expires_at));
+    const problem = overlayPayloadProblem(row.payload);
+    if (!keyed || problem?.kind === 'form') errors.add('Backup has a synced-task state in a form UniHub does not write');
+    else if (problem) errors.add(`Backup has a synced-task state UniHub cannot store: ${problem.problem}`);
   }
   return [...errors];
 }
@@ -87,7 +61,7 @@ async function restoreOverlays(connection: SqlExecutor, userId: string, rows: re
     if (checkCancelled) await checkCancelled();
     const calendarId = calendarIds.get(String(row.calendar_id));
     // Validation refused any other payload; a row this restore cannot place is counted for its note, never dropped silently.
-    if (!calendarId || !parseOverlayPayload(row.payload)) { result.unplaced += 1; continue; }
+    if (!calendarId || overlayPayloadProblem(row.payload)) { result.unplaced += 1; continue; }
     const state = parseOverlayState(row.payload);
     if (!state) continue; // nothing UniHub keeps
     // Only a synced calendar receives overlays; the restore never writes one onto a local list.
@@ -95,29 +69,28 @@ async function restoreOverlays(connection: SqlExecutor, userId: string, rows: re
       WHERE c.id = ? AND c.user_id = ?`, [calendarId, userId]);
     if (!calendar || calendar.provider === 'local') { result.unplaced += 1; continue; }
     const recurrenceId = String(row.recurrence_id ?? '');
-    const shape = row.match_kind === 'shape' ? { title: String(row.shape_title ?? ''), start: String(normalizeMysqlDateTime(row.shape_start as string) ?? '') } : undefined;
+    const shape = row.match_kind === 'shape' ? { title: String(row.shape_title ?? ''), start: String(overlaySqlTime(row.shape_start) ?? '') } : undefined;
     if (conflictMode !== 'replace') {
       const [waiting] = shape
-        ? await connection.execute<RowDataPacket[]>(`SELECT id FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = 'shape' AND shape_title = ? ${UID_EXACT} AND shape_start = ? LIMIT 1`,
+        ? await connection.execute<RowDataPacket[]>(`SELECT id FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = 'shape' AND shape_title = ? ${UID_EXACT} AND shape_start = ? AND failed_at IS NULL LIMIT 1`,
           [userId, calendarId, shape.title, shape.start])
-        : await connection.execute<RowDataPacket[]>(`SELECT id FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = 'uid' AND uid = ? ${UID_EXACT} AND recurrence_id = ? ${UID_EXACT} LIMIT 1`,
+        : await connection.execute<RowDataPacket[]>(`SELECT id FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id = ? AND match_kind = 'uid' AND uid = ? ${UID_EXACT} AND recurrence_id = ? ${UID_EXACT} AND failed_at IS NULL LIMIT 1`,
           [userId, calendarId, String(row.uid), recurrenceId]);
       if (waiting.length) { targets.add(calendarId); continue; }
     }
     if (state.source_email_id) state.source_email_id = emailIds.get(state.source_email_id) ?? state.source_email_id;
     pending.push({ userId, calendarId, uid: String(row.uid ?? ''), recurrenceId, state, accountIdentity: String(row.account_identity ?? ''), matchKind: shape ? 'shape' : 'uid', shape,
-      expiresAt: shape ? normalizeMysqlDateTime(row.expires_at as string | null) ?? normalizeMysqlDateTime(new Date(now.getTime() + OVERLAY_SHAPE_DAYS * 86400000).toISOString()) : null });
+      expiresAt: shape ? overlaySqlTime(row.expires_at) ?? normalizeMysqlDateTime(new Date(now.getTime() + OVERLAY_SHAPE_DAYS * 86400000).toISOString()) : null });
     targets.add(calendarId);
   }
   const stored = await insertOverlays(connection, pending);
   result.unplaced += pending.length - stored;
   if (!targets.size) return result;
   result.applied = await applyOverlaysToLiveRows(connection, userId, { calendarIds: [...targets], mode: conflictMode === 'replace' ? 'replace' : 'fill' });
-  const [[left]] = await connection.execute<RowDataPacket[]>(`SELECT COUNT(*) AS n FROM calendar_overlay_restores WHERE user_id = ? AND calendar_id IN (${[...targets].map(() => '?').join(', ')})`,
+  const [[left]] = await connection.execute<RowDataPacket[]>(`SELECT COUNT(*) AS n FROM calendar_overlay_restores WHERE user_id = ? AND failed_at IS NULL AND calendar_id IN (${[...targets].map(() => '?').join(', ')})`,
     [userId, ...targets]);
   result.waiting = Number(left.n) || 0;
   return result;
 }
 
-export { parseOverlayPayload, validateOverlayRows, restoreOverlays };
-export type { OverlayState };
+export { validateOverlayRows, restoreOverlays };

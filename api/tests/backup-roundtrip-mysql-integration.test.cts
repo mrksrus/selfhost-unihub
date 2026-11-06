@@ -940,6 +940,11 @@ test('production export and restore jobs round-trip what a backup holds through 
       [(state: FixtureValue) => { state.subtasks = [{ title: 't'.repeat(256), is_done: false, position: 0 }]; }, /cannot store: a subtask title is longer than 255 characters/],
       // Counted as written: a space is a character too.
       [(state: FixtureValue) => { state.subtasks = [{ title: ` ${'t'.repeat(255)}`, is_done: false, position: 0 }]; }, /cannot store: a subtask title is longer than 255 characters/],
+      // Every column as its type holds it: a signed INT, a real date and time.
+      [(state: FixtureValue) => { state.subtasks = [{ title: 'Step', is_done: false, position: 2147483648 }]; }, /cannot store: a subtask position is outside the range its column holds/],
+      [(state: FixtureValue) => { state.todo_status = 'done'; state.done_at = '2026-99-01 08:00:00'; }, /cannot store: a done time that is not a real date and time/],
+      [(state: FixtureValue) => { state.todo_status = 'done'; state.done_at = '2026-02-30 08:00:00'; }, /cannot store: a done time that is not a real date and time/],
+      [(state: FixtureValue) => { state.attendees[0].is_organizer = 'yes'; }, /in a form UniHub does not write/],
     ] as const) {
       const copy = structuredClone(archive);
       const state = overlayOf(copy);

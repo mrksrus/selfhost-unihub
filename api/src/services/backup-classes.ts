@@ -95,6 +95,7 @@ const LEFT_OUT = Object.freeze({
   synced_events: { section: 'calendar' as const, what: 'CalDAV and subscription events', reason: 'They download again from the provider after the accounts reconnect; UniHub\'s ToDo state, subtasks and replies of synced items are in the backup.' },
   sync_mail: { section: 'mail' as const, what: 'Sync-mode mail', reason: 'It downloads again from the provider after the account signs in.' },
   download_mail: { section: 'mail' as const, what: 'Downloaded mail', reason: '"Include downloaded mail" was off.' },
+  failed_overlays: { section: 'calendar' as const, what: 'Synced-item state that could not be applied', reason: 'The database refused to write it to its item; it stays on this server.' },
 });
 type LeftOutKind = keyof typeof LEFT_OUT;
 
@@ -107,7 +108,7 @@ function backupContents(sections: readonly string[], counts: Partial<Record<Left
     .filter(kind => sections.includes(LEFT_OUT[kind].section) && Number(counts[kind]) > 0)
     .map(kind => ({ ...LEFT_OUT[kind], count: Number(counts[kind]) }));
   const notes: string[] = [];
-  if (left_out.some(entry => entry.what !== LEFT_OUT.download_mail.what)) notes.push('Provider data is not in this backup; it downloads again after the accounts reconnect.');
+  if (left_out.some(entry => entry.what === LEFT_OUT.synced_events.what || entry.what === LEFT_OUT.sync_mail.what)) notes.push('Provider data is not in this backup; it downloads again after the accounts reconnect.');
   if (sections.includes('mail')) notes.push('Snoozes on Sync-mode mail are not kept; those messages come back unsnoozed.');
   return { included: [...included], left_out, notes };
 }

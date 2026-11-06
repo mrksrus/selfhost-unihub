@@ -396,7 +396,10 @@ async function syncedTaskOverlays(connection: SqlExecutor, userId: string, pendi
 async function leftOutCounts(connection: SqlExecutor, userId: string, sections: readonly string[], included: readonly string[], mailAccountId: string | null) {
   const counts: Partial<Record<LeftOutKind, number>> = {};
   const count = async (sql: string, params: unknown[]) => Number((await connection.execute<RowDataPacket[]>(sql, params as string[]))[0][0].n) || 0;
-  if (sections.includes('calendar')) counts.synced_events = await count(`SELECT COUNT(*) AS n FROM calendar_events b WHERE b.user_id = ? AND NOT ${localEventSql('b')}`, [userId]);
+  if (sections.includes('calendar')) {
+    counts.synced_events = await count(`SELECT COUNT(*) AS n FROM calendar_events b WHERE b.user_id = ? AND NOT ${localEventSql('b')}`, [userId]);
+    counts.failed_overlays = await count('SELECT COUNT(*) AS n FROM calendar_overlay_restores b WHERE b.user_id = ? AND b.failed_at IS NOT NULL', [userId]);
+  }
   if (sections.includes('mail')) {
     const account = mailAccountId === null ? '' : ' AND b.mail_account_id = ?';
     const scope = mailAccountId === null ? [] : [mailAccountId];
@@ -442,6 +445,7 @@ async function readBackupSnapshot(userId: string, sections: unknown, checkCancel
           where = 'r.user_id = ? AND a.user_id = ?'; params = [userId, userId];
         }
         if (table === 'recording_transcription_jobs') where += " AND b.status = 'completed'";
+        if (table === 'calendar_overlay_restores') where += ' AND b.failed_at IS NULL';
         if (accountOnly) where += ` AND ${ACCOUNT_ONLY_FILTERS[table]}`;
         if (mailAccountId !== null && SECTION_POLICIES.mail.tables.includes(table)) {
           const filter = ACCOUNT_MAIL_FILTERS[table];
