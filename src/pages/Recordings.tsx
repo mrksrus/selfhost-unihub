@@ -311,13 +311,14 @@ const Recordings = () => {
 
   const busy = capture.state !== 'idle';
   // Record while the browser or Android still asks for the microphone: the
-  // same start, shown as starting until it answers.
+  // same start, shown as starting (a spinner for the microphone, disabled)
+  // until it answers. The label stays "Record" so the panel title keeps its room.
   const starting = capture.starting;
   const recordAction = (narrow: boolean) => (
     <Button size="sm" onClick={() => void capture.start()} disabled={starting || busy || !!pendingAudio}
       aria-label={starting ? 'Starting recording' : narrow ? 'Record' : undefined}>
       {starting ? <Loader2 aria-hidden="true" className="animate-spin" /> : <Mic aria-hidden="true" />}
-      <span className={narrow ? 'hidden sm:inline' : undefined}>{starting ? 'Starting…' : 'Record'}</span>
+      <span className={narrow ? 'hidden sm:inline' : undefined}>Record</span>
     </Button>
   );
   const filtered = !!(search || tagFilter || categoryFilter !== 'all');

@@ -264,6 +264,7 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
       let stream: MediaStream | null = null;
       let audioContext: AudioContext | null = null;
       let capture: Awaited<ReturnType<typeof openCapture>> = null;
+      let committed = false;
       const discard = async () => {
         stream?.getTracks().forEach((track) => track.stop());
         await audioContext?.close().catch(() => {});
@@ -321,6 +322,7 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
         if (stale()) return await discard();
 
         // Current and complete: from here on the recording is the hook's.
+        committed = true;
         streamRef.current = mediaStream;
         audioContextRef.current = context;
         audioSourceRef.current = source;
@@ -378,7 +380,14 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
         };
         setState('recording');
       } catch (error: unknown) {
-        await discard();
+        if (committed) {
+          const captureId = captureIdRef.current;
+          endCapture();
+          if (captureId) void deleteCapture(captureId).catch(() => {});
+          await releaseRecordingResources();
+        } else {
+          await discard();
+        }
         if (stale()) return;
         const message = error instanceof Error ? error.message : 'Microphone access failed';
         toast({ title: 'Could not start recording', description: message, variant: 'destructive' });

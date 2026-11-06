@@ -91,9 +91,10 @@ This reduces browser messaging and avoids forcing a 44.1 kHz conversion. The
 recording timer updates once per second. These changes reduce overhead; actual
 microphone quality still depends on the browser, device and audio drivers.
 
-Record asks for the microphone once: the button reads "Starting…" and is
-disabled until the browser (or Android) answers, so a second tap joins the
-pending start instead of opening a second capture. A refused microphone
+Record asks for the microphone once: the button shows a spinner and is
+disabled (named "Starting recording" for assistive technology) until the
+browser or Android answers, so a second tap joins the pending start instead of
+opening a second capture. A refused microphone
 returns the page to idle; a start abandoned before the answer (page left,
 account switched, Stop) releases the stream when it arrives.
 
