@@ -570,12 +570,13 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
     await step('microphone', async () => {
       const before = new Set((await recordings()).map(item => item.id));
       await navigateTo('Recordings');
-      // On CI the first pairing on a fresh emulator sometimes got no question at
-      // all; one explanation is a start that fails before Android asks, which the
-      // page shows as "Could not start recording" for a few seconds. That message
-      // means the start has given up, so only then is Record tapped again: a
-      // second tap while the question is pending could start a second capture.
-      // The reason is the text after the title, best effort.
+      // On CI the first pairing on a fresh emulator sometimes got neither Android's
+      // question nor a failure message after the tap. A second tap could start a
+      // second capture while the first is still pending, so Record is tapped again
+      // only with proof that nothing is pending: after "Could not start recording"
+      // (that start gave up; the reason is the text after the title, best effort),
+      // or after ending the app, which ends any pending start with it. logcat from
+      // a stalled try is kept with the evidence.
       const question = find(/^(While using the app|Allow|ALLOW|Only this time)$/);
       const failures: string[] = [];
       let allow: UiNode | undefined;
@@ -587,11 +588,20 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
           if (asked) return { asked };
           const failed = nodes.findIndex(node => node.text === 'Could not start recording');
           return failed >= 0 ? { failed: nodes.slice(failed + 1).find(node => node.text)?.text || 'no reason shown' } : undefined;
-        }, 60_000);
+        }, 60_000).catch((error: Error) => ({ stalled: error }));
         if ('asked' in outcome) allow = outcome.asked;
-        else {
-          failures.push(outcome.failed);
+        else if ('failed' in outcome) {
+          failures.push(`could not start: ${outcome.failed}`);
           log(`       recording could not start: ${outcome.failed}`);
+        } else {
+          if (attempt === 2) throw outcome.stalled;
+          const logcat = path.join(evidence, `${pairing.app}-app-${pairing.server}-server-microphone-logcat-${attempt + 1}.txt`);
+          try { fs.writeFileSync(logcat, adb('logcat', '-d', '-t', '400')); } catch { /* best effort */ }
+          failures.push(`no question and no message (logcat: ${path.basename(logcat)}); app ended and started again`);
+          log(`       no microphone question and no message; ending the app and trying again (logcat: ${logcat})`);
+          shell(`am force-stop ${PACKAGE}`);
+          shell(`am start -n ${PACKAGE}/.MainActivity`);
+          await navigateTo('Recordings');
         }
       }
       if (!allow) throw new Error(`recording could not start (${failures.join('; ')})`);
