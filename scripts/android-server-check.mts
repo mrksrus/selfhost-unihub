@@ -570,8 +570,11 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
     await step('microphone', async () => {
       const before = new Set((await recordings()).map(item => item.id));
       await navigateTo('Recordings');
-      await tapOn('Record', /^Record$/, { cls: /Button/ });
-      const allow = await waitFor('Android\'s microphone question', find(/^(While using the app|Allow|ALLOW|Only this time)$/), 60_000);
+      // A tap right after the page opens can land before Record listens (seen on
+      // fast CI runners), so tap again until Android asks for the microphone.
+      const question = find(/^(While using the app|Allow|ALLOW|Only this time)$/);
+      await tapUntil('Record', /^Record$/, question, { cls: /Button/ });
+      const allow = await waitFor('Android\'s microphone question', question, 60_000);
       tap(allow);
       await waitFor('the running recorder', find(/^Stop$/, /Button/), 60_000);
       const granted = shell(`dumpsys package ${PACKAGE}`).includes('android.permission.RECORD_AUDIO: granted=true');
