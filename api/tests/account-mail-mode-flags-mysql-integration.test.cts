@@ -88,7 +88,7 @@ test('Download keeps read and star set in UniHub when the provider\'s flags chan
   peer.setFlags('archive', readThere, ['\\Seen', '\\Flagged']);
   peer.setFlags('archive', starredThere, ['\\Seen', '\\Flagged']);
   const history = await scan('archive', 'history');
-  assert.deepEqual([history.processed, history.updated], [3, 3], 'the sweep observed every message again');
+  assert.deepEqual([history.processed, 'updated' in history && history.updated], [3, 3], 'the sweep observed every message again');
   assert.deepEqual((await item(archive, plain)).flags, [1, 1], 'read and starred in UniHub stays read and starred');
   assert.deepEqual((await item(archive, readThere)).flags, [0, 0], 'marked unread in UniHub stays unread, not starred by the provider');
   assert.deepEqual((await item(archive, starredThere)).flags, [0, 0]);
