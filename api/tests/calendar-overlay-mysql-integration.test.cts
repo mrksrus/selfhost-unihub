@@ -289,6 +289,35 @@ test('synced tasks keep their own state through a restore and the first sync, by
     assert.equal(await pending(), 1, 'the other waits for its item');
   });
 
+  await t.test('a row without a server copy takes a state by its UID only as the one row with it', async () => {
+    const before = await pending();
+    const orphan = async (title: string) => {
+      const eventId = crypto.randomUUID();
+      await pool.execute("INSERT INTO calendar_events (id, user_id, calendar_id, uid, title, start_time, end_time) VALUES (?, ?, ?, 'orphan@example.test', ?, '2026-12-01 09:00:00', '2026-12-01 10:00:00')",
+        [eventId, users.owner, work, title]);
+      await pool.execute("INSERT INTO calendar_event_external_refs (id, user_id, event_id, calendar_id, account_id, provider, external_event_id) VALUES (?, ?, ?, ?, ?, 'caldav', ?)",
+        [crypto.randomUUID(), users.owner, eventId, work, accountId, `${eventId}.ics`]);
+      return eventId;
+    };
+    const [a, b] = [await orphan('Orphan A'), await orphan('Orphan B')];
+    const status = async (eventId: string) => (await pool.query<RowDataPacket[]>('SELECT todo_status FROM calendar_events WHERE id = ?', [eventId]))[0][0].todo_status;
+    const apply = async () => {
+      const cx = await pool.getConnection();
+      try { return await overlays.applyOverlaysToLiveRows(cx, users.owner, { calendarIds: [work] }); } finally { cx.release(); }
+    };
+    await write([{ userId: users.owner, calendarId: work, uid: 'orphan@example.test', recurrenceId: '', state: state('Orphan') }]);
+    // Two rows carry the UID: neither is proven to be the item, so the state waits.
+    assert.equal(await apply(), 0);
+    assert.deepEqual([await status(a), await status(b)], [null, null]);
+    assert.equal(await pending(), before + 1);
+    // Once one row is left, it is the item.
+    await pool.execute('DELETE FROM calendar_events WHERE id = ?', [b]);
+    assert.equal(await apply(), 1);
+    assert.equal(await status(a), 'done');
+    assert.equal(await pending(), before);
+    await pool.execute('DELETE FROM calendar_events WHERE id = ?', [a]);
+  });
+
   await t.test('nothing is applied while the module is off or a calendar restore runs; an overlay goes with its calendar', async () => {
     clock += 86400000;
     server.store(`${WORK}not-yet.ics`, eventIcs('not-yet@example.test', 'Later', clock));

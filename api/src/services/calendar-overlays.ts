@@ -438,14 +438,16 @@ async function applyOverlaysToLiveRows(connection: SqlExecutor, userId: string, 
   const scope = `${calendarIds ? ` AND p.calendar_id IN (${calendarIds.map(() => '?').join(', ')})` : ''}${uid !== undefined ? ` AND p.uid = ? ${EXACT}` : ''}`;
   const scopeValues = [...(calendarIds ?? []), ...(uid !== undefined ? [uid] : [])];
   // A row with a server copy counts only with the UID that copy has: one kept
-  // from before (0.27 cut UIDs) could name another item. A row whose link has
-  // no server copy (from before UniHub kept them) goes by its own UID.
+  // from before (0.27 cut UIDs) could name another item. A copy with a UID
+  // too long to keep leaves its row keyed by the row's own id, which names
+  // that row alone. A row whose link has no server copy (from before UniHub
+  // kept them) goes by its own UID, and only as the one row with it (below).
   const [byUid] = await connection.execute<RowDataPacket[]>(
     `SELECT p.id, p.payload, e.id AS event_id FROM calendar_overlay_restores p
      JOIN calendar_events e ON e.user_id = p.user_id AND e.calendar_id = p.calendar_id AND e.uid = p.uid ${EXACT}
      JOIN calendar_event_external_refs r ON r.event_id = e.id AND r.user_id = e.user_id AND COALESCE(r.recurrence_id, '') = p.recurrence_id ${EXACT}
      LEFT JOIN calendar_remote_objects o ON o.id = r.remote_object_id AND o.user_id = e.user_id
-     WHERE p.user_id = ? AND p.match_kind = 'uid' AND p.failed_at IS NULL AND (o.id IS NULL OR o.uid = e.uid ${EXACT})${scope}
+     WHERE p.user_id = ? AND p.match_kind = 'uid' AND p.failed_at IS NULL AND (o.id IS NULL OR o.uid = e.uid ${EXACT} OR (o.uid IS NULL AND e.uid = e.id))${scope}
      ORDER BY p.created_at, p.id FOR UPDATE`, [userId, ...scopeValues]);
   // Every row with the shape counts, also one that keeps state: the match must be the only one.
   const [shapes] = uid !== undefined ? [[] as RowDataPacket[]] : await connection.execute<RowDataPacket[]>(
@@ -461,9 +463,13 @@ async function applyOverlaysToLiveRows(connection: SqlExecutor, userId: string, 
        FROM calendar_events e WHERE e.id = ? AND e.user_id = ? FOR UPDATE`, [row.event_id, userId]);
     if (own && !own.todo_status && !Number(own.has_subtasks)) byShape.push(row);
   }
+  // An overlay names one item: one whose identity reaches more than one row
+  // waits rather than guess between them.
+  const reached = new Map<string, number>();
+  for (const row of byUid) reached.set(String(row.id), (reached.get(String(row.id)) ?? 0) + 1);
   let applied = 0;
   const claimed = new Set<string>();
-  for (const row of [...byUid, ...byShape]) {
+  for (const row of [...byUid.filter(row => reached.get(String(row.id)) === 1), ...byShape]) {
     if (claimed.has(String(row.event_id))) continue;
     claimed.add(String(row.event_id));
     if (await applyWaitingOverlay(connection, userId, row, String(row.event_id), mode)) applied += 1;
