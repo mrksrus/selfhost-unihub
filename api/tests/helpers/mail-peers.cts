@@ -86,5 +86,77 @@ function smtpPeer(cert: FixtureValue, commands: string[], { implicit = false, af
     : net.createServer(socket => serve(socket, false));
 }
 
-export type MailPeerHelpers = { selfSigned: typeof selfSigned; trySelfSigned: typeof trySelfSigned; listen: typeof listen; smtpPeer: typeof smtpPeer };
-module.exports = { selfSigned, trySelfSigned, listen, smtpPeer };
+/**
+ * Plain IMAP with CONDSTORE: an INBOX and a Junk per login, holding the
+ * messages the test adds (every one has the same synthetic body). `setFlags`
+ * stands in for another mail client changing a message's flags; its MODSEQ
+ * moves on. Any command the engine is not expected to send fails the test.
+ */
+async function imapPeer() {
+  const sockets = new Set<Socket>(), errors: string[] = [];
+  const boxes = new Map<string, { mail: Map<number, { flags: string[]; modseq: number; subject: string }>; nextUid: number }>();
+  const box = (key: string) => { if (!boxes.has(key)) boxes.set(key, { mail: new Map(), nextUid: 1 }); return boxes.get(key)!; };
+  const server = net.createServer(socket => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('error', () => {});
+    socket.write('* OK synthetic IMAP peer\r\n');
+    let input = '', chain = Promise.resolve(), login = '', selectedBox = 'INBOX';
+    const send = (value: string) => { if (!socket.destroyed) socket.write(value); };
+    socket.on('data', chunk => {
+      input += chunk.toString('latin1');
+      let index;
+      while ((index = input.indexOf('\r\n')) !== -1) {
+        const line = input.slice(0, index); input = input.slice(index + 2);
+        const match = /^([0-9A-F]+) (.*)$/.exec(line);
+        if (!match) { errors.push(`unrecognized request shape: ${line.slice(0, 48)}`); socket.destroy(); break; }
+        const [, tag, cmd] = match;
+        chain = chain.then(async () => {
+          const ok = (suffix?: string) => send(`${tag} OK ${suffix || 'done'}\r\n`);
+          if (cmd === 'CAPABILITY') { send('* CAPABILITY IMAP4rev1 UIDPLUS MOVE CONDSTORE ENABLE\r\n'); ok(); return; }
+          if (cmd === 'ENABLE CONDSTORE') { send('* ENABLED CONDSTORE\r\n'); ok(); return; }
+          if (cmd.startsWith('LOGIN ')) { login = /LOGIN "?([a-z]+)"? /.exec(cmd)?.[1] || ''; if (!login) throw new Error('LOGIN without a login'); ok(); return; }
+          if (cmd.startsWith('LSUB ')) { ok(); return; }
+          const { mail } = box(`${login}/${selectedBox}`);
+          if (cmd.startsWith('LIST ')) { send('* LIST (\\Noselect) "/" ""\r\n'); ok(); return; }
+          const selected = /^(SELECT|EXAMINE) "?(INBOX|Junk)"?$/.exec(cmd);
+          if (selected) {
+            selectedBox = selected[2];
+            const { mail, nextUid } = box(`${login}/${selectedBox}`);
+            send(`* FLAGS (\\Seen \\Flagged)\r\n* ${mail.size} EXISTS\r\n* OK [UIDVALIDITY 9] valid\r\n* OK [UIDNEXT ${nextUid}] next\r\n`);
+            ok(`[${selected[1] === 'EXAMINE' ? 'READ-ONLY' : 'READ-WRITE'}] selected`); return;
+          }
+          const fetch = /^UID FETCH (\d+)(?::(\d+))? \(UID (?:FLAGS INTERNALDATE|(BODY\.PEEK\[\])) MODSEQ\)$/.exec(cmd);
+          if (fetch) {
+            const low = Number(fetch[1]), high = Number(fetch[2] || fetch[1]);
+            for (const [uid, item] of [...mail].filter(([uid]) => uid >= low && uid <= high).sort((a, b) => a[0] - b[0])) {
+              if (fetch[3]) {
+                const raw = Buffer.from(`From: Fixture Sender <fixture@example.test>\r\nTo: owner@example.test\r\nSubject: ${item.subject}\r\nMessage-ID: <${uid}.${selectedBox}@example.test>\r\n\r\nbody\r\n`);
+                send(`* 1 FETCH (UID ${uid} FLAGS (${item.flags.join(' ')}) MODSEQ (${item.modseq}) INTERNALDATE "29-Sep-2026 12:00:00 +0000" BODY[] {${raw.length}}\r\n`);
+                if (!socket.destroyed) socket.write(raw);
+                send(')\r\n');
+              } else send(`* 1 FETCH (UID ${uid} FLAGS (${item.flags.join(' ')}) MODSEQ (${item.modseq}) INTERNALDATE "29-Sep-2026 12:00:00 +0000")\r\n`);
+            }
+            ok(); return;
+          }
+          if (cmd === 'LOGOUT') { send('* BYE bye\r\n'); ok(); return; }
+          throw new Error(`Unexpected IMAP command: ${cmd}`);
+        }).catch(e => { errors.push(e.message); socket.destroy(); });
+      }
+    });
+  });
+  const { port, close } = await listen(server);
+  return {
+    errors, port,
+    arrive(login: string, subject: string, flags: string[] = [], mailbox = 'INBOX') { const b = box(`${login}/${mailbox}`); const uid = b.nextUid++; b.mail.set(uid, { flags, modseq: 19, subject }); return uid; },
+    setFlags(login: string, uid: number, flags: string[], mailbox = 'INBOX') {
+      const item = box(`${login}/${mailbox}`).mail.get(uid);
+      if (!item) throw new Error(`No UID ${uid} in ${login}/${mailbox}`);
+      item.flags = flags; item.modseq++;
+    },
+    close,
+  };
+}
+
+export type MailPeerHelpers = { selfSigned: typeof selfSigned; trySelfSigned: typeof trySelfSigned; listen: typeof listen; smtpPeer: typeof smtpPeer; imapPeer: typeof imapPeer };
+module.exports = { selfSigned, trySelfSigned, listen, smtpPeer, imapPeer };

@@ -217,6 +217,29 @@ export async function waitForImap(who: string | ImapLogin, subject: string, chec
   }
 }
 
+/**
+ * Replaces the flags of the stack mailbox's newest message with exactly this
+ * subject, as another mail program would (UID STORE FLAGS).
+ */
+export async function setProviderFlags(mailbox: string, subject: string, flags: string[], folder = 'INBOX') {
+  const message = await imapMessage(mailbox, subject, folder);
+  if (!message) throw new Error(`no message "${subject}" in ${mailbox}/${folder}`);
+  const login = stackImap(mailbox);
+  const client = new ImapFlow({ host: login.host, port: login.port, secure: true, logger: false,
+    auth: { user: login.user, pass: login.pass }, tls: { ca: login.ca } });
+  await client.connect();
+  try {
+    const lock = await client.getMailboxLock(folder);
+    try {
+      if (!await client.messageFlagsSet(String(message.uid), flags, { uid: true })) throw new Error(`could not set the flags of "${subject}"`);
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout().catch(() => undefined);
+  }
+}
+
 /** Polls the stack provider until a flag is set (true) or cleared (false) on the message. */
 export async function waitForProviderFlag(mailbox: string, subject: string, flag: string, set: boolean, { folder = 'INBOX', timeout = 60_000 } = {}) {
   return (await waitForImap(mailbox, subject, (m) => m.flags.has(flag) === set, { folder, timeout }))?.flags ?? null;

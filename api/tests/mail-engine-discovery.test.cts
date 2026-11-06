@@ -3,7 +3,8 @@ const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
 
-const account = { id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', user_id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' };
+// A Sync account: flags and presence sweeps, and following the provider's read/star, exist only there.
+const account = { id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', user_id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', sync_mode: 'sync' };
 const folder = { folderName: 'INBOX', dbFolderName: 'inbox' };
 const mailboxId = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 function fixture(t: import('node:test').TestContext, { uids = [1], epoch = 123, gmail = false }: FixtureValue = {}) {

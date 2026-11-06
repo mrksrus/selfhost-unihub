@@ -6,7 +6,6 @@ import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 // real notification job with only the Web Push send replaced.
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const net = (require('node:net') as typeof import('node:net'));
 const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const os = (require('node:os') as typeof import('node:os'));
 const path = (require('node:path') as typeof import('node:path'));
@@ -16,69 +15,7 @@ const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
 const one = async (db: FixtureValue, sql: string, params: FixtureValue[] = []) => (await db.execute(sql, params))[0][0];
 const rows = async (db: FixtureValue, sql: string, params: FixtureValue[] = []) => (await db.execute(sql, params))[0];
 const decode = (value: FixtureValue) => typeof value === 'string' ? JSON.parse(value) : value;
-
-// Mailboxes per login whose messages the test adds; every message has the same synthetic body.
-async function startPeer() {
-  const sockets = new Set<import('node:net').Socket>(), errors: FixtureValue[] = [];
-  const boxes = new Map<string, { mail: Map<number, { flags: string[]; modseq: number; subject: string }>; nextUid: number }>();
-  const box = (login: string) => { if (!boxes.has(login)) boxes.set(login, { mail: new Map(), nextUid: 1 }); return boxes.get(login)!; };
-  const server = net.createServer(socket => {
-    sockets.add(socket);
-    socket.on('close', () => sockets.delete(socket));
-    socket.on('error', () => {});
-    socket.write('* OK synthetic notification peer\r\n');
-    let input = '', chain = Promise.resolve(), login = '', selectedBox = 'INBOX';
-    const send = (value: string) => { if (!socket.destroyed) socket.write(value); };
-    socket.on('data', chunk => {
-      input += chunk.toString('latin1');
-      let index;
-      while ((index = input.indexOf('\r\n')) !== -1) {
-        const line = input.slice(0, index); input = input.slice(index + 2);
-        const match = /^([0-9A-F]+) (.*)$/.exec(line);
-        if (!match) { errors.push(`unrecognized request shape: ${line.slice(0, 48)}`); socket.destroy(); break; }
-        const [, tag, cmd] = match;
-        chain = chain.then(async () => {
-          const ok = (suffix?: string) => send(`${tag} OK ${suffix || 'done'}\r\n`);
-          if (cmd === 'CAPABILITY') { send('* CAPABILITY IMAP4rev1 UIDPLUS MOVE CONDSTORE ENABLE\r\n'); ok(); return; }
-          if (cmd === 'ENABLE CONDSTORE') { send('* ENABLED CONDSTORE\r\n'); ok(); return; }
-          if (cmd.startsWith('LOGIN ')) { login = /LOGIN "?([a-z]+)"? /.exec(cmd)?.[1] || ''; assert(login); ok(); return; }
-          if (cmd.startsWith('LSUB ')) { ok(); return; }
-          const { mail, nextUid } = box(`${login}/${selectedBox}`);
-          if (cmd.startsWith('LIST ')) { send('* LIST (\\Noselect) "/" ""\r\n'); ok(); return; }
-          const selected = /^(SELECT|EXAMINE) "?(INBOX|Junk)"?$/.exec(cmd);
-          if (selected) {
-            selectedBox = selected[2];
-            const { mail, nextUid } = box(`${login}/${selectedBox}`);
-            send(`* FLAGS (\\Seen \\Flagged)\r\n* ${mail.size} EXISTS\r\n* OK [UIDVALIDITY 9] valid\r\n* OK [UIDNEXT ${nextUid}] next\r\n`);
-            ok(`[${selected[1] === 'EXAMINE' ? 'READ-ONLY' : 'READ-WRITE'}] selected`); return;
-          }
-          const fetch = /^UID FETCH (\d+)(?::(\d+))? \(UID (?:FLAGS INTERNALDATE|(BODY\.PEEK\[\])) MODSEQ\)$/.exec(cmd);
-          if (fetch) {
-            const low = Number(fetch[1]), high = Number(fetch[2] || fetch[1]);
-            for (const [uid, item] of [...mail].filter(([uid]) => uid >= low && uid <= high).sort((a, b) => a[0] - b[0])) {
-              if (fetch[3]) {
-                const raw = Buffer.from(`From: Fixture Sender <fixture@example.test>\r\nTo: owner@example.test\r\nSubject: ${item.subject}\r\nMessage-ID: <${uid}.${selectedBox}@example.test>\r\n\r\nbody\r\n`);
-                send(`* 1 FETCH (UID ${uid} FLAGS (${item.flags.join(' ')}) MODSEQ (${item.modseq}) INTERNALDATE "29-Sep-2026 12:00:00 +0000" BODY[] {${raw.length}}\r\n`);
-                if (!socket.destroyed) socket.write(raw);
-                send(')\r\n');
-              } else send(`* 1 FETCH (UID ${uid} FLAGS (${item.flags.join(' ')}) MODSEQ (${item.modseq}) INTERNALDATE "29-Sep-2026 12:00:00 +0000")\r\n`);
-            }
-            ok(); return;
-          }
-          if (cmd === 'LOGOUT') { send('* BYE bye\r\n'); ok(); return; }
-          throw new Error(`Unexpected IMAP command: ${cmd}`);
-        }).catch(e => { errors.push(e.message); socket.destroy(); });
-      }
-    });
-  });
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
-  return {
-    errors,
-    arrive(login: string, subject: string, flags: string[] = [], mailbox = 'INBOX') { const b = box(`${login}/${mailbox}`); const uid = b.nextUid++; b.mail.set(uid, { flags, modseq: 19, subject }); return uid; },
-    port: (server.address() as import('node:net').AddressInfo).port,
-    async close() { for (const socket of sockets) socket.destroy(); await new Promise(r => server.close(r)); assert.deepEqual(errors, []); },
-  };
-}
+const { imapPeer } = require('./helpers/mail-peers.cts') as import('./helpers/mail-peers.cts').MailPeerHelpers;
 
 test('real MariaDB + IMAP wire peer: new mail is announced after its content arrives, baselines and read mail are not',
   { skip: !process.env.MYSQL_TEST_HOST, timeout: 60000 }, async t => {
@@ -97,7 +34,7 @@ test('real MariaDB + IMAP wire peer: new mail is announced after its content arr
     const originalSend = webPush.sendNotification;
     const sent: FixtureValue[] = [];
     webPush.sendNotification = async (_subscription: FixtureValue, payload: FixtureValue) => { sent.push(JSON.parse(payload)); return { statusCode: 201 }; };
-    let ownsSchema = false, peer: Awaited<ReturnType<typeof startPeer>> | undefined, imap: FixtureValue;
+    let ownsSchema = false, peer: Awaited<ReturnType<typeof imapPeer>> | undefined, imap: FixtureValue;
     t.after(async () => {
       webPush.sendNotification = originalSend;
       try { if (imap) closeImapConnection(imap); } catch { /* closed */ }
@@ -125,7 +62,7 @@ test('real MariaDB + IMAP wire peer: new mail is announced after its content arr
     const { scanMailboxSlice } = require('../dist/src/services/mail-engine/sync') as typeof import('../src/services/mail-engine/sync');
     const { processBodySlice } = require('../dist/src/services/mail-engine/content') as typeof import('../src/services/mail-engine/content');
     const notifications = require('../dist/src/services/notifications') as typeof import('../src/services/notifications');
-    peer = await startPeer();
+    peer = await imapPeer();
 
     // An owner with a signed-in browser that turned notifications on.
     const userId = crypto.randomUUID(), accountId = crypto.randomUUID(), sessionId = crypto.randomUUID();
