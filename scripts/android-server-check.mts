@@ -594,11 +594,12 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
           failures.push(`could not start: ${outcome.failed}`);
           log(`       recording could not start: ${outcome.failed}`);
         } else {
-          if (attempt === 2) throw outcome.stalled;
           const logcat = path.join(evidence, `${pairing.app}-app-${pairing.server}-server-microphone-logcat-${attempt + 1}.txt`);
-          try { fs.writeFileSync(logcat, adb('logcat', '-d', '-t', '400')); } catch { /* best effort */ }
-          failures.push(`no question and no message (logcat: ${path.basename(logcat)}); app ended and started again`);
-          log(`       no microphone question and no message; ending the app and trying again (logcat: ${logcat})`);
+          let saved = `logcat: ${path.basename(logcat)}`;
+          try { fs.writeFileSync(logcat, adb('logcat', '-d', '-t', '400')); } catch (error) { saved = `logcat not saved: ${(error as Error).message.split('\n')[0]}`; }
+          failures.push(`no question and no message (${saved})`);
+          if (attempt === 2) throw new Error(`${outcome.stalled.message} [tries: ${failures.join('; ')}]`);
+          log(`       no microphone question and no message; ending the app and trying again (${saved})`);
           shell(`am force-stop ${PACKAGE}`);
           shell(`am start -n ${PACKAGE}/.MainActivity`);
           await navigateTo('Recordings');
