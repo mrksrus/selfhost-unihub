@@ -289,6 +289,32 @@ test('synced tasks keep their own state through a restore and the first sync, by
     assert.equal(await pending(), 1, 'the other waits for its item');
   });
 
+  await t.test('a row keyed by its own id never takes the state of another item whose real UID is that id', async () => {
+    // A: a provider UID too long to keep, so its row is keyed by its own id.
+    const [a] = await rowOf('Huge UID');
+    assert.equal(a.uid, a.id);
+    // B: another provider item whose real UID is that id, with UniHub state; then deleted at the provider.
+    clock += 86400000;
+    server.store(`${WORK}collides.ics`, eventIcs(a.id, 'Collides', clock));
+    await sync();
+    const [b] = await rowOf('Collides');
+    await pool.execute("UPDATE calendar_events SET todo_status = 'done', done_at = '2026-11-01 08:00:00' WHERE id = ?", [b.id]);
+    const saved = await overlays.overlayStateOf(pool, users.owner, b.id);
+    server.remote.objects.delete(`${WORK}collides.ics`);
+    server.remote.version += 1;
+    await sync();
+    assert.equal((await rowOf('Collides')).length, 0, 'B is gone');
+    // B's state comes back from a backup: it waits for B, never goes onto A.
+    const before = await pending();
+    await write([{ userId: users.owner, calendarId: work, uid: a.id, recurrenceId: '', state: saved }]);
+    const cx = await pool.getConnection();
+    try { assert.equal(await overlays.applyOverlaysToLiveRows(cx, users.owner, { calendarIds: [work], mode: 'replace' }), 0); } finally { cx.release(); }
+    await sync();
+    assert.equal((await rowOf('Huge UID'))[0].todo_status, null, 'A keeps none of B\'s state');
+    assert.equal(await pending(), before + 1, 'B\'s state still waits');
+    await pool.execute('DELETE FROM calendar_overlay_restores WHERE user_id = ? AND uid = ?', [users.owner, a.id]);
+  });
+
   await t.test('a row without a server copy takes a state by its UID only as the one row with it', async () => {
     const before = await pending();
     const orphan = async (title: string) => {
