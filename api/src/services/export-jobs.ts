@@ -1,4 +1,4 @@
-import type { RowDataPacket, ExecuteValues } from 'mysql2/promise';
+import type { ResultSetHeader, RowDataPacket, ExecuteValues } from 'mysql2/promise';
 import type { ApiError, SqlExecutor, StoredFlag } from '../types';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -17,6 +17,7 @@ import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
 import { resolvePolicy } from './settings';
 import { conflict, notFound } from '../http/errors';
 import { fileRemovalGate } from './file-removal-gate';
+import { withTransaction } from './transactions';
 import type { BackupContents } from '../contracts/backup';
 
 type CheckCancelled = (() => Promise<unknown>) | null;
@@ -431,14 +432,34 @@ async function removeUnpublishedArchive(file: string) {
 }
 
 /**
- * After the ready update failed: whether it was committed anyway (its answer
- * lost), was not, or cannot be told now.
+ * Settles a job whose run failed or was cancelled, in one transaction on the
+ * job's row. The locking read waits for a ready update still in flight (its
+ * answer lost, its row lock held), so it sees that update once committed:
+ * a ready row keeps its archive and key. Only a row still running is marked
+ * failed or cancelled, and its key removed, in the same transaction. When
+ * that cannot be settled now (the database is unreachable, the lock wait
+ * ends), everything stays, the row too: the next start
+ * (resumePendingDataExportJobs) queues the job again, and its run returns at
+ * once if the row is ready or writes the archive afresh.
  */
-async function readyOutcome(jobId: string, finalPath: string): Promise<'ready' | 'not-ready' | 'unknown'> {
+async function settleFailedJob(jobId: string, backupUuid: string | null, fields: Record<string, ExecuteValues>): Promise<'ready' | 'settled' | 'unknown'> {
   try {
-    const [rows] = await db.execute<ExportRow[]>('SELECT status, file_path FROM data_export_jobs WHERE id = ? LIMIT 1', [jobId]);
-    return rows[0]?.status === 'ready' && rows[0].file_path === finalPath ? 'ready' : 'not-ready';
-  } catch {
+    return await withTransaction(async connection => {
+      const [rows] = await connection.execute<ExportRow[]>('SELECT status FROM data_export_jobs WHERE id = ? FOR UPDATE', [jobId]);
+      if (rows[0]?.status === 'ready') return 'ready' as const;
+      if (rows.length) {
+        const keys = Object.keys(fields);
+        const [updated] = await connection.execute<ResultSetHeader>(
+          `UPDATE data_export_jobs SET ${keys.map(key => `${key} = ?`).join(', ')} WHERE id = ? AND status IN ('running', 'cancelling')`,
+          [...keys.map(key => fields[key]), jobId]);
+        // Another state than this run's (not ours to settle): nothing changes.
+        if (updated.affectedRows !== 1) return 'unknown' as const;
+      }
+      if (backupUuid) await connection.execute('DELETE FROM backup_archive_keys WHERE backup_uuid = ? AND export_job_id = ?', [backupUuid, jobId]);
+      return 'settled' as const;
+    });
+  } catch (error) {
+    console.error('[BACKUP] Could not record how an export job ended:', error);
     return 'unknown';
   }
 }
@@ -450,7 +471,6 @@ async function runDataExportJob(jobId: string) {
   let temporaryZipPath = null;
   let finalPath = null;
   let backupUuid = null;
-  let readySent = false;
   try {
     const [rows] = await db.execute<ExportRow[]>('SELECT * FROM data_export_jobs WHERE id = ? LIMIT 1', [jobId]);
     const job = rows[0];
@@ -538,7 +558,6 @@ async function runDataExportJob(jobId: string) {
     if (stat.size > BACKUP_UPLOAD_MAX_SIZE) {
       throw new Error('Backup exceeds the import upload limit. Export smaller sections so the downloaded archive can be restored.');
     }
-    readySent = true;
     await updateJob(jobId!, {
       status: 'ready',
       phase: 'ready',
@@ -552,45 +571,15 @@ async function runDataExportJob(jobId: string) {
       completed_at: new Date(),
     });
   } catch (error) {
-    if (readySent && finalPath) {
-      // The ready update may have been committed though its answer was lost:
-      // then the archive is the job's and stays. When that cannot be told,
-      // the archive, its key and the running row stay too; the next start
-      // (resumePendingDataExportJobs) queues the job again, and the run
-      // returns at once if the row is ready or writes the archive afresh.
-      const outcome = await readyOutcome(jobId, finalPath);
-      if (outcome === 'ready') return;
-      if (outcome === 'unknown') {
-        console.error('[BACKUP] Job outcome unknown; it is checked again at the next start:', error);
-        return;
-      }
-    }
     // A .partial file no row names and the instance backup leaves out.
     if (temporaryZipPath) await fs.promises.rm(temporaryZipPath, { force: true }).catch(() => {});
-    if (backupUuid) {
-      await db.execute(
-        'DELETE FROM backup_archive_keys WHERE backup_uuid = ? AND export_job_id = ?',
-        [backupUuid, jobId]
-      ).catch(() => {});
-    }
-    if (error instanceof BackupJobCancelledError) {
-      await updateJob(jobId!, {
-        status: 'cancelled',
-        phase: 'cancelled',
-        progress: 100,
-        error: null,
-        completed_at: new Date(),
-      }).catch(() => {});
-    } else {
-      console.error('[BACKUP] Job failed:', error);
-      await updateJob(jobId!, {
-        status: 'failed',
-        phase: 'failed',
-        progress: 100,
-        error: (error as ApiError).message || 'Backup failed',
-        completed_at: new Date(),
-      }).catch(() => {});
-    }
+    const cancelled = error instanceof BackupJobCancelledError;
+    if (!cancelled) console.error('[BACKUP] Job failed:', error);
+    const outcome = await settleFailedJob(jobId, backupUuid, cancelled
+      ? { status: 'cancelled', phase: 'cancelled', progress: 100, error: null, completed_at: new Date() }
+      : { status: 'failed', phase: 'failed', progress: 100, error: (error as ApiError).message || 'Backup failed', completed_at: new Date() });
+    // Ready after all, or not settled: the archive and its key stay.
+    if (outcome !== 'settled') return;
     // The rows first, then the archive.
     if (finalPath) await removeUnpublishedArchive(finalPath);
   } finally {
