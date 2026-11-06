@@ -310,12 +310,22 @@ const Recordings = () => {
   };
 
   const busy = capture.state !== 'idle';
+  // Record while the browser or Android still asks for the microphone: the
+  // same start, shown as starting until it answers.
+  const starting = capture.starting;
+  const recordAction = (narrow: boolean) => (
+    <Button size="sm" onClick={() => void capture.start()} disabled={starting || busy || !!pendingAudio}
+      aria-label={starting ? 'Starting recording' : narrow ? 'Record' : undefined}>
+      {starting ? <Loader2 aria-hidden="true" className="animate-spin" /> : <Mic aria-hidden="true" />}
+      <span className={narrow ? 'hidden sm:inline' : undefined}>{starting ? 'Starting…' : 'Record'}</span>
+    </Button>
+  );
   const filtered = !!(search || tagFilter || categoryFilter !== 'all');
   const scope = [categoryFilter === 'all' ? 'All recordings' : recordingCategoryLabels[categoryFilter], tagFilter].filter(Boolean).join(' · ');
 
   const panel = (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-      <PanelHeader title="Recordings" action={<Button size="sm" onClick={() => void capture.start()} disabled={busy || !!pendingAudio}><Mic aria-hidden="true" />Record</Button>} />
+      <PanelHeader title="Recordings" action={recordAction(false)} />
       <PanelGroup>
         <PanelItem icon={Layers} active={categoryFilter === 'all'} onSelect={() => setFilter('category', null)}>All recordings</PanelItem>
         {recordingCategories.filter(item => item !== 'none').map(item => (
@@ -338,7 +348,7 @@ const Recordings = () => {
   return (
     <PageShell panel={panel} panelLabel="Recording lists" panelId="recordings">
       <PageHeader title="Recordings" scope={scope}
-        actions={!busy && !pendingAudio && <NarrowOnly><Button size="sm" aria-label="Record" onClick={() => void capture.start()}><Mic aria-hidden="true" /><span className="hidden sm:inline">Record</span></Button></NarrowOnly>}>
+        actions={!busy && !pendingAudio && <NarrowOnly>{recordAction(true)}</NarrowOnly>}>
         <div className="flex h-12 items-center gap-2 px-4 md:px-6">
           <div className="relative w-full max-w-md">
             <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -384,7 +394,7 @@ const Recordings = () => {
             <ul className="border-t border-border">
               {otherStoredRecordings.map(item => (
                 <DeviceRecordingRow key={item.id} item={item} bytesUploaded={storedProgress[item.id] ?? item.bytesUploaded}
-                  canContinue={!pendingAudio && !busy} canDiscard={item.state !== 'queued' || canDiscardQueuedRecordings()}
+                  canContinue={!pendingAudio && !busy && !starting} canDiscard={item.state !== 'queued' || canDiscardQueuedRecordings()}
                   onContinue={() => void continueStoredRecording(item)} onRetry={() => void retryStoredRecording(item)}
                   onDownload={() => void downloadStoredRecording(item)} onDiscard={() => { setDiscardUnconfirmed(false); setDiscardTarget(item); }} />
               ))}

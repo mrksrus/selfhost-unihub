@@ -79,7 +79,13 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
   const startedAtRef = useRef<number | null>(null);
   const pausedAtRef = useRef<number | null>(null);
   const pausedMsRef = useRef(0);
+  // The start waiting for the microphone, if any: a second Record joins it.
+  // Its token tells a start that was cancelled while the browser still asked
+  // (page left, account switched) to release what it got and touch nothing.
+  const startInFlightRef = useRef<Promise<void> | null>(null);
+  const startTokenRef = useRef(0);
   const [state, setState] = useState<CaptureState>('idle');
+  const [starting, setStarting] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   // Read when the recording stops, which can happen from a device event long
@@ -97,6 +103,10 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
     }, 1000);
     return () => window.clearInterval(timer);
   }, [state]);
+
+  // A start still waiting for the microphone belongs to this page and
+  // account: leaving either cancels it.
+  useEffect(() => () => { cancelPendingStart(); }, [userId]);
 
   useEffect(() => () => {
     // Leaving the page mid-recording keeps what was captured. The next visit
@@ -173,32 +183,29 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
   }
 
   // Holds a lock for the whole recording, so a recovery in another tab
-  // leaves this capture alone.
-  const startCapture = async (sampleRate: number) => {
-    captureIdRef.current = null;
-    captureBatchRef.current = [];
-    captureBatchSamplesRef.current = 0;
-    captureFailedRef.current = false;
-    captureWritesRef.current = Promise.resolve();
-    if (!userId) return;
+  // leaves this capture alone. Returns the capture the recording writes to,
+  // or null when this browser cannot store it. Nothing is written to the
+  // hook's refs: the start adopts the capture once it is sure it is current.
+  const openCapture = async (sampleRate: number): Promise<{ id: string; release: (() => void) | null } | null> => {
+    if (!userId) return null;
     const captureId = crypto.randomUUID();
+    const lock: { release: (() => void) | null } = { release: null };
     try {
       if (navigator.locks) {
         await new Promise<void>((acquired) => {
           void navigator.locks.request(captureLockName(captureId), () => {
             acquired();
-            return new Promise<void>((release) => { captureReleaseRef.current = release; });
+            return new Promise<void>((release) => { lock.release = release; });
           });
         });
       }
       const now = Date.now();
       await createCapture({ id: captureId, userId, sampleRate, sampleCount: 0, batches: 0, startedAt: now, updatedAt: now });
-      captureIdRef.current = captureId;
-      captureTimerRef.current = setInterval(() => void persistCaptureBatch(), CAPTURE_FLUSH_MS);
+      return { id: captureId, release: lock.release };
     } catch {
-      captureReleaseRef.current?.();
-      captureReleaseRef.current = null;
+      lock.release?.();
       toast({ title: 'Recording is kept in memory only', description: 'This browser does not allow storing it on the device. Keep the app open until you save it.' });
+      return null;
     }
   };
 
@@ -225,113 +232,165 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
     streamRef.current = null;
   };
 
-  const start = async () => {
+  // Forgets the start waiting for the microphone. When its stream arrives,
+  // that start stops the tracks it was given and leaves the refs alone, so a
+  // later start is never mixed with it.
+  const cancelPendingStart = () => {
+    if (!startInFlightRef.current) return;
+    startTokenRef.current += 1;
+    startInFlightRef.current = null;
+    setStarting(false);
+  };
+
+  // One start at a time: Record while the browser (or Android) still asks for
+  // the microphone joins the pending start instead of asking again. The
+  // stream, context and worklet stay local until the last await is over, so a
+  // start that fails, or was cancelled meanwhile, releases only its own.
+  const start = (): Promise<void> => {
+    if (startInFlightRef.current) return startInFlightRef.current;
+    if (recorderWorkletRef.current) return Promise.resolve();
     const AudioContextClass = window.AudioContext || (window as typeof window & {
       webkitAudioContext?: typeof AudioContext;
     }).webkitAudioContext;
     if (!navigator.mediaDevices?.getUserMedia || !AudioContextClass || typeof AudioWorkletNode === 'undefined') {
       toast({ title: 'Recording is not available in this browser', variant: 'destructive' });
-      return;
+      return Promise.resolve();
     }
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          autoGainControl: false,
-          echoCancellation: false,
-          noiseSuppression: false,
-        },
-      });
-      streamRef.current = stream;
-      const track = stream.getAudioTracks()[0];
-      const processing = track ? await disableVoiceProcessing(track) : [];
-      if (processing.length) {
-        toast({
-          title: 'The browser keeps audio processing on',
-          description: `It did not allow turning off ${processing.map(key => VOICE_PROCESSING_LABELS[key]).join(', ')}. The volume may change on its own during the recording.`,
+    const token = ++startTokenRef.current;
+    const stale = () => token !== startTokenRef.current;
+    setStarting(true);
+    const run = (async () => {
+      let stream: MediaStream | null = null;
+      let audioContext: AudioContext | null = null;
+      let capture: Awaited<ReturnType<typeof openCapture>> = null;
+      const discard = async () => {
+        stream?.getTracks().forEach((track) => track.stop());
+        await audioContext?.close().catch(() => {});
+        if (capture) {
+          capture.release?.();
+          void deleteCapture(capture.id).catch(() => {});
+        }
+      };
+      try {
+        const mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            autoGainControl: false,
+            echoCancellation: false,
+            noiseSuppression: false,
+          },
         });
-      }
-      // Keep the microphone's rate where available so capture does not need an
-      // extra resampling step. WAV records the actual context rate in its header.
-      const sampleRate = track?.getSettings().sampleRate;
-      const audioContext = new AudioContextClass({
-        ...(sampleRate ? { sampleRate } : {}),
-        latencyHint: 'balanced',
-      });
-      audioContextRef.current = audioContext;
-      await audioContext.audioWorklet.addModule('/audio-recorder-worklet.js');
-      const source = audioContext.createMediaStreamSource(stream);
-      audioSourceRef.current = source;
-      const worklet = new AudioWorkletNode(audioContext, 'pcm-recorder', {
-        numberOfInputs: 1,
-        numberOfOutputs: 1,
-        outputChannelCount: [1],
-        channelCount: 1,
-        channelCountMode: 'explicit',
-      });
-      recorderWorkletRef.current = worklet;
-      const silentGain = audioContext.createGain();
-      silentGainRef.current = silentGain;
-      silentGain.gain.value = 0;
-      source.connect(worklet);
-      worklet.connect(silentGain);
-      silentGain.connect(audioContext.destination);
-      await audioContext.resume();
-
-      pcmChunksRef.current = [];
-      pcmSampleCountRef.current = 0;
-      pcmSampleRateRef.current = audioContext.sampleRate;
-      startedAtRef.current = Date.now();
-      pausedAtRef.current = null;
-      pausedMsRef.current = 0;
-      stopInProgressRef.current = false;
-      setElapsedSeconds(0);
-      latest.current.onStart();
-      interruptionShownRef.current = false;
-      await startCapture(audioContext.sampleRate);
-
-      // A phone call or another app can take the microphone or suspend audio.
-      // Keep what was recorded and tell the user.
-      if (track) track.onended = () => {
-        toast({ title: 'The microphone was turned off', description: 'The recording was stopped. What was recorded so far is kept.', variant: 'destructive' });
-        void stop();
-      };
-      audioContext.onstatechange = () => {
-        if (audioContext.state === 'running' || audioContext.state === 'closed' || stopInProgressRef.current) return;
-        void audioContext.resume().catch(() => {});
-        if (!interruptionShownRef.current) {
-          interruptionShownRef.current = true;
-          toast({ title: 'Recording was interrupted', description: 'The system paused audio. The recording may have a gap.', variant: 'destructive' });
+        stream = mediaStream;
+        if (stale()) return await discard();
+        const track = mediaStream.getAudioTracks()[0];
+        const processing = track ? await disableVoiceProcessing(track) : [];
+        if (stale()) return await discard();
+        if (processing.length) {
+          toast({
+            title: 'The browser keeps audio processing on',
+            description: `It did not allow turning off ${processing.map(key => VOICE_PROCESSING_LABELS[key]).join(', ')}. The volume may change on its own during the recording.`,
+          });
         }
-      };
+        // Keep the microphone's rate where available so capture does not need an
+        // extra resampling step. WAV records the actual context rate in its header.
+        const sampleRate = track?.getSettings().sampleRate;
+        const context = new AudioContextClass({
+          ...(sampleRate ? { sampleRate } : {}),
+          latencyHint: 'balanced',
+        });
+        audioContext = context;
+        await context.audioWorklet.addModule('/audio-recorder-worklet.js');
+        if (stale()) return await discard();
+        const source = context.createMediaStreamSource(mediaStream);
+        const worklet = new AudioWorkletNode(context, 'pcm-recorder', {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [1],
+          channelCount: 1,
+          channelCountMode: 'explicit',
+        });
+        const silentGain = context.createGain();
+        silentGain.gain.value = 0;
+        source.connect(worklet);
+        worklet.connect(silentGain);
+        silentGain.connect(context.destination);
+        await context.resume();
+        if (stale()) return await discard();
+        capture = await openCapture(context.sampleRate);
+        if (stale()) return await discard();
 
-      worklet.port.onmessage = (event: MessageEvent<{
-        type?: string;
-        buffer?: ArrayBuffer;
-        samples?: number;
-      }>) => {
-        if (event.data.type === 'pcm' && event.data.buffer && event.data.samples) {
-          pcmChunksRef.current.push(event.data.buffer);
-          pcmSampleCountRef.current += event.data.samples;
-          if (captureIdRef.current) {
-            captureBatchRef.current.push(event.data.buffer);
-            captureBatchSamplesRef.current += event.data.samples;
+        // Current and complete: from here on the recording is the hook's.
+        streamRef.current = mediaStream;
+        audioContextRef.current = context;
+        audioSourceRef.current = source;
+        recorderWorkletRef.current = worklet;
+        silentGainRef.current = silentGain;
+        pcmChunksRef.current = [];
+        pcmSampleCountRef.current = 0;
+        pcmSampleRateRef.current = context.sampleRate;
+        startedAtRef.current = Date.now();
+        pausedAtRef.current = null;
+        pausedMsRef.current = 0;
+        stopInProgressRef.current = false;
+        setElapsedSeconds(0);
+        interruptionShownRef.current = false;
+        captureIdRef.current = capture?.id ?? null;
+        captureReleaseRef.current = capture?.release ?? null;
+        captureBatchRef.current = [];
+        captureBatchSamplesRef.current = 0;
+        captureFailedRef.current = false;
+        captureWritesRef.current = Promise.resolve();
+        if (capture) captureTimerRef.current = setInterval(() => void persistCaptureBatch(), CAPTURE_FLUSH_MS);
+        latest.current.onStart();
+
+        // A phone call or another app can take the microphone or suspend audio.
+        // Keep what was recorded and tell the user.
+        if (track) track.onended = () => {
+          toast({ title: 'The microphone was turned off', description: 'The recording was stopped. What was recorded so far is kept.', variant: 'destructive' });
+          void stop();
+        };
+        context.onstatechange = () => {
+          if (context.state === 'running' || context.state === 'closed' || stopInProgressRef.current) return;
+          void context.resume().catch(() => {});
+          if (!interruptionShownRef.current) {
+            interruptionShownRef.current = true;
+            toast({ title: 'Recording was interrupted', description: 'The system paused audio. The recording may have a gap.', variant: 'destructive' });
           }
-        } else if (event.data.type === 'stopped') {
-          workletStoppedResolveRef.current?.();
-          workletStoppedResolveRef.current = null;
+        };
+
+        worklet.port.onmessage = (event: MessageEvent<{
+          type?: string;
+          buffer?: ArrayBuffer;
+          samples?: number;
+        }>) => {
+          if (event.data.type === 'pcm' && event.data.buffer && event.data.samples) {
+            pcmChunksRef.current.push(event.data.buffer);
+            pcmSampleCountRef.current += event.data.samples;
+            if (captureIdRef.current) {
+              captureBatchRef.current.push(event.data.buffer);
+              captureBatchSamplesRef.current += event.data.samples;
+            }
+          } else if (event.data.type === 'stopped') {
+            workletStoppedResolveRef.current?.();
+            workletStoppedResolveRef.current = null;
+          }
+        };
+        setState('recording');
+      } catch (error: unknown) {
+        await discard();
+        if (stale()) return;
+        const message = error instanceof Error ? error.message : 'Microphone access failed';
+        toast({ title: 'Could not start recording', description: message, variant: 'destructive' });
+      } finally {
+        if (!stale()) {
+          startInFlightRef.current = null;
+          setStarting(false);
         }
-      };
-      setState('recording');
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Microphone access failed';
-      toast({ title: 'Could not start recording', description: message, variant: 'destructive' });
-      const captureId = captureIdRef.current;
-      endCapture();
-      if (captureId) void deleteCapture(captureId).catch(() => {});
-      await releaseRecordingResources();
-    }
+      }
+    })();
+    startInFlightRef.current = run;
+    return run;
   };
 
   const pause = () => {
@@ -353,7 +412,12 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
 
   const stop = async () => {
     const worklet = recorderWorkletRef.current;
-    if (!worklet || stopInProgressRef.current) return;
+    if (!worklet) {
+      // Stopped before the microphone answered: the answer is released on arrival.
+      cancelPendingStart();
+      return;
+    }
+    if (stopInProgressRef.current) return;
     stopInProgressRef.current = true;
 
     try {
@@ -441,5 +505,5 @@ export function useAudioCapture({ userId, draftTitle, onStart, onCaptured }: Opt
     }
   };
 
-  return { state, elapsedSeconds, start, pause, resume, stop };
+  return { state, starting, elapsedSeconds, start, pause, resume, stop };
 }

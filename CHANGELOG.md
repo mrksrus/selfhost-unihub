@@ -6,6 +6,19 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.28.1
+
+### Fixed
+
+- **Record no longer starts a second recording while the microphone question
+  is still open.** On the Recordings page, another tap on Record while the
+  browser or Android still asked for the microphone started a second capture
+  that wrote into the same recording, and Stop could leave the first
+  microphone on. Record now reads "Starting…" until the microphone answers,
+  a refused microphone returns the page to its idle state, and a start
+  abandoned by leaving the page or switching accounts releases the microphone
+  when it answers late.
+
 ## 0.27.2
 
 A fix for writing mail. No database upgrade and no configuration change (see
