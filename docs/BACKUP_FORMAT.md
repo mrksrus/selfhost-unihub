@@ -33,7 +33,8 @@ no key, and the inner manifest's `backup_uuid` and the portable-credential
 key (derived with HKDF-SHA256 from the password and the UUID) must agree with it.
 
 The server keeps the password wrapped with `BACKUP_MASTER_KEY` in
-`backup_archive_keys.server_wrapped_key`, so it opens its own backups without
+`backup_archive_keys.server_wrapped_key` (AES-256-GCM, with its key version
+`v1` in the stored value and in the authenticated data), so it opens its own backups without
 asking, as it did with the data key of the container.
 
 ### Inside `unihub-backup.zip` (ZIP format 2)
@@ -59,12 +60,18 @@ these paths (`files[].archive_path`) and restore reads them there. The vCard
 VEVENT, ToDo-only items as VTODO with STATUS and COMPLETED, subtasks as VTODO
 with `RELATED-TO;RELTYPE=PARENT`, the ToDo state as `X-UNIHUB-TODO-STATUS`)
 are copies for other programs, listed in the manifest's `derived_files`;
-restore never reads them. Messages are numbered per folder in date order.
+restore never reads them. They are made from the same database snapshot as
+`backup.json`. All-day events have the exclusive DATE end the calendar's own
+writer gives them (an end at a time on a later day still covers that day);
+ToDo-only items are undated in UniHub, so their VTODO has no DTSTART or DUE. Messages are numbered per folder in date order.
 Names are made portable to Windows, macOS and Linux: no control, direction
 or `<>:"/\|?*` characters, no trailing dot or space, no leading dot, no
 reserved device name (`CON`, `NUL`, `COM1`, …), at most 64 to 100 bytes a
 part, and unique within a folder as Windows and macOS compare names (a second
-`Memo.wav` becomes `Memo (2).wav`).
+`Memo.wav` becomes `Memo (2).wav`). Files and subfolders of a folder share
+one set of names, so a message never takes the name a folder needs; two
+source folders whose portable names agree (`Work:Docs`, `Work?Docs`) become
+`Work_Docs` and `Work_Docs (2)`.
 
 ZIP format 1 (before 0.28) keeps `manifest.json`, `checksums.json` and
 `data/backup.json` at the root and the files under `files/`. Readers decide

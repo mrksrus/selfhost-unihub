@@ -147,20 +147,23 @@ function unwrapDataKeyFromServer(wrappedValue: string | WrappedKey, backupUuid: 
 // The password of an encrypted ZIP backup (backup-envelope.ts), kept so the
 // server can open its own archive: the counterpart of a container's wrapped
 // data key, with its own associated data, so neither is read as the other.
+// The stored value names its key version (F10): v1 is AES-256-GCM under the
+// key derived from BACKUP_MASTER_KEY (deriveMasterKey); the version is part
+// of the associated data, so it cannot be changed without failing.
+const ENVELOPE_PASSWORD_VERSION = 'v1';
+const envelopePasswordAad = (version: string, backupUuid: string) => Buffer.from(`unihub-backup-envelope-password:${version}:${backupUuid}`, 'utf8');
+
 function wrapEnvelopePasswordForServer(password: string, backupUuid: string) {
-  return JSON.stringify(aesGcmEncrypt(
-    deriveMasterKey(),
-    Buffer.from(password, 'utf8'),
-    Buffer.from(`unihub-backup-envelope-password:${backupUuid}`, 'utf8')
-  ));
+  return JSON.stringify({
+    version: ENVELOPE_PASSWORD_VERSION,
+    ...aesGcmEncrypt(deriveMasterKey(), Buffer.from(password, 'utf8'), envelopePasswordAad(ENVELOPE_PASSWORD_VERSION, backupUuid)),
+  });
 }
 
-function unwrapEnvelopePasswordFromServer(wrappedValue: string | WrappedKey, backupUuid: string) {
-  return aesGcmDecrypt(
-    deriveMasterKey(),
-    typeof wrappedValue === 'string' ? JSON.parse(wrappedValue) : wrappedValue,
-    Buffer.from(`unihub-backup-envelope-password:${backupUuid}`, 'utf8')
-  ).toString('utf8');
+function unwrapEnvelopePasswordFromServer(wrappedValue: string | (WrappedKey & { version?: string }), backupUuid: string) {
+  const wrapped = typeof wrappedValue === 'string' ? JSON.parse(wrappedValue) as WrappedKey & { version?: string } : wrappedValue;
+  if (wrapped.version !== ENVELOPE_PASSWORD_VERSION) throw new Error('Unsupported key version of a backup password.');
+  return aesGcmDecrypt(deriveMasterKey(), wrapped, envelopePasswordAad(wrapped.version, backupUuid)).toString('utf8');
 }
 
 function protectRecoveryPassword(password: unknown, backupUuid: string) {

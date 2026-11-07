@@ -2,10 +2,8 @@
 
 **ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of the database, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
-In 0.10.6, backup creation/import/restore are enabled again. Schema 3 includes
-account-specific folders, local filing/Legacy identities, routing overrides,
-recovery history and completed recording transcripts. Since 0.12.0 (Games removed),
-Tetris scores in older archives are skipped with a warning.
+Since 0.12.0 (Games removed), Tetris scores in older archives are skipped
+with a warning.
 
 Unknown sections, data tables/fields, file kinds and missing schema-3 file content
 are errors. Conflicting folder ownership or a merge that would hide restored
@@ -21,10 +19,9 @@ See [Recovery contracts](DATA_RECOVERY.md) for developer requirements and
 
 
 
-This guide describes UniHub **0.10.6**. New backups use data schema 3;
-imports select schema 1 or 2 automatically. UniHub 0.10.2 reads schema 1 only
-and cannot import new schema-3 backups. See [Backup Format](BACKUP_FORMAT.md)
-for the compatibility contract.
+This guide describes UniHub **0.28**. New backups use data schema 7; imports
+read schemas 1 to 7 automatically. See [Backup Format](BACKUP_FORMAT.md) for
+the compatibility contract.
 
 ## Purpose
 
@@ -81,14 +78,14 @@ When Mail or Calendar/ToDo is selected as well, that section is backed up and
 restored completely, as before. Use an encrypted backup to restore the
 credentials on another server; see [Portable Account Credentials](#portable-account-credentials).
 
-Encryption is enabled by default:
+Every backup is encrypted; there is no unencrypted mode. Restore still reads
+the archives earlier releases made:
 
-| Mode | Extension | Credentials | Portability |
+| Made by | Extension | Credentials | Portability |
 | --- | --- | --- | --- |
-| Encrypted | `.unihub-backup` | Portable protected credential bundle | Any UniHub server with the recovery password |
-| Unencrypted | `.zip` | Existing server-encrypted values only | Data/files are portable; credentials may require the original `ENCRYPTION_KEY` |
-
-Existing restorable UniHub `.zip` backups remain supported.
+| 0.28 and later | `.zip`, AES-encrypted | Portable protected credential bundle | Any UniHub server, and 7-Zip and similar programs, with the recovery password |
+| 0.27 | `.unihub-backup` | Portable protected credential bundle | Any UniHub server with the recovery password |
+| Before 0.27, unencrypted | `.zip` | Existing server-encrypted values only | Data/files are portable; credentials may require the original `ENCRYPTION_KEY` |
 
 ## What Is Included
 

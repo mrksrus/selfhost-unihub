@@ -599,8 +599,9 @@ async function startDataExportJob(userId: string, { sections, scope, includeDown
     if (!owned.length) throw Object.assign(new Error('Mail account not found'), { status: 404 });
   }
   const jobId = crypto.randomUUID();
-  // The server keeps the backup until this date when a policy says so
-  // (backup.server_retention_days); NULL keeps it until it is deleted.
+  // The server keeps the backup at least until this date when a policy says
+  // so (backup.server_retention_days, D36); nothing removes it then. NULL:
+  // no minimum.
   const retentionDays = (await resolvePolicy(userId, 'backup.server_retention_days')).value;
   await db.execute(
     `INSERT INTO data_export_jobs

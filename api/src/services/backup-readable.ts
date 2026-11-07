@@ -10,17 +10,19 @@
 // Messages and recordings are the canonical stored files: backup.json names
 // them by these paths and restore reads them from there, so each byte is
 // stored once. Contacts and calendars are copies made for other programs;
-// restore reads backup.json, never them. Names are made portable to Windows,
-// macOS and Linux (portableName) and unique within their folder,
-// case-insensitively, as on the file systems of Windows and macOS.
+// restore reads backup.json, never them; they are made from the same
+// snapshot. Names are made portable to Windows, macOS and Linux
+// (portableName) and unique within their folder, files and folders together,
+// case-insensitively and as NFC, as on the file systems of Windows and macOS
+// (PathTree).
 import type { BackupRow } from '../types';
+import type { ExportContact } from './contacts-vcard-write';
 import fs from 'node:fs';
 import { RESTORE_DATA_DIRECTORY } from './backup-format';
 import { getBackupArchivePath } from './backup-common';
-import { exportContacts } from './contacts-export';
 import { writeVCards } from './contacts-vcard-write';
 import { parseDatetimeToMillis } from './calendar';
-import { isValidTimeZone, resolveUserTimeZone, utcToZonedFields } from './calendar-ical';
+import { allDayRange, isValidTimeZone, resolveUserTimeZone } from './calendar-ical';
 
 const ICAL: typeof import('ical.js').default = require('ical.js');
 
@@ -72,16 +74,54 @@ function portableZipPath(value: unknown) {
     .join('/');
 }
 
-/** Unique names per folder: a second "Notes.ics" becomes "Notes (2).ics", compared as Windows and macOS do. */
+interface PathNode { path: string; names: Map<string, string>; folders: Map<string, PathNode>; files: number }
+const folded = (name: string) => name.normalize('NFC').toLowerCase();
+const pathNode = (path: string): PathNode => ({ path, names: new Map(), folders: new Map(), files: 0 });
+
+/**
+ * The names of an archive as a tree: in each folder, files and subfolders
+ * share one set of names compared as Windows and macOS compare them, so a
+ * file never takes a name a folder needs (or the reverse) and "Memo" and
+ * "memo" never meet. A folder is found again by the identity of what it
+ * stands for (a source folder), so two sources whose portable names agree
+ * ("Work:Docs", "Work?Docs") get two folders: "Work_Docs" and "Work_Docs (2)".
+ */
+class PathTree {
+  private root = pathNode('');
+
+  private free(parent: PathNode, base: string, extension: string, owner: string) {
+    let name = `${base}${extension}`;
+    for (let copy = 2; parent.names.has(folded(name)); copy += 1) name = `${base} (${copy})${extension}`;
+    parent.names.set(folded(name), owner);
+    return name;
+  }
+
+  /** The folder `name` in `parent` that stands for `identity`, made on first use. */
+  folder(parent: PathNode | null, name: string, identity = name) {
+    const at = parent || this.root;
+    const known = at.folders.get(identity);
+    if (known) return known;
+    const chosen = this.free(at, name, '', `folder:${identity}`);
+    const node = pathNode(at.path ? `${at.path}/${chosen}` : chosen);
+    at.folders.set(identity, node);
+    return node;
+  }
+
+  /** A new file `base` + `extension` in `parent`; its full path. */
+  file(parent: PathNode, base: string, extension = '') {
+    parent.files += 1;
+    return `${parent.path}/${this.free(parent, base, extension, 'file')}`;
+  }
+}
+
+/** Unique file names in plain folders (named by their path): a second "Notes.ics" becomes "Notes (2).ics". */
 class NameRegistry {
-  private taken = new Set<string>();
+  private tree = new PathTree();
 
   take(directory: string, base: string, extension = '') {
-    const key = (name: string) => `${directory}/${name}`.normalize('NFC').toLowerCase();
-    let name = `${base}${extension}`;
-    for (let copy = 2; this.taken.has(key(name)); copy += 1) name = `${base} (${copy})${extension}`;
-    this.taken.add(key(name));
-    return `${directory}/${name}`;
+    let node: PathNode | null = null;
+    for (const part of directory.split('/')) node = this.tree.folder(node, part);
+    return this.tree.file(node!, base, extension);
   }
 }
 
@@ -111,7 +151,7 @@ interface ArchiveFile { kind?: unknown; id?: unknown; filename?: unknown }
  * photos, the Bin's recordings) under "UniHub restore data/files/".
  */
 function readableArchivePaths(data: Record<string, unknown>, files: readonly ArchiveFile[]) {
-  const names = new NameRegistry();
+  const tree = new PathTree();
   const paths = new Map<string, string>();
   const emails = new Map(asRows(data.emails).map(row => [String(row.id), row]));
   const accounts = new Map(asRows(data.mail_accounts).map(row => [String(row.id), row]));
@@ -122,23 +162,32 @@ function readableArchivePaths(data: Record<string, unknown>, files: readonly Arc
     .map(file => ({ file, email: emails.get(String(file.id))! }))
     .sort((a, b) => (parseDatetimeToMillis(a.email.received_at) ?? 0) - (parseDatetimeToMillis(b.email.received_at) ?? 0)
       || String(a.email.id).localeCompare(String(b.email.id)));
-  const counters = new Map<string, number>();
-  for (const { file, email } of messages) {
-    const account = accounts.get(String(email.mail_account_id));
-    const accountName = portableName(account?.email_address, { maxBytes: 64, fallback: 'Local mail' });
+  // Every folder first, by the source it stands for (account, then each
+  // level of the folder's own path), so folders keep their names and the
+  // messages take the names left in them.
+  const mailRoot = tree.folder(null, 'Mail');
+  const folderOf = (email: BackupRow) => {
+    const accountId = String(email.mail_account_id ?? '');
+    const account = accounts.get(accountId);
+    let node = tree.folder(mailRoot, portableName(account?.email_address, { maxBytes: 64, fallback: 'Local mail' }), `account:${accountId}`);
     const folder = folders.get(String(email.folder));
-    const folderParts = String(folder?.display_name || email.folder || 'Inbox').split('/').filter(part => part.trim())
-      .slice(0, 8).map(part => portableName(part, { maxBytes: 64, fallback: 'Folder' }));
-    const directory = ['Mail', accountName, ...(folderParts.length ? folderParts : ['Inbox'])].join('/');
-    const number = (counters.get(directory.toLowerCase()) || 0) + 1;
-    counters.set(directory.toLowerCase(), number);
+    const parts = String(folder?.display_name || email.folder || 'Inbox').split('/').filter(part => part.trim()).slice(0, 8);
+    for (const [level, part] of (parts.length ? parts : ['Inbox']).entries()) {
+      node = tree.folder(node, portableName(part, { maxBytes: 64, fallback: 'Folder' }), `${accountId}\0${parts.slice(0, level + 1).join('/')}`);
+    }
+    return node;
+  };
+  const placed = messages.map(message => ({ ...message, folder: folderOf(message.email) }));
+  for (const { file, email, folder } of placed) {
+    const number = folder.files + 1;
     const base = portableName(`${String(number).padStart(5, '0')} ${utcDate(email.received_at)} ${String(email.subject ?? '').trim() || '(no subject)'}`, { maxBytes: 100 });
-    paths.set(`raw_email:${file.id}`, names.take(directory, base, '.eml'));
+    paths.set(`raw_email:${file.id}`, tree.file(folder, base, '.eml'));
   }
+  const recordingRoot = tree.folder(null, 'Recordings');
   for (const file of files) {
     if (file.kind !== 'recording') continue;
     const row = recordings.get(String(file.id));
-    paths.set(`recording:${file.id}`, names.take('Recordings', portableName(row?.title, { maxBytes: 100, fallback: 'Recording' }), recordingExtension(row, file.filename)));
+    paths.set(`recording:${file.id}`, tree.file(recordingRoot, portableName(row?.title, { maxBytes: 100, fallback: 'Recording' }), recordingExtension(row, file.filename)));
   }
   for (const file of files) {
     const key = `${file.kind}:${file.id}`;
@@ -147,18 +196,27 @@ function readableArchivePaths(data: Record<string, unknown>, files: readonly Arc
   return paths;
 }
 
-/** The archive's contacts as one vCard 4.0 file (with photos), written in slices to outPath; null without contacts. */
-async function writeContactsVcf(userId: string, data: Record<string, unknown>, outPath: string, checkCancelled: (() => unknown) | null) {
-  const ids = asRows(data.contacts).map(row => String(row.id));
-  if (!ids.length) return null;
+/**
+ * The archive's contacts as one vCard 4.0 file, written in slices to
+ * outPath; null without contacts. The cards are the ones the backup's
+ * snapshot read (backup-export.ts readBackupSnapshot), so the file holds the
+ * contacts backup.json holds; each photo comes from the archive's own copy
+ * of its file (by SHA-256), and a card whose photo is not there goes without.
+ */
+async function writeContactsVcf(cards: readonly ExportContact[], photoFiles: ReadonlyMap<string, string>, outPath: string, checkCancelled: (() => unknown) | null) {
+  if (!cards.length) return null;
   const out = await fs.promises.open(outPath, 'wx', 0o600);
   let count = 0;
   try {
-    for (let start = 0; start < ids.length; start += VCARD_SLICE) {
+    for (let start = 0; start < cards.length; start += VCARD_SLICE) {
       if (checkCancelled) await checkCancelled();
-      const contacts = await exportContacts(userId, ids.slice(start, start + VCARD_SLICE), { photos: true });
-      count += contacts.length;
-      if (contacts.length) await out.write(Buffer.from(writeVCards(contacts, '4.0'), 'utf8'));
+      const slice = await Promise.all(cards.slice(start, start + VCARD_SLICE).map(async card => {
+        const file = card.contact.photo ? photoFiles.get(card.contact.photo.etag) : undefined;
+        const data = file ? await fs.promises.readFile(file).catch(() => null) : null;
+        return { ...card, photo: data ? { data, media_type: 'image/jpeg' } : null };
+      }));
+      count += slice.length;
+      await out.write(Buffer.from(writeVCards(slice, '4.0'), 'utf8'));
     }
     await out.close();
   } catch (error) {
@@ -173,12 +231,6 @@ function utcTime(ms: number) {
   return ICAL.Time.fromJSDate(new Date(ms), true);
 }
 
-function dateIn(ms: number, timeZone: string, addDays = 0) {
-  const f = utcToZonedFields(ms, timeZone);
-  const date = new Date(Date.UTC(f.year, f.month - 1, f.day + addDays));
-  return ICAL.Time.fromData({ year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate(), isDate: true });
-}
-
 function addText(component: InstanceType<typeof ICAL.Component>, name: string, value: unknown) {
   if (value != null && String(value).trim() !== '') component.addPropertyWithValue(name, String(value));
 }
@@ -190,7 +242,10 @@ const TASK_STATUS: Readonly<Record<string, string>> = Object.freeze({ done: 'COM
 /**
  * One calendar's local events and tasks as iCalendar: a VEVENT per event, a
  * VTODO per ToDo-only item, and each subtask as a VTODO related to its
- * parent. Times are written in UTC, all-day items as dates in timeZone.
+ * parent. Times are written in UTC; all-day events as dates in timeZone with
+ * the exclusive end the calendar's own writer gives them (allDayRange). A
+ * ToDo-only item has no date in UniHub (its stored times are placeholders),
+ * so its VTODO has neither DTSTART nor DUE.
  */
 function calendarIcs(name: string, events: readonly BackupRow[], subtasks: readonly BackupRow[], timeZone: string, now = Date.now()) {
   const calendar = new ICAL.Component('vcalendar');
@@ -213,13 +268,11 @@ function calendarIcs(name: string, events: readonly BackupRow[], subtasks: reado
     addText(item, 'location', event.location);
     const allDay = event.all_day === true || event.all_day === 1 || event.all_day === '1';
     if (task) {
-      item.addPropertyWithValue('due', allDay ? dateIn(endMs ?? startMs, timeZone) : utcTime(endMs ?? startMs));
+      // Undated: no DTSTART or DUE.
     } else if (allDay) {
-      const start = dateIn(startMs, timeZone);
-      let end = endMs === null ? dateIn(startMs, timeZone, 1) : dateIn(endMs, timeZone);
-      if (end.compare(start) <= 0) end = dateIn(startMs, timeZone, 1);
-      item.addPropertyWithValue('dtstart', start);
-      item.addPropertyWithValue('dtend', end);
+      const range = allDayRange(startMs, endMs ?? startMs, timeZone);
+      item.addPropertyWithValue('dtstart', range.start);
+      item.addPropertyWithValue('dtend', range.end);
     } else {
       item.addPropertyWithValue('dtstart', utcTime(startMs));
       item.addPropertyWithValue('dtend', utcTime(Math.max(endMs ?? startMs, startMs)));

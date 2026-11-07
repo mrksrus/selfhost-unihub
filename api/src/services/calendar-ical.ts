@@ -505,6 +505,7 @@ export {
   resolveUserTimeZone,
   zonedWallTimeToUtc,
   utcToZonedFields,
+  allDayRange,
   expandCalendarObject,
   splitIcsFeed,
   MAX_FEED_OBJECTS,

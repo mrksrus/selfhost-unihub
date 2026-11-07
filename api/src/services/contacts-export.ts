@@ -4,6 +4,7 @@
 // and are produced in slices (a few hundred contacts, their photos read per
 // slice), so an export of thousands of photos never sits in memory whole.
 import type { RowDataPacket } from 'mysql2/promise';
+import type { SqlExecutor } from '../types';
 import type { ExportFormat } from '../contracts/contacts';
 import type { KeptPropertyDraft } from './contacts';
 import type { ExportContact } from './contacts-vcard-write';
@@ -43,19 +44,23 @@ async function storedPhoto(userId: string, contactId: string) {
   }
 }
 
-/** Contacts with their kept properties, the import details of their values and, when asked, their photos. */
-async function exportContacts(userId: string, ids: readonly string[], { photos = false } = {}): Promise<ExportContact[]> {
+/**
+ * Contacts with their kept properties, the import details of their values
+ * and, when asked, their photos. `executor` reads them: a backup passes its
+ * snapshot's connection (backup-export.ts), so they match the snapshot.
+ */
+async function exportContacts(userId: string, ids: readonly string[], { photos = false, executor = db }: { photos?: boolean; executor?: SqlExecutor } = {}): Promise<ExportContact[]> {
   const out: ExportContact[] = [];
   for (let start = 0; start < ids.length; start += CHUNK) {
     const slice = ids.slice(start, start + CHUNK);
-    const contacts = await loadContacts(db, userId, slice);
+    const contacts = await loadContacts(executor, userId, slice);
     if (!contacts.length) continue;
     const owned = contacts.map(contact => contact.id);
-    const [values] = await db.execute<(RowDataPacket & { id: string; params: unknown; vcard_group: string | null })[]>(
+    const [values] = await executor.execute<(RowDataPacket & { id: string; params: unknown; vcard_group: string | null })[]>(
       `SELECT id, params, vcard_group FROM contact_values WHERE user_id = ? AND contact_id IN (${placeholders(owned)}) AND (params IS NOT NULL OR vcard_group IS NOT NULL)`,
       [userId, ...owned]);
     const extras = new Map(values.map(row => [row.id, { params: json(row.params), group: row.vcard_group }]));
-    const [kept] = await db.execute<(RowDataPacket & { contact_id: string; name: string; vcard_group: string | null; params: unknown; value: string; source_version: string | null })[]>(
+    const [kept] = await executor.execute<(RowDataPacket & { contact_id: string; name: string; vcard_group: string | null; params: unknown; value: string; source_version: string | null })[]>(
       `SELECT contact_id, name, vcard_group, params, value, source_version FROM contact_properties WHERE user_id = ? AND contact_id IN (${placeholders(owned)})
        ORDER BY contact_id, position, id`, [userId, ...owned]);
     const keptBy = new Map<string, KeptPropertyDraft[]>();

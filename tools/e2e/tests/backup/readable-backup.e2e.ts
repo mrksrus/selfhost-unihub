@@ -74,9 +74,12 @@ test('[28-21] a downloaded backup opens outside UniHub with its password: mail, 
   expect(fns).toContain(`Vic ${family}`);
 
   const calendars = inner.filter((entry) => entry.name.startsWith('Calendars/') && entry.name.endsWith('.ics'));
-  const summaries = calendars.flatMap((entry) => new ICAL.Component(ICAL.parse(entry.data.toString('utf8'))).getAllSubcomponents('vtodo')
-    .map((todo: { getFirstPropertyValue(name: string): unknown }) => todo.getFirstPropertyValue('summary')));
-  expect(summaries).toContain(task);
+  type Todo = { getFirstPropertyValue(name: string): unknown; hasProperty(name: string): boolean };
+  const todos: Todo[] = calendars.flatMap((entry) => new ICAL.Component(ICAL.parse(entry.data.toString('utf8'))).getAllSubcomponents('vtodo'));
+  const made = todos.find((todo) => todo.getFirstPropertyValue('summary') === task);
+  expect(made, 'the task is in a calendar file').toBeTruthy();
+  // A task without a date in UniHub has none outside it.
+  expect([made!.hasProperty('due'), made!.hasProperty('dtstart')]).toEqual([false, false]);
 
   // The same with 7-Zip, where the machine has it (CI images carry 7z).
   const binary = sevenZipBinary();

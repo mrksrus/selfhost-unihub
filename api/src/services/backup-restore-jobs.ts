@@ -230,9 +230,10 @@ async function loadBackupForJob(job: RestoreJob, unlock: ArchiveUnlock | null) {
   const prepared = await prepareZipForJob(job, unlock);
   try {
     const parsed = await backupFromZipFile(prepared.zipPath);
-    // The archive inside an encrypted ZIP names the UUID its envelope gave.
+    // The archive inside an encrypted ZIP names the UUID its envelope gave
+    // (every writer of the envelope records it).
     const innerUuid = (parsed.manifest as { backup_uuid?: unknown } | undefined)?.backup_uuid;
-    if (unlock?.kind === 'envelope' && innerUuid !== undefined && innerUuid !== job.backup_uuid) throw new Error(UNLOCK_FAILED);
+    if (unlock?.kind === 'envelope' && innerUuid !== job.backup_uuid) throw new Error(UNLOCK_FAILED);
     if (parsed.backup.portable_credentials) {
       if (!unlock) throw new Error('Protected portable credentials require an encrypted backup key.');
       decryptPortableCredentialBundle(parsed.backup.portable_credentials as Parameters<typeof decryptPortableCredentialBundle>[0], unlock.portableKey);

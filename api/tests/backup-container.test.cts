@@ -19,6 +19,8 @@ const {
   revealProtectedRecoveryPassword,
   encryptPortableCredentialBundle,
   decryptPortableCredentialBundle,
+  wrapEnvelopePasswordForServer,
+  unwrapEnvelopePasswordFromServer,
 } = require('../dist/src/services/backup-container') as typeof import('../src/services/backup-container');
 
 test('encrypted UniHub backup is portable with its password and detects damage', async (t) => {
@@ -80,4 +82,19 @@ test('portable credential bundle round trips without exposing plaintext fields',
   const bundle = encryptPortableCredentialBundle(credentials, dataKey);
   assert.equal(JSON.stringify(bundle).includes('mail-secret'), false);
   assert.deepEqual(decryptPortableCredentialBundle(bundle, dataKey), credentials);
+});
+
+test('the server copy of a backup password names its key version, which is authenticated', () => {
+  const uuid = crypto.randomUUID();
+  const wrapped = JSON.parse(wrapEnvelopePasswordForServer('synthetic-password', uuid));
+  assert.equal(wrapped.version, 'v1');
+  assert.equal(unwrapEnvelopePasswordFromServer(JSON.stringify(wrapped), uuid), 'synthetic-password');
+  // An unknown or missing version is refused, not guessed.
+  assert.throws(() => unwrapEnvelopePasswordFromServer(JSON.stringify({ ...wrapped, version: 'v2' }), uuid), /key version/);
+  const { version: _version, ...unversioned } = wrapped;
+  assert.throws(() => unwrapEnvelopePasswordFromServer(JSON.stringify(unversioned), uuid), /key version/);
+  // Neither wrap is read as the other or under another backup's UUID.
+  assert.throws(() => unwrapDataKeyFromServer(JSON.stringify(wrapped), uuid));
+  assert.throws(() => unwrapEnvelopePasswordFromServer(JSON.stringify({ version: 'v1', ...JSON.parse(wrapDataKeyForServer(crypto.randomBytes(32), uuid)) }), uuid));
+  assert.throws(() => unwrapEnvelopePasswordFromServer(JSON.stringify(wrapped), crypto.randomUUID()));
 });

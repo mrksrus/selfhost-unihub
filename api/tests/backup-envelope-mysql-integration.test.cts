@@ -121,6 +121,11 @@ test('a user backup is an encrypted ZIP other programs open, with readable mail,
     await insert('mail_accounts', { id: accountId, user_id: users.source, email_address: 'owner@example.test', provider: 'custom', username: 'owner@example.test', imap_host: '192.0.2.10', smtp_host: '192.0.2.11', is_active: 1, sync_mode: 'download', sync_status: 'idle' });
     await insert('mail_folders', { id: crypto.randomUUID(), user_id: users.source, slug: 'hostile', display_name: 'Projects/CON/..', position: 7, is_system: 0, mail_account_id: accountId });
     await insert('mail_folders', { id: crypto.randomUUID(), user_id: users.source, slug: 'plain', display_name: 'Receipts', position: 8, is_system: 0, mail_account_id: accountId });
+    // A subfolder named as a message of its parent is named, and two folders
+    // whose portable names agree (R1 F1).
+    for (const [slug, display] of [['collide', 'Receipts/00001 2030-01-04 Same.eml'], ['workcolon', 'Work:Docs'], ['workquestion', 'Work?Docs']]) {
+      await insert('mail_folders', { id: crypto.randomUUID(), user_id: users.source, slug, display_name: display, position: 9, is_system: 0, mail_account_id: accountId });
+    }
     const messages = [
       { folder: 'hostile', subject: 'a/b\\c:d*e?f"g|h<i>', received: '2030-01-02 08:00:00' },
       { folder: 'hostile', subject: 'invoice\u202Egpj.exe', received: '2030-01-03 08:00:00' },
@@ -128,6 +133,9 @@ test('a user backup is an encrypted ZIP other programs open, with readable mail,
       { folder: 'plain', subject: 'Same', received: '2030-01-04 08:00:00' },
       { folder: 'plain', subject: '   ', received: '2030-01-05 08:00:00' },
       { folder: 'plain', subject: 'Ünïcødé — ' + 'long '.repeat(60), received: '2030-01-06 08:00:00' },
+      { folder: 'collide', subject: 'Child', received: '2030-01-07 08:00:00' },
+      { folder: 'workcolon', subject: 'Colon', received: '2030-01-08 08:00:00' },
+      { folder: 'workquestion', subject: 'Question', received: '2030-01-09 08:00:00' },
     ];
     const rawById = new Map<string, Buffer>();
     for (const [index, message] of messages.entries()) {
@@ -156,6 +164,13 @@ test('a user backup is an encrypted ZIP other programs open, with readable mail,
     await insert('calendar_accounts', { id: localAccount, user_id: users.source, provider: 'local', display_name: 'UniHub', is_active: 1 });
     await insert('calendar_calendars', { id: calendarId, user_id: users.source, account_id: localAccount, name: 'Home: Errands?', color: '#22c55e', is_visible: 1 });
     await insert('calendar_events', { id: eventId, user_id: users.source, calendar_id: calendarId, uid: 'envelope-event@example.test', title: 'Dentist', start_time: '2030-02-04 09:00:00', end_time: '2030-02-04 09:30:00', recurrence: 'FREQ=WEEKLY;COUNT=3', location: 'Graz' });
+    // All-day events (R1 F2): a range ending at a time on its last day, one
+    // stored from local midnight to local midnight, and one over the change
+    // to summer time (Europe/Vienna, 2030-03-31).
+    for (const [title, start, end] of [['Trip', '2030-03-01 09:00:00', '2030-03-03 17:00:00'], ['Holiday', '2030-03-10 23:00:00', '2030-03-12 23:00:00'],
+      ['Clock change', '2030-03-30 23:00:00', '2030-03-31 22:00:00']]) {
+      await insert('calendar_events', { id: crypto.randomUUID(), user_id: users.source, calendar_id: calendarId, uid: `envelope-${title.replace(' ', '-').toLowerCase()}@example.test`, title, start_time: start, end_time: end, all_day: 1 });
+    }
     await insert('calendar_events', { id: taskId, user_id: users.source, calendar_id: calendarId, uid: 'envelope-task@example.test', title: 'Post the letter', start_time: '2030-02-05 00:00:00', end_time: '2030-02-05 00:00:00', is_todo_only: 1, todo_status: 'done', done_at: '2030-02-05 10:00:00' });
     await insert('calendar_event_subtasks', { id: crypto.randomUUID(), user_id: users.source, event_id: taskId, title: 'Buy stamps', is_done: 1, position: 0 });
     await insert('calendar_event_subtasks', { id: crypto.randomUUID(), user_id: users.source, event_id: taskId, title: 'Find the address', is_done: 0, position: 1 });
@@ -189,8 +204,15 @@ test('a user backup is an encrypted ZIP other programs open, with readable mail,
     for (const raw of rawById.values()) assert.equal(inner.filter(entry => entry.data.equals(raw)).length, 1, 'each message is stored once');
     assert.ok(byName.has('Mail/owner@example.test/Projects/_CON/Folder/00001 2030-01-02 a_b_c_d_e_f_g_h_i_.eml'), [...byName.keys()].join('\n'));
     assert.ok(byName.has('Mail/owner@example.test/Projects/_CON/Folder/00002 2030-01-03 invoice_gpj.exe.eml'));
-    assert.ok(byName.has('Mail/owner@example.test/Receipts/00001 2030-01-04 Same.eml'));
+    // The subfolder keeps its name; the message it would have hidden gets "(2)".
+    assert.ok(byName.has('Mail/owner@example.test/Receipts/00001 2030-01-04 Same.eml/00001 2030-01-07 Child.eml'));
+    assert.ok(byName.has('Mail/owner@example.test/Receipts/00001 2030-01-04 Same (2).eml'));
     assert.ok(byName.has('Mail/owner@example.test/Receipts/00002 2030-01-04 Same.eml'));
+    assert.ok(byName.has('Mail/owner@example.test/Work_Docs/00001 2030-01-08 Colon.eml'));
+    assert.ok(byName.has('Mail/owner@example.test/Work_Docs (2)/00001 2030-01-09 Question.eml'));
+    // No file has the name, as Windows and macOS compare names, of a folder another file is in.
+    const folderNames = new Set(inner.flatMap(entry => entry.name.split('/').slice(0, -1).map((_, at, parts) => parts.slice(0, at + 1).join('/').normalize('NFC').toLowerCase())));
+    assert.deepEqual(inner.filter(entry => folderNames.has(entry.name.normalize('NFC').toLowerCase())).map(entry => entry.name), []);
     assert.ok(byName.has('Mail/owner@example.test/Receipts/00003 2030-01-05 (no subject).eml'));
     assert.ok(eml.every(entry => Buffer.byteLength(path.posix.basename(entry.name)) <= 104));
     // Recordings: the original bytes, unique names.
@@ -213,7 +235,7 @@ test('a user backup is an encrypted ZIP other programs open, with readable mail,
     // Calendars: iCalendar with the event, the finished task and its subtasks.
     const ics = byName.get('Calendars/Home_ Errands_.ics')!.toString('utf8');
     const calendar = new ICAL.Component(ICAL.parse(ics));
-    const event = calendar.getFirstSubcomponent('vevent');
+    const event = calendar.getAllSubcomponents('vevent').find((item: FixtureValue) => item.getFirstPropertyValue('uid') === 'envelope-event@example.test');
     assert.equal(event.getFirstPropertyValue('summary'), 'Dentist');
     assert.equal(event.getFirstPropertyValue('uid'), 'envelope-event@example.test');
     assert.equal(event.getFirstPropertyValue('dtstart').toJSDate().toISOString(), '2030-02-04T09:00:00.000Z');
@@ -221,6 +243,12 @@ test('a user backup is an encrypted ZIP other programs open, with readable mail,
     const todos = calendar.getAllSubcomponents('vtodo');
     const task = todos.find((todo: FixtureValue) => todo.getFirstPropertyValue('uid') === 'envelope-task@example.test');
     assert.equal(task.getFirstPropertyValue('status'), 'COMPLETED');
+    // A ToDo-only task has no date in UniHub, so none outside it either (R1 F4).
+    assert.deepEqual([task.hasProperty('due'), task.hasProperty('dtstart')], [false, false]);
+    // All-day events end, exclusively, the day after their last day (R1 F2).
+    const allDay = Object.fromEntries(calendar.getAllSubcomponents('vevent').filter((item: FixtureValue) => item.getFirstPropertyValue('dtstart').isDate)
+      .map((item: FixtureValue) => [item.getFirstPropertyValue('summary'), [String(item.getFirstPropertyValue('dtstart')), String(item.getFirstPropertyValue('dtend'))]]));
+    assert.deepEqual(allDay, { Trip: ['2030-03-01', '2030-03-04'], Holiday: ['2030-03-11', '2030-03-13'], 'Clock change': ['2030-03-31', '2030-04-01'] });
     assert.equal(task.getFirstPropertyValue('completed').toJSDate().toISOString(), '2030-02-05T10:00:00.000Z');
     const subtasks = todos.filter((todo: FixtureValue) => todo.getFirstPropertyValue('related-to') === 'envelope-task@example.test');
     assert.deepEqual(subtasks.map((todo: FixtureValue) => [todo.getFirstPropertyValue('summary'), todo.getFirstPropertyValue('status')]), [['Buy stamps', 'COMPLETED'], ['Find the address', 'NEEDS-ACTION']]);
@@ -240,8 +268,10 @@ test('a user backup is an encrypted ZIP other programs open, with readable mail,
       assert.equal(sevenZip(binary, uploads('download.zip'), uploads('7z-outer'), password), 0);
       assert.notEqual(sevenZip(binary, uploads('download.zip'), uploads('7z-wrong'), 'not-the-password'), 0);
       assert.equal(sevenZip(binary, uploads('7z-outer', 'unihub-backup.zip'), uploads('7z-inner'), ''), 0);
-      const extracted = await fs.readFile(uploads('7z-inner', 'Mail', 'owner@example.test', 'Receipts', '00001 2030-01-04 Same.eml'));
-      assert.ok([...rawById.values()].some(raw => raw.equals(extracted)));
+      // Every message extracts, byte for byte (R1 F1: a file in a folder's place stopped 7-Zip).
+      const extracted = await fs.readdir(uploads('7z-inner', 'Mail'), { recursive: true, withFileTypes: true });
+      const onDisk = await Promise.all(extracted.filter(entry => entry.isFile()).map(entry => fs.readFile(path.join(entry.parentPath, entry.name))));
+      assert.deepEqual(onDisk.map(sha256).sort(), [...rawById.values()].map(sha256).sort());
     }
 
     // Round trip: another person uploads it, unlocks it with the password and restores it.
@@ -308,6 +338,36 @@ test('a user backup is an encrypted ZIP other programs open, with readable mail,
     const accountInner: { name: string }[] = readZip(readZip(accountArchive, accountKey.recovery_password)[1].data);
     assert.equal(accountInner.filter(entry => entry.name.startsWith('Mail/owner@example.test/')).length, messages.length);
     assert.equal(accountInner.some(entry => /^(Contacts|Calendars|Recordings)\//.test(entry.name)), false);
+
+    // The vCard copy holds the contacts the snapshot holds, also when one is
+    // deleted while the archive is written (R1 F3): the deletion lands just
+    // before the vCard records are read.
+    await source('POST', '/contacts', { first_name: 'Deleted', last_name: 'Meanwhile', email: 'meanwhile@example.test' });
+    const [[meanwhile]] = await pool.execute<RowDataPacket[]>("SELECT id FROM contacts WHERE user_id = ? AND first_name = 'Deleted'", [users.source]);
+    const contactsExport = runtime('services/contacts-export');
+    const readCards = contactsExport.exportContacts;
+    // Another client's connection, as the deletion would come from a request.
+    const other = await mysql.createConnection({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306), database: process.env.MYSQL_TEST_DATABASE, user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD });
+    contactsExport.exportContacts = async (...args: FixtureValue[]) => {
+      await other.execute('DELETE FROM contacts WHERE id = ?', [meanwhile.id]);
+      return readCards(...args);
+    };
+    try {
+      const raced = await source('POST', '/backup/jobs', { sections: ['contacts'] }, 202);
+      const racedReady = await settle(() => source('GET', `/backup/jobs/${raced.job.id}`), ['ready', 'failed']);
+      assert.equal(racedReady.status, 'ready', racedReady.error);
+      const racedKey = await source('POST', `/backup/jobs/${racedReady.id}/recovery-password/reveal`, {});
+      const racedInner = new Map<string, Buffer>(readZip(readZip(await source('GET', `/backup/jobs/${racedReady.id}/download`, undefined, 200, true), racedKey.recovery_password)[1].data)
+        .map((entry: FixtureValue) => [entry.name, entry.data]));
+      const racedBackup = JSON.parse(racedInner.get('UniHub restore data/backup.json')!.toString('utf8'));
+      assert.ok(racedBackup.data.contacts.some((row: FixtureValue) => row.id === meanwhile.id), 'backup.json holds the contact');
+      const racedCards = ICAL.parse(racedInner.get('Contacts/Contacts.vcf')?.toString('utf8') ?? '');
+      const racedNames = (Array.isArray(racedCards[0]) ? racedCards : [racedCards]).map((jcal: FixtureValue) => new ICAL.Component(jcal).getFirstPropertyValue('fn'));
+      assert.deepEqual(racedNames.sort(), ['Ana Example', 'Deleted Meanwhile', 'Zoë Example']);
+    } finally {
+      contactsExport.exportContacts = readCards;
+      await other.end();
+    }
   } finally {
     if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
     if (owned) { const connection = await pool.getConnection(); try { await connection.query('SET FOREIGN_KEY_CHECKS=0'); const [tables] = await connection.query<RowDataPacket[]>('SHOW TABLES'); for (const row of tables) await connection.query('DROP TABLE ??', [Object.values(row)[0]]); } finally { await connection.query('SET FOREIGN_KEY_CHECKS=1'); connection.release(); } }

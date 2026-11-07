@@ -12,6 +12,8 @@ import { encryptPortableCredentialBundle, decryptPortableCredentialBundle } from
 import { inspectRecordingAudio } from './recording-audio';
 import { BACKUP_VERSION, ZIP_BACKUP_FORMAT, ZIP_BACKUP_FORMAT_VERSION, ARCHIVE_LAYOUTS, getBackupProducer } from './backup-format';
 import { CONTACTS_ENTRY, calendarEntries, readableArchivePaths, writeContactsVcf } from './backup-readable';
+import { exportContacts } from './contacts-export';
+import type { ExportContact } from './contacts-vcard-write';
 import {
   SECTION_POLICIES,
   TABLE_POLICIES,
@@ -61,6 +63,9 @@ interface ExportBackup extends ArchiveEnvelope {
   portable_credentials: ReturnType<typeof encryptPortableCredentialBundle> | null;
   data: SnapshotData;
   contents: BackupContents;
+  // The contacts as the snapshot read them, for the archive's vCard copy;
+  // never part of backup.json.
+  contact_cards?: ExportContact[];
 }
 interface BackupOptions {
   includeFileData?: boolean;
@@ -74,6 +79,8 @@ interface BackupOptions {
   mailAccountId?: string | null;
   // The UUID the envelope names (backup-envelope.ts), recorded in the manifest.
   backupUuid?: string | null;
+  // Also read the contacts as vCard records in the snapshot (the archive's Contacts.vcf).
+  contactCards?: boolean;
 }
 interface CredentialBundle {
   mail_accounts: { id: string; password: string }[];
@@ -414,7 +421,8 @@ async function leftOutCounts(connection: SqlExecutor, userId: string, sections: 
   return counts;
 }
 
-async function readBackupSnapshot(userId: string, sections: unknown, checkCancelled: CheckCancelled, mailAccountId: string | null = null, includeDownloadMail = true): Promise<{ data: SnapshotData; contents: BackupContents }> {
+async function readBackupSnapshot(userId: string, sections: unknown, checkCancelled: CheckCancelled, mailAccountId: string | null = null, includeDownloadMail = true,
+  withContactCards = false): Promise<{ data: SnapshotData; contents: BackupContents; contactCards: ExportContact[] }> {
   const request = normalizeBackupRequest(sections);
   if (mailAccountId !== null && request.accountOnlySections.length) throw new Error('An account backup cannot also export account settings only');
   const connection = await db.getConnection();
@@ -474,11 +482,15 @@ async function readBackupSnapshot(userId: string, sections: unknown, checkCancel
     }
     const complete = request.sections.filter(section => !request.accountOnlySections.includes(section));
     const counts = await leftOutCounts(connection, userId, complete, included, mailAccountId);
+    // In the same snapshot as the rows: the vCard copy then holds exactly the
+    // contacts backup.json holds, whatever changes meanwhile.
+    const contactCards = withContactCards && data.contacts?.length
+      ? await exportContacts(userId, data.contacts.map(row => String(row.id)), { executor: connection }) : [];
     await connection.commit();
     const contents = backupContents(complete, counts, { downloadMail: included.length > 0 && complete.includes('mail') });
     // Account settings hold only the connections.
     if (request.accountOnlySections.length && !contents.included.includes('config')) contents.included.push('config');
-    return { data, contents };
+    return { data, contents, contactCards };
   } catch (error) {
     await connection.rollback().catch(() => {});
     throw error;
@@ -494,8 +506,9 @@ async function buildBackupForUser(userId: string, {
   sections = 'full',
   mailAccountId = null,
   includeDownloadMail = true,
+  contactCards: withContactCards = false,
 }: BackupOptions = {}): Promise<ExportBackup> {
-  const { data, contents } = await readBackupSnapshot(userId, sections, checkCancelled, mailAccountId, includeDownloadMail);
+  const { data, contents, contactCards } = await readBackupSnapshot(userId, sections, checkCancelled, mailAccountId, includeDownloadMail, withContactCards);
   const { accountOnlySections } = normalizeBackupRequest(sections);
   const fileEntries = [];
   for (const [kind, policy] of Object.entries(FILE_POLICIES)) {
@@ -574,6 +587,7 @@ async function buildBackupForUser(userId: string, {
     contents,
     files: fileEntries,
     portable_credentials: portableCredentials,
+    ...(withContactCards ? { contact_cards: contactCards } : {}),
   };
   if (accountOnlySections.length) {
     backup.account_only_sections = accountOnlySections;
@@ -597,6 +611,7 @@ async function buildBackupArchiveEntriesForUser(userId: string, sections: unknow
     includeDownloadMail,
     portableCredentialKey,
     checkCancelled,
+    contactCards: true,
   });
   const scopedBackup = scopeBackupForImport(fullBackup, sections) as ExportBackup & { import_sections: string[] };
   assertBackupFilesComplete(scopedBackup);
@@ -687,7 +702,12 @@ async function buildBackupArchiveEntriesForUser(userId: string, sections: unknow
     }
     // Copies for other programs, never read by restore.
     const derivedEntries: { name: string; data?: Buffer; filePath?: string; cleanupAfterWrite?: boolean; expectedSha256?: string; expectedSize?: number }[] = [];
-    if (await writeContactsVcf(userId, scopedBackup.data, contactsPath, checkCancelled)) {
+    const scopedContacts = new Set((scopedBackup.data.contacts || []).map(row => String(row.id)));
+    const cards = (fullBackup.contact_cards || []).filter(card => scopedContacts.has(String(card.contact.id)));
+    // The photos the archive itself holds (content-addressed, by SHA-256).
+    const photoFiles = new Map((scopedBackup.files || []).filter(file => file.kind === 'contact_photo' && !file.missing && file.source_path)
+      .map(file => [String(file.id), String(file.source_path)]));
+    if (await writeContactsVcf(cards, photoFiles, contactsPath, checkCancelled)) {
       const sha256 = await sha256File(contactsPath, checkCancelled);
       derivedEntries.push({ name: CONTACTS_ENTRY, filePath: contactsPath, cleanupAfterWrite: true, expectedSha256: sha256, expectedSize: (await fs.promises.stat(contactsPath)).size });
     }
