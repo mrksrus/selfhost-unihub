@@ -63,6 +63,7 @@ export interface AdminUserAccountsResponse {
 export interface AdminMailAccountCreateRequest extends AdminReauthentication {
   email_address: string;
   display_name?: string;
+  /** Default 'custom': a server given by its addresses. */
   provider?: string;
   username?: string;
   /** The password (the field's historical name); stored encrypted. */

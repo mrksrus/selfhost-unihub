@@ -62,7 +62,8 @@ export = defineRoutes({
   'POST /api/admin/users/:id/mail-accounts': change(async (req, adminId, body) => {
     const userId = req.params.id;
     await assertPersonModule(userId, 'mail');
-    const result = await createMailAccount(userId, withoutPassword(body), { adminId }) as RouteResponse;
+    // A server given by its addresses unless the dialog names a provider.
+    const result = await createMailAccount(userId, { provider: 'custom', ...withoutPassword(body) }, { adminId }) as RouteResponse;
     const account = (result as { account?: { id?: string } }).account;
     if (!failed(result) && account?.id) await recordAuditAfter({ action: 'admin.mail_account_added', actorId: adminId, targetUserId: userId, req, details: { mail_account: account.id } });
     return result;
