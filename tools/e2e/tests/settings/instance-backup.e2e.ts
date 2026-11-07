@@ -1,5 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect, credentials } from 'e2e';
+import { signInPassword } from '../support/env.ts';
 import { ok, pageApi, signIn } from '../support/api.ts';
 import { onlyOn } from '../support/ui.ts';
 
@@ -10,7 +11,9 @@ import { onlyOn } from '../support/ui.ts';
 // administrator's password whether or not the backup is on.
 
 interface Status { enabled: boolean; missing: string[]; running: boolean; last_run: { id: string; status: string } | null; time_utc: string; keep: number; schedule_defaults?: { time_utc: string; keep: number } }
+// The handle for the form; the plain value for request bodies made from Node.
 const password = credentials.user('admin').password;
+const apiPassword = signInPassword;
 
 test('[28-06] the instance backup page is off with what is missing, or backs up now', { session: 'admin', timeout: 300_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop');
@@ -62,11 +65,11 @@ test('[28-06 D35] the admin sets the daily time and how many to keep with their 
     // A wrong password changes nothing; so does a non-admin.
     expect((await pageApi(browser, 'PUT', '/api/admin/instance-backup/settings', { time_utc: '05:00', keep: 3, current_password: 'not-the-admin-password' })).status).toBe(403);
     const alex = await signIn('alex');
-    expect((await alex('PUT', '/api/admin/instance-backup/settings', { time_utc: '05:00', keep: 3, current_password: 'local-dev-admin-password' })).status).toBe(403);
+    expect((await alex('PUT', '/api/admin/instance-backup/settings', { time_utc: '05:00', keep: 3, current_password: apiPassword })).status).toBe(403);
     expect(ok(await pageApi<Status>(browser, 'GET', '/api/admin/instance-backup'), 'status').time_utc).toBe('04:45');
     const log = ok(await (await signIn('admin'))<{ entries: { action: string }[] }>('GET', '/api/admin/audit'), 'audit');
     expect(log.entries.some((entry) => entry.action === 'admin.instance_backup_settings_changed'), 'recorded').toBe(true);
   } finally {
-    ok(await (await signIn('admin'))('PUT', '/api/admin/instance-backup/settings', { ...restore, current_password: password }), 'restore schedule');
+    ok(await (await signIn('admin'))('PUT', '/api/admin/instance-backup/settings', { ...restore, current_password: apiPassword }), 'restore schedule');
   }
 });

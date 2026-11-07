@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect, credentials } from 'e2e';
-import { people, stack } from '../support/env.ts';
+import { people, signInPassword, stack } from '../support/env.ts';
 import { ok, pageApi, signIn } from '../support/api.ts';
 import { onlyOn } from '../support/ui.ts';
 
@@ -11,7 +11,9 @@ import { onlyOn } from '../support/ui.ts';
 // decisions: the bin's minimum (D34), backups kept a minimum age (D36),
 // the notices of the rules (D38) and the password on self-deletion (D41).
 
+// The handle for the form; the plain value for request bodies made from Node.
 const password = credentials.user('admin').password;
+const apiPassword = signInPassword;
 const REASON = 'Your administrator does not allow deleting items from the bin for good.';
 const PEOPLE = ['admin', 'alex', 'blair'] as const;
 
@@ -29,12 +31,14 @@ async function acknowledge(names: readonly (typeof PEOPLE)[number][] = PEOPLE) {
 /** Sets rules as the admin; everyone has seen them afterwards unless `unseen` names who has not. */
 async function setPolicy(values: Record<string, unknown>, { binMinimum, unseen = [] as readonly (typeof PEOPLE)[number][] } = {}) {
   const admin = await signIn('admin');
-  ok(await admin('PUT', '/api/admin/policies', { values, ...(binMinimum ? { bin_min_retention: binMinimum } : {}), current_password: password }), 'set policy');
+  ok(await admin('PUT', '/api/admin/policies', { values, ...(binMinimum ? { bin_min_retention: binMinimum } : {}), current_password: apiPassword }), 'set policy');
   await acknowledge(PEOPLE.filter((name) => !unseen.includes(name)));
 }
 
 test('[28-11 28-13] a rule set by the admin greys alex\'s control with its reason, and the server refuses; blair cannot set rules', { session: 'admin', timeout: 300_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop', 'phone');
+  // Start from the default, whatever an earlier run left.
+  await setPolicy({ 'bin.delete': 'allowed' });
   await app.open('/admin/policies');
   try {
     await screen.getByRole('combobox', 'Users may empty the bin or delete for good').tap();
@@ -62,7 +66,7 @@ test('[28-11 28-13] a rule set by the admin greys alex\'s control with its reaso
     expect(refused.data.code).toBe('POLICY_FORBIDS');
 
     const blair = await signIn('blair');
-    expect((await blair('PUT', '/api/admin/policies', { values: { 'bin.delete': 'allowed' }, current_password: 'local-dev-admin-password' })).status, 'a non-admin cannot set rules').toBe(403);
+    expect((await blair('PUT', '/api/admin/policies', { values: { 'bin.delete': 'allowed' }, current_password: apiPassword })).status, 'a non-admin cannot set rules').toBe(403);
 
     const log = ok(await (await signIn('admin'))<{ entries: { action: string; details: Record<string, unknown> | null }[] }>('GET', '/api/admin/audit'), 'audit');
     expect(log.entries.some((entry) => entry.action === 'admin.policy_changed' && entry.details?.key === 'bin.delete'), 'recorded').toBe(true);
@@ -135,7 +139,7 @@ test('[28-11 D36] a backup younger than the admin\'s minimum cannot be deleted b
     // The administrator's path can delete it earlier, with their password.
     const admin = await signIn('admin');
     const me = ok(await pageApi<{ user: { id: string } }>(browser, 'GET', '/api/auth/me'), 'me').user;
-    ok(await admin('DELETE', `/api/admin/users/${me.id}/backups/${started.id}`, { current_password: password }), 'admin deletes');
+    ok(await admin('DELETE', `/api/admin/users/${me.id}/backups/${started.id}`, { current_password: apiPassword }), 'admin deletes');
   } finally {
     await setPolicy({ 'backup.server_retention_days': null });
   }
@@ -153,12 +157,16 @@ test('[28-12] the admin adds a mail account for alex with their password; alex h
   // Every dialog of this path names the person it acts for.
   await expect(dialog.getByTestId('confirm-target')).toContainText(people.alex.email);
   await dialog.getByLabel('Email address').fill(address);
+  // The provider knows alex's mailbox only; the address stays unique for this run.
+  await dialog.getByLabel('Username').fill(people.alex.mailbox);
   await dialog.getByLabel('Mail password').fill(stack.providerPassword);
   await dialog.getByLabel('IMAP server').fill(stack.providerHost);
   await dialog.getByLabel('IMAP port').fill(String(stack.imapsPort));
   await dialog.getByLabel('SMTP server').fill(stack.providerHost);
   await dialog.getByLabel('SMTP port').fill(String(stack.smtpsPort));
-  await dialog.getByRole('radio', /^Sync/).tap();
+  // The radio row's label covers its input: the label is the tap target.
+  await dialog.getByText('Sync', { exact: true }).tap();
+  await expect(dialog.getByRole('radio', /^Sync/)).toBeChecked();
   await dialog.getByLabel('Your password', { exact: true }).fill(password);
   await dialog.getByRole('button', 'Add account').tap();
   await expect(screen.getByText('Mail account added', { exact: true })).toBeVisible({ timeout: 60_000 });
@@ -199,7 +207,7 @@ test('[28-14 D38] a changed rule opens the notice for alex once; OK records it; 
     expect(effective.acknowledged_revision, 'OK recorded the revision').toBe(effective.revision);
     // The next start opens nothing.
     await browser.reload();
-    await expect(screen.getByRole('button', /Settings|More/).first()).toBeVisible();
+    await expect(screen.getByRole('navigation', 'Main').first()).toBeVisible();
     await expect(screen.getByRole('dialog', 'Your administrator changed the data rules')).toHaveCount(0);
     // The rules stay readable.
     await app.open('/settings?section=account');
@@ -233,6 +241,8 @@ test('[28-14 D38] the sign-up form lists the rules that limit a new person', { s
 
 test('[28-15 D41] deleting your own account asks for your password, and a wrong one deletes nothing', { session: 'alex', timeout: 240_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop', 'phone');
+  // A rule changed by an earlier run must not leave its notice over this page.
+  await acknowledge(['alex']);
   await app.open('/settings?section=delete');
   await screen.getByRole('button', 'Delete account').tap();
   const dialog = screen.getByRole('dialog', 'Delete your account?');
