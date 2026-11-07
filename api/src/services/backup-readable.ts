@@ -31,7 +31,8 @@ const VCARD_SLICE = 200;
 const RESERVED_NAME = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])$/i;
 // Control characters, the characters Windows forbids in a name, and
 // direction overrides, which could make "gpj.exe" read as "exe.jpg".
-const UNSAFE_CHARACTERS = /[\u0000-\u001f\u007f-\u009f<>:"/\\|?*‎‏‪-‮⁦-⁩﻿]/g;
+// eslint-disable-next-line no-control-regex -- the control characters are what it refuses
+const UNSAFE_CHARACTERS = /[\u0000-\u001f\u007f-\u009f<>:"/\\|?*\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
 
 const asRows = (value: unknown) => Array.isArray(value) ? value as BackupRow[] : [];
 

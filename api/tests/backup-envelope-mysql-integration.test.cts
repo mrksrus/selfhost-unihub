@@ -53,6 +53,7 @@ function handZip(entries: { name: string; data: Buffer }[]) {
 function assertPortable(entryName: string) {
   for (const part of entryName.split('/')) {
     assert.ok(part.length > 0 && Buffer.byteLength(part) <= 255, `${entryName}: part length`);
+    // eslint-disable-next-line no-control-regex -- the control characters are what it refuses
     assert.doesNotMatch(part, /[\u0000-\u001f\u007f<>:"\\|?*\u202a-\u202e\u2066-\u2069]/, `${entryName}: forbidden character`);
     assert.doesNotMatch(part, /[. ]$/, `${entryName}: trailing dot or space`);
     assert.doesNotMatch(part, /^\./, `${entryName}: leading dot`);
