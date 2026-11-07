@@ -55,7 +55,8 @@ test('[28-21] a downloaded backup opens outside UniHub with its password: mail, 
   const archive = Buffer.from(await response.arrayBuffer());
 
   // Outside the app: the plain README, then the encrypted archive with the password.
-  expect(() => readZip(archive, 'not-the-password')).toThrow(/wrong password/);
+  const wrong = (() => { try { readZip(archive, 'not-the-password'); return 'opened'; } catch (error) { return (error as Error).message; } })();
+  expect(wrong).toMatch(/wrong password/);
   const outer = readZip(archive, password);
   expect(outer.map((entry: { name: string }) => entry.name)).toEqual(['README.txt', 'unihub-backup.zip']);
   const inner: { name: string; data: Buffer }[] = readZip(outer[1].data);
