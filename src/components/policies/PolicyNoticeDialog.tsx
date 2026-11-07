@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
@@ -43,9 +43,11 @@ export function PolicyNoticeDialog() {
   });
   const open = noticeDue && dismissed !== revision;
   const firstTime = acknowledgedRevision === 0;
+  // OK takes focus when the dialog opens, so Enter confirms after reading.
+  const okButton = useRef<HTMLButtonElement>(null);
   return (
     <Dialog open={open} onOpenChange={next => { if (!next && !acknowledge.isPending) setDismissed(revision); }}>
-      <DialogContent>
+      <DialogContent onOpenAutoFocus={event => { event.preventDefault(); okButton.current?.focus(); }}>
         <DialogHeader>
           <DialogTitle>{firstTime ? 'Rules on this server' : 'Your administrator changed the data rules'}</DialogTitle>
           <DialogDescription>
@@ -57,7 +59,7 @@ export function PolicyNoticeDialog() {
           A rule greys out the control it concerns, with its reason. You can read the rules any time in <Link to={settingsHref('account')} className="underline underline-offset-4 hover:text-foreground" onClick={() => setDismissed(revision)}>Settings › Profile</Link>.
         </p>
         <DialogFooter>
-          <Button type="button" onClick={() => acknowledge.mutate(revision)} disabled={acknowledge.isPending} autoFocus>
+          <Button ref={okButton} type="button" onClick={() => acknowledge.mutate(revision)} disabled={acknowledge.isPending}>
             {acknowledge.isPending && <Loader2 aria-hidden="true" className="animate-spin" />}OK
           </Button>
         </DialogFooter>

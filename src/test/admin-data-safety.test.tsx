@@ -105,7 +105,7 @@ describe('Server settings → Policies', () => {
 
 describe('Server settings → Policies: the bin\'s minimum (D34)', () => {
   it('greys the minimum out until the bin rule forbids deleting, then saves it with the bin rule', { timeout: 20_000 }, async () => {
-    const withMinimum = (values: Record<string, unknown> = {}, minimum = 'forever') => {
+    const withMinimum = (values: Record<string, unknown> = {}, minimum: '30' | '90' | 'forever' = 'forever') => {
       const answer = adminPolicies() as AdminPoliciesResponse & { bin_min_retention: unknown };
       for (const [key, value] of Object.entries(values)) answer.policies[key as keyof typeof answer.policies] = { ...answer.policies[key as keyof typeof answer.policies], value, source: 'policy' } as never;
       answer.bin_min_retention = { value: minimum, source: minimum === 'forever' ? 'default' : 'policy', default: 'forever', values: ['30', '90', 'forever'], applies: answer.policies['bin.delete'].value === 'forbidden', effect: 'The automatic purge waits at least this long.' };
@@ -117,7 +117,7 @@ describe('Server settings → Policies: the bin\'s minimum (D34)', () => {
       throw new Error(`unexpected GET ${path}`);
     });
     vi.mocked(api.put).mockImplementation(async (path: string, body: unknown) => {
-      const { values, bin_min_retention } = body as { values: Record<string, unknown>; bin_min_retention?: string };
+      const { values, bin_min_retention } = body as { values: Record<string, unknown>; bin_min_retention?: '30' | '90' | 'forever' };
       return path === '/admin/policies' ? { data: withMinimum(values, bin_min_retention) } : { data: {} };
     });
     mountSignedIn(<AdminPolicies />, { user: ADMIN });
