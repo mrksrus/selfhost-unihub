@@ -10,7 +10,7 @@ import { SessionQueryProvider } from '@/components/SessionQueryProvider';
 import { AuthContext, type AuthContextType } from '@/contexts/auth-context';
 import { AdminMailAccountDialog } from '@/components/admin/AdminAccountDialogs';
 import type { AdminPoliciesResponse } from '@/lib/admin-api';
-import type { InstanceBackupStatus } from '@/lib/instance-backup-api';
+import { instanceBackupQueryKey, type InstanceBackupStatus } from '@/lib/instance-backup-api';
 import { DEFAULT_POLICY_VALUES, POLICY_KEYS } from '@/lib/policies-api';
 import { ADMIN, mountSignedIn, policiesAnswer, stubBrowserApis, testClient } from './helpers/data-safety';
 
@@ -187,6 +187,59 @@ describe('Server settings → Instance backup', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(screen.getByText('22:15 UTC')).toBeInTheDocument();
     expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Schedule saved' }));
+  });
+
+  // The status polls every three seconds while a backup runs. A changed answer
+  // must leave the administrator's unsaved fields alone; Save sends what they typed.
+  it('a status answer that arrives while the schedule is being edited leaves the typed values alone', { timeout: 20_000 }, async () => {
+    let status = instanceStatus({ enabled: true, missing: [], destination: '/backups', key_fingerprint: 'k1', running: true });
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/admin/instance-backup') return { data: status };
+      throw new Error(`unexpected GET ${path}`);
+    });
+    vi.mocked(api.put).mockImplementation(async (path: string, body: unknown) => {
+      if (path === '/admin/instance-backup/settings') { const { time_utc, keep } = body as { time_utc: string; keep: number }; return { data: instanceStatus({ ...status, time_utc, keep, schedule_source: 'admin' }) }; }
+      throw new Error(`unexpected PUT ${path}`);
+    });
+    const client = testClient();
+    mountSignedIn(<AdminInstanceBackup />, { user: ADMIN, client });
+    fireEvent.click(await screen.findByRole('button', { name: 'Change schedule…' }, { timeout: 5000 }));
+    const dialog = await screen.findByRole('dialog', { name: 'Change the schedule?' });
+    fireEvent.change(within(dialog).getByLabelText('Time (UTC)'), { target: { value: '22:15' } });
+    fireEvent.change(within(dialog).getByLabelText('Backups kept'), { target: { value: '7' } });
+    // The run finishes and the server reports another schedule (set by a second administrator meanwhile).
+    status = instanceStatus({ ...status, running: false, time_utc: '04:00', keep: 21, schedule_source: 'admin' });
+    await act(async () => { await client.refetchQueries({ queryKey: instanceBackupQueryKey }); });
+    await waitFor(() => expect(screen.getByText('04:00 UTC')).toBeInTheDocument());
+    expect(within(dialog).getByLabelText('Time (UTC)')).toHaveValue('22:15');
+    expect(within(dialog).getByLabelText('Backups kept')).toHaveValue(7);
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save schedule' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/instance-backup/settings', { time_utc: '22:15', keep: 7, current_password: 'admin-pw' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    // Opened again, the fields start from what the server holds now.
+    fireEvent.click(screen.getByRole('button', { name: 'Change schedule…' }));
+    const again = await screen.findByRole('dialog', { name: 'Change the schedule?' });
+    expect(within(again).getByLabelText('Time (UTC)')).toHaveValue('22:15');
+    expect(within(again).getByLabelText('Backups kept')).toHaveValue(7);
+  });
+
+  it('a refused password empties the field and keeps the dialog open for another try', { timeout: 20_000 }, async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/admin/instance-backup') return { data: instanceStatus({ enabled: true, missing: [], destination: '/backups', key_fingerprint: 'k1' }) };
+      throw new Error(`unexpected GET ${path}`);
+    });
+    vi.mocked(api.put).mockResolvedValueOnce({ error: 'The password is not correct.', status: 403, code: 'ADMIN_PASSWORD_INCORRECT' });
+    mountSignedIn(<AdminInstanceBackup />, { user: ADMIN });
+    fireEvent.click(await screen.findByRole('button', { name: 'Change schedule…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Change the schedule?' });
+    const password = within(dialog).getByLabelText('Your password');
+    fireEvent.change(password, { target: { value: 'wrong-pw' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save schedule' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not save the schedule', description: 'The password is not correct.' })));
+    expect(screen.getByRole('dialog', { name: 'Change the schedule?' })).toBeInTheDocument();
+    await waitFor(() => expect((password as HTMLInputElement).value).toBe(''));
+    expect(within(dialog).getByRole('button', { name: 'Save schedule' })).toBeDisabled();
   });
 
   it('refuses an impossible number of kept backups before asking for the password', async () => {

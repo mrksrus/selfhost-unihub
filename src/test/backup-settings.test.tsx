@@ -31,10 +31,13 @@ const job = (id: string, fields: Partial<BackupJob> = {}): BackupJob => ({
   contents: { included: ['local', 'config'], left_out: [{ section: 'mail', what: 'Sync-mode mail', reason: 'It downloads again from the provider after the account reconnects.', count: 1204 }], notes: [] },
   error: null, created_at: '2026-06-03T10:00:00.000Z', updated_at: '2026-06-03T10:05:00.000Z', started_at: '2026-06-03T10:00:00.000Z', completed_at: '2026-06-03T10:05:00.000Z', downloaded_at: null, ...fields,
 });
+const DAY = 24 * 60 * 60 * 1000;
+const daysAgo = (days: number) => new Date(Date.now() - days * DAY).toISOString();
+const formatDay = (iso: string) => new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'long' });
 const JOBS = [
-  // The administrator's minimum holds this one until a day far ahead (D36).
-  job('new', { keep_until: '2099-07-03T10:00:00.000Z', downloaded_at: '2026-06-03T11:00:00.000Z' }),
-  job('old', { encryption_enabled: false, contents: null, content_type: 'application/zip', created_at: '2026-05-01T10:00:00.000Z', completed_at: '2026-05-01T10:05:00.000Z' }),
+  // Ten days old: a 90-day minimum holds it (D36). Its stored keep_until is the rule of the day it was made and must not decide.
+  job('new', { created_at: daysAgo(10), started_at: daysAgo(10), completed_at: daysAgo(10), updated_at: daysAgo(10), keep_until: '2099-07-03T10:00:00.000Z', downloaded_at: daysAgo(9) }),
+  job('old', { encryption_enabled: false, contents: null, content_type: 'application/zip', created_at: daysAgo(200), completed_at: daysAgo(200) }),
 ];
 const restoreJob = (id: string, fields: Partial<RestoreJob> = {}): RestoreJob => ({
   id, source_type: 'generated', source_export_job_id: 'new', status: 'validated', operation: 'validate', phase: 'validated', progress: 100, cancel_requested: false,
@@ -113,7 +116,8 @@ describe('Settings → Backup and restore (0.28)', () => {
     const section = (await screen.findByRole('heading', { name: 'Backups on this server' })).closest('section')!;
     await waitFor(() => expect(within(section).getAllByText('Full backup')).toHaveLength(2));
     expect(within(section).getByText('Left out: Sync-mode mail (1,204).')).toBeInTheDocument();
-    expect(within(section).getByText(/kept at least until (3 July|July 3)/)).toBeInTheDocument();
+    // No minimum in force: nothing is "kept at least until", whatever the job stored when it was made.
+    expect(within(section).queryByText(/kept at least until/)).not.toBeInTheDocument();
     expect(within(section).getByText('Not encrypted, made before 0.28.')).toBeInTheDocument();
     // D37: a downloaded, encrypted backup says how to open it outside UniHub; the plain pre-0.28 one does not.
     const hints = within(section).getAllByTestId('open-outside-hint');
@@ -143,17 +147,71 @@ describe('Settings → Backup and restore (0.28)', () => {
     fireEvent.pointerDown(newer, { button: 0, ctrlKey: false });
     const held = await screen.findByRole('menuitem', { name: /Delete/ });
     expect(held).toHaveAttribute('aria-disabled', 'true');
-    expect(held).toHaveTextContent(/at least 90 days: until then nobody can delete them\. This one can be deleted from (3 July|July 3)/);
+    const opens = formatDay(new Date(Date.parse(JOBS[0].created_at) + 90 * DAY).toISOString());
+    expect(held).toHaveTextContent(`at least 90 days: until then nobody can delete them. This one can be deleted from ${opens}`);
+    expect(within(section).getByText(new RegExp(`kept at least until ${opens}`))).toBeInTheDocument();
     fireEvent.click(held);
     expect(api.delete).not.toHaveBeenCalled();
     fireEvent.keyDown(held, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('menuitem')).not.toBeInTheDocument());
-    // The old backup finished 90 days before this test's clock long ago: nothing holds it.
+    // The old backup was made 200 days ago: nothing holds it.
     fireEvent.pointerDown(older, { button: 0, ctrlKey: false });
     const free = await screen.findByRole('menuitem', { name: 'Delete' });
     expect(free).not.toHaveAttribute('aria-disabled');
     fireEvent.click(free);
     await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/backup/jobs/old'));
+  });
+
+  // The rule in force today decides, not the one of the day the backup was made:
+  // the server tests the current minimum against the creation date.
+  it('Delete follows the current minimum after the rule was removed, shortened or lengthened', { timeout: 20_000 }, async () => {
+    const deleteItem = async (name: string) => {
+      fireEvent.pointerDown(await screen.findByRole('button', { name: `More actions for ${name}` }), { button: 0, ctrlKey: false });
+      return screen.findByRole('menuitem', { name: /Delete/ });
+    };
+    const close = async (item: HTMLElement) => { fireEvent.keyDown(item, { key: 'Escape' }); await waitFor(() => expect(screen.queryByRole('menuitem')).not.toBeInTheDocument()); };
+    // Removed: the 10-day-old backup still carries a keep_until of 2099, yet Delete is allowed.
+    answer(capabilities(), [JOBS[0]]);
+    const first = mountSignedIn(<BackupSettings active />);
+    expect(await screen.findByText(/The server keeps them until you delete them/)).toBeInTheDocument();
+    let item = await deleteItem('Full backup');
+    expect(item).not.toHaveAttribute('aria-disabled');
+    expect(screen.queryByText(/kept at least until/)).not.toBeInTheDocument();
+    await close(item);
+    first.unmount();
+    // Shortened to 30 days: a 60-day-old backup with a far keep_until is free.
+    answer(capabilities(), [job('sixty', { created_at: daysAgo(60), completed_at: daysAgo(60), keep_until: '2099-07-03T10:00:00.000Z' })], [],
+      policiesAnswer({ 'backup.server_retention_days': { value: 30, allowed: true, reason: 'Your backups are kept at least 30 days.' } }));
+    const second = mountSignedIn(<BackupSettings active />);
+    await screen.findByText(/keeps each backup at least 30 days/);
+    item = await deleteItem('Full backup');
+    expect(item).not.toHaveAttribute('aria-disabled');
+    await close(item);
+    second.unmount();
+    // Lengthened to 365 days: a 100-day-old backup whose stored keep_until has passed is held until its creation plus 365 days.
+    const created = daysAgo(100);
+    answer(capabilities(), [job('hundred', { created_at: created, completed_at: created, keep_until: daysAgo(10) })], [],
+      policiesAnswer({ 'backup.server_retention_days': { value: 365, allowed: true, reason: 'Your backups are kept at least 365 days.' } }));
+    mountSignedIn(<BackupSettings active />);
+    await screen.findByText(/keeps each backup at least 365 days/);
+    item = await deleteItem('Full backup');
+    expect(item).toHaveAttribute('aria-disabled', 'true');
+    expect(item).toHaveTextContent(`This one can be deleted from ${formatDay(new Date(Date.parse(created) + 365 * DAY).toISOString())}`);
+    fireEvent.click(item);
+    expect(api.delete).not.toHaveBeenCalled();
+  });
+
+  // A rule the page did not know yet: the server refuses, its words are shown and rules and backups are read again.
+  it('a delete the server refuses under a rule shows the server\'s reason and reloads the rules', { timeout: 20_000 }, async () => {
+    answer(capabilities(), [JOBS[1]]);
+    vi.mocked(api.delete).mockResolvedValueOnce({ error: 'Your administrator keeps every backup at least 90 days. This one can be deleted from 2026-12-01.', status: 403, code: 'POLICY_FORBIDS' });
+    mountSignedIn(<BackupSettings active />);
+    await screen.findByText('Full backup');
+    const before = vi.mocked(api.get).mock.calls.filter(([path]) => path === '/policies/effective').length;
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions for Full backup' }), { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not delete the backup', description: expect.stringContaining('at least 90 days') })));
+    await waitFor(() => expect(vi.mocked(api.get).mock.calls.filter(([path]) => path === '/policies/effective').length).toBeGreaterThan(before));
   });
 
   it('downloads a backup through a download ticket, never with the session URL', async () => {

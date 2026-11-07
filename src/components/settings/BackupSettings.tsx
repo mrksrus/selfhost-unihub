@@ -12,6 +12,8 @@ import {
   type BackupContents, type BackupDataClass, type BackupExportSectionId, type BackupImportResult, type BackupJob, type BackupSectionId, type CalendarMode, type ConflictMode, type CredentialsMode, type RestoreJob, type RestoreOptions,
 } from '@/lib/backup-api';
 import { OPEN_OUTSIDE_STEPS, OPEN_OUTSIDE_UNIHUB, deletableFrom } from '@/lib/backup';
+import { ApiError } from '@/lib/api-error';
+import { policiesQueryKey } from '@/lib/policies-api';
 import { copyText, downloadTicket, saveFile } from '@/lib/platform';
 import { jobPollInterval } from '@/lib/job-polling';
 import { Button } from '@/components/ui/button';
@@ -162,6 +164,8 @@ export default function BackupSettings({ active }: { active: boolean }) {
   const sectionLabels = new Map([...importSections, ...exportSections].map(({ id, label }) => [id, label]));
   const sectionLabel = (id: string) => sectionLabels.get(id) || id;
   const refreshJobs = () => { void queryClient.invalidateQueries({ queryKey: backupQueryKeys.jobs }); };
+  // The rules decide which backup may be deleted: read them again each time the section opens, so a rule changed meanwhile shows.
+  useEffect(() => { if (active) void queryClient.invalidateQueries({ queryKey: policiesQueryKey }); }, [active, queryClient]);
   const refreshRestores = () => { void queryClient.invalidateQueries({ queryKey: backupQueryKeys.restoreJobs }); };
   const failed = (title: string) => (error: Error) => toast({ title, description: error.message, variant: 'destructive' });
 
@@ -230,7 +234,12 @@ export default function BackupSettings({ active }: { active: boolean }) {
     onError: failed('Could not start the backup'),
   });
   const cancel = useSessionMutation({ mutationFn: (job: BackupJob) => backupApi.cancel(job.id), onSuccess: refreshJobs, onError: failed('Could not stop the backup') });
-  const remove = useSessionMutation({ mutationFn: (job: BackupJob) => backupApi.delete(job.id), onSuccess: () => { refreshJobs(); toast({ title: 'Backup deleted' }); }, onError: failed('Could not delete the backup') });
+  const remove = useSessionMutation({ mutationFn: (job: BackupJob) => backupApi.delete(job.id), onSuccess: () => { refreshJobs(); toast({ title: 'Backup deleted' }); },
+    onError: (error: Error) => {
+      // The server decides (D36): a refusal under a rule this page did not know yet shows the server's words and reloads rules and backups.
+      if (error instanceof ApiError && error.code === 'POLICY_FORBIDS') { void queryClient.invalidateQueries({ queryKey: policiesQueryKey }); refreshJobs(); }
+      failed('Could not delete the backup')(error);
+    } });
   // The ticket is fetched in the request and handed to the browser or the app
   // only in the session-guarded callback: a late answer starts no download.
   const download = useSessionMutation({ mutationFn: (job: BackupJob) => prepareBackupDownload(job), onSuccess: ticket => downloadTicket(ticket), onError: failed('Could not download the backup') });

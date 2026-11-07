@@ -47,18 +47,21 @@ export function PolicyNoticeDialog() {
   const okButton = useRef<HTMLButtonElement>(null);
   return (
     <Dialog open={open} onOpenChange={next => { if (!next && !acknowledge.isPending) setDismissed(revision); }}>
-      <DialogContent onOpenAutoFocus={event => { event.preventDefault(); okButton.current?.focus(); }}>
-        <DialogHeader>
+      {/* A long list of rules on a small phone: the dialog stays inside the viewport and its safe areas, the list scrolls, title and OK stay in reach. */}
+      <DialogContent className="flex max-h-[calc(100dvh-1rem-env(safe-area-inset-top,0px)-env(safe-area-inset-bottom,0px))] flex-col" onOpenAutoFocus={event => { event.preventDefault(); okButton.current?.focus(); }}>
+        <DialogHeader className="shrink-0">
           <DialogTitle>{firstTime ? 'Rules on this server' : 'Your administrator changed the data rules'}</DialogTitle>
           <DialogDescription>
             {firstTime ? 'Your administrator set these rules for everyone on this server.' : 'These rules apply to everyone on this server from now on. Nothing of yours was deleted.'}
           </DialogDescription>
         </DialogHeader>
-        <RulesList rules={rules} className="text-sm" />
-        <p className="text-xs text-muted-foreground">
-          A rule greys out the control it concerns, with its reason. You can read the rules any time in <Link to={settingsHref('account')} className="underline underline-offset-4 hover:text-foreground" onClick={() => setDismissed(revision)}>Settings › Profile</Link>.
-        </p>
-        <DialogFooter>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain" data-testid="notice-body">
+          <RulesList rules={rules} className="text-sm" />
+          <p className="text-xs text-muted-foreground">
+            A rule greys out the control it concerns, with its reason. You can read the rules any time in <Link to={settingsHref('account')} className="underline underline-offset-4 hover:text-foreground" onClick={() => setDismissed(revision)}>Settings › Profile</Link>.
+          </p>
+        </div>
+        <DialogFooter className="shrink-0">
           <Button ref={okButton} type="button" onClick={() => acknowledge.mutate(revision)} disabled={acknowledge.isPending}>
             {acknowledge.isPending && <Loader2 aria-hidden="true" className="animate-spin" />}OK
           </Button>

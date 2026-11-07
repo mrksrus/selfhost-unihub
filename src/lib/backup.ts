@@ -31,13 +31,15 @@ export const OPEN_OUTSIDE_STEPS: readonly string[] = [
 ];
 
 /**
- * When a backup may be deleted under the administrator's minimum (D36): the
- * server's date, else the backup's completion plus the minimum; null when
- * nothing holds it.
+ * When a backup may be deleted under the administrator's minimum (D36): its
+ * creation plus the minimum in force now, as the server tests it
+ * (api/src/services/backup-policy.ts); null when nothing holds it. The
+ * `keep_until` a job stored at creation is not used: it is the minimum of
+ * that day, and a rule that was removed, shortened or lengthened since
+ * would grey Delete wrongly. The server refuses a too-young delete anyway.
  */
 const DAY_MS = 24 * 60 * 60 * 1000;
-export function deletableFrom(job: Pick<BackupJob, 'keep_until' | 'completed_at' | 'created_at'>, minimumDays: number | null): string | null {
-  if (job.keep_until) return job.keep_until;
+export function deletableFrom(job: Pick<BackupJob, 'created_at'>, minimumDays: number | null): string | null {
   if (!minimumDays) return null;
-  return new Date(Date.parse(job.completed_at || job.created_at) + minimumDays * DAY_MS).toISOString();
+  return new Date(Date.parse(job.created_at) + minimumDays * DAY_MS).toISOString();
 }

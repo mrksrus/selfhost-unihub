@@ -70,6 +70,8 @@ export function AdminMailAccountDialog({ account, open, onClose, pending, onSubm
     } else {
       onSubmit({ ...fields, username: fields.username || fields.email_address, delete_emails_on_server: fields.sync_mode === 'download' && fields.delete_emails_on_server }, adminPassword);
     }
+    // Sent: the administrator's password lives in no state beyond the request; a refusal asks for it again.
+    setAdminPassword('');
   };
   return (
     <Dialog open={open} onOpenChange={next => { if (!next && !pending) onClose(); }}>
@@ -146,6 +148,7 @@ export function AdminCalendarAccountDialog({ account, open, onClose, pending, on
       for (const key of ['url', 'username', 'password'] as const) if (fields[key]) change[key] = fields[key];
       onSubmit(change, adminPassword);
     } else onSubmit(fields, adminPassword);
+    setAdminPassword('');
   };
   return (
     <Dialog open={open} onOpenChange={next => { if (!next && !pending) onClose(); }}>

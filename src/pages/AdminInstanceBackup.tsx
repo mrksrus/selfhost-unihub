@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useId, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Play } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
@@ -69,10 +69,13 @@ const AdminInstanceBackup = () => {
   });
   const status = query.data;
 
-  // The schedule dialog: the fields start from what the server reports each time it opens.
+  // The schedule dialog: the fields start from what the server reports at the
+  // moment it opens, and stay the administrator's own until Save or Cancel.
+  // The status keeps polling while a backup runs; a changed answer must not
+  // replace what they are typing.
   const [editing, setEditing] = useState(false);
   const [schedule, setSchedule] = useState<InstanceBackupSchedule>({ time_utc: '03:30', keep: 14 });
-  useEffect(() => { if (editing && status) setSchedule({ time_utc: status.time_utc, keep: status.keep }); }, [editing, status]);
+  const openEditor = () => { if (status) setSchedule({ time_utc: status.time_utc, keep: status.keep }); setEditing(true); };
   const scheduleValid = TIME.test(schedule.time_utc) && Number.isInteger(schedule.keep) && schedule.keep >= KEEP_MIN && schedule.keep <= KEEP_MAX;
   const saveSchedule = useSecretMutation({
     mutationFn: (currentPassword: string) => saveInstanceBackupSchedule(schedule, currentPassword),
@@ -112,7 +115,7 @@ const AdminInstanceBackup = () => {
         </SettingsSection>
         <SettingsSection title="Schedule"
           description={`Daily, at a time of your choosing. Saving asks for your password.${status.schedule_source === 'environment' ? ` Until you set one, the server's environment or its defaults (${status.schedule_defaults?.time_utc ?? '03:30'} UTC, keep ${status.schedule_defaults?.keep ?? 14}) hold.` : ''}`}
-          action={<Button size="sm" variant="outline" onClick={() => setEditing(true)}>Change schedule…</Button>}>
+          action={<Button size="sm" variant="outline" onClick={openEditor}>Change schedule…</Button>}>
           <SettingsRow label="Time" description={local ? `${local} for you. The run starts at this UTC time every day.` : 'The run starts at this UTC time every day.'}>
             <span className="font-mono text-sm tabular-nums">{status.time_utc} UTC</span>
           </SettingsRow>
