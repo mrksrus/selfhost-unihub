@@ -20,7 +20,7 @@ import {
   clearCsrfCookie,
   SESSION_DAYS,
 } from '../auth';
-import { getSignupMode } from '../services/settings';
+import { acknowledgeAtSignup, dataRules, getSignupMode } from '../services/settings';
 import {
   generateTwoFactorSecret,
   verifyTotp,
@@ -119,11 +119,13 @@ export = defineRoutes({
   // Sign-up and sign-in are public and issue the CSRF token, so they need
   // none; everything else needs the session the boundary verified. Credential
   // bodies allow a 1024-character passphrase.
+  // With the data rules that would limit a new person (contracts/policies.ts
+  // SignupDataRules), so the form can list them before anyone signs up.
   'GET /api/auth/signup-mode': { auth: 'public', module: null, handler: async () => {
     try {
-      return { signup_mode: await getSignupMode() };
+      return { signup_mode: await getSignupMode(), data_rules: await dataRules() };
     } catch {
-      return { signup_mode: 'disabled' };
+      return { signup_mode: 'disabled', data_rules: [] };
     }
   } },
 
@@ -167,6 +169,8 @@ export = defineRoutes({
         'INSERT INTO users (id, email, password_hash, full_name, email_verified, is_active) VALUES (?, ?, ?, ?, TRUE, ?)',
         [newUserId, email, passwordHash, full_name || null, isActive]
       );
+      // The form listed the data rules in force; the new account has seen them.
+      await acknowledgeAtSignup(newUserId);
 
       // If approval required, don't create session or return token
       if (!isActive) {

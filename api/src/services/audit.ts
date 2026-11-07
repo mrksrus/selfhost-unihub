@@ -15,7 +15,13 @@ const AUDIT_ACTIONS = [
   'auth.signin', 'auth.signin_failed', 'auth.password_changed', 'auth.two_factor_enabled', 'auth.two_factor_disabled',
   'auth.recovery_codes_replaced', 'auth.session_revoked', 'auth.account_deleted',
   'admin.password_reset', 'admin.role_changed', 'admin.two_factor_reset', 'admin.user_activated', 'admin.user_deactivated',
-  'admin.user_deleted', 'admin.signup_mode_changed', 'admin.instance_backup_started',
+  'admin.user_deleted', 'admin.signup_mode_changed', 'admin.instance_backup_started', 'admin.instance_backup_settings_changed',
+  // Data-safety policies and the administrator's path for a person (F13):
+  // the target is the person whose data changed.
+  'admin.policy_changed',
+  'admin.mail_account_added', 'admin.mail_account_changed', 'admin.mail_account_removed', 'admin.mail_account_reset',
+  'admin.calendar_account_added', 'admin.calendar_account_changed', 'admin.calendar_account_removed',
+  'admin.backup_deleted', 'admin.bin_emptied', 'admin.bin_item_deleted', 'admin.data_cleared',
   'mail.account_disconnected', 'mail.account_purged',
 ] as const;
 type AuditAction = typeof AUDIT_ACTIONS[number];
