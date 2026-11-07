@@ -57,11 +57,10 @@ export function PolicyNoticeDialog() {
         </DialogHeader>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain" data-testid="notice-body">
           <RulesList rules={rules} className="text-sm" />
-          <p className="text-xs text-muted-foreground">
-            A rule greys out the control it concerns, with its reason. You can read the rules any time in <Link to={settingsHref('account')} className="underline underline-offset-4 hover:text-foreground" onClick={() => setDismissed(revision)}>Settings › Profile</Link>.
-          </p>
+          <p className="text-xs text-muted-foreground">A rule greys out the control it concerns, with its reason. You can read the rules any time under Settings › Profile.</p>
         </div>
-        <DialogFooter className="shrink-0">
+        <DialogFooter className="shrink-0 gap-2 sm:gap-0">
+          <Button variant="ghost" asChild><Link to={settingsHref('account')} onClick={() => setDismissed(revision)}>Open Settings › Profile</Link></Button>
           <Button ref={okButton} type="button" onClick={() => acknowledge.mutate(revision)} disabled={acknowledge.isPending}>
             {acknowledge.isPending && <Loader2 aria-hidden="true" className="animate-spin" />}OK
           </Button>
