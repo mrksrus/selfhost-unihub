@@ -206,11 +206,12 @@ try {
   assert(typeof recoveryPassword === 'string' && recoveryPassword.length > 16, 'Recovery password must be available exactly once');
   await primary.request('POST', `/api/backup/jobs/${backupId}/recovery-password/reveal`, {}, { expected: 410 });
   const archive = await primary.request('GET', `/api/backup/jobs/${backupId}/download`, undefined, { binary: true });
-  assert.match(archive.response.headers.get('content-type')!, /application\/vnd\.unihub\.backup/);
+  // 0.28 backups are AES-encrypted ZIP files (D37); older .unihub-backup containers still import.
+  assert.match(archive.response.headers.get('content-type')!, /application\/zip/);
   assert.equal(archive.bytes.length, readyBackup.file_size);
   assert.equal(crypto.createHash('sha256').update(archive.bytes).digest('hex'), readyBackup.file_sha256);
   const imported = await other.request<{ job: SmokeJob }>('POST', '/api/backup/import?sections=contacts,recordings&conflict_mode=replace', archive.bytes, {
-    expected: 202, rawBody: true, headers: { 'Content-Type': 'application/vnd.unihub.backup' },
+    expected: 202, rawBody: true, headers: { 'Content-Type': 'application/zip' },
   });
   const restoreId = imported.data.job.id;
   assert.equal(imported.data.job.status, 'awaiting_password');
