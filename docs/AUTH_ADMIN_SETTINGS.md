@@ -157,12 +157,13 @@ Public endpoint:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/auth/signup-mode` | Return current signup mode and `data_rules`: the [data-safety rules](#data-safety-policies) in force, in plain words, so the form can list them |
-| POST | `/api/auth/signup` | Create account according to signup mode |
+| GET | `/api/auth/signup-mode` | Return current signup mode, `data_rules`: the [data-safety rules](#data-safety-policies) in force, in plain words, so the form can list them, and `rules_revision`, their revision |
+| POST | `/api/auth/signup` | Create account according to signup mode; `rules_revision` is the revision of the rules the form listed |
 
-A person who signs up has seen the rules listed on the form, so their account
-starts with the current rules revision confirmed and the notice is not shown
-to them.
+A person who signs up has seen the rules listed on the form: their account
+starts with the `rules_revision` the form sends back confirmed. Rules saved
+after the form loaded, or a form that sends no revision, leave the notice due
+after the first sign-in.
 
 ## Sign-In Flow
 
@@ -574,7 +575,7 @@ holds. When that list changes, the rules revision (`system_settings`
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/policies/effective` | Every key as it applies to the person (`value`, `source`, `allowed`, `reason`), the `rules`, the current `revision` and the person's `acknowledged_revision` |
+| GET | `/api/policies/effective` | Every key as it applies to the person (`value`, `source`, `allowed`, `reason`), the `rules`, the current `revision` and the person's `acknowledged_revision`, all from one consistent read, so the rules are those of the revision |
 | POST | `/api/policies/acknowledge` | `{ "revision": n }`: the person confirmed the rules of that revision (`policy_notices`, never restored); a revision that does not exist yet is `400 POLICY_REVISION_INVALID` |
 
 While `acknowledged_revision` is below `revision`, the app shows the rules once

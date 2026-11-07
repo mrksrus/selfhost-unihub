@@ -471,10 +471,6 @@ function rulesOf(levels: readonly PolicyLevel[]): string[] {
   return [...new Set(rules)];
 }
 
-/** The rules in force for the sign-up form (GET /api/auth/signup-mode). */
-async function dataRules(executor: SqlExecutor = db): Promise<string[]> {
-  return rulesOf(await loadPolicyLevels(executor));
-}
 
 const REVISION_KEY = 'policy_revision';
 
@@ -506,12 +502,36 @@ async function recordAcknowledged(userId: string, revision: number, executor: Sq
   if (revision > 0) await executor.execute('INSERT IGNORE INTO policy_notices (user_id, revision) VALUES (?, ?)', [userId, revision]);
 }
 
+// Reads in one consistent snapshot on one connection: rules shown with a
+// revision are that revision's, whatever an administrator saves meanwhile,
+// so confirming the revision never confirms rules the person did not see.
+async function inSnapshot<T>(read: (cx: SqlExecutor) => Promise<T>): Promise<T> {
+  const cx = await db.getConnection();
+  try {
+    await cx.query('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY');
+    const result = await read(cx);
+    await cx.commit();
+    return result;
+  } catch (error) {
+    await cx.rollback().catch(() => undefined);
+    throw error;
+  } finally { cx.release(); }
+}
+
 /** GET /api/policies/effective: every key for the person, the rules and where their notice stands. */
-async function getEffectivePolicies(userId: string, executor: SqlExecutor = db): Promise<EffectivePoliciesResponse> {
-  const levels = await loadPolicyLevels(executor);
-  const policies = Object.fromEntries((Object.keys(POLICIES) as PolicyKey[]).map(key => [key, effectivePolicy(key, levels)])) as EffectivePoliciesResponse['policies'];
-  const [revision, acknowledged] = await Promise.all([policyRevision(executor), acknowledgedRevision(userId, executor)]);
-  return { policies, revision, acknowledged_revision: Math.min(acknowledged, revision), rules: rulesOf(levels) };
+async function getEffectivePolicies(userId: string): Promise<EffectivePoliciesResponse> {
+  return inSnapshot(async cx => {
+    const levels = await loadPolicyLevels(cx);
+    const policies = Object.fromEntries((Object.keys(POLICIES) as PolicyKey[]).map(key => [key, effectivePolicy(key, levels)])) as EffectivePoliciesResponse['policies'];
+    const revision = await policyRevision(cx);
+    const acknowledged = await acknowledgedRevision(userId, cx);
+    return { policies, revision, acknowledged_revision: Math.min(acknowledged, revision), rules: rulesOf(levels) };
+  });
+}
+
+/** The rules in force for the sign-up form (GET /api/auth/signup-mode), with their revision. */
+async function signupRules(): Promise<{ data_rules: string[]; rules_revision: number }> {
+  return inSnapshot(async cx => ({ data_rules: rulesOf(await loadPolicyLevels(cx)), rules_revision: await policyRevision(cx) }));
 }
 
 /** POST /api/policies/acknowledge: the person confirmed the rules of `revision`. */
@@ -523,9 +543,15 @@ async function acknowledgePolicies(userId: string, input: unknown): Promise<Ackn
   return { acknowledged_revision: await acknowledgedRevision(userId) };
 }
 
-/** A new person saw the rules at sign-up; their account starts with them confirmed. */
-async function acknowledgeAtSignup(userId: string, executor: SqlExecutor = db) {
-  await recordAcknowledged(userId, await policyRevision(executor), executor);
+/**
+ * A new person saw the rules of `shown` (the revision GET signup-mode sent
+ * with them) on the sign-up form; their account starts with that revision
+ * confirmed. Without one, or with one that does not exist yet, nothing is:
+ * the notice then shows the rules after the first sign-in.
+ */
+async function acknowledgeAtSignup(userId: string, shown: unknown, executor: SqlExecutor = db) {
+  if (!Number.isSafeInteger(shown) || (shown as number) <= 0 || (shown as number) > await policyRevision(executor)) return;
+  await recordAcknowledged(userId, shown as number, executor);
 }
 
 // --- The administrator's policies page ----------------------------------------
@@ -670,8 +696,8 @@ export {
   binRetentionFloor,
   acknowledgePolicies,
   acknowledgeAtSignup,
+  signupRules,
   whilePolicyAllows,
-  dataRules,
   policyRevision,
   getAdminPolicies,
   updateAdminPolicies,

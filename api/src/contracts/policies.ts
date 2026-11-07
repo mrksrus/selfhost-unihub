@@ -151,7 +151,9 @@ export interface PolicyForbidsDetails {
 /**
  * GET /api/auth/signup-mode gains the rules that limit a new person, in plain
  * words (the same as EffectivePoliciesResponse.rules); empty while every
- * policy is at its default. A person who signs up has seen them: their
- * account starts with the current revision acknowledged.
+ * policy is at its default. rules_revision is the revision of those rules:
+ * the form sends it back as `rules_revision` with POST /api/auth/signup, and
+ * the new account starts with that revision acknowledged. Without it the
+ * notice shows the rules after the first sign-in.
  */
-export interface SignupDataRules { data_rules: string[] }
+export interface SignupDataRules { data_rules: string[]; rules_revision?: number }
