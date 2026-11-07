@@ -61,6 +61,16 @@ describe('policy greying', () => {
     vi.unstubAllGlobals();
   });
 
+  it('a mail-account deletion the server holds back says so plainly and deletes nothing', async () => {
+    vi.mocked(api.get).mockResolvedValue(policiesAnswer());
+    vi.mocked(api.post).mockResolvedValue({ error: 'Provider changes have an unresolved outcome. Reconnect the accounts and let them finish before deleting.', status: 409, code: 'MAIL_OPERATIONS_UNRESOLVED' } as never);
+    mountSignedIn(<DeleteDataSettings />);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Delete all' })[2]);
+    const dialog = await screen.findByRole('alertdialog', { name: 'Delete all mail accounts?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete all' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Nothing deleted yet', description: expect.stringContaining('unresolved outcome') })));
+  });
+
   it('keeps an allowed control usable when the rules fail to load', async () => {
     vi.mocked(api.get).mockResolvedValue({ error: 'Not reachable', status: 503 });
     mountSignedIn(<DeleteDataSettings />);

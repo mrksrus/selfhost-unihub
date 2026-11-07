@@ -35,6 +35,11 @@ const instanceStatus = (fields: Partial<InstanceBackupStatus> = {}): InstanceBac
 const USERS = [{ id: 'user-admin', email: 'admin@example.com', full_name: 'Avery Admin', role: 'admin', is_active: true, created_at: '2026-01-01T00:00:00.000Z' },
   { id: 'user-alex', email: 'alex@example.com', full_name: 'Alex Example', role: 'user', is_active: true, two_factor_enabled: true, created_at: '2026-01-02T00:00:00.000Z' },
   { id: 'user-blair', email: 'blair@example.com', full_name: 'Blair Example', role: 'user', is_active: true, created_at: '2026-01-03T00:00:00.000Z' }];
+const BIN_ITEMS = [
+  { id: 'bin-1', module: 'contacts', item_type: 'contact', title: 'Grace Hopper', reason: 'deleted', group_id: null, deleted_at: '2026-06-10T09:00:00.000Z', purge_after: '2026-07-10T09:00:00.000Z', provider: 'local', origin: null },
+  { id: 'bin-2', module: 'calendar', item_type: 'event', title: 'Seed swap', reason: 'calendar_deleted', group_id: 'grp', deleted_at: '2026-06-11T09:00:00.000Z', purge_after: null, provider: 'local', origin: null },
+  { id: 'bin-3', module: 'calendar', item_type: 'calendar', title: 'Garden club', reason: 'calendar_deleted', group_id: 'grp', deleted_at: '2026-06-11T09:00:00.000Z', purge_after: null, provider: 'local', origin: null },
+];
 const MAIL_ACCOUNT = { id: 'm1', email_address: 'alex@mail.example.com', display_name: null, provider: 'custom', sync_mode: 'sync', delete_emails_on_server: false, is_active: true, sync_status: 'ok', last_synced_at: null, disconnected_at: null };
 
 beforeEach(() => {
@@ -46,8 +51,10 @@ beforeEach(() => {
     if (path === '/admin/users') return { data: { users: USERS } };
     if (path === '/admin/users/user-alex/accounts') return { data: { user_id: 'user-alex', mail_accounts: [MAIL_ACCOUNT], calendar_accounts: [] } };
     if (path === '/admin/users/user-alex/backups') return { data: { jobs: [] } };
+    if (path === '/admin/users/user-alex/bin') return { data: { items: BIN_ITEMS, retention: '30' } };
     if (path === '/admin/users/user-blair/accounts') return { data: { user_id: 'user-blair', mail_accounts: [], calendar_accounts: [] } };
     if (path === '/admin/users/user-blair/backups') return { data: { jobs: [] } };
+    if (path === '/admin/users/user-blair/bin') return { data: { items: [], retention: '30' } };
     throw new Error(`unexpected GET ${path}`);
   });
   vi.mocked(api.put).mockImplementation(async (path: string, body: unknown) => {
@@ -293,6 +300,7 @@ describe('Admin → Users → a person', () => {
     vi.mocked(api.get).mockImplementation(async (path: string) => {
       if (path === '/admin/users') return { data: { users: USERS } };
       if (path === '/admin/users/user-alex/accounts') return { data: { user_id: 'user-alex', mail_accounts: [], calendar_accounts: [] } };
+      if (path === '/admin/users/user-alex/bin') return { data: { items: [], retention: '30' } };
       if (path === '/admin/users/user-alex/backups') return { data: { jobs: [{ id: 'bk-1', scope: 'full', status: 'ready', phase: 'done', progress: 100, cancel_requested: false, requested_sections: [], file_size: 1_000_000, file_sha256: 'x', content_type: 'application/vnd.unihub.backup', encryption_enabled: true, backup_uuid: 'u', recovery_password_available: false, recovery_password_revealed: true, server_unlock_available: true, keep_until: '2099-01-01T00:00:00.000Z', contents: null, error: null, created_at: '2026-06-01T10:00:00.000Z', updated_at: '2026-06-01T10:00:00.000Z', started_at: null, completed_at: '2026-06-01T10:05:00.000Z', downloaded_at: null }] } };
       if (path === '/policies/effective') return policiesAnswer();
       throw new Error(`unexpected GET ${path}`);
@@ -315,10 +323,57 @@ describe('Admin → Users → a person', () => {
 
   it('says when a person has nothing at all on this server', async () => {
     mountSignedIn(<AdminUserDetail />, { user: ADMIN, path: '/admin/users/user-blair', routePath: '/admin/users/:id' });
-    expect(await screen.findByText(/Blair Example has no mail or calendar accounts and no backups on this server yet/)).toHaveAttribute('role', 'status');
+    expect(await screen.findByText(/Blair Example has no mail or calendar accounts, no backups on this server and nothing in their bin yet/)).toHaveAttribute('role', 'status');
+    expect(screen.getByText('The bin of Blair Example is empty.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Empty bin' })).toBeDisabled();
   });
 
-  it('removes a mail account with its mail after the administrator\'s password, and adds one with the person\'s fields', async () => {
+  it('shows the person\'s bin, a group as one row, and deletes one item for good with the administrator\'s password', { timeout: 20_000 }, async () => {
+    mountSignedIn(<AdminUserDetail />, { user: ADMIN, path: '/admin/users/user-alex', routePath: '/admin/users/:id' });
+    expect(await screen.findByText('Grace Hopper')).toBeInTheDocument();
+    // The calendar and its event are one row, named by the calendar.
+    expect(screen.getByText('Garden club')).toBeInTheDocument();
+    expect(screen.queryByText('Seed swap')).not.toBeInTheDocument();
+    expect(screen.getByText(/with 1 item/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Empty bin' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Grace Hopper for good' }));
+    const confirm = await screen.findByRole('dialog', { name: 'Delete Grace Hopper for good?' });
+    expect(within(confirm).getByTestId('confirm-target')).toHaveTextContent('Alex Example (alex@example.com)');
+    fireEvent.change(within(confirm).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Delete for good' }));
+    await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/admin/users/user-alex/bin/bin-1', { current_password: 'admin-pw' }));
+  });
+
+  it('a mail server that cannot be verified asks the administrator to trust it, then sends the fingerprints with their password again', { timeout: 20_000 }, async () => {
+    const trust = { blocked: false, requiresConfirmation: true, requiresInsecureTls: true, warnings: ['The certificate is self-signed.'],
+      assessments: { imap: { host: 'imap.example.com', port: 993, knownProvider: false, allowlisted: false, blocked: false }, smtp: { host: 'smtp.example.com', port: 587, knownProvider: false, allowlisted: false, blocked: false } },
+      certificates: { imap: { fingerprint256: 'AA:BB', authorized: false, subject: { CN: 'imap.example.com' } }, smtp: { fingerprint256: 'CC:DD', authorized: false, subject: { CN: 'smtp.example.com' } } } };
+    vi.mocked(api.post).mockResolvedValueOnce({ error: 'Review mail server authenticity before continuing.', status: 409, requiresHostTrustConfirmation: true, mailHostTrust: trust } as never)
+      .mockResolvedValueOnce({ data: { account: MAIL_ACCOUNT } });
+    mountSignedIn(<AdminUserDetail />, { user: ADMIN, path: '/admin/users/user-alex', routePath: '/admin/users/:id' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Add mail account' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add a mail account' });
+    fireEvent.change(within(dialog).getByLabelText('Email address'), { target: { value: 'new@mail.example.com' } });
+    fireEvent.change(within(dialog).getByLabelText('Mail password'), { target: { value: 'mail-secret' } });
+    fireEvent.change(within(dialog).getByLabelText('IMAP server'), { target: { value: 'imap.example.com' } });
+    fireEvent.change(within(dialog).getByLabelText('SMTP server'), { target: { value: 'smtp.example.com' } });
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add account' }));
+    const ask = await screen.findByRole('dialog', { name: 'Trust this mail server?' });
+    expect(within(ask).getByText(/AA:BB/)).toBeInTheDocument();
+    expect(within(ask).getByText('The certificate is self-signed.')).toBeInTheDocument();
+    expect(within(ask).getByTestId('confirm-target')).toHaveTextContent('Alex Example (alex@example.com)');
+    // The password was dropped with the refused request: it is asked for again.
+    fireEvent.change(within(ask).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(ask).getByRole('button', { name: 'Trust and save' }));
+    await waitFor(() => expect(api.post).toHaveBeenLastCalledWith('/admin/users/user-alex/mail-accounts', expect.objectContaining({
+      email_address: 'new@mail.example.com', accept_host_trust: true, trusted_imap_fingerprint256: 'AA:BB', trusted_smtp_fingerprint256: 'CC:DD', provider: 'custom', current_password: 'admin-pw',
+    })));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail account added' })));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('removes a mail account with its mail after the administrator\'s password, and adds one with the person\'s fields', { timeout: 20_000 }, async () => {
     mountSignedIn(<AdminUserDetail />, { user: ADMIN, path: '/admin/users/user-alex', routePath: '/admin/users/:id' });
     await screen.findByText('alex@mail.example.com');
     fireEvent.pointerDown(screen.getByRole('button', { name: 'Actions for alex@mail.example.com' }), { button: 0, ctrlKey: false });
@@ -339,7 +394,7 @@ describe('Admin → Users → a person', () => {
     fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add account' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/users/user-alex/mail-accounts', expect.objectContaining({
-      email_address: 'new@mail.example.com', username: 'new@mail.example.com', encrypted_password: 'mail-secret', imap_host: 'imap.example.com', smtp_host: 'smtp.example.com', sync_mode: 'sync', current_password: 'admin-pw',
+      email_address: 'new@mail.example.com', username: 'new@mail.example.com', encrypted_password: 'mail-secret', imap_host: 'imap.example.com', smtp_host: 'smtp.example.com', sync_mode: 'sync', provider: 'custom', current_password: 'admin-pw',
     })));
   });
 });

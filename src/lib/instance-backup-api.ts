@@ -1,20 +1,9 @@
 import { queryOptions } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { ApiError, unwrap } from '@/lib/api-error';
-import type { InstanceBackupRunResponse, InstanceBackupStatus as InstanceBackupStatusContract } from '../../api/src/contracts/instance-backup';
+import type { InstanceBackupRunResponse, InstanceBackupSettingsRequest, InstanceBackupStatus } from '../../api/src/contracts/instance-backup';
 
-export type { InstanceBackupRun } from '../../api/src/contracts/instance-backup';
-
-/**
- * The status with the schedule's provenance (contracts/instance-backup.ts
- * from 0.28 C2; optional here until that contract is merged): 'admin' once
- * set on the page, 'environment' while INSTANCE_BACKUP_TIME/_KEEP or the
- * defaults hold.
- */
-export type InstanceBackupStatus = InstanceBackupStatusContract & {
-  schedule_source?: 'admin' | 'environment';
-  schedule_defaults?: { time_utc: string; keep: number };
-};
+export type { InstanceBackupRun, InstanceBackupStatus } from '../../api/src/contracts/instance-backup';
 
 // The built-in instance backup (D4), administrators only. Destination and
 // key come from the environment and are shown read-only; the schedule (time
@@ -47,7 +36,7 @@ export const INSTANCE_BACKUP_KEEP_MAX = 1000;
  * success, never at once.
  */
 export async function saveInstanceBackupSchedule(schedule: InstanceBackupSchedule, currentPassword: string): Promise<InstanceBackupStatus> {
-  const status = unwrap(await api.put<InstanceBackupStatus>('/admin/instance-backup/settings', { ...schedule, current_password: currentPassword }));
+  const status = unwrap(await api.put<InstanceBackupStatus>('/admin/instance-backup/settings', { ...schedule, current_password: currentPassword } satisfies InstanceBackupSettingsRequest));
   if (!status) throw new Error('The server did not answer with the instance backup status.');
   return status;
 }

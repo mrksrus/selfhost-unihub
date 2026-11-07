@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { ApiError, unwrap } from '@/lib/api-error';
 import { deleteOwnAccount } from '@/lib/auth-api';
 import type { ModuleId } from '@/lib/modules';
 import { invalidateCalendarQueries } from '@/lib/calendar-api';
@@ -64,17 +65,17 @@ export default function DeleteDataSettings() {
   const accountPolicy = usePolicy('account.delete');
 
   const remove = useMutation({
-    mutationFn: async (entry: Target) => {
-      const response = await api.post<{ message?: string }>(entry.path);
-      if (response.error) throw new Error(response.error);
-      return response.data;
-    },
+    mutationFn: async (entry: Target) => unwrap(await api.post<{ message?: string }>(entry.path)),
     onSuccess: (data, entry) => {
       void entry.refresh?.(client);
       toast({ title: data?.message || entry.done });
       setTarget(null);
     },
-    onError: (error: Error, entry) => toast({ title: `Could not delete ${entry.label.toLowerCase()}`, description: error.message, variant: 'destructive' }),
+    // A provider change with an unresolved outcome keeps the mail accounts: the server says so plainly and deletes nothing.
+    onError: (error: Error, entry) => toast({
+      title: error instanceof ApiError && error.code === 'MAIL_OPERATIONS_UNRESOLVED' ? 'Nothing deleted yet' : `Could not delete ${entry.label.toLowerCase()}`,
+      description: error.message, variant: 'destructive',
+    }),
   });
   // The password is a variable of the request only while it runs (useSecretMutation).
   const removeAccount = useSecretMutation({
