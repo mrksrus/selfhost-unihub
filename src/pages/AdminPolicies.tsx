@@ -4,7 +4,7 @@ import { useSecretMutation } from '@/hooks/use-secret-mutation';
 import { useAuth } from '@/contexts/useAuth';
 import { useToast } from '@/hooks/use-toast';
 import { adminPoliciesQueryKey, fetchAdminPolicies, saveAdminPolicies, type AdminPolicy, type BinMinimum } from '@/lib/admin-api';
-import { policiesQueryKey, type PolicyKey, type PolicyValues } from '@/lib/policies-api';
+import { acknowledgePolicies, policiesQueryKey, type PolicyKey, type PolicyValues } from '@/lib/policies-api';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ErrorState, LoadingState } from '@/components/ui/page-states';
@@ -108,8 +108,8 @@ const AdminPolicies = () => {
     },
     onSuccess: answer => {
       client.setQueryData(adminPoliciesQueryKey, answer);
-      // The administrator's own greyed controls follow at once.
-      void client.invalidateQueries({ queryKey: policiesQueryKey });
+      // The administrator set these rules and has seen them: no notice for them (D38). Then their own greyed controls follow.
+      void acknowledgePolicies(answer.revision).catch(() => undefined).finally(() => client.invalidateQueries({ queryKey: policiesQueryKey }));
       setDraft({});
       setConfirming(false);
       toast({ title: 'Policies saved', description: 'Nothing was deleted; the rules apply from now on.' });
