@@ -100,3 +100,18 @@ export interface ScopedSettingsResponse<T> { id: string; settings: ResolvedSetti
 
 /** The body of every PUT: the changed values only; one invalid value saves nothing. */
 export interface SettingsUpdateRequest<T> { values: Partial<T> }
+
+/**
+ * DELETE /api/settings/account: the person's own password again (D41). 400
+ * PASSWORD_REQUIRED without it, 403 PASSWORD_INCORRECT, 429 after too many
+ * wrong ones; 403 POLICY_FORBIDS while account.delete is forbidden.
+ */
+export interface AccountDeleteRequest { current_password: string }
+
+/**
+ * POST /api/settings/clear-{contacts,calendar,mail-accounts,recordings}: the
+ * module's items deleted for good. clear-mail-accounts answers 409
+ * MAIL_OPERATIONS_UNRESOLVED, deleting nothing, while a provider change of
+ * an account has an unresolved outcome (as purging one account does).
+ */
+export interface ClearDataResponse { message: string; deleted: number }
