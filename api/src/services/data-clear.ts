@@ -98,7 +98,7 @@ async function clearMailAccounts(userId: string, actor: ClearActor): Promise<Cle
     // the message rows, so none escapes the check below), then the linked
     // calendars a sync could be linking meanwhile.
     await cx.execute('SELECT id FROM mail_accounts WHERE user_id = ? ORDER BY id FOR UPDATE', [userId]);
-    await cx.execute('SELECT id FROM emails WHERE user_id = ? ORDER BY id FOR UPDATE', [userId]);
+    await cx.execute('SELECT COUNT(*) AS count FROM emails WHERE user_id = ? FOR UPDATE', [userId]);
     const [linked] = await cx.execute<Linked[]>(`SELECT id, provider, provider_config, mail_account_id FROM calendar_accounts
       WHERE user_id = ? AND mail_account_id IS NOT NULL FOR UPDATE`, [userId]);
     if (await countUnresolved(userId, cx)) throw unresolvedOperations();

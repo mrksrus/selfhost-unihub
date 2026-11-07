@@ -30,6 +30,16 @@ async function assertPersonModule(userId: string, module: string, section = modu
   }
 }
 
+/**
+ * A change of the person's mail account for the administrator: their password
+ * stands for the address the person types to switch an account to Sync.
+ */
+async function adminMailAccountChange(userId: string, accountId: string, values: Record<string, unknown>) {
+  if (values.sync_mode !== 'sync' || values.confirm_address !== undefined) return values;
+  const [[account]] = await db.execute<RowDataPacket[]>('SELECT email_address FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
+  return account ? { ...values, confirm_address: account.email_address } : values;
+}
+
 const iso = (value: unknown) => value == null ? null : (value instanceof Date ? value : new Date(`${String(value).replace(' ', 'T')}Z`)).toISOString();
 
 /** GET /api/admin/users/:id/accounts: the person's mail and calendar accounts, without credentials. */
@@ -55,4 +65,4 @@ async function personAccounts(userId: string): Promise<AdminUserAccountsResponse
   };
 }
 
-export { assertPerson, assertPersonModule, personAccounts };
+export { assertPerson, assertPersonModule, personAccounts, adminMailAccountChange };

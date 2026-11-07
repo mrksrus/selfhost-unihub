@@ -84,7 +84,11 @@ export interface AdminMailAccountCreateRequest extends AdminReauthentication {
   caldav_url?: string;
 }
 
-/** PUT /api/admin/users/:id/mail-accounts/:accountId: settings, mode or password; only the given fields change. */
+/**
+ * PUT /api/admin/users/:id/mail-accounts/:accountId: settings, mode or
+ * password; only the given fields change. Switching to Sync needs no typed
+ * address here: the administrator's password stands for it.
+ */
 export type AdminMailAccountUpdateRequest = AdminReauthentication & Partial<Omit<AdminMailAccountCreateRequest, 'current_password'>>;
 
 /** POST /api/admin/users/:id/calendar-accounts: the fields of the person's own POST /api/calendar/accounts. */

@@ -6,7 +6,7 @@ import { defineRoutes } from '../http/route';
 import { clientError, notFound } from '../http/errors';
 import { confirmPassword } from '../security/reauthentication';
 import { recordAuditAfter } from '../services/audit';
-import { assertPerson, assertPersonModule, personAccounts } from '../services/admin-path';
+import { adminMailAccountChange, assertPerson, assertPersonModule, personAccounts } from '../services/admin-path';
 import { createMailAccount, updateMailAccount } from '../services/mail-account-changes';
 import { disconnectAccount, disconnectAndPurgeAccount } from '../services/mail-account-lifecycle';
 import { createCalendarAccount, deleteCalendarAccount, updateCalendarAccount } from '../services/calendar-account-changes';
@@ -72,7 +72,7 @@ export = defineRoutes({
     const userId = req.params.id, accountId = req.params.accountId;
     await assertPersonModule(userId, 'mail');
     const values = withoutPassword(body);
-    const result = await updateMailAccount(userId, accountId, values, { adminId }) as RouteResponse;
+    const result = await updateMailAccount(userId, accountId, await adminMailAccountChange(userId, accountId, values), { adminId }) as RouteResponse;
     if (!failed(result)) {
       await recordAuditAfter({ action: 'admin.mail_account_changed', actorId: adminId, targetUserId: userId, req,
         details: { mail_account: accountId, fields: Object.keys(values).filter(key => key !== 'encrypted_password').sort().join(',') || null, password: 'encrypted_password' in values } });
