@@ -538,17 +538,25 @@ refuses before anything happens. A rule that depends on the body is checked
 by the service that takes it, with the same `403 POLICY_FORBIDS` and its
 reason: the mode and the provider-deletion switch of a new or changed mail
 account (`services/mail-account-mode.ts`), and turning a mail account's linked
-calendar on or off. A backup younger than `backup.server_retention_days` is
+calendar on or off, which decides from a read that changes nothing. A backup
+younger than `backup.server_retention_days`, or one still being made, is
 refused with the date from which it can be deleted
-(`services/backup-policy.ts`).
+(`services/backup-policy.ts`); a failed or cancelled one can go at once.
+
+A step that deletes or erases after waiting asks again when it acts, under the
+rules revision row: an administrator's save locks that row first, so it
+commits either before the step reads the rules or after the step. Deletion at
+the provider asks before queueing a message and holds the row while it sends
+the erase; the bin's purge reads its minimum after its row locks.
 
 **The bin's minimum.** While `bin.delete` is forbidden, the bin keeps items at
 least as long as the administrator's minimum (`30`, `90` days or `forever`,
 by default `forever`; `bin_min_retention` on the policies routes, stored as
 `policy.bin.min_retention`). It is the floor of the person's `bin_retention`:
 a shorter choice reads as the minimum and saving one is refused with `403
-POLICY_FLOOR`; a longer one stays. The purge asks again before it deletes
-anything, and the bin shows when each item can go at the earliest.
+POLICY_FLOOR`; a longer one stays. The purge asks again, under its locks,
+before it deletes anything, and the bin shows when each item can go at the
+earliest.
 
 **Saving.** `PUT /api/admin/policies` takes `{ "values": { ... },
 "bin_min_retention"?: ..., "current_password": "..." }` with only the changed

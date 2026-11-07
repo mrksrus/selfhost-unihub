@@ -304,9 +304,9 @@ type PolicyLevel = Map<StoredPolicyKey, Policy[]>;
 
 // The levels from the broadest to the narrowest. A stored value that is no
 // longer valid for its key reads as absent.
-async function loadPolicyLevels(executor: SqlExecutor): Promise<PolicyLevel[]> {
+async function loadPolicyLevels(executor: SqlExecutor, { lock = false } = {}): Promise<PolicyLevel[]> {
   const [rows] = await executor.execute<RowDataPacket[]>(`SELECT setting_key, setting_value, locked FROM setting_policies
-    WHERE target_kind = 'installation' AND target_id = '' AND setting_key LIKE 'policy.%'`);
+    WHERE target_kind = 'installation' AND target_id = '' AND setting_key LIKE 'policy.%'${lock ? ' LOCK IN SHARE MODE' : ''}`);
   const installation: PolicyLevel = new Map();
   for (const row of rows) {
     const key = String(row.setting_key).slice(POLICY_PREFIX.length);
@@ -365,8 +365,8 @@ function binFloor(levels: readonly PolicyLevel[]): BinMinimumRetention | null {
 }
 
 /** The bin's minimum retention in force for the person (D34); null while bin.delete is allowed. */
-async function binRetentionFloor(_userId: string, executor: SqlExecutor = db): Promise<BinMinimumRetention | null> {
-  return binFloor(await loadPolicyLevels(executor));
+async function binRetentionFloor(_userId: string, executor: SqlExecutor = db, { lock = false }: PolicyRead = {}): Promise<BinMinimumRetention | null> {
+  return binFloor(await policyLevels(executor, lock));
 }
 
 // The bin's minimum becomes a floor of the person's bin_retention, together
@@ -389,14 +389,43 @@ async function resolvePolicies(userId: string, executor: SqlExecutor = db): Prom
 }
 
 /** One policy key as it applies to the person, for workers and services. */
-async function resolvePolicy<K extends PolicyKey>(userId: string, key: K, executor: SqlExecutor = db): Promise<EffectivePolicy<K>> {
-  return effectivePolicy(key, await loadPolicyLevels(executor));
+async function resolvePolicy<K extends PolicyKey>(userId: string, key: K, executor: SqlExecutor = db, { lock = false }: PolicyRead = {}): Promise<EffectivePolicy<K>> {
+  return effectivePolicy(key, await policyLevels(executor, lock));
+}
+
+/**
+ * Runs `work` once if the policy allows the person the action, holding the
+ * rules revision shared on a connection of its own until the work ends: an
+ * administrator's save that forbids it waits for work in flight, and none
+ * starts after that save committed (F13). For a provider command, which
+ * never runs inside a transaction that could be retried: the work must not
+ * use the database. Returns whether the work ran.
+ */
+async function whilePolicyAllows(userId: string, key: PolicyKey, work: () => Promise<unknown>): Promise<boolean> {
+  const cx = await db.getConnection();
+  try {
+    await cx.beginTransaction();
+    const allowed = effectivePolicy(key, await policyLevels(cx, true)).allowed;
+    if (allowed) await work();
+    await cx.commit();
+    return allowed;
+  } catch (error) {
+    await cx.rollback().catch(() => undefined);
+    throw error;
+  } finally { cx.release(); }
 }
 
 // The refusal of an action a policy forbids: 403 POLICY_FORBIDS with the key
 // and the plain reason the person sees.
 function policyForbids(policy: PolicyKey, reason: string) {
   return forbidden('POLICY_FORBIDS', reason, { policy, reason } satisfies PolicyForbidsDetails);
+}
+
+interface PolicyRead {
+  // For a destructive step inside its transaction (F13), on that
+  // transaction's connection: the policies as committed now, and no
+  // administrator's save commits until the transaction ends (policyLevels).
+  lock?: boolean;
 }
 
 interface PolicyActor {
@@ -448,6 +477,17 @@ async function dataRules(executor: SqlExecutor = db): Promise<string[]> {
 }
 
 const REVISION_KEY = 'policy_revision';
+
+// An administrator's save locks the revision row first and holds it until
+// it commits (updateAdminPolicies). A destructive step that holds the row
+// shared and then reads the policies with a locking read, which sees the
+// latest committed rows whatever the transaction read before, acts on the
+// rules in force: a save commits either before that read or after the step.
+async function policyLevels(executor: SqlExecutor, lock: boolean): Promise<PolicyLevel[]> {
+  if (!lock) return loadPolicyLevels(executor);
+  await executor.execute('SELECT setting_value FROM system_settings WHERE setting_key = ? LOCK IN SHARE MODE', [REVISION_KEY]);
+  return loadPolicyLevels(executor, { lock: true });
+}
 
 /** The installation's rules revision (system_settings policy_revision); 0 before any rule changed. */
 async function policyRevision(executor: SqlExecutor = db, { lock = false } = {}): Promise<number> {
@@ -630,6 +670,7 @@ export {
   binRetentionFloor,
   acknowledgePolicies,
   acknowledgeAtSignup,
+  whilePolicyAllows,
   dataRules,
   policyRevision,
   getAdminPolicies,

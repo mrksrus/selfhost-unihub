@@ -126,11 +126,13 @@ function retentionDays(retention: BinRetention, reason: BinReason) {
  * the administrator's minimum retention ('never' for forever). It is also
  * the floor of the person's resolved bin_retention (services/settings.ts);
  * asked again here, in the purge's own transaction, so a purge never goes
- * below it whatever the setting reads.
+ * below it whatever the setting reads. Locked, after the purge's last
+ * waiting lock: the policies as committed then, and an administrator's save
+ * waits for the batch (settings.ts policyLevels).
  */
-async function purgeFloorDays(userId: string, executor: SqlExecutor): Promise<number | null | 'never'> {
+async function purgeFloorDays(userId: string, executor: SqlExecutor, { lock = false } = {}): Promise<number | null | 'never'> {
   const { binRetentionFloor } = require('./settings') as typeof import('./settings');
-  const floor = await binRetentionFloor(userId, executor);
+  const floor = await binRetentionFloor(userId, executor, { lock });
   return floor === null ? null : floor === 'forever' ? 'never' : Number(floor);
 }
 
@@ -412,7 +414,9 @@ async function purgeBin({ now = new Date(), active = () => true }: PurgeOptions 
   const sections = await getActiveRestoreSectionsByUser(db);
   const { purgeMergeRecords, withPhotoLock } = require('./contact-merge') as typeof import('./contact-merge');
   let items = 0; let merges = 0;
-  const retentionNow = async (userId: string, cx: SqlExecutor) => retentionDaysNow(await binRetention(userId, cx), await purgeFloorDays(userId, cx));
+  // The resolved retention holds the floor as the transaction's snapshot saw
+  // it; with the floor read again under the lock, the stricter of both holds.
+  const retentionNow = async (userId: string, cx: SqlExecutor, lock = false) => retentionDaysNow(await binRetention(userId, cx), await purgeFloorDays(userId, cx, { lock }));
   for (const { user_id: userId } of due) {
     if (!active()) break;
     for (const module of MODULES) {
@@ -421,7 +425,7 @@ async function purgeBin({ now = new Date(), active = () => true }: PurgeOptions 
         if (module === 'contacts') {
           merges += await withTransaction(async cx => {
             await lockPersonForRetention(cx, userId, 'share');
-            const days = await retentionNow(userId, cx);
+            const days = await retentionNow(userId, cx, true);
             return days === null ? 0 : purgeMergeRecords(cx, userId, { now, minDays: Math.max(days, MERGE_UNDO_DAYS) });
           });
         }
@@ -444,9 +448,12 @@ async function purgeBin({ now = new Date(), active = () => true }: PurgeOptions 
             const restoring = new Set(journals.map(row => String(row.bin_item_id)));
             const [locked] = await cx.execute<BinRow[]>(
               `SELECT * FROM bin_items FORCE INDEX (PRIMARY) WHERE id IN (${placeholders(ids)}) AND user_id = ? ORDER BY id FOR UPDATE`, [...ids, userId]);
+            // The locks above may have waited while an administrator raised the floor.
+            const keep = await retentionNow(userId, cx, true);
+            if (keep === null) return { removed: [] as BinRow[], last: null };
             // Still due by its time and the retention in force now; an undone merge's rows go at their time.
             const removed = locked.filter(row => !restoring.has(row.id) && row.purge_after && new Date(row.purge_after) <= now
-              && (row.restored_at || now.getTime() - new Date(row.deleted_at).getTime() >= (row.reason === 'merged' ? Math.max(days, MERGE_UNDO_DAYS) : days) * 86400000));
+              && (row.restored_at || now.getTime() - new Date(row.deleted_at).getTime() >= (row.reason === 'merged' ? Math.max(keep, MERGE_UNDO_DAYS) : keep) * 86400000));
             if (removed.length) await cx.execute(`DELETE FROM bin_items WHERE user_id = ? AND id IN (${placeholders(removed.map(row => row.id))})`, [userId, ...removed.map(row => row.id)]);
             return { removed, last: candidates.length === PURGE_BATCH ? last : null };
           });
