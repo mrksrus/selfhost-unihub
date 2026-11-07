@@ -7,11 +7,22 @@ import type {
   SettingValuesByScope,
   UserSettingValues,
 } from '../contracts/settings';
-import type { EffectivePolicy, PolicyForbidsDetails, PolicyKey, PolicySource, PolicyValues } from '../contracts/policies';
+import type { AuthRequest } from '../types';
+import type {
+  AcknowledgePoliciesResponse,
+  AdminPoliciesResponse,
+  BinMinimumRetention,
+  EffectivePoliciesResponse,
+  EffectivePolicy,
+  PolicyForbidsDetails,
+  PolicyKey,
+  PolicySource,
+  PolicyValues,
+} from '../contracts/policies';
 
 import { db } from '../state';
 import { ApiError, badRequest, forbidden, notFound } from '../http/errors';
-import { SETTINGS, POLICIES } from './settings-registry';
+import { SETTINGS, POLICIES, BIN_MIN_RETENTION, POLICY_EFFECTS } from './settings-registry';
 import type { Entry, Kind, PolicyEntry, ReferenceTarget, Value } from './settings-registry';
 
 // The one owner of settings and policies (F1). Every option is one entry of
@@ -78,11 +89,12 @@ function accept(kind: Kind, value: unknown): Value | undefined {
 
 const stricter = (entry: Entry, a: Value, b: Value) => entry.strictness!.indexOf(String(a)) >= entry.strictness!.indexOf(String(b)) ? a : b;
 
-interface Policy { value: Value; locked: boolean }
+// reason: the plain words of a floor that comes from a data-safety policy.
+interface Policy { value: Value; locked: boolean; reason?: string }
 type Policies = Map<string, Policy>;
 
 async function loadPolicies(executor: SqlExecutor): Promise<Policies> {
-  const [rows] = await executor.execute<RowDataPacket[]>("SELECT setting_key, setting_value, locked FROM setting_policies WHERE target_kind = 'installation' AND target_id = ''");
+  const [rows] = await executor.execute<RowDataPacket[]>("SELECT setting_key, setting_value, locked FROM setting_policies WHERE target_kind = 'installation' AND target_id = '' AND setting_key NOT LIKE 'policy.%'");
   const policies: Policies = new Map();
   for (const row of rows) {
     const [scope, key] = String(row.setting_key).split('.', 2) as [SettingScope, string];
@@ -92,7 +104,7 @@ async function loadPolicies(executor: SqlExecutor): Promise<Policies> {
     const value = entry && entry.kind.type !== 'reference' ? decode(entry.kind, String(row.setting_value)) : undefined;
     if (value !== undefined) policies.set(row.setting_key, { value, locked: !!Number(row.locked) });
   }
-  return policies;
+  return withBinFloor(policies, await loadPolicyLevels(executor));
 }
 
 function resolve(scope: SettingScope, key: string, entry: Entry, stored: Value | undefined, policies: Policies): ResolvedSetting<Value> {
@@ -208,7 +220,7 @@ async function updateSettings<S extends SettingScope>(scope: S, userId: string, 
     if (value === undefined) throw badRequest('SETTING_INVALID', `Invalid value for ${key}`);
     const policy = policies.get(policyKey(scope, key));
     if (policy?.locked) throw forbidden('POLICY_LOCKED', `Your administrator has set ${key}`);
-    if (policy && entry.strictness && stricter(entry, value, policy.value) !== value) throw forbidden('POLICY_FLOOR', `Your administrator does not allow less than ${String(policy.value)} for ${key}`);
+    if (policy && entry.strictness && stricter(entry, value, policy.value) !== value) throw forbidden('POLICY_FLOOR', policy.reason ?? `Your administrator does not allow less than ${String(policy.value)} for ${key}`);
     await checkReference(userId, entry.kind, value, executor);
     if (key === 'notify_folders') await checkFolders(userId, value as string[], executor);
     updates.push([key, encode(entry.kind, value)]);
@@ -279,13 +291,16 @@ async function setUserPreferences(userId: string, input: Record<string, unknown>
 // can only make stricter; without an order, the narrower target's value
 // replaces an unlocked one. Among one person's groups the strictest value wins.
 // A policy names an action, not a choice of the person, so the user step
-// holds nothing: what a person may choose (the mail mode, including mail in a
-// backup) is for the service that takes the choice to check (0.28 C2; not
-// enforced before). Groups arrive in
-// 0.30 as one more level after the installation's.
+// holds nothing: what a person may choose (the mail mode, the provider
+// deletion switch) is checked by the service that takes the choice, with
+// assertAllowed and the same code. Groups arrive in 0.30 as one more level
+// after the installation's.
 const POLICY_PREFIX = 'policy.';
+const BIN_MIN_KEY = 'bin.min_retention';
+type StoredPolicyKey = PolicyKey | typeof BIN_MIN_KEY;
 const isPolicyKey = (key: string): key is PolicyKey => Object.prototype.hasOwnProperty.call(POLICIES, key);
-type PolicyLevel = Map<PolicyKey, Policy[]>;
+const policyEntry = (key: StoredPolicyKey): PolicyEntry => (key === BIN_MIN_KEY ? BIN_MIN_RETENTION : POLICIES[key]) as PolicyEntry;
+type PolicyLevel = Map<StoredPolicyKey, Policy[]>;
 
 // The levels from the broadest to the narrowest. A stored value that is no
 // longer valid for its key reads as absent.
@@ -295,8 +310,8 @@ async function loadPolicyLevels(executor: SqlExecutor): Promise<PolicyLevel[]> {
   const installation: PolicyLevel = new Map();
   for (const row of rows) {
     const key = String(row.setting_key).slice(POLICY_PREFIX.length);
-    if (!isPolicyKey(key)) continue;
-    const value = decode(POLICIES[key].kind, String(row.setting_value));
+    if (!isPolicyKey(key) && key !== BIN_MIN_KEY) continue;
+    const value = decode(policyEntry(key).kind, String(row.setting_value));
     if (value !== undefined) installation.set(key, [{ value, locked: !!Number(row.locked) }]);
   }
   return [installation];
@@ -340,6 +355,33 @@ function effectivePolicy<K extends PolicyKey>(key: K, levels: readonly PolicyLev
   return { value: value as PolicyValues[K], source, allowed: !own, reason: entry.reasons[String(value)] ?? null };
 }
 
+/**
+ * The bin's minimum retention in force (D34): while bin.delete is forbidden,
+ * the administrator's minimum (by default forever); otherwise none.
+ */
+function binFloor(levels: readonly PolicyLevel[]): BinMinimumRetention | null {
+  if (effectivePolicy('bin.delete', levels).allowed) return null;
+  return resolvePolicyValue(BIN_MIN_RETENTION as PolicyEntry, levels.map(level => level.get(BIN_MIN_KEY))).value as BinMinimumRetention;
+}
+
+/** The bin's minimum retention in force for the person (D34); null while bin.delete is allowed. */
+async function binRetentionFloor(_userId: string, executor: SqlExecutor = db): Promise<BinMinimumRetention | null> {
+  return binFloor(await loadPolicyLevels(executor));
+}
+
+// The bin's minimum becomes a floor of the person's bin_retention, together
+// with any policy of that setting itself (the stricter holds), so the
+// settings answer, a refused choice, new bin items and the purge all see it.
+function withBinFloor(policies: Policies, levels: readonly PolicyLevel[]): Policies {
+  const floor = binFloor(levels);
+  if (floor === null) return policies;
+  const key = policyKey('user', 'bin_retention');
+  const own = policies.get(key);
+  const value = own ? stricter(SETTINGS.user.bin_retention as Entry, own.value, floor) : floor;
+  policies.set(key, { value, locked: own?.locked ?? false, ...(value === floor ? { reason: BIN_MIN_RETENTION.reasons[floor] } : {}) });
+  return policies;
+}
+
 /** Every policy key as it applies to the person, from one read of the stored policies. */
 async function resolvePolicies(userId: string, executor: SqlExecutor = db): Promise<{ [K in PolicyKey]: EffectivePolicy<K> }> {
   const levels = await loadPolicyLevels(executor);
@@ -380,6 +422,186 @@ async function assertAllowed(userId: string, keys: PolicyKey | readonly PolicyKe
   }
 }
 
+// --- The rules people are told about (D38) -----------------------------------
+
+/**
+ * The rules in force, in plain words: every key an administrator set to
+ * something other than its default or whose action is refused, then the
+ * bin's minimum while it holds. The same list is shown at sign-up, in the
+ * notice and in Settings → Profile; when it changes, so does the revision.
+ */
+function rulesOf(levels: readonly PolicyLevel[]): string[] {
+  const rules: string[] = [];
+  for (const key of Object.keys(POLICIES) as PolicyKey[]) {
+    const policy = effectivePolicy(key, levels);
+    if ((policy.allowed && policy.value === POLICIES[key].default) || !policy.reason) continue;
+    rules.push(policy.reason);
+  }
+  const floor = binFloor(levels);
+  if (floor) rules.push(BIN_MIN_RETENTION.reasons[floor]);
+  return [...new Set(rules)];
+}
+
+/** The rules in force for the sign-up form (GET /api/auth/signup-mode). */
+async function dataRules(executor: SqlExecutor = db): Promise<string[]> {
+  return rulesOf(await loadPolicyLevels(executor));
+}
+
+const REVISION_KEY = 'policy_revision';
+
+/** The installation's rules revision (system_settings policy_revision); 0 before any rule changed. */
+async function policyRevision(executor: SqlExecutor = db, { lock = false } = {}): Promise<number> {
+  const [rows] = await executor.execute<RowDataPacket[]>(`SELECT setting_value FROM system_settings WHERE setting_key = ?${lock ? ' FOR UPDATE' : ''}`, [REVISION_KEY]);
+  const revision = Number(rows[0]?.setting_value);
+  return Number.isSafeInteger(revision) && revision > 0 ? revision : 0;
+}
+
+async function acknowledgedRevision(userId: string, executor: SqlExecutor = db): Promise<number> {
+  const [[row]] = await executor.execute<RowDataPacket[]>('SELECT COALESCE(MAX(revision), 0) AS revision FROM policy_notices WHERE user_id = ?', [userId]);
+  return Number(row.revision) || 0;
+}
+
+// Records that the person saw the rules of a revision; nothing for revision 0.
+async function recordAcknowledged(userId: string, revision: number, executor: SqlExecutor) {
+  if (revision > 0) await executor.execute('INSERT IGNORE INTO policy_notices (user_id, revision) VALUES (?, ?)', [userId, revision]);
+}
+
+/** GET /api/policies/effective: every key for the person, the rules and where their notice stands. */
+async function getEffectivePolicies(userId: string, executor: SqlExecutor = db): Promise<EffectivePoliciesResponse> {
+  const levels = await loadPolicyLevels(executor);
+  const policies = Object.fromEntries((Object.keys(POLICIES) as PolicyKey[]).map(key => [key, effectivePolicy(key, levels)])) as EffectivePoliciesResponse['policies'];
+  const [revision, acknowledged] = await Promise.all([policyRevision(executor), acknowledgedRevision(userId, executor)]);
+  return { policies, revision, acknowledged_revision: Math.min(acknowledged, revision), rules: rulesOf(levels) };
+}
+
+/** POST /api/policies/acknowledge: the person confirmed the rules of `revision`. */
+async function acknowledgePolicies(userId: string, input: unknown): Promise<AcknowledgePoliciesResponse> {
+  const revision = (input as { revision?: unknown } | null)?.revision;
+  if (!Number.isSafeInteger(revision) || (revision as number) < 0) throw badRequest('POLICY_REVISION_INVALID', 'Expected { revision: <number> }');
+  if ((revision as number) > await policyRevision()) throw badRequest('POLICY_REVISION_INVALID', 'That revision of the rules does not exist yet');
+  await recordAcknowledged(userId, revision as number, db);
+  return { acknowledged_revision: await acknowledgedRevision(userId) };
+}
+
+/** A new person saw the rules at sign-up; their account starts with them confirmed. */
+async function acknowledgeAtSignup(userId: string, executor: SqlExecutor = db) {
+  await recordAcknowledged(userId, await policyRevision(executor), executor);
+}
+
+// --- The administrator's policies page ----------------------------------------
+
+function policyValues(entry: PolicyEntry): Value[] {
+  const { kind } = entry;
+  if (kind.type === 'enum') return [...kind.values];
+  if (kind.type === 'integer') return [...(kind.nullable ? [null] : []), ...(kind.values ?? [])];
+  return [entry.default];
+}
+
+function adminView(levels: readonly PolicyLevel[], revision: number): AdminPoliciesResponse {
+  const policies = Object.fromEntries((Object.keys(POLICIES) as PolicyKey[]).map(key => {
+    const entry = POLICIES[key] as PolicyEntry;
+    const { value, source } = resolvePolicyValue(entry, levels.map(level => level.get(key)));
+    return [key, { value, source, default: entry.default, values: policyValues(entry), effect: POLICY_EFFECTS[key] ?? null }];
+  })) as unknown as AdminPoliciesResponse['policies'];
+  const minimum = resolvePolicyValue(BIN_MIN_RETENTION as PolicyEntry, levels.map(level => level.get(BIN_MIN_KEY)));
+  return {
+    policies,
+    bin_min_retention: { value: minimum.value as BinMinimumRetention, source: minimum.source, default: 'forever', values: [...BIN_MIN_RETENTION.kind.type === 'enum' ? BIN_MIN_RETENTION.kind.values : []] as BinMinimumRetention[],
+      applies: binFloor(levels) !== null, effect: POLICY_EFFECTS[BIN_MIN_KEY]! },
+    revision,
+  };
+}
+
+/** GET /api/admin/policies. */
+async function getAdminPolicies(executor: SqlExecutor = db): Promise<AdminPoliciesResponse> {
+  return adminView(await loadPolicyLevels(executor), await policyRevision(executor));
+}
+
+const policyConflict = (message: string) => badRequest('POLICY_CONFLICT', message);
+
+// Combinations that cannot hold: refused before anything is stored.
+function checkPolicyCombination(levels: readonly PolicyLevel[]) {
+  const value = <K extends PolicyKey>(key: K) => effectivePolicy(key, levels).value;
+  if (value('mail.mode.download') === 'forbidden' && value('mail.mode.sync') === 'forbidden') throw policyConflict('Allow at least one mail mode. To stop new mail accounts, forbid adding accounts instead.');
+  const forced = value('mail.mode.new_accounts');
+  if ((forced === 'download' || forced === 'download_delete') && value('mail.mode.download') === 'forbidden') throw policyConflict('New accounts cannot use Download mode while Download mode is not allowed.');
+  if (forced === 'sync' && value('mail.mode.sync') === 'forbidden') throw policyConflict('New accounts cannot use Sync mode while Sync mode is not allowed.');
+  if (forced === 'download_delete' && value('mail.provider_delete') === 'forbidden') throw policyConflict('New accounts cannot delete at the provider while deleting there is not allowed.');
+}
+
+interface PolicyUpdate { key: StoredPolicyKey; value: Value }
+
+function parsePolicyUpdates(input: unknown): PolicyUpdate[] {
+  const body = input as { values?: unknown; bin_min_retention?: unknown } | null;
+  const values = body?.values ?? {};
+  if (!values || typeof values !== 'object' || Array.isArray(values)) throw badRequest('POLICY_INVALID', 'Expected { values: { ... }, current_password }');
+  const updates: PolicyUpdate[] = [];
+  for (const [key, raw] of Object.entries(values)) {
+    if (!isPolicyKey(key)) throw badRequest('POLICY_UNKNOWN', `Unknown policy ${key}`);
+    const value = accept(POLICIES[key].kind, raw);
+    if (value === undefined) throw badRequest('POLICY_INVALID', `Invalid value for ${key}`);
+    updates.push({ key, value });
+  }
+  if (body && Object.prototype.hasOwnProperty.call(body, 'bin_min_retention')) {
+    const value = accept(BIN_MIN_RETENTION.kind, body.bin_min_retention);
+    if (value === undefined) throw badRequest('POLICY_INVALID', 'Invalid value for bin_min_retention');
+    updates.push({ key: BIN_MIN_KEY, value });
+  }
+  if (!updates.length) throw badRequest('POLICY_INVALID', 'Nothing to change');
+  return updates;
+}
+
+/**
+ * PUT /api/admin/policies, after the route checked the administrator's
+ * password: the changed values in one transaction with an activity-log
+ * entry for each; the revision goes up when the rules people see change,
+ * and the administrator who saved them has seen them. A value equal to the
+ * key's default removes its policy. Changing a policy deletes nothing:
+ * services read the rules when they act.
+ */
+async function updateAdminPolicies(adminId: string, input: unknown, { req = null }: { req?: AuthRequest | null } = {}): Promise<AdminPoliciesResponse> {
+  const updates = parsePolicyUpdates(input);
+  const { recordAudit } = require('./audit') as typeof import('./audit');
+  const { withTransaction } = require('./transactions') as typeof import('./transactions');
+  return withTransaction(async cx => {
+    // The revision row is the lock between administrators saving at once.
+    await cx.execute("INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES (?, '0')", [REVISION_KEY]);
+    const revision = await policyRevision(cx, { lock: true });
+    const before = await loadPolicyLevels(cx);
+    const after: PolicyLevel[] = before.map(level => new Map(level));
+    const changed: { key: StoredPolicyKey; from: Value; to: Value }[] = [];
+    for (const { key, value } of updates) {
+      const entry = policyEntry(key);
+      const from = resolvePolicyValue(entry, before.map(level => level.get(key))).value;
+      const stored = before[0].get(key);
+      if (value === entry.default) after[0].delete(key); else after[0].set(key, [{ value, locked: false }]);
+      if (from !== value || (stored !== undefined) !== (value !== entry.default)) changed.push({ key, from, to: value });
+    }
+    checkPolicyCombination(after);
+    for (const { key, to } of changed) {
+      const entry = policyEntry(key);
+      if (to === entry.default) {
+        await cx.execute("DELETE FROM setting_policies WHERE target_kind = 'installation' AND target_id = '' AND setting_key = ?", [POLICY_PREFIX + key]);
+      } else {
+        await cx.execute(`INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked, updated_by) VALUES ('installation', '', ?, ?, FALSE, ?)
+          ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), locked = FALSE, updated_by = VALUES(updated_by)`, [POLICY_PREFIX + key, encode(entry.kind, to), adminId]);
+      }
+    }
+    for (const { key, from, to } of changed) {
+      if (from === to) continue;
+      await recordAudit({ action: 'admin.policy_changed', actorId: adminId, req, details: { key, from: from as string | number | null, to: to as string | number | null } }, cx);
+    }
+    const stored = await loadPolicyLevels(cx);
+    let next = revision;
+    if (JSON.stringify(rulesOf(stored)) !== JSON.stringify(rulesOf(before))) {
+      next = revision + 1;
+      await cx.execute('UPDATE system_settings SET setting_value = ? WHERE setting_key = ?', [String(next), REVISION_KEY]);
+      await recordAcknowledged(adminId, next, cx);
+    }
+    return adminView(stored, next);
+  });
+}
+
 const SIGNUP_MODES = ['open', 'approval', 'disabled'] as const;
 type SignupMode = typeof SIGNUP_MODES[number];
 const isSignupMode = (value: unknown): value is SignupMode => SIGNUP_MODES.includes(value as SignupMode);
@@ -404,6 +626,14 @@ export {
   POLICIES,
   resolvePolicy,
   resolvePolicies,
+  getEffectivePolicies,
+  binRetentionFloor,
+  acknowledgePolicies,
+  acknowledgeAtSignup,
+  dataRules,
+  policyRevision,
+  getAdminPolicies,
+  updateAdminPolicies,
   resolvePolicyValue,
   assertAllowed,
   policyForbids,

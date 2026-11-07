@@ -137,8 +137,9 @@ test('CSRF: sign-in and sign-up need no token, exactly the service-worker routes
 // DELETE, and any POST whose path names a removal; a new one fails here until
 // it is declared or listed. The limit: a PUT, or a POST named otherwise, that
 // removes data, or a removal chosen by the body (the provider-deletion switch
-// of a mail account, its mode), is not found by name; review and the service
-// checks (0.28 C2) carry those. The real refusals are walked in
+// of a mail account, its mode, a mail account's linked calendar), is not
+// found by name; review and the service checks carry those
+// (mail-account-mode.ts, calendar-accounts.ts setMailCalendar). The real refusals are walked in
 // policies-mysql-integration.
 const NOT_DESTRUCTIVE: Readonly<Record<string, string>> = {
   'DELETE /api/auth/sessions/:id': 'signs a device out; no data',
@@ -162,6 +163,15 @@ const NOT_DESTRUCTIVE: Readonly<Record<string, string>> = {
   'DELETE /api/recordings/:id': 'moves the recording to the bin',
   'DELETE /api/admin/users/:id': 'admin path: role, password and activity log; a person\'s policy never stops an administrator',
   'POST /api/admin/users/:id/2fa/reset': 'admin path, as above',
+  // The administrator's path for a person (routes/admin-people.ts): what a
+  // policy forbids the person; password and activity log, the person's
+  // module switch and restore lock checked in the service.
+  'DELETE /api/admin/users/:id/mail-accounts/:accountId': 'admin path, as above',
+  'DELETE /api/admin/users/:id/calendar-accounts/:accountId': 'admin path, as above',
+  'DELETE /api/admin/users/:id/backups/:jobId': 'admin path, as above; also before backup.server_retention_days (D36)',
+  'DELETE /api/admin/users/:id/bin/:itemId': 'admin path, as above',
+  'POST /api/admin/users/:id/bin/empty': 'admin path, as above',
+  'POST /api/admin/users/:id/clear/:module': 'admin path, as above',
 };
 const removesData = (key: string) => {
   const [method, path] = key.split(' ');

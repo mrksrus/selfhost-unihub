@@ -32,6 +32,7 @@ import {
 import { revealProtectedRecoveryPassword } from '../services/backup-container';
 import { BACKUP_DISABLED_MESSAGE, DISABLED_BACKUP_ROUTES } from '../services/backup-availability';
 import { downloadMailChoice } from '../services/backup-classes';
+import { assertBackupDeletable } from '../services/backup-policy';
 import { SECTION_POLICIES, ACCOUNT_SECTION } from '../services/backup-catalog';
 import { BACKUP_VERSION } from '../services/backup-format';
 
@@ -204,8 +205,15 @@ const routes: RouteTable = defineRoutes({
     } catch (error) { return failed(error, 'Failed to cancel backup job', 'Cancel backup job error'); }
   }),
 
+  // backup.server_retention_days is a minimum age before deleting (D36).
   'DELETE /api/backup/jobs/:id': write(async (req, userId) => {
-    try { return await deleteDataExportJob(userId, req.params.id); } catch (error) { return failed(error, 'Failed to delete backup job', 'Delete backup job error'); }
+    try {
+      await assertBackupDeletable(userId, req.params.id);
+      return await deleteDataExportJob(userId, req.params.id);
+    } catch (error) {
+      if ((error as ApiError).code === 'POLICY_FORBIDS') return clientError(error, 'Failed to delete backup job');
+      return failed(error, 'Failed to delete backup job', 'Delete backup job error');
+    }
   }, { destructive: ['backup.delete'] }),
 
   'GET /api/backup/restore-jobs': user(async (_req, userId) => {

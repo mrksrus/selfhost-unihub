@@ -157,8 +157,12 @@ Public endpoint:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/auth/signup-mode` | Return current signup mode |
+| GET | `/api/auth/signup-mode` | Return current signup mode and `data_rules`: the [data-safety rules](#data-safety-policies) in force, in plain words, so the form can list them |
 | POST | `/api/auth/signup` | Create account according to signup mode |
+
+A person who signs up has seen the rules listed on the form, so their account
+starts with the current rules revision confirmed and the notice is not shown
+to them.
 
 ## Sign-In Flow
 
@@ -243,7 +247,14 @@ password. The same rule applies to all of them: a missing password is `400`
 (`ADMIN_PASSWORD_REQUIRED`), a wrong one `403` (`ADMIN_PASSWORD_INCORRECT`, not
 `401`, which the browser treats as an expired session), and after 10 wrong
 passwords in 10 minutes an admin gets `429` with `Retry-After`. In **Admin >
-Users** each of these actions asks for it.
+Users** each of these actions asks for it. The same holds for every change on
+the [administrator's path for a person](#the-administrators-path-for-a-person),
+for saving the [policies](#data-safety-policies) and for the instance backup's
+schedule (`api/src/security/reauthentication.ts`).
+
+Deleting one's own account asks for one's own password the same way
+(`DELETE /api/settings/account` with `{ "current_password": "..." }`): `400
+PASSWORD_REQUIRED`, `403 PASSWORD_INCORRECT`, `429` after too many wrong ones.
 
 ### Admin reset
 
@@ -320,15 +331,39 @@ boundary checks it before the handler runs.
 | GET | `/api/admin/settings/signup-mode` | Read signup mode |
 | PUT | `/api/admin/settings/signup-mode` | Set signup mode |
 | GET | `/api/admin/audit` | Activity log, newest first; `?before=<cursor>` for the next page |
-| GET | `/api/admin/instance-backup` | Instance backup: on or off (and what is missing), the read-only configuration, the key's fingerprint, next run, kept count and size, the latest runs and the restore command (`server.settings`) |
+| GET | `/api/admin/instance-backup` | Instance backup: on or off (and what is missing), the read-only destination, the key's fingerprint, the schedule in force (`time_utc`, `keep`, `schedule_source`, `schedule_defaults`), next run, kept count and size, the latest runs and the restore command (`server.settings`) |
 | POST | `/api/admin/instance-backup/run` | "Back up now": `202` with the started run; `409 INSTANCE_BACKUP_OFF` or `INSTANCE_BACKUP_RUNNING`, `503 INSTANCE_BACKUP_NOT_READY` while the process does not run the background work yet (`server.settings`) |
+| PUT | `/api/admin/instance-backup/settings` | The time of the daily run (`HH:MM`, UTC) and how many backups are kept (1 to 1000), with the admin's password (`server.settings`) |
+| GET | `/api/admin/policies` | Every data-safety policy with its value, source, default, values and what it means for existing data, the bin's minimum and the rules revision (`server.settings`) |
+| PUT | `/api/admin/policies` | Save changed policies with the admin's password (`server.settings`) |
+| GET | `/api/admin/users/:id/accounts`, `/backups`, `/bin` | A person's mail and calendar accounts (no credentials), backups and bin (`users.read`) |
+| POST, PUT, DELETE | `/api/admin/users/:id/mail-accounts[/:accountId]` | Add, change, disconnect (`?purge=true`: and delete UniHub's copy of its mail) a person's mail account (`users.manage`) |
+| POST, PUT, DELETE | `/api/admin/users/:id/calendar-accounts[/:accountId]` | Add, change, remove a person's calendar account (`users.manage`) |
+| DELETE | `/api/admin/users/:id/backups/:jobId` | Delete a person's backup (`users.manage`) |
+| POST, DELETE | `/api/admin/users/:id/bin/empty`, `/api/admin/users/:id/bin/:itemId` | Empty a person's bin (optionally one module) or delete one item for good (`users.manage`) |
+| POST | `/api/admin/users/:id/clear/:module` | Settings > Delete data for a person: `contacts`, `calendar`, `mail-accounts` or `recordings` (`users.manage`) |
+
+The instance backup's destination and key come only from the environment (or
+`*_FILE`). Its schedule is an installation setting the admin changes on the
+page; until then `INSTANCE_BACKUP_TIME` and `INSTANCE_BACKUP_KEEP`, or daily
+03:30 UTC and 14 kept, apply. The schedule reads it every minute and a run
+reads the kept count when it succeeds, so a change needs no restart; a lower
+count removes the oldest backups at the next verified success, as the count
+always does.
 
 ### Activity log
 
 `audit_log` (upgrade step 19) records sign-ins and failed sign-ins, password,
 2FA and recovery-code changes, signing out another device, account deletion,
 every admin action on a user or on sign-up, starting an instance backup
-(`admin.instance_backup_started`), and the removal of a person's mail
+(`admin.instance_backup_started`) and changing its schedule
+(`admin.instance_backup_settings_changed`), each changed policy
+(`admin.policy_changed` with the key and its old and new value), everything
+done on the administrator's path for a person (`admin.mail_account_added`,
+`_changed`, `_removed`, `_reset`; `admin.calendar_account_added`, `_changed`,
+`_removed`; `admin.backup_deleted`, `admin.bin_emptied`,
+`admin.bin_item_deleted`, `admin.data_cleared`, with the person as the
+account concerned), and the removal of a person's mail
 data: disconnecting a mail account (`mail.account_disconnected`) and deleting
 it with UniHub's copy of its mail (`mail.account_purged`). Each entry names
 the actor, the account concerned, the address and the request id; details hold
@@ -402,7 +437,7 @@ and the request boundary refuses a forbidden action with 403 `POLICY_FORBIDS`
 and `details: { policy, reason }` before anything changes, for every person,
 administrators included on their own data. A locked policy stands; a policy
 of a key with an order is a floor that later group policies can only make
-stricter. No route writes them yet.
+stricter. See [Data-safety policies](#data-safety-policies).
 
 ### User scope
 
@@ -424,6 +459,7 @@ stricter. No route writes them yet.
 | `mail_preview_lines` | `0` to `5` | `1` | Mail |
 | `snooze_choices` | a list from `1h`, `3h`, `tomorrow`, `1d`, `2d`, `next_week`, `1w`, `2w`, `1mo`, each at most once | `1h`, `1d`, `1w` | Mail |
 | `snoozed_messages` | `hide` (out of the lists until due), `keep` (stays in its folder, marked); a view rule applied at once ([Snooze](MAIL_SYNC.md#snooze)) | `hide` | Mail |
+| `bin_retention` | how long the bin keeps a deleted item: `7`, `30`, `90` days or `forever`; while deleting from the bin for good is forbidden, never below the administrator's minimum (its `floor`) | `30` | Bin |
 
 A reference (`default_mail_account_id`, `default_task_list_id`,
 `default_calendar_id`) is checked against its own kind of record when it is
@@ -474,18 +510,103 @@ Light or System, and a look per theme such as OLED black or High contrast),
 **Offline reading**, and the device part of **Notifications** (permission and
 the subscription of this browser or phone). They say "Saved on this device".
 
+## Data-safety policies
+
+Administrators set them in Settings > Server settings > Policies for the whole
+installation (groups follow in 0.30). They are rules on actions (F13 on F1),
+resolved by `services/settings.ts` (`resolvePolicy`, `assertAllowed`) from the
+installation's `policy.<key>` rows, else the key's default, which always
+allows what UniHub did before. Changing a policy deletes nothing: the
+services read the rules when they act.
+
+| Key | Values (default first) | What it stops |
+| --- | --- | --- |
+| `mail.mode.download`, `mail.mode.sync` | `allowed`, `forbidden` | adding an account in that mode, switching one to it; existing accounts keep working |
+| `mail.mode.new_accounts` | `user_choice`, `download`, `download_delete`, `sync` | a new account in another mode: the dialog preselects and locks it, the server fills it in or refuses another |
+| `mail.provider_delete` | `user_choice`, `forbidden`, `required` | `forbidden`: turning deletion at the provider on, and the deletion worker queues and deletes nothing more for anyone; `required`: a new Download account deletes at the provider |
+| `backup.download_mail` | `user_choice`, `always` | leaving downloaded mail out of a backup |
+| `backup.create`, `backup.restore`, `backup.delete` | `allowed`, `forbidden` | creating, restoring, deleting one's backups |
+| `backup.server_retention_days` | none, `30`, `90`, `365` | deleting a finished backup younger than that; nothing is deleted automatically |
+| `accounts.add`, `accounts.remove`, `accounts.reset` | `allowed`, `forbidden` | adding, removing mail and calendar accounts (also turning a linked calendar on or off), deleting UniHub's copy of an account's mail |
+| `account.delete` | `allowed`, `forbidden` | deleting one's own UniHub account |
+| `data.clear` | `allowed`, `forbidden`; also forbidden while `bin.delete` is | Settings > Delete data |
+| `bin.delete` | `allowed`, `forbidden` | deleting from the bin for good and emptying it; the automatic purge then keeps items for the bin's minimum |
+| `accounts.admin_manage` | `available` | nothing: the administrator's path is always there |
+
+A route names the policies of its action on its spec and the request boundary
+refuses before anything happens. A rule that depends on the body is checked
+by the service that takes it, with the same `403 POLICY_FORBIDS` and its
+reason: the mode and the provider-deletion switch of a new or changed mail
+account (`services/mail-account-mode.ts`), and turning a mail account's linked
+calendar on or off. A backup younger than `backup.server_retention_days` is
+refused with the date from which it can be deleted
+(`services/backup-policy.ts`).
+
+**The bin's minimum.** While `bin.delete` is forbidden, the bin keeps items at
+least as long as the administrator's minimum (`30`, `90` days or `forever`,
+by default `forever`; `bin_min_retention` on the policies routes, stored as
+`policy.bin.min_retention`). It is the floor of the person's `bin_retention`:
+a shorter choice reads as the minimum and saving one is refused with `403
+POLICY_FLOOR`; a longer one stays. The purge asks again before it deletes
+anything, and the bin shows when each item can go at the earliest.
+
+**Saving.** `PUT /api/admin/policies` takes `{ "values": { ... },
+"bin_min_retention"?: ..., "current_password": "..." }` with only the changed
+keys; a value equal to the default removes the policy. One transaction holds
+the values and an `admin.policy_changed` entry per changed key. A key or value
+the server does not know is `400 POLICY_UNKNOWN` or `POLICY_INVALID`; a
+combination that cannot hold (new accounts in a mode that is not allowed, new
+accounts deleting at the provider while that is forbidden, both mail modes
+forbidden) is `400 POLICY_CONFLICT`, and nothing is saved.
+
+**Telling people (D38).** The rules in force are listed in plain words: every
+key not at its default or refusing its action, and the bin's minimum while it
+holds. When that list changes, the rules revision (`system_settings`
+`policy_revision`) goes up and the administrator who saved it has seen it.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/policies/effective` | Every key as it applies to the person (`value`, `source`, `allowed`, `reason`), the `rules`, the current `revision` and the person's `acknowledged_revision` |
+| POST | `/api/policies/acknowledge` | `{ "revision": n }`: the person confirmed the rules of that revision (`policy_notices`, never restored); a revision that does not exist yet is `400 POLICY_REVISION_INVALID` |
+
+While `acknowledged_revision` is below `revision`, the app shows the rules once
+and records the confirmation; Settings > Profile lists them; the sign-up form
+lists them from `GET /api/auth/signup-mode`.
+
+### The administrator's path for a person
+
+A rule that forbids a person something never makes it impossible: an
+administrator does it for them on Admin > Users > the person, with their own
+password, and the activity log records it with the person as the account
+concerned (routes in [Admin Endpoints](#admin-endpoints)). Each route calls the
+service of the person's own route with the person's id and the administrator
+as actor, so the person's policies do not stop it; the request boundary checks
+the administrator, so the service checks the person's module switch (`403
+MODULE_DISABLED`) and restore lock (`409 RESTORE_IN_PROGRESS`) before any
+change, and an id of anyone else's record is `404`. The administrator's
+password stands for the typed address a person enters to delete an account's
+mail. Deleting the mail is still refused while a provider change of the
+account has an unresolved outcome, and a backup can be deleted before its
+minimum age. Accounts are listed without credentials.
+
 ## User Data Management Endpoints
 
 These routes are for the current user and require CSRF:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| DELETE | `/api/settings/account` | Delete current user and associated uploaded files |
-| POST | `/api/settings/clear-contacts` | Delete all contacts |
-| POST | `/api/settings/clear-calendar` | Delete calendar/to-do data and recreate default local calendar |
-| POST | `/api/settings/clear-mail-accounts` | Delete all mail accounts and attachment files |
-| POST | `/api/settings/clear-recordings` | Delete all recordings and files |
+| DELETE | `/api/settings/account` | Delete current user and associated uploaded files; needs `{ "current_password": "..." }` (`account.delete`) |
+| POST | `/api/settings/clear-contacts` | Delete all contacts (`data.clear`) |
+| POST | `/api/settings/clear-calendar` | Delete calendar/to-do data and recreate default local calendar (`data.clear`, `accounts.remove`) |
+| POST | `/api/settings/clear-mail-accounts` | Delete all mail accounts and attachment files (`data.clear`, `accounts.remove`, `accounts.reset`); `409 MAIL_OPERATIONS_UNRESOLVED` while a provider change has an unresolved outcome |
+| POST | `/api/settings/clear-recordings` | Delete all recordings and files (`data.clear`) |
 | GET | `/api/settings/mail-sender-candidates` | Suggest sender/domain rule candidates from local mail |
+
+The four clears are `services/data-clear.ts`, shared with the administrator's
+path. Clearing mail accounts refuses, as purging one account does, while a
+provider change has an unresolved outcome: it stops the accounts' work, then
+checks again under the locks of the accounts and their messages, so a change
+accepted meanwhile cannot slip past.
 
 Account deletion (`services/user-lifecycle.ts`, shared with the admin route)
 stops the user's mail work, deletes the `users` row (every table cascades from

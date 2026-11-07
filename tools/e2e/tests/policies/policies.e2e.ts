@@ -3,6 +3,7 @@ import { expect, credentials } from 'e2e';
 import { people, signInPassword, stack } from '../support/env.ts';
 import { ok, pageApi, signIn } from '../support/api.ts';
 import { onlyOn } from '../support/ui.ts';
+import { createProviderMailbox } from '../support/mail.ts';
 
 // 0.28 policies (C, E; F13) with three people: the admin sets a rule with
 // their password, alex sees the greyed control with its reason and the
@@ -11,7 +12,7 @@ import { onlyOn } from '../support/ui.ts';
 // decisions: the bin's minimum (D34), backups kept a minimum age (D36),
 // the notices of the rules (D38) and the password on self-deletion (D41).
 
-// The handle for the form; the plain value for request bodies made from Node.
+// The handle fills the dialogs; API bodies made from Node need the value itself (synthetic).
 const password = credentials.user('admin').password;
 const apiPassword = signInPassword;
 const REASON = 'Your administrator does not allow deleting items from the bin for good.';
@@ -19,20 +20,23 @@ const PEOPLE = ['admin', 'alex', 'blair'] as const;
 
 interface Effective { policies: Record<string, { allowed: boolean; reason: string | null; value: unknown }>; revision: number; acknowledged_revision: number; rules: string[] }
 
-/** Records the current revision as seen for these people, so no notice blocks a page in another test. */
-async function acknowledge(names: readonly (typeof PEOPLE)[number][] = PEOPLE) {
+// A changed rule leaves the notice due for everyone (D38), and its dialog
+// covers the page: each person confirms it here, except where a test is
+// about that notice. Without a revision, the current one is confirmed where
+// it is still due.
+async function acknowledge(names: readonly (typeof PEOPLE)[number][] = PEOPLE, revision?: number) {
   for (const name of names) {
     const api = await signIn(name);
-    const effective = ok(await api<Effective>('GET', '/api/policies/effective'), `${name} rules`);
-    if (effective.acknowledged_revision < effective.revision) ok(await api('POST', '/api/policies/acknowledge', { revision: effective.revision }), `${name} acknowledges`);
+    const due = revision ?? await (async () => { const effective = ok(await api<Effective>('GET', '/api/policies/effective'), `${name} rules`); return effective.acknowledged_revision < effective.revision ? effective.revision : null; })();
+    if (due !== null) ok(await api('POST', '/api/policies/acknowledge', { revision: due }), `${name} confirms the rules`);
   }
 }
 
 /** Sets rules as the admin; everyone has seen them afterwards unless `unseen` names who has not. */
 async function setPolicy(values: Record<string, unknown>, { binMinimum, unseen = [] as readonly (typeof PEOPLE)[number][] } = {}) {
   const admin = await signIn('admin');
-  ok(await admin('PUT', '/api/admin/policies', { values, ...(binMinimum ? { bin_min_retention: binMinimum } : {}), current_password: apiPassword }), 'set policy');
-  await acknowledge(PEOPLE.filter((name) => !unseen.includes(name)));
+  const saved = ok(await admin<{ revision: number }>('PUT', '/api/admin/policies', { values, ...(binMinimum ? { bin_min_retention: binMinimum } : {}), current_password: apiPassword }), 'set policy');
+  await acknowledge(PEOPLE.filter((name) => !unseen.includes(name)), saved.revision);
 }
 
 test('[28-11 28-13] a rule set by the admin greys alex\'s control with its reason, and the server refuses; blair cannot set rules', { session: 'admin', timeout: 300_000 }, async ({ app, screen, browser }) => {
@@ -151,20 +155,19 @@ test('[28-12] the admin adds a mail account for alex with their password; alex h
   const { users } = ok(await admin<{ users: { id: string; email: string }[] }>('GET', '/api/admin/users'), 'users');
   const alexId = users.find((user) => user.email === people.alex.email)!.id;
   const address = `alex.admin.${Date.now().toString(36)}@mail.test`;
+  await createProviderMailbox(address);
   await app.open(`/admin/users/${alexId}`);
   await screen.getByRole('button', 'Add mail account').tap();
   const dialog = screen.getByRole('dialog', 'Add a mail account');
   // Every dialog of this path names the person it acts for.
   await expect(dialog.getByTestId('confirm-target')).toContainText(people.alex.email);
   await dialog.getByLabel('Email address').fill(address);
-  // The provider knows alex's mailbox only; the address stays unique for this run.
-  await dialog.getByLabel('Username').fill(people.alex.mailbox);
   await dialog.getByLabel('Mail password').fill(stack.providerPassword);
   await dialog.getByLabel('IMAP server').fill(stack.providerHost);
   await dialog.getByLabel('IMAP port').fill(String(stack.imapsPort));
   await dialog.getByLabel('SMTP server').fill(stack.providerHost);
   await dialog.getByLabel('SMTP port').fill(String(stack.smtpsPort));
-  // The radio row's label covers its input: the label is the tap target.
+  // The row is the tap target; its input is drawn by the row (RadioRow).
   await dialog.getByText('Sync', { exact: true }).tap();
   await expect(dialog.getByRole('radio', /^Sync/)).toBeChecked();
   await dialog.getByLabel('Your password', { exact: true }).fill(password);

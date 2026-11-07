@@ -106,6 +106,14 @@ function getCurrentBoxUidValidity(connection: ProtocolConnection | null) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
+// mail.provider_delete forbidden (F13): nothing more is queued or deleted at
+// the provider, also for an account whose switch is on; the queue waits and
+// goes on once the policy allows it again. Changing the policy deletes nothing.
+async function providerDeletionForbidden(userId: string) {
+  const { resolvePolicy } = require('./settings') as typeof import('./settings');
+  return !(await resolvePolicy(userId, 'mail.provider_delete')).allowed;
+}
+
 async function recordMailServerMessageForDeletion({
   connection = db,
   userId,
@@ -125,6 +133,7 @@ async function recordMailServerMessageForDeletion({
   const folderName = String(sourceFolder || '');
   if (!userId || !accountId || !emailId || !folderName || !normalizedUid || !epoch
     || rawFormat !== 'exact_octets' || rawVerified !== true) return false;
+  if (await providerDeletionForbidden(userId)) return false;
   if (!await verifyArchive({ raw_storage_path: rawStoragePath, raw_sha256: rawSha256,
     raw_bytes: rawBytes, raw_format: rawFormat, raw_verified: rawVerified }, { root: rawRoot() })) return false;
 
@@ -149,7 +158,7 @@ async function recordMailServerMessageForDeletion({
 }
 
 async function seedMailServerDeletionQueueForAccount({ userId, accountId, connection = db }: { userId: string; accountId: string; connection?: SqlExecutor }) {
-  if (!userId || !accountId) return { queued: 0 };
+  if (!userId || !accountId || await providerDeletionForbidden(userId)) return { queued: 0 };
   let queued = 0, afterId = '';
   for (;;) {
     const [emails] = await connection.execute<RowDataPacket[]>(
@@ -251,6 +260,7 @@ async function isMailServerDeletionStillEnabled(accountId: string) {
   if (!account || account.sync_mode === 'sync') return false;
   if (!toBooleanFlag(account.delete_emails_on_server) || !toBooleanFlag(account.is_active)) return false;
   if (!await canRunModule(account.user_id, 'mail', { background: true })) return false;
+  if (await providerDeletionForbidden(account.user_id)) return false;
   if (!account.server_delete_grace_until) return false;
   return new Date(account.server_delete_grace_until).getTime() <= Date.now();
 }
@@ -286,6 +296,9 @@ async function processMailServerDeletionForAccountUnlocked(accountId: string, { 
     }
     if (await isSectionRestoreActive(account.user_id, 'mail')) {
       return { accountId: normalizedAccountId, skipped: true, reason: 'mail_restore_running' };
+    }
+    if (await providerDeletionForbidden(account.user_id)) {
+      return { accountId: normalizedAccountId, skipped: true, reason: 'policy_forbids' };
     }
 
     const config = await buildImapConnectionConfig(account as RowDataPacket & Parameters<typeof buildImapConnectionConfig>[0]);

@@ -14,10 +14,9 @@ import { listAuditLog, recordAudit, recordAuditAfter } from '../services/audit';
 import { clientError } from '../http/errors';
 import {
   hashPassword,
-  verifyPassword,
   getAuthTokenFromRequest,
 } from '../auth';
-import { refundReauth, reserveReauth } from '../security/login-limits';
+import { confirmPassword } from '../security/reauthentication';
 import { disableTwoFactor } from '../services/two-factor';
 import { getSignupMode, isSignupMode, setSignupMode } from '../services/settings';
 import { defineRoutes } from '../http/route';
@@ -40,28 +39,9 @@ async function getActiveAdminCount() {
 
 // Changing another person's password, role or 2FA, deactivating or deleting
 // them needs the admin's own password again, so a stolen or unattended admin
-// session cannot take over or remove an account. Not 401: the client treats a
-// 401 outside /api/auth/ as an expired session and signs out.
-async function confirmAdminPassword(userId: string, body: Input, res?: import('node:http').ServerResponse | null) {
-  const currentPassword = body?.current_password;
-  if (typeof currentPassword !== 'string' || !currentPassword || currentPassword.length > 1024) {
-    return { error: 'Your current password is required', code: 'ADMIN_PASSWORD_REQUIRED', status: 400 };
-  }
-  const retryAfter = reserveReauth(userId);
-  if (retryAfter) {
-    res?.setHeader('Retry-After', String(retryAfter));
-    return { error: `Too many attempts. Try again in ${retryAfter} seconds.`, status: 429 };
-  }
-  let wrong: boolean | null = null;
-  try {
-    const [admins] = await db.execute<RowDataPacket[]>('SELECT password_hash FROM users WHERE id = ?', [userId]);
-    wrong = !admins.length || !(await verifyPassword(currentPassword, admins[0].password_hash));
-  } finally {
-    // A right password, or a check that failed for another reason, is not a guess.
-    if (wrong !== true) refundReauth(userId);
-  }
-  if (wrong) return { error: 'Current password is incorrect', code: 'ADMIN_PASSWORD_INCORRECT', status: 403 };
-  return null;
+// session cannot take over or remove an account (security/reauthentication.ts).
+function confirmAdminPassword(userId: string, body: Input, res?: import('node:http').ServerResponse | null) {
+  return confirmPassword(userId, body?.current_password, res);
 }
 
 async function getUserRoleStatus(targetId: string) {

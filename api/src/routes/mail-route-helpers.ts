@@ -4,23 +4,9 @@ import type { ApiError, StoredFlag } from '../types';
 import { db } from '../state';
 import { CLIENT_KEY_PATTERN } from '../services/mail-engine/repository';
 import { clientError } from '../http/errors';
-import { normalizeMailFolderSlug, ensureDefaultMailFoldersForUser, scheduleMailAccountSync } from '../services/mail';
+import { normalizeMailFolderSlug, ensureDefaultMailFoldersForUser } from '../services/mail';
+import { startMailSyncInBackground } from '../services/mail-account-changes';
 import { pendingFlagSql, EFFECTIVE_READ_SQL, EFFECTIVE_STAR_SQL } from '../services/mail-folder-view';
-
-async function startMailSyncInBackground(accountId: string, label = accountId, options: Record<string, unknown> = {}) {
-  const job = await scheduleMailAccountSync(accountId, options);
-  if (job.skipped) return null;
-  job.promise
-    .then((result: { success?: boolean; error?: string } | null | undefined) => {
-      if (result?.success === false) {
-        console.error(`[SYNC] Background sync failed for ${label}:`, result.error || 'Unknown error');
-      }
-    })
-    .catch((error: Error) => {
-      console.error(`[SYNC] Background sync failed for ${label}:`, error.message);
-    });
-  return job.started;
-}
 
 async function validateUserMailFolder(userId: string, folderSlug: unknown) {
   const normalizedSlug = normalizeMailFolderSlug(folderSlug);

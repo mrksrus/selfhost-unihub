@@ -22,7 +22,12 @@ export interface PolicyValues {
   'backup.create': Allowance;
   'backup.restore': Allowance;
   'backup.delete': Allowance;
-  /** Days the server keeps each user backup before removing it; null keeps it until deleted. */
+  /**
+   * The minimum age of a user backup before its owner may delete it (D36):
+   * a DELETE of a younger one is refused with POLICY_FORBIDS. Nothing is
+   * ever deleted automatically; the administrator's path can delete earlier.
+   * null sets no minimum.
+   */
   'backup.server_retention_days': 30 | 90 | 365 | null;
   /** Adding mail and calendar accounts, and turning a mail account's linked calendar on. */
   'accounts.add': Allowance;
@@ -36,11 +41,24 @@ export interface PolicyValues {
   'account.delete': Allowance;
   /** Settings → Delete data, per module; also forbidden while bin.delete is. */
   'data.clear': Allowance;
-  /** Deleting from the bin for good and emptying it. */
+  /**
+   * Deleting from the bin for good and emptying it. Forbidden, it also stops
+   * the automatic purge from going below the bin's minimum retention
+   * (BinMinimumRetention): people may keep items longer, never shorter.
+   */
   'bin.delete': Allowance;
 }
 
 export type PolicyKey = keyof PolicyValues;
+
+/**
+ * How long the bin keeps deleted items at least while bin.delete is
+ * forbidden (D34; default 'forever': the purge then deletes nothing). It
+ * becomes the floor of the person's bin_retention setting, so the settings
+ * answer shows it as that setting's `floor`. Stored as policy.bin.min_retention;
+ * not a PolicyKey yet, so it is its own field of the administrator's routes.
+ */
+export type BinMinimumRetention = '30' | '90' | 'forever';
 
 /** Where a value comes from: an administrator's policy or the default. */
 export type PolicySource = 'policy' | 'default';
@@ -66,7 +84,11 @@ export interface EffectivePoliciesResponse {
   rules: string[];
 }
 
-/** POST /api/policies/acknowledge: the revision the person saw. */
+/**
+ * POST /api/policies/acknowledge: the revision the person saw. A revision
+ * above the current one is refused (400 POLICY_REVISION_INVALID); an older
+ * one records nothing new and the notice stays due.
+ */
 export interface AcknowledgePoliciesRequest { revision: number }
 export interface AcknowledgePoliciesResponse { acknowledged_revision: number }
 
@@ -81,19 +103,42 @@ export interface AdminPolicy<K extends PolicyKey = PolicyKey> {
   effect: string | null;
 }
 
+/** The bin's minimum retention as administrators see it. */
+export interface AdminBinMinimumRetention {
+  value: BinMinimumRetention;
+  source: PolicySource;
+  default: 'forever';
+  values: BinMinimumRetention[];
+  /** True while bin.delete is forbidden: only then does the minimum hold anything. */
+  applies: boolean;
+  effect: string;
+}
+
 /** GET /api/admin/policies (permission server.settings). */
 export interface AdminPoliciesResponse {
   policies: { [K in PolicyKey]: AdminPolicy<K> };
+  /** Always sent since 0.28 C2. */
+  bin_min_retention?: AdminBinMinimumRetention;
   revision: number;
 }
 
 /**
  * PUT /api/admin/policies: the changed values only, with the administrator's
- * password. One transaction with the activity-log entry; changing a policy
- * deletes nothing.
+ * password; the answer is AdminPoliciesResponse as now set. One transaction
+ * with an activity-log entry per changed key (admin.policy_changed with
+ * key, from, to); the revision goes up when the rules people see change.
+ * Changing a policy deletes nothing. A value equal to the default removes
+ * the policy. Refused with 400:
+ * - POLICY_UNKNOWN: a key the server does not know
+ * - POLICY_INVALID: a value the key cannot take
+ * - POLICY_CONFLICT: a combination that cannot hold, for example new
+ *   accounts in a mode that is not allowed, or new accounts that delete at
+ *   the provider while deleting there is not allowed
+ * - ADMIN_PASSWORD_REQUIRED (400) / ADMIN_PASSWORD_INCORRECT (403)
  */
 export interface AdminPoliciesUpdateRequest {
   values: Partial<PolicyValues>;
+  bin_min_retention?: BinMinimumRetention;
   current_password: string;
 }
 
@@ -103,5 +148,10 @@ export interface PolicyForbidsDetails {
   reason: string;
 }
 
-/** GET /api/auth/signup-mode gains the rules that limit a new person, in plain words. */
+/**
+ * GET /api/auth/signup-mode gains the rules that limit a new person, in plain
+ * words (the same as EffectivePoliciesResponse.rules); empty while every
+ * policy is at its default. A person who signs up has seen them: their
+ * account starts with the current revision acknowledged.
+ */
 export interface SignupDataRules { data_rules: string[] }
