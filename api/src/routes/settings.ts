@@ -1,18 +1,17 @@
-import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
+import type { RowDataPacket } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
 import { db } from '../state';
 import { clearAuthCookie, clearCsrfCookie } from '../auth';
 import { clientError } from '../http/errors';
-import { ensureDefaultLocalCalendarForUser } from '../services/calendar';
+import { clearModuleData, CLEAR_MODULES } from '../services/data-clear';
+import type { ClearTarget } from '../services/data-clear';
+import type { PolicyKey } from '../contracts/policies';
+import { confirmPassword, OWN_CODES } from '../security/reauthentication';
 import {
-  deleteStoredAttachmentFiles,
   loadActiveMailSenderRules,
   pickBestMailSenderRuleMatch,
   normalizeSenderDomain,
 } from '../services/mail';
-import {
-  clearRecordings,
-} from '../services/recordings';
 import { deleteUser } from '../services/user-lifecycle';
 import { getScopedSettings, getSettings, getUserPreferences, setUserPreferences, updateSettings } from '../services/settings';
 import { changeUserSettings } from '../services/bin';
@@ -28,6 +27,20 @@ import { defineRoutes } from '../http/route';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 type Input = Record<string, unknown>;
+
+function clearRoute(target: ClearTarget, destructive: readonly PolicyKey[]) {
+  return {
+    auth: 'user' as const, module: CLEAR_MODULES[target], restoreSection: CLEAR_MODULES[target], destructive,
+    handler: async (_req: Request, userId: string) => {
+      try {
+        return await clearModuleData(userId, target);
+      } catch (error) {
+        if (!(error as ApiError).status) console.error(`Clear ${target} error:`, error);
+        return clientError(error, 'Failed to delete the data');
+      }
+    },
+  };
+}
 
 export = defineRoutes({
   // The settings registry (F1). Mail-account and calendar settings follow
@@ -101,8 +114,12 @@ export = defineRoutes({
     }
   } },
 
-  'DELETE /api/settings/account': { auth: 'user', module: null, restoreSection: '*', destructive: ['account.delete'], handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+  // Deleting one's own account asks for the password again (D41): a stolen or
+  // unattended session must not remove everything (security/reauthentication.ts).
+  'DELETE /api/settings/account': { auth: 'user', module: null, restoreSection: '*', destructive: ['account.delete'], body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
     try {
+      const refused = await confirmPassword(userId, body?.current_password, res, OWN_CODES);
+      if (refused) return refused;
       await deleteUser(userId, { actor: 'self', actorId: userId, req });
       clearAuthCookie(res);
       clearCsrfCookie(res);
@@ -115,83 +132,12 @@ export = defineRoutes({
 
   // Clearing a module's data follows that module's switch and its restore lock.
   // It deletes for good (data.clear, also forbidden while bin.delete is), and
-  // clearing calendar or mail removes the module's accounts as well.
-  'POST /api/settings/clear-contacts': { auth: 'user', module: 'contacts', restoreSection: 'contacts', destructive: ['data.clear'], handler: async (req: Request, userId: string) => {
-    try {
-      const [result] = await db.execute<ResultSetHeader>('DELETE FROM contacts WHERE user_id = ?', [userId]);
-      const deleted = result.affectedRows || 0;
-      return { message: `Deleted ${deleted} contact(s)`, deleted };
-    } catch (error) {
-      console.error('Clear contacts error:', error);
-      return { error: 'Failed to delete contacts', status: 500 };
-    }
-  } },
-  'POST /api/settings/clear-calendar': { auth: 'user', module: 'calendar', restoreSection: 'calendar', destructive: ['data.clear', 'accounts.remove'], handler: async (req: Request, userId: string) => {
-    try {
-      const [subtasksResult] = await db.execute<ResultSetHeader>('DELETE FROM calendar_event_subtasks WHERE user_id = ?', [userId]);
-      const [eventsResult] = await db.execute<ResultSetHeader>('DELETE FROM calendar_events WHERE user_id = ?', [userId]);
-      await db.execute('DELETE FROM calendar_calendars WHERE user_id = ?', [userId]);
-      await db.execute('DELETE FROM calendar_accounts WHERE user_id = ?', [userId]);
-      await ensureDefaultLocalCalendarForUser(userId);
-      const deletedSubtasks = subtasksResult.affectedRows || 0;
-      const deletedEvents = eventsResult.affectedRows || 0;
-      return { message: `Deleted ${deletedEvents} event(s) and ${deletedSubtasks} subtask(s)`, deleted: deletedEvents + deletedSubtasks };
-    } catch (error) {
-      console.error('Clear calendar error:', error);
-      return { error: 'Failed to delete calendar and todo data', status: 500 };
-    }
-  } },
-  'POST /api/settings/clear-mail-accounts': { auth: 'user', module: 'mail', restoreSection: 'mail', destructive: ['data.clear', 'accounts.remove', 'accounts.reset'], handler: async (req: Request, userId: string) => {
-    try {
-      const [attachments] = await db.execute<RowDataPacket[]>(
-        'SELECT storage_path FROM email_attachments WHERE user_id = ?',
-        [userId]
-      );
-      // Linked calendars stay, unlinked: one connected from mail finds a mail
-      // account with its address again (its sync waits until then), and its
-      // running work, which read a deleted login, stops.
-      const { stopCalendarAccountWork, unlinkFromDeletedMail } = require('../services/calendar-sync') as typeof import('../services/calendar-sync');
-      const connection = await db.getConnection();
-      let result: ResultSetHeader;
-      let linkedCalendars: (RowDataPacket & { id: string; provider: string; provider_config: unknown; mail_account_id: string })[];
-      try {
-        await connection.beginTransaction();
-        // Locking read: a sync linking a calendar meanwhile waits for the commit
-        // and then finds its mail account gone.
-        [linkedCalendars] = await connection.execute<typeof linkedCalendars>(`SELECT id, provider, provider_config, mail_account_id FROM calendar_accounts
-          WHERE user_id = ? AND mail_account_id IS NOT NULL FOR UPDATE`, [userId]);
-        [result] = await connection.execute<ResultSetHeader>('DELETE FROM mail_accounts WHERE user_id = ?', [userId]);
-        for (const calendar of linkedCalendars) await unlinkFromDeletedMail(connection, calendar, calendar.mail_account_id);
-        await connection.commit();
-      } catch (error) { await connection.rollback(); throw error; }
-      finally { connection.release(); }
-      const { publishCalendarChanged } = require('../services/realtime') as typeof import('../services/realtime');
-      for (const calendar of linkedCalendars) {
-        if (calendar.provider === 'caldav') stopCalendarAccountWork(calendar.id, 'unlinked');
-        publishCalendarChanged(userId, calendar.id, 'status');
-      }
-      const fileResult = await deleteStoredAttachmentFiles((attachments || []).map(row => row.storage_path));
-      const deleted = result.affectedRows || 0;
-      return {
-        message: `Deleted ${deleted} mail account(s). Removed ${fileResult.deletedFiles} attachment file(s).`,
-        deleted,
-        deletedAttachmentFiles: fileResult.deletedFiles,
-        failedAttachmentFiles: fileResult.failedFiles,
-      };
-    } catch (error) {
-      console.error('Clear mail accounts error:', error);
-      return { error: 'Failed to delete mail accounts', status: 500 };
-    }
-  } },
-  'POST /api/settings/clear-recordings': { auth: 'user', module: 'recordings', restoreSection: 'recordings', destructive: ['data.clear'], handler: async (req: Request, userId: string) => {
-    try {
-      const deleted = await clearRecordings(userId);
-      return { message: `Deleted ${deleted} recording(s)`, deleted };
-    } catch (error) {
-      console.error('Clear recordings error:', error);
-      return { error: 'Failed to delete recordings', status: 500 };
-    }
-  } },
+  // clearing calendar or mail removes the module's accounts as well
+  // (services/data-clear.ts, shared with the administrator's path).
+  'POST /api/settings/clear-contacts': clearRoute('contacts', ['data.clear']),
+  'POST /api/settings/clear-calendar': clearRoute('calendar', ['data.clear', 'accounts.remove']),
+  'POST /api/settings/clear-mail-accounts': clearRoute('mail-accounts', ['data.clear', 'accounts.remove', 'accounts.reset']),
+  'POST /api/settings/clear-recordings': clearRoute('recordings', ['data.clear']),
   'GET /api/settings/mail-sender-candidates': { auth: 'user', module: 'mail', handler: async (req: Request, userId: string) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host}`);

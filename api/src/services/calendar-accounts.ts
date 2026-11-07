@@ -7,6 +7,7 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { ApiError, MailAccountIdentity, SqlExecutor, StoredFlag } from '../types';
 import type { CalendarAccount } from '../types/calendar';
+import type { PolicyActor } from './settings';
 import crypto from 'crypto';
 import { db } from '../state';
 import { encrypt, decrypt } from '../security/encryption';
@@ -353,7 +354,10 @@ function currentManualUrl(account: AccountRow | null) {
 
 // Turn the calendar of a mail account on or off, or change its address.
 // caldav_url: undefined keeps the current address, '' finds it automatically.
-async function setMailCalendar(userId: string, mailAccountId: string, { enabled, caldav_url: caldavUrl, time_zone: timeZone }: { enabled?: unknown; caldav_url?: unknown; time_zone?: unknown } = {}) {
+// Turning a mail account's calendar on adds a calendar account, turning it
+// off removes one: accounts.add and accounts.remove (F13), which depend on
+// the body and so are checked here; an administrator's actor passes them.
+async function setMailCalendar(userId: string, mailAccountId: string, { enabled, caldav_url: caldavUrl, time_zone: timeZone }: { enabled?: unknown; caldav_url?: unknown; time_zone?: unknown } = {}, actor: PolicyActor = {}) {
   if (typeof enabled !== 'boolean') throw fail('enabled must be true or false', 400);
   if (caldavUrl !== undefined && caldavUrl !== null && typeof caldavUrl !== 'string') throw fail('Calendar address must be text', 400);
   const requestedUrl = caldavUrl == null ? undefined : caldavUrl.trim();
@@ -363,8 +367,10 @@ async function setMailCalendar(userId: string, mailAccountId: string, { enabled,
   // Mail module; turning the calendar off deletes calendar data.
   await assertCalendarAvailable(userId);
   const existing = await linkedCalendarAccount(userId, mail);
+  const { assertAllowed } = require('./settings') as typeof import('./settings');
 
   if (!enabled) {
+    if (existing) await assertAllowed(userId, 'accounts.remove', actor);
     if (existing) await removeCalendarAccount(userId, existing.id);
     return describeLink(userId, mail, null);
   }
@@ -385,6 +391,8 @@ async function setMailCalendar(userId: string, mailAccountId: string, { enabled,
     return describeLink(userId, mail, (await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM calendar_accounts WHERE id = ?', [existing.id]))[0][0]);
   }
 
+  // A new link adds an account; a new address replaces the old one.
+  await assertAllowed(userId, existing ? ['accounts.add', 'accounts.remove'] : ['accounts.add'], actor);
   const password = mail.encrypted_password ? decrypt(mail.encrypted_password) : null;
   const manualUrl = requestedUrl !== undefined ? requestedUrl : existingUrl;
   const subscription = manualUrl && looksLikeIcsFeed(manualUrl, caldav.matchCalendarProvider({ emailAddress: mail.email_address, imapHost: mail.imap_host }));

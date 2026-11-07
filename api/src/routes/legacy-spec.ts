@@ -85,10 +85,11 @@ const BACKGROUND_HEADER_CSRF_KEYS: ReadonlySet<string> = new Set([
 //   route reads it) deletes its mail there and here: mail.provider_delete. A
 //   folder that is only UniHub's returns its mail to Inbox and names none.
 // - One mail account's backup (routes/backup.ts declares the other backup routes).
-// The rules that depend on the body come with their service checks (0.28
-// C2): the mail mode and the provider-deletion switch of a new or changed
-// mail account (and the deletion worker's recheck), and turning a mail
-// account's linked calendar on or off.
+// The rules that depend on the body are checked in their services with the
+// same function and code: the mail mode and the provider-deletion switch of
+// a new or changed mail account (mail-account-mode.ts; the deletion worker
+// checks again before each message), and turning a mail account's linked
+// calendar on or off (calendar-accounts.ts setMailCalendar).
 const POLICIES_BY_ROUTE: Readonly<Record<string, Pick<RoutePolicy, 'destructive' | 'requires'>>> = {
   'POST /api/mail/accounts': { requires: ['accounts.add'] },
   'DELETE /api/mail/accounts/:id': { destructive: ['accounts.remove', { policy: 'accounts.reset', query: { purge: 'true' } }] },

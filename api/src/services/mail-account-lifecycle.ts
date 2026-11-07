@@ -210,4 +210,4 @@ async function disconnectAndPurgeAccount(userId: string, accountId: string, conf
   }
 }
 
-export { purgePreview, disconnectAccount, purgeAccount, disconnectAndPurgeAccount, removeUnreferencedRaw };
+export { purgePreview, disconnectAccount, purgeAccount, disconnectAndPurgeAccount, removeUnreferencedRaw, unresolved as UNRESOLVED_OPERATION_SQL };
