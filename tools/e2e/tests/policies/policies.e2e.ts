@@ -1,20 +1,30 @@
 import { test } from '@e2e-dev/web';
 import { expect, credentials } from 'e2e';
-import { people, stack } from '../support/env.ts';
+import { people, signInPassword, stack } from '../support/env.ts';
 import { ok, pageApi, signIn } from '../support/api.ts';
 import { onlyOn } from '../support/ui.ts';
+import { createProviderMailbox } from '../support/mail.ts';
 
 // 0.28 policies (C, E; F13) with three people: the admin sets a rule with
 // their password, alex sees the greyed control with its reason and the
 // server refuses the action, blair cannot change rules, and the admin acts
 // for alex through Users with an activity-log entry.
 
+// The handle fills the dialogs; API bodies need the value itself (synthetic).
 const password = credentials.user('admin').password;
 const REASON = 'Your administrator does not allow deleting items from the bin for good.';
 
+// A changed rule leaves the notice due for everyone (D38), and its dialog
+// covers the page: each person confirms it here, except where a test is
+// about that notice.
+async function acknowledge(revision: number, names: readonly string[] = ['admin', 'alex', 'blair']) {
+  for (const name of names) ok(await (await signIn(name))('POST', '/api/policies/acknowledge', { revision }), `${name} confirms the rules`);
+}
+
 async function setPolicy(values: Record<string, unknown>) {
   const admin = await signIn('admin');
-  ok(await admin('PUT', '/api/admin/policies', { values, current_password: password }), 'set policy');
+  const saved = ok(await admin<{ revision: number }>('PUT', '/api/admin/policies', { values, current_password: signInPassword }), 'set policy');
+  await acknowledge(saved.revision);
 }
 
 test('[28-11 28-13] a rule set by the admin greys alex\'s control with its reason, and the server refuses; blair cannot set rules', { session: 'admin', timeout: 300_000 }, async ({ app, screen, browser }) => {
@@ -72,6 +82,7 @@ test('[28-12] the admin adds a mail account for alex with their password; alex h
   const { users } = ok(await admin<{ users: { id: string; email: string }[] }>('GET', '/api/admin/users'), 'users');
   const alexId = users.find((user) => user.email === people.alex.email)!.id;
   const address = `alex.admin.${Date.now().toString(36)}@mail.test`;
+  await createProviderMailbox(address);
   await app.open(`/admin/users/${alexId}`);
   await screen.getByRole('button', 'Add mail account').tap();
   const dialog = screen.getByRole('dialog', 'Add a mail account');
@@ -81,7 +92,9 @@ test('[28-12] the admin adds a mail account for alex with their password; alex h
   await dialog.getByLabel('IMAP port').fill(String(stack.imapsPort));
   await dialog.getByLabel('SMTP server').fill(stack.providerHost);
   await dialog.getByLabel('SMTP port').fill(String(stack.smtpsPort));
-  await dialog.getByRole('radio', /^Sync/).tap();
+  // The row is the tap target; its input is drawn by the row (RadioRow).
+  await dialog.getByText('Sync', { exact: true }).tap();
+  await expect(dialog.getByRole('radio', /^Sync/)).toBeChecked();
   await dialog.getByLabel('Your password', { exact: true }).fill(password);
   await dialog.getByRole('button', 'Add account').tap();
   await expect(screen.getByText('Mail account added', { exact: true })).toBeVisible({ timeout: 60_000 });
