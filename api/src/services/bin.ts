@@ -122,13 +122,16 @@ function retentionDays(retention: BinRetention, reason: BinReason) {
 
 /**
  * The purge's question to the data-safety policies before it deletes a
- * person's items: the floor of D34 (an administrator's minimum retention, or
- * no automatic purge while deleting for good is forbidden) plugs in here.
- * Until it is decided nothing beyond the person's resolved retention holds
- * an item.
+ * person's items (D34): while deleting from the bin for good is forbidden,
+ * the administrator's minimum retention ('never' for forever). It is also
+ * the floor of the person's resolved bin_retention (services/settings.ts);
+ * asked again here, in the purge's own transaction, so a purge never goes
+ * below it whatever the setting reads.
  */
-async function purgeFloorDays(_userId: string, _executor: SqlExecutor): Promise<number | null | 'never'> {
-  return null;
+async function purgeFloorDays(userId: string, executor: SqlExecutor): Promise<number | null | 'never'> {
+  const { binRetentionFloor } = require('./settings') as typeof import('./settings');
+  const floor = await binRetentionFloor(userId, executor);
+  return floor === null ? null : floor === 'forever' ? 'never' : Number(floor);
 }
 
 /**
@@ -216,6 +219,19 @@ function parseModule(value: unknown): BinModule | null {
 
 // --- Listing ----------------------------------------------------------------
 
+/**
+ * When the purge may take an item under the retention in force now: never
+ * before its stored time, and no sooner than the retention (with the
+ * administrator's minimum, D34) allows; null when nothing will take it.
+ * The stored time is only moved when the person changes their retention.
+ */
+function shownPurgeAfter(row: Pick<BinRow, 'purge_after' | 'deleted_at' | 'reason'>, retention: BinRetention) {
+  const days = retentionDays(retention, row.reason);
+  if (!row.purge_after || days === null) return null;
+  const earliest = new Date(iso(row.deleted_at)).getTime() + days * 86400000;
+  return new Date(Math.max(new Date(iso(row.purge_after)).getTime(), earliest)).toISOString();
+}
+
 /** GET /api/bin?module=: the open items of the person's enabled modules, newest first. */
 async function listBin(userId: string, moduleInput?: unknown): Promise<BinListResponse> {
   const module = parseModule(moduleInput);
@@ -232,7 +248,7 @@ async function listBin(userId: string, moduleInput?: unknown): Promise<BinListRe
   const pending = await restoringBinItems(db, userId);
   const items: BinItem[] = rows.map(row => ({
     id: row.id, module: row.module, item_type: row.item_type, title: row.title, reason: row.reason, group_id: row.group_id,
-    deleted_at: iso(row.deleted_at), purge_after: row.purge_after ? iso(row.purge_after) : null,
+    deleted_at: iso(row.deleted_at), purge_after: shownPurgeAfter(row, retention),
     provider: row.provider === 'caldav' ? 'caldav' : 'local', origin: row.origin || null,
     ...(pending.has(row.id) ? { restoring: true as const } : {}),
   }));

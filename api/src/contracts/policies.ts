@@ -117,7 +117,8 @@ export interface AdminBinMinimumRetention {
 /** GET /api/admin/policies (permission server.settings). */
 export interface AdminPoliciesResponse {
   policies: { [K in PolicyKey]: AdminPolicy<K> };
-  bin_min_retention: AdminBinMinimumRetention;
+  /** Always sent since 0.28 C2. */
+  bin_min_retention?: AdminBinMinimumRetention;
   revision: number;
 }
 

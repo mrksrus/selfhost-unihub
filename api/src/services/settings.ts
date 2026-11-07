@@ -364,6 +364,11 @@ function binFloor(levels: readonly PolicyLevel[]): BinMinimumRetention | null {
   return resolvePolicyValue(BIN_MIN_RETENTION as PolicyEntry, levels.map(level => level.get(BIN_MIN_KEY))).value as BinMinimumRetention;
 }
 
+/** The bin's minimum retention in force for the person (D34); null while bin.delete is allowed. */
+async function binRetentionFloor(_userId: string, executor: SqlExecutor = db): Promise<BinMinimumRetention | null> {
+  return binFloor(await loadPolicyLevels(executor));
+}
+
 // The bin's minimum becomes a floor of the person's bin_retention, together
 // with any policy of that setting itself (the stricter holds), so the
 // settings answer, a refused choice, new bin items and the purge all see it.
@@ -622,6 +627,7 @@ export {
   resolvePolicy,
   resolvePolicies,
   getEffectivePolicies,
+  binRetentionFloor,
   acknowledgePolicies,
   acknowledgeAtSignup,
   dataRules,
