@@ -317,6 +317,36 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     assert.match(status.restore_command, /instance-restore\.js --file/);
   });
 
+  await t.test('D35: the schedule and the count an administrator sets are picked up without a restart', async () => {
+    const put = (body: Record<string, unknown>, status: number) => admin.request('PUT', '/api/admin/instance-backup/settings', body)
+      .then(reply => { assert.equal(reply.status, status, JSON.stringify(reply.body)); return reply.body as FixtureValue; });
+    assert.equal((await put({ time_utc: '11:00', keep: 1, current_password: 'wrong-password' }, 403)).code, 'ADMIN_PASSWORD_INCORRECT');
+    assert.equal((await put({ time_utc: '25:00', keep: 1, current_password: password }, 400)).code, 'INSTANCE_BACKUP_TIME_INVALID');
+    assert.equal((await put({ time_utc: '11:00', keep: 0, current_password: password }, 400)).code, 'INSTANCE_BACKUP_KEEP_INVALID');
+    assert.equal((await alex.request('PUT', '/api/admin/instance-backup/settings', { time_utc: '11:00', keep: 1, current_password: password })).status, 403);
+    const unchanged = (await admin.request('GET', '/api/admin/instance-backup')).body as FixtureValue;
+    assert.deepEqual([unchanged.time_utc, unchanged.keep, unchanged.schedule_source, unchanged.schedule_defaults], ['03:30', 2, 'environment', { time_utc: '03:30', keep: 2 }]);
+
+    // A day far from the real runs: its scheduled run at 03:30 has happened (failed), so at 12:00 nothing is due.
+    const now = new Date('2030-01-15T12:00:00Z');
+    const earlier = crypto.randomUUID();
+    await pool.execute("INSERT INTO instance_backups (id, trigger_kind, status, app_version, migration_id, started_at, finished_at, error) VALUES (?, 'schedule', 'failed', '0.0.0', 0, '2030-01-15 04:00:00', '2030-01-15 04:01:00', 'synthetic')", [earlier]);
+    assert.equal(await backup.runDueInstanceBackup(now), null);
+    const saved = await put({ time_utc: '11:00', keep: 1, current_password: password }, 200);
+    assert.deepEqual([saved.time_utc, saved.keep, saved.schedule_source], ['11:00', 1, 'admin']);
+    const [[entry]] = await pool.query<RowDataPacket[]>("SELECT actor_id, details FROM audit_log WHERE action = 'admin.instance_backup_settings_changed'");
+    assert.deepEqual([entry.actor_id, typeof entry.details === 'string' ? JSON.parse(entry.details) : entry.details], [users.admin, { from_time_utc: '03:30', time_utc: '11:00', from_keep: 2, keep: 1 }]);
+    // The same process, no new configuration: the 11:00 run of that day is due now, and its success keeps one backup.
+    const run = await backup.runDueInstanceBackup(now);
+    assert.ok(run, 'the new time is due');
+    assert.equal((run as FixtureValue).status, 'succeeded');
+    assert.equal(Number((await pool.query<RowDataPacket[]>("SELECT COUNT(*) AS count FROM instance_backups WHERE status = 'succeeded' AND removed_at IS NULL"))[0][0].count), 1);
+    assert.equal(fs.readdirSync(destination).length, 1);
+    await pool.execute("DELETE FROM system_settings WHERE setting_key IN ('instance_backup_time_utc', 'instance_backup_keep')");
+    await pool.execute('DELETE FROM instance_backups WHERE id = ?', [earlier]);
+    assert.equal(((await admin.request('GET', '/api/admin/instance-backup')).body as FixtureValue).keep, 2, 'the environment\'s again');
+  });
+
   await t.test('the status is one snapshot, and a run is running until its retention has removed the old files', async () => {
     backup.useInstanceBackupConfig({ ...settings, keep: 1 });
     const holder = await pool.getConnection();
