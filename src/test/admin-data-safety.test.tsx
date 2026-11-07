@@ -365,7 +365,9 @@ describe('Admin → Users → a person', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     const confirm = await screen.findByRole('dialog', { name: 'Delete this backup of Alex Example?' });
     expect(within(confirm).getByTestId('confirm-target')).toHaveTextContent('For Alex Example (alex@example.com)');
-    expect(within(confirm).getByText(/before the time your rule keeps it/)).toBeInTheDocument();
+    // The administrator's path is not held by the minimum; the row shows no deadline, since the job's stored one may be stale (D36).
+    expect(within(confirm).getByText(/whatever the minimum your rule keeps it for/)).toBeInTheDocument();
+    expect(screen.queryByText(/kept at least until/)).not.toBeInTheDocument();
     fireEvent.change(within(confirm).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
     fireEvent.click(within(confirm).getByRole('button', { name: 'Delete backup' }));
     await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/admin/users/user-alex/backups/bk-1', { current_password: 'admin-pw' }));

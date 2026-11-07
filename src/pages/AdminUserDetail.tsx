@@ -222,9 +222,9 @@ const AdminUserDetail = () => {
             : backupsQuery.data!.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">{name} has no backups on this server.</p></SettingsBlock>
             : backupsQuery.data!.map((job: BackupJob) => (
               <SettingsRow key={job.id} label={<span className="flex items-center gap-1.5">{job.encryption_enabled && <LockKeyhole aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />}{job.scope === 'full' ? 'Full backup' : `${job.requested_sections.map(sentenceCase).join(', ')} backup`}</span>}
-                description={[sentenceCase(job.status), formatWhen(job.completed_at || job.created_at), job.file_size ? formatBytes(job.file_size) : null, job.keep_until && Date.parse(job.keep_until) > Date.now() ? `kept at least until ${formatWhen(job.keep_until)}` : null].filter(Boolean).join(' · ')}>
+                description={[sentenceCase(job.status), formatWhen(job.completed_at || job.created_at), job.file_size ? formatBytes(job.file_size) : null, ].filter(Boolean).join(' · ')}>
                 <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" disabled={['queued', 'running', 'cancelling'].includes(job.status)} onClick={() => openConfirm({
-                  userId: id, title: `Delete this backup of ${name}?`, description: `The archive is removed from the server${job.keep_until ? ', before the time your rule keeps it' : ''}. A copy they downloaded is not affected.`, action: 'Delete backup', destructive: true,
+                  userId: id, title: `Delete this backup of ${name}?`, description: 'The archive is removed from the server, whatever the minimum your rule keeps it for. A copy they downloaded is not affected.', action: 'Delete backup', destructive: true,
                   run: (password, generation) => removeBackup.mutate({ userId: id, generation, jobId: job.id, password }) })}>Delete</Button>
               </SettingsRow>
             ))}
