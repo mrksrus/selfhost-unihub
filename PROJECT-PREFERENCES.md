@@ -681,9 +681,12 @@ Accepted, 2026-10-28 (maintainer). Built in 0.28.0.
 
 Deleted contacts, calendar events and tasks (also those synced from a CalDAV
 account), recordings and similar items go into a bin; mail keeps its Trash
-folders. Each person chooses how long their bin keeps items: 7, 30 or 90 days
-or for good. An administrator policy decides whether people may empty the
-bin or delete from it for good, for retention and proof against deletion.
+folders. The bin keeps items 30 days by default; each person can choose 7,
+30 or 90 days or for good in Settings, never less than an administrator's
+minimum (2026-11-07). An administrator policy decides whether people may empty
+the bin or delete from it for good, for retention and proof against deletion;
+forbidding it also stops the automatic purge, with the administrator choosing
+the minimum retention.
 People are told about that policy plainly when they sign up and whenever an
 administrator changes it, so a rule never surprises them later.
 
@@ -717,6 +720,20 @@ release contract's database promise is the CI step `test:ci`.
 
 Evidence: `.github/workflows/docker-image.yml` (`api-tests` and `e2e` jobs),
 `docs/RELEASE_CONTRACT.md`, `.agents/skills/unihub-verify/SKILL.md`.
+
+#### P-35 Backups are always encrypted and still readable outside UniHub
+
+Accepted, 2026-11-07 (maintainer, D37 and D36). Built in 0.28.0.
+
+Nobody, administrators included, downloads an unencrypted backup. A backup
+must still belong to its owner outside UniHub: it opens with standard tools
+(7-Zip and the like) and its recovery password, and holds its contents in
+formats other apps read, so mail can go into Thunderbird, contacts and
+calendars into any app that reads vCard and iCalendar, recordings as their
+audio files. Old unencrypted `.zip` archives keep importing. When an
+administrator sets how long users' backups are kept, that is a minimum:
+nobody deletes one earlier (the administrator path with re-authentication
+excepted), and nothing is deleted automatically afterwards.
 
 ## Open decisions and conflicts
 
