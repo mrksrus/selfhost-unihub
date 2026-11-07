@@ -783,9 +783,15 @@ function latestSlot(now: Date, timeUtc: string) {
   return slot;
 }
 
-function nextRun(now: Date, timeUtc: string) {
+// One scheduled run a UTC day: a slot is due while no scheduled run started
+// on its day, so a time moved later after the day's run waits for tomorrow.
+const utcDay = (time: Date) => new Date(Date.UTC(time.getUTCFullYear(), time.getUTCMonth(), time.getUTCDate()));
+
+/** The first slot after `now` on a UTC day without a scheduled run (`lastScheduled`: when the latest one started). */
+function nextRun(now: Date, timeUtc: string, lastScheduled: Date | null = null) {
   const next = latestSlot(now, timeUtc);
   next.setUTCDate(next.getUTCDate() + 1);
+  if (lastScheduled && lastScheduled >= utcDay(next)) next.setUTCDate(next.getUTCDate() + 1);
   return next;
 }
 
@@ -842,9 +848,9 @@ async function updateInstanceBackupSchedule(adminId: string, input: unknown, { r
 /** The schedule's tick (background-work.ts): one scheduled run per day, also when the server was down at the time. */
 async function runDueInstanceBackup(now = new Date()) {
   if (!enabled() || current || !isWorkerOwner()) return null;
-  const slot = latestSlot(now, (await scheduleSettings()).timeUtc);
+  const day = utcDay(latestSlot(now, (await scheduleSettings()).timeUtc));
   const [[done]] = await db.execute<RowDataPacket[]>("SELECT 1 AS done FROM instance_backups WHERE trigger_kind = 'schedule' AND started_at >= ? LIMIT 1",
-    [slot.toISOString().slice(0, 19).replace('T', ' ')]);
+    [day.toISOString().slice(0, 19).replace('T', ' ')]);
   if (done) return null;
   return runInstanceBackup({ trigger: 'schedule' }).catch(error => {
     if ((error as { code?: string }).code !== 'INSTANCE_BACKUP_RUNNING') throw error;
@@ -861,7 +867,7 @@ async function getInstanceBackupStatus(now = new Date()): Promise<InstanceBackup
   const on = enabled();
   const active = current !== null;
   const schedule = await scheduleSettings();
-  const { rows, success, kept, runningRows } = await inTransaction(SNAPSHOT, async connection => {
+  const { rows, success, kept, runningRows, lastScheduled } = await inTransaction(SNAPSHOT, async connection => {
     const [runs] = await connection.execute<RunRow[]>(`SELECT b.*, u.email AS actor_email FROM instance_backups b LEFT JOIN users u ON u.id = b.actor_id
       ORDER BY b.started_at DESC, b.id DESC LIMIT ${RUNS_SHOWN}`);
     const [[latest]] = await connection.execute<RunRow[]>(`SELECT b.*, u.email AS actor_email FROM instance_backups b LEFT JOIN users u ON u.id = b.actor_id
@@ -869,7 +875,8 @@ async function getInstanceBackupStatus(now = new Date()): Promise<InstanceBackup
     const [[keptRow]] = await connection.execute<RowDataPacket[]>(`SELECT COUNT(*) AS count, COALESCE(SUM(size_bytes), 0) AS bytes FROM instance_backups
       WHERE status = 'succeeded' AND removed_at IS NULL`);
     const [[running]] = await connection.execute<RowDataPacket[]>("SELECT COUNT(*) AS count FROM instance_backups WHERE status = 'running'");
-    return { rows: runs, success: latest as RunRow | undefined, kept: keptRow, runningRows: running };
+    const [[scheduled]] = await connection.execute<RowDataPacket[]>("SELECT MAX(started_at) AS started FROM instance_backups WHERE trigger_kind = 'schedule'");
+    return { rows: runs, success: latest as RunRow | undefined, kept: keptRow, runningRows: running, lastScheduled: scheduled.started ? new Date(iso(scheduled.started)!) : null };
   });
   return {
     enabled: on,
@@ -880,7 +887,7 @@ async function getInstanceBackupStatus(now = new Date()): Promise<InstanceBackup
     keep: schedule.keep,
     schedule_source: schedule.source,
     schedule_defaults: { time_utc: config.timeUtc, keep: config.keep },
-    next_run_at: on ? nextRun(now, schedule.timeUtc).toISOString() : null,
+    next_run_at: on ? nextRun(now, schedule.timeUtc, lastScheduled).toISOString() : null,
     last_run: rows[0] ? serializeRun(rows[0]) : null,
     last_success: success ? serializeRun(success) : null,
     kept: { count: Number(kept.count), bytes: Number(kept.bytes) },
