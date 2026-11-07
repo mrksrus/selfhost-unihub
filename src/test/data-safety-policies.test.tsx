@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
 import DeleteDataSettings from '@/components/settings/DeleteDataSettings';
@@ -40,6 +40,25 @@ describe('policy greying', () => {
     expect(screen.getByText(ACCOUNT_REASON)).toBeInTheDocument();
     // The rows stay: a greyed control is still a visible one.
     expect(screen.getByText('Contacts')).toBeInTheDocument();
+  });
+
+  // D41: deleting one's own account asks for the password again and sends it with the request.
+  it('deleting your own account asks for your password and sends it', async () => {
+    vi.mocked(api.get).mockResolvedValue(policiesAnswer());
+    vi.mocked(api.delete).mockResolvedValue({ data: { deleted: true } });
+    const assign = vi.fn();
+    vi.stubGlobal('location', { ...window.location, assign });
+    mountSignedIn(<DeleteDataSettings />);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete account' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Delete your account?' });
+    const confirm = within(dialog).getByRole('button', { name: 'Delete account' });
+    expect(confirm).toBeDisabled();
+    expect(api.delete).not.toHaveBeenCalled();
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'my-own-password' } });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/settings/account', { current_password: 'my-own-password' }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('/auth'));
+    vi.unstubAllGlobals();
   });
 
   it('keeps an allowed control usable when the rules fail to load', async () => {

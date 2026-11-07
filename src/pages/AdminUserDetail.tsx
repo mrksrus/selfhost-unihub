@@ -128,6 +128,9 @@ const AdminUserDetail = () => {
   const pending = removeMail.isPending || removeCalendar.isPending || removeBackup.isPending || emptyBin.isPending || clear.isPending;
 
   const name = person?.full_name || person?.email || 'this person';
+  // Every dialog names the person it acts for, with the address so that two people of one name stay apart.
+  const target = person ? (person.full_name ? `${person.full_name} (${person.email})` : person.email) : name;
+  const nothingAtAll = accountsQuery.data && backupsQuery.data && accountsQuery.data.mail_accounts.length === 0 && accountsQuery.data.calendar_accounts.length === 0 && backupsQuery.data.length === 0;
   const body = !admin ? <p className="text-sm text-muted-foreground">Only admins can see this page.</p>
     : usersQuery.isLoading ? <LoadingState label="Loading the account…" />
     : usersQuery.error ? <ErrorState title="Could not load the account" error={usersQuery.error} onRetry={() => void usersQuery.refetch()} retrying={usersQuery.isFetching} />
@@ -137,11 +140,14 @@ const AdminUserDetail = () => {
         <p className="mb-8 max-w-prose text-sm text-muted-foreground">
           What you do here is done for {name} as if they did it, with your password, and recorded in the activity log. A rule that forbids them an action does not apply to you.
         </p>
+        {nothingAtAll && (
+          <p role="status" className="mb-8 max-w-prose text-sm text-muted-foreground">{name} has no mail or calendar accounts and no backups on this server yet. Their bin and data can still be emptied below.</p>
+        )}
 
         <SettingsSection title="Mail accounts" action={<Button size="sm" variant="outline" onClick={() => openMailDialog(null)}><Plus aria-hidden="true" />Add mail account</Button>}>
           {accountsQuery.isLoading ? <SettingsBlock><LoadingState compact label="Loading accounts…" /></SettingsBlock>
             : accountsQuery.error ? <SettingsBlock><ErrorState title="Could not load the accounts" error={accountsQuery.error} onRetry={() => void accountsQuery.refetch()} retrying={accountsQuery.isFetching} /></SettingsBlock>
-            : accountsQuery.data!.mail_accounts.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">No mail accounts.</p></SettingsBlock>
+            : accountsQuery.data!.mail_accounts.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">{name} has no mail accounts.</p></SettingsBlock>
             : accountsQuery.data!.mail_accounts.map(account => (
               <SettingsRow key={account.id} label={account.display_name ? `${account.display_name} (${account.email_address})` : account.email_address} description={mailMeta(account)}>
                 <DropdownMenu>
@@ -165,7 +171,7 @@ const AdminUserDetail = () => {
         <SettingsSection title="Calendar accounts" action={<Button size="sm" variant="outline" onClick={() => openCalendarDialog(null)}><Plus aria-hidden="true" />Add calendar account</Button>}>
           {accountsQuery.isLoading ? <SettingsBlock><LoadingState compact label="Loading accounts…" /></SettingsBlock>
             : accountsQuery.error ? null
-            : accountsQuery.data!.calendar_accounts.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">No calendar accounts.</p></SettingsBlock>
+            : accountsQuery.data!.calendar_accounts.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">{name} has no calendar accounts.</p></SettingsBlock>
             : accountsQuery.data!.calendar_accounts.map(account => (
               <SettingsRow key={account.id} label={account.display_name || account.account_email || 'Calendars'} description={calendarMeta(account)}>
                 {account.provider !== 'local' && (
@@ -186,18 +192,18 @@ const AdminUserDetail = () => {
         <SettingsSection title="Backups" description="Backups kept on this server for this person. They cannot be downloaded here.">
           {backupsQuery.isLoading ? <SettingsBlock><LoadingState compact label="Loading backups…" /></SettingsBlock>
             : backupsQuery.error ? <SettingsBlock><ErrorState title="Could not load the backups" error={backupsQuery.error} onRetry={() => void backupsQuery.refetch()} retrying={backupsQuery.isFetching} /></SettingsBlock>
-            : backupsQuery.data!.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">No backups.</p></SettingsBlock>
+            : backupsQuery.data!.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">{name} has no backups on this server.</p></SettingsBlock>
             : backupsQuery.data!.map((job: BackupJob) => (
               <SettingsRow key={job.id} label={<span className="flex items-center gap-1.5">{job.encryption_enabled && <LockKeyhole aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />}{job.scope === 'full' ? 'Full backup' : `${job.requested_sections.join(', ')} backup`}</span>}
                 description={[job.status, formatWhen(job.completed_at || job.created_at), job.file_size ? formatBytes(job.file_size) : null, job.keep_until ? `kept until ${formatWhen(job.keep_until)}` : null].filter(Boolean).join(' · ')}>
                 <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" disabled={['queued', 'running', 'cancelling'].includes(job.status)} onClick={() => openConfirm({
-                  userId: id, title: 'Delete this backup?', description: 'The archive is removed from the server. A downloaded copy is not affected.', action: 'Delete backup', destructive: true,
+                  userId: id, title: `Delete this backup of ${name}?`, description: `The archive is removed from the server${job.keep_until ? ', before the time your rule keeps it' : ''}. A copy they downloaded is not affected.`, action: 'Delete backup', destructive: true,
                   run: (password, generation) => removeBackup.mutate({ userId: id, generation, jobId: job.id, password }) })}>Delete</Button>
               </SettingsRow>
             ))}
         </SettingsSection>
 
-        <SettingsSection title="Bin" description="What they deleted waits in their bin until it is restored or gone for good.">
+        <SettingsSection title="Bin" description={`What ${name} deleted waits in their bin until it is restored or gone for good. Emptying it here is allowed whatever the bin rule says for them.`}>
           {BIN_MODULES.map(module => (
             <SettingsRow key={module.id} label={module.label}>
               <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => openConfirm({
@@ -229,11 +235,11 @@ const AdminUserDetail = () => {
       <PageHeader title="Settings" scope={person ? `Users · ${name}` : 'Users'}
         back={<Button variant="ghost" size="icon" aria-label="Back to users" asChild><Link to="/admin/users"><ChevronLeft aria-hidden="true" /></Link></Button>} />
       <PageBody width="reading">{body}</PageBody>
-      <PasswordConfirmDialog open={!!confirm && confirm.userId === id} onClose={() => setConfirm(null)} title={confirm?.title ?? ''} description={confirm?.description ?? ''}
+      <PasswordConfirmDialog open={!!confirm && confirm.userId === id} onClose={() => setConfirm(null)} title={confirm?.title ?? ''} description={confirm?.description ?? ''} target={target}
         actionLabel={confirm?.action ?? ''} destructive={confirm?.destructive} pending={pending} onConfirm={password => { if (confirm?.userId === id) confirm.run(password, confirm.generation); }} />
-      <AdminMailAccountDialog open={mailDialog.open} account={mailDialog.account} onClose={() => setMailDialog(CLOSED)} pending={saveMail.isPending}
+      <AdminMailAccountDialog open={mailDialog.open} account={mailDialog.account} onClose={() => setMailDialog(CLOSED)} pending={saveMail.isPending} target={target}
         onSubmit={(fields, password) => saveMail.mutate({ userId: id, generation: mailDialog.generation, account: mailDialog.account, fields, password })} />
-      <AdminCalendarAccountDialog open={calendarDialog.open} account={calendarDialog.account} onClose={() => setCalendarDialog(CLOSED)} pending={saveCalendar.isPending}
+      <AdminCalendarAccountDialog open={calendarDialog.open} account={calendarDialog.account} onClose={() => setCalendarDialog(CLOSED)} pending={saveCalendar.isPending} target={target}
         onSubmit={(fields, password) => saveCalendar.mutate({ userId: id, generation: calendarDialog.generation, account: calendarDialog.account, fields, password })} />
     </PageShell>
   );

@@ -5,9 +5,11 @@ import type { User } from '@/contexts/auth-context';
 import { useAuth } from '@/contexts/useAuth';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
+import { usePolicies } from '@/hooks/use-policies';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
+import { RulesList } from '@/components/policies/PolicyNoticeDialog';
 
 const DEVICE_TIME_ZONE = '';
 const timeZones = (() => {
@@ -18,6 +20,25 @@ const timeZones = (() => {
     return [];
   }
 })();
+
+/**
+ * Settings → Profile, "Rules on this server" (D38): the data rules in force
+ * for this person, always readable, the same words as the notice dialog.
+ */
+export function RulesOnThisServer() {
+  const { user, isOffline } = useAuth();
+  const { rules, loaded } = usePolicies();
+  return (
+    <SettingsSection title="Rules on this server" description="Your administrator can limit backups, the bin, accounts and deleting data for everyone on this server. You are told at sign-up and whenever a rule changes.">
+      <SettingsBlock>
+        {isOffline ? <p className="text-sm text-muted-foreground">The rules need a connection.</p>
+          : !loaded ? <p role="status" className="text-sm text-muted-foreground">Loading the rules…</p>
+          : <RulesList rules={rules} className="text-sm" />}
+        {user?.role === 'admin' && loaded && <p className="mt-3 text-xs text-muted-foreground">You set these under Server › Policies; they apply to you too.</p>}
+      </SettingsBlock>
+    </SettingsSection>
+  );
+}
 
 export default function AccountSettings() {
   const { user, setUser } = useAuth();
@@ -43,7 +64,7 @@ export default function AccountSettings() {
   const changed = fullName.trim() !== (user?.full_name || '') || timezone !== (user?.timezone ?? DEVICE_TIME_ZONE);
   const submit = (event: FormEvent) => { event.preventDefault(); save.mutate(); };
 
-  return (
+  return (<>
     <form onSubmit={submit}>
       <SettingsSection title="Profile">
         <SettingsRow label="Email">
@@ -67,5 +88,6 @@ export default function AccountSettings() {
         </SettingsBlock>
       </SettingsSection>
     </form>
-  );
+    <RulesOnThisServer />
+  </>);
 }

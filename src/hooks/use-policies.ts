@@ -10,10 +10,10 @@ const DEFAULTS = defaultPolicies();
  * load, every action reads as allowed: the server refuses a forbidden one
  * anyway, and the control greys out as soon as the answer is here.
  *
- * `rules`, `revision` and `acknowledgedRevision` are the seam for the notice
- * dialog and "Rules on this server" (D38, not built yet): `noticeDue` is true
- * when an administrator changed a user-facing rule since the person last
- * confirmed them.
+ * `rules`, `revision` and `acknowledgedRevision` feed the notice dialog and
+ * "Rules on this server" (D38): `noticeDue` is true when an administrator
+ * changed a user-facing rule since the person last confirmed them, or when
+ * they never confirmed any.
  */
 export function usePolicies() {
   // The session where one is mounted; a view rendered on its own (unit tests) has none.

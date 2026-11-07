@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioRow } from '@/components/ui/radio';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { TargetLine } from '@/components/admin/PasswordConfirmDialog';
 
 // The administrator's dialogs for a person's accounts (F13, accounts.admin_manage):
 // the same fields as the person's own add dialog, plus the administrator's
@@ -31,9 +32,11 @@ const emptyMail = (): MailFields => ({ email_address: '', display_name: '', user
  * Adds a mail account for the person, or changes one. Editing keeps the
  * stored password unless a new one is typed; the address cannot change.
  */
-export function AdminMailAccountDialog({ account, open, onClose, pending, onSubmit }: {
+export function AdminMailAccountDialog({ account, open, onClose, pending, onSubmit, target }: {
   account: AdminMailAccount | null; open: boolean; onClose: () => void; pending: boolean;
   onSubmit: (fields: Partial<MailFields>, currentPassword: string) => void;
+  /** The person the account belongs to, always shown. */
+  target?: string;
 }) {
   const [fields, setFields] = useState<MailFields>(emptyMail);
   // The server fields the administrator typed into; the others stay as they are on the account.
@@ -68,6 +71,7 @@ export function AdminMailAccountDialog({ account, open, onClose, pending, onSubm
           <DialogTitle>{account ? `Change ${account.email_address}` : 'Add a mail account'}</DialogTitle>
           <DialogDescription>{account ? 'Only the fields you fill in change; the password stays unless you type a new one.' : 'The account is checked against its servers as if the person added it, and recorded in the activity log.'}</DialogDescription>
         </DialogHeader>
+        {target && <TargetLine target={target} />}
         <form className="space-y-4" onSubmit={submit}>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field id="admin-mail-address" label="Email address" type="email" required value={fields.email_address} disabled={!!account} onChange={event => set('email_address', event.target.value)} autoComplete="off" />
@@ -104,9 +108,10 @@ export function AdminMailAccountDialog({ account, open, onClose, pending, onSubm
 const emptyCalendar = (): CalendarFields => ({ provider: 'caldav', url: '', account_email: '', display_name: '', username: '', password: '' });
 
 /** Adds a calendar account (CalDAV or an ICS subscription) for the person, or changes one. */
-export function AdminCalendarAccountDialog({ account, open, onClose, pending, onSubmit }: {
+export function AdminCalendarAccountDialog({ account, open, onClose, pending, onSubmit, target }: {
   account: AdminCalendarAccount | null; open: boolean; onClose: () => void; pending: boolean;
   onSubmit: (fields: Partial<CalendarFields>, currentPassword: string) => void;
+  target?: string;
 }) {
   const [fields, setFields] = useState<CalendarFields>(emptyCalendar);
   const [adminPassword, setAdminPassword] = useState('');
@@ -131,6 +136,7 @@ export function AdminCalendarAccountDialog({ account, open, onClose, pending, on
           <DialogTitle>{account ? `Change ${account.display_name || account.account_email || 'the calendar account'}` : 'Add a calendar account'}</DialogTitle>
           <DialogDescription>{account ? 'Only the fields you fill in change.' : 'A CalDAV server (HTTPS) or a calendar subscription, checked as if the person added it.'}</DialogDescription>
         </DialogHeader>
+        {target && <TargetLine target={target} />}
         <form className="space-y-4" onSubmit={submit}>
           {!account && (
             <fieldset className="space-y-1">

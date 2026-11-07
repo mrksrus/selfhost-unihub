@@ -162,6 +162,16 @@ export type { AdminPolicy, AdminPoliciesResponse } from '../../api/src/contracts
 
 export const adminPoliciesQueryKey = ['admin', 'policies'] as const;
 
+/**
+ * The minimum retention of the bin while bin.delete is forbidden (D34):
+ * 30 or 90 days, or until restored (the default). Proposed as a policy key
+ * for C2; the server resolves it as the floor of each person's bin_retention
+ * setting. A server without the key leaves the choice greyed out.
+ */
+export const BIN_MINIMUM_KEY = 'bin.min_retention';
+export type BinMinimum = '30' | '90' | 'forever';
+export const BIN_MINIMUMS: readonly BinMinimum[] = ['30', '90', 'forever'];
+
 export async function fetchAdminPolicies(signal?: AbortSignal): Promise<AdminPoliciesResponse> {
   const answer = unwrap(await api.get<AdminPoliciesResponse>('/admin/policies', { signal }));
   if (!answer?.policies) throw new Error('The server did not answer with its policies.');
@@ -169,7 +179,7 @@ export async function fetchAdminPolicies(signal?: AbortSignal): Promise<AdminPol
 }
 
 /** Saves the changed values only, with the administrator's password; the answer is every policy as now set. */
-export async function saveAdminPolicies(values: Partial<PolicyValues>, currentPassword: string): Promise<AdminPoliciesResponse> {
+export async function saveAdminPolicies(values: Partial<PolicyValues> & Partial<Record<typeof BIN_MINIMUM_KEY, BinMinimum>>, currentPassword: string): Promise<AdminPoliciesResponse> {
   const answer = unwrap(await api.put<AdminPoliciesResponse>('/admin/policies', { values, current_password: currentPassword } satisfies AdminPoliciesUpdateRequest));
   if (!answer?.policies) throw new Error('The server did not answer with its policies.');
   return answer;

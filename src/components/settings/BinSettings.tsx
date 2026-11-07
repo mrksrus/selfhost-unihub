@@ -4,23 +4,16 @@ import { useToast } from '@/hooks/use-toast';
 import { useContext } from 'react';
 import { AuthContext } from '@/contexts/auth-context';
 import { BIN_RETENTIONS, binApi, binQueryOptions, invalidateBinQueries, type BinRetention } from '@/lib/bin-api';
-import { userSettingsQueryKey, userSettingsQueryOptions, type ResolvedSetting } from '@/lib/settings-api';
-import { allowedByFloor, policyReason } from '@/components/settings/setting-policy';
+import { userSettingsQueryKey, userSettingsQueryOptions } from '@/lib/settings-api';
+import { BIN_RETENTION_ORDER, allowedByFloor, retentionLock } from '@/components/settings/setting-policy';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 import { BinView } from '@/components/bin/BinView';
 
-// The retention order from the least to the most private: a floor set by an
-// administrator (D34, when decided) greys out the shorter choices.
-const RETENTION_ORDER: readonly BinRetention[] = ['7', '30', '90', 'forever'];
-
-/**
- * The `bin_retention` setting as the server resolves it, once the registry
- * carries the key; until then the choice comes from the bin's answer.
- */
-function retentionSetting(settings: object | undefined): ResolvedSetting<BinRetention> | undefined {
-  return (settings as Record<string, ResolvedSetting<BinRetention>> | undefined)?.bin_retention;
-}
+// An administrator who forbids deleting from the bin for good also sets a
+// minimum (D34): the server resolves it as the setting's floor, and the
+// shorter choices grey out with the reason. The server refuses a shorter
+// value anyway.
 
 /** Settings → Bin: how long deleted items wait, and everything in the bin. */
 export default function BinSettings() {
@@ -29,9 +22,10 @@ export default function BinSettings() {
   const client = useQueryClient();
   const settings = useQuery({ ...userSettingsQueryOptions, enabled: !isOffline });
   const bin = useQuery({ ...binQueryOptions(), enabled: !isOffline });
-  const setting = retentionSetting(settings.data);
+  const setting = settings.data?.bin_retention;
+  // The bin's own answer carries the retention too, for a server whose settings answer is late.
   const retention = setting?.value ?? bin.data?.retention;
-  const lock = setting ? policyReason(setting) : undefined;
+  const lock = retentionLock(setting);
 
   const save = useMutation({
     mutationFn: (value: BinRetention) => binApi.setRetention(value),
@@ -53,7 +47,7 @@ export default function BinSettings() {
               <SelectTrigger id="bin-retention" className="w-full sm:w-56"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {BIN_RETENTIONS.map(choice => (
-                  <SelectItem key={choice.value} value={choice.value} disabled={!!setting && !allowedByFloor(setting, RETENTION_ORDER, choice.value)}>{choice.label}</SelectItem>
+                  <SelectItem key={choice.value} value={choice.value} disabled={!!setting && !allowedByFloor(setting, BIN_RETENTION_ORDER, choice.value)}>{choice.label}</SelectItem>
                 ))}
               </SelectContent>
             </Select>

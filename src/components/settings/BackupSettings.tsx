@@ -11,6 +11,7 @@ import {
   BACKUP_ACTIVE, RESTORE_ACTIVE, RevealAlreadyShown, RevealUncertain, backupApi, backupQueryKeys, getBackupDownloadAction, prepareBackupDownload, revealRecoveryPasswordOnce,
   type BackupContents, type BackupDataClass, type BackupExportSectionId, type BackupImportResult, type BackupJob, type BackupSectionId, type CalendarMode, type ConflictMode, type CredentialsMode, type RestoreJob, type RestoreOptions,
 } from '@/lib/backup-api';
+import { OPEN_OUTSIDE_UNIHUB, deletableFrom } from '@/lib/backup';
 import { copyText, downloadTicket, saveFile } from '@/lib/platform';
 import { jobPollInterval } from '@/lib/job-polling';
 import { Button } from '@/components/ui/button';
@@ -32,7 +33,8 @@ import { cn } from '@/lib/utils';
 // downloaded mail by choice or policy, never what a provider holds. The
 // archive leaves the server through a download ticket (F9). A policy can
 // forbid creating, restoring or deleting: the control greys out with the
-// server's reason.
+// server's reason. An administrator's retention is a minimum (D36): Delete
+// greys out on a backup younger than that, with the date it opens.
 
 /** What each data class means to the person. */
 const CLASS_WORDS: Record<BackupDataClass, string> = {
@@ -310,8 +312,11 @@ export default function BackupSettings({ active }: { active: boolean }) {
     chosen.includes('calendar') ? 'events and tasks of calendar servers' : null,
     ...(capabilities?.exclusions ?? []).map(entry => entry.replace(/\.$/, '').replace(/^./, c => c.toLowerCase())),
   ].filter((entry): entry is string => !!entry);
-  const retentionText = retentionPolicy.value ? `The server keeps each backup ${retentionPolicy.value} days, then removes it.` : 'The server keeps them until you delete them.';
+  // D36: the administrator's days are a minimum, never an expiry.
+  const minimumDays = retentionPolicy.value;
+  const retentionText = minimumDays ? `Your administrator keeps each backup at least ${minimumDays} days; after that you can delete it. Nothing is deleted on its own.` : 'The server keeps them until you delete them.';
   const busy = create.isPending || upload.isPending || unlock.isPending;
+  const now = Date.now();
   // The restore choices are fixed while the server prepares a job with them.
   const preparing = upload.isPending || restoreStored.isPending;
 
@@ -369,11 +374,16 @@ export default function BackupSettings({ active }: { active: boolean }) {
         : jobs.map(job => {
           const running = BACKUP_ACTIVE.includes(job.status);
           const title = job.scope === 'full' ? 'Full backup' : `${job.requested_sections.map(sectionLabel).join(', ')} backup`;
+          const opens = job.status === 'ready' ? deletableFrom(job, minimumDays) : null;
+          const held = !!opens && Date.parse(opens) > now;
+          const deleteLock = deletePolicy.lock ?? (!held ? undefined
+            : minimumDays ? `Your administrator keeps backups at least ${minimumDays} days. This one can be deleted from ${formatDay(opens)}.`
+            : `Your administrator keeps this backup until ${formatDay(opens)}. It can be deleted from then.`);
           const meta = [
             job.status === 'running' ? `Creating ${job.progress}%` : BACKUP_STATUS[job.status],
             formatWhen(job.completed_at || job.started_at || job.created_at),
             job.file_size ? formatBytes(job.file_size) : null,
-            job.keep_until ? `kept until ${formatDay(job.keep_until)}` : null,
+            held ? `kept at least until ${formatDay(opens)}` : null,
           ].filter(Boolean).join(' · ');
           const age = !job.encryption_enabled ? 'Not encrypted, made before 0.28.' : job.contents === null && job.status === 'ready' ? 'Made before 0.28; what it holds is read when it is restored.' : null;
           const lost = passwordLost.has(job.id) && !job.recovery_password_available;
@@ -392,6 +402,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                     <p className="text-xs text-muted-foreground">Left out: {job.contents.left_out.map(entry => `${entry.what}${entry.count !== undefined ? ` (${entry.count.toLocaleString()})` : ''}`).join(', ')}.</p>
                   )}
                   {job.error && <p className="text-xs text-destructive">{job.error}</p>}
+                  {job.downloaded_at && OPEN_OUTSIDE_UNIHUB && <p className="text-xs text-muted-foreground" data-testid="open-outside-hint">{OPEN_OUTSIDE_UNIHUB}</p>}
                 </div>
                 <div className="flex shrink-0 items-center gap-1 touch:gap-3">
                   {job.status === 'ready' && <>
@@ -407,7 +418,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         {job.status === 'ready' && <PolicyMenuItem className="sm:hidden" lock={restorePolicy.lock} disabled={!available || busy || preparing} onClick={() => restoreStored.mutate({ job, options })}>Restore</PolicyMenuItem>}
-                        <PolicyMenuItem lock={deletePolicy.lock} className="text-destructive focus:text-destructive" onClick={() => remove.mutate(job)}>Delete</PolicyMenuItem>
+                        <PolicyMenuItem lock={deleteLock} className="text-destructive focus:text-destructive" onClick={() => remove.mutate(job)}>Delete</PolicyMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   )}
@@ -611,6 +622,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
               <input type="checkbox" className="mt-1 h-4 w-4 accent-accent" checked={recoverySaved} onChange={event => setRecoverySaved(event.target.checked)} />
               <span>I have saved the recovery password.</span>
             </label>
+            {OPEN_OUTSIDE_UNIHUB && <p className="text-xs text-muted-foreground" data-testid="open-outside-hint">{OPEN_OUTSIDE_UNIHUB}</p>}
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={closeRecovery} disabled={!recoverySaved}>Close</Button>
               <Button disabled={!recoverySaved || download.isPending} onClick={() => { if (recoveryJob) download.mutate(recoveryJob); closeRecovery(); }}>

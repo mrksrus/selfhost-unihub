@@ -2,10 +2,19 @@ import { api } from '@/lib/api';
 import { unwrap } from '@/lib/api-error';
 import type { SignupMode } from '@/lib/admin-api';
 
-/** Who may create an account, for the sign-in page; unknown counts as closed. */
-export async function fetchPublicSignupMode(): Promise<SignupMode> {
-  const response = await api.get<{ signup_mode?: SignupMode }>('/auth/signup-mode');
-  return response.data?.signup_mode || 'disabled';
+/**
+ * Who may create an account, for the sign-in page; unknown counts as closed.
+ * With it the rules that limit a new person on this server, in plain words
+ * (D38): a server before 0.28 sends none.
+ */
+export async function fetchPublicSignupMode(): Promise<{ mode: SignupMode; dataRules: string[] }> {
+  const response = await api.get<{ signup_mode?: SignupMode; data_rules?: string[] }>('/auth/signup-mode');
+  return { mode: response.data?.signup_mode || 'disabled', dataRules: Array.isArray(response.data?.data_rules) ? response.data.data_rules.filter(rule => typeof rule === 'string') : [] };
+}
+
+/** Deletes one's own UniHub account with everything in it; asks for the password again (D41). */
+export async function deleteOwnAccount(currentPassword: string) {
+  unwrap(await api.delete('/settings/account', { current_password: currentPassword }));
 }
 
 /** Changes the password; the server then signs out every device, this one too. */

@@ -32,7 +32,8 @@ const job = (id: string, fields: Partial<BackupJob> = {}): BackupJob => ({
   error: null, created_at: '2026-06-03T10:00:00.000Z', updated_at: '2026-06-03T10:05:00.000Z', started_at: '2026-06-03T10:00:00.000Z', completed_at: '2026-06-03T10:05:00.000Z', downloaded_at: null, ...fields,
 });
 const JOBS = [
-  job('new', { keep_until: '2026-07-03T10:00:00.000Z' }),
+  // The administrator's minimum holds this one until a day far ahead (D36).
+  job('new', { keep_until: '2099-07-03T10:00:00.000Z' }),
   job('old', { encryption_enabled: false, contents: null, content_type: 'application/zip', created_at: '2026-05-01T10:00:00.000Z', completed_at: '2026-05-01T10:05:00.000Z' }),
 ];
 const restoreJob = (id: string, fields: Partial<RestoreJob> = {}): RestoreJob => ({
@@ -106,14 +107,39 @@ describe('Settings → Backup and restore (0.28)', () => {
     expect(screen.getByText(CREATE)).toBeInTheDocument();
   });
 
-  it('lists what each backup left out, when the server removes it, and marks archives from before 0.28', async () => {
+  it('lists what each backup left out, how long the administrator keeps it, and marks archives from before 0.28', async () => {
     answer();
     mountSignedIn(<BackupSettings active />);
     const section = (await screen.findByRole('heading', { name: 'Backups on this server' })).closest('section')!;
     await waitFor(() => expect(within(section).getAllByText('Full backup')).toHaveLength(2));
     expect(within(section).getByText('Left out: Sync-mode mail (1,204).')).toBeInTheDocument();
-    expect(within(section).getByText(/kept until (3 July|July 3)/)).toBeInTheDocument();
+    expect(within(section).getByText(/kept at least until (3 July|July 3)/)).toBeInTheDocument();
     expect(within(section).getByText('Not encrypted, made before 0.28.')).toBeInTheDocument();
+  });
+
+  // D36: the administrator's days are a minimum. Delete greys out on a backup
+  // younger than that with the date it opens; an older one deletes as before.
+  it('greys Delete out on a backup the administrator still keeps, with the date it can go, and not on an older one', { timeout: 20_000 }, async () => {
+    answer(capabilities(), JOBS, [], policiesAnswer({ 'backup.server_retention_days': { value: 90, allowed: true, reason: 'Your administrator keeps each of your backups at least 90 days.' } }));
+    mountSignedIn(<BackupSettings active />);
+    const section = (await screen.findByRole('heading', { name: 'Backups on this server' })).closest('section')!;
+    await waitFor(() => expect(within(section).getAllByText('Full backup')).toHaveLength(2));
+    expect(screen.getByText(/keeps each backup at least 90 days; after that you can delete it/)).toBeInTheDocument();
+    const [newer, older] = within(section).getAllByRole('button', { name: 'More actions for Full backup' });
+    fireEvent.pointerDown(newer, { button: 0, ctrlKey: false });
+    const held = await screen.findByRole('menuitem', { name: /Delete/ });
+    expect(held).toHaveAttribute('aria-disabled', 'true');
+    expect(held).toHaveTextContent(/at least 90 days\. This one can be deleted from (3 July|July 3)/);
+    fireEvent.click(held);
+    expect(api.delete).not.toHaveBeenCalled();
+    fireEvent.keyDown(held, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menuitem')).not.toBeInTheDocument());
+    // The old backup finished 90 days before this test's clock long ago: nothing holds it.
+    fireEvent.pointerDown(older, { button: 0, ctrlKey: false });
+    const free = await screen.findByRole('menuitem', { name: 'Delete' });
+    expect(free).not.toHaveAttribute('aria-disabled');
+    fireEvent.click(free);
+    await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/backup/jobs/old'));
   });
 
   it('downloads a backup through a download ticket, never with the session URL', async () => {
