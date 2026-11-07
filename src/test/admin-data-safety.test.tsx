@@ -29,7 +29,7 @@ const adminPolicies = (): AdminPoliciesResponse => ({
   policies: Object.fromEntries(POLICY_KEYS.map(key => [key, { value: DEFAULT_POLICY_VALUES[key], source: 'default', default: DEFAULT_POLICY_VALUES[key], values: VALUES[key] ?? ['allowed', 'forbidden'], effect: key === 'mail.mode.sync' ? 'Existing Sync accounts keep working.' : null }])) as AdminPoliciesResponse['policies'],
 });
 const instanceStatus = (fields: Partial<InstanceBackupStatus> = {}): InstanceBackupStatus => ({
-  enabled: false, missing: ['destination', 'key'], destination: null, key_fingerprint: null, time_utc: '03:30', keep: 14, next_run_at: null, last_run: null, last_success: null,
+  enabled: false, missing: ['destination', 'key'], destination: null, key_fingerprint: null, time_utc: '03:30', keep: 14, schedule_source: 'environment', schedule_defaults: { time_utc: '03:30', keep: 14 }, next_run_at: null, last_run: null, last_success: null,
   kept: { count: 0, bytes: 0 }, running: false, runs: [], restore_command: 'node /app/api/dist/scripts/instance-restore.js --file <backup.uhib> --key-file <key>', ...fields,
 });
 const USERS = [{ id: 'user-admin', email: 'admin@example.com', full_name: 'Avery Admin', role: 'admin', is_active: true, created_at: '2026-01-01T00:00:00.000Z' },
@@ -105,10 +105,10 @@ describe('Server settings → Policies', () => {
 
 describe('Server settings → Policies: the bin\'s minimum (D34)', () => {
   it('greys the minimum out until the bin rule forbids deleting, then saves it with the bin rule', { timeout: 20_000 }, async () => {
-    const withMinimum = (values: Record<string, unknown> = {}) => {
-      const answer = adminPolicies();
-      (answer.policies as Record<string, unknown>)['bin.min_retention'] = { value: 'forever', source: 'default', default: 'forever', values: ['30', '90', 'forever'], effect: 'The automatic purge waits at least this long.' };
+    const withMinimum = (values: Record<string, unknown> = {}, minimum = 'forever') => {
+      const answer = adminPolicies() as AdminPoliciesResponse & { bin_min_retention: unknown };
       for (const [key, value] of Object.entries(values)) answer.policies[key as keyof typeof answer.policies] = { ...answer.policies[key as keyof typeof answer.policies], value, source: 'policy' } as never;
+      answer.bin_min_retention = { value: minimum, source: minimum === 'forever' ? 'default' : 'policy', default: 'forever', values: ['30', '90', 'forever'], applies: answer.policies['bin.delete'].value === 'forbidden', effect: 'The automatic purge waits at least this long.' };
       return answer;
     };
     vi.mocked(api.get).mockImplementation(async (path: string) => {
@@ -116,7 +116,10 @@ describe('Server settings → Policies: the bin\'s minimum (D34)', () => {
       if (path === '/policies/effective') return policiesAnswer();
       throw new Error(`unexpected GET ${path}`);
     });
-    vi.mocked(api.put).mockImplementation(async (path: string, body: unknown) => path === '/admin/policies' ? { data: withMinimum((body as { values: Record<string, unknown> }).values) } : { data: {} });
+    vi.mocked(api.put).mockImplementation(async (path: string, body: unknown) => {
+      const { values, bin_min_retention } = body as { values: Record<string, unknown>; bin_min_retention?: string };
+      return path === '/admin/policies' ? { data: withMinimum(values, bin_min_retention) } : { data: {} };
+    });
     mountSignedIn(<AdminPolicies />, { user: ADMIN });
     const minimum = await screen.findByRole('combobox', { name: 'Deleted items are kept at least' });
     expect(minimum).toBeDisabled();
@@ -132,7 +135,10 @@ describe('Server settings → Policies: the bin\'s minimum (D34)', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Save the changed rules?' });
     fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
-    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/policies', { values: { 'bin.delete': 'forbidden', 'bin.min_retention': '90' }, current_password: 'admin-pw' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/policies', { values: { 'bin.delete': 'forbidden' }, bin_min_retention: '90', current_password: 'admin-pw' }));
+    // Saved: the row shows the server's answer and the bar is gone.
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Unsaved changes' })).not.toBeInTheDocument());
+    expect(screen.getByRole('combobox', { name: 'Deleted items are kept at least' })).toHaveTextContent('90 days');
   });
 
   it('shows the minimum greyed out with the reason on a server without it', async () => {
@@ -153,7 +159,7 @@ describe('Server settings → Instance backup', () => {
       throw new Error(`unexpected GET ${path}`);
     });
     vi.mocked(api.put).mockImplementation(async (path: string, body: unknown) => {
-      if (path === '/admin/instance-backup/schedule') { const { time_utc, keep } = body as { time_utc: string; keep: number }; return { data: instanceStatus({ enabled: true, missing: [], destination: '/backups', key_fingerprint: 'k1', time_utc, keep }) }; }
+      if (path === '/admin/instance-backup/settings') { const { time_utc, keep } = body as { time_utc: string; keep: number }; return { data: instanceStatus({ enabled: true, missing: [], destination: '/backups', key_fingerprint: 'k1', time_utc, keep, schedule_source: 'admin' }) }; }
       throw new Error(`unexpected PUT ${path}`);
     });
     mountSignedIn(<AdminInstanceBackup />, { user: ADMIN });
@@ -170,7 +176,7 @@ describe('Server settings → Instance backup', () => {
     expect(save).toBeDisabled();
     fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
     fireEvent.click(save);
-    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/instance-backup/schedule', { time_utc: '22:15', keep: 7, current_password: 'admin-pw' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/instance-backup/settings', { time_utc: '22:15', keep: 7, current_password: 'admin-pw' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(screen.getByText('22:15 UTC')).toBeInTheDocument();
     expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Schedule saved' }));
@@ -186,7 +192,7 @@ describe('Server settings → Instance backup', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Change the schedule?' });
     fireEvent.change(within(dialog).getByLabelText('Backups kept'), { target: { value: '0' } });
     fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
-    expect(within(dialog).getByRole('alert')).toHaveTextContent(/between 1 and 365/);
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(/between 1 and 1000/);
     expect(within(dialog).getByRole('button', { name: 'Save schedule' })).toBeDisabled();
     expect(api.put).not.toHaveBeenCalled();
   });

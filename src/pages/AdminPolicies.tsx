@@ -3,8 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSecretMutation } from '@/hooks/use-secret-mutation';
 import { useAuth } from '@/contexts/useAuth';
 import { useToast } from '@/hooks/use-toast';
-import { BIN_MINIMUMS, BIN_MINIMUM_KEY, adminPoliciesQueryKey, fetchAdminPolicies, saveAdminPolicies, type AdminPolicy } from '@/lib/admin-api';
-import { policiesQueryKey, type PolicyKey } from '@/lib/policies-api';
+import { adminPoliciesQueryKey, fetchAdminPolicies, saveAdminPolicies, type AdminPolicy, type BinMinimum } from '@/lib/admin-api';
+import { policiesQueryKey, type PolicyKey, type PolicyValues } from '@/lib/policies-api';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ErrorState, LoadingState } from '@/components/ui/page-states';
@@ -20,7 +20,8 @@ import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog'
 // as minimums: how long users' backups are kept (D36) and, while deleting
 // from the bin is forbidden, how long the bin keeps items (D34).
 
-/** A rule's row; `when` hides nothing: a row shown only while another rule has a value is still greyed out otherwise. */
+/** The bin's minimum is not a policy key: it travels as its own field and has this row key here. */
+const BIN_MINIMUM_KEY = 'bin.min_retention';
 type RowKey = PolicyKey | typeof BIN_MINIMUM_KEY;
 type Row = { key: RowKey; label: string; description: string; consequence?: string };
 const GROUPS: { title: string; description?: string; rows: Row[] }[] = [
@@ -72,8 +73,8 @@ const NONE = 'none';
 const valueKey = (value: unknown) => value === null ? NONE : String(value);
 const valueLabel = (value: unknown) => value === null ? 'No minimum' : typeof value === 'number' ? `${value} days` : VALUE_LABELS[String(value)] ?? String(value);
 
-/** The minimum retention row of a server without the key: shown, greyed, with the reason. */
-const BIN_MINIMUM_FALLBACK: AdminPolicy<never> = { value: 'forever' as never, source: 'default', default: 'forever' as never, values: [...BIN_MINIMUMS] as never[], effect: null };
+/** The minimum retention row of a server without the field: shown, greyed, with the reason. */
+const BIN_MINIMUM_FALLBACK: AdminPolicy<never> = { value: 'forever' as never, source: 'default', default: 'forever' as never, values: ['30', '90', 'forever'] as never[], effect: null };
 const BIN_MINIMUM_MISSING = 'This server does not offer a minimum yet: items stay in the bin until they are restored.';
 
 /** The select for one policy, with the default marked and the effect of the chosen value under it. */
@@ -101,7 +102,10 @@ const AdminPolicies = () => {
 
   // The password is a variable of the request: useSecretMutation drops it as soon as the server answers.
   const save = useSecretMutation({
-    mutationFn: (currentPassword: string) => saveAdminPolicies(draft as Parameters<typeof saveAdminPolicies>[0], currentPassword),
+    mutationFn: (currentPassword: string) => {
+      const { [BIN_MINIMUM_KEY]: binMinimum, ...values } = draft;
+      return saveAdminPolicies(values as Partial<PolicyValues>, currentPassword, binMinimum as BinMinimum | undefined);
+    },
     onSuccess: answer => {
       client.setQueryData(adminPoliciesQueryKey, answer);
       // The administrator's own greyed controls follow at once.
@@ -113,10 +117,12 @@ const AdminPolicies = () => {
     onError: (error: Error) => toast({ title: 'Could not save the policies', description: error.message, variant: 'destructive' }),
   });
 
-  // The server's keys, plus the proposed minimum of the bin where the server lacks it.
-  const policies = query.data?.policies as Partial<Record<RowKey, AdminPolicy>> | undefined;
-  const binMinimumOffered = !!policies && BIN_MINIMUM_KEY in policies;
-  const policyOf = (key: RowKey): AdminPolicy | undefined => policies?.[key] ?? (key === BIN_MINIMUM_KEY ? BIN_MINIMUM_FALLBACK : undefined);
+  // The server's keys, plus the bin's minimum from its own field (greyed out where the server lacks it).
+  const policies = query.data?.policies as Partial<Record<PolicyKey, AdminPolicy>> | undefined;
+  const binMinimum = query.data?.bin_min_retention;
+  const policyOf = (key: RowKey): AdminPolicy | undefined => key === BIN_MINIMUM_KEY
+    ? (binMinimum ? { value: binMinimum.value, source: binMinimum.source, default: binMinimum.default, values: binMinimum.values, effect: binMinimum.effect } as AdminPolicy<never> : BIN_MINIMUM_FALLBACK)
+    : policies?.[key];
   const changed = Object.keys(draft) as RowKey[];
   const current = (key: RowKey): unknown => (key in draft ? draft[key] : policyOf(key)?.value);
   const change = (key: RowKey, value: unknown) => setDraft(previous => {
@@ -129,8 +135,10 @@ const AdminPolicies = () => {
   /** What greys a row out, if anything: the bin's minimum while deleting is allowed, or on a server without it. */
   const lockOf = (row: Row): string | undefined => {
     if (row.key !== BIN_MINIMUM_KEY) return undefined;
-    if (!binMinimumOffered) return BIN_MINIMUM_MISSING;
-    if (current('bin.delete') !== 'forbidden') return 'Applies once "Users may empty the bin or delete for good" is not allowed.';
+    if (!binMinimum) return BIN_MINIMUM_MISSING;
+    // The draft decides as soon as the bin rule is changed here; the server's `applies` otherwise.
+    const applies = 'bin.delete' in draft ? draft['bin.delete'] === 'forbidden' : binMinimum.applies;
+    if (!applies) return 'Applies once "Users may empty the bin or delete for good" is not allowed.';
     return undefined;
   };
 

@@ -4,7 +4,10 @@ import { Loader2, Play } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { useToast } from '@/hooks/use-toast';
 import { useSecretMutation } from '@/hooks/use-secret-mutation';
-import { instanceBackupQueryKey, instanceBackupQueryOptions, localTimeOf, runInstanceBackup, saveInstanceBackupSchedule, type InstanceBackupRun, type InstanceBackupSchedule } from '@/lib/instance-backup-api';
+import {
+  INSTANCE_BACKUP_KEEP_MAX, INSTANCE_BACKUP_KEEP_MIN, instanceBackupQueryKey, instanceBackupQueryOptions, localTimeOf, runInstanceBackup, saveInstanceBackupSchedule,
+  type InstanceBackupRun, type InstanceBackupSchedule,
+} from '@/lib/instance-backup-api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -25,8 +28,8 @@ const formatBytes = (bytes: number) => bytes < 1024 ** 2 ? `${Math.max(1, Math.r
 const formatWhen = (iso: string) => new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
 const RUN_STATUS: Record<InstanceBackupRun['status'], string> = { running: 'Running', succeeded: 'Succeeded', failed: 'Failed' };
 const MISSING: Record<'destination' | 'key', string> = { destination: 'INSTANCE_BACKUP_DIR', key: 'INSTANCE_BACKUP_KEY or INSTANCE_BACKUP_KEY_FILE' };
-const KEEP_MIN = 1;
-const KEEP_MAX = 365;
+const KEEP_MIN = INSTANCE_BACKUP_KEEP_MIN;
+const KEEP_MAX = INSTANCE_BACKUP_KEEP_MAX;
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 function runLine(run: InstanceBackupRun) {
@@ -107,7 +110,8 @@ const AdminInstanceBackup = () => {
           )}
           <SettingsRow label="Kept at the destination" description={status.enabled ? `${status.kept.count} ${status.kept.count === 1 ? 'backup' : 'backups'}, ${formatBytes(status.kept.bytes)}; the oldest beyond ${status.keep} is removed after a verified success.` : 'Nothing while the backup is off.'} />
         </SettingsSection>
-        <SettingsSection title="Schedule" description="Daily, at a time of your choosing. Saving asks for your password."
+        <SettingsSection title="Schedule"
+          description={`Daily, at a time of your choosing. Saving asks for your password.${status.schedule_source === 'environment' ? ` Until you set one, the server's environment or its defaults (${status.schedule_defaults?.time_utc ?? '03:30'} UTC, keep ${status.schedule_defaults?.keep ?? 14}) hold.` : ''}`}
           action={<Button size="sm" variant="outline" onClick={() => setEditing(true)}>Change schedule…</Button>}>
           <SettingsRow label="Time" description={local ? `${local} for you. The run starts at this UTC time every day.` : 'The run starts at this UTC time every day.'}>
             <span className="font-mono text-sm tabular-nums">{status.time_utc} UTC</span>

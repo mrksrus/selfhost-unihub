@@ -376,9 +376,9 @@ export default function BackupSettings({ active }: { active: boolean }) {
           const title = job.scope === 'full' ? 'Full backup' : `${job.requested_sections.map(sectionLabel).join(', ')} backup`;
           const opens = job.status === 'ready' ? deletableFrom(job, minimumDays) : null;
           const held = !!opens && Date.parse(opens) > now;
+          // The server's own words for the rule, then the date this backup opens.
           const deleteLock = deletePolicy.lock ?? (!held ? undefined
-            : minimumDays ? `Your administrator keeps backups at least ${minimumDays} days. This one can be deleted from ${formatDay(opens)}.`
-            : `Your administrator keeps this backup until ${formatDay(opens)}. It can be deleted from then.`);
+            : `${retentionPolicy.reason ?? (minimumDays ? `Your backups are kept at least ${minimumDays} days.` : 'Your administrator keeps this backup for now.')} This one can be deleted from ${formatDay(opens)}.`);
           const meta = [
             job.status === 'running' ? `Creating ${job.progress}%` : BACKUP_STATUS[job.status],
             formatWhen(job.completed_at || job.started_at || job.created_at),

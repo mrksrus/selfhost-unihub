@@ -157,30 +157,45 @@ export function auditActionLabel(entry: Pick<AuditEntry, 'action' | 'details'>) 
 }
 
 // ── Policies (Server settings → Policies) ─────────────────────────
-import type { AdminPoliciesResponse, AdminPoliciesUpdateRequest, PolicyValues } from '../../api/src/contracts/policies';
+import type { AdminPoliciesResponse, AdminPoliciesUpdateRequest, PolicySource, PolicyValues } from '../../api/src/contracts/policies';
 export type { AdminPolicy, AdminPoliciesResponse } from '../../api/src/contracts/policies';
 
 export const adminPoliciesQueryKey = ['admin', 'policies'] as const;
 
 /**
- * The minimum retention of the bin while bin.delete is forbidden (D34):
- * 30 or 90 days, or until restored (the default). Proposed as a policy key
- * for C2; the server resolves it as the floor of each person's bin_retention
- * setting. A server without the key leaves the choice greyed out.
+ * The bin's minimum retention while bin.delete is forbidden (D34): 30 or 90
+ * days, or until restored (the default). The server resolves it as the floor
+ * of each person's bin_retention setting. It is its own field of the
+ * administrator's routes (contracts/policies.ts AdminBinMinimumRetention
+ * from 0.28 C2; mirrored here until that contract is merged); a server
+ * without it leaves the choice greyed out.
  */
-export const BIN_MINIMUM_KEY = 'bin.min_retention';
 export type BinMinimum = '30' | '90' | 'forever';
-export const BIN_MINIMUMS: readonly BinMinimum[] = ['30', '90', 'forever'];
+export interface AdminBinMinimum {
+  value: BinMinimum;
+  source: PolicySource;
+  default: 'forever';
+  values: BinMinimum[];
+  /** True while bin.delete is forbidden: only then does the minimum hold anything. */
+  applies: boolean;
+  effect: string;
+}
+export type AdminPoliciesAnswer = AdminPoliciesResponse & { bin_min_retention?: AdminBinMinimum };
 
-export async function fetchAdminPolicies(signal?: AbortSignal): Promise<AdminPoliciesResponse> {
-  const answer = unwrap(await api.get<AdminPoliciesResponse>('/admin/policies', { signal }));
+export async function fetchAdminPolicies(signal?: AbortSignal): Promise<AdminPoliciesAnswer> {
+  const answer = unwrap(await api.get<AdminPoliciesAnswer>('/admin/policies', { signal }));
   if (!answer?.policies) throw new Error('The server did not answer with its policies.');
   return answer;
 }
 
-/** Saves the changed values only, with the administrator's password; the answer is every policy as now set. */
-export async function saveAdminPolicies(values: Partial<PolicyValues> & Partial<Record<typeof BIN_MINIMUM_KEY, BinMinimum>>, currentPassword: string): Promise<AdminPoliciesResponse> {
-  const answer = unwrap(await api.put<AdminPoliciesResponse>('/admin/policies', { values, current_password: currentPassword } satisfies AdminPoliciesUpdateRequest));
+/**
+ * Saves the changed values only, with the administrator's password; the
+ * answer is every policy as now set. `binMinimum` travels as its own field
+ * (AdminPoliciesUpdateRequest.bin_min_retention) when it changed.
+ */
+export async function saveAdminPolicies(values: Partial<PolicyValues>, currentPassword: string, binMinimum?: BinMinimum): Promise<AdminPoliciesAnswer> {
+  const body: AdminPoliciesUpdateRequest & { bin_min_retention?: BinMinimum } = { values, current_password: currentPassword, ...(binMinimum ? { bin_min_retention: binMinimum } : {}) };
+  const answer = unwrap(await api.put<AdminPoliciesAnswer>('/admin/policies', body));
   if (!answer?.policies) throw new Error('The server did not answer with its policies.');
   return answer;
 }

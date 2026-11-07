@@ -120,7 +120,7 @@ describe('Settings → Backup and restore (0.28)', () => {
   // D36: the administrator's days are a minimum. Delete greys out on a backup
   // younger than that with the date it opens; an older one deletes as before.
   it('greys Delete out on a backup the administrator still keeps, with the date it can go, and not on an older one', { timeout: 20_000 }, async () => {
-    answer(capabilities(), JOBS, [], policiesAnswer({ 'backup.server_retention_days': { value: 90, allowed: true, reason: 'Your administrator keeps each of your backups at least 90 days.' } }));
+    answer(capabilities(), JOBS, [], policiesAnswer({ 'backup.server_retention_days': { value: 90, allowed: true, reason: 'Your backups are kept at least 90 days: until then nobody can delete them.' } }));
     mountSignedIn(<BackupSettings active />);
     const section = (await screen.findByRole('heading', { name: 'Backups on this server' })).closest('section')!;
     await waitFor(() => expect(within(section).getAllByText('Full backup')).toHaveLength(2));
@@ -129,7 +129,7 @@ describe('Settings → Backup and restore (0.28)', () => {
     fireEvent.pointerDown(newer, { button: 0, ctrlKey: false });
     const held = await screen.findByRole('menuitem', { name: /Delete/ });
     expect(held).toHaveAttribute('aria-disabled', 'true');
-    expect(held).toHaveTextContent(/at least 90 days\. This one can be deleted from (3 July|July 3)/);
+    expect(held).toHaveTextContent(/at least 90 days: until then nobody can delete them\. This one can be deleted from (3 July|July 3)/);
     fireEvent.click(held);
     expect(api.delete).not.toHaveBeenCalled();
     fireEvent.keyDown(held, { key: 'Escape' });
