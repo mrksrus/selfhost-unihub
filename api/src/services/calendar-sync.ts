@@ -331,13 +331,15 @@ async function deleteCalendarsWithEvents(connection: SqlExecutor, userId: string
   await connection.execute(`DELETE FROM calendar_calendars WHERE user_id = ? AND id IN (${placeholders})`, [userId, ...calendarIds]);
 }
 
-async function deleteCalendarAccount(userId: string, accountId: string) {
+// inTransaction: written with the deletion (an administrator's activity-log entry).
+async function deleteCalendarAccount(userId: string, accountId: string, inTransaction?: (connection: SqlExecutor) => Promise<unknown>) {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
     const [calendars] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_calendars WHERE account_id = ? AND user_id = ?', [accountId, userId]);
     await deleteCalendarsWithEvents(connection, userId, calendars.map(row => row.id));
     await connection.execute('DELETE FROM calendar_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
+    if (inTransaction) await inTransaction(connection);
     await connection.commit();
   } catch (error) {
     await connection.rollback();

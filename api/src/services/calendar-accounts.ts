@@ -241,8 +241,8 @@ async function connectCalDavAccount({ userId, emailAddress, displayName, usernam
   return { account: serializeCalendarAccount(account), calendars, server: found.server, hint: found.hint || null };
 }
 
-async function removeCalendarAccount(userId: string, accountId: string) {
-  await calendarSync.deleteCalendarAccount(userId, accountId);
+async function removeCalendarAccount(userId: string, accountId: string, inTransaction?: (connection: SqlExecutor) => Promise<unknown>) {
+  await calendarSync.deleteCalendarAccount(userId, accountId, inTransaction);
 }
 
 // --- Mail account link ------------------------------------------------------

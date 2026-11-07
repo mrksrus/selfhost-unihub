@@ -7,7 +7,7 @@ import { withTransaction } from './transactions';
 import { isModuleEnabled } from './module-settings';
 import { isSectionRestoreActive } from './restore-locks';
 import { assertAllowed } from './settings';
-import { recordAudit, recordAuditAfter } from './audit';
+import { recordAudit } from './audit';
 import type { PolicyActor } from './settings';
 
 // Settings → Delete data: every item of one module, for good (no bin). The
@@ -124,8 +124,7 @@ async function clearMailAccounts(userId: string, actor: ClearActor): Promise<Cle
 
 async function clearRecordingsData(userId: string, actor: ClearActor): Promise<ClearResult> {
   const { clearRecordings } = require('./recordings') as typeof import('./recordings');
-  const deleted = await clearRecordings(userId);
-  if (actor.adminId) await recordAuditAfter(auditEntry(userId, 'recordings', deleted, actor));
+  const deleted = await clearRecordings(userId, actor.adminId ? (cx, count) => recordAudit(auditEntry(userId, 'recordings', count, actor), cx) : undefined);
   return { message: `Deleted ${deleted} recording(s)`, deleted };
 }
 

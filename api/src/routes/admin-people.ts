@@ -5,7 +5,8 @@ import type { BinDeleteResponse, BinListResponse } from '../contracts/bin';
 import { defineRoutes } from '../http/route';
 import { clientError, notFound } from '../http/errors';
 import { confirmPassword } from '../security/reauthentication';
-import { recordAuditAfter } from '../services/audit';
+import type { AuditDetails, AuditEntry } from '../services/audit';
+import { recordAudit, recordAuditIntent, settleAudit } from '../services/audit';
 import { adminMailAccountChange, assertPerson, assertPersonModule, personAccounts } from '../services/admin-path';
 import { createMailAccount, updateMailAccount } from '../services/mail-account-changes';
 import { disconnectAccount, disconnectAndPurgeAccount } from '../services/mail-account-lifecycle';
@@ -21,6 +22,10 @@ import { clearModuleData, isClearTarget } from '../services/data-clear';
 // route calls the service of the person's own route with the person's id
 // and the administrator as actor (services/admin-path.ts checks the
 // person's module switch and restore lock). Reading needs users.read.
+// Every change has its entry before it answers: in the transaction of the
+// change where the service has one (calendar account removal, the bin, the
+// clears, mail account removal), else written first and settled after
+// (audited).
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 type Body = Record<string, unknown> & { current_password?: unknown };
 type Handler = (req: Request, adminId: string, body: Body, res: ServerResponse) => Promise<RouteResponse>;
@@ -54,6 +59,23 @@ function answer(error: unknown): RouteResponse {
 }
 
 const failed = (result: RouteResponse) => typeof result.error === 'string' || (typeof result.status === 'number' && result.status >= 400);
+
+// The entry first; the change runs only once it is stored. A refusal settles
+// it as failed; an error without a status leaves it pending, as the change
+// may have happened.
+async function audited(entry: AuditEntry, change: () => Promise<RouteResponse>, outcome: (result: RouteResponse) => AuditDetails = () => ({})) {
+  const id = await recordAuditIntent(entry);
+  let result: RouteResponse;
+  try {
+    result = await change();
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    if (status && status < 500) await settleAudit(id, 'failed');
+    throw error;
+  }
+  if (failed(result)) await settleAudit(id, 'failed'); else await settleAudit(id, 'done', outcome(result));
+  return result;
+}
 const deleted = (count: number, extra: RouteResponse = {}): RouteResponse => ({ ...extra, deleted: count } satisfies AdminDeleteResponse & RouteResponse);
 
 export = defineRoutes({
@@ -63,22 +85,19 @@ export = defineRoutes({
     const userId = req.params.id;
     await assertPersonModule(userId, 'mail');
     // A server given by its addresses unless the dialog names a provider.
-    const result = await createMailAccount(userId, { provider: 'custom', ...withoutPassword(body) }, { adminId }) as RouteResponse;
-    const account = (result as { account?: { id?: string } }).account;
-    if (!failed(result) && account?.id) await recordAuditAfter({ action: 'admin.mail_account_added', actorId: adminId, targetUserId: userId, req, details: { mail_account: account.id } });
-    return result;
+    return audited({ action: 'admin.mail_account_added', actorId: adminId, targetUserId: userId, req, details: { mail_account: null } },
+      async () => await createMailAccount(userId, { provider: 'custom', ...withoutPassword(body) }, { adminId }) as RouteResponse,
+      result => ({ mail_account: (result as { account?: { id?: string } }).account?.id ?? null }));
   }, 50000),
 
   'PUT /api/admin/users/:id/mail-accounts/:accountId': change(async (req, adminId, body) => {
     const userId = req.params.id, accountId = req.params.accountId;
     await assertPersonModule(userId, 'mail');
     const values = withoutPassword(body);
-    const result = await updateMailAccount(userId, accountId, await adminMailAccountChange(userId, accountId, values), { adminId }) as RouteResponse;
-    if (!failed(result)) {
-      await recordAuditAfter({ action: 'admin.mail_account_changed', actorId: adminId, targetUserId: userId, req,
-        details: { mail_account: accountId, fields: Object.keys(values).filter(key => key !== 'encrypted_password').sort().join(',') || null, password: 'encrypted_password' in values } });
-    }
-    return result;
+    const change = await adminMailAccountChange(userId, accountId, values);
+    return audited({ action: 'admin.mail_account_changed', actorId: adminId, targetUserId: userId, req,
+      details: { mail_account: accountId, fields: Object.keys(values).filter(key => key !== 'encrypted_password').sort().join(',') || null, password: 'encrypted_password' in values } },
+    async () => await updateMailAccount(userId, accountId, change, { adminId }) as RouteResponse);
   }, 50000),
 
   // Without purge: disconnected, UniHub keeps its copy of the mail. With
@@ -98,30 +117,27 @@ export = defineRoutes({
   'POST /api/admin/users/:id/calendar-accounts': change(async (req, adminId, body) => {
     const userId = req.params.id;
     await assertPersonModule(userId, 'calendar');
-    const result = await createCalendarAccount(userId, withoutPassword(body)) as RouteResponse;
-    const account = (result as { account?: { id?: string } }).account;
-    if (!failed(result) && account?.id) await recordAuditAfter({ action: 'admin.calendar_account_added', actorId: adminId, targetUserId: userId, req, details: { calendar_account: account.id } });
-    return result;
+    return audited({ action: 'admin.calendar_account_added', actorId: adminId, targetUserId: userId, req, details: { calendar_account: null } },
+      async () => await createCalendarAccount(userId, withoutPassword(body)) as RouteResponse,
+      result => ({ calendar_account: (result as { account?: { id?: string } }).account?.id ?? null }));
   }, 50000),
 
   'PUT /api/admin/users/:id/calendar-accounts/:accountId': change(async (req, adminId, body) => {
     const userId = req.params.id, accountId = req.params.accountId;
     await assertPersonModule(userId, 'calendar');
     const values = withoutPassword(body);
-    const result = await updateCalendarAccount(userId, accountId, values) as RouteResponse;
-    if (!failed(result)) {
-      await recordAuditAfter({ action: 'admin.calendar_account_changed', actorId: adminId, targetUserId: userId, req,
-        details: { calendar_account: accountId, fields: Object.keys(values).filter(key => key !== 'password').sort().join(',') || null, password: 'password' in values } });
-    }
-    return result;
+    return audited({ action: 'admin.calendar_account_changed', actorId: adminId, targetUserId: userId, req,
+      details: { calendar_account: accountId, fields: Object.keys(values).filter(key => key !== 'password').sort().join(',') || null, password: 'password' in values } },
+    async () => await updateCalendarAccount(userId, accountId, values) as RouteResponse);
   }, 50000),
 
   'DELETE /api/admin/users/:id/calendar-accounts/:accountId': change(async (req, adminId) => {
     const userId = req.params.id, accountId = req.params.accountId;
     await assertPersonModule(userId, 'calendar');
-    const result = await deleteCalendarAccount(userId, accountId) as RouteResponse;
+    const result = await deleteCalendarAccount(userId, accountId, {
+      inTransaction: cx => recordAudit({ action: 'admin.calendar_account_removed', actorId: adminId, targetUserId: userId, req, details: { calendar_account: accountId } }, cx),
+    }) as RouteResponse;
     if (failed(result)) return result;
-    await recordAuditAfter({ action: 'admin.calendar_account_removed', actorId: adminId, targetUserId: userId, req, details: { calendar_account: accountId } });
     return deleted(1, result);
   }),
 
@@ -136,9 +152,9 @@ export = defineRoutes({
   'DELETE /api/admin/users/:id/backups/:jobId': change(async (req, adminId) => {
     const userId = req.params.id, jobId = req.params.jobId;
     await assertPerson(userId);
-    const result = await deleteDataExportJob(userId, jobId) as RouteResponse;
+    const result = await audited({ action: 'admin.backup_deleted', actorId: adminId, targetUserId: userId, req, details: { backup_job: jobId } },
+      async () => await deleteDataExportJob(userId, jobId) as RouteResponse);
     if (failed(result)) return result;
-    await recordAuditAfter({ action: 'admin.backup_deleted', actorId: adminId, targetUserId: userId, req, details: { backup_job: jobId } });
     return deleted(1, result);
   }),
 
@@ -154,17 +170,20 @@ export = defineRoutes({
     const userId = req.params.id;
     await assertPerson(userId);
     const values = withoutPassword(body);
-    const result: BinDeleteResponse = await emptyBin(userId, values);
-    await recordAuditAfter({ action: 'admin.bin_emptied', actorId: adminId, targetUserId: userId, req,
-      details: { deleted: result.deleted, module: typeof values.module === 'string' ? values.module : null } });
+    const module = typeof values.module === 'string' ? values.module : null;
+    // An entry for each batch, with the batch's deletion.
+    const result: BinDeleteResponse = await emptyBin(userId, values, {
+      record: (cx, rows) => recordAudit({ action: 'admin.bin_emptied', actorId: adminId, targetUserId: userId, req, details: { deleted: rows.length, module } }, cx),
+    });
     return { ...result };
   }),
 
   'DELETE /api/admin/users/:id/bin/:itemId': change(async (req, adminId) => {
     const userId = req.params.id, itemId = req.params.itemId;
     await assertPerson(userId);
-    const result: BinDeleteResponse = await deleteBinItem(userId, itemId);
-    await recordAuditAfter({ action: 'admin.bin_item_deleted', actorId: adminId, targetUserId: userId, req, details: { bin_item: itemId } });
+    const result: BinDeleteResponse = await deleteBinItem(userId, itemId, {
+      record: cx => recordAudit({ action: 'admin.bin_item_deleted', actorId: adminId, targetUserId: userId, req, details: { bin_item: itemId } }, cx),
+    });
     return { ...result };
   }),
 

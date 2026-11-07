@@ -371,10 +371,15 @@ the actor, the account concerned, the address and the request id; details hold
 only a role or mode, or for mail the account's id and the numbers of messages
 and calendar events removed, never a password, code, token or mail address. Entries about an account that later
 got deleted stay, without its address. An entry written for a change that runs
-in a transaction commits or rolls back with it. Entries older than 365 days are
-deleted by the hourly session cleanup. The log is server-local: backups and
-restores do not carry it. Admins read it in Settings > Server settings >
-Activity.
+in a transaction commits or rolls back with it. An administrator's change for a
+person always has its entry: in the change's transaction where there is one
+(removing a calendar or mail account, the bin, Delete data), else written
+first with `outcome: "pending"` and then set to `done` or `failed` (adding or
+changing an account, deleting a backup); an entry that cannot be written stops
+the change, and one left `pending` means the change may have happened.
+Entries older than 365 days are deleted by the hourly session cleanup. The
+log is server-local: backups and restores do not carry it. Admins read it in
+Settings > Server settings > Activity.
 
 Safety checks:
 
