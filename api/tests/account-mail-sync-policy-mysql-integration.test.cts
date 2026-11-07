@@ -778,12 +778,11 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     }, 'account backup ready');
     // Encrypted although the client asked otherwise; readable with the revealed recovery password.
     const { recovery_password: recoveryPassword } = await call('POST', `/backup/jobs/${started.job.id}/recovery-password/reveal`, {});
-    const sealed = path.join(directory, 'account-backup.unihub-backup'), opened = path.join(directory, 'account-backup.zip');
+    const sealed = path.join(directory, 'account-backup.zip'), opened = path.join(directory, 'account-backup-inner.zip');
     await fs.writeFile(sealed, await call('GET', `/backup/jobs/${started.job.id}/download`, undefined, 200, true));
-    const container = isolated('services/backup-container');
-    await container.decryptBackupFile(sealed, opened, (await container.unlockContainerWithPassword(sealed, recoveryPassword)).dataKey);
+    await isolated('services/backup-envelope').openBackupEnvelope(sealed, opened, recoveryPassword);
     const entries = isolated('services/backup-zip-reader').readZipEntries(await fs.readFile(opened));
-    const backup = JSON.parse(entries.get('data/backup.json').toString('utf8'));
+    const backup = JSON.parse(entries.get('UniHub restore data/backup.json').toString('utf8'));
     assert.deepEqual(backup.data.mail_accounts.map((account: FixtureValue) => account.id), [switching]);
     assert.deepEqual(backup.data.emails.map((email: FixtureValue) => email.id).sort(), [...switchingMail].sort(), 'Only this account\'s mail');
     assert.deepEqual(backup.data.mail_command_receipts, []);

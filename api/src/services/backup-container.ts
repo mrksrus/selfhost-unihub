@@ -144,6 +144,25 @@ function unwrapDataKeyFromServer(wrappedValue: string | WrappedKey, backupUuid: 
   );
 }
 
+// The password of an encrypted ZIP backup (backup-envelope.ts), kept so the
+// server can open its own archive: the counterpart of a container's wrapped
+// data key, with its own associated data, so neither is read as the other.
+function wrapEnvelopePasswordForServer(password: string, backupUuid: string) {
+  return JSON.stringify(aesGcmEncrypt(
+    deriveMasterKey(),
+    Buffer.from(password, 'utf8'),
+    Buffer.from(`unihub-backup-envelope-password:${backupUuid}`, 'utf8')
+  ));
+}
+
+function unwrapEnvelopePasswordFromServer(wrappedValue: string | WrappedKey, backupUuid: string) {
+  return aesGcmDecrypt(
+    deriveMasterKey(),
+    typeof wrappedValue === 'string' ? JSON.parse(wrappedValue) : wrappedValue,
+    Buffer.from(`unihub-backup-envelope-password:${backupUuid}`, 'utf8')
+  ).toString('utf8');
+}
+
 function protectRecoveryPassword(password: unknown, backupUuid: string) {
   return JSON.stringify(aesGcmEncrypt(
     deriveMasterKey(),
@@ -392,6 +411,8 @@ export {
   generateRecoveryPassword,
   wrapDataKeyForServer,
   unwrapDataKeyFromServer,
+  wrapEnvelopePasswordForServer,
+  unwrapEnvelopePasswordFromServer,
   protectRecoveryPassword,
   revealProtectedRecoveryPassword,
   encryptPortableCredentialBundle,

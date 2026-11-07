@@ -9,6 +9,7 @@ import { runDueWritebacks } from './mail-writebacks';
 import { pruneFinishedJobs } from './mail-engine/runtime';
 import { pruneCommandReceipts } from './mail-engine/repository';
 import { cleanupExpiredRecordingUploads } from './recordings';
+import { cleanupExpiredRestoreArchives } from './backup-restore-jobs';
 import { isSectionRestoreActive } from './restore-locks';
 import { idleSupervisor } from './mail-idle';
 import { processNotificationJobs } from './notifications';
@@ -54,6 +55,7 @@ interface BackgroundWorkDeps {
   runDueWritebacks: typeof runDueWritebacks;
   pruneFinishedJobs: typeof pruneFinishedJobs;
   cleanupExpiredRecordingUploads: typeof cleanupExpiredRecordingUploads;
+  cleanupExpiredRestoreArchives: typeof cleanupExpiredRestoreArchives;
   isSectionRestoreActive: typeof isSectionRestoreActive;
   idleSupervisor: Pick<typeof idleSupervisor, 'start' | 'stop' | 'options'>;
   runCalendarSyncPass: () => Promise<unknown>;
@@ -87,6 +89,7 @@ function defaultDeps(): BackgroundWorkDeps {
     runDueWritebacks,
     pruneFinishedJobs,
     cleanupExpiredRecordingUploads,
+    cleanupExpiredRestoreArchives,
     isSectionRestoreActive,
     idleSupervisor,
     pruneAuditLog: () => pruneAuditLog(),
@@ -236,6 +239,13 @@ async function runStartup(deps: BackgroundWorkDeps, state: { stopped: boolean },
   every('CLEANUP', 60 * 60 * 1000, async () => {
     const deleted = await deps.cleanupExpiredRecordingUploads();
     if (deleted > 0) log.info('CLEANUP', 'Deleted expired recording uploads', { deleted });
+  });
+
+  // Uploaded restore archives 7 days after their upload, never while a
+  // restore uses one (backup-restore-jobs.ts). Backups people made stay.
+  every('CLEANUP', 60 * 60 * 1000, async () => {
+    const expired = await deps.cleanupExpiredRestoreArchives();
+    if (expired > 0) log.info('CLEANUP', 'Deleted expired restore uploads', { expired });
   });
 
   // Bin items past their retention and merge records past their undo window

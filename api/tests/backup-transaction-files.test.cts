@@ -92,7 +92,7 @@ test('new selected recording exports reject unsupported stored audio while other
   t.after(async () => {
     await Promise.all(contactEntries.filter((entry) => entry.cleanupAfterWrite).map((entry: FixtureValue) => fs.rm(entry.filePath, { force: true })));
   });
-  assert.ok(contactEntries.some((entry) => entry.name === 'data/backup.json'));
+  assert.ok(contactEntries.some((entry) => entry.name === 'UniHub restore data/backup.json'));
   await assert.rejects(buildBackupArchiveEntriesForUser('test-user', ['recordings']), error => (error as FixtureValue).status === 409 && /stored audio is unsupported or unreadable/.test((error as FixtureValue).message));
   assert.deepEqual(await fs.readFile(sourcePath), original);
 });

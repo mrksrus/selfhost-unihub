@@ -629,7 +629,7 @@ The Backup and restore section in Settings also exposes generated backup and dur
 - background progress with start/end times
 - cooperative Stop controls
 - direct restore from a retained generated backup
-- upload-once validation for `.zip` and `.unihub-backup`
+- upload-once validation for `.zip` (encrypted since 0.28) and `.unihub-backup` (0.27)
 - recovery-password input for portable encrypted uploads
 - retry and deletion for retained restore jobs
 

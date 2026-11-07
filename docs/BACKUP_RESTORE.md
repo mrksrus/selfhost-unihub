@@ -12,9 +12,9 @@ are errors. Conflicting folder ownership or a merge that would hide restored
 mail rolls back instead of reporting success. Missing optional historical
 account references become null with a warning; live references remain required.
 
-Automatic expiry of retained uploads remains paused to protect archives kept
-during suspension. Uploaded archives are removed after successful restoration
-or explicit deletion. Completed backups remain until explicitly deleted.
+Uploaded archives are removed after a successful restore, on deletion, or
+seven days after the upload, never while a restore validates or runs from
+one. Backups people make stay until they delete them.
 
 See [Recovery contracts](DATA_RECOVERY.md) for developer requirements and
 [Backup format](BACKUP_FORMAT.md) for historical compatibility.
@@ -118,19 +118,26 @@ It does not restore:
 
 ### Files
 
-The inner ZIP payload contains:
+Since 0.28.0 the archive inside the encrypted ZIP (see
+[Opening a backup outside UniHub](#opening-a-backup-outside-unihub)) contains:
 
 ```text
-manifest.json
-data/backup.json
-checksums.json
-files/mail-raw/...
-files/mail-attachments/...
-files/recordings/...
+Mail/<account>/<folder>/00001 2030-01-02 Subject.eml
+Contacts/Contacts.vcf
+Calendars/<calendar>.ics
+Recordings/<title>.wav
+UniHub restore data/manifest.json
+UniHub restore data/backup.json
+UniHub restore data/checksums.json
+UniHub restore data/files/...
 ```
 
-`data/backup.json` and the stored files are the authoritative restore data.
-`checksums.json` contains SHA-256 checksums for validation.
+`backup.json` and the stored files are the authoritative restore data: the
+`.eml` messages and the recordings are the stored files themselves, kept once.
+The vCard and iCalendar files are copies for other programs; restore does not
+read them. `checksums.json` contains SHA-256 checksums for validation. Archives
+of earlier releases keep `manifest.json`, `data/backup.json` and
+`checksums.json` at the root and the files under `files/`; they still restore.
 
 `manifest.json` already serves as the version file: it records the data schema,
 ZIP format, producing application version, selected sections and counts. There
@@ -157,25 +164,34 @@ complete recovery.
 
 ## Encryption Model
 
-Encrypted backups use a versioned `.unihub-backup` container around the normal
-ZIP payload:
+Every backup is encrypted. Since 0.28.0 a backup is a standard ZIP file
+encrypted with AES-256 (WinZip AES, AE-2) that 7-Zip, Keka, Ark, WinRAR and
+`7z` open with the recovery password:
 
-- random 256-bit data-encryption key per backup
-- AES-256-GCM authenticated encryption
-- independent 4 MiB encrypted chunks
-- unique nonce per chunk
-- generated 256-bit base64url recovery password
-- `scrypt` password derivation with a random salt
+- a plain `README.txt` that says how to open the file
+- one encrypted entry, `unihub-backup.zip`, the archive itself, so names and
+  sizes inside stay hidden
+- a generated 256-bit base64url recovery password per backup
+- PBKDF2-HMAC-SHA1 key derivation (1000 iterations, as the format fixes it; the
+  password's 256 random bits make that enough) and HMAC-SHA1 authentication
+  of every byte
 
-The recovery password wraps the backup data key inside the file. This makes the
-backup self-contained and portable: another UniHub installation can unlock it
-using only the file and recovery password.
+The file is self-contained and portable: another UniHub installation, or any
+of those programs, opens it with only the file and the recovery password.
+[Backup format](BACKUP_FORMAT.md#the-encrypted-zip-0280-on) describes the
+details.
+
+Backups made by 0.27 are `.unihub-backup` files: a UniHub container with
+AES-256-GCM chunks and an `scrypt`-wrapped data key. They still restore, with
+their recovery password or automatically on their source server; other
+programs cannot open them.
 
 ### Server Automatic Unlock
 
-The source server also stores a separately wrapped copy of the data key. This
-allows a retained server backup to be validated or restored without entering
-the recovery password.
+The source server also stores a separately wrapped copy of the recovery
+password (of the data key, for a 0.27 container). This allows a retained
+server backup to be validated or restored without entering the recovery
+password. The server could decrypt the backup anyway: it made it.
 
 The server-side key is protected by:
 
@@ -214,11 +230,49 @@ If the password is lost:
 
 Store the backup and password separately where practical.
 
+## Opening a backup outside UniHub
+
+A backup is meant to be readable without UniHub, for example to move mail into
+Thunderbird or to keep contacts and calendars in another program.
+
+1. Open the downloaded `.zip` with 7-Zip (Windows, Linux), Keka (macOS), Ark
+   (KDE), WinRAR, or run `7z x unihub-backup-….zip`. The ZIP support built into
+   Windows Explorer and the macOS Archive Utility cannot open AES-encrypted
+   ZIP files; they show only `README.txt`.
+2. Enter the recovery password. Inside is `unihub-backup.zip`, an ordinary ZIP
+   archive: open or extract it as usual.
+3. `Mail/` holds one `.eml` file per message, by account and folder; the
+   files are the messages exactly as UniHub stored them. `Contacts/Contacts.vcf`
+   holds the contacts (vCard 4.0), `Calendars/` one iCalendar file per local
+   calendar with its events, tasks and subtasks, and `Recordings/` the original
+   audio files. `UniHub restore data/` is what UniHub reads to restore.
+
+Thunderbird:
+
+- Mail: install the ImportExportTools NG add-on, then on a folder choose
+  **ImportExportTools NG → Import all messages from a directory** and pick a
+  folder under `Mail/`; or drag `.eml` files onto a Thunderbird folder.
+- Contacts, calendars and tasks: **File → Import**, choose to import from a
+  file, then **Address Books** with `Contacts.vcf` or **Calendars** with a
+  `.ics` file.
+
+To restore into UniHub, upload the downloaded file unchanged, not
+`unihub-backup.zip` or the extracted files.
+
+Short text for the backup screen (for the download and the backup list):
+
+> This backup is a password-protected ZIP file. Open it with 7-Zip, Keka or
+> WinRAR and the recovery password. Inside are your mail as .eml files,
+> contacts as a .vcf file, calendars as .ics files and your recordings, ready
+> for programs such as Thunderbird. To restore into UniHub, upload the file
+> unchanged.
+
 ### Portable Account Credentials
 
 For encrypted backups, UniHub decrypts stored mail and calendar credentials only
 in process while building the protected payload. It places them in a credential
-bundle encrypted with the backup data key.
+bundle encrypted with a key derived from the recovery password (the backup data
+key of a 0.27 container).
 
 During restore on another server:
 
@@ -277,8 +331,9 @@ The app resumes interrupted queued/running backup jobs after restart.
 
 Import accepts:
 
-- `.unihub-backup`
-- UniHub-created restorable `.zip`
+- the encrypted `.zip` of 0.28 and later
+- the `.unihub-backup` container of 0.27
+- the unencrypted restorable `.zip` of earlier releases
 
 The upload happens once. UniHub retains the archive, creates a restore job, and
 validates it in the background.
@@ -288,14 +343,16 @@ For encrypted uploads:
 - the same user on the source server may be auto-unlocked while the matching
   retained key record exists
 - all other uploads require the recovery password
-- the entered password is used in memory and is not stored
-- after unlock, UniHub retains only a server-wrapped data key for that restore
-  job
+- the entered password is checked against the file's password verifier;
+  every byte is then authenticated when the archive is opened for validation,
+  so a changed file fails there
+- after unlock, UniHub retains the password (or a 0.27 container's data key)
+  only wrapped with the server key, for that restore job
 
 Validation checks:
 
-- container authentication for encrypted backups
-- ZIP structure and safe paths
+- authentication of every byte of an encrypted backup
+- ZIP structure and safe paths (no absolute, drive-letter or `..` names)
 - supported UniHub app/format versions
 - matching version metadata in the manifest and data payload
 - required manifest and data files
@@ -509,7 +566,7 @@ During mail restore:
 | Archive type | Retention |
 | --- | --- |
 | Generated backup | Until manually deleted |
-| Uploaded, validated/failed backup | Seven days |
+| Uploaded backup, not being validated or restored | Seven days after the upload |
 | Successful uploaded restore | Archive deleted after completion |
 | Restore-job history | Retained until manually deleted |
 
@@ -548,7 +605,8 @@ All endpoints require authentication. State-changing endpoints require CSRF.
 | `DELETE` | `/api/backup/restore-jobs/:id` | Delete a non-running job and retained upload |
 
 Uploads use `application/zip`, `application/octet-stream`, or
-`application/vnd.unihub.backup`.
+`application/vnd.unihub.backup`. Downloads are `application/zip` (a 0.27
+container keeps `application/vnd.unihub.backup` and its extension).
 
 `POST /api/backup/jobs` takes `{"sections": "full" | [...], "encrypt": true}`.
 Section IDs are `settings`, `contacts`, `calendar`, `mail`, `recordings` and
@@ -562,7 +620,7 @@ results list account-only sections in `account_only_sections`.
 Filesystem:
 
 ```text
-/app/uploads/backups/<userId>/              generated backups
+/app/uploads/backups/<userId>/              generated backups (<jobId>.zip)
 /app/uploads/backups/restores/<userId>/     retained uploads
 /app/uploads/backups/restores/work/<jobId>/ temporary decrypted ZIPs
 ```
@@ -573,7 +631,7 @@ Important tables:
 | --- | --- |
 | `data_export_jobs` | Generated backup state and file metadata |
 | `backup_restore_jobs` | Upload, validation, restore, progress, result, and retention state |
-| `backup_archive_keys` | Server-wrapped data keys and temporary one-time password ciphertext |
+| `backup_archive_keys` | The server-wrapped recovery password (a 0.27 container's data key) and temporary one-time password ciphertext |
 
 Uploaded/generated archive files are created with owner-only filesystem
 permissions where the host filesystem honors POSIX modes.
@@ -603,7 +661,7 @@ Metadata limits are the same for export and import:
 | --- | --- |
 | `manifest.json` | 16 MiB |
 | `checksums.json` | 64 MiB |
-| `data/backup.json` | 512 MiB |
+| `backup.json` | 512 MiB |
 
 Use section backups if a full backup exceeds a limit. A single section can also
 exceed these limits; automatic splitting within a section is not implemented.

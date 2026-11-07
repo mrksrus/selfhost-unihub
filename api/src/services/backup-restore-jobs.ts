@@ -17,8 +17,11 @@ import {
   readContainerHeader,
   unlockContainerWithPassword,
   unwrapDataKeyFromServer,
+  unwrapEnvelopePasswordFromServer,
   wrapDataKeyForServer,
+  wrapEnvelopePasswordForServer,
 } from './backup-container';
+import { UNLOCK_FAILED, checkEnvelopePassword, envelopeDataKey, openBackupEnvelope, readBackupEnvelope } from './backup-envelope';
 import { controlPool } from './side-pools';
 import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
 import { attachmentsRoot, rawRoot } from './mail-storage';
@@ -173,7 +176,14 @@ async function checkRestoreCancelled(jobId: string, executor: SqlExecutor = db) 
   }
 }
 
-async function getServerDataKey(job: RestoreJob) {
+// How the server opens an encrypted archive it holds the key of: the
+// password of an encrypted ZIP (0.28 on) or the data key of a UNIHUBBK1
+// container (0.27). portableKey encrypts the portable credentials inside.
+type ArchiveUnlock =
+  | { kind: 'envelope'; password: string; portableKey: Buffer }
+  | { kind: 'container'; dataKey: Buffer; portableKey: Buffer };
+
+async function getServerUnlock(job: RestoreJob): Promise<ArchiveUnlock | null> {
   if (!job.is_encrypted) return null;
   const [rows] = await db.execute<RestoreJob[]>(
     `SELECT server_wrapped_key
@@ -183,38 +193,49 @@ async function getServerDataKey(job: RestoreJob) {
     [job.backup_uuid, job.user_id]
   );
   if (!rows.length) return null;
+  const envelope = await readBackupEnvelope(job.archive_path!);
   try {
-    return unwrapDataKeyFromServer(rows[0].server_wrapped_key, job.backup_uuid!);
+    if (envelope) {
+      const password = unwrapEnvelopePasswordFromServer(rows[0].server_wrapped_key, job.backup_uuid!);
+      return { kind: 'envelope', password, portableKey: envelopeDataKey(password, job.backup_uuid!) };
+    }
+    const dataKey = unwrapDataKeyFromServer(rows[0].server_wrapped_key, job.backup_uuid!);
+    return { kind: 'container', dataKey, portableKey: dataKey };
   } catch {
     return null;
   }
 }
 
-async function prepareZipForJob(job: RestoreJob, dataKey: Buffer | null): Promise<{ zipPath: string; temporary: boolean }> {
+async function prepareZipForJob(job: RestoreJob, unlock: ArchiveUnlock | null): Promise<{ zipPath: string; temporary: boolean }> {
   if (!job.is_encrypted) return { zipPath: job.archive_path!, temporary: false };
   const workDir = getJobWorkDir(job.id);
   const zipPath = path.join(workDir, 'archive.zip');
   await fs.promises.rm(workDir, { recursive: true, force: true });
   await fs.promises.mkdir(workDir, { recursive: true });
   await updateRestoreJob(job.id, { phase: 'decrypting', progress: 5 });
-  await decryptBackupFile(job.archive_path!, zipPath, dataKey!, {
+  const options = {
     checkCancelled: () => checkRestoreCancelled(job.id),
-    onProgress: async (processed, total) => {
+    onProgress: async (processed: number, total: number) => {
       await updateRestoreJob(job.id, {
         progress: 5 + Math.round((processed / Math.max(total, 1)) * 30),
       });
     },
-  });
+  };
+  if (unlock?.kind === 'envelope') await openBackupEnvelope(job.archive_path!, zipPath, unlock.password, options);
+  else await decryptBackupFile(job.archive_path!, zipPath, unlock?.kind === 'container' ? unlock.dataKey : Buffer.alloc(0), options);
   return { zipPath, temporary: true };
 }
 
-async function loadBackupForJob(job: RestoreJob, dataKey: Buffer | null) {
-  const prepared = await prepareZipForJob(job, dataKey);
+async function loadBackupForJob(job: RestoreJob, unlock: ArchiveUnlock | null) {
+  const prepared = await prepareZipForJob(job, unlock);
   try {
     const parsed = await backupFromZipFile(prepared.zipPath);
+    // The archive inside an encrypted ZIP names the UUID its envelope gave.
+    const innerUuid = (parsed.manifest as { backup_uuid?: unknown } | undefined)?.backup_uuid;
+    if (unlock?.kind === 'envelope' && innerUuid !== undefined && innerUuid !== job.backup_uuid) throw new Error(UNLOCK_FAILED);
     if (parsed.backup.portable_credentials) {
-      if (!dataKey) throw new Error('Protected portable credentials require an encrypted backup key.');
-      decryptPortableCredentialBundle(parsed.backup.portable_credentials as Parameters<typeof decryptPortableCredentialBundle>[0], dataKey);
+      if (!unlock) throw new Error('Protected portable credentials require an encrypted backup key.');
+      decryptPortableCredentialBundle(parsed.backup.portable_credentials as Parameters<typeof decryptPortableCredentialBundle>[0], unlock.portableKey);
     }
     return { ...parsed, prepared };
   } catch (error) {
@@ -234,8 +255,8 @@ async function validateRestoreJob(job: RestoreJob) {
   await checkRestoreCancelled(job.id);
   const archiveHash = await sha256File(job.archive_path!, () => checkRestoreCancelled(job.id));
   await updateRestoreJob(job.id, { archive_sha256: archiveHash, progress: 4 });
-  const dataKey = await getServerDataKey(job);
-  if (job.is_encrypted && !dataKey) {
+  const unlock = await getServerUnlock(job);
+  if (job.is_encrypted && !unlock) {
     await updateRestoreJob(job.id, {
       status: 'awaiting_password',
       phase: 'awaiting_password',
@@ -244,7 +265,7 @@ async function validateRestoreJob(job: RestoreJob) {
     return;
   }
 
-  const parsed = await loadBackupForJob(job, dataKey);
+  const parsed = await loadBackupForJob(job, unlock);
   try {
     await updateRestoreJob(job.id, { phase: 'validating', progress: 40 });
     const validation = await importBackupForUser(job.user_id, parsed.backup, {
@@ -254,7 +275,7 @@ async function validateRestoreJob(job: RestoreJob) {
       calendar_mode: job.calendar_mode,
       credentials_mode: job.credentials_mode,
       fileSourcesByPath: parsed.fileSourcesByPath,
-      portableCredentialKey: dataKey,
+      portableCredentialKey: unlock?.portableKey ?? null,
     });
     if (!validation.valid || validation.errors?.length) {
       await updateRestoreJob(job.id, {
@@ -301,11 +322,11 @@ async function restoreValidatedJob(job: RestoreJob) {
       await checkRestoreCancelled(job.id);
     }
   }
-  const dataKey = await getServerDataKey(job);
-  if (job.is_encrypted && !dataKey) {
+  const unlock = await getServerUnlock(job);
+  if (job.is_encrypted && !unlock) {
     throw new Error('The encrypted backup key is no longer available. Upload the backup and enter its recovery password again.');
   }
-  const parsed = await loadBackupForJob(job, dataKey);
+  const parsed = await loadBackupForJob(job, unlock);
   try {
     await updateRestoreJob(job.id, { phase: 'restoring', progress: 40 });
     const result = await importBackupForUser(job.user_id, parsed.backup, {
@@ -315,7 +336,7 @@ async function restoreValidatedJob(job: RestoreJob) {
       calendar_mode: job.calendar_mode,
       credentials_mode: job.credentials_mode,
       fileSourcesByPath: parsed.fileSourcesByPath,
-      portableCredentialKey: dataKey,
+      portableCredentialKey: unlock?.portableKey ?? null,
       restoreJobId: job.id,
       // These run while the import's transaction holds its connection and
       // row locks, which requests may wait for with every main connection:
@@ -482,12 +503,20 @@ function normalizeRestoreOptions(options: ImportOptions = {}) {
 async function createUploadedRestoreJob(userId: string, sourcePath: string, options: ImportOptions = {}) {
   const jobId = crypto.randomUUID();
   const normalized = normalizeRestoreOptions(options);
-  const parsedHeader = await readContainerHeader(sourcePath);
-  const encrypted = Boolean(parsedHeader);
-  const backupUuid = (parsedHeader?.header?.backup_uuid || null) as string | null;
+  // An encrypted ZIP (0.28 on), the UNIHUBBK1 container (0.27) or an
+  // unencrypted ZIP (before 0.27).
+  let envelope;
+  try {
+    envelope = await readBackupEnvelope(sourcePath);
+  } catch (error) {
+    throw Object.assign(new Error((error as Error).message), { status: 400 });
+  }
+  const parsedHeader = envelope ? null : await readContainerHeader(sourcePath);
+  const encrypted = Boolean(envelope || parsedHeader);
+  const backupUuid = (envelope?.backupUuid || parsedHeader?.header?.backup_uuid || null) as string | null;
   const targetDir = path.join(RESTORE_ROOT, String(userId));
   await fs.promises.mkdir(targetDir, { recursive: true });
-  const targetPath = path.join(targetDir, `${jobId}.${encrypted ? 'unihub-backup' : 'zip'}`);
+  const targetPath = path.join(targetDir, `${jobId}.${parsedHeader ? 'unihub-backup' : 'zip'}`);
   await fs.promises.rename(sourcePath, targetPath);
   const stat = await fs.promises.stat(targetPath);
   let status = 'uploaded';
@@ -584,9 +613,22 @@ async function unlockRestoreJob(userId: string, jobId: string | null, password?:
     return { error: 'Restore job is not waiting for a password', status: 409 };
   }
   if (!password) return { error: 'Recovery password is required', status: 400 };
-  const unlocked = await unlockContainerWithPassword(job.archive_path!, password);
-  if (unlocked.header.backup_uuid !== job.backup_uuid!) {
-    return { error: 'Unable to unlock backup. The password is incorrect or the backup is damaged.', status: 400 };
+  let wrapped: string;
+  const envelope = await readBackupEnvelope(job.archive_path!).catch(() => null);
+  if (envelope) {
+    // The password's verifier: the whole entry's HMAC is checked when the
+    // archive is opened for validation.
+    if (envelope.backupUuid !== job.backup_uuid || !(await checkEnvelopePassword(job.archive_path!, password))) return { error: UNLOCK_FAILED, status: 400 };
+    wrapped = wrapEnvelopePasswordForServer(password, job.backup_uuid!);
+  } else {
+    let unlocked;
+    try {
+      unlocked = await unlockContainerWithPassword(job.archive_path!, password);
+    } catch {
+      return { error: UNLOCK_FAILED, status: 400 };
+    }
+    if (unlocked.header.backup_uuid !== job.backup_uuid!) return { error: UNLOCK_FAILED, status: 400 };
+    wrapped = wrapDataKeyForServer(unlocked.dataKey, job.backup_uuid!);
   }
   await db.execute(
     `INSERT INTO backup_archive_keys
@@ -604,7 +646,7 @@ async function unlockRestoreJob(userId: string, jobId: string | null, password?:
     [
       job.backup_uuid,
       userId,
-      wrapDataKeyForServer(unlocked.dataKey, job.backup_uuid!),
+      wrapped,
       job.expires_at,
     ]
   );
@@ -637,15 +679,16 @@ async function startRestoreJob(userId: string, jobId: string | null) {
   if (!job.archive_path || !fs.existsSync(job.archive_path)) {
     return { error: 'The retained backup archive is no longer available', status: 410 };
   }
-  await updateRestoreJob(jobId!, {
-    status: retryValidation ? 'uploaded' : 'queued',
-    operation: retryValidation ? 'validate' : 'restore',
-    phase: retryValidation ? 'uploaded' : 'queued',
-    progress: 0,
-    cancel_requested: 0,
-    error: null,
-    completed_at: null,
-  });
+  // Only from the state just read, with its archive: an upload that expired
+  // meanwhile (cleanupExpiredRestoreArchives) is not started without it.
+  const [started] = await db.execute<ResultSetHeader>(
+    `UPDATE backup_restore_jobs
+     SET status = ?, operation = ?, phase = ?, progress = 0, cancel_requested = 0, error = NULL, completed_at = NULL
+     WHERE id = ? AND user_id = ? AND status = ? AND archive_path = ?`,
+    [retryValidation ? 'uploaded' : 'queued', retryValidation ? 'validate' : 'restore', retryValidation ? 'uploaded' : 'queued',
+      jobId, userId, job.status, job.archive_path]
+  );
+  if (started.affectedRows !== 1) return { error: 'The restore job changed meanwhile. Reload and try again.', status: 409 };
   scheduleRestoreWorker();
   return { job: serializeRestoreJob((await getRestoreJob(userId, jobId))!) };
 }
@@ -729,25 +772,42 @@ async function resumePendingRestoreJobs() {
   return interrupted.length;
 }
 
+/**
+ * Removes uploaded restore archives UPLOAD_RETENTION_DAYS after their upload
+ * (the worker owner, hourly: background-work.ts), never while a restore
+ * validates or runs from one. The row is marked expired first, by a write
+ * that holds only while the job is still idle with that archive, so a restore
+ * started meanwhile keeps its file; then the file and the archive's key go.
+ * Uploads live outside what the instance backup copies, so no removal gate
+ * is needed. Backups the user made are not touched (D36).
+ */
 async function cleanupExpiredRestoreArchives() {
+  const busy = [...BUSY_RESTORE_STATUSES];
   const [rows] = await db.execute<RestoreJob[]>(
-    `SELECT * FROM backup_restore_jobs
+    `SELECT id, user_id, archive_path, backup_uuid FROM backup_restore_jobs
      WHERE source_type = 'upload'
        AND archive_path IS NOT NULL
        AND expires_at IS NOT NULL
        AND expires_at <= UTC_TIMESTAMP()
-       AND status NOT IN ('validating', 'queued', 'running', 'cancelling')`
+       AND status NOT IN (${busy.map(() => '?').join(', ')})`,
+    busy
   );
+  let expired = 0;
   for (const job of rows || []) {
-    await fs.promises.rm(job.archive_path!, { force: true }).catch(() => {});
-    await updateRestoreJob(job.id, {
-      status: 'expired',
-      phase: 'expired',
-      archive_path: null,
-    });
+    const [marked] = await db.execute<ResultSetHeader>(
+      `UPDATE backup_restore_jobs SET status = 'expired', phase = 'expired', archive_path = NULL
+       WHERE id = ? AND archive_path = ? AND expires_at <= UTC_TIMESTAMP() AND status NOT IN (${busy.map(() => '?').join(', ')})`,
+      [job.id, job.archive_path, ...busy]
+    );
+    if (marked.affectedRows !== 1) continue;
+    expired += 1;
+    await cleanupJobWork(job);
+    if (path.resolve(job.archive_path!).startsWith(`${path.resolve(RESTORE_ROOT)}${path.sep}`)) {
+      await fs.promises.rm(job.archive_path!, { force: true }).catch(() => {});
+    }
     await pruneArchiveKeyIfUnreferenced(job.user_id, job.backup_uuid!);
   }
-  return rows.length;
+  return expired;
 }
 
 async function getActiveRestoreSections(userId: string) {

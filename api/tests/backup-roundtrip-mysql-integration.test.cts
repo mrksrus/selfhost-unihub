@@ -277,7 +277,7 @@ test('production export and restore jobs round-trip what a backup holds through 
     assert.equal(bytes.length, Number(ready.file_size)); assert.equal(sha256(bytes), ready.file_sha256);
     assert.ok(ready.file_path.startsWith(sourceRoot + path.sep));
     assert.equal(Number(ready.encryption_enabled), 1);
-    assert.ok(ready.file_path.endsWith('.unihub-backup'));
+    assert.ok(ready.file_path.endsWith('.zip'));
     assert.ok(ready.keep_until === null || ready.keep_until instanceof Date || typeof ready.keep_until === 'string');
     const [[key]] = await pool.execute<RowDataPacket[]>('SELECT recovery_password_ciphertext FROM backup_archive_keys WHERE backup_uuid = ? AND user_id = ?', [ready.backup_uuid, sourceUser]);
     const password = source('services/backup-container').revealProtectedRecoveryPassword(key.recovery_password_ciphertext, ready.backup_uuid);
@@ -292,7 +292,8 @@ test('production export and restore jobs round-trip what a backup holds through 
   assert.deepEqual(contents.left_out.map((item: FixtureValue) => [item.what, item.count]),
     [['CalDAV and subscription events', 1], ['Sync-mode mail', original.emails.length - kept.emails.length]]);
   assert.deepEqual([...contents.included].sort(), ['config', 'local', 'local-by-policy']);
-  // A ZIP as releases before 0.28 could write without encryption; the readers still import it.
+  // An unencrypted ZIP, as releases before 0.27 wrote them (here in this
+  // release's layout); the readers still import one.
   const legacyPath = path.join(directory, 'legacy.zip');
   await exportJobs.writeZip(await source('services/backup').buildBackupArchiveEntriesForUser(sourceUser, 'full', { workDirectory: directory }), legacyPath);
   const legacy = { bytes: await fs.readFile(legacyPath), password: null };
@@ -341,7 +342,7 @@ test('production export and restore jobs round-trip what a backup holds through 
     if (archive.password) {
       assert.equal(created.status, 'awaiting_password', 'A different user/deployment needs the recovery password');
       if (wrongPasswordFirst) {
-        await assert.rejects(service.unlockRestoreJob(userId, created.id, 'wrong-recovery-password'), /password|unlock|decrypt/i);
+        assert.match((await service.unlockRestoreJob(userId, created.id, 'wrong-recovery-password')).error, /password is incorrect/);
         assert.equal((await service.getRestoreJob(userId, created.id)).status, 'awaiting_password');
         assert.equal((await rowsFor('emails', userId)).length, 0);
       }

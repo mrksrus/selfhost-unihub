@@ -10,7 +10,8 @@ import { db } from '../state';
 import { decrypt } from '../security/encryption';
 import { encryptPortableCredentialBundle, decryptPortableCredentialBundle } from './backup-container';
 import { inspectRecordingAudio } from './recording-audio';
-import { BACKUP_VERSION, ZIP_BACKUP_FORMAT, ZIP_BACKUP_FORMAT_VERSION, getBackupProducer } from './backup-format';
+import { BACKUP_VERSION, ZIP_BACKUP_FORMAT, ZIP_BACKUP_FORMAT_VERSION, ARCHIVE_LAYOUTS, getBackupProducer } from './backup-format';
+import { CONTACTS_ENTRY, calendarEntries, readableArchivePaths, writeContactsVcf } from './backup-readable';
 import {
   SECTION_POLICIES,
   TABLE_POLICIES,
@@ -24,7 +25,6 @@ import {
   sha256File,
   normalizeRows,
   isPathUnderRoot,
-  getBackupArchivePath,
   getBackupRowCounts,
   jsonBuffer,
   assertBackupMetadataSize,
@@ -72,6 +72,8 @@ interface BackupOptions {
   checkCancelled?: CheckCancelled;
   sections?: unknown;
   mailAccountId?: string | null;
+  // The UUID the envelope names (backup-envelope.ts), recorded in the manifest.
+  backupUuid?: string | null;
 }
 interface CredentialBundle {
   mail_accounts: { id: string; password: string }[];
@@ -586,6 +588,7 @@ async function buildBackupArchiveEntriesForUser(userId: string, sections: unknow
   mailAccountId = null,
   includeDownloadMail = true,
   workDirectory = os.tmpdir(),
+  backupUuid = null,
 }: BackupOptions = {}) {
   const fullBackup = await buildBackupForUser(userId, {
     includeFileData: false,
@@ -612,6 +615,9 @@ async function buildBackupArchiveEntriesForUser(userId: string, sections: unknow
   const archiveFiles = [];
   const fileEntries = [];
   const missingFiles = [];
+  const layout = ARCHIVE_LAYOUTS[ZIP_BACKUP_FORMAT_VERSION];
+  // Messages and recordings under readable names (backup-readable.ts).
+  const archivePaths = readableArchivePaths(scopedBackup.data, (scopedBackup.files || []).filter(file => !file?.missing && file?.source_path && file.sha256));
 
   for (const file of scopedBackup.files || []) {
     if (checkCancelled) await checkCancelled();
@@ -634,7 +640,7 @@ async function buildBackupArchiveEntriesForUser(userId: string, sections: unknow
         throw error;
       }
     }
-    const archivePath = getBackupArchivePath(file);
+    const archivePath = archivePaths.get(`${file.kind}:${file.id}`)!;
     archiveFiles.push({
       ...normalizeArchiveFileEntry(file),
       archive_path: archivePath,
@@ -666,17 +672,32 @@ async function buildBackupArchiveEntriesForUser(userId: string, sections: unknow
   // The export job writes it beside its archive, never in the system's
   // temporary directory (a small tmpfs on some hosts); other callers choose.
   const dataPath = path.join(workDirectory, `unihub-backup-data-${crypto.randomUUID()}.json.partial`);
+  const contactsPath = path.join(workDirectory, `unihub-backup-contacts-${crypto.randomUUID()}.vcf.partial`);
   try {
     await writeBackupJsonFile(backupPayload, dataPath);
     const checksums: { generated_at: string; algorithm: string; entries: Record<string, string> } = {
       generated_at: new Date().toISOString(),
       algorithm: 'sha256',
       entries: {
-        'data/backup.json': await sha256File(dataPath, checkCancelled),
+        [layout.backup]: await sha256File(dataPath, checkCancelled),
       },
     };
     for (const file of archiveFiles) {
       if (file.archive_path && file.sha256) checksums.entries[file.archive_path] = file.sha256;
+    }
+    // Copies for other programs, never read by restore.
+    const derivedEntries: { name: string; data?: Buffer; filePath?: string; cleanupAfterWrite?: boolean; expectedSha256?: string; expectedSize?: number }[] = [];
+    if (await writeContactsVcf(userId, scopedBackup.data, contactsPath, checkCancelled)) {
+      const sha256 = await sha256File(contactsPath, checkCancelled);
+      derivedEntries.push({ name: CONTACTS_ENTRY, filePath: contactsPath, cleanupAfterWrite: true, expectedSha256: sha256, expectedSize: (await fs.promises.stat(contactsPath)).size });
+    }
+    if (Array.isArray(scopedBackup.data.calendar_events) && scopedBackup.data.calendar_events.length) {
+      // All-day items are dates in the person's zone.
+      const [zoneRows] = await db.execute<RowDataPacket[]>('SELECT timezone FROM users WHERE id = ?', [userId]);
+      for (const entry of calendarEntries(scopedBackup.data, zoneRows[0]?.timezone)) derivedEntries.push(entry);
+    }
+    for (const entry of derivedEntries) {
+      checksums.entries[entry.name] = entry.expectedSha256 || crypto.createHash('sha256').update(entry.data!).digest('hex');
     }
 
     const manifest = {
@@ -685,6 +706,7 @@ async function buildBackupArchiveEntriesForUser(userId: string, sections: unknow
       producer: getBackupProducer(),
       format: ZIP_BACKUP_FORMAT,
       format_version: ZIP_BACKUP_FORMAT_VERSION,
+      ...(backupUuid ? { backup_uuid: backupUuid } : {}),
       exported_at: backupPayload.exported_at,
       sections: scopedBackup.import_sections,
       ...(backupPayload.account_only_sections ? { account_only_sections: backupPayload.account_only_sections } : {}),
@@ -692,6 +714,7 @@ async function buildBackupArchiveEntriesForUser(userId: string, sections: unknow
       // What the archive holds by data class, and what it left out (schema 7).
       contents: scopedBackup.contents,
       file_count: archiveFiles.filter(file => file.archive_path).length,
+      derived_files: derivedEntries.map(entry => entry.name),
       missing_files: missingFiles,
       warnings: [
         ...(backupPayload.warnings || []),
@@ -709,14 +732,16 @@ async function buildBackupArchiveEntriesForUser(userId: string, sections: unknow
     assertBackupMetadataSize('checksums.json', checksumData.length);
     assertBackupMetadataSize('data/backup.json', dataSize);
     return [
-      { name: 'manifest.json', data: manifestData },
-      { name: 'data/backup.json', filePath: dataPath, cleanupAfterWrite: true,
-        expectedSha256: checksums.entries['data/backup.json'], expectedSize: dataSize },
-      { name: 'checksums.json', data: checksumData },
+      { name: layout.manifest, data: manifestData },
+      { name: layout.backup, filePath: dataPath, cleanupAfterWrite: true,
+        expectedSha256: checksums.entries[layout.backup], expectedSize: dataSize },
+      { name: layout.checksums, data: checksumData },
       ...fileEntries,
+      ...derivedEntries,
     ];
   } catch (error) {
     await fs.promises.rm(dataPath, { force: true }).catch(() => {});
+    await fs.promises.rm(contactsPath, { force: true }).catch(() => {});
     throw error;
   }
 }

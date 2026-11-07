@@ -179,7 +179,7 @@ test('file tickets: one use without a cookie, owner-bound, refused when expired,
     await owner('POST', `/backup/jobs/${backupId}/recovery-password/reveal`, {});
     await stranger('POST', '/files/tickets', forBackup, 404);
     const backupTicket = await owner('POST', '/files/tickets', forBackup);
-    assert.equal(backupTicket.content_type, 'application/vnd.unihub.backup');
+    assert.equal(backupTicket.content_type, 'application/zip');
     const whole = await fetchTicket(backupTicket.url);
     assert.equal(whole.status, 200);
     assert.equal(whole.body.length, backupTicket.size);
