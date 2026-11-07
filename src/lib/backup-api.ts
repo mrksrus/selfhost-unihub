@@ -84,6 +84,7 @@ export const backupApi = {
   /** Uploads an archive once; validation runs in the background. */
   upload: async (file: File, sections: BackupSectionId[] | 'full', options: RestoreOptions) => {
     const params = new URLSearchParams({ sections: sections === 'full' ? 'full' : sections.join(','), ...options });
+    // Older 0.28 builds downloaded `.unihub-backup` containers; they still import.
     const contentType = file.name.endsWith('.unihub-backup') ? 'application/vnd.unihub.backup' : 'application/zip';
     return required(unwrap(await api.uploadBlob<{ job: RestoreJob }>(`/backup/import?${params}`, file, contentType)), 'restore job').job;
   },
@@ -152,9 +153,8 @@ export async function revealRecoveryPasswordOnce(id: string, waitMs = REVEAL_WAI
   }
 }
 
-/** The file name a backup is saved under: the archive is always `.unihub-backup`; an unencrypted one from before 0.28 keeps `.zip`. */
-export const backupFileName = (job: Pick<BackupJob, 'id' | 'encryption_enabled'>, prefix = 'unihub-backup') =>
-  `${prefix}-${job.id}.${job.encryption_enabled ? 'unihub-backup' : 'zip'}`;
+/** The file name a backup is saved under when the ticket names none: a `.zip` (D37: a password-protected ZIP, as an unencrypted one from before 0.28 was a plain one). */
+export const backupFileName = (job: Pick<BackupJob, 'id' | 'encryption_enabled'>, prefix = 'unihub-backup') => `${prefix}-${job.id}.zip`;
 
 /**
  * Asks for the download ticket of a ready backup: the answer goes to

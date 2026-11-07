@@ -11,7 +11,7 @@ import {
   BACKUP_ACTIVE, RESTORE_ACTIVE, RevealAlreadyShown, RevealUncertain, backupApi, backupQueryKeys, getBackupDownloadAction, prepareBackupDownload, revealRecoveryPasswordOnce,
   type BackupContents, type BackupDataClass, type BackupExportSectionId, type BackupImportResult, type BackupJob, type BackupSectionId, type CalendarMode, type ConflictMode, type CredentialsMode, type RestoreJob, type RestoreOptions,
 } from '@/lib/backup-api';
-import { OPEN_OUTSIDE_UNIHUB, deletableFrom } from '@/lib/backup';
+import { OPEN_OUTSIDE_STEPS, OPEN_OUTSIDE_UNIHUB, deletableFrom } from '@/lib/backup';
 import { copyText, downloadTicket, saveFile } from '@/lib/platform';
 import { jobPollInterval } from '@/lib/job-polling';
 import { Button } from '@/components/ui/button';
@@ -83,6 +83,16 @@ const RESTORE_STATUS: Record<RestoreJob['status'], string> = {
   uploaded: 'Uploaded', awaiting_password: 'Needs its recovery password', validating: 'Checking', validated: 'Checked, ready to restore', queued: 'Waiting',
   running: 'Restoring', cancelling: 'Stopping', cancelled: 'Stopped', completed: 'Restored', failed: 'Failed', expired: 'Expired',
 };
+
+/** How to open a backup outside UniHub (D37): the short sentence, with the steps behind a disclosure. */
+function OpenOutsideHint({ className }: { className?: string }) {
+  return (
+    <details className={cn('text-xs text-muted-foreground', className)} data-testid="open-outside-hint">
+      <summary className="cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{OPEN_OUTSIDE_UNIHUB} <span className="underline underline-offset-4">How to open it</span></summary>
+      <ol className="mt-2 list-decimal space-y-1 pl-5">{OPEN_OUTSIDE_STEPS.map(step => <li key={step}>{step}</li>)}</ol>
+    </details>
+  );
+}
 
 /** What an archive holds and what it leaves out, from its manifest, with the server's notes. */
 export function BackupContentsList({ contents, notes, className }: { contents: BackupContents | null | undefined; notes?: string[]; className?: string }) {
@@ -402,7 +412,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                     <p className="text-xs text-muted-foreground">Left out: {job.contents.left_out.map(entry => `${entry.what}${entry.count !== undefined ? ` (${entry.count.toLocaleString()})` : ''}`).join(', ')}.</p>
                   )}
                   {job.error && <p className="text-xs text-destructive">{job.error}</p>}
-                  {job.downloaded_at && OPEN_OUTSIDE_UNIHUB && <p className="text-xs text-muted-foreground" data-testid="open-outside-hint">{OPEN_OUTSIDE_UNIHUB}</p>}
+                  {job.downloaded_at && job.encryption_enabled && <OpenOutsideHint className="mt-1" />}
                 </div>
                 <div className="flex shrink-0 items-center gap-1 touch:gap-3">
                   {job.status === 'ready' && <>
@@ -432,7 +442,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
 
     <SettingsSection title="Restore" description="Upload a backup, or choose one above, and review what it holds before anything is restored.">
       {restorePolicy.lock && <SettingsBlock><PolicyNote reason={restorePolicy.lock} className="mt-0" /></SettingsBlock>}
-      <SettingsRow label="Backup file" htmlFor="backup-import-file" description="A .unihub-backup file, or a .zip backup made before 0.28.">
+      <SettingsRow label="Backup file" htmlFor="backup-import-file" description="The downloaded .zip, unchanged. Older .unihub-backup files and .zip backups made before 0.28 import too.">
         <Input id="backup-import-file" type="file" className="w-full sm:w-72" accept="application/zip,application/vnd.unihub.backup,.zip,.unihub-backup"
           disabled={!available || busy || !!restorePolicy.lock}
           onChange={event => { setImportFile(event.target.files?.[0] || null); resetReview(); setRestorePassword(''); }} />
@@ -622,7 +632,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
               <input type="checkbox" className="mt-1 h-4 w-4 accent-accent" checked={recoverySaved} onChange={event => setRecoverySaved(event.target.checked)} />
               <span>I have saved the recovery password.</span>
             </label>
-            {OPEN_OUTSIDE_UNIHUB && <p className="text-xs text-muted-foreground" data-testid="open-outside-hint">{OPEN_OUTSIDE_UNIHUB}</p>}
+            <OpenOutsideHint />
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={closeRecovery} disabled={!recoverySaved}>Close</Button>
               <Button disabled={!recoverySaved || download.isPending} onClick={() => { if (recoveryJob) download.mutate(recoveryJob); closeRecovery(); }}>

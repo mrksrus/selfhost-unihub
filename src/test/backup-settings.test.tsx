@@ -33,7 +33,7 @@ const job = (id: string, fields: Partial<BackupJob> = {}): BackupJob => ({
 });
 const JOBS = [
   // The administrator's minimum holds this one until a day far ahead (D36).
-  job('new', { keep_until: '2099-07-03T10:00:00.000Z' }),
+  job('new', { keep_until: '2099-07-03T10:00:00.000Z', downloaded_at: '2026-06-03T11:00:00.000Z' }),
   job('old', { encryption_enabled: false, contents: null, content_type: 'application/zip', created_at: '2026-05-01T10:00:00.000Z', completed_at: '2026-05-01T10:05:00.000Z' }),
 ];
 const restoreJob = (id: string, fields: Partial<RestoreJob> = {}): RestoreJob => ({
@@ -115,6 +115,20 @@ describe('Settings → Backup and restore (0.28)', () => {
     expect(within(section).getByText('Left out: Sync-mode mail (1,204).')).toBeInTheDocument();
     expect(within(section).getByText(/kept at least until (3 July|July 3)/)).toBeInTheDocument();
     expect(within(section).getByText('Not encrypted, made before 0.28.')).toBeInTheDocument();
+    // D37: a downloaded, encrypted backup says how to open it outside UniHub; the plain pre-0.28 one does not.
+    const hints = within(section).getAllByTestId('open-outside-hint');
+    expect(hints).toHaveLength(1);
+    expect(hints[0]).toHaveTextContent(/password-protected ZIP file\. Open it with 7-Zip, Keka or WinRAR/);
+    expect(within(hints[0]).getByRole('list')).toHaveTextContent(/unihub-backup\.zip/);
+    expect(within(section).queryByText(/removes|deleted on its own|automatically deleted/)).not.toBeInTheDocument();
+  });
+
+  it('falls back to a .zip file name when the ticket names none', async () => {
+    answer(capabilities(), [job('named', { downloaded_at: '2026-06-03T11:00:00.000Z' })]);
+    vi.mocked(api.post).mockResolvedValueOnce({ data: { url: '/api/files/tickets/t3/download', expires_at: '', filename: '', content_type: 'application/zip', size: 1 } });
+    mountSignedIn(<BackupSettings active />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Download Full backup' }));
+    await waitFor(() => expect(downloadTicket).toHaveBeenCalledWith({ url: '/api/files/tickets/t3/download', filename: 'unihub-backup-named.zip' }));
   });
 
   // D36: the administrator's days are a minimum. Delete greys out on a backup
@@ -144,11 +158,11 @@ describe('Settings → Backup and restore (0.28)', () => {
 
   it('downloads a backup through a download ticket, never with the session URL', async () => {
     answer();
-    vi.mocked(api.post).mockResolvedValueOnce({ data: { url: '/api/files/tickets/t1/download', expires_at: '2026-06-15T09:31:00.000Z', filename: 'unihub-backup-new.unihub-backup', content_type: 'application/vnd.unihub.backup', size: 12_400_000 } });
+    vi.mocked(api.post).mockResolvedValueOnce({ data: { url: '/api/files/tickets/t1/download', expires_at: '2026-06-15T09:31:00.000Z', filename: 'unihub-backup-new.zip', content_type: 'application/zip', size: 12_400_000 } });
     mountSignedIn(<BackupSettings active />);
     fireEvent.click((await screen.findAllByRole('button', { name: 'Download Full backup' }))[0]);
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/files/tickets', { kind: 'backup-archive', id: 'new' }));
-    await waitFor(() => expect(downloadTicket).toHaveBeenCalledWith({ url: '/api/files/tickets/t1/download', filename: 'unihub-backup-new.unihub-backup' }));
+    await waitFor(() => expect(downloadTicket).toHaveBeenCalledWith({ url: '/api/files/tickets/t1/download', filename: 'unihub-backup-new.zip' }));
   });
 
   it('a download ticket answered after the session ended starts no download', { timeout: 20_000 }, async () => {
@@ -341,6 +355,7 @@ describe('Settings → Backup and restore (0.28)', () => {
     expect(await within(dialog).findByLabelText('Recovery password')).toHaveTextContent('correct-horse-battery');
     const download = within(dialog).getByRole('button', { name: 'Download backup' });
     expect(download).toBeDisabled();
+    expect(within(dialog).getByTestId('open-outside-hint')).toHaveTextContent(/Open it with 7-Zip, Keka or WinRAR and the recovery password/);
     fireEvent.click(within(dialog).getByRole('checkbox'));
     expect(download).toBeEnabled();
     fireEvent.click(download);
