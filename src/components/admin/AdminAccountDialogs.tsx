@@ -6,8 +6,10 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioRow } from '@/components/ui/radio';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { TargetLine } from '@/components/admin/PasswordConfirmDialog';
+import { mailProviders } from '@/components/mail/mail-page-model';
 
 // The administrator's dialogs for a person's accounts (F13, accounts.admin_manage):
 // the same fields as the person's own add dialog, plus the administrator's
@@ -26,7 +28,8 @@ function Field({ id, label, hint, ...props }: { id: string; label: string; hint?
   );
 }
 
-const emptyMail = (): MailFields => ({ email_address: '', display_name: '', username: '', encrypted_password: '', imap_host: '', imap_port: 993, smtp_host: '', smtp_port: 587, sync_mode: 'download', delete_emails_on_server: false });
+// The same provider choice as the person's own dialog: it fills the servers of a known provider, and the server requires it.
+const emptyMail = (): MailFields => ({ email_address: '', display_name: '', provider: 'custom', username: '', encrypted_password: '', imap_host: '', imap_port: 993, smtp_host: '', smtp_port: 587, sync_mode: 'download', delete_emails_on_server: false });
 
 /**
  * Adds a mail account for the person, or changes one. Editing keeps the
@@ -45,11 +48,15 @@ export function AdminMailAccountDialog({ account, open, onClose, pending, onSubm
   useEffect(() => {
     setAdminPassword('');
     setEdited(new Set());
-    setFields(open && account ? { ...emptyMail(), email_address: account.email_address, display_name: account.display_name ?? '', sync_mode: account.sync_mode, delete_emails_on_server: account.delete_emails_on_server } : emptyMail());
+    setFields(open && account ? { ...emptyMail(), email_address: account.email_address, display_name: account.display_name ?? '', provider: account.provider, sync_mode: account.sync_mode, delete_emails_on_server: account.delete_emails_on_server } : emptyMail());
   }, [open, account]);
   const set = <K extends keyof MailFields>(key: K, value: MailFields[K]) => {
     setFields(current => ({ ...current, [key]: value }));
     setEdited(current => new Set(current).add(key));
+  };
+  const changeProvider = (provider: string) => {
+    const known = mailProviders.find(entry => entry.value === provider);
+    setFields(current => ({ ...current, provider, imap_host: known?.imapHost || '', smtp_host: known?.smtpHost || '', imap_port: known?.imapPort || 993, smtp_port: known?.smtpPort || 587 }));
   };
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -73,6 +80,17 @@ export function AdminMailAccountDialog({ account, open, onClose, pending, onSubm
         </DialogHeader>
         {target && <TargetLine target={target} />}
         <form className="space-y-4" onSubmit={submit}>
+          {!account && (
+            <div className="space-y-1.5">
+              <Label htmlFor="admin-mail-provider">Provider</Label>
+              <Select value={fields.provider ?? 'custom'} onValueChange={changeProvider}>
+                <SelectTrigger id="admin-mail-provider"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {mailProviders.map(entry => <SelectItem key={entry.value} value={entry.value}>{entry.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className="grid gap-3 sm:grid-cols-2">
             <Field id="admin-mail-address" label="Email address" type="email" required value={fields.email_address} disabled={!!account} onChange={event => set('email_address', event.target.value)} autoComplete="off" />
             <Field id="admin-mail-name" label="Display name" value={fields.display_name ?? ''} onChange={event => set('display_name', event.target.value)} autoComplete="off" />
