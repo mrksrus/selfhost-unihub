@@ -4,8 +4,73 @@
 
 0.28.0 and later write account backups with data schema 7 and retain readers for schemas 1–6
 (0.27.x wrote schema 6, 0.26.x schema 5, 0.10.13 to 0.25.x schema 4). Every new
-backup is encrypted; unencrypted ZIP archives of earlier releases still import.
-`manifest.json` is the version file. Users do not select conversion scripts.
+backup is an AES-encrypted ZIP file that other programs open with the recovery
+password (below); the `.unihub-backup` container of 0.27 and unencrypted ZIP
+archives of earlier releases still import. `manifest.json` is the version file.
+Users do not select conversion scripts.
+
+## The encrypted ZIP (0.28.0 on)
+
+A backup is a standard ZIP file, named `….zip`, with two entries:
+
+| Entry | Stored as | Holds |
+| --- | --- | --- |
+| `README.txt` | Plain, stored | How to open the file; nothing personal |
+| `unihub-backup.zip` | WinZip AES-256 (AE-2), stored | The archive below |
+
+The entry is encrypted as WinZip AE-2 (method 99, extra field `0x9901`):
+PBKDF2-HMAC-SHA1 with 1000 iterations and a 16-byte salt gives the AES-256 key,
+the HMAC key and a 2-byte password verifier; the data is AES-256 in WinZip's
+counter mode (a little-endian counter from 1) and authenticated by HMAC-SHA1
+over the ciphertext (10 bytes). The password is the generated recovery
+password, 256 random bits, so the low PBKDF2 count costs no strength. 7-Zip,
+Keka, Ark, WinRAR and `7z x` open it; the built-in ZIP support of Windows
+Explorer and the macOS Archive Utility does not (they show `README.txt`).
+One encrypted entry keeps the names and sizes inside hidden. The ZIP comment
+is `UniHub backup <backup UUID>`: the server finds its own key by it before
+any password is known. The comment is not authenticated; a changed one finds
+no key, and the inner manifest's `backup_uuid` and the portable-credential
+key (derived with HKDF-SHA256 from the password and the UUID) must agree with it.
+
+The server keeps the password wrapped with `BACKUP_MASTER_KEY` in
+`backup_archive_keys.server_wrapped_key`, so it opens its own backups without
+asking, as it did with the data key of the container.
+
+### Inside `unihub-backup.zip` (ZIP format 2)
+
+An ordinary stored ZIP32 with UTF-8 names:
+
+```text
+Mail/<account>/<folder>/<NNNNN> <YYYY-MM-DD> <subject>.eml
+Contacts/Contacts.vcf
+Calendars/<calendar>.ics
+Recordings/<title>.<ext>
+UniHub restore data/manifest.json
+UniHub restore data/backup.json
+UniHub restore data/checksums.json
+UniHub restore data/files/mail-attachments/…, contact-photos/…, other/…
+```
+
+Each byte is stored once. A `.eml` is the stored raw message of mail the
+archive holds (Download-mode mail and Sync-mode mail without a server copy,
+by data class), a recording its original file; `backup.json` names them by
+these paths (`files[].archive_path`) and restore reads them there. The vCard
+4.0 file (with photos) and the iCalendar files (local calendars: events as
+VEVENT, ToDo-only items as VTODO with STATUS and COMPLETED, subtasks as VTODO
+with `RELATED-TO;RELTYPE=PARENT`, the ToDo state as `X-UNIHUB-TODO-STATUS`)
+are copies for other programs, listed in the manifest's `derived_files`;
+restore never reads them. Messages are numbered per folder in date order.
+Names are made portable to Windows, macOS and Linux: no control, direction
+or `<>:"/\|?*` characters, no trailing dot or space, no leading dot, no
+reserved device name (`CON`, `NUL`, `COM1`, …), at most 64 to 100 bytes a
+part, and unique within a folder as Windows and macOS compare names (a second
+`Memo.wav` becomes `Memo (2).wav`).
+
+ZIP format 1 (before 0.28) keeps `manifest.json`, `checksums.json` and
+`data/backup.json` at the root and the files under `files/`. Readers decide
+the layout by where the manifest is, and both documents must name that format.
+Entry names are refused when absolute, with a drive letter, a backslash, NUL
+or a `.`/`..` part.
 
 ## Independent version fields
 
@@ -13,15 +78,15 @@ backup is encrypted; unencrypted ZIP archives of earlier releases still import.
 | --- | --- | --- |
 | Data `version` | 7 | Meaning and shape of exported records |
 | ZIP `format` | `unihub-restorable-backup` | Identifies a restorable archive |
-| ZIP `format_version` | 1 | Archive layout |
-| Encrypted container | 1 | Authenticated encryption framing |
+| ZIP `format_version` | 2 | Archive layout (1 before 0.28) |
+| Encryption | WinZip AES-256 (AE-2) ZIP | `UNIHUBBK1` container version 1 in 0.27, still read |
 | `producer` | UniHub name and app version | Build provenance, not reader selection |
 
 Database upgrade IDs in `schema_migrations` are separate from these fields.
 Both manifest and data payload must agree on supported format/version values.
 The manifest includes selected sections, row counts and file count. Checksums
-cover metadata and stored files. Encrypted archives retain streaming AES-256-GCM
-framing and a password-wrapped data key.
+cover metadata and stored files. The 0.27 container had streaming AES-256-GCM
+framing and a password-wrapped data key; its archives are still read.
 
 ## Readers and data coverage
 
@@ -295,7 +360,7 @@ The writer uses stored ZIP32 entries without compression or ZIP64:
 | ZIP entries, including metadata | 65,534 |
 | `manifest.json` | 16 MiB |
 | `checksums.json` | 64 MiB |
-| `data/backup.json` | 512 MiB |
+| `backup.json` (`data/backup.json` in format 1) | 512 MiB |
 
 Export rejects output exceeding import limits. Section backups may fit where a
 full archive does not. Splitting within one section is not implemented.
@@ -317,6 +382,13 @@ full schema 6 archive from the actual `v0.27.1` exporter (local and CalDAV
 tasks, Sync and Download mail) under `v6-0.27.1`. Their provenance and hashes are recorded.
 They contain invented data, not the owner's mailbox. Do not regenerate them just
 to accommodate a changed reader.
+
+`api/tests/backup-envelope-mysql-integration.test.cts` opens a new backup as
+another program would, with a WinZip AES reader written apart from the writer
+(`api/tests/helpers/winzip-aes-reader.cts`) and with 7-Zip where one is
+installed, and checks the readable files against the stored bytes; the e2e
+test `tools/e2e/tests/backup/readable-backup.e2e.ts` does the same with a
+downloaded backup.
 
 Focused MariaDB recovery tests verify current exports, automatic old readers,
 relationships and file bytes, restored account/folder meaning, conflicts,

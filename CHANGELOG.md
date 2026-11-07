@@ -79,13 +79,24 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   backup; it starts on, because that mail may be the only copy. An account
   that deletes mail at the provider always includes its mail; the choice is
   then checked and greyed with the reason.
-- **Every backup is encrypted** and needs its recovery password to restore
-  on another server. The "Encrypt backups" switch is gone; a backup from
-  before 0.28 is marked "Not encrypted, made before 0.28" and still downloads
-  and restores.
+- **Every backup is a password-protected ZIP file that opens outside
+  UniHub.** 7-Zip, Keka, Ark, WinRAR or `7z x` open it with its recovery
+  password (AES-256). Inside are your mail as `.eml` files by account and
+  folder, contacts as a vCard file, local calendars and tasks as iCalendar
+  files, and recordings as their original files, ready for programs such as
+  Thunderbird ([how to open one](docs/BACKUP_RESTORE.md#opening-a-backup-outside-unihub)).
+  To restore into UniHub, upload the file unchanged; on another server it
+  needs its recovery password. The backup of one mail account is the same
+  kind of file. Backups made by 0.27 (`.unihub-backup`) still restore, as do
+  unencrypted ones from before; the "Encrypt backups" switch is gone, and a
+  backup from before 0.28 is marked "Not encrypted, made before 0.28" and
+  still downloads and restores.
+- **Uploaded restore archives are removed seven days after the upload,**
+  never while a restore validates or runs from one; before, they stayed until
+  deleted. Backups you made are never removed automatically.
 - **Backup and restore is a list of settings:** what to back up, "Include
   downloaded mail", what the backup holds and what it leaves out with counts,
-  and the backups on this server with when the server removes them. The
+  and the backups on this server. The
   review of a backup to restore lists the same, with the server's notes, also
   for old archives.
 - **Restoring an older backup** brings back only what a new backup would

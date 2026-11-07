@@ -6,7 +6,7 @@ const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const os = (require('node:os') as typeof import('node:os'));
 const path = (require('node:path') as typeof import('node:path'));
 const {
-  BACKUP_VERSION, ZIP_BACKUP_FORMAT, ZIP_BACKUP_FORMAT_VERSION,
+  BACKUP_VERSION, ZIP_BACKUP_FORMAT, ZIP_BACKUP_FORMAT_VERSION, ARCHIVE_LAYOUTS,
   normalizeBackupPayload, validateBackupVersionFields, validateArchiveVersionFields,
 } = require('../dist/src/services/backup-format') as typeof import('../src/services/backup-format');
 const { backupFromZipBuffer, backupFromZipFile, sha256Buffer, validateBackupPayload } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
@@ -47,30 +47,35 @@ test('future, missing and malformed data versions fail before normalization', ()
 
 test('archive and payload must agree on supported versions', () => {
   const metadata = { app: 'unihub', version: 2, format: ZIP_BACKUP_FORMAT, format_version: ZIP_BACKUP_FORMAT_VERSION };
-  validateArchiveVersionFields(metadata, metadata as FixtureValue);
+  validateArchiveVersionFields(metadata, metadata as FixtureValue, ZIP_BACKUP_FORMAT_VERSION);
   for (const changed of [
-    { version: 1 }, { version: 3 }, { format_version: 2 },
+    { version: 1 }, { version: 3 }, { format_version: 1 }, { format_version: 3 },
     { format_version: undefined }, { format: 'unknown' }, { app: 'other' },
-  ]) assert.throws(() => validateArchiveVersionFields({ ...metadata, ...changed }, metadata as FixtureValue), /version|format|app/);
+  ]) assert.throws(() => validateArchiveVersionFields({ ...metadata, ...changed }, metadata as FixtureValue, ZIP_BACKUP_FORMAT_VERSION), /version|format|app/);
+  // The format fields name the layout the entries were found in.
+  assert.throws(() => validateArchiveVersionFields(metadata, metadata as FixtureValue, 1), /format/);
 });
 
 test('both ZIP import paths reject unknown or inconsistent versions with intact checksums', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'backup-version-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  for (const [name, manifestVersion, dataVersion, archiveVersion] of [
-    ['old', 1, 1, 1], ['v2', 2, 2, 1], ['v3', 3, 3, 1], ['v4', 4, 4, 1], ['v5', 5, 5, 1], ['v6', 6, 6, 1], ['current', 7, 7, 1], ['future', 8, 8, 1],
-    ['mismatch', 1, 2, 1], ['future-archive', 2, 2, 2],
+  // [name, manifest version, data version, format version, layout the entries are in]
+  for (const [name, manifestVersion, dataVersion, archiveVersion, layout] of [
+    ['old', 1, 1, 1, 1], ['v2', 2, 2, 1, 1], ['v3', 3, 3, 1, 1], ['v4', 4, 4, 1, 1], ['v5', 5, 5, 1, 1], ['v6', 6, 6, 1, 1], ['root-current', 7, 7, 1, 1],
+    ['current', 7, 7, 2, 2], ['future', 8, 8, 2, 2],
+    ['mismatch', 1, 2, 1, 1], ['root-claims-2', 7, 7, 2, 1], ['readable-claims-1', 7, 7, 1, 2], ['future-archive', 7, 7, 3, 2],
   ] as const) {
     const filePath = path.join(directory, name + '.zip');
+    const names = ARCHIVE_LAYOUTS[layout];
     const metadata = { app: 'unihub', format: ZIP_BACKUP_FORMAT, format_version: archiveVersion };
     const data = Buffer.from(JSON.stringify({ ...metadata, version: dataVersion, data: { contacts: [] }, files: [] }));
     await writeZip([
-      { name: 'manifest.json', data: JSON.stringify({ ...metadata, version: manifestVersion }) },
-      { name: 'data/backup.json', data },
-      { name: 'checksums.json', data: JSON.stringify({ algorithm: 'sha256', entries: { 'data/backup.json': sha256Buffer(data) } }) },
+      { name: names.manifest, data: JSON.stringify({ ...metadata, version: manifestVersion }) },
+      { name: names.backup, data },
+      { name: names.checksums, data: JSON.stringify({ algorithm: 'sha256', entries: { [names.backup]: sha256Buffer(data) } }) },
     ], filePath);
     const bytes = await fs.readFile(filePath);
-    if (['old', 'v2', 'v3', 'v4', 'v5', 'v6', 'current'].includes(name)) {
+    if (['old', 'v2', 'v3', 'v4', 'v5', 'v6', 'root-current', 'current'].includes(name)) {
       assert.equal(backupFromZipBuffer(bytes).backup.version, dataVersion);
       assert.equal((await backupFromZipFile(filePath)).backup.version, dataVersion);
     } else {
@@ -83,22 +88,23 @@ test('both ZIP import paths reject unknown or inconsistent versions with intact 
 test('schema 3 ZIP readers require complete SHA-256 metadata before import', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'backup-metadata-integrity-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  for (const version of [1, 2, 3, 4]) {
-    const metadata = { app: 'unihub', version, format: ZIP_BACKUP_FORMAT, format_version: ZIP_BACKUP_FORMAT_VERSION };
+  for (const [version, formatVersion] of [[1, 1], [2, 1], [3, 1], [4, 1], [4, 2], [7, 2]]) {
+    const names = ARCHIVE_LAYOUTS[formatVersion];
+    const metadata = { app: 'unihub', version, format: ZIP_BACKUP_FORMAT, format_version: formatVersion };
     const data = Buffer.from(JSON.stringify({ ...metadata, data: { contacts: [] }, files: [] }));
     const digest = sha256Buffer(data);
     const cases = [
       ['missing-file', null],
       ['missing-digest', { algorithm: 'sha256', entries: {} }],
-      ['empty-digest', { algorithm: 'sha256', entries: { 'data/backup.json': '' } }],
-      ['missing-algorithm', { entries: { 'data/backup.json': digest } }],
-      ['unsupported-algorithm', { algorithm: 'md5', entries: { 'data/backup.json': digest } }],
-      ['valid', { algorithm: 'sha256', entries: { 'data/backup.json': digest } }],
+      ['empty-digest', { algorithm: 'sha256', entries: { [names.backup]: '' } }],
+      ['missing-algorithm', { entries: { [names.backup]: digest } }],
+      ['unsupported-algorithm', { algorithm: 'md5', entries: { [names.backup]: digest } }],
+      ['valid', { algorithm: 'sha256', entries: { [names.backup]: digest } }],
     ];
     for (const [name, checksums] of cases) {
-      const filePath = path.join(directory, `${version}-${name}.zip`);
-      const entries = [{ name: 'manifest.json', data: JSON.stringify(metadata) }, { name: 'data/backup.json', data }];
-      if (checksums) entries.push({ name: 'checksums.json', data: JSON.stringify(checksums) });
+      const filePath = path.join(directory, `${version}-${formatVersion}-${name}.zip`);
+      const entries = [{ name: names.manifest, data: JSON.stringify(metadata) }, { name: names.backup, data }];
+      if (checksums) entries.push({ name: names.checksums, data: JSON.stringify(checksums) });
       await writeZip(entries, filePath);
       const bytes = await fs.readFile(filePath);
       if (version >= 3 && name !== 'valid') {
@@ -111,10 +117,10 @@ test('schema 3 ZIP readers require complete SHA-256 metadata before import', asy
     }
     if (version >= 3) {
       for (const digest of ['not-a-sha256', '0'.repeat(64)]) {
-        const filePath = path.join(directory, `${version}-bad-${digest}.zip`);
+        const filePath = path.join(directory, `${version}-${formatVersion}-bad-${digest}.zip`);
         await writeZip([
-          { name: 'manifest.json', data: JSON.stringify(metadata) }, { name: 'data/backup.json', data },
-          { name: 'checksums.json', data: JSON.stringify({ algorithm: 'sha256', entries: { 'data/backup.json': digest } }) },
+          { name: names.manifest, data: JSON.stringify(metadata) }, { name: names.backup, data },
+          { name: names.checksums, data: JSON.stringify({ algorithm: 'sha256', entries: { [names.backup]: digest } }) },
         ], filePath);
         const bytes = await fs.readFile(filePath);
         assert.throws(() => backupFromZipBuffer(bytes), /metadata|Checksum mismatch/);

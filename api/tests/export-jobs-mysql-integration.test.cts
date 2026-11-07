@@ -34,7 +34,7 @@ test('a failed export removes its archive through the removal gate, and keeps it
       VALUES (?, ?, 'full', 'queued', '["contacts"]', 1)`, [jobId, owner]);
     return jobId;
   };
-  const archiveOf = (jobId: string) => path.join(directory, 'backups', owner, `${jobId}.unihub-backup`);
+  const archiveOf = (jobId: string) => path.join(directory, 'backups', owner, `${jobId}.zip`);
   const rowOf = async (jobId: string) => (await pool.query<RowDataPacket[]>('SELECT status, file_path FROM data_export_jobs WHERE id = ?', [jobId]))[0][0];
   const keysOf = async (jobId: string) => Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS count FROM backup_archive_keys WHERE export_job_id = ?', [jobId]))[0][0].count);
 

@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { StringDecoder } from 'string_decoder';
-import { ZIP_BACKUP_FORMAT, BACKUP_METADATA_LIMITS, validateArchiveVersionFields } from './backup-format';
+import { ZIP_BACKUP_FORMAT, BACKUP_METADATA_LIMITS, ARCHIVE_LAYOUTS, validateArchiveVersionFields } from './backup-format';
 import {
   sha256Buffer,
   isFileRangeSource,
@@ -51,6 +51,9 @@ function readZipEntries(buffer: Buffer) {
     offset += 46 + fileNameLength + extraLength + commentLength;
 
     if (name.endsWith('/')) continue;
+    if (!isSafeZipEntryName(name)) {
+      throw new Error(`Backup ZIP contains an unsafe entry path: ${name || '(empty)'}.`);
+    }
     if (compressionMethod !== 0) {
       throw new Error(`Unsupported ZIP compression for ${name}. UniHub backups must use stored entries.`);
     }
@@ -72,10 +75,17 @@ function readZipEntries(buffer: Buffer) {
   return entries;
 }
 
-function parseJsonZipEntry<T>(entries: ReadonlyMap<string, Buffer>, name: string): T | null {
+// The layout an archive's metadata is in: format 2 under "UniHub restore
+// data/", format 1 at the root. The format fields must then agree with it.
+function archiveLayout(entries: ReadonlyMap<string, unknown>) {
+  const formatVersion = entries.has(ARCHIVE_LAYOUTS[2].manifest) ? 2 : 1;
+  return { formatVersion, names: ARCHIVE_LAYOUTS[formatVersion] };
+}
+
+function parseJsonZipEntry<T>(entries: ReadonlyMap<string, Buffer>, name: string, limitName: keyof typeof BACKUP_METADATA_LIMITS): T | null {
   const buffer = entries.get(name);
   if (!buffer) return null;
-  assertBackupMetadataSize(name, buffer.length);
+  assertBackupMetadataSize(limitName, buffer.length);
   try {
     return JSON.parse(buffer.toString('utf8'));
   } catch {
@@ -83,20 +93,21 @@ function parseJsonZipEntry<T>(entries: ReadonlyMap<string, Buffer>, name: string
   }
 }
 
-function requireSchema3MetadataChecksum(backup: ArchiveEnvelope, checksums: Checksums | null) {
+function requireSchema3MetadataChecksum(backup: ArchiveEnvelope, checksums: Checksums | null, backupName: string) {
   if (backup.version < 3) return;
   if (checksums?.algorithm !== 'sha256'
-    || typeof checksums?.entries?.['data/backup.json'] !== 'string'
-    || !/^[a-f0-9]{64}$/.test(checksums.entries['data/backup.json'])) {
+    || typeof checksums?.entries?.[backupName] !== 'string'
+    || !/^[a-f0-9]{64}$/.test(checksums.entries[backupName])) {
     throw new Error('Schema 3 backup requires valid SHA-256 metadata in checksums.json.');
   }
 }
 
 function backupFromZipBuffer(buffer: Buffer) {
   const entries = readZipEntries(buffer);
-  const manifest = parseJsonZipEntry<ArchiveEnvelope>(entries, 'manifest.json');
-  const checksums = parseJsonZipEntry<Checksums>(entries, 'checksums.json');
-  const backup = parseJsonZipEntry<ArchiveEnvelope>(entries, 'data/backup.json');
+  const { formatVersion, names } = archiveLayout(entries);
+  const manifest = parseJsonZipEntry<ArchiveEnvelope>(entries, names.manifest, 'manifest.json');
+  const checksums = parseJsonZipEntry<Checksums>(entries, names.checksums, 'checksums.json');
+  const backup = parseJsonZipEntry<ArchiveEnvelope>(entries, names.backup, 'data/backup.json');
   if (!manifest || !backup) {
     throw new Error('This ZIP is not a restorable UniHub backup. Create a new backup with the Backup buttons.');
   }
@@ -106,12 +117,12 @@ function backupFromZipBuffer(buffer: Buffer) {
   if (manifest.format !== ZIP_BACKUP_FORMAT || backup.format !== ZIP_BACKUP_FORMAT) {
     throw new Error('This ZIP is not a restorable UniHub backup.');
   }
-  validateArchiveVersionFields(manifest, backup);
-  requireSchema3MetadataChecksum(backup, checksums);
-  if (checksums?.entries?.['data/backup.json']) {
-    const actualDataHash = sha256Buffer(entries.get('data/backup.json')!);
-    if (actualDataHash !== checksums.entries['data/backup.json']) {
-      throw new Error('Checksum mismatch for data/backup.json.');
+  validateArchiveVersionFields(manifest, backup, formatVersion);
+  requireSchema3MetadataChecksum(backup, checksums, names.backup);
+  if (checksums?.entries?.[names.backup]) {
+    const actualDataHash = sha256Buffer(entries.get(names.backup)!);
+    if (actualDataHash !== checksums.entries[names.backup]) {
+      throw new Error(`Checksum mismatch for ${names.backup}.`);
     }
   }
 
@@ -147,8 +158,10 @@ async function readFileRange(fileHandle: FileHandle, start: number, size: number
   return buffer;
 }
 
+// No absolute, drive-letter or parent paths, no backslashes or NUL: entries
+// are only ever looked up by name, but an archive that names one is not ours.
 function isSafeZipEntryName(name: string) {
-  if (!name || name.startsWith('/') || name.includes('\\')) return false;
+  if (!name || name.startsWith('/') || name.includes('\\') || name.includes('\0') || /^[a-zA-Z]:/.test(name)) return false;
   return name.split('/').every(part => part && part !== '.' && part !== '..');
 }
 
@@ -299,9 +312,10 @@ async function parseJsonZipFileEntry<T>(entries: ReadonlyMap<string, FileRangeSo
 
 async function backupFromZipFile(filePath: string) {
   const entries = await readZipFileEntries(filePath);
-  const manifestEntry = await parseJsonZipFileEntry<ArchiveEnvelope>(entries, 'manifest.json', BACKUP_METADATA_LIMITS['manifest.json']);
-  const checksumsEntry = await parseJsonZipFileEntry<Checksums>(entries, 'checksums.json', BACKUP_METADATA_LIMITS['checksums.json']);
-  const backupEntry = await parseJsonZipFileEntry<ArchiveEnvelope>(entries, 'data/backup.json', BACKUP_METADATA_LIMITS['data/backup.json']);
+  const { formatVersion, names } = archiveLayout(entries);
+  const manifestEntry = await parseJsonZipFileEntry<ArchiveEnvelope>(entries, names.manifest, BACKUP_METADATA_LIMITS['manifest.json']);
+  const checksumsEntry = await parseJsonZipFileEntry<Checksums>(entries, names.checksums, BACKUP_METADATA_LIMITS['checksums.json']);
+  const backupEntry = await parseJsonZipFileEntry<ArchiveEnvelope>(entries, names.backup, BACKUP_METADATA_LIMITS['data/backup.json']);
   const manifest = manifestEntry?.value || null;
   const checksums = checksumsEntry?.value || null;
   const backup = backupEntry?.value || null;
@@ -314,13 +328,13 @@ async function backupFromZipFile(filePath: string) {
   if (manifest.format !== ZIP_BACKUP_FORMAT || backup.format !== ZIP_BACKUP_FORMAT) {
     throw new Error('This ZIP is not a restorable UniHub backup.');
   }
-  validateArchiveVersionFields(manifest, backup);
-  requireSchema3MetadataChecksum(backup, checksums);
+  validateArchiveVersionFields(manifest, backup, formatVersion);
+  requireSchema3MetadataChecksum(backup, checksums, names.backup);
   if (
-    checksums?.entries?.['data/backup.json']
-    && backupEntry!.sha256 !== checksums.entries['data/backup.json']
+    checksums?.entries?.[names.backup]
+    && backupEntry!.sha256 !== checksums.entries[names.backup]
   ) {
-    throw new Error('Checksum mismatch for data/backup.json.');
+    throw new Error(`Checksum mismatch for ${names.backup}.`);
   }
 
   const fileSourcesByPath = new Map<string, FileRangeSource>();

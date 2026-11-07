@@ -140,7 +140,7 @@ test('upgrade 25: an export queued before it still includes downloaded mail', { 
     const [[key]] = await pool.query<RowDataPacket[]>('SELECT server_wrapped_key FROM backup_archive_keys WHERE export_job_id = ?', [jobId]);
     const container = runtime('services/backup-container');
     const zip = path.join(directory, 'queued.zip');
-    await container.decryptBackupFile(job.file_path, zip, container.unwrapDataKeyFromServer(key.server_wrapped_key, job.backup_uuid));
+    await runtime('services/backup-envelope').openBackupEnvelope(job.file_path, zip, container.unwrapEnvelopePasswordFromServer(key.server_wrapped_key, job.backup_uuid));
     const { backup } = await runtime('services/backup').backupFromZipFile(zip);
     assert.deepEqual(backup.data.emails.map((row: { subject: string }) => row.subject), ['Downloaded message']);
     assert.deepEqual(backup.contents.left_out, []);

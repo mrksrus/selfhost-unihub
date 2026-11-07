@@ -12,7 +12,15 @@ import { RETIRED_TABLES, RETIRED_FILE_KINDS } from './backup-catalog';
 
 const BACKUP_VERSION = 7;
 const ZIP_BACKUP_FORMAT = 'unihub-restorable-backup';
-const ZIP_BACKUP_FORMAT_VERSION = 1;
+// Format 2 (0.28) keeps the restore metadata under "UniHub restore data/"
+// beside the readable copies (backup-readable.ts); format 1 at the root.
+const ZIP_BACKUP_FORMAT_VERSION = 2;
+const RESTORE_DATA_DIRECTORY = 'UniHub restore data';
+const ARCHIVE_LAYOUTS: Readonly<Record<number, { manifest: string; checksums: string; backup: string }>> = Object.freeze({
+  1: Object.freeze({ manifest: 'manifest.json', checksums: 'checksums.json', backup: 'data/backup.json' }),
+  2: Object.freeze({ manifest: `${RESTORE_DATA_DIRECTORY}/manifest.json`, checksums: `${RESTORE_DATA_DIRECTORY}/checksums.json`, backup: `${RESTORE_DATA_DIRECTORY}/backup.json` }),
+});
+const isKnownFormatVersion = (value: unknown) => typeof value === 'number' && Object.hasOwn(ARCHIVE_LAYOUTS, value);
 const BACKUP_METADATA_LIMITS = Object.freeze({
   'manifest.json': 16 * 1024 * 1024,
   'checksums.json': 64 * 1024 * 1024,
@@ -48,7 +56,7 @@ function validateBackupVersionFields(backup: Partial<ArchiveEnvelope> | null | u
   // Inline legacy JSON has no ZIP-format fields. If either field is supplied,
   // require the complete known pair; never guess how an unknown archive works.
   if (backup?.format !== undefined || backup?.format_version !== undefined) {
-    if (backup.format !== ZIP_BACKUP_FORMAT || backup.format_version !== ZIP_BACKUP_FORMAT_VERSION) {
+    if (backup.format !== ZIP_BACKUP_FORMAT || !isKnownFormatVersion(backup.format_version)) {
       errors.push('Unsupported backup archive format or version.');
     }
   }
@@ -64,12 +72,14 @@ function validateBackupVersionFields(backup: Partial<ArchiveEnvelope> | null | u
   return { errors, warnings };
 }
 
-function validateArchiveVersionFields(manifest: Partial<ArchiveEnvelope> | null | undefined, backup: ArchiveEnvelope) {
+// formatVersion: the layout the archive's entries were found in, which both
+// documents must name.
+function validateArchiveVersionFields(manifest: Partial<ArchiveEnvelope> | null | undefined, backup: ArchiveEnvelope, formatVersion: number) {
   if (manifest?.app !== 'unihub' || backup?.app !== 'unihub') {
     throw versionError('Backup app must be "unihub".');
   }
-  if (manifest.format !== ZIP_BACKUP_FORMAT || manifest.format_version !== ZIP_BACKUP_FORMAT_VERSION
-      || backup.format !== ZIP_BACKUP_FORMAT || backup.format_version !== ZIP_BACKUP_FORMAT_VERSION) {
+  if (manifest.format !== ZIP_BACKUP_FORMAT || manifest.format_version !== formatVersion
+      || backup.format !== ZIP_BACKUP_FORMAT || backup.format_version !== formatVersion) {
     throw versionError('Unsupported backup archive format or version.');
   }
   const { errors } = validateBackupVersionFields(backup);
@@ -110,6 +120,8 @@ export {
   BACKUP_VERSION,
   ZIP_BACKUP_FORMAT,
   ZIP_BACKUP_FORMAT_VERSION,
+  RESTORE_DATA_DIRECTORY,
+  ARCHIVE_LAYOUTS,
   BACKUP_METADATA_LIMITS,
   archiveCarriesStep,
   getBackupProducer,

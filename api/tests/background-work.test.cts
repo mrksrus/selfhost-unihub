@@ -33,6 +33,7 @@ function deps(timers: ReturnType<typeof fakeTimers>) {
       runDueWritebacks: async () => {},
       pruneFinishedJobs: async () => ({ deleted: 0 }),
       cleanupExpiredRecordingUploads: async () => 0,
+      cleanupExpiredRestoreArchives: async () => { calls.push('restore uploads'); return 0; },
       isSectionRestoreActive: async () => false,
       idleSupervisor: { start: () => { idle.started++; }, stop: () => { idle.stopped++; }, options: { maxSessions: 0 } },
       runCalendarSyncPass: async () => {},
@@ -58,13 +59,16 @@ async function quietly<T>(work: () => Promise<T>) {
   try { return await work(); } finally { console.log = original; }
 }
 
-test('background work starts the sixteen timers and stop clears every one of them', async () => {
+test('background work starts the seventeen timers and stop clears every one of them', async () => {
   const timers = fakeTimers();
   const { overrides, calls, idle } = deps(timers);
   const work = startBackgroundWork(overrides);
   await quietly(() => work.ready);
   assert.deepEqual([...timers.intervals.values()].map(timer => timer.ms).sort((a, b) => a - b),
-    [1000, 15000, 15000, 30000, 30000, 30000, 60000, 60000, 60000, 60000, 3600000, 3600000, 3600000, 3600000, 3600000, 86400000]);
+    [1000, 15000, 15000, 30000, 30000, 30000, 60000, 60000, 60000, 60000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 86400000]);
+  // The hourly cleanup expires uploaded restore archives (D36).
+  await quietly(async () => { for (const { fn, ms } of timers.intervals.values()) if (ms === 3600000) fn(); await new Promise(resolve => setTimeout(resolve, 10)); });
+  assert.ok(calls.includes('restore uploads'));
   // Interrupted syncs are reset before their timers can pick accounts up,
   // and an instance backup the last process left running is recorded as failed.
   assert.ok(calls.includes('UPDATE mail_accounts'));

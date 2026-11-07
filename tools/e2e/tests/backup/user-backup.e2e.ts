@@ -53,11 +53,11 @@ test('[28-17] a backup downloads through a ticket that needs no session cookie',
   // The first download waits until the person has seen the recovery password.
   if (ready.recovery_password_available) ok(await pageApi(browser, 'POST', `/api/backup/jobs/${ready.id}/recovery-password/reveal`), 'reveal');
   const ticket = ok(await pageApi<{ url: string; filename: string; size: number }>(browser, 'POST', '/api/files/tickets', { kind: 'backup-archive', id: ready.id }), 'ticket');
-  expect(ticket.filename).toMatch(/\.unihub-backup$/);
+  expect(ticket.filename).toMatch(/\.zip$/);
   // Fetched from Node without any cookie, as the app's download manager does.
   const response = await fetch(new URL(ticket.url, stack.url), { redirect: 'manual' });
   expect(response.status, 'the ticket answers without a session').toBe(200);
-  expect(response.headers.get('content-type')).toContain('application/vnd.unihub.backup');
+  expect(response.headers.get('content-type')).toContain('application/zip');
   expect((await response.arrayBuffer()).byteLength).toBe(ticket.size);
   // The grant allows a resumed download (Range) for the same archive.
   const partial = await fetch(new URL(ticket.url, stack.url), { headers: { Range: 'bytes=0-9' } });

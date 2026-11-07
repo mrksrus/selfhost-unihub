@@ -7,11 +7,13 @@ import { BACKUP_UPLOAD_MAX_SIZE } from '../config';
 import { db } from '../state';
 import { buildBackupArchiveEntriesForUser, sha256File } from './backup';
 import {
-  encryptBackupFile,
   generateRecoveryPassword,
-  wrapDataKeyForServer,
+  wrapEnvelopePasswordForServer,
   protectRecoveryPassword,
 } from './backup-container';
+import { envelopeDataKey, writeBackupEnvelope } from './backup-envelope';
+import { portableZipPath } from './backup-readable';
+import { ARCHIVE_LAYOUTS, ZIP_BACKUP_FORMAT_VERSION } from './backup-format';
 import { controlPool } from './side-pools';
 import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
 import { resolvePolicy } from './settings';
@@ -131,15 +133,6 @@ function dosDateTime(date = new Date()) {
   return { dosTime, dosDate };
 }
 
-function sanitizeZipPath(value: unknown) {
-  return String(value || 'file')
-    .replace(/\\/g, '/')
-    .split('/')
-    .filter(part => part && part !== '.' && part !== '..')
-    .map(part => part.replace(/[^a-zA-Z0-9._ -]/g, '_') || 'item')
-    .join('/');
-}
-
 function bufferFromUInt32(value: number) {
   const buffer = Buffer.alloc(4);
   buffer.writeUInt32LE(value >>> 0, 0);
@@ -192,7 +185,7 @@ function getWritableStream(targetPath: string) {
 }
 
 async function prepareZipEntry(entry: ZipEntry, checkCancelled: CheckCancelled = null): Promise<PreparedEntry> {
-  const name = sanitizeZipPath(entry.name);
+  const name = portableZipPath(entry.name);
   const filePath = entry.filePath ? path.resolve(entry.filePath!) : null;
   if (filePath) {
     const stat = await fs.promises.stat(filePath);
@@ -362,7 +355,7 @@ function parseContents(value: unknown): BackupContents | null {
 }
 
 function manifestContents(entries: readonly ZipEntry[]) {
-  const manifest = entries.find(entry => entry.name === 'manifest.json');
+  const manifest = entries.find(entry => entry.name === ARCHIVE_LAYOUTS[ZIP_BACKUP_FORMAT_VERSION].manifest);
   if (!manifest?.data) return null;
   return parseContents((JSON.parse(String(manifest.data)) as { contents?: unknown }).contents);
 }
@@ -486,14 +479,18 @@ async function runDataExportJob(jobId: string) {
     const sections = parseRequestedSections(job.requested_sections);
     // A job an older release queued without encryption is encrypted as well.
     if (!job.encryption_enabled) await updateJob(jobId!, { encryption_enabled: 1 });
-    const dataKey = crypto.randomBytes(32);
+    // The archive is an encrypted ZIP (backup-envelope.ts) that opens with
+    // the recovery password; the portable credentials inside are encrypted
+    // with a key derived from the same password and the backup's UUID.
+    backupUuid = crypto.randomUUID();
     const recoveryPassword = generateRecoveryPassword();
     const targetDir = path.join(BACKUPS_ROOT, String(job.user_id));
     entries = await collectExportEntries(job.user_id, sections, {
       mailAccountId: job.mail_account_id || null,
       includeDownloadMail: job.include_download_mail === undefined ? true : Boolean(job.include_download_mail),
       workDirectory: targetDir,
-      portableCredentialKey: dataKey,
+      portableCredentialKey: envelopeDataKey(recoveryPassword, backupUuid),
+      backupUuid,
       // Runs while the snapshot read holds its connection, on which it would
       // not see a later cancellation: the control pool (side-pools.ts).
       checkCancelled: () => checkExportCancelled(jobId, controlPool()),
@@ -502,7 +499,7 @@ async function runDataExportJob(jobId: string) {
     await updateJob(jobId!, { phase: 'archiving', progress: 35 });
     const contents = manifestContents(entries);
     temporaryZipPath = path.join(targetDir, `${job.id}.zip.partial`);
-    finalPath = path.join(targetDir, `${job.id}.unihub-backup`);
+    finalPath = path.join(targetDir, `${job.id}.zip`);
     // Left by an earlier attempt of this job, which is not ready (checked
     // above): no committed row names either file, so no gate is needed.
     await fs.promises.rm(temporaryZipPath, { force: true }).catch(() => {});
@@ -520,11 +517,9 @@ async function runDataExportJob(jobId: string) {
     await checkExportCancelled(jobId);
     {
       await updateJob(jobId!, { phase: 'encrypting', progress: 76 });
-      backupUuid = crypto.randomUUID();
-      await encryptBackupFile(temporaryZipPath, finalPath, {
+      await writeBackupEnvelope(temporaryZipPath, finalPath, {
         backupUuid,
-        dataKey,
-        recoveryPassword,
+        password: recoveryPassword,
         checkCancelled: () => checkExportCancelled(jobId),
         onProgress: async (processed, total) => {
           await updateJob(jobId!, {
@@ -549,7 +544,7 @@ async function runDataExportJob(jobId: string) {
           backupUuid,
           job.user_id,
           job.id,
-          wrapDataKeyForServer(dataKey, backupUuid),
+          wrapEnvelopePasswordForServer(recoveryPassword, backupUuid),
           protectRecoveryPassword(recoveryPassword, backupUuid),
         ]
       );
@@ -565,7 +560,7 @@ async function runDataExportJob(jobId: string) {
       file_path: finalPath,
       file_size: stat.size,
       file_sha256: await sha256File(finalPath),
-      content_type: 'application/vnd.unihub.backup',
+      content_type: 'application/zip',
       backup_uuid: backupUuid,
       contents: contents ? JSON.stringify(contents) : null,
       completed_at: new Date(),
@@ -755,11 +750,13 @@ async function backupArchiveFile(userId: string, jobId: string) {
   if (!isBackupPathUnderRoot(job.file_path)) throw new Error('Backup path is outside the backup storage');
   const filePath = path.resolve(job.file_path);
   const stat = await fs.promises.stat(filePath);
-  const extension = job.encryption_enabled ? 'unihub-backup' : 'zip';
+  // An encrypted ZIP since 0.28; the container of 0.27 keeps its extension.
+  const container = filePath.endsWith('.unihub-backup');
+  const extension = container ? 'unihub-backup' : 'zip';
   return {
     path: filePath,
     size: stat.size,
-    contentType: job.content_type || (job.encryption_enabled ? 'application/vnd.unihub.backup' : 'application/zip'),
+    contentType: job.content_type || (container ? 'application/vnd.unihub.backup' : 'application/zip'),
     filename: `unihub-backup-${new Date().toISOString().slice(0, 10)}-${jobId}.${extension}`,
   };
 }

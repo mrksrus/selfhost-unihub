@@ -434,7 +434,7 @@ A new database is created from the 0.16.0 baseline, which stands for upgrade ste
 | `/app/uploads/attachments` | Email attachments |
 | `/app/uploads/mail-raw` | Raw imported email source |
 | `/app/uploads/recordings` | Recording audio files and upload temp files |
-| `/app/uploads/backups/<userId>` | Generated `.zip` or encrypted `.unihub-backup` archives |
+| `/app/uploads/backups/<userId>` | Generated backups: encrypted `.zip` (0.28 on), `.unihub-backup` (0.27) or unencrypted `.zip` (before) |
 | `/app/uploads/backups/restores/<userId>` | Retained restore uploads |
 | `/app/uploads/backups/restores/work/<jobId>` | Temporary decrypted ZIP used by an active encrypted restore job |
 
@@ -494,6 +494,7 @@ previous run is still going (`services/timers.ts`). These sixteen run:
 | 1 hour | Delete expired sessions |
 | 1 hour | Delete finished mail engine jobs older than 7 days |
 | 1 hour | Delete expired recording upload temp files |
+| 1 hour | Delete uploaded restore archives seven days after their upload, except while a restore validates or runs from one (`backup-restore-jobs.ts`) |
 | 1 hour | Delete contacts merged away more than 30 days ago and their merge records (`contact-merge.ts`); skips people with a running contacts restore or the Contacts module off |
 | 1 hour | Delete contact imports past their 24 hours and their staged files (`contacts-import.ts`); skips people with a running contacts restore or the Contacts module off |
 | 1 day | Delete contact photo files older than an hour that no contact, bin item or merge undo refers to (`contact-photos.ts`), also 10 minutes after a start; skips the same people |
@@ -559,16 +560,22 @@ that page limit so users with more than 2,000 contacts receive their entire list
 
 The canonical backup data remains an uncompressed, stored-entry ZIP built by
 `api/src/services/export-jobs.ts` from data assembled in
-`api/src/services/backup-export.ts` (through the `backup.ts` facade).
+`api/src/services/backup-export.ts` (through the `backup.ts` facade), with
+readable names for mail, recordings and the derived vCard and iCalendar
+copies (`backup-readable.ts`).
 
-Encrypted backups add a streaming container implemented by
-`api/src/services/backup-container.ts`:
+Since 0.28 that ZIP is wrapped in a standard AES-encrypted ZIP
+(`api/src/services/backup-envelope.ts`, WinZip AE-2 with node:crypto) that
+other programs open with the recovery password:
 
-- random per-backup data key
-- 4 MiB AES-256-GCM chunks
-- password-wrapped data key embedded in the file
-- server-wrapped data key stored in `backup_archive_keys`
-- portable mail/calendar credential bundle encrypted with the backup data key
+- a plain `README.txt` and one encrypted entry, `unihub-backup.zip`
+- the recovery password wrapped with the server key in `backup_archive_keys`,
+  for automatic unlock on the source server
+- the portable mail/calendar credential bundle encrypted with a key derived
+  from the recovery password
+
+`api/src/services/backup-container.ts` still reads the `UNIHUBBK1` container
+of 0.27 (4 MiB AES-256-GCM chunks, a password- and server-wrapped data key).
 
 Durable state is split across:
 
