@@ -612,7 +612,7 @@ These routes are for the current user and require CSRF:
 | DELETE | `/api/settings/account` | Delete current user and associated uploaded files; needs `{ "current_password": "..." }` (`account.delete`) |
 | POST | `/api/settings/clear-contacts` | Delete all contacts (`data.clear`) |
 | POST | `/api/settings/clear-calendar` | Delete calendar/to-do data and recreate default local calendar (`data.clear`, `accounts.remove`) |
-| POST | `/api/settings/clear-mail-accounts` | Delete all mail accounts and attachment files (`data.clear`, `accounts.remove`, `accounts.reset`); `409 MAIL_OPERATIONS_UNRESOLVED` while a provider change has an unresolved outcome |
+| POST | `/api/settings/clear-mail-accounts` | Delete all mail accounts and attachment files (`data.clear`, `accounts.remove`, `accounts.reset`); `409 MAIL_OPERATIONS_UNRESOLVED` while a provider change has an unresolved outcome; with calendars connected from mail, also Calendar's module switch and restore lock |
 | POST | `/api/settings/clear-recordings` | Delete all recordings and files (`data.clear`) |
 | GET | `/api/settings/mail-sender-candidates` | Suggest sender/domain rule candidates from local mail |
 
@@ -620,7 +620,10 @@ The four clears are `services/data-clear.ts`, shared with the administrator's
 path. Clearing mail accounts refuses, as purging one account does, while a
 provider change has an unresolved outcome: it stops the accounts' work, then
 checks again under the locks of the accounts and their messages, so a change
-accepted meanwhile cannot slip past.
+accepted meanwhile cannot slip past. It unlinks the calendars connected from
+the accounts, so while there are any it is also a change to Calendar: refused
+while Calendar is off (`403 MODULE_DISABLED`) or being restored (`409
+RESTORE_IN_PROGRESS`), before any work stops and again under the locks.
 
 Account deletion (`services/user-lifecycle.ts`, shared with the admin route)
 stops the user's mail work, deletes the `users` row (every table cascades from
