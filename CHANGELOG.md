@@ -151,13 +151,6 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   the copy it finds. A move that waited no longer writes to the server after
   Calendar was switched off, a calendar restore began or the account was
   paused meanwhile; it waits until they allow it again.
-- **Deleting a folder on the mail server checks what the server holds.**
-  Before the DELETE, UniHub asks each server for the folder and deletes only
-  the one it reports; a folder listing it cannot fully read deletes nothing.
-  A DELETE whose answer was lost is checked on the next attempt instead of
-  being sent blindly, and a folder made again under the same name since is
-  never taken for the deleted one: the attempt says so, and deleting it
-  again removes the new folder too.
 - **A change that waited is refused once its sign-in no longer holds.**
   Deleting your own account, an administrator's change for a person, and
   saving the rules or the instance backup's schedule check again, just

@@ -7,8 +7,8 @@ version-specific upgrade guidance. Preserve existing data and keys when upgradin
 
 ## 0.28.0 Data safety
 
-**Make a database backup first.** Two automatic database upgrades run at the
-first start, in order. **Step 25** gives every event, calendar and recording a stable
+**Make a database backup first.** One automatic database upgrade runs at the
+first start: **step 25** gives every event, calendar and recording a stable
 identity (a synced event takes its UID from the calendar server, every other
 item its id), and adds the tables of the bin's purge, the policies' notices,
 the instance backup's runs and the ToDo state of synced tasks waiting after a
@@ -27,11 +27,10 @@ upgrade, or give the container a start grace longer than the pass (30
 minutes for the benchmark's 13):** a stop during the pass rolls it back and
 the next start runs it again, so with each restart it never finishes. See
 [Data recovery](DATA_RECOVERY.md#backup-versions-and-restore-behavior) for the
-details. **Step 26**, right after it, adds the table in which a folder
-deletion records each mail server's answer; it takes no noticeable time.
+details.
 
-Going back to 0.27.x means restoring that backup: 0.27.x does not know steps
-25 and 26 and refuses to start ("Database upgrade history is unknown or out of
+Going back to 0.27.x means restoring that backup: 0.27.x does not know step
+25 and refuses to start ("Database upgrade history is unknown or out of
 order"). Backups made by 0.28.0 use **data schema 7** and are always
 encrypted. An older UniHub cannot read them; 0.28.0 reads every older backup.
 

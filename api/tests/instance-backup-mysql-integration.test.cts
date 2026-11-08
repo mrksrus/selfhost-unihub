@@ -114,9 +114,6 @@ test('the instance backup copies the installation, keeps only verified runs, ref
   }
   await pool.execute(`INSERT INTO calendar_event_moves (id, user_id, target_uid, state, next_attempt_at) VALUES (?, ?, 'synthetic-move@example.test', 'removing', UTC_TIMESTAMP())`,
     [crypto.randomUUID(), users.alex]);
-  // A folder deletion the old installation had under way: its record of the servers' answers is not carried over.
-  await pool.execute(`INSERT INTO mail_folder_deletions (id, user_id, mail_account_id, remote_name, uidvalidity, state, attempt) VALUES (?, ?, ?, 'Synthetic', 7, 'sending', ?)`,
-    [crypto.randomUUID(), users.alex, mailAccount, crypto.randomUUID()]);
 
   const recordingPath = write(path.join(rootDirs.recordings, users.alex, 'memo.webm'), crypto.randomBytes(300_000));
   await pool.execute("INSERT INTO recordings (id, user_id, title, content_type, storage_path) VALUES (?, ?, 'Synthetic memo', 'audio/webm', ?)", [crypto.randomUUID(), users.alex, recordingPath]);
@@ -859,7 +856,7 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     });
 
     // Every table as the dump had it, but for the running life of the old installation.
-    const retired: Record<string, number> = { sessions: 0, file_tickets: 0, two_factor_challenges: 0, calendar_event_moves: 0, mail_folder_deletions: 0,
+    const retired: Record<string, number> = { sessions: 0, file_tickets: 0, two_factor_challenges: 0, calendar_event_moves: 0,
       mail_scheduled_sends: first.manifest.database.tables.mail_scheduled_sends - 1, mail_server_messages: first.manifest.database.tables.mail_server_messages - 1 };
     for (const [table, count] of Object.entries(first.manifest.database.tables)) {
       const [[row]] = await pool.query<RowDataPacket[]>(`SELECT COUNT(*) AS count FROM ${pool.escapeId(table)}`);

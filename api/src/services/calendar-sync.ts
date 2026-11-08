@@ -1022,14 +1022,15 @@ async function noteMissingLogin(account: Account, message: string, { seen, signa
   const noted = await withPersonLock(account.user_id, () => withTransaction(async cx => {
     if (signal?.aborted) return 'refused' as const;
     const [[row]] = await cx.execute<RowDataPacket[]>('SELECT is_active, encrypted_password, mail_account_id FROM calendar_accounts WHERE id = ? FOR UPDATE', [account.id]);
+    // Before any write, whichever it is.
+    try { await assertFinalStep(cx, { userId: account.user_id, modules: ['calendar'] }); } catch (error) {
+      if (isRefusal(error)) return 'refused' as const;
+      throw error;
+    }
     if (seen && row && ((row.encrypted_password ?? null) !== (seen.encrypted_password ?? null) || (row.mail_account_id ?? null) !== (seen.mail_account_id ?? null))) {
       if (!Number(row.is_active)) return 'unchanged' as const;
       await cx.execute("UPDATE calendar_accounts SET sync_status = 'pending', next_sync_at = NULL WHERE id = ? AND is_active = TRUE", [account.id]);
       return 'again' as const;
-    }
-    try { await assertFinalStep(cx, { userId: account.user_id, modules: ['calendar'] }); } catch (error) {
-      if (isRefusal(error)) return 'refused' as const;
-      throw error;
     }
     const [paused] = await cx.execute<ResultSetHeader>(`UPDATE calendar_accounts ca
       LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id

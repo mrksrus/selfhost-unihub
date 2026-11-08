@@ -262,9 +262,6 @@ retires the queues an account restore never brings back:
 - **Queued deletions at the provider are dropped**
   (`mail_server_messages` still pending). Once deletion is on again, the next
   pass queues afresh.
-- **Folder deletions under way are forgotten.** What the old installation
-  recorded of a folder's DELETE at its mail servers (`mail_folder_deletions`)
-  is deleted; deleting the folder again asks each server first what it holds.
 
 **The drill.** Restore a recent backup on a spare machine or a second Compose
 project now and then, and sign in. The release gate runs the same restore:

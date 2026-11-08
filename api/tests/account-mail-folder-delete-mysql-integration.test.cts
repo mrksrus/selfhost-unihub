@@ -5,18 +5,11 @@ const { randomUUID } = (require('node:crypto') as typeof import('node:crypto'));
 const { EventEmitter } = (require('node:events') as typeof import('node:events'));
 const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
 
-// A guarded IMAP client with only what folder deletion uses: LIST, STATUS of
-// a listed folder with its UIDVALIDITY (a missing one as ImapFlow answers it,
-// NotFound) and DELETE.
-const GENERATIONS: Record<string, number> = { Projects: 17, Receipts: 18, Gone: 1 };
-function fakeConnection(mailboxDelete: (name: string) => Promise<unknown>, listed: string[] = ['INBOX', 'Projects']) {
+// A guarded IMAP client with only what folder deletion uses.
+function fakeConnection(mailboxDelete: (name: string) => Promise<unknown>, listed: string[] = ['INBOX']) {
   const { guardImapConnection } = require('../dist/src/services/mail-imap-guard') as typeof import('../src/services/mail-imap-guard');
   const client = Object.assign(new EventEmitter(), { usable: true, isClosed: false, close() { client.isClosed = true; }, mailboxDelete,
-    list: async () => listed.map(path => ({ path, flags: new Set() })),
-    status: async (path: string) => {
-      if (!listed.includes(path)) throw Object.assign(new Error(`Mailbox doesn't exist: ${path}`), { code: 'NotFound' });
-      return { path, uidValidity: BigInt(GENERATIONS[path] ?? 1) };
-    } });
+    list: async () => listed.map(path => ({ path, flags: new Set() })) });
   return guardImapConnection(client as unknown as import('../src/types/imap-protocol').ProtocolConnection);
 }
 const commandFailed = (reply: Record<string, unknown>) => Object.assign(new Error('Command failed'), reply);
@@ -146,6 +139,4 @@ test('real MySQL: a local folder empties into Inbox; a server folder goes only t
   const gone = await deleteMailFolder({ userId: owner, slug: 'gone', server: true }, { pool, connect: absent });
   assert.equal(gone.server.length, 1);
   assert.equal(await folderRows('gone'), 0);
-  // Settled, the record of what the servers answered goes with it.
-  assert.equal((await pool.execute<RowDataPacket[]>('SELECT id FROM mail_folder_deletions WHERE user_id = ?', [owner]))[0].length, 0);
 });

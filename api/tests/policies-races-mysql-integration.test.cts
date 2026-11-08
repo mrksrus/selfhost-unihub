@@ -104,16 +104,13 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     return file;
   }
   const encrypt = (text: string) => (require('../dist/src/security/encryption') as typeof import('../src/security/encryption')).encrypt(text);
-  // A synthetic mail server's folders, each with its UIDVALIDITY: LIST, and
-  // STATUS as ImapFlow answers it (NotFound for a missing name). A fake
-  // connection spreads it and adds its own DELETE.
+  // A synthetic mail server's folders: its LIST. A fake connection spreads
+  // it and adds its own DELETE.
   const folderServer = (folders: Record<string, number> = { Shared: 1 }) => ({
     list: async () => ['INBOX', ...Object.keys(folders)].map(path => ({ path, flags: new Set() })),
-    status: async (name: string) => {
-      if (!(name in folders)) throw Object.assign(new Error(`Mailbox doesn't exist: ${name}`), { code: 'NotFound' });
-      return { path: name, uidValidity: BigInt(folders[name]) };
-    },
   });
+  // A DELETE of a folder the server no longer has, answered as Dovecot does.
+  const nonexistent = (name: string) => Object.assign(new Error(`Mailbox doesn't exist: ${name}`), { responseStatus: 'NO', serverResponseCode: 'NONEXISTENT' });
   // Each case starts with every policy at its default and no restore, whatever an earlier one left.
   const fromDefaults = (name: string, body: () => Promise<void>) => t.test(name, async () => {
     await pool.query("DELETE FROM setting_policies WHERE target_kind = 'installation'");
@@ -2023,10 +2020,6 @@ test('a destructive step follows the rules in force when it acts, with an owner,
   }
   const folderDeletion = () => require('../dist/src/services/mail-folder-delete') as typeof import('../src/services/mail-folder-delete');
   const guarded = (connection: FixtureValue) => (require('../dist/src/services/mail-imap-guard') as typeof import('../src/services/mail-imap-guard')).guardImapConnection({ on() {}, close() {}, ...connection });
-  const mailboxStates = async (accounts: string[]) => (await pool.query<RowDataPacket[]>(`SELECT state FROM mail_remote_mailboxes WHERE mail_account_id IN (?, ?) AND remote_name = 'Shared' ORDER BY mail_account_id`, accounts))[0].map(row => row.state);
-  // A folder deletion's record per server copy (mail_folder_deletions), by account.
-  const deletionSteps = async (accounts: string[]) => (await pool.query<RowDataPacket[]>(`SELECT mail_account_id, state FROM mail_folder_deletions WHERE mail_account_id IN (?, ?) AND remote_name = 'Shared'`, accounts))[0]
-    .map(row => [row.mail_account_id, row.state]).sort((a, b) => (a[0] < b[0] ? -1 : 1));
 
   await fromDefaults('r8: deleting a folder at the provider counts what the servers answered, even when its final check could not commit', async () => {
     const fx = await sharedFolder('commit-r8'), commands: string[] = [], getConnection = pool.getConnection;
@@ -2048,7 +2041,7 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     await fx.remove();
   });
 
-  await fromDefaults('r8: a folder deleted at one server whose local update failed is not deleted there again by the next attempt', async () => {
+  await fromDefaults('r8: a folder deleted at one server whose local update failed is not sent again by itself; deleting it again finishes it', async () => {
     const finalStep = require('../dist/src/services/final-step') as FixtureValue, original = finalStep.underFinalStep;
     const modules = require('../dist/src/services/module-settings') as FixtureValue;
     const fx = await sharedFolder('settle-r8'), commands: string[] = [];
@@ -2058,48 +2051,37 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     const servers = new Map(fx.accounts.map(id => [id, { Shared: 1 } as Record<string, number>]));
     const connect = async (account: FixtureValue) => guarded({ ...folderServer(servers.get(account.id)), mailboxDelete: async (name: string) => {
       commands.push(account.id);
+      if (!(name in servers.get(account.id)!)) throw nonexistent(name);
       if (secondFails && account.id === fx.accounts[1]) throw Object.assign(new Error('synthetic server busy'), { responseStatus: 'NO', responseText: 'Server busy' });
       delete servers.get(account.id)![name];
     } }) as FixtureValue;
     try {
       const first = await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true }, { connect }).then(() => null, (error: FixtureValue) => error);
       assert.deepEqual([first?.code, first?.details?.settled], ['FOLDER_PARTLY_DELETED', false], String(first?.message));
-      assert.deepEqual(await deletionSteps(fx.accounts), [[fx.accounts[0], 'deleted']], 'the deleted copy is recorded, the refused one not');
+      assert.deepEqual(first?.details?.deleted_on.length, 1);
       secondFails = false;
       await modules.setUserModules(users.alex, { modules: { mail: { enabled: true } } });
+      assert.deepEqual(commands, [fx.accounts[0], fx.accounts[1]], 'nothing is sent again by itself');
+      // Deleting it again asks both servers again: the first has no such folder any more, the second deletes it.
       await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true }, { connect });
-      assert.deepEqual(commands, [fx.accounts[0], fx.accounts[1], fx.accounts[1]], 'the deleted copy is not sent again');
+      assert.deepEqual(commands, [fx.accounts[0], fx.accounts[1], fx.accounts[0], fx.accounts[1]]);
       assert.equal(await count('SELECT COUNT(*) AS count FROM mail_folders WHERE id = ?', [fx.folder]), 0);
     } finally { finalStep.underFinalStep = original; await modules.setUserModules(users.alex, { modules: { mail: { enabled: true } } }); }
     await fx.remove();
   });
 
-  await fromDefaults('r8: a folder DELETE without an answer is checked before anything is sent again', async () => {
+  await fromDefaults('r8: a folder DELETE without an answer is answered 502, changes nothing locally and is not sent again by itself', async () => {
     const fx = await sharedFolder('uncertain-r8'), commands: string[] = [];
-    const servers = new Map(fx.accounts.map(id => [id, { Shared: 7 } as Record<string, number>]));
-    // The first DELETE's answer is lost: once after the server deleted it, once before.
-    let lose: 'after' | 'before' | null = 'before';
-    const connect = async (account: FixtureValue) => guarded({ ...folderServer(servers.get(account.id)), mailboxDelete: async (name: string) => {
+    const connect = async (account: FixtureValue) => guarded({ ...folderServer(), mailboxDelete: async () => {
       commands.push(account.id);
-      if (lose && account.id === fx.accounts[0]) {
-        if (lose === 'after') delete servers.get(account.id)![name];
-        throw new Error('synthetic connection lost');
-      }
-      delete servers.get(account.id)![name];
+      if (account.id === fx.accounts[0]) throw new Error('synthetic connection lost');
     } }) as FixtureValue;
-    const attempt = () => folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true }, { connect }).then(() => null, (error: FixtureValue) => ({ status: error.status, code: error.code }));
-    assert.deepEqual(await attempt(), { status: 502, code: 'MAIL_SERVER_ERROR' });
-    assert.deepEqual(await deletionSteps(fx.accounts), [[fx.accounts[0], 'sending']], 'the unanswered one is recorded as such; the one not sent is not');
-    // The server still has the generation it was sent for: that DELETE did not go, and goes now.
-    lose = 'after';
-    assert.deepEqual(await attempt(), { status: 502, code: 'MAIL_SERVER_ERROR' });
-    assert.deepEqual(commands, [fx.accounts[0], fx.accounts[0]]);
-    // Proven gone (a complete listing without it, and STATUS of the name refused): settled without a DELETE.
-    lose = null;
-    assert.equal(await attempt(), null);
-    assert.deepEqual(commands, [fx.accounts[0], fx.accounts[0], fx.accounts[1]]);
-    assert.equal(await count('SELECT COUNT(*) AS count FROM mail_folders WHERE id = ?', [fx.folder]), 0);
-    assert.deepEqual(await deletionSteps(fx.accounts), []);
+    const reply = await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true }, { connect }).then(() => null, (error: FixtureValue) => error);
+    assert.deepEqual([reply?.status, reply?.code], [502, 'MAIL_SERVER_ERROR']);
+    assert.doesNotMatch(String(reply?.message), /synthetic connection lost/, 'in UniHub\'s words');
+    assert.deepEqual(commands, [fx.accounts[0]], 'the rest is not sent, and the first not again');
+    assert.equal(await count('SELECT COUNT(*) AS count FROM mail_folder_remote_boxes WHERE folder_id = ?', [fx.folder]), 2);
+    assert.equal(await count('SELECT COUNT(*) AS count FROM mail_folders WHERE id = ?', [fx.folder]), 1);
     await fx.remove();
   });
 
@@ -2115,177 +2097,6 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     } finally { (service as FixtureValue).deleteMailFolder = deleteMailFolder; }
     assert.equal(await count('SELECT COUNT(*) AS count FROM mail_folder_remote_boxes WHERE folder_id = ?', [fx.folder]), 2);
     await fx.remove();
-  });
-
-  // r9: a folder deletion's record of each server's step is its own
-  // (mail_folder_deletions), bound to the mailbox generation it targeted.
-  await fromDefaults('r9: a folder made again on the server after UniHub deleted it there is not deleted by the next attempt', async () => {
-    const fx = await sharedFolder('recreated-r9');
-    const repository = require('../dist/src/services/mail-engine/repository') as FixtureValue;
-    const finalStep = require('../dist/src/services/final-step') as FixtureValue, original = finalStep.underFinalStep;
-    const modules = require('../dist/src/services/module-settings') as FixtureValue;
-    for (const accountId of fx.accounts) await repository.ensureMailbox({ userId: users.alex, accountId, folderName: 'Shared', epoch: 80 });
-    const servers = new Map(fx.accounts.map(id => [id, { Shared: 80 } as Record<string, number>]));
-    const commands: string[] = [];
-    let first = true;
-    // Mail switched off right after the DELETEs: the local update is refused.
-    finalStep.underFinalStep = async (...args: FixtureValue[]) => {
-      try { return await original(...args); } finally { if (first) await modules.setUserModules(users.alex, { modules: { mail: { enabled: false } } }); }
-    };
-    const connect = async (account: FixtureValue) => guarded({ ...folderServer(servers.get(account.id)), mailboxDelete: async (name: string) => {
-      commands.push(account.id);
-      if (first && account.id === fx.accounts[1]) throw Object.assign(new Error('Synthetic refusal'), { responseStatus: 'NO' });
-      delete servers.get(account.id)![name];
-    } }) as FixtureValue;
-    const attempt = () => folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true }, { connect }).catch((error: FixtureValue) => error);
-    try {
-      const reply = await attempt();
-      assert.deepEqual([reply.code, reply.details?.settled], ['FOLDER_PARTLY_DELETED', false]);
-      first = false;
-      await modules.setUserModules(users.alex, { modules: { mail: { enabled: true } } });
-      // The server has Shared again (a new mailbox, UIDVALIDITY 81), and a folder check saw it.
-      servers.get(fx.accounts[0])!.Shared = 81;
-      await repository.ensureMailbox({ userId: users.alex, accountId: fx.accounts[0], folderName: 'Shared', epoch: 81 });
-      const again = await attempt();
-      assert.equal(again?.code, 'FOLDER_RECREATED', JSON.stringify(again?.message ?? again));
-      assert.deepEqual(commands, [fx.accounts[0], fx.accounts[1]], 'nothing is sent to the folder made again');
-      assert.deepEqual(await mailboxStates(fx.accounts), ['active', 'active']);
-      // Asked once more, deleting it there is a deletion of its own.
-      assert.equal((await attempt())?.slug, fx.slug);
-      assert.deepEqual(commands, [fx.accounts[0], fx.accounts[1], fx.accounts[0], fx.accounts[1]]);
-    } finally {
-      finalStep.underFinalStep = original;
-      await modules.setUserModules(users.alex, { modules: { mail: { enabled: true } } });
-      await fx.remove();
-    }
-  });
-
-  await fromDefaults('r9: a folder DELETE without an answer that went, then a folder made again under the name, is not deleted again', async () => {
-    const fx = await sharedFolder('unknown-r9'), account = fx.accounts[0];
-    await pool.execute('DELETE FROM mail_folder_remote_boxes WHERE folder_id = ? AND mail_account_id = ?', [fx.folder, fx.accounts[1]]);
-    const repository = require('../dist/src/services/mail-engine/repository') as FixtureValue;
-    await repository.ensureMailbox({ userId: users.alex, accountId: account, folderName: 'Shared', epoch: 90 });
-    const folders: Record<string, number> = { Shared: 90 }, commands: string[] = [];
-    let lost = true;
-    const connect = async () => guarded({ ...folderServer(folders), mailboxDelete: async (name: string) => {
-      commands.push(name);
-      delete folders[name];
-      if (lost) throw new Error('Synthetic lost DELETE acknowledgement');
-    } }) as FixtureValue;
-    const attempt = () => folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true }, { connect }).catch((error: FixtureValue) => error);
-    try {
-      assert.equal((await attempt()).status, 502);
-      lost = false;
-      folders.Shared = 91;
-      await repository.ensureMailbox({ userId: users.alex, accountId: account, folderName: 'Shared', epoch: 91 });
-      assert.equal((await attempt())?.code, 'FOLDER_RECREATED');
-      assert.deepEqual(commands, ['Shared'], 'the new mailbox is not taken for the one the DELETE was meant for');
-      assert.deepEqual(await deletionSteps(fx.accounts), []);
-    } finally { await fx.remove(); }
-  });
-
-  await fromDefaults('r9: a malformed folder listing proves nothing gone: no mail is deleted, and discovery refuses it too', async () => {
-    const net = require('node:net') as typeof import('node:net');
-    const fx = await sharedFolder('partial-list-r9'), account = fx.accounts[0], email = crypto.randomUUID();
-    await pool.execute('DELETE FROM mail_folder_remote_boxes WHERE folder_id = ? AND mail_account_id = ?', [fx.folder, fx.accounts[1]]);
-    const repository = require('../dist/src/services/mail-engine/repository') as FixtureValue;
-    const box = await repository.ensureMailbox({ userId: users.alex, accountId: account, folderName: 'Shared', epoch: 110 });
-    await pool.execute("INSERT INTO emails (id, user_id, mail_account_id, from_address, to_addresses, folder, remote_folder, remote_uid, remote_uidvalidity) VALUES (?, ?, ?, 'synthetic@example.test', '[]', ?, 'Shared', 1, 110)", [email, users.alex, account, fx.slug]);
-    await repository.upsertOccurrence({ userId: users.alex, accountId: account, mailboxId: box.id, epoch: 110, uid: 1, emailId: email });
-    // As an earlier attempt without an answer left it before 0.28.0 r9.
-    await pool.execute("UPDATE mail_remote_mailboxes SET state = 'deleting' WHERE id = ?", [box.id]);
-    // A real IMAP peer whose LIST has an entry without a name, which the installed client accepts.
-    const sockets = new Set<import('node:net').Socket>(), wire: string[] = [];
-    const server = net.createServer(socket => {
-      sockets.add(socket); socket.on('close', () => sockets.delete(socket)); socket.write('* OK [CAPABILITY IMAP4rev1] synthetic partial-list peer\r\n');
-      let buffer = '';
-      socket.on('data', chunk => {
-        buffer += chunk.toString();
-        let end;
-        while ((end = buffer.indexOf('\r\n')) >= 0) {
-          const line = buffer.slice(0, end); buffer = buffer.slice(end + 2);
-          const space = line.indexOf(' '), tag = line.slice(0, space), cmd = line.slice(space + 1);
-          wire.push(cmd);
-          if (cmd === 'CAPABILITY') socket.write(`* CAPABILITY IMAP4rev1\r\n${tag} OK capabilities\r\n`);
-          else if (cmd.startsWith('LOGIN ')) socket.write(`${tag} OK logged in\r\n`);
-          else if (cmd.startsWith('LIST ')) socket.write(`* LIST () "/" "INBOX"\r\n* LIST () "/"\r\n${tag} OK listing completed\r\n`);
-          else if (cmd.startsWith('LSUB ')) socket.write(`${tag} OK subscriptions\r\n`);
-          else if (cmd.startsWith('LOGOUT')) socket.write(`* BYE done\r\n${tag} OK logout\r\n`);
-          else socket.write(`${tag} NO unexpected synthetic command\r\n`);
-        }
-      });
-    });
-    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-    const connect = async () => (require('../dist/src/services/mail-imap-guard') as FixtureValue).guardImapConnection(await (require('../dist/src/services/mail-imap-client') as FixtureValue).connectImap({
-      imap: { host: '127.0.0.1', port: (server.address() as import('node:net').AddressInfo).port, user: 'fixture', password: 'fixture', tls: false, connTimeout: 1000, authTimeout: 1000, socketTimeout: 1000 } }));
-    try {
-      const reply = await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true }, { connect }).catch((error: FixtureValue) => error);
-      assert.deepEqual([reply.status, reply.code], [502, 'MAIL_SERVER_ERROR'], JSON.stringify(reply.message ?? reply));
-      assert.equal(await count('SELECT COUNT(*) AS count FROM emails WHERE id = ?', [email]), 1, 'the mail stays');
-      assert.equal(wire.some(cmd => cmd.startsWith('DELETE ')), false);
-      // Discovery uses the same rule: an incomplete listing retires no folder.
-      const connection = await connect();
-      try {
-        await assert.rejects((require('../dist/src/services/mail-folders') as FixtureValue).listAvailableImapFolders(connection, new Map(), true), /Incomplete server folder listing/);
-      } finally { (require('../dist/src/services/mail-imap-guard') as FixtureValue).closeImapConnection(connection); }
-    } finally {
-      for (const socket of sockets) socket.destroy();
-      await new Promise<void>(resolve => server.close(() => resolve()));
-      await fx.remove();
-    }
-  });
-
-  await fromDefaults('r9: a folder deletion whose record could not be confirmed sends nothing, hides nothing and is not left uncertain', async () => {
-    const fx = await sharedFolder('marker-commit-r9'), repository = require('../dist/src/services/mail-engine/repository') as FixtureValue;
-    for (const accountId of fx.accounts) await repository.ensureMailbox({ userId: users.alex, accountId, folderName: 'Shared', epoch: 100 });
-    await pool.execute("UPDATE mail_accounts SET sync_mode = 'sync' WHERE id IN (?, ?)", fx.accounts);
-    const item = crypto.randomUUID();
-    await pool.execute("INSERT INTO emails (id, user_id, mail_account_id, from_address, to_addresses, folder, remote_folder, remote_uid, remote_uidvalidity) VALUES (?, ?, ?, 'synthetic@example.test', '[]', ?, 'Shared', 1, 100)", [item, users.alex, fx.accounts[0], fx.slug]);
-    const [[mailbox]] = await pool.query<RowDataPacket[]>("SELECT id FROM mail_remote_mailboxes WHERE mail_account_id = ? AND remote_name = 'Shared'", [fx.accounts[0]]);
-    await repository.upsertOccurrence({ userId: users.alex, accountId: fx.accounts[0], mailboxId: mailbox.id, epoch: 100, uid: 1, emailId: item });
-    const membership = (require('../dist/src/services/mail-folder-view') as FixtureValue).folderMembershipSql;
-    const visible = () => count(`SELECT COUNT(*) AS count FROM emails WHERE id = ? AND ${membership}`, [item, fx.slug, fx.slug, fx.slug]);
-    assert.equal(await visible(), 1);
-    const original = pool.getConnection;
-    let inject = true, sends = 0;
-    // The first transaction to commit is the record before the DELETEs: committed, its answer lost.
-    pool.getConnection = async function (this: typeof pool) {
-      const cx = await original.call(this) as PoolConnection, commit = cx.commit, release = cx.release;
-      cx.commit = async function (this: PoolConnection) { await commit.call(this); if (inject) { inject = false; throw new Error('Synthetic lost marker COMMIT acknowledgement'); } } as typeof cx.commit;
-      cx.release = function (this: PoolConnection) { cx.commit = commit; cx.release = release; return release.call(this); };
-      return cx;
-    } as typeof pool.getConnection;
-    const servers = new Map(fx.accounts.map(id => [id, { Shared: 100 } as Record<string, number>]));
-    const connect = async (account: FixtureValue) => guarded({ ...folderServer(servers.get(account.id)), mailboxDelete: async (name: string) => { sends++; delete servers.get(account.id)![name]; } }) as FixtureValue;
-    try {
-      await assert.rejects(folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true }, { connect }), /lost marker COMMIT/, 'its own error stays the answer');
-      assert.equal(sends, 0);
-      assert.equal(await visible(), 1, 'the folder still shows its mail');
-      assert.deepEqual(await deletionSteps(fx.accounts), [], 'what it recorded was taken back');
-      pool.getConnection = original;
-      const retry = await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true }, { connect });
-      assert.equal(retry.slug, fx.slug);
-      assert.equal(sends, 2);
-    } finally { pool.getConnection = original; await fx.remove(); }
-  });
-
-  await fromDefaults('r9: a folder deletion refused before anything was sent keeps its refusal when taking back its record fails', async () => {
-    const fx = await sharedFolder('cleanup-r9'), finalStep = require('../dist/src/services/final-step') as FixtureValue, original = finalStep.underFinalStep;
-    const execute = pool.execute;
-    let sends = 0;
-    finalStep.underFinalStep = async () => {
-      pool.execute = async function (this: typeof pool, sql: FixtureValue, ...args: FixtureValue[]) {
-        if (/FROM mail_remote_mailboxes WHERE state = 'deleting'|DELETE FROM mail_folder_deletions WHERE attempt/.test(String(sql))) throw new Error('Synthetic cleanup connection failure');
-        return (execute as FixtureValue).call(this, sql, ...args);
-      } as typeof pool.execute;
-      throw (require('../dist/src/http/errors') as FixtureValue).forbidden('POLICY_FORBIDS', 'Synthetic final policy refusal');
-    };
-    const connect = async () => guarded({ ...folderServer(), mailboxDelete: async () => { sends++; } }) as FixtureValue;
-    try {
-      const result = await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true }, { connect }).catch((error: FixtureValue) => error);
-      assert.equal(sends, 0);
-      assert.equal(result.code, 'POLICY_FORBIDS', String(result.message));
-    } finally { pool.execute = execute; finalStep.underFinalStep = original; await fx.remove(); }
   });
 
   await fromDefaults('r9: a running foreground operation stopped by a refused disconnect resumes as its own outcome check, while background sync is off', async () => {
@@ -2508,5 +2319,57 @@ test('a destructive step follows the rules in force when it acts, with an owner,
       } finally { await own.rollback().catch(() => {}); own.release(); await saving; await pool.execute('DELETE FROM users WHERE id = ?', [b.id]); }
     }
     assert.equal(await count("SELECT COUNT(*) AS count FROM setting_policies WHERE setting_key = 'policy.accounts.remove'"), 0);
+  });
+
+  await fromDefaults('r10: an administrator\'s local calendar for a person that waited is refused once they are no administrator, and nothing is made', async () => {
+    const caller = crypto.randomUUID(), name = 'local-admin-r10';
+    await pool.execute("INSERT INTO users (id, email, password_hash, full_name, role) VALUES (?, ?, ?, ?, 'admin')", [caller, `${name}@example.test`, passwordHash, name]);
+    const client = await signIn(name), locks = require('../dist/src/services/person-lock') as FixtureValue;
+    const original = locks.withPersonLock, arrived = deferred(), go = deferred();
+    const holder = original(users.alex, () => go.promise);
+    locks.withPersonLock = async (...args: FixtureValue[]) => { if (args[0] === users.alex) arrived.resolve(); return original(...args); };
+    const pending = client.request('POST', `/api/admin/users/${users.alex}/calendar-accounts`, { provider: 'local', display_name: 'After admin demotion', current_password: password });
+    try {
+      await within(arrived.promise); locks.withPersonLock = original;
+      await pool.execute("UPDATE users SET role = 'user' WHERE id = ?", [caller]);
+      go.resolve(); await holder;
+      const reply = await pending;
+      assert.deepEqual([reply.status, reply.body.code], [403, 'ADMIN_REQUIRED'], JSON.stringify(reply.body));
+      assert.equal(await count("SELECT COUNT(*) AS count FROM calendar_accounts WHERE user_id = ? AND display_name = 'After admin demotion'", [users.alex]), 0, 'no account');
+      assert.equal(await count("SELECT COUNT(*) AS count FROM calendar_calendars c JOIN calendar_accounts a ON a.id = c.account_id WHERE a.display_name = 'After admin demotion'"), 0, 'no calendar');
+    } finally {
+      go.resolve(); await holder; await pending; locks.withPersonLock = original;
+      await pool.execute("DELETE FROM calendar_accounts WHERE user_id = ? AND display_name = 'After admin demotion'", [users.alex]);
+      await pool.execute('DELETE FROM users WHERE id = ?', [caller]);
+    }
+  });
+
+  await fromDefaults('r10: a sync that found no password while a new one was saved writes nothing once Calendar is off', async () => {
+    const account = crypto.randomUUID();
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, username, base_url, is_active, sync_status)
+      VALUES (?, ?, 'caldav', 'guard-r10@example.test', 'guard-r10', 'https://guard-r10.example.test/dav/', TRUE, 'pending')`, [account, users.alex]);
+    const sync = require('../dist/src/services/calendar-sync') as FixtureValue, locks = require('../dist/src/services/person-lock') as FixtureValue;
+    const changes = require('../dist/src/services/calendar-account-changes') as FixtureValue, modules = require('../dist/src/services/module-settings') as FixtureValue;
+    const original = locks.withPersonLock, arrived = deferred(), go = deferred();
+    // While the old sync waits: a new password, Calendar switched off, and a newer status.
+    const holder = original(users.alex, async () => {
+      await within(arrived.promise);
+      await changes.updateCalendarAccount(users.alex, account, { password: 'synthetic-r10-new-password' });
+      await modules.setUserModules(users.alex, { modules: { calendar: { enabled: false } } });
+      await pool.execute("UPDATE calendar_accounts SET sync_status = 'paused', next_sync_at = '2035-01-01 00:00:00' WHERE id = ?", [account]);
+      await go.promise;
+    });
+    locks.withPersonLock = async (...args: FixtureValue[]) => { if (args[0] === users.alex) arrived.resolve(); return original(...args); };
+    const pending = sync.syncCalendarAccount(account, { userId: users.alex }).catch((error: FixtureValue) => error);
+    try {
+      await within(arrived.promise); locks.withPersonLock = original; go.resolve(); await holder;
+      assert.deepEqual(await pending, { skipped: true, reason: 'paused' });
+      const row = await rowOf('calendar_accounts', account);
+      assert.deepEqual([row.sync_status, new Date(row.next_sync_at).toISOString()], ['paused', '2035-01-01T00:00:00.000Z'], 'the newer status stays');
+    } finally {
+      go.resolve(); await holder; await pending; locks.withPersonLock = original;
+      await modules.setUserModules(users.alex, { modules: { calendar: { enabled: true } } });
+      await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [account]);
+    }
   });
 });
