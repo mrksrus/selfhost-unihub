@@ -168,9 +168,7 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   options wrap a long name with the dot on the first line.
 - Changed pictures `admin-policies` (wide, dark and light): the Backups
   rules read as a minimum (D36), "Keep users' backups at least" and
-  "Deleting backups", with the bin minimum row, and the bin rule says what
-  the automatic clean-up still does while people may not delete for good;
-  wording only, same layout.
+  "Deleting backups", with the bin minimum row; wording only, same layout.
 
 ## 0.27.2
 
