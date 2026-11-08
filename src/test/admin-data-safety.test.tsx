@@ -342,6 +342,23 @@ describe('Admin → Users → a person', () => {
     expect(await screen.findByText('The list of users', {}, { timeout: 10_000 })).toBeInTheDocument();
   });
 
+  // The admin path's calendar add proves the caller too: no longer an administrator (403 ADMIN_REQUIRED) leaves the admin screens with a word.
+  it('adding a calendar for a person when the caller is no longer an administrator leaves the admin screen with a word', { timeout: 20_000 }, async () => {
+    vi.mocked(api.post).mockResolvedValueOnce({ error: 'Only an administrator can do this; nothing was changed.', status: 403, code: 'ADMIN_REQUIRED' } as never);
+    const retrySession = vi.fn(async () => {});
+    mountSignedIn(<Routes><Route path="/admin/users/:id" element={<AdminUserDetail />} /><Route path="/settings" element={<p>Settings home</p>} /></Routes>,
+      { user: ADMIN, path: '/admin/users/user-alex', auth: { retrySession } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Add calendar account' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add a calendar account' });
+    fireEvent.change(within(dialog).getByLabelText('Address'), { target: { value: 'https://dav.example.org/' } });
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add account' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/users/user-alex/calendar-accounts', expect.objectContaining({ current_password: 'admin-pw' })));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "You're no longer an administrator." })));
+    expect(await screen.findByText('Settings home', {}, { timeout: 10_000 })).toBeInTheDocument();
+    expect(retrySession).toHaveBeenCalled();
+  });
+
   it('a confirmation opened for one person closes when the page moves to another', { timeout: 20_000 }, async () => {
     let navigate!: NavigateFunction;
     function Page() { navigate = useNavigate(); return <AdminUserDetail />; }
