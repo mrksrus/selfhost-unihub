@@ -253,8 +253,8 @@ test('[28-15 D41] deleting your own account asks for your password, and a wrong 
   await expect(confirm).toBeDisabled();
   await dialog.getByLabel('Your password', { exact: true }).fill('not-alex-password-e2e');
   await confirm.tap();
-  await expect(screen.getByText('Could not delete your account', { exact: true })).toBeVisible();
-  // The dialog stays for another try; alex is still signed in and still here.
+  await expect(screen.getByText('That is not your password', { exact: true })).toBeVisible();
+  // The dialog stays for another try (the field is emptied; a secure field cannot be read here, the rendered test checks it); alex is still signed in and still here.
   await expect(dialog).toBeVisible();
   await browser.keyboard.press('Escape');
   expect((await pageApi(browser, 'GET', '/api/auth/me')).status, 'still signed in').toBe(200);
