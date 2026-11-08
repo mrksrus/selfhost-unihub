@@ -20,6 +20,7 @@ import { confirmPassword } from '../security/reauthentication';
 import { disableTwoFactor } from '../services/two-factor';
 import { getSignupMode, isSignupMode, setSignupMode } from '../services/settings';
 import { defineRoutes } from '../http/route';
+import { personFromParam } from '../services/admin-path';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface Input {
@@ -40,6 +41,12 @@ async function getActiveAdminCount() {
 // Changing another person's password, role or 2FA, deactivating or deleting
 // them needs the admin's own password again, so a stolen or unattended admin
 // session cannot take over or remove an account (security/reauthentication.ts).
+// The person of `:id` as stored (admin-path.ts personFromParam): one
+// spelling of their id for the checks below and for every change.
+async function storedPerson(req: Request): Promise<{ id: string } | { refused: ReturnType<typeof clientError> }> {
+  try { return { id: await personFromParam(req.params.id) }; } catch (error) { return { refused: clientError(error, 'User not found') }; }
+}
+
 function confirmAdminPassword(userId: string, body: Input, res?: import('node:http').ServerResponse | null) {
   return confirmPassword(userId, body?.current_password, res);
 }
@@ -283,7 +290,9 @@ export = defineRoutes({
 
   'PUT /api/admin/users/:id/password': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
-    const targetId = req.params.id;
+    const target = await storedPerson(req);
+    if ('refused' in target) return target.refused;
+    const targetId = target.id;
     const { new_password } = body;
 
     if (!new_password || new_password.length < MIN_PASSWORD_LENGTH) {
@@ -310,7 +319,9 @@ export = defineRoutes({
   // which needs a code, so a stolen admin session cannot remove it.
   'POST /api/admin/users/:id/2fa/reset': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
-    const targetId = req.params.id;
+    const target = await storedPerson(req);
+    if ('refused' in target) return target.refused;
+    const targetId = target.id;
     if (targetId === userId) {
       return { error: 'Turn off your own two-factor authentication in Settings', status: 400 };
     }
@@ -360,7 +371,9 @@ export = defineRoutes({
 
   'DELETE /api/admin/users/:id': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
-    const id = req.params.id;
+    const target = await storedPerson(req);
+    if ('refused' in target) return target.refused;
+    const id = target.id;
 
     if (id === userId) {
       return { error: 'Cannot delete your own account', status: 400 };
@@ -384,7 +397,9 @@ export = defineRoutes({
 
   'PUT /api/admin/users/:id/role': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
-    const id = req.params.id;
+    const target = await storedPerson(req);
+    if ('refused' in target) return target.refused;
+    const id = target.id;
     const nextRole = String(body?.role || '').trim().toLowerCase();
     if (!['user', 'admin'].includes(nextRole)) {
       return { error: 'Invalid role. Must be user or admin.', status: 400 };
@@ -409,7 +424,9 @@ export = defineRoutes({
 
   'PUT /api/admin/users/:id/activate': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
-    const id = req.params.id;
+    const target = await storedPerson(req);
+    if ('refused' in target) return target.refused;
+    const id = target.id;
     const { is_active } = body;
 
     try {

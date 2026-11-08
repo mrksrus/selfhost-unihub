@@ -2,7 +2,7 @@ import type { ExecuteValues, RowDataPacket } from 'mysql2/promise';
 import type { ApiError, MailAccountIdentity, StoredFlag } from '../types';
 import type { PolicyActor } from './settings';
 import * as mailWritebacks from './mail-writebacks';
-import { mailAccountModeChange, sameProviderMailbox, modePolicyInput, assertModeAllowed, modePolicyKeys, assertNewAccountMode } from './mail-account-mode';
+import { mailAccountModeChange, sameProviderMailbox, modePolicyInput, assertModeAllowed, modePolicyKeys, assertNewAccountMode, addressConfirmed } from './mail-account-mode';
 import { parseMailAccountInput } from './mail-account-input';
 import * as mailSyncPolicy from './mail-sync-policy';
 import { withMailAccountLock } from './mail-account-lock';
@@ -347,6 +347,10 @@ async function updateMailAccountNow(userId: string, id: string, body: Input, act
     [id, userId]
   );
   if (accounts.length === 0) return { error: 'Account not found', status: 404 };
+  // An administrator's password stands for the address the person types to
+  // switch an account to Sync: the account's address as read here, under
+  // the person's lock, so no change of it runs in between.
+  if (actor.adminId && body.sync_mode === 'sync' && body.confirm_address === undefined) body = { ...body, confirm_address: accounts[0].email_address };
   // Checked before the lock and before any work stops: a refused field
   // leaves a working account untouched. The values used below come from
   // the row re-read under the lock.
@@ -526,34 +530,36 @@ async function updateMailAccountNow(userId: string, id: string, body: Input, act
   if (updates.length === 0 && !serverDeleteSettingProvided) return { error: 'No fields to update', status: 400 };
   // Failed validation/authentication must not pause a working account.
   const pause = stopRequired ? await stopOwnedMailAccountWork(id, SETTINGS_PAUSE) : null;
-
-  if (updates.length > 0) {
-    params.push(id, userId);
-    // Under the account's row and the final check (final-step.ts): the
-    // mode's policies, Mail on and not being restored, as committed now,
-    // and still the account this change was decided from (account-identity.ts).
-    // A refusal puts back only the pause this change replaced, while its own
-    // is still there: a restore or a module switch since keeps its own, and
-    // the refusal stays the answer.
-    try {
+  // The pause is this change's own for its whole life (mail-sync-control.ts
+  // stopOwnedMailAccountWork): refused, or failed before its commit, the
+  // change puts back only what it replaced, while its own pause is still
+  // there (a restore or a module switch since keeps its own); committed, it
+  // ends its own pause as after a reconnect. The change's error stays the
+  // answer.
+  let committed = false, resumed = false;
+  try {
+    if (updates.length > 0) {
+      params.push(id, userId);
+      // Under the account's row and the final check (final-step.ts): the
+      // mode's policies, Mail on and not being restored, as committed now,
+      // and still the account this change was decided from (account-identity.ts).
       await withTransaction(async cx => {
         const [[current]] = await cx.execute<RowDataPacket[]>('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [id, userId]);
         await assertFinalStep(cx, { userId, policies: modePolicyKeys(existingAccount, modeChange), actor, modules: ['mail'] });
         assertUnchangedRow(current, seen);
         await cx.execute(`UPDATE mail_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
       });
-    } catch (error) {
-      await releaseOwnedMailAccountStop(pause);
-      throw error;
+      committed = true;
     }
+    if (modeChange.changed) await mailWritebacks.cancelForAccount(db, id, userId, { leavingSync: modeChange.mode !== 'sync' });
+    // A reconnect resumes the account whatever paused it.
+    if (stopRequired && body.is_active === true) {
+      await (require('../services/mail-engine/runtime') as typeof import('../services/mail-engine/runtime')).resumeAccount({ userId, accountId: id });
+      resumed = true;
+    }
+  } finally {
+    if (!resumed) await releaseOwnedMailAccountStop(pause, { committed });
   }
-
-  if (modeChange.changed) await mailWritebacks.cancelForAccount(db, id, userId, { leavingSync: modeChange.mode !== 'sync' });
-  // A reconnect resumes the account whatever paused it; any other change
-  // ends its own pause only (a restore or module switch since keeps its own).
-  if (stopRequired && body.is_active === true)
-    await (require('../services/mail-engine/runtime') as typeof import('../services/mail-engine/runtime')).resumeAccount({ userId, accountId: id });
-  else await releaseOwnedMailAccountStop(pause);
 
   if (modeChange.changed) {
     await db.execute("UPDATE mail_server_messages SET delete_status = 'skipped', delete_error = 'Cancelled by mail mode change' WHERE mail_account_id = ? AND user_id = ? AND delete_status IN ('pending', 'failed')", [id, userId]);
@@ -587,5 +593,34 @@ async function updateMailAccountNow(userId: string, id: string, body: Input, act
   });
 }
 
-export { createMailAccount, updateMailAccount, loadAccountJson, withPolicyFields, startMailSyncInBackground, ACCOUNT_COLUMNS };
+// POST /api/mail/accounts/:id/confirm-sync-policy: the typed address
+// confirms that Sync may remove local copies the server no longer has, for
+// good. Under the person's lock (person-lock.ts), so no change of the
+// account runs between the read and the write; then, under the account's
+// row, the final check (final-step.ts: Mail on and not being restored) and
+// the account still as read (account-identity.ts); the removal job is
+// admitted in the same transaction.
+async function confirmSyncPolicy(userId: string, id: string, typed: unknown) {
+  return withPersonLock(userId, async () => {
+    const [[account]] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+    if (!account) return { error: 'Account not found', status: 404 };
+    if (account.sync_mode !== 'sync') return { error: 'Only a Sync account has a Sync policy to confirm.', status: 409 };
+    if (!addressConfirmed(account, typed)) return { error: 'Type the account email address to confirm.', status: 400 };
+    const seen = accountSnapshot('mail', account);
+    await withTransaction(async cx => {
+      const [[current]] = await cx.execute<RowDataPacket[]>('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [id, userId]);
+      await assertFinalStep(cx, { userId, modules: ['mail'] });
+      assertUnchangedRow(current, seen);
+      await cx.execute(`UPDATE mail_accounts SET sync_policy_confirmed_at = COALESCE(sync_policy_confirmed_at, UTC_TIMESTAMP())
+        WHERE id = ? AND user_id = ? AND sync_mode = 'sync'`, [id, userId]);
+      await mailSyncPolicy.enqueuePrune({ userId, accountId: id }, cx);
+    });
+    // Removal runs in the background as bounded durable jobs: the one admitted above, started now.
+    await (require('./mail-durable-jobs') as typeof import('./mail-durable-jobs')).durableScheduler.enqueue({ userId, accountId: id,
+      kind: 'prune', priority: mailSyncPolicy.PRUNE_PRIORITY });
+    return { confirmed: true, queued: true };
+  });
+}
+
+export { createMailAccount, updateMailAccount, confirmSyncPolicy, loadAccountJson, withPolicyFields, startMailSyncInBackground, ACCOUNT_COLUMNS };
 export type { Input as MailAccountInput, AccountRow as MailAccountRow };

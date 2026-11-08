@@ -1,5 +1,7 @@
 import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import type { ApiError, SqlExecutor } from '../types';
+import crypto from 'node:crypto';
+import { ApiError as HttpError } from '../http/errors';
 import type { ProtocolConnection, ProtocolError } from '../types/imap-protocol';
 
 import { db } from '../state';
@@ -61,7 +63,7 @@ async function settleBox(cx: SqlExecutor, { userId, slug, box }: { userId: strin
     WHERE user_id = ? AND mail_account_id = ? AND BINARY remote_name = BINARY ? FOR UPDATE`, [userId, accountId, box.remote_name]);
   // As after a folder listing without it: its copies stop counting as membership.
   if (mailbox) await cx.execute(`UPDATE mail_remote_mailboxes SET state = 'missing', epoch_revision = epoch_revision + 1
-    WHERE id = ? AND state = 'active'`, [mailbox.id]);
+    WHERE id = ? AND state IN ('active', 'deleting')`, [mailbox.id]);
   const mailboxId = mailbox?.id ?? null;
   const [items] = await cx.execute<RowDataPacket[]>(`SELECT e.id, COALESCE(e.is_draft, FALSE) AS is_draft,
       e.remote_folder, e.remote_uid, e.remote_uidvalidity,
@@ -149,12 +151,30 @@ async function deleteNow({ userId, slug, server = false }: { userId: string; slu
   const byId = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0);
   boxes.sort((left, right) => byId(left.mail_account_id, right.mail_account_id) || byId(left.remote_name, right.remote_name));
 
-  // Every account the folder is on, connected before the first DELETE: a
-  // folder on several accounts is deleted at none of them when one of them
-  // cannot be reached or may not be changed.
+  // What earlier attempts left (mail_remote_mailboxes.state, the provider
+  // evidence of each mailbox): 'missing' is gone at the provider (a DELETE
+  // it confirmed, or a listing without it) and is never sent again;
+  // 'deleting' is a DELETE sent without a known answer, checked before
+  // anything else is sent.
+  const evidence = new Map<RemoteBox, { id: string; state: string } | null>();
+  for (const box of boxes) {
+    const [[mailbox]] = await pool.execute<RowDataPacket[]>(`SELECT id, state FROM mail_remote_mailboxes
+      WHERE user_id = ? AND mail_account_id = ? AND BINARY remote_name = BINARY ?`, [userId, box.mail_account_id, box.remote_name]);
+    evidence.set(box, mailbox ? { id: mailbox.id, state: mailbox.state } : null);
+  }
+  const gone = (box: RemoteBox) => evidence.get(box)?.state === 'missing';
+  const [addressRows] = boxes.length ? await pool.execute<RowDataPacket[]>(`SELECT id, email_address FROM mail_accounts WHERE user_id = ? AND id IN (${boxes.map(() => '?').join(', ')})`,
+    [userId, ...boxes.map(box => box.mail_account_id)]) : [[]];
+  const addresses = new Map((addressRows as RowDataPacket[]).map(row => [row.id as string, row.email_address as string]));
+  const addressOf = (box: RemoteBox) => addresses.get(box.mail_account_id) ?? box.mail_account_id;
+
+  // Every account a DELETE goes to, connected before the first one: a folder
+  // on several accounts is deleted at none of them when one of them cannot
+  // be reached or may not be changed.
   const chosen = new Map<string, { account: AccountRow; connection: FolderConnection | null }>();
+  const removed: RemoteBox[] = boxes.filter(gone);
   try {
-    for (const box of boxes) {
+    for (const box of boxes.filter(box => !gone(box))) {
       if (chosen.has(box.mail_account_id)) continue;
       const [accounts] = await pool.execute<AccountRow[]>('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ? AND is_active = TRUE AND disconnected_at IS NULL', [box.mail_account_id, userId]);
       const account = accounts[0];
@@ -166,57 +186,139 @@ async function deleteNow({ userId, slug, server = false }: { userId: string; slu
       try {
         entry.connection = await connect(entry.account);
       } catch (error) {
-        throw fail(502, `Could not connect to the mail server (${entry.account.email_address}): ${(error as Error).message}`);
+        log.warn('MAIL', 'Could not connect to delete a folder', undefined, error);
+        throw serverFailure(`Could not connect to the mail server (${entry.account.email_address}). Nothing was changed.`);
       }
     }
+    // A DELETE sent before without an answer: listed no more, it went; still
+    // listed, it may not have, or the folder was made again since. Then
+    // nothing is sent: the next folder check tells which.
+    for (const box of boxes.filter(box => evidence.get(box)?.state === 'deleting')) {
+      const { connection } = chosen.get(box.mail_account_id)!;
+      const entries = await runGuardedImap(connection as ProtocolConnection, () => connection!.list()).catch(() => null);
+      if (!Array.isArray(entries) || !entries.length) throw serverFailure(`Could not check the folder on the mail server (${addressOf(box)}). Nothing was changed.`);
+      if (entries.some(entry => entry?.path === box.remote_name)) {
+        throw Object.assign(fail(409, `UniHub could not tell whether an earlier attempt deleted the folder on the mail server (${addressOf(box)}), and the server lists it. Try again after the next mail sync.`),
+          { code: 'FOLDER_DELETE_UNCERTAIN' });
+      }
+      evidence.set(box, { ...evidence.get(box)!, state: 'missing' });
+      removed.push(box);
+    }
+    const toSend = boxes.filter(box => !removed.includes(box));
+
+    // Recorded before the first DELETE goes out, in a transaction of its own:
+    // from here on, a box whose answer is not known stays 'deleting'.
+    const prior = toSend.length ? await markDeleting(pool, userId, toSend, evidence) : new Map<RemoteBox, string | null>();
     // The provider's DELETEs under one final check (final-step.ts): the
     // policy, Mail on and not being restored, and every account still as
     // read above (account-identity.ts), held until the last one answered.
-    // A refusal deletes nothing. A server that fails a DELETE stops the
-    // rest; the ones already deleted are settled below, never sent again.
-    const removed: RemoteBox[] = [];
+    // A refusal deletes nothing. A server that fails a DELETE stops the rest.
+    const outcomes = new Map<RemoteBox, 'deleted' | 'refused' | 'uncertain'>();
     let failure: ApiError | null = null;
-    // A folder only UniHub has sends nothing to a provider: no provider check.
-    if (boxes.length) await underFinalStep({ userId, policies: ['mail.provider_delete'], modules: ['mail'],
-      unchanged: [...chosen.values()].map(entry => accountSnapshot('mail', entry.account)) }, async () => {
-      for (const box of boxes) {
-        const { account, connection } = chosen.get(box.mail_account_id)!;
-        try {
-          await runGuardedImap(connection as ProtocolConnection, () => connection!.mailboxDelete(box.remote_name));
-        } catch (error) {
-          if (!await alreadyGone(connection!, box.remote_name, error)) {
-            failure = fail(502, `Could not delete the folder on the mail server (${account.email_address}): ${(error as Error).message}`);
-            return;
+    if (toSend.length) {
+      try {
+        await underFinalStep({ userId, policies: ['mail.provider_delete'], modules: ['mail'],
+          unchanged: [...chosen.values()].map(entry => accountSnapshot('mail', entry.account)) }, async () => {
+          for (const box of toSend) {
+            const { connection } = chosen.get(box.mail_account_id)!;
+            try {
+              await runGuardedImap(connection as ProtocolConnection, () => connection!.mailboxDelete(box.remote_name));
+              outcomes.set(box, 'deleted');
+            } catch (error) {
+              if (await alreadyGone(connection!, box.remote_name, error)) { outcomes.set(box, 'deleted'); continue; }
+              // A NO or BAD is the server's answer: not deleted. Anything else (a
+              // lost connection, a timeout) leaves the outcome unknown.
+              const answered = ['NO', 'BAD'].includes(String((error as ProtocolError)?.responseStatus || ''));
+              outcomes.set(box, answered ? 'refused' : 'uncertain');
+              log.warn('MAIL', 'The mail server did not delete a folder', undefined, error);
+              failure = serverFailure(answered
+                ? `The mail server did not delete the folder (${addressOf(box)}).`
+                : `UniHub could not confirm that the mail server deleted the folder (${addressOf(box)}).`);
+              return;
+            }
           }
-        }
-        removed.push(box);
+        }, pool);
+      } catch (error) {
+        // Refused, or failed, before anything was sent: nothing changed. Once
+        // a DELETE went out, what the servers answered counts, whatever the
+        // check's own end (its COMMIT) did.
+        if (!outcomes.size) { await settleMarks(pool, toSend, prior, outcomes); throw error; }
+        log.warn('MAIL', 'The final check of a folder deletion ended with an error after its DELETEs', undefined, error);
       }
-    }, pool);
+      await settleMarks(pool, toSend, prior, outcomes).catch(error => log.warn('MAIL', 'Could not record which folder copies the server deleted', undefined, error));
+      removed.push(...toSend.filter(box => outcomes.get(box) === 'deleted'));
+    }
     // What the servers deleted is settled locally even when a later DELETE
-    // failed; refused there (Mail turned off, a restore admitted since), the
-    // next folder discovery settles it, and the answer still says what went.
+    // failed; refused there (Mail turned off, a restore admitted since), its
+    // 'missing' record stays, a retry settles it without sending it again,
+    // and the answer still says what went.
     // 409, so the answer reaches the client with what went (a 5xx would not).
     const partly = (error: ApiError, settled: boolean) => Object.assign(error, { status: 409, code: 'FOLDER_PARTLY_DELETED', details: {
-      deleted_on: removed.map(box => chosen.get(box.mail_account_id)!.account.email_address),
-      remaining_on: boxes.filter(box => !removed.includes(box)).map(box => chosen.get(box.mail_account_id)!.account.email_address),
+      deleted_on: removed.map(addressOf),
+      remaining_on: boxes.filter(box => !removed.includes(box)).map(addressOf),
       settled,
     } });
+    const whole = !failure && removed.length === boxes.length;
     let outcome: Awaited<ReturnType<typeof settle>> | null = null;
     try {
-      if (removed.length) outcome = await settle({ userId, slug, folderId: folder.id, removed, whole: !failure }, pool);
+      if (removed.length || whole) outcome = await settle({ userId, slug, folderId: folder.id, removed, whole }, pool);
     } catch (error) {
-      if (!failure) throw partly(fail(409, 'The folder was deleted on the mail server, but UniHub could not update its copy yet. It does so at the next folder check.'), false);
+      if (!failure) throw partly(fail(409, 'The folder was deleted on the mail server, but UniHub could not update its copy yet. Delete it again to finish; nothing is sent to the server again.'), false);
       log.warn('MAIL', 'Could not settle a partly deleted folder', undefined, error);
     }
-    // Nothing deleted anywhere: the server's refusal as it is, everything as it was.
+    // Nothing deleted anywhere: the server's answer, everything as it was.
     if (failure && !removed.length) throw failure;
     if (failure) throw partly(failure, Boolean(outcome));
-    if (!outcome) outcome = await settle({ userId, slug, folderId: folder.id, removed, whole: true }, pool);
-    return { slug, server: removed.map(box => ({ accountId: box.mail_account_id, remoteName: box.remote_name, emailAddress: chosen.get(box.mail_account_id)!.account.email_address })),
-      deletedMessages: outcome.deleted, movedMessages: outcome.moved };
+    return { slug, server: removed.map(box => ({ accountId: box.mail_account_id, remoteName: box.remote_name, emailAddress: addressOf(box) })),
+      deletedMessages: outcome!.deleted, movedMessages: outcome!.moved };
   } finally {
     for (const entry of chosen.values()) if (entry.connection) closeImapConnection(entry.connection as ProtocolConnection);
   }
+}
+
+// A deliberate 502: the mail server's failure in UniHub's words (the
+// server's own text goes to the log), with nothing changed.
+const serverFailure = (message: string): ApiError => Object.assign(new HttpError(502, 'MAIL_SERVER_ERROR', message), { expose: true });
+
+// Marks each box's mailbox 'deleting' (made if UniHub has no record of it
+// yet); answers each one's earlier state (null: made here).
+async function markDeleting(pool: Options['pool'] & object, userId: string, boxes: readonly RemoteBox[], evidence: Map<RemoteBox, { id: string; state: string } | null>) {
+  return withTransaction(async cx => {
+    const prior = new Map<RemoteBox, string | null>();
+    for (const box of boxes) {
+      const known = evidence.get(box);
+      if (known) {
+        await cx.execute("UPDATE mail_remote_mailboxes SET state = 'deleting' WHERE id = ?", [known.id]);
+        prior.set(box, known.state);
+      } else {
+        const id = crypto.randomUUID();
+        await cx.execute("INSERT INTO mail_remote_mailboxes (id, user_id, mail_account_id, remote_name, state) VALUES (?, ?, ?, ?, 'deleting')", [id, userId, box.mail_account_id, box.remote_name]);
+        evidence.set(box, { id, state: 'deleting' });
+        prior.set(box, null);
+      }
+    }
+    return prior;
+  }, pool);
+}
+
+// What the DELETEs answered, recorded: deleted is 'missing', as after a
+// listing without it; one refused, or not sent, is as it was; one without a
+// known answer stays 'deleting'. Only rows still 'deleting' change: a folder
+// check that saw the mailbox since has recorded what it saw.
+async function settleMarks(pool: Options['pool'] & object, boxes: readonly RemoteBox[], prior: Map<RemoteBox, string | null>, outcomes: Map<RemoteBox, 'deleted' | 'refused' | 'uncertain'>) {
+  const [rows] = await pool.execute<RowDataPacket[]>(`SELECT id, mail_account_id, remote_name FROM mail_remote_mailboxes WHERE state = 'deleting' AND mail_account_id IN (${boxes.map(() => '?').join(', ')})`,
+    boxes.map(box => box.mail_account_id));
+  await withTransaction(async cx => {
+    for (const box of boxes) {
+      const row = (rows as RowDataPacket[]).find(entry => entry.mail_account_id === box.mail_account_id && entry.remote_name === box.remote_name);
+      if (!row) continue;
+      const outcome = outcomes.get(box);
+      if (outcome === 'uncertain') continue;
+      if (outcome === 'deleted') await cx.execute("UPDATE mail_remote_mailboxes SET state = 'missing', epoch_revision = epoch_revision + 1 WHERE id = ? AND state = 'deleting'", [row.id]);
+      else if (prior.get(box) == null) await cx.execute("DELETE FROM mail_remote_mailboxes WHERE id = ? AND state = 'deleting'", [row.id]);
+      else await cx.execute("UPDATE mail_remote_mailboxes SET state = ? WHERE id = ? AND state = 'deleting'", [prior.get(box), row.id]);
+    }
+  }, pool);
 }
 
 // The local side of what the server deleted: the items of each deleted box

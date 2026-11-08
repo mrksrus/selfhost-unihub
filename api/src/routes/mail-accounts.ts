@@ -26,7 +26,7 @@ import {
 } from '../services/mail';
 import * as calendarAccounts from '../services/calendar-accounts';
 import { EFFECTIVE_READ_SQL, extractMailRouteId, routeError } from './mail-route-helpers';
-import { createMailAccount, updateMailAccount, loadAccountJson, withPolicyFields, ACCOUNT_COLUMNS } from '../services/mail-account-changes';
+import { createMailAccount, updateMailAccount, confirmSyncPolicy, loadAccountJson, withPolicyFields, ACCOUNT_COLUMNS } from '../services/mail-account-changes';
 import type { MailAccountInput, MailAccountRow } from '../services/mail-account-changes';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
@@ -141,17 +141,7 @@ export = {
   'POST /api/mail/accounts/:id/confirm-sync-policy': async (req: Request, userId: string | null, body: Input) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try {
-      const id = accountRouteId(req);
-      const [[account]] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT id, user_id, email_address, sync_mode FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
-      if (!account) return { error: 'Account not found', status: 404 };
-      if (account.sync_mode !== 'sync') return { error: 'Only a Sync account has a Sync policy to confirm.', status: 409 };
-      if (!addressConfirmed(account, body?.confirm_address)) return { error: 'Type the account email address to confirm.', status: 400 };
-      await db.execute(`UPDATE mail_accounts SET sync_policy_confirmed_at = COALESCE(sync_policy_confirmed_at, UTC_TIMESTAMP())
-        WHERE id = ? AND user_id = ? AND sync_mode = 'sync'`, [id, userId]);
-      // Removal runs in the background as bounded durable jobs.
-      await (require('../services/mail-durable-jobs') as typeof import('../services/mail-durable-jobs')).durableScheduler.enqueue({ userId, accountId: id,
-        kind: 'prune', priority: mailSyncPolicy.PRUNE_PRIORITY });
-      return { confirmed: true, queued: true };
+      return await confirmSyncPolicy(userId, accountRouteId(req)!, body?.confirm_address);
     } catch (error) {
       if (!(error as ApiError).status) console.error('[ACCOUNT] Confirm Sync policy error:', error);
       return routeError(error, 'Could not confirm the Sync policy');
