@@ -185,6 +185,8 @@ async function updateNow(userId: string, id: string, body: Input) {
     await cx.execute(`UPDATE calendar_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
   });
   if (resume) calendarSync.syncCalendarAccountInBackground(id, { userId, reason: 'manual' });
+  // Paused: a sync or change under way stops now and writes nothing more.
+  if (body.is_active === false && remote) calendarSync.stopCalendarAccountWork(id, 'paused');
   const [rows] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
   return { account: serializeCalendarAccount(rows[0]) };
 }

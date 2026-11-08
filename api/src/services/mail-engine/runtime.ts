@@ -169,42 +169,70 @@ async function requestCancellation({ userId, accountId, jobId }: JobOwner & { jo
 // An operator canary hold outranks every other pause: the stop still fences
 // workers, but only releaseRollout may clear the hold. Absorbed reasons stay
 // enforced by is_active/disconnected_at and live module checks.
-// Answers the pause it replaced (`prior`, null without one), for takeBackPause.
-async function pauseAccount({ userId, accountId, reason }: JobOwner & { reason: string }, executor: EngineExecutor = db): Promise<{ prior: string | null }> {
+// What a pause replaced, for takeBackPause: the earlier pause (`prior`, null
+// without one) and the jobs it stopped, with the state each had.
+interface PausedState { prior: string | null; jobs: { id: string; state: 'queued' | 'running' }[] }
+
+async function pauseAccount({ userId, accountId, reason }: JobOwner & { reason: string }, executor: EngineExecutor = db): Promise<PausedState> {
   if (typeof reason !== 'string' || !reason || reason.length > 255) throw new TypeError('Invalid pause reason');
   return tx(executor, async cx => {
     await ownAccount(cx, userId, accountId, true);
     const [[before]] = await cx.execute<RowDataPacket[]>('SELECT paused_reason FROM mail_engine_accounts WHERE mail_account_id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
+    const [jobs] = await cx.execute<(RowDataPacket & { id: string; state: 'queued' | 'running' })[]>(
+      "SELECT id, state FROM mail_engine_jobs WHERE mail_account_id = ? AND state IN ('queued','running') ORDER BY id FOR UPDATE", [accountId]);
     await cx.execute(`INSERT INTO mail_engine_accounts (mail_account_id,user_id,paused_reason) VALUES (?,?,?)
       ON DUPLICATE KEY UPDATE paused_reason = IF(paused_reason <=> ?, paused_reason, VALUES(paused_reason)),
         generation = generation + 1, lease_owner = NULL, lease_until = NULL`, [accountId, userId, reason, HOLD_REASON]);
     await cx.execute("UPDATE mail_engine_jobs SET state='paused', lease_owner=NULL, lease_until=NULL WHERE mail_account_id=? AND state IN ('queued','running')", [accountId]);
-    return { prior: (before?.paused_reason as string | null | undefined) ?? null };
+    return { prior: (before?.paused_reason as string | null | undefined) ?? null, jobs: jobs.map(job => ({ id: job.id, state: job.state })) };
   });
 }
 // A change that paused an account with a reason of its own (one no other
-// change writes) and was then refused puts back the pause it replaced, and
-// only while its own is still there: a restore, a module switch or a
-// disconnect that paused the account since keeps its pause. Without an
-// earlier pause, the account resumes as after its own (resumeAccount), or,
-// when it is no longer connected, is left paused by nothing but that.
-// Whether it put the earlier state back.
-async function takeBackPause({ userId, accountId, reason, prior }: JobOwner & { reason: string; prior: string | null }, executor: EngineExecutor = db) {
-  const restored = await tx(executor, async cx => {
+// change writes) and was then refused puts back what it replaced, and only
+// while its own pause is still there: a restore, a module switch or a
+// disconnect that paused the account since keeps its pause and its jobs.
+// The earlier pause comes back, unless it was Mail switched off and Mail is
+// on again by now. The jobs it stopped come back as they were, not as after
+// a reconnect: a queued one is queued again, an accepted operation's
+// included (foreground admission is the caller's, mail-sync-control.ts); one
+// it stopped while running resumes as a reconcile of its operation, which
+// checks a command that may have gone out instead of sending it again, or
+// as the same read. Jobs paused by anything else stay as they are.
+// `committed`: the change went through (new settings or login), so its jobs
+// end as after a reconnect (resumeAccount): reads go on, an earlier provider
+// job is retired for review. Whether it put the earlier state back.
+async function takeBackPause({ userId, accountId, reason, prior, jobs = [] }: JobOwner & { reason: string } & Partial<PausedState>,
+  executor: EngineExecutor = db, { committed = false }: { committed?: boolean } = {}) {
+  return tx(executor, async cx => {
     const [[paused]] = await cx.execute<RowDataPacket[]>('SELECT paused_reason FROM mail_engine_accounts WHERE mail_account_id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
-    if (!paused || paused.paused_reason !== reason) return 'theirs' as const;
-    if (prior !== null) {
-      await cx.execute('UPDATE mail_engine_accounts SET paused_reason = ? WHERE mail_account_id = ? AND user_id = ? AND paused_reason = ?', [prior, accountId, userId, reason]);
-      return 'restored' as const;
+    if (!paused || paused.paused_reason !== reason) return false;
+    let next = prior ?? null;
+    if (next === 'Mail module disabled' && await (require('../module-settings') as typeof import('../module-settings')).isModuleEnabled(userId, 'mail', cx)) next = null;
+    await cx.execute('UPDATE mail_engine_accounts SET paused_reason = ? WHERE mail_account_id = ? AND user_id = ? AND paused_reason = ?', [next, accountId, userId, reason]);
+    if (committed) {
+      if (next !== null) return true;
+      for (const job of jobs) {
+        await cx.execute(`UPDATE mail_engine_jobs SET
+          state = IF(operation_id IS NULL AND kind IN (${sqlList(READ_ONLY_KINDS)}), 'queued', 'cancelled'),
+          cancellation_requested = NOT (operation_id IS NULL AND kind IN (${sqlList(READ_ONLY_KINDS)})),
+          completed_at = IF(operation_id IS NULL AND kind IN (${sqlList(READ_ONLY_KINDS)}), NULL, UTC_TIMESTAMP()),
+          error = IF(operation_id IS NULL AND kind IN (${sqlList(READ_ONLY_KINDS)}), NULL, 'Reconnect retained prior provider intent for review; this historical job was not replayed'),
+          phase = 'revalidation', lease_owner = NULL, lease_until = NULL, worker_generation = NULL, due_at = UTC_TIMESTAMP()
+          WHERE id = ? AND mail_account_id = ? AND state = 'paused'`, [job.id, accountId]);
+      }
+      return true;
     }
-    const [[account]] = await cx.execute<RowDataPacket[]>('SELECT is_active, disconnected_at FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
-    if (account && bool(account.is_active) && !account.disconnected_at) return 'resume' as const;
-    await cx.execute('UPDATE mail_engine_accounts SET paused_reason = NULL WHERE mail_account_id = ? AND user_id = ? AND paused_reason = ?', [accountId, userId, reason]);
-    return 'restored' as const;
+    for (const job of jobs) {
+      if (job.state === 'queued') {
+        await cx.execute("UPDATE mail_engine_jobs SET state = 'queued', due_at = UTC_TIMESTAMP() WHERE id = ? AND mail_account_id = ? AND state = 'paused'", [job.id, accountId]);
+      } else {
+        await cx.execute(`UPDATE mail_engine_jobs SET state = 'queued', kind = IF(operation_id IS NULL, kind, 'reconcile'),
+          phase = IF(operation_id IS NULL, 'revalidation', 'recovery'), lease_owner = NULL, lease_until = NULL, worker_generation = NULL,
+          due_at = UTC_TIMESTAMP(), completed_at = NULL WHERE id = ? AND mail_account_id = ? AND state = 'paused'`, [job.id, accountId]);
+      }
+    }
+    return true;
   });
-  if (restored === 'theirs') return false;
-  if (restored === 'resume') await resumeAccount({ userId, accountId, reasons: [reason] }, executor);
-  return true;
 }
 // Explicit authenticated reconnect (all reasons but a canary hold), or permitted
 // user interaction (only named module pauses). Never resume archived provider

@@ -1,7 +1,7 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { AdminCalendarAccount, AdminMailAccount, AdminUserAccountsResponse } from '../contracts/admin-accounts';
 import { db } from '../state';
-import { conflict, forbidden, notFound } from '../http/errors';
+import { badRequest, conflict, forbidden, notFound } from '../http/errors';
 import { isModuleEnabled } from './module-settings';
 import { isSectionRestoreActive } from './restore-locks';
 
@@ -12,6 +12,21 @@ import { isSectionRestoreActive } from './restore-locks';
 // do not stop it and the activity log names the administrator. The request
 // boundary checked the administrator's role, module switches and restore
 // locks; the person's own are checked here, before any side effect.
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The person's id as stored, from an address's `:id`: 400 unless it is a
+ * UUID, 404 unless the person exists. The database matches ids without
+ * case, so every change for the person, their lock (person-lock.ts) and
+ * the rows it writes use this one spelling.
+ */
+async function personFromParam(id: unknown): Promise<string> {
+  if (typeof id !== 'string' || !UUID.test(id)) throw badRequest('INVALID_USER_ID', 'Invalid user id');
+  const [[row]] = await db.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM users WHERE id = ?', [id]);
+  if (!row) throw notFound('USER_NOT_FOUND', 'User not found');
+  return row.id;
+}
 
 /** 404 unless the person exists. */
 async function assertPerson(userId: string) {
@@ -28,16 +43,6 @@ async function assertPersonModule(userId: string, module: string, section = modu
   if (await isSectionRestoreActive(userId, section)) {
     throw conflict('RESTORE_IN_PROGRESS', `A restore of this person's ${section} is running. Try again when it has finished.`);
   }
-}
-
-/**
- * A change of the person's mail account for the administrator: their password
- * stands for the address the person types to switch an account to Sync.
- */
-async function adminMailAccountChange(userId: string, accountId: string, values: Record<string, unknown>) {
-  if (values.sync_mode !== 'sync' || values.confirm_address !== undefined) return values;
-  const [[account]] = await db.execute<RowDataPacket[]>('SELECT email_address FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
-  return account ? { ...values, confirm_address: account.email_address } : values;
 }
 
 const iso = (value: unknown) => value == null ? null : (value instanceof Date ? value : new Date(`${String(value).replace(' ', 'T')}Z`)).toISOString();
@@ -65,4 +70,4 @@ async function personAccounts(userId: string): Promise<AdminUserAccountsResponse
   };
 }
 
-export { assertPerson, assertPersonModule, personAccounts, adminMailAccountChange };
+export { assertPerson, assertPersonModule, personAccounts, personFromParam };

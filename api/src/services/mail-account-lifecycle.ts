@@ -15,7 +15,6 @@ import { fileRemovalGate } from './file-removal-gate';
 import { assertFinalStep } from './final-step';
 import { accountSnapshot, assertUnchanged } from './account-identity';
 import { withPersonLock } from './person-lock';
-import type { OwnedPause } from './mail-sync-control';
 
 type IdRow = RowDataPacket & { id: string };
 interface CalendarCounts { calendar_accounts: number | string; calendar_events: number | string }
@@ -86,10 +85,8 @@ async function disconnectNow(userId: string, accountId: string, { req = null, ad
   if (!owned) throw fail('Account not found', 404);
   // The account as this change found it: its credential goes only if it is still the one seen (account-identity.ts).
   const seen = accountSnapshot('mail', owned as RowDataPacket & { id: string });
-  const pause = await mail().stopOwnedMailAccountWork(accountId, 'Account disconnected');
-  return withMailAccountLock(accountId, async () => {
+  return withOwnedStop(accountId, 'Account disconnected', committed => withMailAccountLock(accountId, async () => {
     const connection = await db.getConnection();
-    let committed = false, released = false;
     try {
       await connection.beginTransaction();
       const [[account]] = await connection.execute<RowDataPacket[]>('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
@@ -113,7 +110,7 @@ async function disconnectNow(userId: string, accountId: string, { req = null, ad
       // Only CalDAV accounts use the mail login; a subscription goes on.
       const [linkedCalendars] = await connection.execute<IdRow[]>("SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? AND provider = 'caldav'", [userId, accountId]);
       await connection.commit();
-      committed = true;
+      committed();
       // After the commit: a linked calendar's running sync or change stops now;
       // any that starts later finds the account disconnected.
       const { stopCalendarAccountWork, stopLinkedCalendarWork } = require('./calendar-sync') as typeof import('./calendar-sync');
@@ -122,19 +119,21 @@ async function disconnectNow(userId: string, accountId: string, { req = null, ad
       // stopped too (a sync linking it later reads the disconnected account).
       await stopLinkedCalendarWork(userId, accountId, connection).catch((error: Error) => console.error('[MAIL] Could not stop linked calendar work:', error.message));
       return { message: 'Account disconnected. Retained mail and operation history are still available.', disconnected: true, retained_mail: true };
-    } catch (error) {
-      if (!committed) { released = true; await refused(connection, pause); }
-      throw error;
-    } finally { if (!released) connection.release(); }
-  });
+    } catch (error) { await connection.rollback().catch(() => undefined); throw error; }
+    finally { connection.release(); }
+  }));
 }
 
-// Before the commit nothing changed: rolled back, the account's work goes on
-// as before (on a connection of its own, once this one is back in the pool).
-async function refused(connection: { rollback: () => Promise<void>; release: () => void }, pause: OwnedPause | null) {
-  await connection.rollback().catch(() => undefined);
-  connection.release();
-  await mail().releaseOwnedMailAccountStop(pause);
+// A change's own pause, for the change's whole life (mail-sync-control.ts
+// stopOwnedMailAccountWork): whatever ends it before `committed()` (a
+// refusal, a connection that could not be had, a lost one), the account's
+// work goes on as before, on a connection of its own once the change's is
+// back in the pool, and the change's error stays the answer.
+async function withOwnedStop<T>(accountId: string, reason: string, work: (committed: () => void) => Promise<T>): Promise<T> {
+  const pause = await mail().stopOwnedMailAccountWork(accountId, reason);
+  let done = false;
+  try { return await work(() => { done = true; }); }
+  finally { if (!done) await mail().releaseOwnedMailAccountStop(pause); }
 }
 
 async function removeUnreferencedRaw(userId: string, storagePaths: readonly (string | null)[], executor: SqlExecutor = db) {
@@ -170,10 +169,8 @@ async function purgeNow(userId: string, accountId: string, confirmation: unknown
   if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore is in progress');
   const initialPreview = await purgePreview(userId, accountId);
   if (initialPreview.blocked) throw fail(initialPreview.reason);
-  const pause = await mail().stopOwnedMailAccountWork(accountId, 'Account purging');
-  return withMailAccountLock(accountId, async () => {
+  return withOwnedStop(accountId, 'Account purging', committed => withMailAccountLock(accountId, async () => {
     const connection = await db.getConnection();
-    let committed = false, released = false;
     let attachments: (RowDataPacket & { storage_path: string })[] = [], rawPaths: (string | null)[] = [];
     let preview: Awaited<ReturnType<typeof purgePreview>> | undefined, linkedCalendars: IdRow[] = [];
     try {
@@ -217,11 +214,9 @@ async function purgeNow(userId: string, accountId: string, confirmation: unknown
       await recordAudit({ action: adminId ? 'admin.mail_account_reset' : 'mail.account_purged', actorId: adminId ?? userId, targetUserId: userId, req,
         details: { mail_account: accountId, messages: preview.email_count, calendar_events: preview.calendar_events } }, connection);
       await connection.commit();
-      committed = true;
-    } catch (error) {
-      if (!committed) { released = true; await refused(connection, pause); }
-      throw error;
-    } finally { if (!released) connection.release(); }
+      committed();
+    } catch (error) { await connection.rollback().catch(() => undefined); throw error; }
+    finally { connection.release(); }
     for (const row of linkedCalendars) publishCalendarChanged(userId, row.id, 'sync');
     const safeAttachments: string[] = [];
     for (const stored of new Set(attachments.map(row => row.storage_path).filter(Boolean))) {
@@ -238,7 +233,7 @@ async function purgeNow(userId: string, accountId: string, confirmation: unknown
     return { message: 'Disconnected account and its retained local mail and linked calendar permanently removed. Provider mail and events were not changed.', purged: true,
       email_count: preview!.email_count, deletedAttachmentFiles: files.deletedFiles, failedAttachmentFiles: files.failedFiles,
       deletedRawFiles: raw.deletedFiles, failedRawFiles: raw.failedFiles };
-  });
+  }));
 }
 
 // One step for "Disconnect and delete": nothing changes when the purge is

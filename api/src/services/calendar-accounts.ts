@@ -452,11 +452,16 @@ async function peekLinkedCalendarAccount(userId: string, mail: MailAddress): Pro
 // that mail account was linked first).
 // Under the person's lock (person-lock.ts), from the account read again
 // there: no change of the person's accounts runs between the reads and the link.
-async function relinkRestoredCalendar(account: AccountRow) {
+// A paused account, or work stopped (`signal`) while it waited, links
+// nothing and keeps its password: 409 CALENDAR_SYNC_PAUSED, or the stop.
+async function relinkRestoredCalendar(account: AccountRow, signal?: AbortSignal) {
   if (account.mail_account_id || !account.account_email || !wasMailCalendar(account)) return null;
   return withPersonLock(account.user_id, async () => {
+    signal?.throwIfAborted();
     const [[current]] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [account.id, account.user_id]);
-    return current ? relinkNow(current) : null;
+    if (!current) return null;
+    if (!Number(current.is_active)) throw fail('Sync is paused for this calendar account, so changes cannot be saved to it.', 409, 'CALENDAR_SYNC_PAUSED');
+    return relinkNow(current);
   });
 }
 

@@ -574,15 +574,21 @@ A person's account management runs one change at a time
 (`services/person-lock.ts`, in process: one API process owns this work).
 Adding, changing, disconnecting, purging or removing a mail or calendar
 account (an administrator's too), a mail account's calendar (connect,
-replace, off, resume), deleting a folder at the provider or one date of a
-repeating server event, clearing a module's data, deleting the person and
-admitting one of their restores each hold the person's lock from the first
+replace, off, resume), confirming a Sync account's policy, deleting a
+folder at the provider or one date of a repeating server event, clearing a
+module's data, deleting the person and admitting one of their restores each
+hold the person's lock from the first
 read that decides anything, through discovery and login tests, to the
 commit and the provider command it guards; a restore's admission holds it
 only for the admission. The sync takes it around its own account writes
 (linking a restored calendar, dropping a link to deleted mail, noting a
-missing login) and reads the account again under it; the erase worker
-asks for it without waiting and stops for now when a change runs. Two of a
+missing login) and reads the account again under it: an account paused
+meanwhile is not linked, keeps its password, and its sync stops without
+writing (a pause also stops the account's running work). The erase worker
+asks for the lock without waiting and stops for now when a change runs.
+The lock is keyed by the person's id as the database compares it (without
+case); an administrator's routes take the person's id only as a UUID
+(`400 INVALID_USER_ID` otherwise) and use its stored spelling. Two of a
 person's changes therefore never interleave: the later one starts from
 what the earlier one left. The final check still covers what others commit
 meanwhile: rules, module switches, restores.
@@ -599,11 +605,21 @@ and write nothing. The mail account's set of linked calendars, and the
 link of the one it turns off, are checked the same way and answer `409
 MAIL_CALENDAR_CHANGED`. A folder on several mail accounts is deleted at the
 provider only after every one of them was connected and checked, under one
-final check held until the last server answered; a server that fails a
-DELETE after others succeeded stops the rest, the deleted copies are
-settled locally and never sent again, and the answer is `409
-FOLDER_PARTLY_DELETED` with `details.deleted_on`, `details.remaining_on`
-(addresses) and `details.settled`. Reading a mail
+final check held until the last server answered. Each step is recorded in
+the mailbox's provider evidence (`mail_remote_mailboxes.state`) in a
+transaction of its own: `deleting` before the DELETE goes out, `missing`
+once the server confirmed it, back as it was when the server refused it.
+What the servers answered counts even when the check's own end fails. A
+server that fails a DELETE after others succeeded stops the rest, the
+deleted copies are settled locally and never sent again (a retry settles
+them without a DELETE), and the answer is `409 FOLDER_PARTLY_DELETED` with
+`details.deleted_on`, `details.remaining_on` (addresses) and
+`details.settled`. A DELETE sent without a known answer stays `deleting`:
+the next attempt lists the server's folders first, treats one no longer
+listed as deleted, and sends nothing while it is still listed (`409
+FOLDER_DELETE_UNCERTAIN`; the next mail sync records what the server has).
+A server's refusal with nothing deleted is `502 MAIL_SERVER_ERROR` in
+UniHub's words; the server's own text goes only to the log. Reading a mail
 account's calendar writes nothing (a restored one shows `link_pending`).
 The sync's login drops a link to a deleted mail account, and notes a
 missing login, only under Calendar's check; refused, the sync pauses and
@@ -617,10 +633,17 @@ deletion required, while its login was tested refuses it with `403
 POLICY_FORBIDS` naming that policy, and sending it again gets the values
 filled in; a policy relaxed meanwhile refuses nothing. A change that stops
 an account's mail work first (saving settings, disconnecting, purging,
-clearing mail, deleting the person) pauses it with a reason of its own;
-refused, it puts back exactly the pause it replaced, only while its own is
-still there, so a restore or module switch since keeps its pause, and the
-refusal (for example `409 RESTORE_IN_PROGRESS`) stays the answer.
+clearing mail, deleting the person) pauses it with a reason of its own for
+the change's whole life; refused, or failed before its commit (a lost
+connection included), it puts back exactly what it replaced, only while its
+own pause is still there, so a restore or module switch since keeps its
+pause, and the change's error (for example `409 RESTORE_IN_PROGRESS`) stays
+the answer. What it puts back: the earlier pause (not a Mail switched-off
+one once Mail is on again), and the jobs it stopped as they were, an
+accepted provider change's job and its foreground turn included; one it
+stopped while running resumes as a check of its outcome, never sent again.
+A settings change that went through ends its own pause as after a
+reconnect.
 The bin's purge skips a module that is off or being restored. Emptying the bin is refused
 between batches with `403 POLICY_FORBIDS` and the number already deleted as
 `details.deleted`. A backup younger than its minimum is refused under the
