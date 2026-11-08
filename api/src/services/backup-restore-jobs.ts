@@ -5,6 +5,8 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { db } from '../state';
+import { withTransaction } from './transactions';
+import { assertFinalStep } from './final-step';
 import {
   backupFromZipFile,
   importBackupForUser,
@@ -531,50 +533,60 @@ async function createUploadedRestoreJob(userId: string, sourcePath: string, opti
 }
 
 async function createRestoreFromExport(userId: string, exportJobId: string | null, options: ImportOptions = {}) {
-  const [exports] = await db.execute<RestoreJob[]>(
-    'SELECT * FROM data_export_jobs WHERE id = ? AND user_id = ? LIMIT 1',
-    [exportJobId, userId]
-  );
-  const exportJob = exports[0];
-  if (!exportJob) return { error: 'Backup not found', status: 404 };
-  if (exportJob.status !== 'ready' || !exportJob.file_path) {
-    return { error: 'Backup is not ready', status: 409 };
-  }
-  const normalized = normalizeRestoreOptions({
-    ...options,
-    sections: options.sections || parseJsonValue(exportJob.requested_sections, 'full'),
+  // Admission (docs/AUTH_ADMIN_SETTINGS.md, "Lock order"): the backup's row
+  // first, shared, so its deletion either finished (not found) or waits and
+  // then sees this restore; then the person's restores, a current read.
+  type Admitted = { error: string; status: number } | { jobId: string };
+  const admitted = await withTransaction(async (connection): Promise<Admitted> => {
+    const [[exportJob]] = await connection.execute<RestoreJob[]>(
+      'SELECT * FROM data_export_jobs WHERE id = ? AND user_id = ? LOCK IN SHARE MODE',
+      [exportJobId, userId]
+    );
+    if (!exportJob) return { error: 'Backup not found', status: 404 };
+    if (exportJob.status !== 'ready' || !exportJob.file_path) {
+      return { error: 'Backup is not ready', status: 409 };
+    }
+    const normalized = normalizeRestoreOptions({
+      ...options,
+      sections: options.sections || parseJsonValue(exportJob.requested_sections, 'full'),
+    });
+    if (await otherActiveRestore(connection, userId, null)) return { error: 'Another restore is already running', status: 409 };
+    const jobId = crypto.randomUUID();
+    await connection.execute(
+      `INSERT INTO backup_restore_jobs
+         (id, user_id, source_type, source_export_job_id, status, operation, phase, progress,
+          requested_sections, conflict_mode, calendar_mode, credentials_mode, archive_path,
+          archive_size, archive_sha256, backup_uuid, is_encrypted)
+       VALUES (?, ?, 'generated', ?, 'uploaded', 'validate', 'uploaded', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        jobId,
+        userId,
+        exportJobId,
+        JSON.stringify(normalized.sections),
+        normalized.conflictMode,
+        normalized.calendarMode,
+        normalized.credentialsMode,
+        exportJob.file_path,
+        exportJob.file_size,
+        exportJob.file_sha256,
+        exportJob.backup_uuid,
+        exportJob.encryption_enabled ? 1 : 0,
+      ]
+    );
+    return { jobId };
   });
-  const [active] = await db.execute<RestoreJob[]>(
-    `SELECT id FROM backup_restore_jobs
-     WHERE user_id = ? AND status IN ('queued', 'running', 'cancelling')
-     LIMIT 1`,
+  if (!('jobId' in admitted)) return { error: admitted.error, status: admitted.status };
+  scheduleRestoreWorker();
+  return { job: serializeRestoreJob((await getRestoreJob(userId, admitted.jobId))!) };
+}
+
+/** A current read of the person's restores, which a destructive step's final check also locks (final-step.ts). */
+async function otherActiveRestore(connection: SqlExecutor, userId: string, jobId: string | null) {
+  const [rows] = await connection.execute<RestoreJob[]>(
+    `SELECT id, status FROM backup_restore_jobs WHERE user_id = ? LOCK IN SHARE MODE`,
     [userId]
   );
-  if (active.length) return { error: 'Another restore is already running', status: 409 };
-  const jobId = crypto.randomUUID();
-  await db.execute(
-    `INSERT INTO backup_restore_jobs
-       (id, user_id, source_type, source_export_job_id, status, operation, phase, progress,
-        requested_sections, conflict_mode, calendar_mode, credentials_mode, archive_path,
-        archive_size, archive_sha256, backup_uuid, is_encrypted)
-     VALUES (?, ?, 'generated', ?, 'uploaded', 'validate', 'uploaded', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      jobId,
-      userId,
-      exportJobId,
-      JSON.stringify(normalized.sections),
-      normalized.conflictMode,
-      normalized.calendarMode,
-      normalized.credentialsMode,
-      exportJob.file_path,
-      exportJob.file_size,
-      exportJob.file_sha256,
-      exportJob.backup_uuid,
-      exportJob.encryption_enabled ? 1 : 0,
-    ]
-  );
-  scheduleRestoreWorker();
-  return { job: serializeRestoreJob((await getRestoreJob(userId, jobId))!) };
+  return rows.some(row => row.id !== jobId && ACTIVE_RESTORE_STATUSES.has(row.status));
 }
 
 async function unlockRestoreJob(userId: string, jobId: string | null, password?: string) {
@@ -608,44 +620,52 @@ async function unlockRestoreJob(userId: string, jobId: string | null, password?:
       job.expires_at,
     ]
   );
-  await updateRestoreJob(jobId!, {
-    status: 'uploaded',
-    phase: 'uploaded',
-    operation: 'validate',
-    progress: 0,
-    error: null,
-  });
+  // Only from the status checked above: a second unlock, a cancel or a
+  // deletion meanwhile wins.
+  const [unlockedRow] = await db.execute<ResultSetHeader>(
+    `UPDATE backup_restore_jobs
+     SET status = 'uploaded', phase = 'uploaded', operation = 'validate', progress = 0, error = NULL
+     WHERE id = ? AND user_id = ? AND status = 'awaiting_password'`,
+    [jobId, userId]
+  );
+  if (!unlockedRow.affectedRows) return { error: 'Restore job is not waiting for a password', status: 409 };
   scheduleRestoreWorker();
   return { job: serializeRestoreJob((await getRestoreJob(userId, jobId))!) };
 }
 
 async function startRestoreJob(userId: string, jobId: string | null) {
-  const job = await getRestoreJob(userId, jobId);
-  if (!job) return { error: 'Restore job not found', status: 404 };
-  if (!['validated', 'failed', 'cancelled'].includes(job.status)) {
-    return { error: 'Restore job must be validated before it can start', status: 409 };
-  }
-  const validation = parseJsonValue(job.validation_result, null) as { valid?: boolean; errors?: string[] } | null;
-  const retryValidation = !validation?.valid || Boolean(validation.errors?.length);
-  const [active] = await db.execute<RestoreJob[]>(
-    `SELECT id FROM backup_restore_jobs
-     WHERE user_id = ? AND id <> ? AND status IN ('queued', 'running', 'cancelling')
-     LIMIT 1`,
-    [userId, jobId]
-  );
-  if (active.length) return { error: 'Another restore is already running', status: 409 };
-  if (!job.archive_path || !fs.existsSync(job.archive_path)) {
-    return { error: 'The retained backup archive is no longer available', status: 410 };
-  }
-  await updateRestoreJob(jobId!, {
-    status: retryValidation ? 'uploaded' : 'queued',
-    operation: retryValidation ? 'validate' : 'restore',
-    phase: retryValidation ? 'uploaded' : 'queued',
-    progress: 0,
-    cancel_requested: 0,
-    error: null,
-    completed_at: null,
+  // Admission (docs/AUTH_ADMIN_SETTINGS.md, "Lock order"): the job's row,
+  // then the person's other restores, both current. A destructive step's
+  // final check holds them shared, so this start waits for it; and a
+  // backup's deletion that took this job's archive is seen here.
+  type Admitted = { error: string; status: number } | { started: true };
+  const admitted = await withTransaction(async (connection): Promise<Admitted> => {
+    const [[job]] = await connection.execute<RestoreJob[]>(
+      'SELECT * FROM backup_restore_jobs WHERE id = ? AND user_id = ? FOR UPDATE',
+      [jobId, userId]
+    );
+    if (!job) return { error: 'Restore job not found', status: 404 };
+    if (!['validated', 'failed', 'cancelled'].includes(job.status)) {
+      return { error: 'Restore job must be validated before it can start', status: 409 };
+    }
+    const validation = parseJsonValue(job.validation_result, null) as { valid?: boolean; errors?: string[] } | null;
+    const retryValidation = !validation?.valid || Boolean(validation.errors?.length);
+    if (await otherActiveRestore(connection, userId, jobId)) return { error: 'Another restore is already running', status: 409 };
+    if (!job.archive_path || !fs.existsSync(job.archive_path)) {
+      return { error: 'The retained backup archive is no longer available', status: 410 };
+    }
+    await updateRestoreJob(jobId!, {
+      status: retryValidation ? 'uploaded' : 'queued',
+      operation: retryValidation ? 'validate' : 'restore',
+      phase: retryValidation ? 'uploaded' : 'queued',
+      progress: 0,
+      cancel_requested: 0,
+      error: null,
+      completed_at: null,
+    }, connection);
+    return { started: true };
   });
+  if (!('started' in admitted)) return { error: admitted.error, status: admitted.status };
   scheduleRestoreWorker();
   return { job: serializeRestoreJob((await getRestoreJob(userId, jobId))!) };
 }
@@ -681,16 +701,28 @@ async function cancelRestoreJob(userId: string, jobId: string | null) {
 }
 
 async function deleteRestoreJob(userId: string, jobId: string | null) {
-  const job = await getRestoreJob(userId, jobId);
-  if (!job) return { error: 'Restore job not found', status: 404 };
-  if (BUSY_RESTORE_STATUSES.has(job.status)) {
-    return { error: 'Stop the restore before deleting it', status: 409 };
-  }
+  // Under the job's row, so a start meanwhile either ran first (busy) or
+  // finds it gone; the files go once the row is known deleted.
+  type Outcome = { error: string; status: number } | { job: RestoreJob };
+  const outcome = await withTransaction(async (connection): Promise<Outcome> => {
+    const [[job]] = await connection.execute<RestoreJob[]>(
+      'SELECT * FROM backup_restore_jobs WHERE id = ? AND user_id = ? FOR UPDATE',
+      [jobId, userId]
+    );
+    if (!job) return { error: 'Restore job not found', status: 404 };
+    if (BUSY_RESTORE_STATUSES.has(job.status)) {
+      return { error: 'Stop the restore before deleting it', status: 409 };
+    }
+    await assertFinalStep(connection, { userId, policies: ['backup.delete'] });
+    await connection.execute('DELETE FROM backup_restore_jobs WHERE id = ? AND user_id = ?', [jobId, userId]);
+    return { job };
+  });
+  if (!('job' in outcome)) return { error: outcome.error, status: outcome.status };
+  const { job } = outcome;
   await cleanupJobWork(job);
   if (job.source_type === 'upload' && job.archive_path) {
     await fs.promises.rm(job.archive_path!, { force: true }).catch(() => {});
   }
-  await db.execute('DELETE FROM backup_restore_jobs WHERE id = ? AND user_id = ?', [jobId, userId]);
   await pruneArchiveKeyIfUnreferenced(userId, job.backup_uuid!);
   return { deleted: true };
 }

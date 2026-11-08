@@ -394,25 +394,13 @@ async function resolvePolicy<K extends PolicyKey>(userId: string, key: K, execut
 }
 
 /**
- * Runs `work` once if the policy allows the person the action, holding the
- * rules revision shared on a connection of its own until the work ends: an
- * administrator's save that forbids it waits for work in flight, and none
- * starts after that save committed (F13). For a provider command, which
- * never runs inside a transaction that could be retried: the work must not
- * use the database. Returns whether the work ran.
+ * Every key as committed now, on a transaction's connection, with the rules
+ * revision held shared until it ends (policyLevels): for the final check of
+ * a destructive step (final-step.ts).
  */
-async function whilePolicyAllows(userId: string, key: PolicyKey, work: () => Promise<unknown>): Promise<boolean> {
-  const cx = await db.getConnection();
-  try {
-    await cx.beginTransaction();
-    const allowed = effectivePolicy(key, await policyLevels(cx, true)).allowed;
-    if (allowed) await work();
-    await cx.commit();
-    return allowed;
-  } catch (error) {
-    await cx.rollback().catch(() => undefined);
-    throw error;
-  } finally { cx.release(); }
+async function lockedPolicies(executor: SqlExecutor): Promise<<K extends PolicyKey>(key: K) => EffectivePolicy<K>> {
+  const levels = await policyLevels(executor, true);
+  return key => effectivePolicy(key, levels);
 }
 
 // The refusal of an action a policy forbids: 403 POLICY_FORBIDS with the key
@@ -440,11 +428,11 @@ interface PolicyActor {
  * person the action it names; the request boundary passes every key a
  * route declares, a service or worker the one its action needs.
  */
-async function assertAllowed(userId: string, keys: PolicyKey | readonly PolicyKey[], { adminId }: PolicyActor = {}, executor: SqlExecutor = db, { lock = false }: PolicyRead = {}): Promise<void> {
+async function assertAllowed(userId: string, keys: PolicyKey | readonly PolicyKey[], { adminId }: PolicyActor = {}, executor: SqlExecutor = db): Promise<void> {
   if (adminId) return;
   const list = typeof keys === 'string' ? [keys] : keys;
   if (!list.length) return;
-  const levels = await policyLevels(executor, lock);
+  const levels = await policyLevels(executor, false);
   for (const key of list) {
     const resolved = effectivePolicy(key, levels);
     if (!resolved.allowed) throw policyForbids(key, resolved.reason ?? 'Your administrator does not allow this.');
@@ -697,7 +685,7 @@ export {
   acknowledgePolicies,
   acknowledgeAtSignup,
   signupRules,
-  whilePolicyAllows,
+  lockedPolicies,
   policyRevision,
   getAdminPolicies,
   updateAdminPolicies,

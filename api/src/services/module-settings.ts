@@ -133,6 +133,14 @@ async function readSetting(userId: string, key: string, connection: SqlExecutor)
 async function getUserModules(userId: string, connection: SqlExecutor = db) {
   return modulesFromValue(await readSetting(userId, SETTING_KEY, connection));
 }
+// The person's module switches as committed now, on a transaction's
+// connection, held shared until it ends: a switch saved meanwhile waits
+// (final-step.ts).
+async function lockedUserModules(userId: string, connection: SqlExecutor) {
+  const [rows] = await connection.execute<(RowDataPacket & { setting_value: unknown })[]>(
+    'SELECT setting_value FROM user_settings WHERE user_id = ? AND setting_key = ? LOCK IN SHARE MODE', [userId, SETTING_KEY]);
+  return modulesFromValue(rows[0]?.setting_value);
+}
 // Only the module list shown to the user needs their order; access checks use catalog order.
 async function getOrderedUserModules(userId: string, connection: SqlExecutor = db) {
   return sortModules(await getUserModules(userId, connection), await readSetting(userId, ORDER_KEY, connection));
@@ -174,6 +182,7 @@ async function getBackgroundPausedModulesByUser(connection: SqlExecutor = db) {
   return new Map(rows.map(row => [row.user_id, new Set(modulesFromValue(row.setting_value).filter(module => !module.enabled || !module.background).map(module => module.id))]));
 }
 export {
+  lockedUserModules,
   getBackgroundPausedModulesByUser,
   SETTING_KEY,
   ORDER_KEY,

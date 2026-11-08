@@ -31,4 +31,4 @@ async function blockedBackgroundModulesByUser(connection: SqlExecutor = db) {
   return blocked;
 }
 
-export { canRunModule, blockedBackgroundModulesByUser };
+export { canRunModule, blockedBackgroundModulesByUser, sectionOf };

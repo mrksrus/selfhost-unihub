@@ -7,6 +7,7 @@ import { withTransaction } from './transactions';
 import { isModuleEnabled } from './module-settings';
 import { isSectionRestoreActive } from './restore-locks';
 import { assertAllowed } from './settings';
+import { assertFinalStep } from './final-step';
 import { recordAudit } from './audit';
 import type { PolicyActor } from './settings';
 
@@ -17,10 +18,11 @@ import type { PolicyActor } from './settings';
 // policies; for an administrator those are not the person's, so this checks
 // the person's switch and restore lock itself, and the policies (data.clear,
 // and for calendar and mail the accounts it removes) for the person's own
-// requests. Clearing mail refuses, as purging one account does, while a
-// provider change has an unresolved outcome (D41), and, while calendars are
-// connected from the mail accounts, as a change to Calendar: with Calendar
-// off or being restored.
+// requests: early, and again in the transaction that deletes (final-step.ts).
+// Clearing mail refuses, as purging one account does, while a provider
+// change has an unresolved outcome (D41), and, while calendars are connected
+// from the mail accounts, as a change to Calendar: with Calendar off or being
+// restored.
 
 type ClearTarget = AdminClearModule;
 interface ClearActor extends PolicyActor { req?: AuthRequest | null }
@@ -46,6 +48,11 @@ async function assertClearable(userId: string, target: ClearTarget, actor: Clear
   await assertAllowed(userId, POLICIES_OF[target], actor);
 }
 
+// The final check, in the transaction that deletes: the target's policies,
+// and the switch and restore lock of every module it writes.
+const finalCheck = (cx: SqlExecutor, userId: string, target: ClearTarget, actor: ClearActor, modules: readonly string[] = [MODULE_OF[target]]) =>
+  assertFinalStep(cx, { userId, policies: POLICIES_OF[target], actor, modules });
+
 // The administrator's entry, in the transaction of the change where there is one.
 function auditEntry(userId: string, target: ClearTarget, deleted: number, actor: ClearActor) {
   return { action: 'admin.data_cleared' as const, actorId: actor.adminId!, targetUserId: userId, req: actor.req ?? null, details: { module: target, deleted } };
@@ -53,6 +60,7 @@ function auditEntry(userId: string, target: ClearTarget, deleted: number, actor:
 
 async function clearContacts(userId: string, actor: ClearActor): Promise<ClearResult> {
   const deleted = await withTransaction(async cx => {
+    await finalCheck(cx, userId, 'contacts', actor);
     const [result] = await cx.execute<ResultSetHeader>('DELETE FROM contacts WHERE user_id = ?', [userId]);
     if (actor.adminId) await recordAudit(auditEntry(userId, 'contacts', result.affectedRows || 0, actor), cx);
     return result.affectedRows || 0;
@@ -62,6 +70,7 @@ async function clearContacts(userId: string, actor: ClearActor): Promise<ClearRe
 
 async function clearCalendar(userId: string, actor: ClearActor): Promise<ClearResult> {
   const { deletedEvents, deletedSubtasks } = await withTransaction(async cx => {
+    await finalCheck(cx, userId, 'calendar', actor);
     const [subtasks] = await cx.execute<ResultSetHeader>('DELETE FROM calendar_event_subtasks WHERE user_id = ?', [userId]);
     const [events] = await cx.execute<ResultSetHeader>('DELETE FROM calendar_events WHERE user_id = ?', [userId]);
     await cx.execute('DELETE FROM calendar_calendars WHERE user_id = ?', [userId]);
@@ -108,12 +117,11 @@ async function clearMailAccounts(userId: string, actor: ClearActor): Promise<Cle
     await cx.execute('SELECT COUNT(*) AS count FROM emails WHERE user_id = ? FOR UPDATE', [userId]);
     const [linked] = await cx.execute<Linked[]>(`SELECT id, provider, provider_config, mail_account_id FROM calendar_accounts
       WHERE user_id = ? AND mail_account_id IS NOT NULL FOR UPDATE`, [userId]);
-    // Mail's own switch and restore lock as they are now, after stopping the
-    // work and the waits for these locks (the first plain read of this
-    // transaction), as purging one account checks them.
-    await assertModuleWritable(userId, 'mail', cx);
+    // The policies, Mail's switch and restore lock, and Calendar's when
+    // calendars are connected from mail, as they are now, after stopping
+    // the work and the waits for these locks.
+    await finalCheck(cx, userId, 'mail-accounts', actor, linked.length ? ['mail', 'calendar'] : ['mail']);
     if (await countUnresolved(userId, cx)) throw unresolvedOperations();
-    if (linked.length) await assertModuleWritable(userId, 'calendar', cx);
     const [files] = await cx.execute<(RowDataPacket & { storage_path: string | null })[]>('SELECT storage_path FROM email_attachments WHERE user_id = ?', [userId]);
     const [result] = await cx.execute<ResultSetHeader>('DELETE FROM mail_accounts WHERE user_id = ?', [userId]);
     for (const calendar of linked) await unlinkFromDeletedMail(cx, calendar, calendar.mail_account_id);
@@ -136,7 +144,10 @@ async function clearMailAccounts(userId: string, actor: ClearActor): Promise<Cle
 
 async function clearRecordingsData(userId: string, actor: ClearActor): Promise<ClearResult> {
   const { clearRecordings } = require('./recordings') as typeof import('./recordings');
-  const deleted = await clearRecordings(userId, actor.adminId ? (cx, count) => recordAudit(auditEntry(userId, 'recordings', count, actor), cx) : undefined);
+  const deleted = await clearRecordings(userId, {
+    authorize: cx => finalCheck(cx, userId, 'recordings', actor),
+    record: actor.adminId ? (cx, count) => recordAudit(auditEntry(userId, 'recordings', count, actor), cx) : undefined,
+  });
   return { message: `Deleted ${deleted} recording(s)`, deleted };
 }
 

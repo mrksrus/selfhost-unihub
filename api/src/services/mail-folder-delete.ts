@@ -11,6 +11,7 @@ import { SETTLED } from './mail-engine/operation-states';
 import { deleteEmailRows, removeUnreferencedFiles } from './mail-sync-policy';
 import { yieldMailReadWork } from './mail-sync-control';
 import { SYSTEM_MAIL_FOLDER_SET } from './mail-folders';
+import { assertFinalStep, underFinalStep } from './final-step';
 
 type AccountRow = RowDataPacket & { id: string; user_id: string; email_address: string };
 type FolderConnection = Pick<ProtocolConnection, 'mailboxDelete' | 'list'>;
@@ -145,10 +146,16 @@ async function deleteMailFolder({ userId, slug, server = false }: { userId: stri
       throw fail(502, `Could not connect to the mail server (${account.email_address}): ${(error as Error).message}`);
     }
     try {
-      await runGuardedImap(connection as ProtocolConnection, () => connection.mailboxDelete(box.remote_name));
-    } catch (error) {
-      if (!await alreadyGone(connection, box.remote_name, error))
-        throw fail(502, `Could not delete the folder on the mail server (${account.email_address}): ${(error as Error).message}`);
+      // The provider's DELETE under the final check (final-step.ts): the
+      // policy, Mail on and not being restored, as they are when it is sent.
+      await underFinalStep({ userId, policies: ['mail.provider_delete'], modules: ['mail'] }, async () => {
+        try {
+          await runGuardedImap(connection as ProtocolConnection, () => connection.mailboxDelete(box.remote_name));
+        } catch (error) {
+          if (!await alreadyGone(connection, box.remote_name, error))
+            throw fail(502, `Could not delete the folder on the mail server (${account.email_address}): ${(error as Error).message}`);
+        }
+      }, pool);
     } finally {
       closeImapConnection(connection as ProtocolConnection);
     }
@@ -156,6 +163,8 @@ async function deleteMailFolder({ userId, slug, server = false }: { userId: stri
   }
 
   const outcome = await withTransaction(async cx => {
+    await cx.execute('SELECT id FROM mail_folders WHERE id = ? AND user_id = ? FOR UPDATE', [folder.id, userId]);
+    await assertFinalStep(cx, { userId, modules: ['mail'] });
     const attachmentPaths: string[] = [], rawPaths: string[] = [];
     let deleted = 0, moved = 0;
     for (const box of boxes) {

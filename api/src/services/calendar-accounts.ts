@@ -25,6 +25,7 @@ import {
   wasMailCalendar,
 } from './calendar';
 import * as calendarSync from './calendar-sync';
+import { withTransaction } from './transactions';
 
 interface AccountRow extends CalendarAccount { provider: string; encrypted_password?: string | null }
 interface MailRow extends MailAccountIdentity {
@@ -241,8 +242,8 @@ async function connectCalDavAccount({ userId, emailAddress, displayName, usernam
   return { account: serializeCalendarAccount(account), calendars, server: found.server, hint: found.hint || null };
 }
 
-async function removeCalendarAccount(userId: string, accountId: string, inTransaction?: (connection: SqlExecutor) => Promise<unknown>) {
-  await calendarSync.deleteCalendarAccount(userId, accountId, inTransaction);
+async function removeCalendarAccount(userId: string, accountId: string, options: Parameters<typeof calendarSync.deleteCalendarAccount>[2] = {}) {
+  await calendarSync.deleteCalendarAccount(userId, accountId, options);
 }
 
 // --- Mail account link ------------------------------------------------------
@@ -260,10 +261,12 @@ async function loadMailAccount(userId: string, mailAccountId: string) {
 
 // A restored calendar account this mail account takes over when its link is
 // next read (no account is linked yet).
-async function restoredMailCalendar(userId: string, mail: Pick<MailRow, 'email_address'>, executor: SqlExecutor = db) {
+// `lock`: in a transaction that then changes the candidate (purging its mail
+// account removes it): the rows are locked, so a link meanwhile waits.
+async function restoredMailCalendar(userId: string, mail: Pick<MailRow, 'email_address'>, executor: SqlExecutor = db, { lock = false } = {}) {
   const [unlinked] = await executor.execute<(RowDataPacket & AccountRow)[]>(
     `SELECT * FROM calendar_accounts WHERE user_id = ? AND provider IN ('caldav', 'ics') AND mail_account_id IS NULL AND LOWER(account_email) = LOWER(?)
-     ORDER BY created_at ASC`,
+     ORDER BY created_at ASC${lock ? ' FOR UPDATE' : ''}`,
     [userId, mail.email_address]
   );
   return unlinked.find(wasMailCalendar) || null;
@@ -287,6 +290,38 @@ async function linkedCalendarAccount(userId: string, mail: MailAddress): Promise
   }
   return { ...candidate, mail_account_id: mail.id, provider_config: JSON.stringify(config),
     encrypted_password: candidate.provider === 'caldav' ? null : candidate.encrypted_password };
+}
+
+// linkedCalendarAccount for one account decided on before (`expectedId`):
+// its link, or, when it is a restored one still unlinked, linking it. In one
+// transaction under the mail account's linked rows and that account's row,
+// so it is checked as it is when written; null, with nothing written, when
+// another account is linked or the expected one is gone, linked elsewhere or
+// no longer this mail account's. Never another candidate.
+async function linkExpectedCalendar(userId: string, mail: MailAddress, expectedId: string, then?: (connection: SqlExecutor, account: AccountRow) => Promise<unknown>): Promise<AccountRow | null> {
+  return withTransaction(async connection => {
+    const [linked] = await connection.execute<(RowDataPacket & AccountRow)[]>(
+      'SELECT * FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? ORDER BY created_at ASC FOR UPDATE', [userId, mail.id]);
+    let account: AccountRow | null = null;
+    if (linked[0]) {
+      if (linked[0].id !== expectedId) return null;
+      account = linked[0];
+    } else {
+      const [[candidate]] = await connection.execute<(RowDataPacket & AccountRow)[]>(
+        'SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [expectedId, userId]);
+      if (!candidate || candidate.mail_account_id || !['caldav', 'ics'].includes(candidate.provider)
+        || String(candidate.account_email || '').toLowerCase() !== String(mail.email_address || '').toLowerCase() || !wasMailCalendar(candidate)) return null;
+      // As linkedCalendarAccount writes it.
+      const config = { ...(safeJsonParse(candidate.provider_config, {}) || {}), mailLinked: true };
+      await connection.execute(`UPDATE calendar_accounts SET mail_account_id = ?, provider_config = ?,
+          encrypted_password = IF(provider = 'caldav', NULL, encrypted_password)
+        WHERE id = ? AND mail_account_id IS NULL`, [mail.id, JSON.stringify(config), candidate.id]);
+      account = { ...candidate, mail_account_id: mail.id, provider_config: JSON.stringify(config),
+        encrypted_password: candidate.provider === 'caldav' ? null : candidate.encrypted_password };
+    }
+    if (then) await then(connection, account);
+    return account;
+  });
 }
 
 // What linkedCalendarAccount answers, without linking a restored account:
@@ -404,24 +439,20 @@ async function setMailCalendar(userId: string, mailAccountId: string, { enabled,
 
   if (!enabled) {
     // A restored one not linked yet goes as it is.
-    if (seen) await removeCalendarAccount(userId, seen.id);
+    if (seen) await removeCalendarAccount(userId, seen.id, { actor });
     return describeLink(userId, mail, null);
   }
 
   if (seen && !addressChanged) {
     const resumes = seen.provider === 'caldav' && !seen.is_active;
     if (resumes && !Number(mail.connected)) throw fail(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED');
-    const existing = await linkedCalendarAccount(userId, mail);
-    // Another request linked or removed one meanwhile (this one wrote nothing then).
-    if (!existing || existing.id !== seen.id) throw fail('The calendar of this mail account changed meanwhile. Try again.', 409, 'MAIL_CALENDAR_CHANGED');
-    if (resumes) {
-      await db.execute(
-        "UPDATE calendar_accounts SET is_active = TRUE, encrypted_password = NULL, sync_status = 'pending', sync_error = NULL, next_sync_at = NULL WHERE id = ?",
-        [existing.id]
-      );
-    } else {
-      await db.execute('UPDATE calendar_accounts SET next_sync_at = NULL WHERE id = ?', [existing.id]);
-    }
+    // The account seen above, linked if it was a restored one, and resumed,
+    // in one transaction; another request linked or removed one meanwhile
+    // (this one wrote nothing then).
+    const existing = await linkExpectedCalendar(userId, mail, seen.id, (cx, account) => cx.execute(resumes
+      ? "UPDATE calendar_accounts SET is_active = TRUE, encrypted_password = NULL, sync_status = 'pending', sync_error = NULL, next_sync_at = NULL WHERE id = ?"
+      : 'UPDATE calendar_accounts SET next_sync_at = NULL WHERE id = ?', [account.id]));
+    if (!existing) throw fail('The calendar of this mail account changed meanwhile. Try again.', 409, 'MAIL_CALENDAR_CHANGED');
     calendarSync.syncCalendarAccountInBackground(existing.id, { userId, reason: 'manual' });
     return describeLink(userId, mail, (await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM calendar_accounts WHERE id = ?', [existing.id]))[0][0]);
   }
@@ -445,7 +476,7 @@ async function setMailCalendar(userId: string, mailAccountId: string, { enabled,
   });
   if (seen && seen.id !== connected.account.id) {
     const [still] = await db.execute<RowDataPacket[]>('SELECT id FROM calendar_accounts WHERE id = ?', [seen.id]);
-    if (still.length) await removeCalendarAccount(userId, seen.id);
+    if (still.length) await removeCalendarAccount(userId, seen.id, { actor });
   }
   const [rows] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM calendar_accounts WHERE id = ?', [connected.account.id]);
   return { ...await describeLink(userId, mail, rows[0]), server: connected.server || null, hint: connected.hint || null };

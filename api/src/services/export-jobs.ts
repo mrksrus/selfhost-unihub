@@ -797,11 +797,14 @@ async function deleteDataExportJob(userId: string, jobId: string | null, { autho
     if (!row) return { error: 'Backup job not found', status: 404 };
     if (authorize) await authorize(connection);
     if (active(row.status)) return { error: 'Stop the backup before deleting it', status: 409 };
+    // A current read: a restore admitted from this backup locks its row
+    // first (backup-restore-jobs.ts), so it either committed and shows here
+    // or waits and then finds the backup gone.
     const [activeRestore] = await connection.execute<ExportRow[]>(
       `SELECT id FROM backup_restore_jobs
        WHERE source_export_job_id = ? AND user_id = ?
          AND status IN ('uploaded', 'validating', 'validated', 'queued', 'running', 'cancelling')
-       LIMIT 1`,
+       LOCK IN SHARE MODE`,
       [jobId, userId]
     );
     if (activeRestore.length) return { error: 'This backup is currently used by a restore job', status: 409 };

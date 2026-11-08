@@ -20,6 +20,8 @@ import crypto from 'crypto';
 import { db } from '../state';
 import { decrypt } from '../security/encryption';
 import { canRunModule } from './access-policy';
+import { assertFinalStep } from './final-step';
+import type { PolicyActor } from './settings';
 import { publishCalendarChanged } from './realtime';
 import { sweepRemoteRanks } from './task-order';
 import { isDeadlock, DEADLOCK_RETRIES } from './transactions';
@@ -241,8 +243,10 @@ async function requestIdentities(executor: SqlExecutor, userId: string, accountI
   return identities;
 }
 
-async function accountLogin(account: Account, signal?: AbortSignal) {
-  const { username, encryptedPassword } = await resolveLogin(account);
+// `write: false`: before a change is admitted, the login without linking a
+// restored calendar or unlinking one from deleted mail (resolveLogin).
+async function accountLogin(account: Account, signal?: AbortSignal, { write = true }: { write?: boolean } = {}) {
+  const { username, encryptedPassword } = await resolveLogin(account, false, { write });
   // Missing values are passed on as null, as before; davRequest treats them as absent.
   return {
     username: username as string | undefined,
@@ -350,15 +354,19 @@ async function deleteCalendarsWithEvents(connection: SqlExecutor, userId: string
   await connection.execute(`DELETE FROM calendar_calendars WHERE user_id = ? AND id IN (${placeholders})`, [userId, ...calendarIds]);
 }
 
-// inTransaction: written with the deletion (an administrator's activity-log entry).
-async function deleteCalendarAccount(userId: string, accountId: string, inTransaction?: (connection: SqlExecutor) => Promise<unknown>) {
+// Under the account's row, the final check (final-step.ts): accounts.remove
+// (an administrator's actor passes it), Calendar on and not being restored.
+// record: written with the deletion (an administrator's activity-log entry).
+async function deleteCalendarAccount(userId: string, accountId: string, { actor = {}, record }: { actor?: PolicyActor; record?: (connection: SqlExecutor) => Promise<unknown> } = {}) {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
+    await connection.execute('SELECT id FROM calendar_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
+    await assertFinalStep(connection, { userId, policies: ['accounts.remove'], actor, modules: ['calendar'] });
     const [calendars] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_calendars WHERE account_id = ? AND user_id = ?', [accountId, userId]);
     await deleteCalendarsWithEvents(connection, userId, calendars.map(row => row.id));
     await connection.execute('DELETE FROM calendar_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
-    if (inTransaction) await inTransaction(connection);
+    if (record) await record(connection);
     await connection.commit();
   } catch (error) {
     await connection.rollback();
@@ -1110,10 +1118,12 @@ function assertWritable({ account, calendar }: BaseContext) {
 
 // Every writeback reads its login here, for a linked calendar from its mail
 // account, so a disconnected mail account's login is never used.
-async function withWriteContext<T>(base: BaseContext, write: (ctx: WriteContext) => Promise<T>): Promise<T> {
+// `linking: false` for a read before the change is admitted: its login
+// links nothing (accountLogin).
+async function withWriteContext<T>(base: BaseContext, write: (ctx: WriteContext) => Promise<T>, { linking = true }: { linking?: boolean } = {}): Promise<T> {
   const work = beginAccountWork(base.account.id);
   try {
-    return await write({ ...base, login: await accountLogin(base.account, work.signal), timeZone: await resolveTimeZone(base.account) });
+    return await write({ ...base, login: await accountLogin(base.account, work.signal, { write: linking }), timeZone: await resolveTimeZone(base.account) });
   } finally { work.release(); }
 }
 
