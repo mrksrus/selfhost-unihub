@@ -117,6 +117,28 @@ describe('the bin', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/bin/empty', { module: 'contacts' }));
   });
 
+  // Emptying runs in batches; a rule set meanwhile stops it between two. The answer says how many
+  // items went before, and the list is read again so it no longer shows them.
+  it('an emptying the server stopped says how many items went before, and reads the bin again', { timeout: 20_000 }, async () => {
+    answerGets(ITEMS);
+    vi.mocked(api.post).mockResolvedValueOnce({ error: DELETE_REASON, status: 403, code: 'POLICY_FORBIDS', details: { deleted: 2 } } as never);
+    mountSignedIn(<BinView module="contacts" />);
+    await screen.findAllByRole('listitem');
+    const reads = () => vi.mocked(api.get).mock.calls.filter(([path]) => String(path).startsWith('/bin')).length;
+    const before = reads();
+    fireEvent.click(screen.getByRole('button', { name: 'Empty bin' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete for good' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Emptying stopped', description: expect.stringContaining('2 items were deleted before your administrator stopped deleting from the bin') })));
+    await waitFor(() => expect(reads()).toBeGreaterThan(before));
+    // Without a count, the refusal reads as the rule; the list is read again all the same.
+    vi.mocked(api.post).mockResolvedValueOnce({ error: DELETE_REASON, status: 403, code: 'POLICY_FORBIDS' } as never);
+    const again = reads();
+    fireEvent.click(screen.getByRole('button', { name: 'Empty bin' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete for good' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not empty the bin', description: DELETE_REASON })));
+    await waitFor(() => expect(reads()).toBeGreaterThan(again));
+  });
+
   it('greys Delete for good and Empty bin out with the reason when a policy forbids deleting', async () => {
     answerGets(ITEMS, policiesAnswer({ 'bin.delete': { value: 'forbidden', reason: DELETE_REASON } }));
     mountSignedIn(<BinView module="contacts" />);

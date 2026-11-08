@@ -122,6 +122,30 @@ describe('policy greying', () => {
     expect(onModeChange).not.toHaveBeenCalled();
   });
 
+  // The link changed under the request (another device, a sync): the server wrote nothing (409) and the page reads the link again.
+  it('a calendar change the server refuses as changed meanwhile says so and reads the link again', { timeout: 20_000 }, async () => {
+    const account = { id: 'mail-a', email_address: 'a@example.com', provider: 'custom', is_active: true } as MailAccount;
+    const link = { enabled: true, account: { id: 'cal-a', provider: 'caldav', is_active: true, sync_status: 'ok', last_synced_at: null, provider_config: {} }, calendars: [], event_count: 3, provider: null };
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/policies/effective') return policiesAnswer();
+      if (path === '/mail/accounts/mail-a/calendar') return { data: { calendar: link } };
+      throw new Error(`unexpected GET ${path}`);
+    });
+    vi.mocked(api.put).mockResolvedValueOnce({ error: 'The calendar of this mail account changed meanwhile. Try again.', status: 409, code: 'MAIL_CALENDAR_CHANGED' } as never);
+    mountSignedIn(<MailCalendarSettings account={account} />);
+    const toggle = await screen.findByRole('switch', { name: 'Calendar' });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    const linkReads = () => vi.mocked(api.get).mock.calls.filter(([path]) => path === '/mail/accounts/mail-a/calendar').length;
+    const before = linkReads();
+    fireEvent.click(toggle);
+    fireEvent.click(await screen.findByRole('button', { name: 'Turn off' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/accounts/mail-a/calendar', expect.objectContaining({ enabled: false })));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Calendar not changed', description: 'This changed in the meantime. Try again.' })));
+    await waitFor(() => expect(linkReads()).toBeGreaterThan(before));
+    // Still on, as the server holds it.
+    expect(screen.getByRole('switch', { name: 'Calendar' })).toBeChecked();
+  });
+
   it('the linked calendar of a mail account follows accounts.remove and accounts.add', { timeout: 20_000 }, async () => {
     const REMOVE = 'Your administrator does not allow removing accounts.';
     const ADD = 'Your administrator does not allow adding accounts.';

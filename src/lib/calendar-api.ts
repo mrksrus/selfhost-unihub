@@ -2,6 +2,7 @@ import { format, parseISO, type Locale } from 'date-fns';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import type { QueryClient } from '@tanstack/react-query';
 import { api, type ApiResponse } from '@/lib/api';
+import { ApiError } from '@/lib/api-error';
 import type { BinnedResponse } from '../../api/src/contracts/bin';
 import type { CalendarChoiceFields, CalendarWriteBlock, TaskMoveCancelResponse, TaskMovePending, TaskMoveRequest, TaskMoveResponse, TaskPositionRequest, TaskPositionResponse, TaskRankFields } from '../../api/src/contracts/tasks';
 
@@ -368,7 +369,8 @@ export const calendarApi = {
   /** caldav_url: omitted keeps the current address, '' finds it automatically. */
   async setMailCalendar(mailAccountId: string, payload: { enabled: boolean; caldav_url?: string; time_zone?: string }): Promise<MailCalendarLink> {
     const response = await api.put<{ calendar: MailCalendarLink }>(`/mail/accounts/${encodeURIComponent(mailAccountId)}/calendar`, payload);
-    if (response.error) throw new Error(response.error);
+    // With the server's code: a 409 MAIL_CALENDAR_CHANGED wrote nothing and asks for another try.
+    if (response.error) throw new ApiError(response);
     if (!response.data?.calendar) throw new Error('Calendar settings response missing');
     return response.data.calendar;
   },
