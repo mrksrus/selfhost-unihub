@@ -326,24 +326,19 @@ async function restoredMailCalendar(userId: string, mail: Pick<MailRow, 'email_a
   return unlinked.find(wasMailCalendar) || null;
 }
 
+// The mail account's calendar, linking a restored one found by address
+// (the sync's login, resolveLogin): only through linkExpectedCalendar, so
+// under Calendar's final check; its refusal is thrown.
 async function linkedCalendarAccount(userId: string, mail: MailAddress): Promise<AccountRow | null> {
   const [linked] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? ORDER BY created_at ASC LIMIT 1', [userId, mail.id]);
   if (linked[0]) return linked[0];
   const candidate = await restoredMailCalendar(userId, mail);
   if (!candidate) return null;
-  // The link and its mark are written together: backups keep only the mark.
-  // A CalDAV account drops a password restored with it: it uses the mail login.
-  const config = { ...(safeJsonParse(candidate.provider_config, {}) || {}), mailLinked: true };
-  const [result] = await db.execute<ResultSetHeader>(`UPDATE calendar_accounts SET mail_account_id = ?, provider_config = ?,
-      encrypted_password = IF(provider = 'caldav', NULL, encrypted_password)
-    WHERE id = ? AND mail_account_id IS NULL`, [mail.id, JSON.stringify(config), candidate.id]);
-  if (!result.affectedRows) {
-    // A concurrent request linked it first.
-    const [again] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM calendar_accounts WHERE id = ? AND mail_account_id = ?', [candidate.id, mail.id]);
-    return again[0] || null;
-  }
-  return { ...candidate, mail_account_id: mail.id, provider_config: JSON.stringify(config),
-    encrypted_password: candidate.provider === 'caldav' ? null : candidate.encrypted_password };
+  const account = await linkExpectedCalendar(userId, mail, candidate.id);
+  if (account) return account;
+  // Another request linked one, or took the candidate, meanwhile.
+  const [again] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? ORDER BY created_at ASC LIMIT 1', [userId, mail.id]);
+  return again[0] || null;
 }
 
 // linkedCalendarAccount for one account decided on before (`expectedId`):
@@ -436,6 +431,9 @@ async function describeLink(userId: string, mail: MailRow, account: AccountRow |
     account: null,
     calendars: [],
     event_count: 0,
+    // A restored calendar of this address, not linked yet: it is linked on
+    // the next change (setMailCalendar) or sync, never by reading.
+    link_pending: false,
     provider: provider ? { id: provider.id, label: provider.label, supported: !provider.unsupported, hint: provider.hint || null } : null,
   };
   if (!account) return base;
@@ -450,13 +448,16 @@ async function describeLink(userId: string, mail: MailRow, account: AccountRow |
     account: serializeCalendarAccount({ ...account, mail_connected: mail.connected }),
     calendars: calendars.map(row => ({ id: row.id, name: row.name, color: row.color, read_only: !!row.read_only, is_visible: !!row.is_visible })),
     event_count: Number(count.n) || 0,
+    link_pending: !account.mail_account_id,
   };
 }
 
+// Reading writes nothing: a restored calendar not linked yet is shown as
+// such (link_pending), and is linked only by a guarded change.
 async function getMailCalendarLink(userId: string, mailAccountId: string) {
   const mail = await loadMailAccount(userId, mailAccountId);
   await assertCalendarAvailable(userId);
-  return describeLink(userId, mail, await linkedCalendarAccount(userId, mail));
+  return describeLink(userId, mail, await peekLinkedCalendarAccount(userId, mail));
 }
 
 function currentManualUrl(account: AccountRow | null) {

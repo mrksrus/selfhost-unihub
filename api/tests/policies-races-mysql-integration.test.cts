@@ -870,4 +870,73 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     await pool.execute('DELETE FROM calendar_accounts WHERE id IN (?, ?)', [old, restored]);
     await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
   });
+
+  // A restored calendar of a connected mail account's address, not linked yet, with its own password.
+  async function restoredUnlinked(address: string) {
+    const mail = crypto.randomUUID(), calendar = crypto.randomUUID();
+    const secret = encrypt('synthetic-calendar-password');
+    await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active, encrypted_password) VALUES (?, ?, ?, 'custom', 'download', TRUE, ?)",
+      [mail, users.alex, address, encrypt('synthetic-mail-password')]);
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, is_active, encrypted_password, base_url, provider_config)
+      VALUES (?, ?, 'caldav', ?, TRUE, ?, 'https://caldav.example.test/', '{"mailLinked":true}')`, [calendar, users.alex, address, secret]);
+    return {
+      mail, calendar,
+      unchanged: async (what: string) => {
+        const [[row]] = await pool.query<RowDataPacket[]>('SELECT mail_account_id, encrypted_password FROM calendar_accounts WHERE id = ?', [calendar]);
+        assert.deepEqual([what, row.mail_account_id, row.encrypted_password], [what, null, secret], 'still unlinked, with its password');
+      },
+      remove: async () => {
+        await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [calendar]);
+        await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+      },
+    };
+  }
+
+  await fromDefaults('r5: reading a mail account\'s calendar shows a restored one as waiting to be linked, and writes nothing', async () => {
+    const restored = await restoredUnlinked('read-only-link@example.test');
+    const answer = await call(alex, 'GET', `/api/mail/accounts/${restored.mail}/calendar`);
+    await restored.unchanged('read');
+    assert.deepEqual([answer.calendar.enabled, answer.calendar.link_pending, answer.calendar.account?.id], [true, true, restored.calendar]);
+    await call(blair, 'GET', `/api/mail/accounts/${restored.mail}/calendar`, undefined, 404);
+    await restored.remove();
+  });
+
+  await fromDefaults('r5: a read while a Calendar restore is admitted leaves the restored calendar as it was', async () => {
+    const restored = await restoredUnlinked('read-during-restore@example.test');
+    const restore = crypto.randomUUID();
+    // Held once the read has found the restored calendar, past its early checks.
+    const pause = pauseAfter('AND mail_account_id IS NULL AND LOWER(account_email)');
+    const pending = alex.request('GET', `/api/mail/accounts/${restored.mail}/calendar`);
+    try {
+      await pause.reached();
+      await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', '["calendar"]')`, [restore, users.alex]);
+      pause.release();
+      await pending;
+    } finally { pause.restore(); await pending; }
+    await restored.unchanged('read during a restore');
+    await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
+    await restored.remove();
+  });
+
+  await fromDefaults('r5: a sync that would link a restored calendar stops when a Calendar restore is admitted under its lock', async () => {
+    const caldav = require('../dist/src/services/caldav') as FixtureValue;
+    const calendarSync = require('../dist/src/services/calendar-sync') as typeof import('../src/services/calendar-sync');
+    const restored = await restoredUnlinked('sync-during-restore@example.test');
+    const restore = crypto.randomUUID();
+    // No calendar server: a sync that got past its login fails there, which this case does not need.
+    const listCalendars = caldav.listCalendars;
+    caldav.listCalendars = async () => { throw new Error('synthetic: no calendar server'); };
+    // Held at the sync's login, under its account lock and past its gate.
+    const pause = pauseAfter('SELECT ca.provider, ca.provider_config, ca.account_email');
+    const pending = calendarSync.syncCalendarAccount(restored.calendar, { userId: users.alex }).then(result => result, (error: Error) => ({ error: error.message }));
+    try {
+      await pause.reached();
+      await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', '["calendar"]')`, [restore, users.alex]);
+      pause.release();
+      assert.deepEqual(await pending, { skipped: true, reason: 'paused' });
+    } finally { pause.restore(); await pending; caldav.listCalendars = listCalendars; }
+    await restored.unchanged('sync during a restore');
+    await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
+    await restored.remove();
+  });
 });

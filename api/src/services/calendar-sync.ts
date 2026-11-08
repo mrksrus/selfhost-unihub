@@ -947,7 +947,7 @@ async function runAccountSync(accountId: string, { userId, reason, full, pass }:
     try {
       // Registered and checked in one step: a stop before this has ended the pass.
       if (pass?.aborted) throw STOP_REASONS.stopping();
-      return await syncLocked(accountId, { userId, full }, work.signal);
+      return await syncLocked(accountId, { userId, full, background }, work.signal);
     } finally { work.release(); }
   });
 }
@@ -975,14 +975,19 @@ async function noteMissingLogin(account: Account, message: string) {
 
 const MISSING_LOGIN = new Map([['MAIL_ACCOUNT_DISCONNECTED', 'mail-disconnected'], ['CALDAV_NO_PASSWORD', 'no-password'], ['MAIL_CALENDAR_UNLINKED', 'mail-unlinked']]);
 
-async function syncLocked(accountId: string, { userId, full }: SyncOptions, signal: AbortSignal) {
-  // Reloaded under the lock: a change while the lock was awaited counts.
+async function syncLocked(accountId: string, { userId, full, background = false }: SyncOptions & { background?: boolean }, signal: AbortSignal) {
+  // Reloaded under the lock: a change while the lock was awaited counts,
+  // and so do Calendar switched off and a restore admitted meanwhile.
   const account = await loadAccount(accountId, userId);
   if (!account || !account.is_active) return { skipped: true, reason: 'inactive' };
+  if (!await canRunModule(account.user_id, 'calendar', { background })) return { skipped: true, reason: 'paused' };
   let login: Login | null = null;
   if (account.provider === 'caldav') {
+    // Linking a restored calendar on the way is guarded (linkExpectedCalendar):
+    // a restore admitted after the check above refuses it, and the sync stops.
     try { login = await accountLogin(account, signal); } catch (error) {
       const code = (error as ApiError).code;
+      if (code === 'RESTORE_IN_PROGRESS' || code === 'MODULE_DISABLED') return { skipped: true, reason: 'paused' };
       if (!code || !MISSING_LOGIN.has(code)) throw error;
       await noteMissingLogin(account, (error as ApiError).message);
       return { skipped: true, reason: MISSING_LOGIN.get(code) };
