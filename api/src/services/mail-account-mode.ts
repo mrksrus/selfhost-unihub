@@ -1,5 +1,6 @@
 import type { MailAccountIdentity } from '../types';
 import type { PolicyActor } from './settings';
+import type { EffectivePolicy, PolicyKey } from '../contracts/policies';
 
 const enabled = (value: unknown) => value === true || value === 1 || value === '1' || value === 'true';
 
@@ -46,18 +47,18 @@ type ModeChange = ReturnType<typeof mailAccountModeChange>;
 // say now (D39): only a change to them is refused. An administrator acting
 // for the person (actor.adminId) is not stopped.
 
+type PolicyOf = <K extends PolicyKey>(key: K) => EffectivePolicy<K>;
+
 /**
  * A new account's body under the policies for new accounts: a mode that
  * new accounts must use (mail.mode.new_accounts) and a required deletion at
  * the provider (mail.provider_delete) are filled in where the body names
  * none, and a body that names another is refused.
  */
-async function modePolicyInput<T extends Record<string, unknown>>(userId: string, body: T, { adminId }: PolicyActor = {}): Promise<T> {
-  if (adminId) return body;
-  const { resolvePolicies, policyForbids } = require('./settings') as typeof import('./settings');
-  const policies = await resolvePolicies(userId);
+function newAccountInput<T extends Record<string, unknown>>(policy: PolicyOf, body: T): T {
+  const { policyForbids } = require('./settings') as typeof import('./settings');
   const next: Record<string, unknown> = { ...body };
-  const forced = policies['mail.mode.new_accounts'];
+  const forced = policy('mail.mode.new_accounts');
   if (forced.value !== 'user_choice') {
     const mode = forced.value === 'sync' ? 'sync' : 'download';
     const deleting = forced.value === 'download_delete';
@@ -66,7 +67,7 @@ async function modePolicyInput<T extends Record<string, unknown>>(userId: string
     next.sync_mode = mode;
     if (deleting) next.delete_emails_on_server = true;
   }
-  const deletion = policies['mail.provider_delete'];
+  const deletion = policy('mail.provider_delete');
   if (deletion.value === 'required' && (next.sync_mode ?? 'download') === 'download') {
     if (Object.hasOwn(next, 'delete_emails_on_server') && !enabled(next.delete_emails_on_server)) throw policyForbids('mail.provider_delete', deletion.reason!);
     next.delete_emails_on_server = true;
@@ -74,17 +75,50 @@ async function modePolicyInput<T extends Record<string, unknown>>(userId: string
   return next as T;
 }
 
+async function modePolicyInput<T extends Record<string, unknown>>(userId: string, body: T, { adminId }: PolicyActor = {}): Promise<T> {
+  if (adminId) return body;
+  const { resolvePolicies } = require('./settings') as typeof import('./settings');
+  const policies = await resolvePolicies(userId);
+  return newAccountInput(key => policies[key], body);
+}
+
+/**
+ * At a new account's final check (final-step.ts), with the policies read
+ * under the rules lock: the mode and provider deletion it was prepared with
+ * must still be what those policies give the request as sent (`input`). A
+ * policy saved meanwhile that forces another mode or requires deletion is
+ * refused with POLICY_FORBIDS and its reason; sent again, the request is
+ * filled in by it. An administrator's actor is not stopped.
+ */
+function assertNewAccountMode(policy: PolicyOf, input: Record<string, unknown>, prepared: ModeChange, { adminId }: PolicyActor = {}) {
+  if (adminId) return;
+  const { policyForbids } = require('./settings') as typeof import('./settings');
+  const now = mailAccountModeChange(null, newAccountInput(policy, input));
+  if (now.mode === prepared.mode && now.deleteEnabled === prepared.deleteEnabled) return;
+  const forced = policy('mail.mode.new_accounts');
+  if (forced.value !== 'user_choice') throw policyForbids('mail.mode.new_accounts', forced.reason ?? 'Your administrator does not allow this.');
+  const deletion = policy('mail.provider_delete');
+  throw policyForbids('mail.provider_delete', deletion.reason ?? 'Your administrator does not allow this.');
+}
+
 /**
  * Refuses with POLICY_FORBIDS a new account in a mode that is not allowed,
  * a switch to such a mode, and turning deletion at the provider on while it
  * is not allowed. Turning it off, and every other change, stays possible.
  */
-async function assertModeAllowed(userId: string, account: MailAccountIdentity | null | undefined, change: ModeChange, actor: PolicyActor = {}) {
-  const { assertAllowed } = require('./settings') as typeof import('./settings');
+// The policies a new account or a change of `account` needs: its mode, and
+// provider deletion turned on. Asked early (assertModeAllowed) and again in
+// the transaction that writes it (final-step.ts).
+function modePolicyKeys(account: MailAccountIdentity | null | undefined, change: ModeChange) {
   const keys: ('mail.mode.download' | 'mail.mode.sync' | 'mail.provider_delete')[] = [];
   if (!account || change.changed) keys.push(change.mode === 'sync' ? 'mail.mode.sync' : 'mail.mode.download');
   if (change.deleteEnabled && !(account && enabled(account.delete_emails_on_server))) keys.push('mail.provider_delete');
-  await assertAllowed(userId, keys, actor);
+  return keys;
 }
 
-export { mailAccountModeChange, addressConfirmed, sameProviderMailbox, modePolicyInput, assertModeAllowed };
+async function assertModeAllowed(userId: string, account: MailAccountIdentity | null | undefined, change: ModeChange, actor: PolicyActor = {}) {
+  const { assertAllowed } = require('./settings') as typeof import('./settings');
+  await assertAllowed(userId, modePolicyKeys(account, change), actor);
+}
+
+export { mailAccountModeChange, addressConfirmed, sameProviderMailbox, modePolicyInput, assertModeAllowed, modePolicyKeys, assertNewAccountMode };

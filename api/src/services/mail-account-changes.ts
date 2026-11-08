@@ -1,13 +1,16 @@
-import type { RowDataPacket } from 'mysql2/promise';
+import type { ExecuteValues, RowDataPacket } from 'mysql2/promise';
 import type { ApiError, MailAccountIdentity, StoredFlag } from '../types';
 import type { PolicyActor } from './settings';
 import * as mailWritebacks from './mail-writebacks';
-import { mailAccountModeChange, sameProviderMailbox, modePolicyInput, assertModeAllowed } from './mail-account-mode';
+import { mailAccountModeChange, sameProviderMailbox, modePolicyInput, assertModeAllowed, modePolicyKeys, assertNewAccountMode } from './mail-account-mode';
 import { parseMailAccountInput } from './mail-account-input';
 import * as mailSyncPolicy from './mail-sync-policy';
 import { withMailAccountLock } from './mail-account-lock';
 import crypto from 'crypto';
 import { db } from '../state';
+import { withTransaction } from './transactions';
+import { assertFinalStep } from './final-step';
+import { accountSnapshot, assertUnchanged as assertUnchangedRow } from './account-identity';
 import { encrypt } from '../security/encryption';
 import { inspectMailCertificate, normalizeFingerprint } from '../security/mail-certificates';
 import {
@@ -36,6 +39,9 @@ import { log } from '../log';
 // an administrator's actor passes them (F13).
 
 /** Starts the account's mail sync without waiting for it; false when one is already running (routes/mail-route-helpers.ts re-exports it). */
+// The pause a settings change puts its account in while it is saved (stopMailAccountWork).
+const SETTINGS_PAUSE = 'Account settings changing';
+
 async function startMailSyncInBackground(accountId: string, label = accountId, options: Record<string, unknown> = {}) {
   const job = await scheduleMailAccountSync(accountId, options);
   if (job.skipped) return null;
@@ -219,41 +225,48 @@ async function createMailAccount(userId: string, input: Input, actor: PolicyActo
     };
   }
 
-  // Auth successful - save account immediately
+  // Auth successful - save account immediately, after the final check
+  // (final-step.ts): accounts.add and the mode's policies as committed now
+  // (an administrator's actor passes them), Mail on and not being restored.
   const accountId = crypto.randomUUID();
-  await db.execute(
-    `INSERT INTO mail_accounts
-       (id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
-        smtp_host, smtp_port, encrypted_password, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
-        server_delete_enabled_at, server_delete_grace_until, allow_self_signed,
-        trusted_imap_fingerprint256, trusted_smtp_fingerprint256,
-        sync_window_days, trash_window_days, sync_policy_confirmed_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${serverDeleteEnabled ? 'UTC_TIMESTAMP()' : 'NULL'},
-             ${serverDeleteEnabled ? 'DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE)' : 'NULL'}, ?, ?, ?, ?, ?,
-             ${modeChange.mode === 'sync' ? 'UTC_TIMESTAMP()' : 'NULL'})`,
-    [
-      accountId,
-      userId,
-      email_address,
-      display_name,
-      provider,
-      username,
-      imap_host || null,
-      imap_port,
-      smtp_host || null,
-      smtp_port,
-      encryptedPasswordForStorage,
-      normalizedSyncFetchLimit,
-      modeChange.mode,
-      modeChange.mode === 'sync' ? 'pending' : 'idle',
-      serverDeleteEnabled ? 1 : 0,
-      trustAccepted ? 1 : 0,
-      trustAccepted ? confirmed.imap ?? keptImapFingerprint : null,
-      trustAccepted ? confirmed.smtp : null,
-      syncWindowDays,
-      trashWindowDays,
-    ]
-  );
+  await withTransaction(async cx => {
+    const step = await assertFinalStep(cx, { userId, policies: ['accounts.add', ...modePolicyKeys(null, modeChange)], actor, modules: ['mail'] });
+    // The mode and provider deletion it was prepared with, as the policies locked here give them.
+    assertNewAccountMode(step.policy, input, modeChange, actor);
+    await cx.execute(
+      `INSERT INTO mail_accounts
+         (id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
+          smtp_host, smtp_port, encrypted_password, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
+          server_delete_enabled_at, server_delete_grace_until, allow_self_signed,
+          trusted_imap_fingerprint256, trusted_smtp_fingerprint256,
+          sync_window_days, trash_window_days, sync_policy_confirmed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${serverDeleteEnabled ? 'UTC_TIMESTAMP()' : 'NULL'},
+               ${serverDeleteEnabled ? 'DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE)' : 'NULL'}, ?, ?, ?, ?, ?,
+               ${modeChange.mode === 'sync' ? 'UTC_TIMESTAMP()' : 'NULL'})`,
+      [
+        accountId,
+        userId,
+        email_address,
+        display_name,
+        provider,
+        username,
+        imap_host || null,
+        imap_port,
+        smtp_host || null,
+        smtp_port,
+        encryptedPasswordForStorage,
+        normalizedSyncFetchLimit,
+        modeChange.mode,
+        modeChange.mode === 'sync' ? 'pending' : 'idle',
+        serverDeleteEnabled ? 1 : 0,
+        trustAccepted ? 1 : 0,
+        trustAccepted ? confirmed.imap ?? keptImapFingerprint : null,
+        trustAccepted ? confirmed.smtp : null,
+        syncWindowDays,
+        trashWindowDays,
+      ]
+    );
+  });
   await ensureDefaultMailFoldersForUser(userId);
   // A new Sync account has no local-only mail yet: its policy is
   // confirmed at creation (sync_policy_confirmed_at above).
@@ -272,9 +285,9 @@ async function createMailAccount(userId: string, input: Input, actor: PolicyActo
         caldavUrl: caldav_url || null,
         mailAccountId: accountId,
         timeZone: body.time_zone,
-      });
-      await calendarAccounts.keepMailCalendar(userId, accountId, connected.account.id)
-        .catch(error => log.warn('CALDAV', `Could not unlink an older calendar of ${email_address}`, undefined, error));
+      // The calendar just connected is this mail account's: one a sync linked
+      // to it by address meanwhile is unlinked in the same transaction.
+      }, { actor, mail: { id: accountId } });
       calendarSync = {
         attempted: true,
         success: true,
@@ -336,6 +349,7 @@ async function updateMailAccount(userId: string, id: string, body: Input, actor:
   const [fresh] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
   if (!fresh.length) return { error: 'Account not found', status: 404 };
   const existingAccount = fresh[0];
+  const seen = accountSnapshot('mail', existingAccount);
   const modeChange = mailAccountModeChange(existingAccount, body);
   await assertModeAllowed(userId, existingAccount, modeChange, actor);
   const { email_address, display_name, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password, next } = parseMailAccountInput(body, existingAccount);
@@ -431,8 +445,8 @@ async function updateMailAccount(userId: string, id: string, body: Input, actor:
   }
 
   // Build update query dynamically
-  const updates = [];
-  const params = [];
+  const updates: string[] = [];
+  const params: ExecuteValues[] = [];
   const serverDeleteSettingProvided = modeChange.deleteSettingProvided;
   const requestedServerDeleteEnabled = modeChange.deleteEnabled;
   const currentServerDeleteEnabled = toBooleanFlag(existingAccount.delete_emails_on_server);
@@ -497,14 +511,31 @@ async function updateMailAccount(userId: string, id: string, body: Input, actor:
 
   if (updates.length === 0 && !serverDeleteSettingProvided) return { error: 'No fields to update', status: 400 };
   // Failed validation/authentication must not pause a working account.
-  if (stopRequired) await stopMailAccountWork(id, 'Account settings changing');
+  if (stopRequired) await stopMailAccountWork(id, SETTINGS_PAUSE);
 
   if (updates.length > 0) {
     params.push(id, userId);
-    await db.execute(
-      `UPDATE mail_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
-      params
-    );
+    // Under the account's row and the final check (final-step.ts): the
+    // mode's policies, Mail on and not being restored, as committed now,
+    // and still the account this change was decided from (account-identity.ts).
+    // A refusal lifts only this change's own pause: a restore, a module
+    // switch or a disconnect since keeps its own, and the refusal stays the
+    // answer.
+    try {
+      await withTransaction(async cx => {
+        const [[current]] = await cx.execute<RowDataPacket[]>('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [id, userId]);
+        await assertFinalStep(cx, { userId, policies: modePolicyKeys(existingAccount, modeChange), actor, modules: ['mail'] });
+        assertUnchangedRow(current, seen);
+        await cx.execute(`UPDATE mail_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
+      });
+    } catch (error) {
+      if (stopRequired) {
+        await (require('../services/mail-engine/runtime') as typeof import('../services/mail-engine/runtime'))
+          .resumeAccount({ userId, accountId: id, reasons: [SETTINGS_PAUSE] })
+          .catch((resumeError: Error) => log.warn('ACCOUNT', 'A refused settings change could not resume its account', undefined, resumeError));
+      }
+      throw error;
+    }
   }
 
   if (modeChange.changed) await mailWritebacks.cancelForAccount(db, id, userId, { leavingSync: modeChange.mode !== 'sync' });

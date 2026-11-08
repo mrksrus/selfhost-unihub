@@ -215,7 +215,7 @@ export = {
       return { calendar };
     } catch (error) {
       if (!(error as ApiError).status) console.error('[CALENDAR] Mail calendar update error:', error);
-      return { ...routeError(error, 'Could not change the calendar settings'), ...((error as ApiError).code ? { code: (error as ApiError).code } : {}) };
+      return routeError(error, 'Could not change the calendar settings');
     }
   },
 };

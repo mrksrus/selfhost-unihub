@@ -147,6 +147,11 @@ async function purgeAccount(userId: string, accountId: string, confirmation: unk
       await connection.beginTransaction();
       const [[account]] = await connection.execute<(RowDataPacket & { id: string; email_address: string })[]>('SELECT id, email_address FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
       if (!account) throw fail('Account not found', 404);
+      // The typed address confirmed this account: an address changed while
+      // the work stopped no longer matches it.
+      if (!adminId && !addressConfirmed(account, confirmation)) {
+        throw Object.assign(new Error('This account changed in the meantime. Try again.'), { status: 409, code: 'ACCOUNT_CHANGED' });
+      }
       // Admission locks item rows. Acquire them before the final unresolved-effect
       // check, preventing a concurrently accepted command from escaping the gate.
       const [messages] = await connection.execute<(IdRow & { raw_storage_path: string | null })[]>('SELECT id, raw_storage_path FROM emails WHERE mail_account_id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);

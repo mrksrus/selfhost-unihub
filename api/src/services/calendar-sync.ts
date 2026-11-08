@@ -20,12 +20,14 @@ import crypto from 'crypto';
 import { db } from '../state';
 import { decrypt } from '../security/encryption';
 import { canRunModule } from './access-policy';
-import { assertFinalStep, underFinalStep } from './final-step';
-import { changeInProgress, isLockWaitTimeout } from '../http/errors';
+import { assertFinalStep, underFinalStep, isRefusal } from './final-step';
+import { assertUnchanged } from './account-identity';
+import type { AccountSnapshot } from './account-identity';
+import { changeInProgress, conflict, isLockWaitTimeout } from '../http/errors';
 import type { PolicyActor } from './settings';
 import { publishCalendarChanged } from './realtime';
 import { sweepRemoteRanks } from './task-order';
-import { isDeadlock, DEADLOCK_RETRIES } from './transactions';
+import { isDeadlock, DEADLOCK_RETRIES, withTransaction } from './transactions';
 import { withNamedLock } from './named-locks';
 import { tryEventLock, fenceTaskLocks } from './calendar-move-state';
 import { takeOverlayForNewRow, applyOverlaysToLiveRows, hasPendingOverlays, sweepExpiredOverlays } from './calendar-overlays';
@@ -132,6 +134,24 @@ async function unlinkFromDeletedMail(executor: SqlExecutor, calendar: Pick<Accou
   return config;
 }
 
+// The sync's login drops a link to a deleted mail account in a transaction
+// of its own: under the account's row, still linked to that mail account,
+// which is still gone, after Calendar's final check (final-step.ts), so a
+// restore admitted or Calendar turned off meanwhile refuses it and nothing
+// changes. Returns the configuration written, or null when the row changed
+// meanwhile.
+async function unlinkDanglingMail(account: Account, mailAccountId: string) {
+  return withTransaction(async cx => {
+    const [[row]] = await cx.execute<(RowDataPacket & Pick<Account, 'id' | 'provider_config' | 'mail_account_id'>)[]>(
+      'SELECT id, provider_config, mail_account_id FROM calendar_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [account.id, account.user_id]);
+    if (!row || row.mail_account_id !== mailAccountId) return null;
+    const [[mail]] = await cx.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LOCK IN SHARE MODE', [mailAccountId, account.user_id]);
+    if (mail) return null;
+    await assertFinalStep(cx, { userId: account.user_id, modules: ['calendar'] });
+    return unlinkFromDeletedMail(cx, row, mailAccountId);
+  });
+}
+
 async function mailAccountWithAddress(account: Pick<Account, 'user_id' | 'account_email'>) {
   if (!account.account_email) return false;
   const [rows] = await db.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE user_id = ? AND LOWER(email_address) = LOWER(?) LIMIT 1', [account.user_id, account.account_email]);
@@ -172,7 +192,7 @@ function loginName(link: { mail_account_id?: string | null; mail_id?: string | n
 // write: false answers the same, refusals included, without writing: it
 // neither drops the link to a deleted mail account nor links a restored
 // calendar to its mail account (for checking a change before it is made).
-async function resolveLogin(account: Account, relinked = false, { write = true }: { write?: boolean } = {}): Promise<{ username: string | null | undefined; encryptedPassword: string }> {
+async function resolveLogin(account: Account, relinked = false, { write = true, again = false }: { write?: boolean; again?: boolean } = {}): Promise<{ username: string | null | undefined; encryptedPassword: string }> {
   const [[link]] = await db.execute<LoginLink[]>(`SELECT ca.provider, ca.provider_config, ca.account_email, ca.username, ca.encrypted_password, ca.mail_account_id,
       m.id AS mail_id, ${LOGIN_MAIL_USERNAME} AS mail_username, m.encrypted_password AS mail_password,
       (${MAIL_CONNECTED_SQL}) AS mail_connected
@@ -184,8 +204,10 @@ async function resolveLogin(account: Account, relinked = false, { write = true }
   if (current.mail_account_id && !link.mail_id) {
     // Its mail account was deleted: the link goes, and it looks for a mail
     // account with its address again.
-    current.provider_config = write ? await unlinkFromDeletedMail(db, current, current.mail_account_id)
-      : JSON.stringify({ ...((jsonValue(current.provider_config, {}) || {}) as AccountConfig), mailLinked: true });
+    const written = write ? await unlinkDanglingMail(current, current.mail_account_id) : null;
+    // Changed meanwhile: read once more, and then without writing.
+    if (write && written === null) return resolveLogin(account, relinked, { write: !again, again: true });
+    current.provider_config = written ?? JSON.stringify({ ...((jsonValue(current.provider_config, {}) || {}) as AccountConfig), mailLinked: true });
     current.mail_account_id = null;
     if (current.provider === 'caldav') current.encrypted_password = null;
   }
@@ -358,11 +380,22 @@ async function deleteCalendarsWithEvents(connection: SqlExecutor, userId: string
 // Under the account's row, the final check (final-step.ts): accounts.remove
 // (an administrator's actor passes it), Calendar on and not being restored.
 // record: written with the deletion (an administrator's activity-log entry).
-async function deleteCalendarAccount(userId: string, accountId: string, { actor = {}, record }: { actor?: PolicyActor; record?: (connection: SqlExecutor) => Promise<unknown> } = {}) {
+// expectMail: the mail links the caller saw (a mail account's calendar
+// turned off): one another connect took over for another mail account
+// meanwhile is refused with 409 MAIL_CALENDAR_CHANGED. snapshot: the account
+// as the caller chose it (account-identity.ts); one gone, or whose login,
+// password or server changed meanwhile, is refused with 409 ACCOUNT_CHANGED.
+async function deleteCalendarAccount(userId: string, accountId: string, { actor = {}, record, expectMail, snapshot }: {
+  actor?: PolicyActor; record?: (connection: SqlExecutor) => Promise<unknown>; expectMail?: readonly (string | null)[]; snapshot?: AccountSnapshot;
+} = {}) {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
-    await connection.execute('SELECT id FROM calendar_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
+    const [[row]] = await connection.execute<RowDataPacket[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
+    if (row && expectMail && !expectMail.includes(row.mail_account_id ?? null)) {
+      throw conflict('MAIL_CALENDAR_CHANGED', 'The calendar of this mail account changed meanwhile. Try again.');
+    }
+    if (snapshot) assertUnchanged(row, snapshot, expectMail ?? [snapshot.link]);
     await assertFinalStep(connection, { userId, policies: ['accounts.remove'], actor, modules: ['calendar'] });
     const [calendars] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_calendars WHERE account_id = ? AND user_id = ?', [accountId, userId]);
     await deleteCalendarsWithEvents(connection, userId, calendars.map(row => row.id));
@@ -958,19 +991,30 @@ async function runAccountSync(accountId: string, { userId, reason, full, pass }:
 // disconnected. Its reconnect may have joined this run instead of starting
 // one, so the calendar syncs again right after it.
 async function noteMissingLogin(account: Account, message: string) {
-  const [noted] = await db.execute<ResultSetHeader>(`UPDATE calendar_accounts ca
-    LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
-    SET ca.sync_status = 'paused', ca.sync_error = ?, ca.next_sync_at = UTC_TIMESTAMP() + INTERVAL ? SECOND
-    WHERE ca.id = ? AND ca.is_active = TRUE AND (ca.mail_account_id IS NULL OR m.id IS NULL OR NOT (${MAIL_CONNECTED_SQL}))`,
-  [message, Math.round(SYNC_INTERVAL_MS / 1000), account.id]);
-  if (!noted.affectedRows) {
-    const current = await loadAccount(account.id, account.user_id);
-    if (current?.is_active && current.mail_account_id) {
-      await db.execute("UPDATE calendar_accounts SET sync_status = 'pending', next_sync_at = NULL WHERE id = ? AND is_active = TRUE", [account.id]);
-      followUps.add(account.id);
+  // Under the account's row and Calendar's final check (final-step.ts): a
+  // restore admitted or Calendar turned off meanwhile leaves the row as it
+  // is (false; the sync is paused).
+  const noted = await withTransaction(async cx => {
+    await cx.execute('SELECT id FROM calendar_accounts WHERE id = ? FOR UPDATE', [account.id]);
+    try { await assertFinalStep(cx, { userId: account.user_id, modules: ['calendar'] }); } catch (error) {
+      if (isRefusal(error)) return 'refused' as const;
+      throw error;
     }
-  }
+    const [paused] = await cx.execute<ResultSetHeader>(`UPDATE calendar_accounts ca
+      LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
+      SET ca.sync_status = 'paused', ca.sync_error = ?, ca.next_sync_at = UTC_TIMESTAMP() + INTERVAL ? SECOND
+      WHERE ca.id = ? AND ca.is_active = TRUE AND (ca.mail_account_id IS NULL OR m.id IS NULL OR NOT (${MAIL_CONNECTED_SQL}))`,
+    [message, Math.round(SYNC_INTERVAL_MS / 1000), account.id]);
+    if (paused.affectedRows) return 'paused' as const;
+    const [[current]] = await cx.execute<RowDataPacket[]>('SELECT is_active, mail_account_id FROM calendar_accounts WHERE id = ?', [account.id]);
+    if (!Number(current?.is_active) || !current?.mail_account_id) return 'unchanged' as const;
+    await cx.execute("UPDATE calendar_accounts SET sync_status = 'pending', next_sync_at = NULL WHERE id = ? AND is_active = TRUE", [account.id]);
+    return 'again' as const;
+  });
+  if (noted === 'refused') return false;
+  if (noted === 'again') followUps.add(account.id);
   publishCalendarChanged(account.user_id, account.id, 'status');
+  return true;
 }
 
 const MISSING_LOGIN = new Map([['MAIL_ACCOUNT_DISCONNECTED', 'mail-disconnected'], ['CALDAV_NO_PASSWORD', 'no-password'], ['MAIL_CALENDAR_UNLINKED', 'mail-unlinked']]);
@@ -989,7 +1033,7 @@ async function syncLocked(accountId: string, { userId, full, background = false 
       const code = (error as ApiError).code;
       if (code === 'RESTORE_IN_PROGRESS' || code === 'MODULE_DISABLED') return { skipped: true, reason: 'paused' };
       if (!code || !MISSING_LOGIN.has(code)) throw error;
-      await noteMissingLogin(account, (error as ApiError).message);
+      if (!await noteMissingLogin(account, (error as ApiError).message)) return { skipped: true, reason: 'paused' };
       return { skipped: true, reason: MISSING_LOGIN.get(code) };
     }
   }
@@ -1281,10 +1325,14 @@ async function pushEventDelete({ userId, event, scope, beforeRemove }: EventInpu
     return { localOnly: true };
   }
   assertWritable(base);
+  // One date goes for good, under its final check (below): until then the
+  // login links nothing, so a refusal leaves a restored calendar unlinked
+  // with its password (the sync links it).
+  const recurring = isRecurringIcs(link.object.ics);
+  const occurrence = recurring && !!link.recurrenceId && scope !== 'series';
   return withWriteContext(base, async ctx => {
     const url = objectUrl(ctx.account, link.object);
-    const recurring = isRecurringIcs(link.object.ics);
-    if (recurring && link.recurrenceId && scope !== 'series') {
+    if (occurrence) {
       const ics = ical.removeOccurrenceIcs(link.object.ics, link.recurrenceId, { userTimeZone: ctx.timeZone });
       if (ics) {
         await fenceTaskLocks();
@@ -1305,7 +1353,7 @@ async function pushEventDelete({ userId, event, scope, beforeRemove }: EventInpu
     await removeObjects(rebuildContext(ctx), [link.object.id], new Set(), beforeRemove);
     publishCalendarChanged(userId, ctx.account.id, 'local');
     return { scope: 'series' };
-  });
+  }, { linking: !occurrence });
 }
 
 // Route response for a failed sync or writeback. Raw server statuses must not

@@ -8,6 +8,9 @@ import { CALENDAR_MULTI_ENABLED } from '../config';
 import { CALENDAR_PROVIDER_DEFAULT_CAPABILITIES, normalizeCalendarAccountProvider, serializeCalendarAccount } from './calendar';
 import * as calendarAccounts from './calendar-accounts';
 import * as calendarSync from './calendar-sync';
+import { withTransaction } from './transactions';
+import { assertFinalStep } from './final-step';
+import { accountSnapshot, lockUnchanged } from './account-identity';
 
 // Adding, changing and removing a calendar account: POST, PUT and DELETE
 // /api/calendar/accounts[/:id] (routes/calendar.ts) and the administrator's
@@ -100,7 +103,7 @@ async function updateCalendarAccount(userId: string, id: string, body: Input) {
   const [existing] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
   if (existing.length === 0) return { error: 'Calendar account not found', status: 404 };
 
-  const updates = [];
+  const updates: string[] = [];
   const params: ExecuteValues[] = [];
   if (Object.prototype.hasOwnProperty.call(body, 'account_email')) {
     updates.push('account_email = ?');
@@ -145,7 +148,15 @@ async function updateCalendarAccount(userId: string, id: string, body: Input) {
   if (updates.length === 0) return { error: 'No fields to update', status: 400 };
 
   params.push(id, userId);
-  await db.execute(`UPDATE calendar_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
+  // Under the account's row, still the account read above (its password and
+  // resume were decided from it; account-identity.ts), and Calendar's final
+  // check (final-step.ts): on and not being restored, as committed now.
+  const seen = accountSnapshot('calendar', account);
+  await withTransaction(async cx => {
+    await lockUnchanged(cx, userId, seen);
+    await assertFinalStep(cx, { userId, modules: ['calendar'] });
+    await cx.execute(`UPDATE calendar_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
+  });
   if (resume) calendarSync.syncCalendarAccountInBackground(id, { userId, reason: 'manual' });
   const [rows] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
   return { account: serializeCalendarAccount(rows[0]) };
@@ -171,7 +182,8 @@ async function deleteCalendarAccount(userId: string, id: string, { actor = {}, r
   }
 
   // Only the copies in UniHub are removed; the server keeps its calendars.
-  await calendarAccounts.removeCalendarAccount(userId, id, { actor, record });
+  // The account read above, unless it changed meanwhile (account-identity.ts).
+  await calendarAccounts.removeCalendarAccount(userId, id, { actor, record, snapshot: accountSnapshot('calendar', account) });
   return { message: 'Calendar account deleted' };
 }
 

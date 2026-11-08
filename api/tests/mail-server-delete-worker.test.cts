@@ -80,14 +80,20 @@ test(`server deletion worker: ${scenario}`, async (t) => {
       if (sql.includes('FROM mail_accounts') && sql.includes('SELECT *')) {
         return [[{
           id: 'account-1',
+          provider: 'custom',
           sync_mode: scenario === 'already-sync' ? 'sync' : 'download',
           user_id: 'user-1',
           email_address: 'person@example.com',
           username: 'person@example.com',
           imap_host: '93.184.216.34', // Public literal; the mocked transport never connects.
           imap_port: 993,
+          smtp_host: '93.184.216.34',
+          smtp_port: 465,
           encrypted_password: 'encrypted-secret',
           allow_self_signed: 0,
+          delete_emails_on_server: 1,
+          is_active: 1,
+          disconnected_at: null,
         }]];
       }
       if (sql.includes('FROM mail_server_messages m JOIN emails e')) {
