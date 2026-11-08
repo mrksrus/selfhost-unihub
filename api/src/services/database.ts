@@ -404,19 +404,6 @@ const MIGRATIONS: readonly Migration[] = [
       if (!await hasColumn(connection, 'calendar_overlay_restores', 'failed_at')) throw new Error('calendar_overlay_restores.failed_at is missing');
     },
   },
-  {
-    // 0.28.0: a folder deletion at the provider records each server's step
-    // apart from the live mailbox state, bound to the mailbox generation it
-    // targeted (services/mail-folder-delete.ts).
-    id: 26,
-    name: 'mail-folder-deletions',
-    up: async (connection: PoolConnection) => { await addMailFolderDeletions(connection); },
-    verify: async (connection: PoolConnection) => {
-      await verifyDatabaseInventory(connection, { throughMigration: 26 });
-      if (!await hasIndex(connection, 'mail_folder_deletions', 'uq_mail_folder_deletion')) throw new Error('mail_folder_deletions.uq_mail_folder_deletion is missing');
-      if (await columnCollation(connection, 'mail_folder_deletions', 'remote_name') !== 'utf8mb4_nopad_bin') throw new Error('mail_folder_deletions.remote_name does not compare exactly');
-    },
-  },
 ];
 const LATEST_MIGRATION_ID = MIGRATIONS[MIGRATIONS.length - 1].id;
 
@@ -737,29 +724,6 @@ async function columnIsNullable(connection: SqlExecutor, table: string, column: 
 async function columnCollation(connection: SqlExecutor, table: string, column: string) {
   const [rows] = await connection.execute<(RowDataPacket & { Collation: string | null })[]>(`SHOW FULL COLUMNS FROM ${quoteIdentifier(table)} WHERE Field = ?`, [column]);
   return rows[0]?.Collation ?? null;
-}
-
-// One row per server copy of a folder being deleted there: `sending` once a
-// DELETE may go out, `deleted` once the server confirmed it, gone once UniHub
-// settled the folder locally (or the server refused). `uidvalidity` is the
-// mailbox generation the DELETE was meant for, so a folder made again under
-// the same name is never taken for it.
-async function addMailFolderDeletions(connection: SqlExecutor) {
-  await connection.execute(`CREATE TABLE IF NOT EXISTS mail_folder_deletions (
-    id CHAR(36) NOT NULL PRIMARY KEY,
-    user_id CHAR(36) NOT NULL,
-    mail_account_id CHAR(36) NOT NULL,
-    remote_name VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NOT NULL,
-    uidvalidity BIGINT UNSIGNED NOT NULL,
-    state VARCHAR(16) NOT NULL,
-    attempt CHAR(36) NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_mail_folder_deletion (mail_account_id, remote_name),
-    KEY idx_mail_folder_deletions_owner (user_id, mail_account_id),
-    CONSTRAINT mail_folder_deletions_ibfk_1 FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
-    CONSTRAINT mail_folder_deletions_ibfk_2 FOREIGN KEY (mail_account_id) REFERENCES mail_accounts (id) ON DELETE CASCADE
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 }
 
 // DDL commits on its own: each part checks whether an earlier, interrupted

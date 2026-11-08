@@ -87,7 +87,13 @@ async function createNow(userId: string, body: Input, actor: PolicyActor) {
   const accountId = crypto.randomUUID();
   const capabilities = CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.local;
 
-  await db.execute(
+  // A local account needs no accounts.add admission, but it is still written
+  // under Calendar's final check (final-step.ts): on and not being restored,
+  // and the request's caller still as its route proved them (an
+  // administrator acting for the person, caller-proof.ts).
+  await withTransaction(async cx => {
+  await assertFinalStep(cx, { userId, modules: ['calendar'] });
+  await cx.execute(
     `INSERT INTO calendar_accounts
       (id, user_id, provider, account_email, display_name, capabilities, is_active)
      VALUES (?, ?, 'local', ?, ?, ?, ?)`,
@@ -101,7 +107,7 @@ async function createNow(userId: string, body: Input, actor: PolicyActor) {
     ]
   );
 
-  await db.execute(
+  await cx.execute(
     `INSERT INTO calendar_calendars
       (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
      VALUES (?, ?, ?, ?, ?, ?, TRUE, TRUE, FALSE, TRUE)`,
@@ -114,6 +120,7 @@ async function createNow(userId: string, body: Input, actor: PolicyActor) {
       body.default_calendar_color || '#2563eb',
     ]
   );
+  });
 
   const [rows] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
   const created = rows[0];

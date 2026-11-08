@@ -3,7 +3,7 @@
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
--- Through migration 26.
+-- Through migration 25.
 
 CREATE TABLE `audit_log` (
   `id` char(36) NOT NULL DEFAULT uuid(),
@@ -848,23 +848,6 @@ CREATE TABLE `mail_engine_quarantine` (
   `created_at` datetime NOT NULL DEFAULT current_timestamp(),
   PRIMARY KEY (`source_table`,`source_id`,`reason`),
   KEY `idx_quarantine_account` (`user_id`,`mail_account_id`,`reason`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE `mail_folder_deletions` (
-  `id` char(36) NOT NULL,
-  `user_id` char(36) NOT NULL,
-  `mail_account_id` char(36) NOT NULL,
-  `remote_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NOT NULL,
-  `uidvalidity` bigint(20) unsigned NOT NULL,
-  `state` varchar(16) NOT NULL,
-  `attempt` char(36) NOT NULL,
-  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
-  `updated_at` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_mail_folder_deletion` (`mail_account_id`,`remote_name`),
-  KEY `idx_mail_folder_deletions_owner` (`user_id`,`mail_account_id`),
-  CONSTRAINT `mail_folder_deletions_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `mail_folder_deletions_ibfk_2` FOREIGN KEY (`mail_account_id`) REFERENCES `mail_accounts` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `mail_folder_reconciliations` (

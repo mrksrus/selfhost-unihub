@@ -591,9 +591,9 @@ now when a change runs. The lock is keyed by the person's id as the
 database compares it (without case); an administrator's routes take the
 person's id only as a UUID (`400 INVALID_USER_ID` otherwise) and use its
 stored spelling. An account's id is resolved to its stored spelling the
-same way before a change takes its locks, and every in-process map of an
-account's work (its lock, running sync, connections, IDLE, foreground
-turn) folds case, so a pause through another spelling still stops it. Two of a
+same way before a change takes its locks, and the mail account's lock and
+a calendar account's work (its running sync) fold case, so a pause through
+another spelling still stops it. Two of a
 person's changes therefore never interleave: the later one starts from
 what the earlier one left. The final check still covers what others commit
 meanwhile: rules, module switches, restores.
@@ -622,34 +622,18 @@ and write nothing. The mail account's set of linked calendars, and the
 link of the one it turns off, are checked the same way and answer `409
 MAIL_CALENDAR_CHANGED`. A folder on several mail accounts is deleted at the
 provider only after every one of them was connected and checked, under one
-final check held until the last server answered. Before anything is sent,
-each server is asked what it holds under the name: its complete folder
-listing and STATUS of that name. A DELETE goes only to the mailbox
-generation (UIDVALIDITY) STATUS reports; a folder is taken as gone only
-when both say so (a listing with an entry it cannot read proves nothing,
-for folder discovery too); anything unclear is `502 MAIL_SERVER_ERROR` with
-nothing changed. Each step is recorded apart from the live mailbox state
-discovery keeps, in `mail_folder_deletions` (upgrade step 26), with that
-generation, in transactions of their own: `sending` before a DELETE can go
-out, `deleted` once the server confirmed it, gone when the server refused
-or once UniHub settled the folder. Until the first DELETE is sent, a
-failure (the record's own commit included) takes the record back and stays
-the answer. What the servers answered counts even when the check's own end
+final check held until the last server answered; a refusal sends no
+DELETE. What the servers answered counts even when the check's own end
 fails. A server that fails a DELETE after others succeeded stops the rest,
-the deleted copies are settled locally (only that generation's mail) and
-never sent again (a retry settles them without a DELETE), and the answer
-is `409 FOLDER_PARTLY_DELETED` with `details.deleted_on`,
-`details.remaining_on` (addresses) and `details.settled`. A DELETE sent
-without a known answer is checked on the next attempt: proven gone, it is
-settled without one; the same generation still there, it is sent again. A
-folder made again under the name since a DELETE went (another
-UIDVALIDITY, from the server or a folder check) is never taken for the one
-deleted: the attempt answers `409 FOLDER_RECREATED`, sends nothing and
-forgets the old record, so the next attempt deletes the new folder as a
-deletion of its own. A server's refusal with nothing deleted is `502
-MAIL_SERVER_ERROR` in UniHub's words; the server's own text goes only to
-the log. The record is never in a personal backup; an instance restore
-drops it. Reading a mail
+the deleted copies are settled locally at once and this attempt sends
+nothing again, and the answer is `409 FOLDER_PARTLY_DELETED` with
+`details.deleted_on`, `details.remaining_on` (addresses) and
+`details.settled`. UniHub sends no DELETE again by itself and keeps no
+record across attempts: deleting the folder again asks every server
+again, and one that already deleted its copy answers that it has none (as
+in 0.27). A server's refusal, or a DELETE without an answer, with nothing
+deleted is `502 MAIL_SERVER_ERROR` in UniHub's words; the server's own
+text goes only to the log. Reading a mail
 account's calendar writes nothing (a restored one shows `link_pending`).
 The sync's login drops a link to a deleted mail account, and notes a
 missing login, only under Calendar's check; refused, the sync pauses and
