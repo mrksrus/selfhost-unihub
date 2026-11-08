@@ -1,6 +1,7 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { AuthRequest, SqlExecutor } from '../types';
 
+import crypto from 'crypto';
 import { db } from '../state';
 import { getClientIP } from '../auth';
 import { currentRequestId, log } from '../log';
@@ -53,6 +54,29 @@ async function recordAuditAfter(entry: AuditEntry) {
   await recordAudit(entry).catch(error => log.error('AUDIT', 'Could not record an audit entry', error, { action: entry.action }));
 }
 
+// A change with no one transaction to write its entry in (it talks to a
+// provider, or it is another service's): the entry is written first, with
+// outcome 'pending', and the change only starts once it is stored, so no
+// change ever lacks one. settleAudit then records the outcome ('done' or
+// 'failed') and what only the change knows (the new account's id). An entry
+// left 'pending' (a crash, a failed write) says the change may have happened.
+type AuditOutcome = 'pending' | 'done' | 'failed';
+
+/** Writes the entry before the change, with outcome 'pending'; throws on failure. Returns its id. */
+async function recordAuditIntent(entry: AuditEntry): Promise<string> {
+  const id = crypto.randomUUID();
+  const details = { ...entry.details, outcome: 'pending' satisfies AuditOutcome };
+  await db.execute(`INSERT INTO audit_log (id, actor_id, action, target_user_id, ip_address, request_id, details)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`, [id, entry.actorId, entry.action, entry.targetUserId ?? null, clientAddress(entry.req), currentRequestId(), JSON.stringify(details)]);
+  return id;
+}
+
+/** Records the outcome of the change of an intent; a failure is logged, the entry then stays 'pending'. */
+async function settleAudit(id: string, outcome: Exclude<AuditOutcome, 'pending'>, details: AuditDetails = {}) {
+  await db.execute('UPDATE audit_log SET details = JSON_MERGE_PATCH(COALESCE(details, JSON_OBJECT()), ?) WHERE id = ?', [JSON.stringify({ ...details, outcome }), id])
+    .catch(error => log.error('AUDIT', 'Could not record the outcome of an audit entry', error, { id }));
+}
+
 interface AuditRow extends RowDataPacket {
   id: string; created_at: Date | string; action: string; actor_id: string | null; actor_email: string | null;
   target_user_id: string | null; target_email: string | null; ip_address: string | null; request_id: string | null; details: unknown;
@@ -85,5 +109,5 @@ async function pruneAuditLog(executor: SqlExecutor = db) {
   return result.affectedRows;
 }
 
-export { AUDIT_ACTIONS, RETENTION_DAYS, recordAudit, recordAuditAfter, listAuditLog, pruneAuditLog };
-export type { AuditAction, AuditDetails };
+export { AUDIT_ACTIONS, RETENTION_DAYS, recordAudit, recordAuditAfter, recordAuditIntent, settleAudit, listAuditLog, pruneAuditLog };
+export type { AuditAction, AuditDetails, AuditEntry };

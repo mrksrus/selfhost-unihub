@@ -20,7 +20,7 @@ import {
   clearCsrfCookie,
   SESSION_DAYS,
 } from '../auth';
-import { acknowledgeAtSignup, dataRules, getSignupMode } from '../services/settings';
+import { acknowledgeAtSignup, getSignupMode, signupRules } from '../services/settings';
 import {
   generateTwoFactorSecret,
   verifyTotp,
@@ -54,6 +54,7 @@ interface Input {
   email: string;
   password: string;
   full_name?: string | null;
+  rules_revision?: unknown;
   challenge_token?: unknown;
   code?: string;
   secret?: unknown;
@@ -123,7 +124,7 @@ export = defineRoutes({
   // SignupDataRules), so the form can list them before anyone signs up.
   'GET /api/auth/signup-mode': { auth: 'public', module: null, handler: async () => {
     try {
-      return { signup_mode: await getSignupMode(), data_rules: await dataRules() };
+      return { signup_mode: await getSignupMode(), ...await signupRules() };
     } catch {
       return { signup_mode: 'disabled', data_rules: [] };
     }
@@ -169,8 +170,8 @@ export = defineRoutes({
         'INSERT INTO users (id, email, password_hash, full_name, email_verified, is_active) VALUES (?, ?, ?, ?, TRUE, ?)',
         [newUserId, email, passwordHash, full_name || null, isActive]
       );
-      // The form listed the data rules in force; the new account has seen them.
-      await acknowledgeAtSignup(newUserId);
+      // The form listed the data rules of the revision it sends back.
+      await acknowledgeAtSignup(newUserId, body?.rules_revision);
 
       // If approval required, don't create session or return token
       if (!isActive) {

@@ -157,12 +157,13 @@ Public endpoint:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/auth/signup-mode` | Return current signup mode and `data_rules`: the [data-safety rules](#data-safety-policies) in force, in plain words, so the form can list them |
-| POST | `/api/auth/signup` | Create account according to signup mode |
+| GET | `/api/auth/signup-mode` | Return current signup mode, `data_rules`: the [data-safety rules](#data-safety-policies) in force, in plain words, so the form can list them, and `rules_revision`, their revision |
+| POST | `/api/auth/signup` | Create account according to signup mode; `rules_revision` is the revision of the rules the form listed |
 
-A person who signs up has seen the rules listed on the form, so their account
-starts with the current rules revision confirmed and the notice is not shown
-to them.
+A person who signs up has seen the rules listed on the form: their account
+starts with the `rules_revision` the form sends back confirmed. Rules saved
+after the form loaded, or a form that sends no revision, leave the notice due
+after the first sign-in.
 
 ## Sign-In Flow
 
@@ -370,10 +371,15 @@ the actor, the account concerned, the address and the request id; details hold
 only a role or mode, or for mail the account's id and the numbers of messages
 and calendar events removed, never a password, code, token or mail address. Entries about an account that later
 got deleted stay, without its address. An entry written for a change that runs
-in a transaction commits or rolls back with it. Entries older than 365 days are
-deleted by the hourly session cleanup. The log is server-local: backups and
-restores do not carry it. Admins read it in Settings > Server settings >
-Activity.
+in a transaction commits or rolls back with it. An administrator's change for a
+person always has its entry: in the change's transaction where there is one
+(removing a calendar or mail account, the bin, Delete data), else written
+first with `outcome: "pending"` and then set to `done` or `failed` (adding or
+changing an account, deleting a backup); an entry that cannot be written stops
+the change, and one left `pending` means the change may have happened.
+Entries older than 365 days are deleted by the hourly session cleanup. The
+log is server-local: backups and restores do not carry it. Admins read it in
+Settings > Server settings > Activity.
 
 Safety checks:
 
@@ -538,17 +544,25 @@ refuses before anything happens. A rule that depends on the body is checked
 by the service that takes it, with the same `403 POLICY_FORBIDS` and its
 reason: the mode and the provider-deletion switch of a new or changed mail
 account (`services/mail-account-mode.ts`), and turning a mail account's linked
-calendar on or off. A backup younger than `backup.server_retention_days` is
+calendar on or off, which decides from a read that changes nothing. A backup
+younger than `backup.server_retention_days`, or one still being made, is
 refused with the date from which it can be deleted
-(`services/backup-policy.ts`).
+(`services/backup-policy.ts`); a failed or cancelled one can go at once.
+
+A step that deletes or erases after waiting asks again when it acts, under the
+rules revision row: an administrator's save locks that row first, so it
+commits either before the step reads the rules or after the step. Deletion at
+the provider asks before queueing a message and holds the row while it sends
+the erase; the bin's purge reads its minimum after its row locks.
 
 **The bin's minimum.** While `bin.delete` is forbidden, the bin keeps items at
 least as long as the administrator's minimum (`30`, `90` days or `forever`,
 by default `forever`; `bin_min_retention` on the policies routes, stored as
 `policy.bin.min_retention`). It is the floor of the person's `bin_retention`:
 a shorter choice reads as the minimum and saving one is refused with `403
-POLICY_FLOOR`; a longer one stays. The purge asks again before it deletes
-anything, and the bin shows when each item can go at the earliest.
+POLICY_FLOOR`; a longer one stays. The purge asks again, under its locks,
+before it deletes anything, and the bin shows when each item can go at the
+earliest.
 
 **Saving.** `PUT /api/admin/policies` takes `{ "values": { ... },
 "bin_min_retention"?: ..., "current_password": "..." }` with only the changed
@@ -566,7 +580,7 @@ holds. When that list changes, the rules revision (`system_settings`
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/policies/effective` | Every key as it applies to the person (`value`, `source`, `allowed`, `reason`), the `rules`, the current `revision` and the person's `acknowledged_revision` |
+| GET | `/api/policies/effective` | Every key as it applies to the person (`value`, `source`, `allowed`, `reason`), the `rules`, the current `revision` and the person's `acknowledged_revision`, all from one consistent read, so the rules are those of the revision |
 | POST | `/api/policies/acknowledge` | `{ "revision": n }`: the person confirmed the rules of that revision (`policy_notices`, never restored); a revision that does not exist yet is `400 POLICY_REVISION_INVALID` |
 
 While `acknowledged_revision` is below `revision`, the app shows the rules once
@@ -598,7 +612,7 @@ These routes are for the current user and require CSRF:
 | DELETE | `/api/settings/account` | Delete current user and associated uploaded files; needs `{ "current_password": "..." }` (`account.delete`) |
 | POST | `/api/settings/clear-contacts` | Delete all contacts (`data.clear`) |
 | POST | `/api/settings/clear-calendar` | Delete calendar/to-do data and recreate default local calendar (`data.clear`, `accounts.remove`) |
-| POST | `/api/settings/clear-mail-accounts` | Delete all mail accounts and attachment files (`data.clear`, `accounts.remove`, `accounts.reset`); `409 MAIL_OPERATIONS_UNRESOLVED` while a provider change has an unresolved outcome |
+| POST | `/api/settings/clear-mail-accounts` | Delete all mail accounts and attachment files (`data.clear`, `accounts.remove`, `accounts.reset`); `409 MAIL_OPERATIONS_UNRESOLVED` while a provider change has an unresolved outcome; with calendars connected from mail, also Calendar's module switch and restore lock |
 | POST | `/api/settings/clear-recordings` | Delete all recordings and files (`data.clear`) |
 | GET | `/api/settings/mail-sender-candidates` | Suggest sender/domain rule candidates from local mail |
 
@@ -606,7 +620,10 @@ The four clears are `services/data-clear.ts`, shared with the administrator's
 path. Clearing mail accounts refuses, as purging one account does, while a
 provider change has an unresolved outcome: it stops the accounts' work, then
 checks again under the locks of the accounts and their messages, so a change
-accepted meanwhile cannot slip past.
+accepted meanwhile cannot slip past. It unlinks the calendars connected from
+the accounts, so while there are any it is also a change to Calendar: refused
+while Calendar is off (`403 MODULE_DISABLED`) or being restored (`409
+RESTORE_IN_PROGRESS`), before any work stops and again under the locks.
 
 Account deletion (`services/user-lifecycle.ts`, shared with the admin route)
 stops the user's mail work, deletes the `users` row (every table cascades from

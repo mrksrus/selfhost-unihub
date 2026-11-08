@@ -60,7 +60,7 @@ test('policies, notices and the administrator\'s path for a person, with an owne
       effect: 'A backup younger than this cannot be deleted by its owner; nothing is deleted automatically.' });
     assert.deepEqual([fresh.bin_min_retention.value, fresh.bin_min_retention.applies, fresh.bin_min_retention.values], ['forever', false, ['30', '90', 'forever']]);
     assert.deepEqual((await call(alex, 'GET', '/api/policies/effective')).rules, []);
-    assert.deepEqual(await call(api.client(), 'GET', '/api/auth/signup-mode'), { signup_mode: 'disabled', data_rules: [] });
+    assert.deepEqual(await call(api.client(), 'GET', '/api/auth/signup-mode'), { signup_mode: 'disabled', data_rules: [], rules_revision: 0 });
 
     // Refused without a change or an entry: a stranger, no password, a wrong one, a key or value the server does not know, a conflict.
     await call(blair, 'PUT', '/api/admin/policies', { values: { 'bin.delete': 'forbidden' }, current_password: password }, 403);
@@ -124,16 +124,20 @@ test('policies, notices and the administrator\'s path for a person, with an owne
     assert.deepEqual([next.revision, next.acknowledged_revision], [revision + 1, revision]);
     assert.ok(next.rules.includes(POLICIES['account.delete'].reasons.forbidden));
 
-    // Sign-up lists the same rules; a person who signs up has seen them.
+    // Sign-up lists the same rules with their revision; a person who signs up
+    // has seen the revision the form sends back, and only that one.
     await pool.execute("INSERT INTO system_settings (setting_key, setting_value) VALUES ('signup_mode', 'open') ON DUPLICATE KEY UPDATE setting_value = 'open'");
     const signup = await call(api.client(), 'GET', '/api/auth/signup-mode');
-    assert.deepEqual(signup, { signup_mode: 'open', data_rules: next.rules });
-    const newcomer = api.client();
-    const created = await newcomer.request('POST', '/api/auth/signup', { email: 'casey@example.test', password, full_name: 'Casey' });
-    assert.ok([200, 201].includes(created.status), JSON.stringify(created.body));
-    assert.equal((await call(newcomer, 'GET', '/api/policies/effective')).acknowledged_revision, next.revision);
+    assert.deepEqual(signup, { signup_mode: 'open', data_rules: next.rules, rules_revision: next.revision });
+    for (const [name, shown, acknowledged] of [['casey', next.revision, next.revision], ['dana', revision, revision], ['emery', undefined, 0], ['flynn', next.revision + 1, 0]] as const) {
+      const newcomer = api.client();
+      const created = await newcomer.request('POST', '/api/auth/signup', { email: `${name}@example.test`, password, full_name: name, rules_revision: shown });
+      assert.ok([200, 201].includes(created.status), JSON.stringify(created.body));
+      const seen = await call(newcomer, 'GET', '/api/policies/effective');
+      assert.deepEqual([name, seen.acknowledged_revision, seen.revision], [name, acknowledged, next.revision], 'the notice is due unless the form showed the current rules');
+    }
     await pool.execute("UPDATE system_settings SET setting_value = 'disabled' WHERE setting_key = 'signup_mode'");
-    await pool.execute("DELETE FROM users WHERE email = 'casey@example.test'");
+    await pool.execute("DELETE FROM users WHERE email IN ('casey@example.test', 'dana@example.test', 'emery@example.test', 'flynn@example.test')");
     await setPolicies({ 'bin.delete': 'allowed', 'accounts.remove': 'allowed', 'account.delete': 'allowed' });
   });
 

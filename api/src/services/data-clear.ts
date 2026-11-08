@@ -7,7 +7,7 @@ import { withTransaction } from './transactions';
 import { isModuleEnabled } from './module-settings';
 import { isSectionRestoreActive } from './restore-locks';
 import { assertAllowed } from './settings';
-import { recordAudit, recordAuditAfter } from './audit';
+import { recordAudit } from './audit';
 import type { PolicyActor } from './settings';
 
 // Settings → Delete data: every item of one module, for good (no bin). The
@@ -18,7 +18,9 @@ import type { PolicyActor } from './settings';
 // the person's switch and restore lock itself, and the policies (data.clear,
 // and for calendar and mail the accounts it removes) for the person's own
 // requests. Clearing mail refuses, as purging one account does, while a
-// provider change has an unresolved outcome (D41).
+// provider change has an unresolved outcome (D41), and, while calendars are
+// connected from the mail accounts, as a change to Calendar: with Calendar
+// off or being restored.
 
 type ClearTarget = AdminClearModule;
 interface ClearActor extends PolicyActor { req?: AuthRequest | null }
@@ -34,10 +36,13 @@ const POLICIES_OF = {
 const CLEAR_TARGETS = Object.keys(MODULE_OF) as ClearTarget[];
 const isClearTarget = (value: unknown): value is ClearTarget => typeof value === 'string' && Object.prototype.hasOwnProperty.call(MODULE_OF, value);
 
+async function assertModuleWritable(userId: string, module: string, executor: SqlExecutor = db) {
+  if (!await isModuleEnabled(userId, module, executor)) throw forbidden('MODULE_DISABLED', 'This module is disabled. Enable it in Settings.', { module });
+  if (await isSectionRestoreActive(userId, module, executor)) throw conflict('RESTORE_IN_PROGRESS', `Restore in progress for ${module}. This section is temporarily read-only.`);
+}
+
 async function assertClearable(userId: string, target: ClearTarget, actor: ClearActor) {
-  const module = MODULE_OF[target];
-  if (!await isModuleEnabled(userId, module)) throw forbidden('MODULE_DISABLED', 'This module is disabled. Enable it in Settings.', { module });
-  if (await isSectionRestoreActive(userId, module)) throw conflict('RESTORE_IN_PROGRESS', `Restore in progress for ${module}. This section is temporarily read-only.`);
+  await assertModuleWritable(userId, MODULE_OF[target]);
   await assertAllowed(userId, POLICIES_OF[target], actor);
 }
 
@@ -88,6 +93,8 @@ async function countUnresolved(userId: string, executor: SqlExecutor) {
 async function clearMailAccounts(userId: string, actor: ClearActor): Promise<ClearResult> {
   // Refused before any work stops, then checked again under the locks.
   if (await countUnresolved(userId, db)) throw unresolvedOperations();
+  const [[connected]] = await db.execute<RowDataPacket[]>('SELECT COUNT(*) AS count FROM calendar_accounts WHERE user_id = ? AND mail_account_id IS NOT NULL', [userId]);
+  if (Number(connected.count)) await assertModuleWritable(userId, 'calendar');
   const mail = require('./mail') as typeof import('./mail');
   const [accounts] = await db.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM mail_accounts WHERE user_id = ? ORDER BY id', [userId]);
   for (const account of accounts) await mail.stopMailAccountWork(account.id, 'Mail accounts deleted');
@@ -102,6 +109,7 @@ async function clearMailAccounts(userId: string, actor: ClearActor): Promise<Cle
     const [linked] = await cx.execute<Linked[]>(`SELECT id, provider, provider_config, mail_account_id FROM calendar_accounts
       WHERE user_id = ? AND mail_account_id IS NOT NULL FOR UPDATE`, [userId]);
     if (await countUnresolved(userId, cx)) throw unresolvedOperations();
+    if (linked.length) await assertModuleWritable(userId, 'calendar', cx);
     const [files] = await cx.execute<(RowDataPacket & { storage_path: string | null })[]>('SELECT storage_path FROM email_attachments WHERE user_id = ?', [userId]);
     const [result] = await cx.execute<ResultSetHeader>('DELETE FROM mail_accounts WHERE user_id = ?', [userId]);
     for (const calendar of linked) await unlinkFromDeletedMail(cx, calendar, calendar.mail_account_id);
@@ -124,8 +132,7 @@ async function clearMailAccounts(userId: string, actor: ClearActor): Promise<Cle
 
 async function clearRecordingsData(userId: string, actor: ClearActor): Promise<ClearResult> {
   const { clearRecordings } = require('./recordings') as typeof import('./recordings');
-  const deleted = await clearRecordings(userId);
-  if (actor.adminId) await recordAuditAfter(auditEntry(userId, 'recordings', deleted, actor));
+  const deleted = await clearRecordings(userId, actor.adminId ? (cx, count) => recordAudit(auditEntry(userId, 'recordings', count, actor), cx) : undefined);
   return { message: `Deleted ${deleted} recording(s)`, deleted };
 }
 

@@ -126,11 +126,13 @@ function retentionDays(retention: BinRetention, reason: BinReason) {
  * the administrator's minimum retention ('never' for forever). It is also
  * the floor of the person's resolved bin_retention (services/settings.ts);
  * asked again here, in the purge's own transaction, so a purge never goes
- * below it whatever the setting reads.
+ * below it whatever the setting reads. Locked, after the purge's last
+ * waiting lock: the policies as committed then, and an administrator's save
+ * waits for the batch (settings.ts policyLevels).
  */
-async function purgeFloorDays(userId: string, executor: SqlExecutor): Promise<number | null | 'never'> {
+async function purgeFloorDays(userId: string, executor: SqlExecutor, { lock = false } = {}): Promise<number | null | 'never'> {
   const { binRetentionFloor } = require('./settings') as typeof import('./settings');
-  const floor = await binRetentionFloor(userId, executor);
+  const floor = await binRetentionFloor(userId, executor, { lock });
   return floor === null ? null : floor === 'forever' ? 'never' : Number(floor);
 }
 
@@ -322,12 +324,21 @@ async function restoreBinItem(userId: string, id: string, input?: unknown) {
 // --- Deleting for good ------------------------------------------------------
 
 /**
+ * The administrator who deletes for the person (routes/admin-people.ts):
+ * `record` writes their activity-log entry for what one transaction deleted,
+ * on its connection, so the rows and the entry commit together or not at all.
+ */
+interface BinDeleteActor {
+  record?: (connection: SqlExecutor, deleted: readonly BinRow[]) => Promise<void>;
+}
+
+/**
  * Removes items for good, in one transaction, then their files. A synced
  * item being created at its server again stops (its journal row goes with
  * it); a copy the server took meanwhile shows with the next sync as an item
  * of its own.
  */
-async function deleteForGood(userId: string, rows: readonly BinRow[]) {
+async function deleteForGood(userId: string, rows: readonly BinRow[], { record }: BinDeleteActor = {}) {
   if (!rows.length) return 0;
   const ids = rows.map(row => row.id);
   const deleted = await withTransaction(async connection => {
@@ -336,6 +347,7 @@ async function deleteForGood(userId: string, rows: readonly BinRow[]) {
     const locked = await ownedItems(connection, userId, ids, { lock: true });
     if (!locked.length) return [];
     await connection.execute(`DELETE FROM bin_items WHERE user_id = ? AND id IN (${placeholders(locked.map(row => row.id))})`, [userId, ...locked.map(row => row.id)]);
+    if (record) await record(connection, locked);
     return locked;
   });
   await releaseFiles(userId, deleted);
@@ -350,17 +362,21 @@ async function releaseFiles(userId: string, rows: readonly BinRow[]) {
 }
 
 /** DELETE /api/bin/:id. */
-async function deleteBinItem(userId: string, id: string): Promise<BinDeleteResponse> {
+async function deleteBinItem(userId: string, id: string, actor: BinDeleteActor = {}): Promise<BinDeleteResponse> {
   if (!ID_PATTERN.test(id)) throw notFound('BIN_ITEM_NOT_FOUND', 'Not in the bin');
   const [row] = await ownedItems(db, userId, [id]);
   if (!row) throw notFound('BIN_ITEM_NOT_FOUND', 'Not in the bin');
   const gate = (await moduleGates(userId)).get(row.module);
   if (gate) throw gate;
-  return { deleted: await deleteForGood(userId, [row]) };
+  return { deleted: await deleteForGood(userId, [row], actor) };
 }
 
-/** POST /api/bin/empty: the person's bin, or one module's part of it; modules that are off or being restored keep theirs. */
-async function emptyBin(userId: string, input: unknown): Promise<BinDeleteResponse> {
+/**
+ * POST /api/bin/empty: the person's bin, or one module's part of it; modules
+ * that are off or being restored keep theirs. Batch by batch, each its own
+ * transaction (and the administrator's entry with it).
+ */
+async function emptyBin(userId: string, input: unknown, actor: BinDeleteActor = {}): Promise<BinDeleteResponse> {
   const module = parseModule(input && typeof input === 'object' ? (input as { module?: unknown }).module : undefined);
   const gates = await moduleGates(userId);
   const open = (module ? [module] : MODULES).filter(id => !gates.get(id));
@@ -370,7 +386,7 @@ async function emptyBin(userId: string, input: unknown): Promise<BinDeleteRespon
     const [rows] = open.length ? await db.execute<BinRow[]>(
       `SELECT * FROM bin_items WHERE user_id = ? AND restored_at IS NULL AND module IN (${placeholders(open)}) ORDER BY deleted_at, id LIMIT ${PURGE_BATCH}`, [userId, ...open]) : [[] as BinRow[]];
     if (!rows.length) break;
-    deleted += await deleteForGood(userId, rows);
+    deleted += await deleteForGood(userId, rows, actor);
     if (rows.length < PURGE_BATCH) break;
   }
   return { deleted };
@@ -412,7 +428,9 @@ async function purgeBin({ now = new Date(), active = () => true }: PurgeOptions 
   const sections = await getActiveRestoreSectionsByUser(db);
   const { purgeMergeRecords, withPhotoLock } = require('./contact-merge') as typeof import('./contact-merge');
   let items = 0; let merges = 0;
-  const retentionNow = async (userId: string, cx: SqlExecutor) => retentionDaysNow(await binRetention(userId, cx), await purgeFloorDays(userId, cx));
+  // The resolved retention holds the floor as the transaction's snapshot saw
+  // it; with the floor read again under the lock, the stricter of both holds.
+  const retentionNow = async (userId: string, cx: SqlExecutor, lock = false) => retentionDaysNow(await binRetention(userId, cx), await purgeFloorDays(userId, cx, { lock }));
   for (const { user_id: userId } of due) {
     if (!active()) break;
     for (const module of MODULES) {
@@ -421,7 +439,7 @@ async function purgeBin({ now = new Date(), active = () => true }: PurgeOptions 
         if (module === 'contacts') {
           merges += await withTransaction(async cx => {
             await lockPersonForRetention(cx, userId, 'share');
-            const days = await retentionNow(userId, cx);
+            const days = await retentionNow(userId, cx, true);
             return days === null ? 0 : purgeMergeRecords(cx, userId, { now, minDays: Math.max(days, MERGE_UNDO_DAYS) });
           });
         }
@@ -444,9 +462,12 @@ async function purgeBin({ now = new Date(), active = () => true }: PurgeOptions 
             const restoring = new Set(journals.map(row => String(row.bin_item_id)));
             const [locked] = await cx.execute<BinRow[]>(
               `SELECT * FROM bin_items FORCE INDEX (PRIMARY) WHERE id IN (${placeholders(ids)}) AND user_id = ? ORDER BY id FOR UPDATE`, [...ids, userId]);
+            // The locks above may have waited while an administrator raised the floor.
+            const keep = await retentionNow(userId, cx, true);
+            if (keep === null) return { removed: [] as BinRow[], last: null };
             // Still due by its time and the retention in force now; an undone merge's rows go at their time.
             const removed = locked.filter(row => !restoring.has(row.id) && row.purge_after && new Date(row.purge_after) <= now
-              && (row.restored_at || now.getTime() - new Date(row.deleted_at).getTime() >= (row.reason === 'merged' ? Math.max(days, MERGE_UNDO_DAYS) : days) * 86400000));
+              && (row.restored_at || now.getTime() - new Date(row.deleted_at).getTime() >= (row.reason === 'merged' ? Math.max(keep, MERGE_UNDO_DAYS) : keep) * 86400000));
             if (removed.length) await cx.execute(`DELETE FROM bin_items WHERE user_id = ? AND id IN (${placeholders(removed.map(row => row.id))})`, [userId, ...removed.map(row => row.id)]);
             return { removed, last: candidates.length === PURGE_BATCH ? last : null };
           });
@@ -693,4 +714,4 @@ export {
   parseRefs,
   MERGE_UNDO_DAYS,
 };
-export type { BinRow, NewBinItem, BinKind, KindRestore, RestoreChoice, ArchivedBinItem, RestoreArchivedBinOptions };
+export type { BinRow, BinDeleteActor, NewBinItem, BinKind, KindRestore, RestoreChoice, ArchivedBinItem, RestoreArchivedBinOptions };
