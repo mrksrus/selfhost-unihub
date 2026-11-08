@@ -11,6 +11,7 @@ import * as calendarSync from './calendar-sync';
 import { withTransaction } from './transactions';
 import { assertFinalStep } from './final-step';
 import { accountSnapshot, lockUnchanged } from './account-identity';
+import { withPersonLock } from './person-lock';
 
 // Adding, changing and removing a calendar account: POST, PUT and DELETE
 // /api/calendar/accounts[/:id] (routes/calendar.ts) and the administrator's
@@ -40,8 +41,31 @@ const has = (body: Record<string, unknown>, key: string) => Object.prototype.has
 const isRemoteProvider = (provider: string | undefined) => calendarSync.REMOTE_PROVIDERS.has(provider!);
 const disabled = () => ({ error: 'Calendar multi-account feature disabled', status: 503 });
 
-async function createCalendarAccount(userId: string, body: Input) {
+// Each under the person's lock (person-lock.ts), from the first read through
+// discovery to the commit; the administrator's path takes the person's lock.
+async function createCalendarAccount(userId: string, body: Input, actor: PolicyActor = {}) {
+  return withPersonLock(userId, () => createNow(userId, body, actor));
+}
+
+async function updateCalendarAccount(userId: string, id: string, body: Input) {
+  return withPersonLock(userId, () => updateNow(userId, id, body));
+}
+
+async function deleteCalendarAccount(userId: string, id: string, options: { actor?: PolicyActor; record?: (connection: SqlExecutor) => Promise<unknown> } = {}) {
+  return withPersonLock(userId, () => deleteNow(userId, id, options));
+}
+
+// The mail account a linked calendar account takes its login from, as read now.
+async function linkedMail(userId: string, account: AccountRow) {
+  if (!account.mail_account_id) return null;
+  const [[mail]] = await db.execute<(RowDataPacket & { id: string })[]>('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [account.mail_account_id, userId]);
+  return mail ? accountSnapshot('mail', mail) : null;
+}
+
+async function createNow(userId: string, body: Input, actor: PolicyActor) {
   if (!CALENDAR_MULTI_ENABLED) return disabled();
+  // A remote account is added after discovery: accounts.add is asked again at its commit.
+  const admission = { actor, policies: ['accounts.add' as const] };
   const provider = normalizeCalendarAccountProvider(body.provider || 'local');
   if (!provider) return { error: 'Unsupported calendar account type', status: 400 };
   if (provider === 'caldav') {
@@ -52,12 +76,12 @@ async function createCalendarAccount(userId: string, body: Input) {
     return await calendarAccounts.connectCalDavAccount({
       userId, emailAddress: email, displayName: body.display_name?.trim() || null, username: login,
       password: String(body.password), caldavUrl: body.url ? String(body.url).trim() : null, timeZone: body.time_zone,
-    });
+    }, admission);
   }
   if (provider === 'ics') {
     return await calendarAccounts.connectIcsSubscription({
       userId, url: body.url ? String(body.url).trim() : '', displayName: body.display_name?.trim() || null, timeZone: body.time_zone,
-    });
+    }, admission);
   }
 
   const accountId = crypto.randomUUID();
@@ -97,7 +121,7 @@ async function createCalendarAccount(userId: string, body: Input) {
   return { account };
 }
 
-async function updateCalendarAccount(userId: string, id: string, body: Input) {
+async function updateNow(userId: string, id: string, body: Input) {
   if (!CALENDAR_MULTI_ENABLED) return disabled();
   if (!id) return { error: 'Invalid account id', status: 400 };
   const [existing] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
@@ -152,7 +176,10 @@ async function updateCalendarAccount(userId: string, id: string, body: Input) {
   // resume were decided from it; account-identity.ts), and Calendar's final
   // check (final-step.ts): on and not being restored, as committed now.
   const seen = accountSnapshot('calendar', account);
+  const mailSeen = await linkedMail(userId, account);
   await withTransaction(async cx => {
+    // A linked account's login, and so its resume, came from its mail account: that one too, first.
+    if (mailSeen) await lockUnchanged(cx, userId, mailSeen, { lock: 'share' });
     await lockUnchanged(cx, userId, seen);
     await assertFinalStep(cx, { userId, modules: ['calendar'] });
     await cx.execute(`UPDATE calendar_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
@@ -164,7 +191,7 @@ async function updateCalendarAccount(userId: string, id: string, body: Input) {
 
 // actor and record: an administrator's (routes/admin-people.ts), who passes
 // accounts.remove, and their entry, written with the deletion.
-async function deleteCalendarAccount(userId: string, id: string, { actor = {}, record }: { actor?: PolicyActor; record?: (connection: SqlExecutor) => Promise<unknown> } = {}) {
+async function deleteNow(userId: string, id: string, { actor = {}, record }: { actor?: PolicyActor; record?: (connection: SqlExecutor) => Promise<unknown> }) {
   if (!CALENDAR_MULTI_ENABLED) return disabled();
   if (!id) return { error: 'Invalid account id', status: 400 };
   const [accounts] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
@@ -183,7 +210,7 @@ async function deleteCalendarAccount(userId: string, id: string, { actor = {}, r
 
   // Only the copies in UniHub are removed; the server keeps its calendars.
   // The account read above, unless it changed meanwhile (account-identity.ts).
-  await calendarAccounts.removeCalendarAccount(userId, id, { actor, record, snapshot: accountSnapshot('calendar', account) });
+  await calendarAccounts.removeCalendarAccount(userId, id, { actor, record, snapshot: accountSnapshot('calendar', account), mail: await linkedMail(userId, account) });
   return { message: 'Calendar account deleted' };
 }
 

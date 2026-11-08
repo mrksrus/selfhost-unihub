@@ -25,6 +25,7 @@ import { controlPool } from './side-pools';
 import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
 import { attachmentsRoot, rawRoot } from './mail-storage';
 import { isAnyDraftSendRunning } from './mail-drafts';
+import { withPersonLock } from './person-lock';
 import {
   isAnyMailAccountSyncRunning,
   isAnyMailServerDeleteRunning,
@@ -502,7 +503,9 @@ async function createUploadedRestoreJob(userId: string, sourcePath: string, opti
   }
 
   try {
-    await db.execute(
+    // Admitted under the person's lock (person-lock.ts), only for the write:
+    // a change of the person's accounts in progress finishes first.
+    await withPersonLock(userId, () => db.execute(
       `INSERT INTO backup_restore_jobs
          (id, user_id, source_type, status, operation, phase, progress, requested_sections,
           conflict_mode, calendar_mode, credentials_mode, archive_path, archive_size,
@@ -523,7 +526,7 @@ async function createUploadedRestoreJob(userId: string, sourcePath: string, opti
         encrypted ? 1 : 0,
         new Date(Date.now() + (UPLOAD_RETENTION_DAYS * 24 * 60 * 60 * 1000)),
       ]
-    );
+    ));
   } catch (error) {
     await fs.promises.rm(targetPath, { force: true }).catch(() => {});
     throw error;
@@ -536,8 +539,9 @@ async function createRestoreFromExport(userId: string, exportJobId: string | nul
   // Admission (docs/AUTH_ADMIN_SETTINGS.md, "Lock order"): the backup's row
   // first, shared, so its deletion either finished (not found) or waits and
   // then sees this restore; then the person's restores, a current read.
+  // Under the person's lock (person-lock.ts), for the admission only.
   type Admitted = { error: string; status: number } | { jobId: string };
-  const admitted = await withTransaction(async (connection): Promise<Admitted> => {
+  const admitted = await withPersonLock(userId, () => withTransaction(async (connection): Promise<Admitted> => {
     const [[exportJob]] = await connection.execute<RestoreJob[]>(
       'SELECT * FROM data_export_jobs WHERE id = ? AND user_id = ? LOCK IN SHARE MODE',
       [exportJobId, userId]
@@ -574,7 +578,7 @@ async function createRestoreFromExport(userId: string, exportJobId: string | nul
       ]
     );
     return { jobId };
-  });
+  }));
   if (!('jobId' in admitted)) return { error: admitted.error, status: admitted.status };
   scheduleRestoreWorker();
   return { job: serializeRestoreJob((await getRestoreJob(userId, admitted.jobId))!) };
@@ -622,12 +626,13 @@ async function unlockRestoreJob(userId: string, jobId: string | null, password?:
   );
   // Only from the status checked above: a second unlock, a cancel or a
   // deletion meanwhile wins.
-  const [unlockedRow] = await db.execute<ResultSetHeader>(
+  // Admitted under the person's lock (person-lock.ts), for the write only.
+  const [unlockedRow] = await withPersonLock(userId, () => db.execute<ResultSetHeader>(
     `UPDATE backup_restore_jobs
      SET status = 'uploaded', phase = 'uploaded', operation = 'validate', progress = 0, error = NULL
      WHERE id = ? AND user_id = ? AND status = 'awaiting_password'`,
     [jobId, userId]
-  );
+  ));
   if (!unlockedRow.affectedRows) return { error: 'Restore job is not waiting for a password', status: 409 };
   scheduleRestoreWorker();
   return { job: serializeRestoreJob((await getRestoreJob(userId, jobId))!) };
@@ -638,8 +643,9 @@ async function startRestoreJob(userId: string, jobId: string | null) {
   // then the person's other restores, both current. A destructive step's
   // final check holds them shared, so this start waits for it; and a
   // backup's deletion that took this job's archive is seen here.
+  // Under the person's lock (person-lock.ts), for the admission only.
   type Admitted = { error: string; status: number } | { started: true };
-  const admitted = await withTransaction(async (connection): Promise<Admitted> => {
+  const admitted = await withPersonLock(userId, () => withTransaction(async (connection): Promise<Admitted> => {
     const [[job]] = await connection.execute<RestoreJob[]>(
       'SELECT * FROM backup_restore_jobs WHERE id = ? AND user_id = ? FOR UPDATE',
       [jobId, userId]
@@ -664,7 +670,7 @@ async function startRestoreJob(userId: string, jobId: string | null) {
       completed_at: null,
     }, connection);
     return { started: true };
-  });
+  }));
   if (!('started' in admitted)) return { error: admitted.error, status: admitted.status };
   scheduleRestoreWorker();
   return { job: serializeRestoreJob((await getRestoreJob(userId, jobId))!) };

@@ -337,9 +337,12 @@ test('update mail account can disable server deletion without password changes',
       return { success: true };
     },
     cancelMailAccountSync: () => { assert.fail('Settings changes must stop all account work, not merely scans'); },
-    stopMailAccountWork: async (accountId: string, reason: FixtureValue) => {
+    stopOwnedMailAccountWork: async (accountId: string, reason: FixtureValue) => {
       assert.equal(accountId, 'account-1'); assert.equal(reason, 'Account settings changing'); cancellations++;
+      return { userId: 'user-1', accountId, reason, prior: null };
     },
+    // Saved: the change ends its own pause (mail-sync-control.ts releaseOwnedMailAccountStop).
+    releaseOwnedMailAccountStop: async (pause: FixtureValue) => { if (pause) resumes.push({ userId: pause.userId, accountId: pause.accountId }); },
     syncMailAccount: async () => ({ success: true }),
     scheduleMailAccountSync: () => ({ started: true, promise: Promise.resolve({ success: true }) }),
     isAnyMailAccountSyncRunning: () => false,
@@ -424,7 +427,8 @@ test('reconnect uses the saved password of an account a restore paused, never of
     validateMailHostPolicy: async () => ({ accepted: true, mailHostTrust: {} }),
     buildMailHostTrustResult: async () => ({}),
     testImapConnection: async (account: FixtureValue) => { loginTests.push(account.encrypted_password); return { success: true }; },
-    stopMailAccountWork: async () => {},
+    stopOwnedMailAccountWork: async () => null,
+    releaseOwnedMailAccountStop: async () => {},
     scheduleMailAccountSync: () => ({ started: true, promise: Promise.resolve({ success: true }) }),
     syncMailAccount: async () => ({ success: true }),
     isAnyMailAccountSyncRunning: () => false, getRunningMailSyncAccountIds: () => [], getRunningMailServerDeleteAccountIds: () => [],
@@ -484,7 +488,8 @@ function accountInputFixture(t: import('node:test').TestContext) {
     validateMailHostPolicy: async () => ({ accepted: true, mailHostTrust: {} }),
     buildMailHostTrustResult: async () => ({}),
     testImapConnection: async (account: FixtureValue) => { tested.push(account); return { success: true }; },
-    stopMailAccountWork: async () => { stops++; },
+    stopOwnedMailAccountWork: async () => { stops++; return null; },
+    releaseOwnedMailAccountStop: async () => {},
     scheduleMailAccountSync: () => ({ started: true, promise: Promise.resolve({ success: true }) }),
     syncMailAccount: async () => ({ success: true }),
     isAnyMailAccountSyncRunning: () => false, getRunningMailSyncAccountIds: () => [], getRunningMailServerDeleteAccountIds: () => [],

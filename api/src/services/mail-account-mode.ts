@@ -85,20 +85,25 @@ async function modePolicyInput<T extends Record<string, unknown>>(userId: string
 /**
  * At a new account's final check (final-step.ts), with the policies read
  * under the rules lock: the mode and provider deletion it was prepared with
- * must still be what those policies give the request as sent (`input`). A
- * policy saved meanwhile that forces another mode or requires deletion is
- * refused with POLICY_FORBIDS and its reason; sent again, the request is
- * filled in by it. An administrator's actor is not stopped.
+ * must meet what those policies require now. A policy saved meanwhile that
+ * forces another mode or requires deletion is refused with POLICY_FORBIDS
+ * and its reason; sent again, the request is filled in by it. A policy
+ * relaxed meanwhile refuses nothing: the prepared values are still allowed,
+ * only no longer the default. (Allowed modes, and deletion allowed at all,
+ * are the final check's policy keys, modePolicyKeys.) An administrator's
+ * actor is not stopped.
  */
-function assertNewAccountMode(policy: PolicyOf, input: Record<string, unknown>, prepared: ModeChange, { adminId }: PolicyActor = {}) {
+function assertNewAccountMode(policy: PolicyOf, prepared: ModeChange, { adminId }: PolicyActor = {}) {
   if (adminId) return;
   const { policyForbids } = require('./settings') as typeof import('./settings');
-  const now = mailAccountModeChange(null, newAccountInput(policy, input));
-  if (now.mode === prepared.mode && now.deleteEnabled === prepared.deleteEnabled) return;
+  const refuse = (key: 'mail.mode.new_accounts' | 'mail.provider_delete', reason: string | null | undefined) => policyForbids(key, reason ?? 'Your administrator does not allow this.');
   const forced = policy('mail.mode.new_accounts');
-  if (forced.value !== 'user_choice') throw policyForbids('mail.mode.new_accounts', forced.reason ?? 'Your administrator does not allow this.');
+  if (forced.value !== 'user_choice') {
+    const mode = forced.value === 'sync' ? 'sync' : 'download';
+    if (prepared.mode !== mode || (forced.value === 'download_delete' && !prepared.deleteEnabled)) throw refuse('mail.mode.new_accounts', forced.reason);
+  }
   const deletion = policy('mail.provider_delete');
-  throw policyForbids('mail.provider_delete', deletion.reason ?? 'Your administrator does not allow this.');
+  if (deletion.value === 'required' && prepared.mode === 'download' && !prepared.deleteEnabled) throw refuse('mail.provider_delete', deletion.reason);
 }
 
 /**

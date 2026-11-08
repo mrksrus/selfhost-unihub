@@ -9,6 +9,7 @@ import { isSectionRestoreActive } from './restore-locks';
 import { assertAllowed } from './settings';
 import { assertFinalStep } from './final-step';
 import { recordAudit } from './audit';
+import { withPersonLock } from './person-lock';
 import type { PolicyActor } from './settings';
 
 // Settings → Delete data: every item of one module, for good (no bin). The
@@ -106,10 +107,12 @@ async function clearMailAccounts(userId: string, actor: ClearActor): Promise<Cle
   if (Number(connected.count)) await assertModuleWritable(userId, 'calendar');
   const mail = require('./mail') as typeof import('./mail');
   const [accounts] = await db.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM mail_accounts WHERE user_id = ? ORDER BY id', [userId]);
-  for (const account of accounts) await mail.stopMailAccountWork(account.id, 'Mail accounts deleted');
+  // Each with a pause of this change's own: refused, every account's work
+  // goes on as before (mail-sync-control.ts stopOwnedMailAccountWork).
+  const pauses: Awaited<ReturnType<typeof mail.stopOwnedMailAccountWork>>[] = [];
   const { stopCalendarAccountWork, unlinkFromDeletedMail } = require('./calendar-sync') as typeof import('./calendar-sync');
   type Linked = RowDataPacket & { id: string; provider: string; provider_config: unknown; mail_account_id: string };
-  const { deleted, linkedCalendars, attachments } = await withTransaction(async cx => {
+  const clear = () => withTransaction(async cx => {
     // Purge's order: the accounts, their messages (a command admits under
     // the message rows, so none escapes the check below), then the linked
     // calendars a sync could be linking meanwhile.
@@ -128,6 +131,15 @@ async function clearMailAccounts(userId: string, actor: ClearActor): Promise<Cle
     if (actor.adminId) await recordAudit(auditEntry(userId, 'mail-accounts', result.affectedRows || 0, actor), cx);
     return { deleted: result.affectedRows || 0, linkedCalendars: linked, attachments: files };
   });
+  let outcome: Awaited<ReturnType<typeof clear>>;
+  try {
+    for (const account of accounts) pauses.push(await mail.stopOwnedMailAccountWork(account.id, 'Mail accounts deleted'));
+    outcome = await clear();
+  } catch (error) {
+    for (const pause of pauses) await mail.releaseOwnedMailAccountStop(pause);
+    throw error;
+  }
+  const { deleted, linkedCalendars, attachments } = outcome;
   const { publishCalendarChanged } = require('./realtime') as typeof import('./realtime');
   for (const calendar of linkedCalendars) {
     if (calendar.provider === 'caldav') stopCalendarAccountWork(calendar.id, 'unlinked');
@@ -152,7 +164,12 @@ async function clearRecordingsData(userId: string, actor: ClearActor): Promise<C
 }
 
 /** Deletes every item of one module of the person; `actor.adminId` for the administrator's path. */
+// Under the person's lock (person-lock.ts): no account of theirs is added or changed meanwhile.
 async function clearModuleData(userId: string, target: ClearTarget, actor: ClearActor = {}): Promise<ClearResult> {
+  return withPersonLock(userId, () => clearNow(userId, target, actor));
+}
+
+async function clearNow(userId: string, target: ClearTarget, actor: ClearActor): Promise<ClearResult> {
   await assertClearable(userId, target, actor);
   switch (target) {
     case 'contacts': return clearContacts(userId, actor);
