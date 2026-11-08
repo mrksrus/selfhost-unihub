@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter, useNavigate, type NavigateFunction } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useNavigate, type NavigateFunction } from 'react-router-dom';
 import { api } from '@/lib/api';
 import AdminPolicies from '@/pages/AdminPolicies';
 import AdminInstanceBackup from '@/pages/AdminInstanceBackup';
@@ -93,6 +93,26 @@ describe('Server settings → Policies', () => {
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/policies', { values: { 'backup.create': 'forbidden', 'mail.mode.sync': 'forbidden' }, current_password: 'admin-pw' }));
     await waitFor(() => expect(screen.queryByRole('region', { name: 'Unsaved changes' })).not.toBeInTheDocument());
     expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Policies saved' }));
+  });
+
+  // No longer an administrator (403 ADMIN_REQUIRED, caller-proof): nothing was saved; a word, the session read again, and out of the admin screens.
+  it('a save refused because the caller is no longer an administrator leaves the admin screen with a word', { timeout: 20_000 }, async () => {
+    vi.mocked(api.put).mockResolvedValueOnce({ error: 'Only an administrator can do this; nothing was changed.', status: 403, code: 'ADMIN_REQUIRED' } as never);
+    const retrySession = vi.fn(async () => {});
+    mountSignedIn(<Routes><Route path="/settings/admin/policies" element={<AdminPolicies />} /><Route path="/settings" element={<p>Settings home</p>} /></Routes>,
+      { user: ADMIN, path: '/settings/admin/policies', auth: { retrySession } });
+    const create = await screen.findByRole('combobox', { name: 'Creating backups' });
+    fireEvent.click(create);
+    fireEvent.click(await screen.findByRole('option', { name: 'Not allowed' }));
+    const bar = await screen.findByRole('region', { name: 'Unsaved changes' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Save changes…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Save the changed rules?' });
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "You're no longer an administrator." })));
+    expect(await screen.findByText('Settings home', {}, { timeout: 10_000 })).toBeInTheDocument();
+    expect(retrySession).toHaveBeenCalled();
+    expect(state.toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Policies saved' }));
   });
 
   it('the administrator\'s password leaves the mutation cache once the save is answered', { timeout: 20_000 }, async () => {
@@ -299,6 +319,46 @@ describe('Server settings → Instance backup', () => {
 });
 
 describe('Admin → Users → a person', () => {
+  // The server knows no such person (404 USER_NOT_FOUND, 400 INVALID_USER_ID): back to the list, with a word.
+  it('a person the server no longer knows sends the administrator back to the list', { timeout: 20_000 }, async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/admin/users') return { data: { users: USERS } };
+      if (path.startsWith('/admin/users/user-alex/')) return { error: 'User not found', status: 404, code: 'USER_NOT_FOUND' };
+      if (path === '/policies/effective') return policiesAnswer();
+      throw new Error(`unexpected GET ${path}`);
+    });
+    mountSignedIn(<Routes><Route path="/admin/users/:id" element={<AdminUserDetail />} /><Route path="/admin/users" element={<p>The list of users</p>} /></Routes>, { user: ADMIN, path: '/admin/users/user-alex' });
+    expect(await screen.findByText('The list of users', {}, { timeout: 10_000 })).toBeInTheDocument();
+    expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'This person no longer exists' }));
+    cleanup();
+    // A malformed id in the address is the same case.
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/admin/users') return { data: { users: USERS } };
+      if (path.startsWith('/admin/users/not-a-uuid/')) return { error: 'Invalid user id', status: 400, code: 'INVALID_USER_ID' };
+      if (path === '/policies/effective') return policiesAnswer();
+      throw new Error(`unexpected GET ${path}`);
+    });
+    mountSignedIn(<Routes><Route path="/admin/users/:id" element={<AdminUserDetail />} /><Route path="/admin/users" element={<p>The list of users</p>} /></Routes>, { user: ADMIN, path: '/admin/users/not-a-uuid' });
+    expect(await screen.findByText('The list of users', {}, { timeout: 10_000 })).toBeInTheDocument();
+  });
+
+  // The admin path's calendar add proves the caller too: no longer an administrator (403 ADMIN_REQUIRED) leaves the admin screens with a word.
+  it('adding a calendar for a person when the caller is no longer an administrator leaves the admin screen with a word', { timeout: 20_000 }, async () => {
+    vi.mocked(api.post).mockResolvedValueOnce({ error: 'Only an administrator can do this; nothing was changed.', status: 403, code: 'ADMIN_REQUIRED' } as never);
+    const retrySession = vi.fn(async () => {});
+    mountSignedIn(<Routes><Route path="/admin/users/:id" element={<AdminUserDetail />} /><Route path="/settings" element={<p>Settings home</p>} /></Routes>,
+      { user: ADMIN, path: '/admin/users/user-alex', auth: { retrySession } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Add calendar account' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add a calendar account' });
+    fireEvent.change(within(dialog).getByLabelText('Address'), { target: { value: 'https://dav.example.org/' } });
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add account' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/users/user-alex/calendar-accounts', expect.objectContaining({ current_password: 'admin-pw' })));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "You're no longer an administrator." })));
+    expect(await screen.findByText('Settings home', {}, { timeout: 10_000 })).toBeInTheDocument();
+    expect(retrySession).toHaveBeenCalled();
+  });
+
   it('a confirmation opened for one person closes when the page moves to another', { timeout: 20_000 }, async () => {
     let navigate!: NavigateFunction;
     function Page() { navigate = useNavigate(); return <AdminUserDetail />; }

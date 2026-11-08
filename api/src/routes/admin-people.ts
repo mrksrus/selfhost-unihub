@@ -4,10 +4,12 @@ import type { AdminClearModule, AdminDeleteResponse, AdminUserBackupsResponse } 
 import type { BinDeleteResponse, BinListResponse } from '../contracts/bin';
 import { defineRoutes } from '../http/route';
 import { clientError, notFound } from '../http/errors';
-import { confirmPassword } from '../security/reauthentication';
+import { confirmPasswordHash } from '../security/reauthentication';
+import { getAuthTokenFromRequest } from '../auth';
+import { asCaller } from '../services/caller-proof';
 import type { AuditDetails, AuditEntry } from '../services/audit';
 import { recordAudit, recordAuditIntent, settleAudit } from '../services/audit';
-import { adminMailAccountChange, assertPerson, assertPersonModule, personAccounts } from '../services/admin-path';
+import { assertPerson, assertPersonModule, personAccounts, personFromParam } from '../services/admin-path';
 import { createMailAccount, updateMailAccount } from '../services/mail-account-changes';
 import { disconnectAccount, disconnectAndPurgeAccount } from '../services/mail-account-lifecycle';
 import { createCalendarAccount, deleteCalendarAccount, updateCalendarAccount } from '../services/calendar-account-changes';
@@ -35,9 +37,15 @@ type Handler = (req: Request, adminId: string, body: Body, res: ServerResponse) 
 // never reaches the service with the rest of the body.
 const withoutPassword = ({ current_password: _password, ...rest }: Body = {}) => rest;
 
+// `:id` as the person's stored id (admin-path.ts personFromParam), so the
+// services, the person's lock and the rows written all use one spelling.
+async function asStored(req: Request): Promise<Request> {
+  return Object.assign(req, { params: { ...req.params, id: await personFromParam(req.params.id) } });
+}
+
 function read(handler: (req: Request, adminId: string) => Promise<RouteResponse>) {
   return { auth: 'admin' as const, permission: 'users.read' as const, module: null, handler: async (req: Request, adminId: string) => {
-    try { return await handler(req, adminId); } catch (error) { return answer(error); }
+    try { return await handler(await asStored(req), adminId); } catch (error) { return answer(error); }
   } };
 }
 
@@ -45,9 +53,12 @@ function change(handler: Handler, limit = 4096) {
   return { auth: 'admin' as const, permission: 'users.manage' as const, module: null, restoreSection: null, body: { limit },
     handler: async (req: Request, adminId: string, body: Body, res: ServerResponse) => {
       try {
-        const refused = await confirmPassword(adminId, body?.current_password, res);
-        if (refused) return refused;
-        return await handler(req, adminId, body ?? {}, res);
+        const confirmed = await confirmPasswordHash(adminId, body?.current_password, res);
+        if ('refused' in confirmed) return confirmed.refused;
+        // The change may wait (the person's lock, rows); its final step asks
+        // again that the administrator is one, signed in, with this password.
+        return await asCaller({ userId: adminId, token: getAuthTokenFromRequest(req), admin: true, passwordHash: confirmed.passwordHash },
+          async () => handler(await asStored(req), adminId, body ?? {}, res));
       } catch (error) { return answer(error); }
     } };
 }
@@ -97,10 +108,9 @@ export = defineRoutes({
     const userId = req.params.id, accountId = req.params.accountId;
     await assertPersonModule(userId, 'mail');
     const values = withoutPassword(body);
-    const change = await adminMailAccountChange(userId, accountId, values);
     return audited({ action: 'admin.mail_account_changed', actorId: adminId, targetUserId: userId, req,
       details: { mail_account: accountId, fields: Object.keys(values).filter(key => key !== 'encrypted_password').sort().join(',') || null, password: 'encrypted_password' in values } },
-    async () => await updateMailAccount(userId, accountId, change, { adminId }) as RouteResponse);
+    async () => await updateMailAccount(userId, accountId, values, { adminId }) as RouteResponse);
   }, 50000),
 
   // Without purge: disconnected, UniHub keeps its copy of the mail. With

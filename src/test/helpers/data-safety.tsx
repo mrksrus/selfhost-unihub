@@ -20,8 +20,8 @@ export const ADMIN: User = { id: 'user-admin', email: 'admin@example.com', full_
 export const testClient = () => new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
 
 /** Mounts a view inside a signed-in session (the policies hook reads it), a query client and a router. */
-export function mountSignedIn(view: ReactNode, { user = OWNER, path = '/', routePath = '*', client = testClient() }: { user?: User; path?: string; routePath?: string; client?: QueryClient } = {}) {
-  const session = { user, session: { authenticated: true }, loading: false, serverUnavailable: false, isOffline: false } as unknown as AuthContextType;
+export function mountSignedIn(view: ReactNode, { user = OWNER, path = '/', routePath = '*', client = testClient(), auth = {} }: { user?: User; path?: string; routePath?: string; client?: QueryClient; auth?: Partial<AuthContextType> } = {}) {
+  const session = { user, session: { authenticated: true }, loading: false, serverUnavailable: false, isOffline: false, ...auth } as unknown as AuthContextType;
   return render(
     <AuthContext.Provider value={session}>
       <QueryClientProvider client={client}>

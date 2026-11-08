@@ -44,6 +44,14 @@ async function liveSessionId(userId: string, token: SessionToken | null, executo
   return rows.length ? String(rows[0].id) : null;
 }
 
+/** Whether this user's session for the token is live, read with a shared lock held by the caller's transaction. */
+async function lockLiveSession(userId: string, token: SessionToken | null, connection: SqlExecutor) {
+  if (!token) return false;
+  const [rows] = await connection.execute<RowDataPacket[]>('SELECT 1 FROM sessions WHERE token = ? AND user_id = ? AND expires_at > UTC_TIMESTAMP() LOCK IN SHARE MODE',
+    [sessionKey(token), userId]);
+  return rows.length > 0;
+}
+
 /** Locks the caller's own session row inside a transaction; false when it no longer exists. */
 async function lockOwnSession(userId: string, token: SessionToken | null, connection: SqlExecutor) {
   if (!token) return false;
@@ -104,6 +112,7 @@ export {
   renewSession,
   liveSessionId,
   lockOwnSession,
+  lockLiveSession,
   endSession,
   endOtherSessions,
   endUserSessions,

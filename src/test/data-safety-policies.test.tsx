@@ -85,6 +85,24 @@ describe('policy greying', () => {
     vi.unstubAllGlobals();
   });
 
+  // The password changed meanwhile (403 PASSWORD_CHANGED, caller-proof): nothing was changed; the person signs in again.
+  it('a password changed meanwhile ends the session with a word, and nothing is deleted', { timeout: 20_000 }, async () => {
+    vi.mocked(api.get).mockResolvedValue(policiesAnswer());
+    vi.mocked(api.delete).mockResolvedValueOnce({ error: 'Your password was changed meanwhile, so nothing was changed. Enter your current password again.', status: 403, code: 'PASSWORD_CHANGED' } as never);
+    const signOut = vi.fn(async () => {});
+    const assign = vi.fn();
+    vi.stubGlobal('location', { ...window.location, assign });
+    mountSignedIn(<DeleteDataSettings />, { auth: { signOut } });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete account' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Delete your account?' });
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'typed-password' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete account' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Your password was changed meanwhile. Sign in again.' })));
+    await waitFor(() => expect(signOut).toHaveBeenCalled());
+    expect(assign).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
   it('a mail-account deletion the server holds back says so plainly and deletes nothing', async () => {
     vi.mocked(api.get).mockResolvedValue(policiesAnswer());
     vi.mocked(api.post).mockResolvedValue({ error: 'Provider changes have an unresolved outcome. Reconnect the accounts and let them finish before deleting.', status: 409, code: 'MAIL_OPERATIONS_UNRESOLVED' } as never);

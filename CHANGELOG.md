@@ -227,6 +227,11 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   the copy it finds. A move that waited no longer writes to the server after
   Calendar was switched off, a calendar restore began or the account was
   paused meanwhile; it waits until they allow it again.
+- **A change that waited is refused once its sign-in no longer holds.**
+  Deleting your own account, an administrator's change for a person, and
+  saving the rules or the instance backup's schedule check again, just
+  before they act, that the session is still signed in, the password the
+  same and the administrator still one; otherwise nothing changes.
 - **A download in the Android app no longer closes the app** when Android's
   download service has not started yet, for example right after the phone
   starts; the app says the file could not be saved, and you can try again.

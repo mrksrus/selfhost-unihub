@@ -1,5 +1,6 @@
 import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import type { ApiError, SqlExecutor } from '../types';
+import { ApiError as HttpError } from '../http/errors';
 import type { ProtocolConnection, ProtocolError } from '../types/imap-protocol';
 
 import { db } from '../state';
@@ -119,8 +120,10 @@ async function settleBox(cx: SqlExecutor, { userId, slug, box }: { userId: strin
  * server copies are deleted, and the local change follows for those deleted,
  * in one transaction. A server that fails a DELETE after others succeeded
  * leaves the folder for the accounts still holding it and answers 409
- * FOLDER_PARTLY_DELETED with where it is gone and where it remains; nothing
- * deleted is sent again.
+ * FOLDER_PARTLY_DELETED with where it is gone and where it remains; this
+ * attempt sends nothing again. No record is kept across attempts: deleting
+ * the folder again asks the servers again, and one that already deleted its
+ * copy answers that it has none (alreadyGone).
  *
  * The account's read jobs are stopped before the DELETE. Not covered: a
  * folder discovery whose LIST ran just before the DELETE can register the
@@ -166,35 +169,49 @@ async function deleteNow({ userId, slug, server = false }: { userId: string; slu
       try {
         entry.connection = await connect(entry.account);
       } catch (error) {
-        throw fail(502, `Could not connect to the mail server (${entry.account.email_address}): ${(error as Error).message}`);
+        log.warn('MAIL', 'Could not connect to delete a folder', undefined, error);
+        throw serverFailure(`Could not connect to the mail server (${entry.account.email_address}). Nothing was changed.`);
       }
     }
     // The provider's DELETEs under one final check (final-step.ts): the
     // policy, Mail on and not being restored, and every account still as
     // read above (account-identity.ts), held until the last one answered.
     // A refusal deletes nothing. A server that fails a DELETE stops the
-    // rest; the ones already deleted are settled below, never sent again.
+    // rest; the ones already deleted are settled below, never sent again by
+    // UniHub itself.
     const removed: RemoteBox[] = [];
     let failure: ApiError | null = null;
     // A folder only UniHub has sends nothing to a provider: no provider check.
-    if (boxes.length) await underFinalStep({ userId, policies: ['mail.provider_delete'], modules: ['mail'],
-      unchanged: [...chosen.values()].map(entry => accountSnapshot('mail', entry.account)) }, async () => {
-      for (const box of boxes) {
-        const { account, connection } = chosen.get(box.mail_account_id)!;
-        try {
-          await runGuardedImap(connection as ProtocolConnection, () => connection!.mailboxDelete(box.remote_name));
-        } catch (error) {
-          if (!await alreadyGone(connection!, box.remote_name, error)) {
-            failure = fail(502, `Could not delete the folder on the mail server (${account.email_address}): ${(error as Error).message}`);
-            return;
+    if (boxes.length) {
+      try {
+        await underFinalStep({ userId, policies: ['mail.provider_delete'], modules: ['mail'],
+          unchanged: [...chosen.values()].map(entry => accountSnapshot('mail', entry.account)) }, async () => {
+          for (const box of boxes) {
+            const { account, connection } = chosen.get(box.mail_account_id)!;
+            try {
+              await runGuardedImap(connection as ProtocolConnection, () => connection!.mailboxDelete(box.remote_name));
+            } catch (error) {
+              if (!await alreadyGone(connection!, box.remote_name, error)) {
+                log.warn('MAIL', 'The mail server did not delete a folder', undefined, error);
+                failure = serverFailure(`Could not delete the folder on the mail server (${account.email_address}).`);
+                return;
+              }
+            }
+            removed.push(box);
           }
-        }
-        removed.push(box);
+        }, pool);
+      } catch (error) {
+        // Refused, or failed, before any server deleted it: nothing changed.
+        // Once one did, what the servers answered counts, whatever the
+        // check's own end (its COMMIT) did.
+        if (!removed.length) throw error;
+        log.warn('MAIL', 'The final check of a folder deletion ended with an error after its DELETEs', undefined, error);
       }
-    }, pool);
+    }
     // What the servers deleted is settled locally even when a later DELETE
-    // failed; refused there (Mail turned off, a restore admitted since), the
-    // next folder discovery settles it, and the answer still says what went.
+    // failed; refused there (Mail turned off, a restore admitted since), it
+    // is settled when the folder is deleted again (alreadyGone), and the
+    // answer still says what went.
     // 409, so the answer reaches the client with what went (a 5xx would not).
     const partly = (error: ApiError, settled: boolean) => Object.assign(error, { status: 409, code: 'FOLDER_PARTLY_DELETED', details: {
       deleted_on: removed.map(box => chosen.get(box.mail_account_id)!.account.email_address),
@@ -205,10 +222,10 @@ async function deleteNow({ userId, slug, server = false }: { userId: string; slu
     try {
       if (removed.length) outcome = await settle({ userId, slug, folderId: folder.id, removed, whole: !failure }, pool);
     } catch (error) {
-      if (!failure) throw partly(fail(409, 'The folder was deleted on the mail server, but UniHub could not update its copy yet. It does so at the next folder check.'), false);
+      if (!failure) throw partly(fail(409, 'The folder was deleted on the mail server, but UniHub could not update its copy yet. Delete it again to finish.'), false);
       log.warn('MAIL', 'Could not settle a partly deleted folder', undefined, error);
     }
-    // Nothing deleted anywhere: the server's refusal as it is, everything as it was.
+    // Nothing deleted anywhere: the server's answer in UniHub's words, everything as it was.
     if (failure && !removed.length) throw failure;
     if (failure) throw partly(failure, Boolean(outcome));
     if (!outcome) outcome = await settle({ userId, slug, folderId: folder.id, removed, whole: true }, pool);
@@ -218,6 +235,10 @@ async function deleteNow({ userId, slug, server = false }: { userId: string; slu
     for (const entry of chosen.values()) if (entry.connection) closeImapConnection(entry.connection as ProtocolConnection);
   }
 }
+
+// A deliberate 502: the mail server's failure in UniHub's words (the
+// server's own text goes to the log), with nothing changed.
+const serverFailure = (message: string): ApiError => Object.assign(new HttpError(502, 'MAIL_SERVER_ERROR', message), { expose: true });
 
 // The local side of what the server deleted: the items of each deleted box
 // settled, its link to the folder gone. `whole`: every server copy is gone,

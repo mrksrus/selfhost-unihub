@@ -65,4 +65,45 @@ describe('deleting a mail folder', () => {
     await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Folder partly deleted', description: 'Deleted on a@example.org. Still on b@example.org: try again later.' })));
     expect(invalidate).toHaveBeenCalled();
   });
+
+  // The final check refused (a rule, Mail off, a restore, the account changed): nothing was deleted; the server's sentence, and the folders read again.
+  it('a refusal at the final check shows the server\'s sentence and reads the folders again', async () => {
+    vi.mocked(api.delete).mockResolvedValue({ status: 403, error: 'Your administrator does not allow deleting folders at the provider.', code: 'POLICY_FORBIDS' });
+    const client = show();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Projects' }));
+    await screen.findByText('Delete Projects?');
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete on server and in UniHub' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Folder not deleted', description: 'Your administrator does not allow deleting folders at the provider.' })));
+    expect(invalidate).toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Delete Projects' })).toBeEnabled();
+  });
+
+  it('a mail server that refused shows the safe sentence and reads the folders again', async () => {
+    vi.mocked(api.delete).mockResolvedValue({ status: 502, error: 'Could not connect to the mail server (alex@example.test). Nothing was changed.', code: 'MAIL_SERVER_ERROR' });
+    const client = show();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Projects' }));
+    await screen.findByText('Delete Projects?');
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete on server and in UniHub' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Folder not deleted', description: 'Could not connect to the mail server (alex@example.test). Nothing was changed.' })));
+    expect(invalidate).toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Delete Projects' })).toBeEnabled();
+  });
+
+  it('a folder gone from every server whose UniHub copy could not be updated asks to delete it again', async () => {
+    vi.mocked(api.delete).mockResolvedValue({ status: 409, error: 'The folder was deleted on the mail server, but UniHub could not update its copy yet.', code: 'FOLDER_PARTLY_DELETED',
+      details: { deleted_on: ['alex@example.test'], remaining_on: [], settled: false } });
+    const client = show();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Projects' }));
+    await screen.findByText('Delete Projects?');
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete on server and in UniHub' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Folder partly deleted', description: 'Deleted on alex@example.test. Delete it again to finish; nothing is sent to the server again.' })));
+    expect(invalidate).toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Delete Projects' })).toBeEnabled();
+  });
 });

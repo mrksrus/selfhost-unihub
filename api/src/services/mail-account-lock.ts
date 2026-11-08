@@ -2,7 +2,9 @@
 // so committing Sync mode guarantees an older deletion has finished first.
 const tails = new Map<string, Promise<void>>();
 async function withMailAccountLock<T>(accountId: unknown, callback: () => T | PromiseLike<T>, { wait = true } = {}) {
-  const key = String(accountId || '').trim();
+  // Folded: account ids are UUIDs the database matches without case, so one
+  // account has one queue however a caller spelled its id.
+  const key = String(accountId || '').trim().toLowerCase();
   if (!key) throw new Error('Account ID required');
   // HTTP actions must not join an unbounded queue behind network work. Reject
   // before adding a waiter: a rejected request must never execute later.

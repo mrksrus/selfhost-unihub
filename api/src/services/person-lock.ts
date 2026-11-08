@@ -1,16 +1,17 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { outsideCaller } from './caller-proof';
 
 // A person's account management runs one change at a time. Adding, changing,
 // disconnecting or removing a mail or calendar account, a mail account's
-// calendar, deleting a folder or one date of a repeating event at the
-// provider, clearing a module's data, deleting the person and admitting one
-// of their restores each hold this lock from the first read that decides
-// anything (discovery and login tests included) to the commit and the
-// provider command it guards; an administrator acting for the person takes
-// the person's lock. Two such changes of one person therefore never
-// interleave: the later one starts from what the earlier one left. The final
-// check (final-step.ts) still covers what others commit meanwhile: rules,
-// module switches, restores.
+// calendar, confirming a Sync account's policy, deleting a folder or one date
+// of a repeating event at the provider, clearing a module's data, deleting
+// the person and admitting one of their restores each hold this lock from the
+// first read that decides anything (discovery and login tests included) to
+// the commit and the provider command it guards; an administrator acting for
+// the person takes the person's lock. Two such changes of one person
+// therefore never interleave: the later one starts from what the earlier one
+// left. The final check (final-step.ts) still covers what others commit
+// meanwhile: rules, module switches, restores.
 //
 // One API process owns this work (AGENTS.md, docs/ARCHITECTURE.md), so the
 // lock is in process, like mail-account-lock.ts. The hold is bounded by the
@@ -29,14 +30,21 @@ interface Held { userId: string; active: boolean }
 const tails = new Map<string, Promise<void>>();
 const holding = new AsyncLocalStorage<readonly Held[]>();
 
+// A person's id as the database compares it: user ids are UUIDs, and the
+// database matches them without case, so one person has one queue however a
+// caller spelled the id. Routes that take a person's id from the address
+// resolve it to the stored one first (admin-path.ts personFromParam).
+const keyOf = (userId: unknown) => String(userId || '').trim().toLowerCase();
+
 const busy = () => Object.assign(new Error('Another change is in progress. Try again in a moment.'), { status: 503, code: 'CHANGE_IN_PROGRESS' });
 
 function holdsPersonLock(userId: string) {
-  return Boolean(holding.getStore()?.some(held => held.active && held.userId === userId));
+  const key = keyOf(userId);
+  return Boolean(holding.getStore()?.some(held => held.active && held.userId === key));
 }
 
 async function withPersonLock<T>(userId: unknown, work: () => T | PromiseLike<T>, { wait = true } = {}): Promise<T> {
-  const key = String(userId || '').trim();
+  const key = keyOf(userId);
   if (!key) throw new Error('Person ID required');
   if (holdsPersonLock(key)) return await work();
   // Rejected before joining the queue: a refused caller never runs later.
@@ -58,7 +66,8 @@ async function withPersonLock<T>(userId: unknown, work: () => T | PromiseLike<T>
 
 /** Starts background work without the caller's lock: it takes the lock itself where it needs it. */
 function outsidePersonLock<T>(work: () => T): T {
-  return holding.exit(work);
+  // Nor the request's caller (caller-proof.ts): it is not the request.
+  return outsideCaller(() => holding.exit(work));
 }
 
 /** Whether the error is withPersonLock's `wait: false` refusal. */

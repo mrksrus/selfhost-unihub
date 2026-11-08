@@ -1,12 +1,13 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
 import { db } from '../state';
-import { clearAuthCookie, clearCsrfCookie } from '../auth';
+import { clearAuthCookie, clearCsrfCookie, getAuthTokenFromRequest } from '../auth';
 import { clientError } from '../http/errors';
 import { clearModuleData, CLEAR_MODULES } from '../services/data-clear';
 import type { ClearTarget } from '../services/data-clear';
 import type { PolicyKey } from '../contracts/policies';
-import { confirmPassword, OWN_CODES } from '../security/reauthentication';
+import { confirmPasswordHash, OWN_CODES } from '../security/reauthentication';
+import { asCaller } from '../services/caller-proof';
 import {
   loadActiveMailSenderRules,
   pickBestMailSenderRuleMatch,
@@ -118,9 +119,12 @@ export = defineRoutes({
   // unattended session must not remove everything (security/reauthentication.ts).
   'DELETE /api/settings/account': { auth: 'user', module: null, restoreSection: '*', destructive: ['account.delete'], body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
     try {
-      const refused = await confirmPassword(userId, body?.current_password, res, OWN_CODES);
-      if (refused) return refused;
-      await deleteUser(userId, { actor: 'self', actorId: userId, req });
+      const confirmed = await confirmPasswordHash(userId, body?.current_password, res, OWN_CODES);
+      if ('refused' in confirmed) return confirmed.refused;
+      // The deletion may wait (the person's lock); its final step asks again
+      // that this session is live and the password still the one entered.
+      await asCaller({ userId, token: getAuthTokenFromRequest(req), passwordHash: confirmed.passwordHash },
+        () => deleteUser(userId, { actor: 'self', actorId: userId, req }));
       clearAuthCookie(res);
       clearCsrfCookie(res);
       return { deleted: true };

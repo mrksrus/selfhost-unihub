@@ -7,6 +7,7 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/
 import { MailAccountBackupButton } from '@/components/mail/MailAccountBackupButton';
 import { TypedAddressConfirm } from '@/components/mail/MailModeImpactPanel';
 import { useToast } from '@/hooks/use-toast';
+import { ACCOUNT_CHANGED, hasCode } from '@/lib/api-error';
 import { addressMatches, confirmMailSyncPolicy, emailCount, mailQueryKeys, mailSyncWarnings, type MailAccount } from '@/lib/mail-api';
 import { isOfflineMode } from '@/lib/offline';
 import { cn } from '@/lib/utils';
@@ -53,6 +54,18 @@ export function MailSyncPolicyConfirmDialog({ account, open, onOpenChange, touch
       toast({ title: `Mail-client behavior is on for ${account.email_address}`, description: 'UniHub now follows the server for this account.' });
       setTyped('');
       onOpenChange(false);
+    },
+    onError: error => {
+      // The confirmation waited for another change and was refused: nothing was written. The account is read
+      // again; the dialog stays with the server's sentence for another try, except when Mail itself is off.
+      if (hasCode(error, ACCOUNT_CHANGED) || hasCode(error, 'RESTORE_IN_PROGRESS') || hasCode(error, 'MODULE_DISABLED')) {
+        void client.invalidateQueries({ queryKey: mailQueryKeys.accounts });
+      }
+      if (hasCode(error, 'MODULE_DISABLED')) {
+        toast({ title: 'Mail is turned off', description: error.message, variant: 'destructive' });
+        setTyped('');
+        onOpenChange(false);
+      }
     },
   });
   const change = (next: boolean) => {

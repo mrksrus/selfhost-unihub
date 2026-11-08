@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Edit, Plus, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
-import { ACCOUNT_CHANGED, ApiError, hasCode } from '@/lib/api-error';
+import { ApiError, hasCode } from '@/lib/api-error';
 import { invalidateMailQueries, type MailAccount, type MailFolder } from '@/lib/mail-api';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
@@ -93,19 +93,21 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
       toast({ title: server ? 'Folder deleted on the server' : 'Folder deleted', description: parts.join(' ') });
     },
     onError: (error: Error) => {
-      // Deleted on some servers only (409): what went where, in plain words; folders are read again either way.
+      // Whatever the answer, the folders are read again: a part may have gone, or the server holds something else now.
+      void invalidateMailQueries(queryClient);
+      // Deleted on some servers only, or everywhere but UniHub's copy (409): what went where, in plain words.
       if (hasCode(error, 'FOLDER_PARTLY_DELETED')) {
-        void invalidateMailQueries(queryClient);
         const details = (error.details ?? {}) as { deleted_on?: string[]; remaining_on?: string[]; settled?: boolean };
         const gone = details.deleted_on?.length ? `Deleted on ${details.deleted_on.join(', ')}.` : '';
-        const left = details.remaining_on?.length ? `Still on ${details.remaining_on.join(', ')}: try again later.` : '';
-        const copy = details.settled === false ? 'UniHub updates its copy at the next folder check.' : '';
-        toast({ title: 'Folder partly deleted', description: [gone, left, copy].filter(Boolean).join(' ') || error.message, variant: 'destructive', duration: 10000 });
+        const left = details.remaining_on?.length ? `Still on ${details.remaining_on.join(', ')}: try again later.`
+          : 'Delete it again to finish; nothing is sent to the server again.';
+        const copy = details.remaining_on?.length && details.settled === false ? 'UniHub updates its copy at the next folder check.' : '';
+        toast({ title: 'Folder partly deleted', description: [gone, left, copy].filter(Boolean).join(' '), variant: 'destructive', duration: 10000 });
         return;
       }
-      // The account changed meanwhile (409): nothing was deleted; folders and accounts are read again.
-      if (hasCode(error, ACCOUNT_CHANGED)) void invalidateMailQueries(queryClient);
-      toast({ title: 'Failed to delete folder', description: error.message, variant: 'destructive' });
+      // Nothing deleted: the mail server failed or refused (502, in UniHub's words), the account changed meanwhile,
+      // a rule, Mail off or a restore refused the final check. The server's sentence says which.
+      toast({ title: 'Folder not deleted', description: error.message, variant: 'destructive', duration: 10000 });
     },
   });
 

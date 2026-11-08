@@ -10,7 +10,7 @@ import { isModuleEnabled, isModuleBackgroundEnabled } from './module-settings';
 import { isSectionRestoreActive } from './restore-locks';
 import { canRunModule } from './access-policy';
 import { toBooleanFlag } from './mail-host-policy';
-import { durableScheduler, foregroundMutationAccounts, normalizeMailAccountId } from './mail-durable-jobs';
+import { durableScheduler, foregroundMutationAccounts, foregroundRunningAccounts, normalizeMailAccountId } from './mail-durable-jobs';
 import { mailDeleteStopRequests } from './mail-server-delete';
 import { publishMailJob } from './realtime';
 import { USER_PAUSES } from './mail-engine/rollout';
@@ -80,16 +80,18 @@ async function stopMailAccountWork(accountId: unknown, reason = 'Account stopped
 }
 
 // A pause a change owns (stopOwnedMailAccountWork): its account, its own
-// reason and the pause that reason replaced.
-interface OwnedPause { userId: string; accountId: string; reason: string; prior: string | null }
+// reason, the pause and jobs it replaced, and whether the account's next
+// operation was the person's own (foreground) when it stopped.
+interface OwnedPause { userId: string; accountId: string; reason: string; prior: string | null; jobs: { id: string; state: 'queued' | 'running' }[]; foreground: boolean }
 
 async function stopWork(accountId: unknown, reason: string): Promise<OwnedPause | null> {
   const key = normalizeMailAccountId(accountId);
   const [accounts] = await db.execute<RowDataPacket[]>('SELECT user_id FROM mail_accounts WHERE id = ?', [key]);
   if (!accounts.length) return null;
   const userId = accounts[0].user_id as string;
+  // The person's own operation, waiting for its turn or running now.
+  const foreground = foregroundMutationAccounts.has(key) || foregroundRunningAccounts.has(key);
   const paused = await (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).pauseAccount({ userId, accountId: key, reason });
-  const prior = paused?.prior ?? null;
   mailDeleteStopRequests.add(key);
   foregroundMutationAccounts.delete(key);
   durableScheduler.interruptAccount(key);
@@ -98,7 +100,7 @@ async function stopWork(accountId: unknown, reason: string): Promise<OwnedPause 
   // eligible again until it resumes.
   (require('./mail-idle') as typeof import('./mail-idle')).idleSupervisor.stopAccount(key);
   inboxFollowUps.delete(key);
-  return { userId, accountId: key, reason, prior };
+  return { userId, accountId: key, reason, prior: paused?.prior ?? null, jobs: paused?.jobs ?? [], foreground };
 }
 
 // stopMailAccountWork for a change that may still be refused: its reason is
@@ -109,10 +111,19 @@ async function stopOwnedMailAccountWork(accountId: unknown, reason: string) {
 }
 
 // After a refusal: the original refusal stays the answer, so a failure here is only logged.
-async function releaseOwnedMailAccountStop(pause: OwnedPause | null | undefined) {
+// `committed`: ends a change's own pause once the change went through (its
+// jobs as after a reconnect, takeBackPause); a reconnect resumes the account
+// itself instead (resumeAccount).
+async function releaseOwnedMailAccountStop(pause: OwnedPause | null | undefined, { committed = false }: { committed?: boolean } = {}) {
   if (!pause) return;
-  await (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).takeBackPause(pause)
-    .catch((error: Error) => log.warn('MAIL', `A refused change could not put back the pause of account ${pause.accountId}`, undefined, error));
+  try {
+    if (!await (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).takeBackPause(pause, undefined, { committed })) return;
+    // Its stop told an erase pass and a pending foreground operation to stop; neither applies any more.
+    mailDeleteStopRequests.delete(pause.accountId);
+    if (pause.foreground && !committed) foregroundMutationAccounts.add(pause.accountId);
+  } catch (error) {
+    log.warn('MAIL', `A change could not put back the pause of account ${pause.accountId}`, undefined, error);
+  }
 }
 
 // The user's Mail module choice changed (services/module-lifecycle.ts).

@@ -2,6 +2,7 @@ import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import crypto from 'crypto';
 import { conflict } from '../http/errors';
+import { db } from '../state';
 
 // The account a change chose, as it was when the change read it. A change
 // that reads an account, waits (discovery, a login test, a lock) and then
@@ -70,5 +71,15 @@ async function lockUnchanged(cx: SqlExecutor, userId: string, snapshot: AccountS
   return row;
 }
 
-export { accountSnapshot, assertUnchanged, lockUnchanged };
+// The person's account as stored, for an id a request named in any case
+// (the database matches ids without case); the id itself when there is none,
+// so the change answers its own 404. A change resolves it first: its locks,
+// the workers it stops and the rows it writes then all name one spelling.
+async function storedAccountId(kind: AccountKind, userId: string, id: string, executor: SqlExecutor = db) {
+  if (!id) return id;
+  const [[row]] = await executor.execute<RowDataPacket[]>(`SELECT id FROM ${TABLE[kind]} WHERE id = ? AND user_id = ?`, [id, userId]);
+  return row ? String(row.id) : id;
+}
+
+export { accountSnapshot, assertUnchanged, lockUnchanged, storedAccountId };
 export type { AccountSnapshot, AccountKind };

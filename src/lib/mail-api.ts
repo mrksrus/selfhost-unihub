@@ -1,4 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query';
+import { ApiError } from '@/lib/api-error';
 import { api } from '@/lib/api';
 import type { MailListRow, MailThreadListResponse, MailThreadResponse, MailThreadSummary } from '../../api/src/contracts/mail-threads';
 export type { MailListRow, MailThreadListResponse, MailThreadParticipant, MailThreadResponse, MailThreadSummary } from '../../api/src/contracts/mail-threads';
@@ -111,7 +112,8 @@ export async function fetchMailModeImpact(accountId: string, params: { mode: 'do
 export async function confirmMailSyncPolicy(accountId: string, confirmAddress: string) {
   const response = await api.post<{ confirmed: boolean; queued: boolean }>(
     `/mail/accounts/${encodeURIComponent(accountId)}/confirm-sync-policy`, { confirm_address: confirmAddress.trim() });
-  if (response.error) throw new Error(response.error);
+  // With the server's code: RESTORE_IN_PROGRESS, MODULE_DISABLED and ACCOUNT_CHANGED wrote nothing.
+  if (response.error) throw new ApiError(response);
   return response.data;
 }
 

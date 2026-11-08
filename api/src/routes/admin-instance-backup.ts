@@ -4,7 +4,9 @@ import type { InstanceBackupRunResponse, InstanceBackupStatus } from '../contrac
 import { defineRoutes } from '../http/route';
 import { clientError } from '../http/errors';
 import { getInstanceBackupStatus, startInstanceBackup, updateInstanceBackupSchedule } from '../services/instance-backup';
-import { confirmPassword } from '../security/reauthentication';
+import { confirmPasswordHash } from '../security/reauthentication';
+import { getAuthTokenFromRequest } from '../auth';
+import { asCaller } from '../services/caller-proof';
 import { isWorkerOwner } from '../services/worker-owner';
 import { recordAuditAfter } from '../services/audit';
 import { log } from '../log';
@@ -36,8 +38,9 @@ export = defineRoutes({
 
   'PUT /api/admin/instance-backup/settings': { auth: 'admin', permission: 'server.settings', module: null, restoreSection: null, body: { limit: 2048 },
     handler: async (req: RouteRequest, userId: string, body: unknown, res: ServerResponse) => {
-      const refused = await confirmPassword(userId, (body as { current_password?: unknown } | null)?.current_password, res);
-      if (refused) return refused;
-      return { ...await updateInstanceBackupSchedule(userId, body, { req }) };
+      const confirmed = await confirmPasswordHash(userId, (body as { current_password?: unknown } | null)?.current_password, res);
+      if ('refused' in confirmed) return confirmed.refused;
+      return { ...await asCaller({ userId, token: getAuthTokenFromRequest(req), admin: true, passwordHash: confirmed.passwordHash },
+        () => updateInstanceBackupSchedule(userId, body, { req })) };
     } },
 });

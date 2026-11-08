@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSecretMutation } from '@/hooks/use-secret-mutation';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ChevronLeft, LockKeyhole, MoreHorizontal, Plus } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { useToast } from '@/hooks/use-toast';
+import { hasCode } from '@/lib/api-error';
 import {
   AdminHostTrustError, addAdminCalendarAccount, addAdminMailAccount, adminUserQueryKeys, adminUsersQueryKey, clearAdminUserModule, deleteAdminUserBackup, deleteAdminUserBinItem, emptyAdminUserBin,
   fetchAdminUserAccounts, fetchAdminUserBackups, fetchAdminUserBin, fetchAdminUsers, removeAdminCalendarAccount, removeAdminMailAccount, updateAdminCalendarAccount, updateAdminMailAccount,
@@ -72,6 +73,7 @@ const AdminUserDetail = () => {
   const { id = '' } = useParams();
   const { user } = useAuth();
   const { toast } = useToast();
+  const navigate = useNavigate();
   const client = useQueryClient();
   const admin = user?.role === 'admin';
   const [confirm, setConfirm] = useState<Confirm | null>(null);
@@ -95,7 +97,19 @@ const AdminUserDetail = () => {
   const refreshBackups = (userId: string) => { void client.invalidateQueries({ queryKey: adminUserQueryKeys.backups(userId) }); };
   const refreshBin = (userId: string) => { void client.invalidateQueries({ queryKey: adminUserQueryKeys.bin(userId) }); };
   const done = (title: string, generation: number, refresh: () => void) => { refresh(); closeConfirm(generation); toast({ title }); };
-  const failed = (title: string) => (error: Error) => toast({ title, description: error.message, variant: 'destructive' });
+  // The server knows no such person (400 INVALID_USER_ID, 404 USER_NOT_FOUND): deleted meanwhile, or a stale link. Back to the list.
+  const personGone = (error: unknown) => hasCode(error, 'USER_NOT_FOUND') || hasCode(error, 'INVALID_USER_ID');
+  const GONE = { title: 'This person no longer exists', description: 'The account was deleted or never existed.' };
+  const failed = (title: string) => (error: Error) => {
+    if (personGone(error)) { toast(GONE); navigate('/admin/users', { replace: true }); return; }
+    toast({ title, description: error.message, variant: 'destructive' });
+  };
+  const goneError = [accountsQuery.error, backupsQuery.error, binQuery.error].find(personGone);
+  useEffect(() => {
+    if (!goneError) return;
+    toast({ title: 'This person no longer exists', description: 'The account was deleted or never existed.' });
+    navigate('/admin/users', { replace: true });
+  }, [goneError, toast, navigate]);
   // Another person's page: nothing opened for the previous one may stay.
   useEffect(() => { setConfirm(null); setMailDialog(CLOSED); setCalendarDialog(CLOSED); setHostTrust(null); }, [id]);
 

@@ -38,13 +38,16 @@ const isLockWaitTimeout = (error: unknown) => (error as { code?: unknown } | nul
 
 // Route catch blocks and the request boundary answer a caught error through
 // this: a 4xx with a message meant for the client keeps it, a lock wait
-// timeout is a 503 to try again, everything else becomes the route's
-// fallback text with status 500.
+// timeout is a 503 to try again, a 502 marked `expose: true` (a remote
+// server's failure in UniHub's own words, nothing changed) keeps its status
+// and message, everything else becomes the route's fallback text with
+// status 500.
 function clientError(error: unknown, fallback: string): ClientErrorResponse {
   if (isLockWaitTimeout(error)) return changeInProgress();
   const thrown = error as (ThrownError & { expose?: boolean; details?: unknown }) | null | undefined;
   const status = thrown?.status;
-  if (typeof status === 'number' && Number.isInteger(status) && status >= 400 && status < 500 && thrown!.expose !== false) {
+  const client = typeof status === 'number' && Number.isInteger(status) && status >= 400 && status < 500 && thrown!.expose !== false;
+  if (client || (status === 502 && thrown!.expose === true)) {
     return {
       error: thrown!.message || fallback,
       status,

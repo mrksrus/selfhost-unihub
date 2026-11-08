@@ -90,7 +90,7 @@ test('purge needs explicit matching confirmation before any cancellation or dele
   // The account ID from the URL is not a confirmation; the typed address is.
   await assert.rejects(api.purgeAccount('owner', 'account', 'account'), error => (error as FixtureValue).status === 400);
   await assert.rejects(api.purgeAccount('owner', 'account', 'other@example.test'), error => (error as FixtureValue).status === 400);
-  assert.ok(calls.every(call => call.sql.startsWith('SELECT id, email_address FROM mail_accounts'))); assert.deepEqual(cancellations, []);
+  assert.ok(calls.every(call => call.sql.startsWith('SELECT ')), 'only reads'); assert.deepEqual(cancellations, []);
 });
 
 test('purge is blocked for a still connected account', async t => {

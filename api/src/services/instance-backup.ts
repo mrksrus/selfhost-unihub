@@ -836,6 +836,8 @@ async function updateInstanceBackupSchedule(adminId: string, input: unknown, { r
   await inTransaction('START TRANSACTION', async connection => {
     // Locked in a fixed order, so two administrators saving at once take turns.
     for (const key of [KEEP_SETTING, TIME_SETTING]) await connection.execute('SELECT setting_value FROM system_settings WHERE setting_key = ? FOR UPDATE', [key]);
+    // Then the administrator still as their route proved them (caller-proof.ts).
+    await (require('./caller-proof') as typeof import('./caller-proof')).assertCaller(connection);
     const before = await scheduleSettings(connection);
     await connection.execute(`INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?), (?, ?)
       ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`, [TIME_SETTING, next.timeUtc, KEEP_SETTING, String(next.keep)]);

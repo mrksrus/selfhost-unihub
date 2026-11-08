@@ -10,7 +10,7 @@ import * as calendarAccounts from './calendar-accounts';
 import * as calendarSync from './calendar-sync';
 import { withTransaction } from './transactions';
 import { assertFinalStep } from './final-step';
-import { accountSnapshot, lockUnchanged } from './account-identity';
+import { accountSnapshot, lockUnchanged, storedAccountId } from './account-identity';
 import { withPersonLock } from './person-lock';
 
 // Adding, changing and removing a calendar account: POST, PUT and DELETE
@@ -48,11 +48,11 @@ async function createCalendarAccount(userId: string, body: Input, actor: PolicyA
 }
 
 async function updateCalendarAccount(userId: string, id: string, body: Input) {
-  return withPersonLock(userId, () => updateNow(userId, id, body));
+  return withPersonLock(userId, async () => updateNow(userId, await storedAccountId('calendar', userId, id), body));
 }
 
 async function deleteCalendarAccount(userId: string, id: string, options: { actor?: PolicyActor; record?: (connection: SqlExecutor) => Promise<unknown> } = {}) {
-  return withPersonLock(userId, () => deleteNow(userId, id, options));
+  return withPersonLock(userId, async () => deleteNow(userId, await storedAccountId('calendar', userId, id), options));
 }
 
 // The mail account a linked calendar account takes its login from, as read now.
@@ -87,7 +87,13 @@ async function createNow(userId: string, body: Input, actor: PolicyActor) {
   const accountId = crypto.randomUUID();
   const capabilities = CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.local;
 
-  await db.execute(
+  // A local account needs no accounts.add admission, but it is still written
+  // under Calendar's final check (final-step.ts): on and not being restored,
+  // and the request's caller still as its route proved them (an
+  // administrator acting for the person, caller-proof.ts).
+  await withTransaction(async cx => {
+  await assertFinalStep(cx, { userId, modules: ['calendar'] });
+  await cx.execute(
     `INSERT INTO calendar_accounts
       (id, user_id, provider, account_email, display_name, capabilities, is_active)
      VALUES (?, ?, 'local', ?, ?, ?, ?)`,
@@ -101,7 +107,7 @@ async function createNow(userId: string, body: Input, actor: PolicyActor) {
     ]
   );
 
-  await db.execute(
+  await cx.execute(
     `INSERT INTO calendar_calendars
       (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
      VALUES (?, ?, ?, ?, ?, ?, TRUE, TRUE, FALSE, TRUE)`,
@@ -114,6 +120,7 @@ async function createNow(userId: string, body: Input, actor: PolicyActor) {
       body.default_calendar_color || '#2563eb',
     ]
   );
+  });
 
   const [rows] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
   const created = rows[0];
@@ -185,6 +192,8 @@ async function updateNow(userId: string, id: string, body: Input) {
     await cx.execute(`UPDATE calendar_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
   });
   if (resume) calendarSync.syncCalendarAccountInBackground(id, { userId, reason: 'manual' });
+  // Paused: a sync or change under way stops now and writes nothing more.
+  if (body.is_active === false && remote) calendarSync.stopCalendarAccountWork(id, 'paused');
   const [rows] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
   return { account: serializeCalendarAccount(rows[0]) };
 }

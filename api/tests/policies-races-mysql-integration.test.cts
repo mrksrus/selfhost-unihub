@@ -104,6 +104,13 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     return file;
   }
   const encrypt = (text: string) => (require('../dist/src/security/encryption') as typeof import('../src/security/encryption')).encrypt(text);
+  // A synthetic mail server's folders: its LIST. A fake connection spreads
+  // it and adds its own DELETE.
+  const folderServer = (folders: Record<string, number> = { Shared: 1 }) => ({
+    list: async () => ['INBOX', ...Object.keys(folders)].map(path => ({ path, flags: new Set() })),
+  });
+  // A DELETE of a folder the server no longer has, answered as Dovecot does.
+  const nonexistent = (name: string) => Object.assign(new Error(`Mailbox doesn't exist: ${name}`), { responseStatus: 'NO', serverResponseCode: 'NONEXISTENT' });
   // Each case starts with every policy at its default and no restore, whatever an earlier one left.
   const fromDefaults = (name: string, body: () => Promise<void>) => t.test(name, async () => {
     await pool.query("DELETE FROM setting_policies WHERE target_kind = 'installation'");
@@ -1350,7 +1357,9 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     const deleted: string[] = [];
     const connecting = deferred(), connected = deferred();
     const outcome = deleteMailFolder({ userId: users.alex, slug: 'projects-r6', server: true }, {
-      connect: async () => { connecting.resolve(); await connected.promise; return { mailboxDelete: async (name: string) => { deleted.push(name); }, list: async () => [] } as FixtureValue; },
+      connect: async () => { connecting.resolve(); await connected.promise;
+        return (require('../dist/src/services/mail-imap-guard') as FixtureValue).guardImapConnection({ on() {}, close() {}, ...folderServer({ Projects: 1 }),
+          mailboxDelete: async (name: string) => { deleted.push(name); } }); },
     }).then(() => null, (error: FixtureValue) => error.code);
     try {
       await within(connecting.promise);
@@ -1718,7 +1727,7 @@ test('a destructive step follows the rules in force when it acts, with an owner,
           visited.push(account.id);
           if (!failing && visited.length === 2) { second.reached.resolve(); await second.go.promise; }
           // A guarded connection, as connectToAccount gives one.
-          return guardImapConnection({ close() {}, on() {}, list: async () => [], mailboxDelete: async () => {
+          return guardImapConnection({ close() {}, on() {}, ...folderServer(), mailboxDelete: async () => {
             commands.push(account.id);
             if (failing && account.id === accounts[1]) throw Object.assign(new Error('synthetic server failure'), { responseStatus: 'NO', responseText: 'Server busy' });
           } } as FixtureValue);
@@ -1802,5 +1811,565 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     stubs.restore(); discovery.restore();
     await pool.execute("DELETE FROM calendar_accounts WHERE user_id IN (?, ?) AND (id IN (?, ?) OR display_name IN ('Fenced local', 'Fenced by admin', 'Blair while alex is held'))", [users.alex, users.blair, changed, removed]);
     await pool.execute('DELETE FROM mail_accounts WHERE id IN (?, ?, ?, ?)', [kept, disconnected, byAdmin, purged]);
+  });
+
+  // Review r8.
+  await fromDefaults('r8: an administrator\'s change for a person waits for that person\'s own change, however the id is spelled; a malformed id is refused', async () => {
+    const url = 'https://case-r8.example.test/dav/', login = 'case-original';
+    const source = await mailOf('case-source@example.test', login), target = await mailOf('case-target@example.test', login);
+    const old = await linkedAt(source, 'case-source@example.test', url);
+    const discovery = discoveryHeld(), stubs = mailStubbed();
+    const pause = pauseAfter('SELECT ca.* FROM calendar_accounts ca');
+    const pending = alex.request('PUT', `/api/mail/accounts/${target}/calendar`, { enabled: true, caldav_url: url });
+    let change: ReturnType<typeof admin.request> | undefined;
+    try {
+      await pause.reached();
+      change = admin.request('PUT', `/api/admin/users/${users.alex.toUpperCase()}/mail-accounts/${source}`, { username: 'case-new-login', encrypted_password: 'synthetic-new-password', current_password: password });
+      await waits(change, 'the administrator\'s change');
+      pause.release();
+      assert.equal((await pending).status, 200, JSON.stringify((await pending).body));
+      assert.equal((await change).status, 200, JSON.stringify((await change).body));
+    } finally { pause.restore(); await pending; await change; stubs.restore(); discovery.restore(); }
+    assert.equal((await rowOf('calendar_accounts', old.account)).mail_account_id, target, 'taken over with the login it was found by');
+    assert.equal((await rowOf('mail_accounts', source)).username, 'case-new-login', 'then the login changed');
+    const malformed = await admin.request('GET', '/api/admin/users/not-a-person/accounts');
+    assert.deepEqual([malformed.status, malformed.body.code], [400, 'INVALID_USER_ID'], JSON.stringify(malformed.body));
+    const own = await admin.request('DELETE', `/api/admin/users/${users.admin.toUpperCase()}`, { current_password: password });
+    assert.deepEqual([own.status, own.body.error], [400, 'Cannot delete your own account'], JSON.stringify(own.body));
+    await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [old.account]);
+    await pool.execute('DELETE FROM mail_accounts WHERE id IN (?, ?)', [source, target]);
+  });
+
+  await fromDefaults('r8: a sync that waited to link a restored calendar links nothing once the account was paused, and keeps its password', async () => {
+    const mail = await mailOf('sync-pause-r8@example.test'), old = await linkedAt(mail, 'sync-pause-r8@example.test', 'https://sync-pause-r8.example.test/dav/');
+    const secret = encrypt('synthetic-restored-password');
+    await pool.execute("UPDATE calendar_accounts SET mail_account_id = NULL, encrypted_password = ?, is_active = TRUE, sync_status = 'pending' WHERE id = ?", [secret, old.account]);
+    const calendarSync = require('../dist/src/services/calendar-sync') as FixtureValue;
+    const dav = require('../dist/src/services/caldav') as FixtureValue, list = dav.listCalendars;
+    let listed = 0;
+    dav.listCalendars = async () => { listed++; return []; };
+    const personLock = require('../dist/src/services/person-lock') as FixtureValue, original = personLock.withPersonLock;
+    const arrived = deferred(), gate = deferred();
+    const changes = require('../dist/src/services/calendar-account-changes') as FixtureValue;
+    // Alex's change holds the lock; the sync reaches it and waits; the change pauses the account.
+    const holder = original(users.alex, async () => { await within(arrived.promise); assert.ok((await changes.updateCalendarAccount(users.alex, old.account, { is_active: false })).account); await gate.promise; });
+    personLock.withPersonLock = async (...args: FixtureValue[]) => { if (args[0] === users.alex) arrived.resolve(); return original(...args); };
+    const pending = calendarSync.syncCalendarAccount(old.account, { userId: users.alex }).then((result: FixtureValue) => result, (error: Error) => ({ error: error.message }));
+    try {
+      await within(arrived.promise);
+      personLock.withPersonLock = original;
+      gate.resolve(); await holder;
+      assert.deepEqual(await pending, { skipped: true, reason: 'paused' });
+    } finally { gate.resolve(); await holder; await pending; personLock.withPersonLock = original; dav.listCalendars = list; }
+    const row = await rowOf('calendar_accounts', old.account);
+    assert.deepEqual([Number(row.is_active), row.mail_account_id, row.encrypted_password, row.sync_status, listed], [0, null, secret, 'paused', 0], 'paused, unlinked, with its password, nothing asked of the server');
+    await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [old.account]);
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('r8: confirming a Sync policy waits for a change of the account in progress, and is refused once a Mail restore is admitted', async () => {
+    const stubs = mailStubbed();
+    const scheduler = (require('../dist/src/services/mail-durable-jobs') as FixtureValue).durableScheduler, enqueue = scheduler.enqueue;
+    scheduler.enqueue = async () => ({});
+    try {
+      const mail = await mailOf('confirm-old@example.test');
+      await pool.execute("UPDATE mail_accounts SET sync_mode = 'sync', sync_policy_confirmed_at = NULL WHERE id = ?", [mail]);
+      // Held once the confirmation read the account.
+      const pause = pauseAfter('FROM mail_accounts WHERE id = ? AND user_id = ?');
+      const pending = alex.request('POST', `/api/mail/accounts/${mail}/confirm-sync-policy`, { confirm_address: 'confirm-old@example.test' });
+      let change: ReturnType<typeof alex.request> | undefined;
+      try {
+        await pause.reached();
+        change = alex.request('PUT', `/api/mail/accounts/${mail}`, { email_address: 'confirm-new@example.test', username: 'confirm-new', encrypted_password: 'synthetic-new-password' });
+        await waits(change, 'the address change');
+        pause.release();
+        assert.equal((await pending).status, 200, JSON.stringify((await pending).body));
+        assert.equal((await change).status, 200, JSON.stringify((await change).body));
+      } finally { pause.restore(); await pending; await change; }
+      const restore = crypto.randomUUID(), again = await mailOf('confirm-restore@example.test');
+      await pool.execute("UPDATE mail_accounts SET sync_mode = 'sync', sync_policy_confirmed_at = NULL WHERE id = ?", [again]);
+      const held = pauseAfter('FROM mail_accounts WHERE id = ? AND user_id = ?');
+      const refused = alex.request('POST', `/api/mail/accounts/${again}/confirm-sync-policy`, { confirm_address: 'confirm-restore@example.test' });
+      try {
+        await held.reached();
+        await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', '["mail"]')`, [restore, users.alex]);
+        held.release();
+        const reply = await refused;
+        assert.deepEqual([reply.status, reply.body.code], [409, 'RESTORE_IN_PROGRESS'], JSON.stringify(reply.body));
+      } finally { held.restore(); await refused; }
+      assert.equal((await rowOf('mail_accounts', again)).sync_policy_confirmed_at, null, 'not confirmed');
+      assert.equal(await count("SELECT COUNT(*) AS count FROM mail_engine_jobs WHERE mail_account_id = ? AND kind = 'prune'", [again]), 0, 'and no removal admitted');
+      await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
+      await pool.execute('DELETE FROM mail_accounts WHERE id IN (?, ?)', [mail, again]);
+    } finally { stubs.restore(); scheduler.enqueue = enqueue; }
+  });
+
+  await fromDefaults('r8: an administrator\'s switch to Sync confirms with the address the account has when the switch runs', async () => {
+    const mail = await mailOf('admin-confirm-old@example.test');
+    const stubs = mailStubbed(), reached = deferred(), go = deferred();
+    stubs.svc.testImapConnection = async () => { reached.resolve(); await go.promise; return { success: true }; };
+    const first = alex.request('PUT', `/api/mail/accounts/${mail}`, { email_address: 'admin-confirm-new@example.test', username: 'admin-new', encrypted_password: 'synthetic-new-password' });
+    let second: ReturnType<typeof admin.request> | undefined;
+    try {
+      await within(reached.promise);
+      second = admin.request('PUT', `/api/admin/users/${users.alex}/mail-accounts/${mail}`, { sync_mode: 'sync', current_password: password });
+      await waits(second, 'the administrator\'s switch');
+      go.resolve();
+      assert.equal((await first).status, 200, JSON.stringify((await first).body));
+      assert.equal((await second).status, 200, JSON.stringify((await second).body));
+    } finally { go.resolve(); await first; await second; stubs.restore(); }
+    assert.deepEqual([(await rowOf('mail_accounts', mail)).sync_mode, (await rowOf('mail_accounts', mail)).email_address], ['sync', 'admin-confirm-new@example.test']);
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('r8: a disconnect or purge that cannot get a connection, or a settings change that fails after its commit, leaves no pause of its own', async () => {
+    const lifecycle = require('../dist/src/services/mail-account-lifecycle') as FixtureValue;
+    for (const purge of [false, true]) {
+      const mail = await mailOf(`acquire-${purge}@example.test`);
+      if (purge) await pool.execute('UPDATE mail_accounts SET is_active = FALSE, disconnected_at = UTC_TIMESTAMP() WHERE id = ?', [mail]);
+      const svc = mailServiceOf(), stop = svc.stopOwnedMailAccountWork, getConnection = pool.getConnection;
+      // The change's own connection, right after its stop, cannot be had; the pool works again afterwards.
+      svc.stopOwnedMailAccountWork = async (...args: FixtureValue[]) => {
+        const owned = await stop(...args);
+        pool.getConnection = async function (this: typeof pool) { pool.getConnection = getConnection; throw new Error('synthetic acquisition failure'); } as typeof pool.getConnection;
+        return owned;
+      };
+      try {
+        await assert.rejects(purge ? lifecycle.purgeAccount(users.alex, mail, `acquire-${purge}@example.test`) : lifecycle.disconnectAccount(users.alex, mail), /synthetic acquisition failure/);
+      } finally { pool.getConnection = getConnection; svc.stopOwnedMailAccountWork = stop; }
+      const [[row]] = await pool.query<RowDataPacket[]>('SELECT paused_reason FROM mail_engine_accounts WHERE mail_account_id = ?', [mail]);
+      assert.equal(row?.paused_reason ?? null, null, `${purge ? 'purge' : 'disconnect'}: its pause is gone`);
+      await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+    }
+    const mail = await mailOf('settings-exception@example.test'), stubs = mailStubbed();
+    const writebacks = require('../dist/src/services/mail-writebacks') as FixtureValue, cancel = writebacks.cancelForAccount;
+    writebacks.cancelForAccount = async () => { throw new Error('synthetic cancellation failure'); };
+    try {
+      const reply = await alex.request('PUT', `/api/mail/accounts/${mail}`, { sync_mode: 'sync', confirm_address: 'settings-exception@example.test' });
+      assert.equal(reply.status, 500, JSON.stringify(reply.body));
+    } finally { writebacks.cancelForAccount = cancel; stubs.restore(); }
+    assert.equal((await rowOf('mail_accounts', mail)).sync_mode, 'sync', 'committed');
+    const [[row]] = await pool.query<RowDataPacket[]>('SELECT paused_reason FROM mail_engine_accounts WHERE mail_account_id = ?', [mail]);
+    assert.equal(row?.paused_reason ?? null, null, 'its pause ended all the same');
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('r8: an accepted move waiting to run survives a refused settings change and a refused disconnect, with its foreground turn', async () => {
+    const writebacks = require('../dist/src/services/mail-writebacks') as FixtureValue;
+    const jobs = require('../dist/src/services/mail-durable-jobs') as FixtureValue;
+    const modules = require('../dist/src/services/module-settings') as FixtureValue;
+    await modules.setUserModules(users.alex, { modules: { mail: { enabled: true, background: false } } });
+    const stubs = mailStubbed();
+    try {
+      for (const [what, policy, request] of [
+        ['settings change', 'mail.mode.download', (mail: string) => alex.request('PUT', `/api/mail/accounts/${mail}`, { sync_mode: 'download' })],
+        ['disconnect', 'accounts.remove', (mail: string) => alex.request('DELETE', `/api/mail/accounts/${mail}`)],
+      ] as [string, string, (mail: string) => ReturnType<typeof alex.request>][]) {
+        await pool.query("DELETE FROM setting_policies WHERE target_kind = 'installation'");
+        const mail = await mailOf(`intent-${what.replace(/ /g, '-')}-r8@example.test`), email = crypto.randomUUID(), folder = crypto.randomUUID();
+        await pool.execute("UPDATE mail_accounts SET sync_mode = 'sync' WHERE id = ?", [mail]);
+        await pool.execute("INSERT INTO mail_folders (id, user_id, slug, display_name, is_system) VALUES (?, ?, ?, 'Archive', FALSE)", [folder, users.alex, `archive-${folder.slice(0, 8)}`]);
+        await pool.execute("INSERT INTO mail_folder_remote_boxes (folder_id, mail_account_id, remote_name) VALUES (?, ?, 'Archive')", [folder, mail]);
+        await pool.execute("INSERT INTO emails (id, user_id, mail_account_id, from_address, to_addresses, folder, remote_folder, remote_uid, remote_uidvalidity) VALUES (?, ?, ?, 'sender@example.test', '[]', 'inbox', 'INBOX', 12, 9)", [email, users.alex, mail]);
+        const [[row]] = await pool.query<RowDataPacket[]>('SELECT e.*, a.sync_mode, a.is_active FROM emails e JOIN mail_accounts a ON a.id = e.mail_account_id WHERE e.id = ?', [email]);
+        // Accepted: the intent and its job; the person's own, so it runs with background off.
+        await writebacks.queueChanges(pool, users.alex, [row], { move: `archive-${folder.slice(0, 8)}` });
+        jobs.foregroundMutationAccounts.add(mail);
+        const [[op]] = await pool.query<RowDataPacket[]>('SELECT id FROM mail_writebacks WHERE email_id = ?', [email]);
+        const pause = pauseAfter('INSERT INTO mail_engine_accounts (mail_account_id,user_id,paused_reason)');
+        const pending = request(mail);
+        try {
+          await pause.reached();
+          await setPolicies({ [policy]: 'forbidden' });
+          pause.release();
+          const reply = await pending;
+          assert.deepEqual([what, reply.status, reply.body.code], [what, 403, 'POLICY_FORBIDS'], JSON.stringify(reply.body));
+        } finally { pause.restore(); await pending; }
+        const [[job]] = await pool.query<RowDataPacket[]>('SELECT state, kind, error FROM mail_engine_jobs WHERE operation_id = ?', [op.id]);
+        assert.notEqual(job.state, 'cancelled', `${what}: the move's job is not retired: ${job.error}`);
+        assert.equal(job.kind, 'operation', what);
+        if (job.state === 'queued') assert.equal(jobs.foregroundMutationAccounts.has(mail), true, `${what}: still the person's own turn`);
+        jobs.foregroundMutationAccounts.delete(mail);
+        await pool.execute('DELETE FROM mail_folders WHERE id = ?', [folder]);
+        await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+      }
+    } finally { stubs.restore(); await modules.setUserModules(users.alex, { modules: { mail: { enabled: true, background: true } } }); }
+  });
+
+  await fromDefaults('r8: a refusal does not bring back a Mail switched-off pause once Mail is on again', async () => {
+    const mail = await mailOf('prior-pause-r8@example.test');
+    const control = require('../dist/src/services/mail-sync-control') as FixtureValue;
+    try {
+      await call(alex, 'PUT', '/api/modules', { modules: { mail: { enabled: false } } });
+      const owned = await control.stopOwnedMailAccountWork(mail, 'Account settings changing');
+      await call(alex, 'PUT', '/api/modules', { modules: { mail: { enabled: true } } });
+      await control.releaseOwnedMailAccountStop(owned);
+      const [[row]] = await pool.query<RowDataPacket[]>('SELECT paused_reason FROM mail_engine_accounts WHERE mail_account_id = ?', [mail]);
+      assert.equal(row.paused_reason, null);
+    } finally { await call(alex, 'PUT', '/api/modules', { modules: { mail: { enabled: true } } }); }
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  async function sharedFolder(tag: string) {
+    const accounts = [await mailOf(`${tag}-a@example.test`), await mailOf(`${tag}-b@example.test`)].sort();
+    const folder = crypto.randomUUID(), slug = `${tag}-folder`;
+    await pool.execute("INSERT INTO mail_folders (id, user_id, slug, display_name, is_system) VALUES (?, ?, ?, 'Synthetic shared', FALSE)", [folder, users.alex, slug]);
+    await pool.execute("INSERT INTO mail_folder_remote_boxes (folder_id, mail_account_id, remote_name) VALUES (?, ?, 'Shared'), (?, ?, 'Shared')", [folder, accounts[0], folder, accounts[1]]);
+    const remove = async () => { await pool.execute('DELETE FROM mail_folders WHERE id = ?', [folder]); await pool.execute('DELETE FROM mail_accounts WHERE id IN (?, ?)', accounts); };
+    return { accounts, folder, slug, remove };
+  }
+  const folderDeletion = () => require('../dist/src/services/mail-folder-delete') as typeof import('../src/services/mail-folder-delete');
+  const guarded = (connection: FixtureValue) => (require('../dist/src/services/mail-imap-guard') as typeof import('../src/services/mail-imap-guard')).guardImapConnection({ on() {}, close() {}, ...connection });
+
+  await fromDefaults('r8: deleting a folder at the provider counts what the servers answered, even when its final check could not commit', async () => {
+    const fx = await sharedFolder('commit-r8'), commands: string[] = [], getConnection = pool.getConnection;
+    let inject = true;
+    pool.getConnection = async function (this: typeof pool) {
+      const cx = await getConnection.call(this) as PoolConnection, commit = cx.commit, release = cx.release;
+      cx.commit = async function (this: PoolConnection) { await commit.call(cx); if (inject && commands.length === 2) { inject = false; throw new Error('synthetic lost COMMIT acknowledgement'); } } as typeof cx.commit;
+      cx.release = function (this: PoolConnection) { cx.commit = commit; cx.release = release; return release.call(cx); };
+      return cx;
+    } as typeof pool.getConnection;
+    let result: FixtureValue;
+    try {
+      result = await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true },
+        { connect: async (account: FixtureValue) => guarded({ ...folderServer(), mailboxDelete: async () => { commands.push(account.id); } }) as FixtureValue });
+    } finally { pool.getConnection = getConnection; }
+    assert.deepEqual(commands, fx.accounts, 'each DELETE sent once');
+    assert.equal(result.server.length, 2);
+    assert.equal(await count('SELECT COUNT(*) AS count FROM mail_folders WHERE id = ?', [fx.folder]), 0, 'and the folder is gone in UniHub');
+    await fx.remove();
+  });
+
+  await fromDefaults('r8: a folder deleted at one server whose local update failed is not sent again by itself; deleting it again finishes it', async () => {
+    const finalStep = require('../dist/src/services/final-step') as FixtureValue, original = finalStep.underFinalStep;
+    const modules = require('../dist/src/services/module-settings') as FixtureValue;
+    const fx = await sharedFolder('settle-r8'), commands: string[] = [];
+    let secondFails = true;
+    // Mail switched off right after the servers answered: the local update is refused.
+    finalStep.underFinalStep = async (...args: FixtureValue[]) => { try { return await original(...args); } finally { if (secondFails) await modules.setUserModules(users.alex, { modules: { mail: { enabled: false } } }); } };
+    const servers = new Map(fx.accounts.map(id => [id, { Shared: 1 } as Record<string, number>]));
+    const connect = async (account: FixtureValue) => guarded({ ...folderServer(servers.get(account.id)), mailboxDelete: async (name: string) => {
+      commands.push(account.id);
+      if (!(name in servers.get(account.id)!)) throw nonexistent(name);
+      if (secondFails && account.id === fx.accounts[1]) throw Object.assign(new Error('synthetic server busy'), { responseStatus: 'NO', responseText: 'Server busy' });
+      delete servers.get(account.id)![name];
+    } }) as FixtureValue;
+    try {
+      const first = await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true }, { connect }).then(() => null, (error: FixtureValue) => error);
+      assert.deepEqual([first?.code, first?.details?.settled], ['FOLDER_PARTLY_DELETED', false], String(first?.message));
+      assert.deepEqual(first?.details?.deleted_on.length, 1);
+      secondFails = false;
+      await modules.setUserModules(users.alex, { modules: { mail: { enabled: true } } });
+      assert.deepEqual(commands, [fx.accounts[0], fx.accounts[1]], 'nothing is sent again by itself');
+      // Deleting it again asks both servers again: the first has no such folder any more, the second deletes it.
+      await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true }, { connect });
+      assert.deepEqual(commands, [fx.accounts[0], fx.accounts[1], fx.accounts[0], fx.accounts[1]]);
+      assert.equal(await count('SELECT COUNT(*) AS count FROM mail_folders WHERE id = ?', [fx.folder]), 0);
+    } finally { finalStep.underFinalStep = original; await modules.setUserModules(users.alex, { modules: { mail: { enabled: true } } }); }
+    await fx.remove();
+  });
+
+  await fromDefaults('r8: a folder DELETE without an answer is answered 502, changes nothing locally and is not sent again by itself', async () => {
+    const fx = await sharedFolder('uncertain-r8'), commands: string[] = [];
+    const connect = async (account: FixtureValue) => guarded({ ...folderServer(), mailboxDelete: async () => {
+      commands.push(account.id);
+      if (account.id === fx.accounts[0]) throw new Error('synthetic connection lost');
+    } }) as FixtureValue;
+    const reply = await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true }, { connect }).then(() => null, (error: FixtureValue) => error);
+    assert.deepEqual([reply?.status, reply?.code], [502, 'MAIL_SERVER_ERROR']);
+    assert.doesNotMatch(String(reply?.message), /synthetic connection lost/, 'in UniHub\'s words');
+    assert.deepEqual(commands, [fx.accounts[0]], 'the rest is not sent, and the first not again');
+    assert.equal(await count('SELECT COUNT(*) AS count FROM mail_folder_remote_boxes WHERE folder_id = ?', [fx.folder]), 2);
+    assert.equal(await count('SELECT COUNT(*) AS count FROM mail_folders WHERE id = ?', [fx.folder]), 1);
+    await fx.remove();
+  });
+
+  await fromDefaults('r8: a folder the mail server refused to delete answers 502 in UniHub\'s words, with nothing changed', async () => {
+    const fx = await sharedFolder('nodelete-r8');
+    const service = folderDeletion(), deleteMailFolder = service.deleteMailFolder;
+    (service as FixtureValue).deleteMailFolder = (request: FixtureValue) => deleteMailFolder(request, { connect: async () => guarded({ ...folderServer(),
+      mailboxDelete: async () => { throw Object.assign(new Error('synthetic server busy'), { responseStatus: 'NO', responseText: 'Synthetic raw provider text' }); } }) as FixtureValue });
+    try {
+      const reply = await alex.request('DELETE', `/api/mail/folders/${fx.slug}?server=1`);
+      assert.deepEqual([reply.status, reply.body.code], [502, 'MAIL_SERVER_ERROR'], JSON.stringify(reply.body));
+      assert.doesNotMatch(JSON.stringify(reply.body), /raw provider text|server busy/i);
+    } finally { (service as FixtureValue).deleteMailFolder = deleteMailFolder; }
+    assert.equal(await count('SELECT COUNT(*) AS count FROM mail_folder_remote_boxes WHERE folder_id = ?', [fx.folder]), 2);
+    await fx.remove();
+  });
+
+  await fromDefaults('r9: a running foreground operation stopped by a refused disconnect resumes as its own outcome check, while background sync is off', async () => {
+    const mail = await mailOf('running-foreground-r9@example.test'), email = crypto.randomUUID(), op = crypto.randomUUID();
+    await pool.execute("UPDATE mail_accounts SET sync_mode = 'sync' WHERE id = ?", [mail]);
+    await pool.execute("INSERT INTO emails (id, user_id, mail_account_id, from_address, to_addresses, folder, remote_folder, remote_uid, remote_uidvalidity) VALUES (?, ?, ?, 'sender@example.test', '[]', 'inbox', 'INBOX', 10, 80)", [email, users.alex, mail]);
+    await pool.execute(`INSERT INTO mail_writebacks (id, user_id, mail_account_id, email_id, action, target_value, base_value, target_folder, remote_folder, remote_uid, remote_uidvalidity, state, is_current, dispatched)
+      VALUES (?, ?, ?, ?, 'move', 'Archive', 'inbox', 'archive', 'INBOX', 10, 80, 'queued', TRUE, FALSE)`, [op, users.alex, mail, email]);
+    const runtime = require('../dist/src/services/mail-engine/runtime') as FixtureValue;
+    const modules = require('../dist/src/services/module-settings') as FixtureValue;
+    const jobs = require('../dist/src/services/mail-durable-jobs') as FixtureValue;
+    const operations = require('../dist/src/services/mail-engine/operations') as FixtureValue;
+    const connections = require('../dist/src/services/mail-engine/connection-pool') as FixtureValue;
+    const svc = mailServiceOf();
+    const saved = { acquire: connections.acquireImapConnection, release: connections.releaseImapConnection, process: operations.processDueOperations,
+      move: operations.applyMove, config: svc.buildImapConnectionConfig, stop: svc.stopOwnedMailAccountWork };
+    const entered = deferred(), go = deferred();
+    let acquired = 0, checked = 0, captured: FixtureValue = null;
+    await modules.setUserModules(users.alex, { modules: { mail: { enabled: true, background: false } } });
+    const job = await runtime.enqueueJob({ userId: users.alex, accountId: mail, operationId: op, kind: 'operation' });
+    const claimed = await runtime.claimDueJob({ workerId: 'r9-first', accountId: mail, kinds: ['operation'] });
+    assert.equal(claimed.id, job.id);
+    connections.acquireImapConnection = async () => { acquired++; return {}; };
+    connections.releaseImapConnection = () => {};
+    svc.buildImapConnectionConfig = async () => ({ imap: {} });
+    operations.applyMove = async () => { checked++; };
+    // Dispatched, then stopped before its answer was recorded.
+    operations.processDueOperations = async () => {
+      await pool.execute("UPDATE mail_writebacks SET state = 'executing', dispatched = TRUE WHERE id = ?", [op]);
+      entered.resolve(); await go.promise;
+      throw Object.assign(new Error('Synthetic interrupted running command'), { code: 'MAIL_WORKER_FENCED' });
+    };
+    jobs.foregroundMutationAccounts.add(mail);
+    const running = jobs.runDurableMailJob(claimed, new AbortController().signal, () => {}).catch((error: FixtureValue) => error);
+    try {
+      await within(entered.promise);
+      svc.stopOwnedMailAccountWork = async (...args: FixtureValue[]) => {
+        captured = await saved.stop(...args);
+        go.resolve(); await running;
+        await setPolicies({ 'accounts.remove': 'forbidden' });
+        return captured;
+      };
+      const refused = await alex.request('DELETE', `/api/mail/accounts/${mail}`);
+      assert.deepEqual([refused.status, refused.body.code], [403, 'POLICY_FORBIDS'], JSON.stringify(refused.body));
+      svc.stopOwnedMailAccountWork = saved.stop;
+      assert.equal(captured.foreground, true, 'the stop saw the running job\'s foreground turn');
+      const [[restored]] = await pool.query<RowDataPacket[]>('SELECT kind, state FROM mail_engine_jobs WHERE id = ?', [job.id]);
+      assert.deepEqual([restored.kind, restored.state], ['reconcile', 'queued'], 'dispatched: its outcome is checked, it is not sent again');
+      assert.equal(jobs.foregroundMutationAccounts.has(mail), true, 'and it has its turn back');
+      const next = await runtime.claimDueJob({ workerId: 'r9-reconcile', accountId: mail, kinds: ['reconcile'] });
+      assert.equal(next.id, job.id);
+      const result = await jobs.runDurableMailJob(next, new AbortController().signal, () => {});
+      assert.equal(result.success, true, JSON.stringify(result));
+      assert.deepEqual([acquired, checked], [2, 1], 'the check ran on a connection of its own, with background sync off');
+    } finally {
+      go.resolve(); await running;
+      Object.assign(connections, { acquireImapConnection: saved.acquire, releaseImapConnection: saved.release });
+      Object.assign(operations, { processDueOperations: saved.process, applyMove: saved.move });
+      Object.assign(svc, { buildImapConnectionConfig: saved.config, stopOwnedMailAccountWork: saved.stop });
+      jobs.foregroundMutationAccounts.delete(mail);
+      await modules.setUserModules(users.alex, { modules: { mail: { enabled: true, background: true } } });
+      await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+    }
+  });
+
+  await fromDefaults('r9: a running operation that had not been dispatched when a refused change stopped it runs again as itself', async () => {
+    const mail = await mailOf('undispatched-r9@example.test'), email = crypto.randomUUID(), op = crypto.randomUUID();
+    await pool.execute("UPDATE mail_accounts SET sync_mode = 'sync' WHERE id = ?", [mail]);
+    await pool.execute("INSERT INTO emails (id, user_id, mail_account_id, from_address, to_addresses, folder) VALUES (?, ?, ?, 'synthetic@example.test', '[]', 'inbox')", [email, users.alex, mail]);
+    await pool.execute(`INSERT INTO mail_writebacks (id, user_id, mail_account_id, email_id, action, target_value, base_value, remote_folder, remote_uid, remote_uidvalidity, state, is_current, dispatched)
+      VALUES (?, ?, ?, ?, 'read', '1', '0', 'INBOX', 1, 1, 'queued', TRUE, FALSE)`, [op, users.alex, mail, email]);
+    const runtime = require('../dist/src/services/mail-engine/runtime') as FixtureValue;
+    const job = await runtime.enqueueJob({ userId: users.alex, accountId: mail, operationId: op, kind: 'operation' });
+    assert.equal((await runtime.claimDueJob({ workerId: 'r9-undispatched', accountId: mail, kinds: ['operation'] })).id, job.id);
+    const pause = await runtime.pauseAccount({ userId: users.alex, accountId: mail, reason: 'r9-owned-undispatched' });
+    await runtime.takeBackPause({ userId: users.alex, accountId: mail, reason: 'r9-owned-undispatched', ...pause });
+    const next = await runtime.claimDueJob({ workerId: 'r9-undispatched-next', accountId: mail, kinds: ['operation'] });
+    assert.deepEqual([next?.id, next?.kind], [job.id, 'operation']);
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('r9: an account id spelled in another case reaches the same account\'s work: a pause stops its running sync, and its mail lock is one queue', async () => {
+    const account = crypto.randomUUID(), secret = encrypt('synthetic-r9-case-password');
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, username, encrypted_password, base_url, is_active, sync_status)
+      VALUES (?, ?, 'caldav', 'case-r9@example.test', 'case-r9', ?, 'https://case-r9.example.test/dav/', TRUE, 'pending')`, [account, users.alex, secret]);
+    const sync = require('../dist/src/services/calendar-sync') as FixtureValue, dav = require('../dist/src/services/caldav') as FixtureValue;
+    const saved = { list: dav.listCalendars, objects: dav.listCalendarObjects };
+    const reached = deferred(), go = deferred();
+    dav.listCalendars = async () => { reached.resolve(); await go.promise;
+      return [{ url: 'https://case-r9.example.test/dav/new/', href: '/dav/new/', displayName: 'Written after pause', readOnly: false, ctag: 'new', components: ['VEVENT'] }]; };
+    dav.listCalendarObjects = async () => [];
+    const pending = sync.syncCalendarAccount(account, { userId: users.alex }).catch((error: FixtureValue) => ({ error: error.message }));
+    try {
+      await within(reached.promise);
+      const reply = await alex.request('PUT', `/api/calendar/accounts/${account.toUpperCase()}`, { is_active: false });
+      assert.equal(reply.status, 200, JSON.stringify(reply.body));
+      go.resolve();
+      const result = await pending;
+      assert.notEqual(result.ok, true, JSON.stringify(result));
+      assert.equal(await count('SELECT COUNT(*) AS count FROM calendar_calendars WHERE account_id = ?', [account]), 0, 'the stopped sync wrote nothing');
+    } finally { go.resolve(); await pending; Object.assign(dav, { listCalendars: saved.list, listCalendarObjects: saved.objects }); await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [account]); }
+
+    const { withMailAccountLock } = require('../dist/src/services/mail-account-lock') as typeof import('../src/services/mail-account-lock');
+    const mail = crypto.randomUUID(), held = deferred(), order: number[] = [];
+    const first = withMailAccountLock(mail, async () => { await held.promise; order.push(1); });
+    const second = withMailAccountLock(mail.toUpperCase(), async () => { order.push(2); });
+    assert.equal(await settlesSoon(second, 100), false, 'the other spelling waits for the change in progress');
+    held.resolve(); await Promise.all([first, second]);
+    assert.deepEqual(order, [1, 2]);
+  });
+
+  await fromDefaults('r9: a sync waiting to drop a link to deleted mail leaves the calendar as a pause meanwhile left it', async () => {
+    const account = crypto.randomUUID(), secret = encrypt('synthetic-r9-dangling-password'), dangling = crypto.randomUUID();
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, encrypted_password, base_url, mail_account_id, provider_config, is_active, sync_status)
+      VALUES (?, ?, 'caldav', 'dangling-r9@example.test', ?, 'https://dangling-r9.example.test/dav/', ?, '{"mailLinked":true}', TRUE, 'pending')`, [account, users.alex, secret, dangling]);
+    const sync = require('../dist/src/services/calendar-sync') as FixtureValue, locks = require('../dist/src/services/person-lock') as FixtureValue;
+    const changes = require('../dist/src/services/calendar-account-changes') as FixtureValue;
+    const original = locks.withPersonLock, arrived = deferred(), go = deferred();
+    const holder = original(users.alex, async () => { await within(arrived.promise); assert.ok((await changes.updateCalendarAccount(users.alex, account, { is_active: false })).account); await go.promise; });
+    locks.withPersonLock = async (...args: FixtureValue[]) => { if (args[0] === users.alex) arrived.resolve(); return original(...args); };
+    const pending = sync.syncCalendarAccount(account, { userId: users.alex }).catch((error: FixtureValue) => ({ error: error.message }));
+    try {
+      await within(arrived.promise); locks.withPersonLock = original; go.resolve(); await holder;
+      assert.deepEqual(await pending, { skipped: true, reason: 'paused' });
+      const row = await rowOf('calendar_accounts', account);
+      assert.deepEqual([Number(row.is_active), row.mail_account_id, row.encrypted_password], [0, dangling, secret], 'paused, with its link and password');
+    } finally { go.resolve(); await holder; await pending; locks.withPersonLock = original; await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [account]); }
+  });
+
+  await fromDefaults('r9: a sync that found no password while a new one was saved syncs again with it instead of noting it missing', async () => {
+    const account = crypto.randomUUID();
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, username, base_url, is_active, sync_status)
+      VALUES (?, ?, 'caldav', 'new-login-r9@example.test', 'new-login-r9', 'https://new-login-r9.example.test/dav/', TRUE, 'pending')`, [account, users.alex]);
+    const sync = require('../dist/src/services/calendar-sync') as FixtureValue, locks = require('../dist/src/services/person-lock') as FixtureValue;
+    const changes = require('../dist/src/services/calendar-account-changes') as FixtureValue, dav = require('../dist/src/services/caldav') as FixtureValue;
+    const original = locks.withPersonLock, list = dav.listCalendars, arrived = deferred(), go = deferred();
+    let listed = 0;
+    dav.listCalendars = async () => { listed++; return []; };
+    const holder = original(users.alex, async () => { await within(arrived.promise); assert.ok((await changes.updateCalendarAccount(users.alex, account, { password: 'synthetic-r9-new-password' })).account); await go.promise; });
+    locks.withPersonLock = async (...args: FixtureValue[]) => { if (args[0] === users.alex) arrived.resolve(); return original(...args); };
+    const pending = sync.syncCalendarAccount(account, { userId: users.alex }).catch((error: FixtureValue) => ({ error: error.message }));
+    try {
+      await within(arrived.promise); locks.withPersonLock = original; go.resolve(); await holder; await pending;
+      for (let tries = 0; tries < 100 && !listed; tries++) await new Promise(resolve => setTimeout(resolve, 50));
+      assert.ok(listed > 0, 'it synced again, with the new password');
+      await sync.syncCalendarAccount(account, { userId: users.alex });
+      const row = await rowOf('calendar_accounts', account);
+      assert.ok(row.encrypted_password);
+      assert.doesNotMatch(String(row.sync_error ?? ''), /No password is saved/);
+    } finally { go.resolve(); await holder; await pending; locks.withPersonLock = original; dav.listCalendars = list; await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [account]); }
+  });
+
+  await fromDefaults('r9: deleting one\'s own account that waited is refused once the session ended or the password changed meanwhile', async () => {
+    const locks = require('../dist/src/services/person-lock') as FixtureValue, original = locks.withPersonLock;
+    for (const meanwhile of ['reset', 'hash'] as const) {
+      const person = crypto.randomUUID(), name = `self-delete-r9-${meanwhile === 'reset' ? 'reset' : 'own'}`;
+      await pool.execute('INSERT INTO users (id, email, password_hash, full_name) VALUES (?, ?, ?, ?)', [person, `${name}@example.test`, passwordHash, name]);
+      const client = await signIn(name), arrived = deferred(), go = deferred();
+      const holder = original(person, () => go.promise);
+      locks.withPersonLock = async (...args: FixtureValue[]) => { if (args[0] === person) arrived.resolve(); return original(...args); };
+      const pending = client.request('DELETE', '/api/settings/account', { current_password: password });
+      try {
+        await within(arrived.promise); locks.withPersonLock = original;
+        if (meanwhile === 'reset') {
+          // An administrator's reset ends the person's sessions.
+          assert.equal((await admin.request('PUT', `/api/admin/users/${person}/password`, { new_password: 'synthetic-r9-replaced-password', current_password: password })).status, 200);
+        } else {
+          // Another password stored while this session lives on: the one entered for the deletion is not theirs any more.
+          await pool.execute('UPDATE users SET password_hash = ? WHERE id = ?', [await (require('bcryptjs') as typeof import('bcryptjs')).hash('synthetic-r9-other-password', 4), person]);
+        }
+        go.resolve(); await holder;
+        const reply = await pending;
+        assert.deepEqual([reply.status, reply.body.code], meanwhile === 'reset' ? [401, 'SESSION_ENDED'] : [403, 'PASSWORD_CHANGED'], JSON.stringify(reply.body));
+        assert.equal(await count('SELECT COUNT(*) AS count FROM users WHERE id = ?', [person]), 1, 'the person is kept');
+      } finally { go.resolve(); await holder; await pending; locks.withPersonLock = original; await pool.execute('DELETE FROM users WHERE id = ?', [person]); }
+    }
+  });
+
+  await fromDefaults('r9: an administrator\'s change that waited is refused once they are no administrator or signed out; so are their saves of the rules and of the backup schedule', async () => {
+    const locks = require('../dist/src/services/person-lock') as FixtureValue, original = locks.withPersonLock;
+    const adminOf = async (name: string) => {
+      const id = crypto.randomUUID();
+      await pool.execute("INSERT INTO users (id, email, password_hash, full_name, role) VALUES (?, ?, ?, ?, 'admin')", [id, `${name}@example.test`, passwordHash, name]);
+      return { id, client: await signIn(name) };
+    };
+    // The person's account change waits for the person's lock.
+    const a = await adminOf('admin-path-r9'), mail = await mailOf('admin-path-r9@example.test');
+    const arrived = deferred(), go = deferred();
+    const holder = original(users.alex, () => go.promise);
+    locks.withPersonLock = async (...args: FixtureValue[]) => { if (args[0] === users.alex) arrived.resolve(); return original(...args); };
+    const pending = a.client.request('DELETE', `/api/admin/users/${users.alex}/mail-accounts/${mail}`, { current_password: password });
+    try {
+      await within(arrived.promise); locks.withPersonLock = original;
+      await pool.execute("UPDATE users SET role = 'user' WHERE id = ?", [a.id]);
+      go.resolve(); await holder;
+      const reply = await pending;
+      assert.deepEqual([reply.status, reply.body.code], [403, 'ADMIN_REQUIRED'], JSON.stringify(reply.body));
+      assert.equal((await rowOf('mail_accounts', mail)).disconnected_at, null, 'the account stays connected');
+    } finally { go.resolve(); await holder; await pending; locks.withPersonLock = original; await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]); await pool.execute('DELETE FROM users WHERE id = ?', [a.id]); }
+
+    // A save waits for another one's row; the administrator signs out meanwhile.
+    for (const [key, url, body] of [
+      ['policy_revision', '/api/admin/policies', { values: { 'accounts.remove': 'forbidden' } }],
+      ['instance_backup_keep', '/api/admin/instance-backup/settings', { time_utc: '04:30', keep: 3 }],
+    ] as const) {
+      const b = await adminOf(`saves-r9-${key}`);
+      await pool.execute("INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES (?, '0')", [key]);
+      const before = await count("SELECT COUNT(*) AS count FROM audit_log WHERE actor_id = ?", [b.id]).catch(() => 0);
+      const own = await pool.getConnection();
+      await own.beginTransaction();
+      await own.execute('SELECT setting_value FROM system_settings WHERE setting_key = ? FOR UPDATE', [key]);
+      const saving = b.client.request('PUT', url, { ...body, current_password: password });
+      try {
+        assert.equal(await settlesSoon(saving, 300), false, 'the save waits for the row');
+        await pool.execute('DELETE FROM sessions WHERE user_id = ?', [b.id]);
+        await own.rollback();
+        const reply = await saving;
+        assert.deepEqual([reply.status, reply.body.code], [401, 'SESSION_ENDED'], `${url}: ${JSON.stringify(reply.body)}`);
+        assert.equal(await count("SELECT COUNT(*) AS count FROM audit_log WHERE actor_id = ?", [b.id]).catch(() => 0), before, 'nothing saved');
+      } finally { await own.rollback().catch(() => {}); own.release(); await saving; await pool.execute('DELETE FROM users WHERE id = ?', [b.id]); }
+    }
+    assert.equal(await count("SELECT COUNT(*) AS count FROM setting_policies WHERE setting_key = 'policy.accounts.remove'"), 0);
+  });
+
+  await fromDefaults('r10: an administrator\'s local calendar for a person that waited is refused once they are no administrator, and nothing is made', async () => {
+    const caller = crypto.randomUUID(), name = 'local-admin-r10';
+    await pool.execute("INSERT INTO users (id, email, password_hash, full_name, role) VALUES (?, ?, ?, ?, 'admin')", [caller, `${name}@example.test`, passwordHash, name]);
+    const client = await signIn(name), locks = require('../dist/src/services/person-lock') as FixtureValue;
+    const original = locks.withPersonLock, arrived = deferred(), go = deferred();
+    const holder = original(users.alex, () => go.promise);
+    locks.withPersonLock = async (...args: FixtureValue[]) => { if (args[0] === users.alex) arrived.resolve(); return original(...args); };
+    const pending = client.request('POST', `/api/admin/users/${users.alex}/calendar-accounts`, { provider: 'local', display_name: 'After admin demotion', current_password: password });
+    try {
+      await within(arrived.promise); locks.withPersonLock = original;
+      await pool.execute("UPDATE users SET role = 'user' WHERE id = ?", [caller]);
+      go.resolve(); await holder;
+      const reply = await pending;
+      assert.deepEqual([reply.status, reply.body.code], [403, 'ADMIN_REQUIRED'], JSON.stringify(reply.body));
+      assert.equal(await count("SELECT COUNT(*) AS count FROM calendar_accounts WHERE user_id = ? AND display_name = 'After admin demotion'", [users.alex]), 0, 'no account');
+      assert.equal(await count("SELECT COUNT(*) AS count FROM calendar_calendars c JOIN calendar_accounts a ON a.id = c.account_id WHERE a.display_name = 'After admin demotion'"), 0, 'no calendar');
+    } finally {
+      go.resolve(); await holder; await pending; locks.withPersonLock = original;
+      await pool.execute("DELETE FROM calendar_accounts WHERE user_id = ? AND display_name = 'After admin demotion'", [users.alex]);
+      await pool.execute('DELETE FROM users WHERE id = ?', [caller]);
+    }
+  });
+
+  await fromDefaults('r10: a sync that found no password while a new one was saved writes nothing once Calendar is off', async () => {
+    const account = crypto.randomUUID();
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, username, base_url, is_active, sync_status)
+      VALUES (?, ?, 'caldav', 'guard-r10@example.test', 'guard-r10', 'https://guard-r10.example.test/dav/', TRUE, 'pending')`, [account, users.alex]);
+    const sync = require('../dist/src/services/calendar-sync') as FixtureValue, locks = require('../dist/src/services/person-lock') as FixtureValue;
+    const changes = require('../dist/src/services/calendar-account-changes') as FixtureValue, modules = require('../dist/src/services/module-settings') as FixtureValue;
+    const original = locks.withPersonLock, arrived = deferred(), go = deferred();
+    // While the old sync waits: a new password, Calendar switched off, and a newer status.
+    const holder = original(users.alex, async () => {
+      await within(arrived.promise);
+      await changes.updateCalendarAccount(users.alex, account, { password: 'synthetic-r10-new-password' });
+      await modules.setUserModules(users.alex, { modules: { calendar: { enabled: false } } });
+      await pool.execute("UPDATE calendar_accounts SET sync_status = 'paused', next_sync_at = '2035-01-01 00:00:00' WHERE id = ?", [account]);
+      await go.promise;
+    });
+    locks.withPersonLock = async (...args: FixtureValue[]) => { if (args[0] === users.alex) arrived.resolve(); return original(...args); };
+    const pending = sync.syncCalendarAccount(account, { userId: users.alex }).catch((error: FixtureValue) => error);
+    try {
+      await within(arrived.promise); locks.withPersonLock = original; go.resolve(); await holder;
+      assert.deepEqual(await pending, { skipped: true, reason: 'paused' });
+      const row = await rowOf('calendar_accounts', account);
+      assert.deepEqual([row.sync_status, new Date(row.next_sync_at).toISOString()], ['paused', '2035-01-01T00:00:00.000Z'], 'the newer status stays');
+    } finally {
+      go.resolve(); await holder; await pending; locks.withPersonLock = original;
+      await modules.setUserModules(users.alex, { modules: { calendar: { enabled: true } } });
+      await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [account]);
+    }
   });
 });

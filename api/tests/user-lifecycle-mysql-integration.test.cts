@@ -149,8 +149,11 @@ test('deleting a user removes their rows and files under every root, nothing of 
 
     // B deletes their own account, with their password (D41): same removal, and the browser's cookies are cleared.
     await connection.execute<ResultSetHeader>('UPDATE users SET password_hash = ? WHERE id = ?', [await hashPassword('synthetic-lifecycle-password'), b.user]);
+    // From a live session of theirs: the deletion's final step asks again that it is (services/caller-proof.ts).
+    const token = `synthetic-lifecycle-session-${b.user}`;
+    await (require('../dist/src/services/sessions') as typeof import('../src/services/sessions')).createSession({ userId: b.user, token, expiresAt: new Date(Date.now() + 3600_000) }, connection);
     const res = response();
-    const self = await settingsRoutes['DELETE /api/settings/account'].handler({ url: '/api/settings/account', headers: {} } as FixtureValue, b.user,
+    const self = await settingsRoutes['DELETE /api/settings/account'].handler({ url: '/api/settings/account', headers: { cookie: `auth-token=${token}` } } as FixtureValue, b.user,
       { current_password: 'synthetic-lifecycle-password' } as FixtureValue, res as FixtureValue);
     assert.deepEqual(self, { deleted: true });
     const cookies = (res.headers.get('Set-Cookie') as string[]).join('\n');
