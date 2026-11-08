@@ -189,17 +189,17 @@ test('a failed export removes its archive through the removal gate, and keeps it
     assert.equal(await keysOf(jobId), 1);
   });
 
-  await t.test('a worker that read the job queued does not take it once it was cancelled', async () => {
+  await t.test('a cancel asked while the worker publishes the job ends it cancelled, with its archive and key removed', async () => {
     const jobId = await queueJob();
     let answer: FixtureValue = null;
-    await runWith(jobId, async (sql, _values, run) => {
-      const result = await run();
-      if (!answer && worksOn(sql)) answer = await jobs.cancelDataExportJob(owner, jobId);
-      return result;
+    await runWith(jobId, async (sql, values, run) => {
+      // Past the worker's last cancel check, before its ready row.
+      if (!answer && isReadyUpdate(sql, values)) answer = await jobs.cancelDataExportJob(owner, jobId);
+      return run();
     });
     const row = await rowOf(jobId);
-    assert.deepEqual([answer.job?.status, row.status], ['cancelled', 'cancelled']);
-    assert.equal(fs.existsSync(archiveOf(jobId)), false, 'no archive was written');
+    assert.deepEqual([answer.job?.status, row.status], ['cancelling', 'cancelled'], 'the cancel is not lost');
+    assert.equal(fs.existsSync(archiveOf(jobId)), false, 'its archive is removed');
     assert.equal(await keysOf(jobId), 0);
   });
 
