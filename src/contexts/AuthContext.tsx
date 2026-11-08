@@ -152,12 +152,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     broadcastAuthChange();
   };
 
-  const signUp = async (email: string, password: string, fullName: string) => {
+  const signUp = async (email: string, password: string, fullName: string, rulesRevision: number | null = null) => {
     const version = beginAuthentication();
     const response = await api.post<{ csrfToken?: string; user?: User; requiresApproval?: boolean; message?: string }>('/auth/signup', {
       email,
       password,
       full_name: fullName,
+      // The rules the form listed (D38): the account confirms that revision and no later one.
+      ...(rulesRevision !== null ? { rules_revision: rulesRevision } : {}),
     });
 
     if (version !== authVersion.current) return { error: new Error('The session changed. Please sign in again.') };

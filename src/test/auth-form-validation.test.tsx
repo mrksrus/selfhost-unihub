@@ -8,7 +8,7 @@ const signIn = vi.fn(async () => ({ error: null as Error | null }));
 vi.mock('@/contexts/useAuth', () => ({
   useAuth: () => ({ user: null, loading: false, signIn, signUp: vi.fn(), verifyTwoFactorLogin: vi.fn() }),
 }));
-vi.mock('@/lib/auth-api', () => ({ fetchPublicSignupMode: vi.fn(async () => ({ mode: 'disabled', dataRules: [] })) }));
+vi.mock('@/lib/auth-api', () => ({ fetchPublicSignupMode: vi.fn(async () => ({ mode: 'disabled', dataRules: [], rulesRevision: null })) }));
 
 beforeEach(() => signIn.mockClear());
 

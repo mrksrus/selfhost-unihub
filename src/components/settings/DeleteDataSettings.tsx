@@ -54,6 +54,16 @@ const TARGETS: Target[] = [
 // on an account through the admin path does.
 const ACCOUNT_CONSEQUENCE = 'Your account and all of its UniHub data are deleted permanently: mail copies, contacts, calendars, tasks, recordings and backups kept on this server. This cannot be undone.';
 
+/** What a refused account deletion says (D41): the password missing, wrong, or asked too often; anything else in the server's words. Nothing was deleted in any case. */
+function accountDeleteFailure(error: Error): { title: string; description: string } {
+  const code = error instanceof ApiError ? error.code : undefined;
+  const status = error instanceof ApiError ? error.status : undefined;
+  if (code === 'PASSWORD_REQUIRED') return { title: 'Your password is needed', description: 'Type your password to delete your account. Nothing was deleted.' };
+  if (code === 'PASSWORD_INCORRECT') return { title: 'That is not your password', description: 'Nothing was deleted. Check the password and try again.' };
+  if (status === 429) return { title: 'Too many attempts', description: `${error.message.replace(/\.?$/, '.')} Nothing was deleted.` };
+  return { title: 'Could not delete your account', description: error.message };
+}
+
 export default function DeleteDataSettings() {
   const client = useQueryClient();
   const { toast } = useToast();
@@ -81,7 +91,7 @@ export default function DeleteDataSettings() {
   const removeAccount = useSecretMutation({
     mutationFn: (currentPassword: string) => deleteOwnAccount(currentPassword),
     onSuccess: () => { window.location.assign('/auth'); },
-    onError: (error: Error) => toast({ title: 'Could not delete your account', description: error.message, variant: 'destructive' }),
+    onError: (error: Error) => toast({ variant: 'destructive', ...accountDeleteFailure(error) }),
   });
 
   return (

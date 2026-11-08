@@ -7,9 +7,19 @@ import type { SignupMode } from '@/lib/admin-api';
  * With it the rules that limit a new person on this server, in plain words
  * (D38): a server before 0.28 sends none.
  */
-export async function fetchPublicSignupMode(): Promise<{ mode: SignupMode; dataRules: string[] }> {
-  const response = await api.get<{ signup_mode?: SignupMode; data_rules?: string[] }>('/auth/signup-mode');
-  return { mode: response.data?.signup_mode || 'disabled', dataRules: Array.isArray(response.data?.data_rules) ? response.data.data_rules.filter(rule => typeof rule === 'string') : [] };
+/**
+ * The sign-up mode with the data rules a new person is shown (D38) and the
+ * revision of those rules: sign-up sends it back, so the account confirms
+ * only the rules it was shown. A newer revision opens the notice afterwards.
+ */
+export async function fetchPublicSignupMode(): Promise<{ mode: SignupMode; dataRules: string[]; rulesRevision: number | null }> {
+  const response = await api.get<{ signup_mode?: SignupMode; data_rules?: string[]; rules_revision?: number }>('/auth/signup-mode');
+  const revision = response.data?.rules_revision;
+  return {
+    mode: response.data?.signup_mode || 'disabled',
+    dataRules: Array.isArray(response.data?.data_rules) ? response.data.data_rules.filter(rule => typeof rule === 'string') : [],
+    rulesRevision: Number.isSafeInteger(revision) && (revision as number) > 0 ? (revision as number) : null,
+  };
 }
 
 /** Deletes one's own UniHub account with everything in it; asks for the password again (D41). */

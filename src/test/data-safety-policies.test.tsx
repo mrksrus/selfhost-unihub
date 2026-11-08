@@ -61,6 +61,30 @@ describe('policy greying', () => {
     vi.unstubAllGlobals();
   });
 
+  // D41: the three refusals C2 answers with, each in plain words; the dialog stays for another try and nothing is deleted.
+  it('a refused account deletion names the missing, wrong or too often tried password, and deletes nothing', { timeout: 20_000 }, async () => {
+    vi.mocked(api.get).mockResolvedValue(policiesAnswer());
+    const assign = vi.fn();
+    vi.stubGlobal('location', { ...window.location, assign });
+    mountSignedIn(<DeleteDataSettings />);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete account' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Delete your account?' });
+    const attempt = async (answer: Record<string, unknown>) => {
+      vi.mocked(api.delete).mockResolvedValueOnce(answer as never);
+      fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'typed-password' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete account' }));
+    };
+    await attempt({ error: 'Your password is required.', status: 400, code: 'PASSWORD_REQUIRED' });
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Your password is needed', description: expect.stringContaining('Nothing was deleted') })));
+    await attempt({ error: 'The password is not correct.', status: 403, code: 'PASSWORD_INCORRECT' });
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'That is not your password', description: expect.stringContaining('Nothing was deleted') })));
+    await attempt({ error: 'Too many attempts. Try again in 42 seconds.', status: 429 });
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Too many attempts', description: expect.stringContaining('Try again in 42 seconds') })));
+    expect(screen.getByRole('dialog', { name: 'Delete your account?' })).toBeInTheDocument();
+    expect(assign).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
   it('a mail-account deletion the server holds back says so plainly and deletes nothing', async () => {
     vi.mocked(api.get).mockResolvedValue(policiesAnswer());
     vi.mocked(api.post).mockResolvedValue({ error: 'Provider changes have an unresolved outcome. Reconnect the accounts and let them finish before deleting.', status: 409, code: 'MAIL_OPERATIONS_UNRESOLVED' } as never);
