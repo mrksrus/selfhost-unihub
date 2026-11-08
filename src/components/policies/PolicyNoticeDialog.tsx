@@ -55,7 +55,8 @@ export function PolicyNoticeDialog() {
             {firstTime ? 'Your administrator set these rules for everyone on this server.' : 'These rules apply to everyone on this server from now on. Nothing of yours was deleted.'}
           </DialogDescription>
         </DialogHeader>
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain" data-testid="notice-body">
+        {/* Focusable, so Tab reaches the rules and PageDown and the arrows scroll them without a pointer; OK keeps the initial focus. */}
+        <div tabIndex={0} role="region" aria-label="The rules" className="-mx-1 min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain rounded-sm px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" data-testid="notice-body">
           <RulesList rules={rules} className="text-sm" />
           <p className="text-xs text-muted-foreground">A rule greys out the control it concerns, with its reason. You can read the rules any time under Settings › Profile.</p>
         </div>

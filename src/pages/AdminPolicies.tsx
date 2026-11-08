@@ -57,8 +57,8 @@ const GROUPS: { title: string; description?: string; rows: Row[] }[] = [
   {
     title: 'Bin and data',
     rows: [
-      { key: 'bin.delete', label: 'Users may empty the bin or delete for good', description: 'While not allowed, nothing in anyone\'s bin is deleted on its own either: items stay at least the time below, however short a person\'s own choice.' },
-      { key: BIN_MINIMUM_KEY, label: 'Deleted items are kept at least', description: 'Applies while the rule above is not allowed. People may keep items longer, never shorter.' },
+      { key: 'bin.delete', label: 'Users may empty the bin or delete for good', description: 'While not allowed, people cannot delete anything from their bin themselves. The automatic clean-up still runs: it keeps items at least the time below, or longer where a person keeps them longer.' },
+      { key: BIN_MINIMUM_KEY, label: 'Deleted items are kept at least', description: 'Applies while the rule above is not allowed. People may keep items longer, never shorter. With Until restored, nothing in a bin is deleted on its own.' },
       { key: 'data.clear', label: 'Settings › Delete data', description: 'Deleting every contact, event, mail account or recording at once. Never allowed while the bin rule forbids deleting.' },
     ],
   },

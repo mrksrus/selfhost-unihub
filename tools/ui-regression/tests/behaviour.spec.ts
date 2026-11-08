@@ -486,9 +486,26 @@ test.describe('D38 the full rules notice fits a small phone', () => {
         const items = dialog.getByRole('list', { name: 'Rules in force' }).getByRole('listitem');
         await expect(items).toHaveCount(EVERY_RULE.length);
         const okBefore = await ok.boundingBox();
-        await items.last().scrollIntoViewIfNeeded();
-        inside(await items.last().boundingBox(), 'the last rule, after scrolling');
+        // Without a pointer: Tab reaches the rules (OK, Close, then the rules, as the focus loop wraps), the keys scroll them
+        // until the last one is readable, and Tab goes on to the footer; Shift+Tab comes back.
+        await page.keyboard.press('Tab');
+        await expect(dialog.getByRole('button', { name: 'Close' })).toBeFocused();
+        await page.keyboard.press('Tab');
+        await expect(body).toBeFocused();
+        await page.keyboard.press('PageDown');
+        await expect.poll(() => body.evaluate(element => element.scrollTop), { message: 'PageDown scrolls the rules' }).toBeGreaterThan(100);
+        for (let step = 0; step < 12 && (await body.evaluate(element => element.scrollTop + element.clientHeight < element.scrollHeight - 1)); step++) await page.keyboard.press('ArrowDown');
+        inside(await items.last().boundingBox(), 'the last rule, after the keys');
         expect(await ok.boundingBox()).toEqual(okBefore);
+        await page.keyboard.press('Tab');
+        await expect(dialog.getByRole('link', { name: 'Open Settings › Profile' })).toBeFocused();
+        await page.keyboard.press('Tab');
+        await expect(ok).toBeFocused();
+        await page.keyboard.press('Shift+Tab');
+        await page.keyboard.press('Shift+Tab');
+        await expect(body).toBeFocused();
+        // A visible focus ring from the tokens on the region.
+        expect(await body.evaluate(element => getComputedStyle(element).boxShadow)).not.toBe('none');
         expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
         await ok.tap();
         await expect(dialog).toBeHidden();
