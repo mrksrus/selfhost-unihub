@@ -136,7 +136,8 @@ async function recordMailServerMessageForDeletion({
   const folderName = String(sourceFolder || '');
   if (!userId || !accountId || !emailId || !folderName || !normalizedUid || !epoch
     || rawFormat !== 'exact_octets' || rawVerified !== true) return false;
-  if (await providerDeletionForbidden(userId)) return false;
+  // On the caller's connection: an import holds its transaction while it queues.
+  if (await providerDeletionForbidden(userId, connection)) return false;
   if (!await verifyArchive({ raw_storage_path: rawStoragePath, raw_sha256: rawSha256,
     raw_bytes: rawBytes, raw_format: rawFormat, raw_verified: rawVerified }, { root: rawRoot() })) return false;
 
@@ -168,7 +169,7 @@ async function recordMailServerMessageForDeletion({
 }
 
 async function seedMailServerDeletionQueueForAccount({ userId, accountId, connection = db }: { userId: string; accountId: string; connection?: SqlExecutor }) {
-  if (!userId || !accountId || await providerDeletionForbidden(userId)) return { queued: 0 };
+  if (!userId || !accountId || await providerDeletionForbidden(userId, connection)) return { queued: 0 };
   let queued = 0, afterId = '';
   for (;;) {
     const [emails] = await connection.execute<RowDataPacket[]>(
