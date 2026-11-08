@@ -780,4 +780,94 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     await pool.execute('DELETE FROM calendar_accounts WHERE id IN (?, ?)', [account, local]);
     await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
   });
+
+  // Review r4: a restored calendar's relink, and a mail calendar's address
+  // replaced, write only under Calendar's final check (final-step.ts).
+  await fromDefaults('S1 r4: a restored calendar is not linked, nor its password dropped, once Calendar is restored or off meanwhile', async () => {
+    const calendarAccounts = require('../dist/src/services/calendar-accounts') as typeof import('../src/services/calendar-accounts');
+    const calendarSync = require('../dist/src/services/calendar-sync') as typeof import('../src/services/calendar-sync');
+    const inBackground = calendarSync.syncCalendarAccountInBackground;
+    (calendarSync as { syncCalendarAccountInBackground: unknown }).syncCalendarAccountInBackground = () => undefined;
+    try {
+      for (const caller of ['person', 'administrator'] as const) {
+        for (const late of ['restore', 'module off'] as const) {
+          const what = `${caller}, ${late}`;
+          const address = `relink-${caller}-${late.replace(' ', '-')}@example.test`;
+          const mail = crypto.randomUUID(), calendar = crypto.randomUUID(), restore = crypto.randomUUID();
+          const secret = encrypt('synthetic-calendar-password');
+          await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active, encrypted_password) VALUES (?, ?, ?, 'custom', 'download', TRUE, ?)",
+            [mail, users.alex, address, encrypt('synthetic-mail-password')]);
+          await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, is_active, encrypted_password, provider_config) VALUES (?, ?, 'caldav', ?, TRUE, ?, '{"mailLinked":true}')`,
+            [calendar, users.alex, address, secret]);
+          // Held once the request has seen the restored calendar, past its early checks.
+          const pause = pauseAfter('AND mail_account_id IS NULL AND LOWER(account_email)');
+          const pending = caller === 'person'
+            ? alex.request('PUT', `/api/mail/accounts/${mail}/calendar`, { enabled: true }).then(reply => ({ status: reply.status, code: reply.body.code }))
+            : calendarAccounts.setMailCalendar(users.alex, mail, { enabled: true }, { adminId: users.admin })
+              .then(() => ({ status: 200, code: undefined }), (error: FixtureValue) => ({ status: error.status, code: error.code }));
+          try {
+            await pause.reached();
+            if (late === 'restore') await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', '["calendar"]')`, [restore, users.alex]);
+            else await call(alex, 'PUT', '/api/modules', { modules: { calendar: { enabled: false } } });
+            pause.release();
+            const answer = await pending;
+            assert.deepEqual([what, answer.status, answer.code], [what, late === 'restore' ? 409 : 403, late === 'restore' ? 'RESTORE_IN_PROGRESS' : 'MODULE_DISABLED']);
+          } finally { pause.restore(); await pending; }
+          const [[row]] = await pool.query<RowDataPacket[]>('SELECT mail_account_id, encrypted_password FROM calendar_accounts WHERE id = ?', [calendar]);
+          assert.deepEqual([what, row.mail_account_id, row.encrypted_password], [what, null, secret], 'still unlinked, with its password');
+          await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
+          if (late === 'module off') await call(alex, 'PUT', '/api/modules', { modules: { calendar: { enabled: true } } });
+          await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [calendar]);
+          await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+        }
+      }
+    } finally { (calendarSync as { syncCalendarAccountInBackground: unknown }).syncCalendarAccountInBackground = inBackground; }
+  });
+
+  await fromDefaults('Q2 r4: a mail calendar\'s new address refused after its discovery leaves the old account and the one it would take over as they were', async () => {
+    const caldav = require('../dist/src/services/caldav') as FixtureValue;
+    const calendarSync = require('../dist/src/services/calendar-sync') as FixtureValue;
+    const address = 'replace-r4@example.test', url = 'https://new.example.test/dav/', oldUrl = 'https://old.example.test/dav/';
+    const mail = crypto.randomUUID(), old = crypto.randomUUID(), restored = crypto.randomUUID();
+    const secret = encrypt('synthetic-restored-password');
+    await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active, encrypted_password) VALUES (?, ?, ?, 'custom', 'download', TRUE, ?)",
+      [mail, users.alex, address, encrypt('synthetic-mail-password')]);
+    // The account linked now, at its manual address, and a restored one of the new address.
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, username, is_active, mail_account_id, base_url, provider_config) VALUES (?, ?, 'caldav', ?, ?, TRUE, ?, ?, ?)`,
+      [old, users.alex, address, address, mail, oldUrl, JSON.stringify({ mailLinked: true, server: { url: oldUrl, source: 'manual' } })]);
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, username, is_active, base_url, encrypted_password, provider_config) VALUES (?, ?, 'caldav', ?, ?, TRUE, ?, ?, ?)`,
+      [restored, users.alex, address, address, url, secret, JSON.stringify({ mailLinked: true, server: { url, source: 'manual' } })]);
+    const find = caldav.findCalDavServer, reconcile = calendarSync.reconcileCalendarList, inBackground = calendarSync.syncCalendarAccountInBackground;
+    let discovering = deferred(), discovered = deferred();
+    caldav.findCalDavServer = async () => {
+      discovering.resolve(); await discovered.promise;
+      return { server: { url, source: 'manual', label: 'Synthetic' }, discovery: { baseUrl: url, principalHref: '/principal/', calendars: [] }, credentialScope: { origin: 'https://new.example.test' } };
+    };
+    calendarSync.reconcileCalendarList = async () => [];
+    calendarSync.syncCalendarAccountInBackground = () => undefined;
+    const accountsOf = async () => (await pool.query<RowDataPacket[]>('SELECT id, mail_account_id, encrypted_password FROM calendar_accounts WHERE id IN (?, ?) ORDER BY id', [old, restored]))[0]
+      .map(row => [row.id, row.mail_account_id, row.encrypted_password]);
+    const before = await accountsOf();
+    let pending: ReturnType<typeof alex.request> | undefined;
+    try {
+      pending = alex.request('PUT', `/api/mail/accounts/${mail}/calendar`, { enabled: true, caldav_url: url });
+      await within(discovering.promise);
+      await setPolicies({ 'accounts.remove': 'forbidden' });
+      discovered.resolve();
+      const reply = await pending;
+      assert.deepEqual([reply.status, reply.body.code, (reply.body.details as FixtureValue)?.policy], [403, 'POLICY_FORBIDS', 'accounts.remove'], JSON.stringify(reply.body));
+      assert.deepEqual(await accountsOf(), before, 'both accounts as they were');
+      // Allowed again, the same change takes the restored one over and removes the old one together.
+      await setPolicies({ 'accounts.remove': 'allowed' });
+      discovering = deferred(); discovered = deferred(); discovered.resolve();
+      await call(alex, 'PUT', `/api/mail/accounts/${mail}/calendar`, { enabled: true, caldav_url: url });
+      assert.deepEqual(await accountsOf(), [[restored, mail, null]], 'taken over, linked, the old one gone');
+    } finally {
+      discovered.resolve();
+      await pending;
+      caldav.findCalDavServer = find; calendarSync.reconcileCalendarList = reconcile; calendarSync.syncCalendarAccountInBackground = inBackground;
+    }
+    await pool.execute('DELETE FROM calendar_accounts WHERE id IN (?, ?)', [old, restored]);
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
 });

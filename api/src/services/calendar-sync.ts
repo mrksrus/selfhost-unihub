@@ -20,7 +20,8 @@ import crypto from 'crypto';
 import { db } from '../state';
 import { decrypt } from '../security/encryption';
 import { canRunModule } from './access-policy';
-import { assertFinalStep } from './final-step';
+import { assertFinalStep, underFinalStep } from './final-step';
+import { changeInProgress, isLockWaitTimeout } from '../http/errors';
 import type { PolicyActor } from './settings';
 import { publishCalendarChanged } from './realtime';
 import { sweepRemoteRanks } from './task-order';
@@ -1282,7 +1283,11 @@ async function pushEventDelete({ userId, event, scope, beforeRemove }: EventInpu
       const ics = ical.removeOccurrenceIcs(link.object.ics, link.recurrenceId, { userTimeZone: ctx.timeZone });
       if (ics) {
         await fenceTaskLocks();
-        const { etag } = await caldav.putCalendarObject({ url, ics, etag: link.object.etag, ...ctx.login }).catch(error => handleConflict(ctx, error));
+        // The date is gone for good (no bin copy): sent under the final check
+        // (final-step.ts), bin.delete and Calendar on and not being restored
+        // as committed now, held until the server answered.
+        const { etag } = await underFinalStep({ userId, policies: ['bin.delete'], modules: ['calendar'] },
+          () => caldav.putCalendarObject({ url, ics, etag: link.object.etag, ...ctx.login })).catch(error => handleConflict(ctx, error));
         await fenceTaskLocks();
         const object = await storeObject(db, ctx.account, ctx.calendar, { id: link.object.id, href: link.object.href, etag, ics });
         await applyObject(rebuildContext(ctx), ctx.calendar, object);
@@ -1301,7 +1306,11 @@ async function pushEventDelete({ userId, event, scope, beforeRemove }: EventInpu
 // Route response for a failed sync or writeback. Raw server statuses must not
 // reach the browser as-is: a 401 there would look like an expired session.
 function calendarErrorResponse(error: unknown, fallback: string) {
-  if ((error as ApiError)?.code && (error as ApiError).status) return { error: (error as ApiError).message, status: (error as ApiError).status, code: (error as ApiError).code };
+  if (isLockWaitTimeout(error)) return changeInProgress();
+  if ((error as ApiError)?.code && (error as ApiError).status) {
+    const { message, status, code, details } = error as ApiError & { details?: unknown };
+    return { error: message, status, code, ...(details === undefined ? {} : { details }) };
+  }
   if ((error as ApiError)?.status === 401) return { error: 'The calendar server rejected the login. Update the password of this account.', status: 422, code: 'CALDAV_AUTH_FAILED' };
   if ((error as ApiError)?.status === 403) return { error: 'The calendar server refused this change.', status: 422, code: 'CALDAV_FORBIDDEN' };
   if ((error as ApiError)?.status) return { error: `The calendar server could not complete the request (${(error as ApiError).status}).`, status: 502, code: 'CALDAV_SERVER_ERROR' };

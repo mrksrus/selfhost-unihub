@@ -6,7 +6,7 @@ import path from 'path';
 import { db } from '../state';
 import { BACKUP_UPLOAD_MAX_SIZE } from '../config';
 import { defineRoutes } from '../http/route';
-import { clientError } from '../http/errors';
+import { changeInProgress, clientError, isLockWaitTimeout } from '../http/errors';
 import type { PolicyDeclaration, RouteTable } from '../http/route';
 import {
   startDataExportJob,
@@ -81,6 +81,7 @@ function isTemporaryBackupUpload(req: Request, body: Input) {
 }
 
 const failed = (error: unknown, fallback: string, logLabel: string): RouteResponse => {
+  if (isLockWaitTimeout(error)) return changeInProgress();
   console.error(`${logLabel}:`, error);
   const thrown = error as ApiError;
   return { error: thrown.status ? thrown.message : fallback, status: thrown.code === 'BACKUP_SECTION_UNSUPPORTED' ? 400 : thrown.status && thrown.status < 500 ? thrown.status : 500 };

@@ -561,10 +561,16 @@ administrator's actor passes them), and the switch and restore lock of every
 module it writes. A refusal is the same `403 POLICY_FORBIDS`, `403
 MODULE_DISABLED` or `409 RESTORE_IN_PROGRESS` as at the boundary, and nothing
 is deleted. A provider command (erasing a message, deleting a folder at the
-provider) runs on a connection of its own that holds the check's locks while
-the command is sent, so nothing it checked changes before the provider
-answered; the erase worker skips a refused message and stops. The bin's purge
-skips a module that is off or being restored. Emptying the bin is refused
+provider, deleting one date of a repeating server event, which is gone for
+good and so needs `bin.delete`) runs on a connection of its own that holds
+the check's locks while the command is sent, so nothing it checked changes
+before the provider answered; the erase worker skips a refused message and
+stops. Linking a restored calendar to its mail account, which drops the
+calendar's own password, and connecting a calendar account, together with
+removing the one a new address replaces, each commit in one transaction
+after Calendar's switch and restore lock (and, for a mail account's
+calendar, its policies) are asked again: a refusal changes neither account.
+The bin's purge skips a module that is off or being restored. Emptying the bin is refused
 between batches with `403 POLICY_FORBIDS` and the number already deleted as
 `details.deleted`. A backup younger than its minimum is refused under the
 backup's row, its file goes after the commit.
@@ -572,14 +578,24 @@ backup's row, its file goes after the commit.
 **Lock order.** Every destructive step, and everything that changes what it
 checks, takes its locks in this order:
 
-1. the step's own rows (the backup, the bin items, the accounts, their
-   messages and linked calendars, the person's row), in the step's order;
+1. the step's own rows where it locks them before it changes them (the
+   backup, the bin items, the accounts, their messages and linked
+   calendars, the calendar accounts a connection takes over or replaces,
+   the person's row), in the step's order; a bulk clear of contacts or
+   calendars and the purge of merge records lock their rows with the
+   DELETE or UPDATE that follows the check, which holds its locks to
+   commit all the same;
 2. the rules revision row (`system_settings` `policy_revision`), shared, then
    the installation's policies; an administrator's save locks it first,
    exclusively;
 3. the person's module switches row (`user_settings` `module_preferences`),
    shared; a switch writes it;
 4. the person's restore jobs, every row and the gap for a new one, shared.
+
+A step or a save that waits longer than the database allows (MariaDB's lock
+wait timeout) is rolled back and answers `503 CHANGE_IN_PROGRESS`, "Another
+change is in progress. Try again in a moment."; nothing is retried for it,
+least of all a provider command, which is never sent before its check holds.
 
 Admitting a restore (creating one from a backup, unlocking, starting or
 retrying it) locks the backup's row first when it has one, shared, then its
