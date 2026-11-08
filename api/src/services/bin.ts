@@ -380,7 +380,9 @@ async function deleteBinItem(userId: string, id: string, actor: BinDeleteActor =
 /**
  * POST /api/bin/empty: the person's bin, or one module's part of it; modules
  * that are off or being restored keep theirs. Batch by batch, each its own
- * transaction (and the administrator's entry with it).
+ * transaction (and the administrator's entry with it). When bin.delete is
+ * forbidden between batches, the refusal names what the earlier batches
+ * deleted (`details.deleted`); those stay deleted.
  */
 async function emptyBin(userId: string, input: unknown, actor: BinDeleteActor = {}): Promise<BinDeleteResponse> {
   const module = parseModule(input && typeof input === 'object' ? (input as { module?: unknown }).module : undefined);
@@ -392,7 +394,12 @@ async function emptyBin(userId: string, input: unknown, actor: BinDeleteActor = 
     const [rows] = open.length ? await db.execute<BinRow[]>(
       `SELECT * FROM bin_items WHERE user_id = ? AND restored_at IS NULL AND module IN (${placeholders(open)}) ORDER BY deleted_at, id LIMIT ${PURGE_BATCH}`, [userId, ...open]) : [[] as BinRow[]];
     if (!rows.length) break;
-    deleted += await deleteForGood(userId, rows, actor);
+    try {
+      deleted += await deleteForGood(userId, rows, actor);
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'POLICY_FORBIDS') error.details = { ...(error.details as object), deleted };
+      throw error;
+    }
     if (rows.length < PURGE_BATCH) break;
   }
   return { deleted };

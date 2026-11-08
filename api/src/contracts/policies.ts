@@ -146,6 +146,8 @@ export interface AdminPoliciesUpdateRequest {
 export interface PolicyForbidsDetails {
   policy: PolicyKey;
   reason: string;
+  /** POST /api/bin/empty refused between batches: what the earlier batches deleted for good. */
+  deleted?: number;
 }
 
 /**
