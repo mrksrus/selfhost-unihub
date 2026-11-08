@@ -2,7 +2,7 @@ import type { ExecuteValues, RowDataPacket } from 'mysql2/promise';
 import type { ApiError, MailAccountIdentity, StoredFlag } from '../types';
 import type { PolicyActor } from './settings';
 import * as mailWritebacks from './mail-writebacks';
-import { mailAccountModeChange, sameProviderMailbox, modePolicyInput, assertModeAllowed, modePolicyKeys } from './mail-account-mode';
+import { mailAccountModeChange, sameProviderMailbox, modePolicyInput, assertModeAllowed, modePolicyKeys, assertNewAccountMode } from './mail-account-mode';
 import { parseMailAccountInput } from './mail-account-input';
 import * as mailSyncPolicy from './mail-sync-policy';
 import { withMailAccountLock } from './mail-account-lock';
@@ -10,6 +10,7 @@ import crypto from 'crypto';
 import { db } from '../state';
 import { withTransaction } from './transactions';
 import { assertFinalStep } from './final-step';
+import { accountSnapshot, assertUnchanged as assertUnchangedRow } from './account-identity';
 import { encrypt } from '../security/encryption';
 import { inspectMailCertificate, normalizeFingerprint } from '../security/mail-certificates';
 import {
@@ -38,6 +39,9 @@ import { log } from '../log';
 // an administrator's actor passes them (F13).
 
 /** Starts the account's mail sync without waiting for it; false when one is already running (routes/mail-route-helpers.ts re-exports it). */
+// The pause a settings change puts its account in while it is saved (stopMailAccountWork).
+const SETTINGS_PAUSE = 'Account settings changing';
+
 async function startMailSyncInBackground(accountId: string, label = accountId, options: Record<string, unknown> = {}) {
   const job = await scheduleMailAccountSync(accountId, options);
   if (job.skipped) return null;
@@ -226,7 +230,9 @@ async function createMailAccount(userId: string, input: Input, actor: PolicyActo
   // (an administrator's actor passes them), Mail on and not being restored.
   const accountId = crypto.randomUUID();
   await withTransaction(async cx => {
-    await assertFinalStep(cx, { userId, policies: ['accounts.add', ...modePolicyKeys(null, modeChange)], actor, modules: ['mail'] });
+    const step = await assertFinalStep(cx, { userId, policies: ['accounts.add', ...modePolicyKeys(null, modeChange)], actor, modules: ['mail'] });
+    // The mode and provider deletion it was prepared with, as the policies locked here give them.
+    assertNewAccountMode(step.policy, input, modeChange, actor);
     await cx.execute(
       `INSERT INTO mail_accounts
          (id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
@@ -343,6 +349,7 @@ async function updateMailAccount(userId: string, id: string, body: Input, actor:
   const [fresh] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
   if (!fresh.length) return { error: 'Account not found', status: 404 };
   const existingAccount = fresh[0];
+  const seen = accountSnapshot('mail', existingAccount);
   const modeChange = mailAccountModeChange(existingAccount, body);
   await assertModeAllowed(userId, existingAccount, modeChange, actor);
   const { email_address, display_name, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password, next } = parseMailAccountInput(body, existingAccount);
@@ -504,23 +511,29 @@ async function updateMailAccount(userId: string, id: string, body: Input, actor:
 
   if (updates.length === 0 && !serverDeleteSettingProvided) return { error: 'No fields to update', status: 400 };
   // Failed validation/authentication must not pause a working account.
-  if (stopRequired) await stopMailAccountWork(id, 'Account settings changing');
+  if (stopRequired) await stopMailAccountWork(id, SETTINGS_PAUSE);
 
   if (updates.length > 0) {
     params.push(id, userId);
     // Under the account's row and the final check (final-step.ts): the
-    // mode's policies, Mail on and not being restored, as committed now. A
-    // refusal resumes work that was stopped for the change.
+    // mode's policies, Mail on and not being restored, as committed now,
+    // and still the account this change was decided from (account-identity.ts).
+    // A refusal lifts only this change's own pause: a restore, a module
+    // switch or a disconnect since keeps its own, and the refusal stays the
+    // answer.
     try {
       await withTransaction(async cx => {
-        const [[current]] = await cx.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [id, userId]);
-        if (!current) throw Object.assign(new Error('Account not found'), { status: 404 });
+        const [[current]] = await cx.execute<RowDataPacket[]>('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [id, userId]);
         await assertFinalStep(cx, { userId, policies: modePolicyKeys(existingAccount, modeChange), actor, modules: ['mail'] });
+        assertUnchangedRow(current, seen);
         await cx.execute(`UPDATE mail_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
       });
     } catch (error) {
-      if (stopRequired && toBooleanFlag(existingAccount.is_active))
-        await (require('../services/mail-engine/runtime') as typeof import('../services/mail-engine/runtime')).resumeAccount({ userId, accountId: id });
+      if (stopRequired) {
+        await (require('../services/mail-engine/runtime') as typeof import('../services/mail-engine/runtime'))
+          .resumeAccount({ userId, accountId: id, reasons: [SETTINGS_PAUSE] })
+          .catch((resumeError: Error) => log.warn('ACCOUNT', 'A refused settings change could not resume its account', undefined, resumeError));
+      }
       throw error;
     }
   }

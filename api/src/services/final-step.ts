@@ -8,6 +8,8 @@ import { lockedPolicies, policyForbids } from './settings';
 import { lockedUserModules } from './module-settings';
 import { lockedRestoreSections } from './restore-locks';
 import { sectionOf } from './access-policy';
+import { lockUnchanged } from './account-identity';
+import type { AccountSnapshot } from './account-identity';
 
 // The last check of every destructive step (F13): deleting for good,
 // clearing, removing or resetting an account, deleting a backup, erasing at
@@ -41,6 +43,8 @@ interface FinalStep {
   background?: boolean;
   /** Refused while any restore of the person runs (deleting the account). */
   anyRestore?: boolean;
+  /** Accounts the step chose before it waited, still as it saw them (account-identity.ts): locked shared, last. */
+  unchanged?: readonly AccountSnapshot[];
 }
 
 interface FinalStepAnswer {
@@ -52,7 +56,7 @@ const moduleOff = (module: string) => forbidden('MODULE_DISABLED', 'This module 
 const restoring = (module: string) => conflict('RESTORE_IN_PROGRESS', `Restore in progress for ${module}. This section is temporarily read-only.`);
 
 /** Throws POLICY_FORBIDS, MODULE_DISABLED or RESTORE_IN_PROGRESS when the step may not happen now. */
-async function assertFinalStep(connection: SqlExecutor, { userId, policies = [], actor = {}, modules = [], background = false, anyRestore = false }: FinalStep): Promise<FinalStepAnswer> {
+async function assertFinalStep(connection: SqlExecutor, { userId, policies = [], actor = {}, modules = [], background = false, anyRestore = false, unchanged = [] }: FinalStep): Promise<FinalStepAnswer> {
   const policy = await lockedPolicies(connection);
   if (!actor.adminId) {
     for (const key of policies) {
@@ -72,10 +76,11 @@ async function assertFinalStep(connection: SqlExecutor, { userId, policies = [],
     if (anyRestore && sections.size) throw conflict('RESTORE_IN_PROGRESS', 'Restore in progress. Try again when it has finished.');
     for (const id of modules) if (sections.has(sectionOf(id))) throw restoring(id);
   }
+  for (const snapshot of unchanged) await lockUnchanged(connection, userId, snapshot, { lock: 'share' });
   return { policy };
 }
 
-const REFUSALS = new Set(['POLICY_FORBIDS', 'MODULE_DISABLED', 'RESTORE_IN_PROGRESS']);
+const REFUSALS = new Set(['POLICY_FORBIDS', 'MODULE_DISABLED', 'RESTORE_IN_PROGRESS', 'ACCOUNT_CHANGED']);
 const isRefusal = (error: unknown) => error instanceof ApiError && REFUSALS.has(error.code);
 
 /**

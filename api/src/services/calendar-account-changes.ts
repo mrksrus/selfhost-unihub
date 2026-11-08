@@ -10,7 +10,7 @@ import * as calendarAccounts from './calendar-accounts';
 import * as calendarSync from './calendar-sync';
 import { withTransaction } from './transactions';
 import { assertFinalStep } from './final-step';
-import { conflict } from '../http/errors';
+import { accountSnapshot, lockUnchanged } from './account-identity';
 
 // Adding, changing and removing a calendar account: POST, PUT and DELETE
 // /api/calendar/accounts[/:id] (routes/calendar.ts) and the administrator's
@@ -148,14 +148,12 @@ async function updateCalendarAccount(userId: string, id: string, body: Input) {
   if (updates.length === 0) return { error: 'No fields to update', status: 400 };
 
   params.push(id, userId);
-  // Under the account's row, still linked as read above (its password and
-  // resume were decided from that), and Calendar's final check
-  // (final-step.ts): on and not being restored, as committed now.
+  // Under the account's row, still the account read above (its password and
+  // resume were decided from it; account-identity.ts), and Calendar's final
+  // check (final-step.ts): on and not being restored, as committed now.
+  const seen = accountSnapshot('calendar', account);
   await withTransaction(async cx => {
-    const [[current]] = await cx.execute<AccountRow[]>('SELECT mail_account_id FROM calendar_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [id, userId]);
-    if (!current || (current.mail_account_id ?? null) !== (account.mail_account_id ?? null)) {
-      throw conflict('MAIL_CALENDAR_CHANGED', 'This calendar account changed meanwhile. Try again.');
-    }
+    await lockUnchanged(cx, userId, seen);
     await assertFinalStep(cx, { userId, modules: ['calendar'] });
     await cx.execute(`UPDATE calendar_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
   });
@@ -184,7 +182,8 @@ async function deleteCalendarAccount(userId: string, id: string, { actor = {}, r
   }
 
   // Only the copies in UniHub are removed; the server keeps its calendars.
-  await calendarAccounts.removeCalendarAccount(userId, id, { actor, record });
+  // The account read above, unless it changed meanwhile (account-identity.ts).
+  await calendarAccounts.removeCalendarAccount(userId, id, { actor, record, snapshot: accountSnapshot('calendar', account) });
   return { message: 'Calendar account deleted' };
 }
 

@@ -232,70 +232,78 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     assert.equal(await count('SELECT COUNT(*) AS count FROM mail_server_messages WHERE email_id = ?', [queued.id]), 0, 'nothing queued');
   });
 
-  await fromDefaults('R1: provider deletion forbidden during the worker\'s last archive check erases nothing at the provider', async () => {
-    // On a real IMAP connection to a local peer.
-    const message = await archived(7);
-    const queue = crypto.randomUUID();
-    await pool.execute(`INSERT INTO mail_server_messages (id, user_id, mail_account_id, email_id, source_folder, imap_uid, imap_uidvalidity, delete_status)
-      VALUES (?, ?, ?, ?, 'INBOX', 7, 1, 'pending')`, [queue, users.alex, account, message.id]);
-    const commands: string[] = [];
-    const sockets = new Set<import('node:net').Socket>();
-    const peer = (require('node:net') as typeof import('node:net')).createServer(socket => {
-      sockets.add(socket);
-      socket.on('close', () => sockets.delete(socket));
-      socket.on('error', () => undefined);
-      socket.write('* OK synthetic IMAP peer\r\n');
-      let input = '';
-      socket.on('data', data => {
-        input += data.toString();
-        for (let end = input.indexOf('\r\n'); end >= 0; end = input.indexOf('\r\n')) {
-          const line = input.slice(0, end);
-          input = input.slice(end + 2);
-          const match = /^(\S+) (.*)$/.exec(line);
-          if (!match) continue;
-          const [, tag, command] = match;
-          commands.push(command);
-          const ok = (text = 'done') => socket.write(`${tag} OK ${text}\r\n`);
-          if (command === 'CAPABILITY') { socket.write('* CAPABILITY IMAP4rev1 UIDPLUS\r\n'); ok(); }
-          else if (command.startsWith('LOGIN ') || command.startsWith('LSUB ') || command.startsWith('UID STORE ')) ok();
-          else if (command.startsWith('LIST ')) { socket.write('* LIST (\\Noselect) "/" ""\r\n'); ok(); }
-          else if (/^(SELECT|EXAMINE) /.test(command)) { socket.write('* FLAGS (\\Seen \\Deleted)\r\n* 1 EXISTS\r\n* OK [UIDVALIDITY 1] valid\r\n* OK [UIDNEXT 8] next\r\n'); ok('[READ-WRITE] selected'); }
-          else if (command.startsWith('UID SEARCH ')) { socket.write('* SEARCH 7\r\n'); ok(); }
-          else if (command.startsWith('UID EXPUNGE ')) { socket.write('* 1 EXPUNGE\r\n'); ok(); }
-          else if (command === 'LOGOUT') { socket.write('* BYE\r\n'); ok(); }
-          else socket.write(`${tag} BAD unsupported\r\n`);
-        }
+  await fromDefaults('R1: provider deletion forbidden, or the account changed, during the worker\'s last archive check erases nothing at the provider', async () => {
+    // On a real IMAP connection to a local peer. Each late change in turn:
+    // the policy (review r1), and the account itself changed by another
+    // request (r6: the pass's account snapshot, account-identity.ts).
+    for (const [late, uid] of [['policy', 7], ['account', 9]] as const) {
+      const message = await archived(uid);
+      const queue = crypto.randomUUID();
+      await pool.execute(`INSERT INTO mail_server_messages (id, user_id, mail_account_id, email_id, source_folder, imap_uid, imap_uidvalidity, delete_status)
+        VALUES (?, ?, ?, ?, 'INBOX', ?, 1, 'pending')`, [queue, users.alex, account, message.id, uid]);
+      const commands: string[] = [];
+      const sockets = new Set<import('node:net').Socket>();
+      const peer = (require('node:net') as typeof import('node:net')).createServer(socket => {
+        sockets.add(socket);
+        socket.on('close', () => sockets.delete(socket));
+        socket.on('error', () => undefined);
+        socket.write('* OK synthetic IMAP peer\r\n');
+        let input = '';
+        socket.on('data', data => {
+          input += data.toString();
+          for (let end = input.indexOf('\r\n'); end >= 0; end = input.indexOf('\r\n')) {
+            const line = input.slice(0, end);
+            input = input.slice(end + 2);
+            const match = /^(\S+) (.*)$/.exec(line);
+            if (!match) continue;
+            const [, tag, command] = match;
+            commands.push(command);
+            const ok = (text = 'done') => socket.write(`${tag} OK ${text}\r\n`);
+            if (command === 'CAPABILITY') { socket.write('* CAPABILITY IMAP4rev1 UIDPLUS\r\n'); ok(); }
+            else if (command.startsWith('LOGIN ') || command.startsWith('LSUB ') || command.startsWith('UID STORE ')) ok();
+            else if (command.startsWith('LIST ')) { socket.write('* LIST (\\Noselect) "/" ""\r\n'); ok(); }
+            else if (/^(SELECT|EXAMINE) /.test(command)) { socket.write(`* FLAGS (\\Seen \\Deleted)\r\n* 1 EXISTS\r\n* OK [UIDVALIDITY 1] valid\r\n* OK [UIDNEXT ${uid + 1}] next\r\n`); ok('[READ-WRITE] selected'); }
+            else if (command.startsWith('UID SEARCH ')) { socket.write(`* SEARCH ${uid}\r\n`); ok(); }
+            else if (command.startsWith('UID EXPUNGE ')) { socket.write('* 1 EXPUNGE\r\n'); ok(); }
+            else if (command === 'LOGOUT') { socket.write('* BYE\r\n'); ok(); }
+            else socket.write(`${tag} BAD unsupported\r\n`);
+          }
+        });
       });
-    });
-    await new Promise<void>(resolve => peer.listen(0, '127.0.0.1', resolve));
-    const buildImapConnectionConfig = host.buildImapConnectionConfig, eligible = content.eligibleForProviderErasure;
-    // Only the destination is the local peer's (plain text on loopback); the worker, ImapFlow and the database are the real ones.
-    (host as { buildImapConnectionConfig: unknown }).buildImapConnectionConfig = async () => ({ imap: { host: '127.0.0.1', port: (peer.address() as import('node:net').AddressInfo).port,
-      tls: false, user: 'synthetic', password: 'synthetic', connTimeout: 3000, authTimeout: 3000, socketTimeout: 5000, keepalive: false } });
-    let calls = 0;
-    const lastCheck = deferred(), goOn = deferred();
-    content.eligibleForProviderErasure = async (...args: Parameters<typeof eligible>) => {
-      const result = await eligible(...args);
-      if (++calls === 2) { lastCheck.resolve(); await goOn.promise; }
-      return result;
-    };
-    const pass = worker.processMailServerDeletionForAccount(account);
-    try {
-      await within(lastCheck.promise);
-      await setPolicies({ 'mail.provider_delete': 'forbidden' });
-      goOn.resolve();
-      const result = await pass as FixtureValue;
-      assert.deepEqual([result.deleted, result.stopped], [0, true], JSON.stringify(result));
-      assert.deepEqual(commands.filter(command => /^UID (STORE|EXPUNGE)/.test(command)), [], 'no erase was sent');
-    } finally {
-      goOn.resolve();
-      await pass.catch(() => undefined);
-      (host as { buildImapConnectionConfig: unknown }).buildImapConnectionConfig = buildImapConnectionConfig;
-      content.eligibleForProviderErasure = eligible;
-      for (const socket of sockets) socket.destroy();
-      await new Promise(resolve => peer.close(resolve));
+      await new Promise<void>(resolve => peer.listen(0, '127.0.0.1', resolve));
+      const buildImapConnectionConfig = host.buildImapConnectionConfig, eligible = content.eligibleForProviderErasure;
+      // Only the destination is the local peer's (plain text on loopback); the worker, ImapFlow and the database are the real ones.
+      (host as { buildImapConnectionConfig: unknown }).buildImapConnectionConfig = async () => ({ imap: { host: '127.0.0.1', port: (peer.address() as import('node:net').AddressInfo).port,
+        tls: false, user: 'synthetic', password: 'synthetic', connTimeout: 3000, authTimeout: 3000, socketTimeout: 5000, keepalive: false } });
+      let calls = 0;
+      const lastCheck = deferred(), goOn = deferred();
+      content.eligibleForProviderErasure = async (...args: Parameters<typeof eligible>) => {
+        const result = await eligible(...args);
+        if (++calls === 2) { lastCheck.resolve(); await goOn.promise; }
+        return result;
+      };
+      const pass = worker.processMailServerDeletionForAccount(account);
+      try {
+        await within(lastCheck.promise);
+        if (late === 'policy') await setPolicies({ 'mail.provider_delete': 'forbidden' });
+        else await pool.execute("UPDATE mail_accounts SET username = 'changed-meanwhile' WHERE id = ?", [account]);
+        goOn.resolve();
+        const result = await pass as FixtureValue;
+        assert.deepEqual([late, result.deleted, result.stopped], [late, 0, true], JSON.stringify(result));
+        assert.deepEqual(commands.filter(command => /^UID (STORE|EXPUNGE)/.test(command)), [], `${late}: no erase was sent`);
+      } finally {
+        goOn.resolve();
+        await pass.catch(() => undefined);
+        (host as { buildImapConnectionConfig: unknown }).buildImapConnectionConfig = buildImapConnectionConfig;
+        content.eligibleForProviderErasure = eligible;
+        for (const socket of sockets) socket.destroy();
+        await new Promise(resolve => peer.close(resolve));
+      }
+      assert.deepEqual((await pool.query<RowDataPacket[]>('SELECT delete_status FROM mail_server_messages WHERE id = ?', [queue]))[0].map(row => row.delete_status), ['pending'], `${late}: it waits`);
+      await pool.execute('DELETE FROM mail_server_messages WHERE id = ?', [queue]);
+      await pool.execute('UPDATE mail_accounts SET username = NULL WHERE id = ?', [account]);
+      if (late === 'policy') await setPolicies({ 'mail.provider_delete': 'user_choice' });
     }
-    assert.deepEqual((await pool.query<RowDataPacket[]>('SELECT delete_status FROM mail_server_messages WHERE id = ?', [queue]))[0].map(row => row.delete_status), ['pending'], 'it waits for the policy');
   });
 
   await fromDefaults('S1: a Download import queues provider deletion on its own transaction, without a second connection', async () => {
@@ -1163,6 +1171,244 @@ test('a destructive step follows the rules in force when it acts, with an owner,
       assert.deepEqual((await pool.query<RowDataPacket[]>('SELECT display_name FROM mail_accounts WHERE id = ?', [mail]))[0].map(row => row.display_name), [null], `${what}: unchanged`);
       await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
     }
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  // Review r6: a change carries the snapshot of each account it chose
+  // (account-identity.ts) and compares it under the row's lock: another
+  // request that changed the account meanwhile makes it refuse with 409
+  // ACCOUNT_CHANGED, and what that request saved stays.
+  const rowOf = async (table: 'calendar_accounts' | 'mail_accounts', id: string) => (await pool.query<RowDataPacket[]>(`SELECT * FROM ${table} WHERE id = ?`, [id]))[0][0];
+  const refusedChanged = (reply: { status: number; body: FixtureValue }, what = '') => assert.deepEqual([what, reply.status, reply.body.code], [what, 409, 'ACCOUNT_CHANGED'], JSON.stringify(reply.body));
+  // A standalone CalDAV account at `url` with login `login` and its own password.
+  async function standaloneAt(url: string, login: string, address = `${login}@standalone.example.test`) {
+    const id = crypto.randomUUID();
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, username, encrypted_password, base_url, is_active, provider_config)
+      VALUES (?, ?, 'caldav', ?, ?, ?, ?, TRUE, '{}')`, [id, users.alex, address, login, encrypt('synthetic-original-password'), url]);
+    return id;
+  }
+  const mailServiceOf = () => require('../dist/src/services/mail') as FixtureValue;
+
+  await fromDefaults('r6: a takeover refuses once the account it found got a new login and password, which stay', async () => {
+    const url = 'https://takeover-r6.example.test/dav/', login = 'old-login-r6';
+    const mail = await mailOf('takeover-r6@example.test', login), account = await standaloneAt(url, login);
+    const discovery = discoveryHeld();
+    // Held once the connect found the account by server and login.
+    const pause = pauseAfter('WHERE ca.user_id = ? AND ca.provider = ? AND ca.base_url = ?');
+    const pending = alex.request('PUT', `/api/mail/accounts/${mail}/calendar`, { enabled: true, caldav_url: url });
+    try {
+      await pause.reached();
+      await call(alex, 'PUT', `/api/calendar/accounts/${account}`, { username: 'new-login-r6', password: 'synthetic-new-password' });
+      pause.release();
+      refusedChanged(await pending);
+    } finally { pause.restore(); await pending; discovery.restore(); }
+    const row = await rowOf('calendar_accounts', account);
+    assert.deepEqual([row.username, row.mail_account_id], ['new-login-r6', null]);
+    assert.ok(row.encrypted_password, 'its new password stays');
+    await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [account]);
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('r6: a takeover refuses once the mail account whose login found it changed its login', async () => {
+    const url = 'https://mail-drift-r6.example.test/dav/', login = 'old-mail-login-r6';
+    const mail = await mailOf('mail-drift-r6@example.test', login), account = await standaloneAt(url, login);
+    const before = await rowOf('calendar_accounts', account);
+    const discovery = discoveryHeld();
+    const mailService = mailServiceOf(), testImap = mailService.testImapConnection;
+    mailService.testImapConnection = async () => ({ success: true });
+    const pause = pauseAfter('WHERE ca.user_id = ? AND ca.provider = ? AND ca.base_url = ?');
+    const pending = alex.request('PUT', `/api/mail/accounts/${mail}/calendar`, { enabled: true, caldav_url: url });
+    try {
+      await pause.reached();
+      await call(alex, 'PUT', `/api/mail/accounts/${mail}`, { username: 'new-mail-login-r6', encrypted_password: 'synthetic-new-mail-password' });
+      pause.release();
+      refusedChanged(await pending);
+    } finally { pause.restore(); await pending; discovery.restore(); mailService.testImapConnection = testImap; }
+    const row = await rowOf('calendar_accounts', account);
+    assert.deepEqual([row.username, row.encrypted_password, row.mail_account_id], [before.username, before.encrypted_password, null], 'the old login\'s calendar as it was');
+    await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [account]);
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('r6: turning a mail calendar off keeps a restored one whose login changed meanwhile, with its events', async () => {
+    const address = 'off-r6@example.test', url = 'https://off-r6.example.test/dav/';
+    const mail = await mailOf(address), old = await linkedAt(mail, address, url);
+    await pool.execute('UPDATE calendar_accounts SET mail_account_id = NULL, encrypted_password = ? WHERE id = ?', [encrypt('synthetic-original-password'), old.account]);
+    const discovery = discoveryHeld();
+    const pause = pauseAfter("provider IN ('caldav', 'ics') AND mail_account_id IS NULL");
+    const pending = alex.request('PUT', `/api/mail/accounts/${mail}/calendar`, { enabled: false });
+    try {
+      await pause.reached();
+      await call(alex, 'PUT', `/api/calendar/accounts/${old.account}`, { username: 'new-off-login-r6', password: 'synthetic-new-password' });
+      pause.release();
+      refusedChanged(await pending);
+    } finally { pause.restore(); await pending; discovery.restore(); }
+    assert.equal((await rowOf('calendar_accounts', old.account)).username, 'new-off-login-r6');
+    assert.equal(await count('SELECT COUNT(*) AS count FROM calendar_event_subtasks WHERE id = ?', [old.subtask]), 1, 'its subtask stays');
+    await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [old.account]);
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('r6: a replacement refuses once the account it replaces was changed meanwhile', async () => {
+    const address = 'replace-drift-r6@example.test', oldUrl = 'https://old-drift-r6.example.test/dav/', newUrl = 'https://new-drift-r6.example.test/dav/';
+    const mail = await mailOf(address), old = await linkedAt(mail, address, oldUrl);
+    const discovery = discoveryHeld();
+    const held = discovery.hold(newUrl);
+    let pending: ReturnType<typeof alex.request> | undefined;
+    try {
+      pending = alex.request('PUT', `/api/mail/accounts/${mail}/calendar`, { enabled: true, caldav_url: newUrl });
+      await held.reached();
+      // Another request found its server again meanwhile.
+      await pool.execute("UPDATE calendar_accounts SET discovery_url = 'https://old-drift-r6.example.test/.well-known/caldav' WHERE id = ?", [old.account]);
+      held.go();
+      refusedChanged(await pending);
+    } finally { discovery.restore(); await pending; }
+    assert.deepEqual(await linksOf(mail), [old.account], 'the old one stays linked');
+    assert.equal(await count('SELECT COUNT(*) AS count FROM calendar_event_subtasks WHERE id = ?', [old.subtask]), 1);
+    await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [old.account]);
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('r6: linking a restored calendar refuses once it got a new login and password, which stay', async () => {
+    const restored = await restoredUnlinked('relink-drift-r6@example.test');
+    const calendarSync = require('../dist/src/services/calendar-sync') as FixtureValue, inBackground = calendarSync.syncCalendarAccountInBackground;
+    calendarSync.syncCalendarAccountInBackground = () => undefined;
+    const pause = pauseAfter('AND mail_account_id IS NULL AND LOWER(account_email)');
+    const pending = alex.request('PUT', `/api/mail/accounts/${restored.mail}/calendar`, { enabled: true });
+    try {
+      await pause.reached();
+      await call(alex, 'PUT', `/api/calendar/accounts/${restored.calendar}`, { username: 'new-relink-login', password: 'synthetic-new-password' });
+      pause.release();
+      refusedChanged(await pending);
+    } finally { pause.restore(); await pending; calendarSync.syncCalendarAccountInBackground = inBackground; }
+    const row = await rowOf('calendar_accounts', restored.calendar);
+    assert.deepEqual([row.username, row.mail_account_id], ['new-relink-login', null]);
+    assert.ok(row.encrypted_password, 'its new password stays');
+    await restored.remove();
+  });
+
+  await fromDefaults('r6: a calendar account\'s stale change, or its removal, refuses once another one changed its login', async () => {
+    const calendarSync = require('../dist/src/services/calendar-sync') as FixtureValue, inBackground = calendarSync.syncCalendarAccountInBackground;
+    calendarSync.syncCalendarAccountInBackground = () => undefined;
+    try {
+      for (const stale of ['change', 'removal'] as const) {
+        const account = await standaloneAt(`https://stale-${stale}-r6.example.test/dav/`, `stale-${stale}`);
+        // The stale request is held after it read the account; the other one reads it next and saves.
+        const pause = pauseAfter('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?');
+        const pending = stale === 'change' ? alex.request('PUT', `/api/calendar/accounts/${account}`, { display_name: 'Stale name' })
+          : alex.request('DELETE', `/api/calendar/accounts/${account}`);
+        try {
+          await pause.reached();
+          await call(alex, 'PUT', `/api/calendar/accounts/${account}`, { username: `newer-${stale}`, password: 'synthetic-new-password' });
+          pause.release();
+          refusedChanged(await pending, stale);
+        } finally { pause.restore(); await pending; }
+        const row = await rowOf('calendar_accounts', account);
+        assert.deepEqual([stale, row?.username, row?.display_name ?? null], [stale, `newer-${stale}`, null], 'the newer change stays, the stale one did nothing');
+        await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [account]);
+      }
+    } finally { calendarSync.syncCalendarAccountInBackground = inBackground; }
+  });
+
+  await fromDefaults('r6: a mail account\'s change refuses once another writer changed the account while it tested the login', async () => {
+    const mail = await mailOf('mail-stale-r6@example.test', 'stale-mail-login');
+    const before = await rowOf('mail_accounts', mail);
+    const mailService = mailServiceOf(), testImap = mailService.testImapConnection;
+    const reached = deferred(), go = deferred();
+    mailService.testImapConnection = async () => { reached.resolve(); await go.promise; return { success: true }; };
+    const pending = alex.request('PUT', `/api/mail/accounts/${mail}`, { encrypted_password: 'synthetic-new-password' });
+    try {
+      await within(reached.promise);
+      await pool.execute("UPDATE mail_accounts SET imap_host = 'imap.moved.example.test' WHERE id = ?", [mail]);
+      go.resolve();
+      refusedChanged(await pending);
+    } finally { go.resolve(); await pending; mailService.testImapConnection = testImap; }
+    const row = await rowOf('mail_accounts', mail);
+    assert.deepEqual([row.encrypted_password, row.imap_host], [before.encrypted_password, 'imap.moved.example.test'], 'its password as it was');
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('r6: deleting a folder at the provider refuses once its account changed while it connected', async () => {
+    const { deleteMailFolder } = require('../dist/src/services/mail-folder-delete') as typeof import('../src/services/mail-folder-delete');
+    const mail = await mailOf('folder-r6@example.test'), folder = crypto.randomUUID();
+    await pool.execute("INSERT INTO mail_folders (id, user_id, slug, display_name, is_system, mail_account_id) VALUES (?, ?, 'projects-r6', 'Projects', FALSE, ?)", [folder, users.alex, mail]);
+    await pool.execute("INSERT INTO mail_folder_remote_boxes (folder_id, mail_account_id, remote_name) VALUES (?, ?, 'Projects')", [folder, mail]);
+    const deleted: string[] = [];
+    const connecting = deferred(), connected = deferred();
+    const outcome = deleteMailFolder({ userId: users.alex, slug: 'projects-r6', server: true }, {
+      connect: async () => { connecting.resolve(); await connected.promise; return { mailboxDelete: async (name: string) => { deleted.push(name); }, list: async () => [] } as FixtureValue; },
+    }).then(() => null, (error: FixtureValue) => error.code);
+    try {
+      await within(connecting.promise);
+      await pool.execute("UPDATE mail_accounts SET username = 'changed-meanwhile' WHERE id = ?", [mail]);
+      connected.resolve();
+      assert.equal(await outcome, 'ACCOUNT_CHANGED');
+    } finally { connected.resolve(); await outcome; }
+    assert.deepEqual(deleted, [], 'nothing deleted at the provider');
+    assert.equal(await count('SELECT COUNT(*) AS count FROM mail_folders WHERE id = ?', [folder]), 1);
+    await pool.execute('DELETE FROM mail_folders WHERE id = ?', [folder]);
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('r6: purging a mail account refuses once its address no longer matches the one typed', async () => {
+    const address = 'purge-r6@example.test', mail = await mailOf(address);
+    await pool.execute('UPDATE mail_accounts SET is_active = FALSE, disconnected_at = UTC_TIMESTAMP(), encrypted_password = NULL WHERE id = ?', [mail]);
+    // Held after the typed address was checked against it.
+    const pause = pauseAfter('SELECT id, email_address FROM mail_accounts WHERE id = ? AND user_id = ?');
+    const pending = alex.request('DELETE', `/api/mail/accounts/${mail}?purge=true&confirm_purge=${encodeURIComponent(address)}`);
+    try {
+      await pause.reached();
+      await pool.execute("UPDATE mail_accounts SET email_address = 'renamed-r6@example.test' WHERE id = ?", [mail]);
+      pause.release();
+      refusedChanged(await pending);
+    } finally { pause.restore(); await pending; }
+    assert.equal(await count('SELECT COUNT(*) AS count FROM mail_accounts WHERE id = ?', [mail]), 1, 'the account stays');
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('S3 r6: a mode forced, or deletion required, while a new account logs in refuses it', async () => {
+    const mailService = mailServiceOf();
+    const testImap = mailService.testImapConnection, hostPolicy = mailService.validateMailHostPolicy, schedule = mailService.scheduleMailAccountSync;
+    mailService.validateMailHostPolicy = async () => ({});
+    mailService.scheduleMailAccountSync = async () => ({ started: false, alreadyRunning: false, promise: Promise.resolve({ success: true }) });
+    try {
+      for (const [index, [values, key]] of ([[{ 'mail.mode.new_accounts': 'sync' }, 'mail.mode.new_accounts'], [{ 'mail.provider_delete': 'required' }, 'mail.provider_delete']] as const).entries()) {
+        await pool.query("DELETE FROM setting_policies WHERE target_kind = 'installation'");
+        const address = `forced-r6-${index}@example.test`, reached = deferred(), go = deferred();
+        mailService.testImapConnection = async () => { reached.resolve(); await go.promise; return { success: true }; };
+        const pending = alex.request('POST', '/api/mail/accounts', { email_address: address, provider: 'custom', encrypted_password: 'synthetic-password', imap_host: 'imap.example.test',
+          imap_port: 993, smtp_host: 'smtp.example.test', smtp_port: 465, sync_mode: 'download', delete_emails_on_server: false, try_calendar_sync: false });
+        try {
+          await within(reached.promise);
+          await setPolicies(values);
+          go.resolve();
+          const reply = await pending;
+          assert.deepEqual([reply.status, reply.body.code, (reply.body.details as FixtureValue)?.policy], [403, 'POLICY_FORBIDS', key], JSON.stringify(reply.body));
+        } finally { go.resolve(); await pending; }
+        assert.equal(await count('SELECT COUNT(*) AS count FROM mail_accounts WHERE email_address = ?', [address]), 0, `${key}: nothing stored`);
+      }
+    } finally { mailService.testImapConnection = testImap; mailService.validateMailHostPolicy = hostPolicy; mailService.scheduleMailAccountSync = schedule; }
+  });
+
+  await fromDefaults('Q1 r6: a password change refused by a Mail restore admitted meanwhile answers RESTORE_IN_PROGRESS and leaves the restore\'s pause', async () => {
+    const mail = await mailOf('restore-error-r6@example.test'), restore = crypto.randomUUID();
+    const mailService = mailServiceOf(), testImap = mailService.testImapConnection;
+    const reached = deferred(), go = deferred();
+    mailService.testImapConnection = async () => { reached.resolve(); await go.promise; return { success: true }; };
+    const before = await rowOf('mail_accounts', mail);
+    const pending = alex.request('PUT', `/api/mail/accounts/${mail}`, { encrypted_password: 'synthetic-new-password' });
+    try {
+      await within(reached.promise);
+      await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', '["mail"]')`, [restore, users.alex]);
+      // The pause a restore writes when it starts restoring mail.
+      await (require('../dist/src/services/backup-mail-engine') as FixtureValue).pauseMailRestore(pool, users.alex);
+      go.resolve();
+      const reply = await pending;
+      assert.deepEqual([reply.status, reply.body.code], [409, 'RESTORE_IN_PROGRESS'], JSON.stringify(reply.body));
+    } finally { go.resolve(); await pending; mailService.testImapConnection = testImap; }
+    const row = await rowOf('mail_accounts', mail);
+    assert.deepEqual([row.encrypted_password, Number(row.is_active)], [before.encrypted_password, 0], 'its password as it was, paused by the restore');
+    await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
     await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
   });
 });

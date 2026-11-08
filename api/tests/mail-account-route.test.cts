@@ -3,11 +3,12 @@ const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 
 // The final check's transaction (final-step.ts) on the fake database: a
-// connection running the same statements, the account row it locks, and no
-// rule, module switch or restore in force (its locking reads find nothing).
+// connection running the same statements, the account row it locks (the
+// fake's own row where it reads the whole row), and no rule, module switch or
+// restore in force (its locking reads find nothing).
 function withConnection(db: { execute: (sql: string, params?: FixtureValue[]) => Promise<FixtureValue> }) {
   const execute = async (sql: string, params: FixtureValue[] = []) => {
-    if (sql.includes('FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE')) return [[{ id: params[0] }]];
+    if (sql.includes('FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE') && !sql.includes('SELECT *')) return [[{ id: params[0] }]];
     if (sql.includes('LOCK IN SHARE MODE')) return [[]];
     return db.execute(sql, params);
   };
@@ -280,6 +281,7 @@ test('update mail account can disable server deletion without password changes',
           return [[{
             id: 'account-1',
             user_id: 'user-1',
+            provider: 'custom',
             email_address: 'user@example.test',
             username: 'user@example.test',
             imap_host: 'mail.example.test',
@@ -289,7 +291,9 @@ test('update mail account can disable server deletion without password changes',
             encrypted_password: 'encrypted:secret',
             allow_self_signed: 0,
             delete_emails_on_server: 1,
+            sync_mode: 'download',
             is_active: 1,
+            disconnected_at: null,
           }]];
         }
         if (sql.includes('UPDATE mail_server_messages')) { queueUpdates.push(sql); return [{ affectedRows: 1 }]; }
@@ -404,8 +408,9 @@ test('reconnect uses the saved password of an account a restore paused, never of
   t.mock.method((require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime')), 'resumeAccount', async (input: FixtureValue) => { resumes.push(input); return { resumed: 0, retired: 0 }; });
   let row: FixtureValue;
   setRequireStub(statePath, { db: { execute: async (sql: string, params: FixtureValue[] = []) => {
-    if (sql.includes('SELECT * FROM mail_accounts')) return [[{ id: 'account-1', user_id: 'user-1', email_address: 'user@example.test', username: 'user@example.test',
-      imap_host: 'mail.example.test', imap_port: 993, smtp_host: 'mail.example.test', smtp_port: 587, allow_self_signed: 0, delete_emails_on_server: 0, sync_mode: 'download', ...row }]];
+    if (sql.includes('SELECT * FROM mail_accounts')) return [[{ id: 'account-1', user_id: 'user-1', provider: 'custom', email_address: 'user@example.test', username: 'user@example.test',
+      imap_host: 'mail.example.test', imap_port: 993, smtp_host: 'mail.example.test', smtp_port: 587, encrypted_password: null, allow_self_signed: 0, delete_emails_on_server: 0, sync_mode: 'download',
+      is_active: 1, disconnected_at: null, ...row }]];
     if (sql.includes('UPDATE mail_accounts SET')) { updates.push({ sql, params }); return [{ affectedRows: 1 }]; }
     if (sql.includes('SELECT id, user_id, email_address')) return [[{ id: 'account-1', user_id: 'user-1', email_address: 'user@example.test', is_active: 1 }]];
     return [[]];
@@ -461,7 +466,7 @@ function accountInputFixture(t: import('node:test').TestContext) {
   let stops = 0;
   const existing = { id: 'account-1', user_id: 'user-1', email_address: 'user@example.test', username: 'user@example.test', display_name: null,
     provider: 'custom', imap_host: 'mail.example.test', imap_port: 993, smtp_host: 'mail.example.test', smtp_port: 587,
-    encrypted_password: 'encrypted:secret', allow_self_signed: 0, delete_emails_on_server: 0, sync_mode: 'download', is_active: 1 };
+    encrypted_password: 'encrypted:secret', allow_self_signed: 0, delete_emails_on_server: 0, sync_mode: 'download', is_active: 1, disconnected_at: null };
   setRequireStub(statePath, { db: { execute: async (sql: string, params: FixtureValue[] = []) => {
     if (params.some(value => value === undefined)) throw new Error('Bind parameters must not contain undefined. To pass SQL NULL specify JS null');
     if (sql.includes('SELECT * FROM mail_accounts')) return [[existing]];

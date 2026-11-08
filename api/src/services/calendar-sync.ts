@@ -21,6 +21,8 @@ import { db } from '../state';
 import { decrypt } from '../security/encryption';
 import { canRunModule } from './access-policy';
 import { assertFinalStep, underFinalStep, isRefusal } from './final-step';
+import { assertUnchanged } from './account-identity';
+import type { AccountSnapshot } from './account-identity';
 import { changeInProgress, conflict, isLockWaitTimeout } from '../http/errors';
 import type { PolicyActor } from './settings';
 import { publishCalendarChanged } from './realtime';
@@ -380,15 +382,20 @@ async function deleteCalendarsWithEvents(connection: SqlExecutor, userId: string
 // record: written with the deletion (an administrator's activity-log entry).
 // expectMail: the mail links the caller saw (a mail account's calendar
 // turned off): one another connect took over for another mail account
-// meanwhile is refused with 409 MAIL_CALENDAR_CHANGED.
-async function deleteCalendarAccount(userId: string, accountId: string, { actor = {}, record, expectMail }: { actor?: PolicyActor; record?: (connection: SqlExecutor) => Promise<unknown>; expectMail?: readonly (string | null)[] } = {}) {
+// meanwhile is refused with 409 MAIL_CALENDAR_CHANGED. snapshot: the account
+// as the caller chose it (account-identity.ts); one gone, or whose login,
+// password or server changed meanwhile, is refused with 409 ACCOUNT_CHANGED.
+async function deleteCalendarAccount(userId: string, accountId: string, { actor = {}, record, expectMail, snapshot }: {
+  actor?: PolicyActor; record?: (connection: SqlExecutor) => Promise<unknown>; expectMail?: readonly (string | null)[]; snapshot?: AccountSnapshot;
+} = {}) {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
-    const [[row]] = await connection.execute<RowDataPacket[]>('SELECT id, mail_account_id FROM calendar_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
+    const [[row]] = await connection.execute<RowDataPacket[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
     if (row && expectMail && !expectMail.includes(row.mail_account_id ?? null)) {
       throw conflict('MAIL_CALENDAR_CHANGED', 'The calendar of this mail account changed meanwhile. Try again.');
     }
+    if (snapshot) assertUnchanged(row, snapshot, expectMail ?? [snapshot.link]);
     await assertFinalStep(connection, { userId, policies: ['accounts.remove'], actor, modules: ['calendar'] });
     const [calendars] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_calendars WHERE account_id = ? AND user_id = ?', [accountId, userId]);
     await deleteCalendarsWithEvents(connection, userId, calendars.map(row => row.id));

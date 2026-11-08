@@ -12,6 +12,7 @@ import { deleteEmailRows, removeUnreferencedFiles } from './mail-sync-policy';
 import { yieldMailReadWork } from './mail-sync-control';
 import { SYSTEM_MAIL_FOLDER_SET } from './mail-folders';
 import { assertFinalStep, underFinalStep } from './final-step';
+import { accountSnapshot } from './account-identity';
 
 type AccountRow = RowDataPacket & { id: string; user_id: string; email_address: string };
 type FolderConnection = Pick<ProtocolConnection, 'mailboxDelete' | 'list'>;
@@ -147,8 +148,9 @@ async function deleteMailFolder({ userId, slug, server = false }: { userId: stri
     }
     try {
       // The provider's DELETE under the final check (final-step.ts): the
-      // policy, Mail on and not being restored, as they are when it is sent.
-      await underFinalStep({ userId, policies: ['mail.provider_delete'], modules: ['mail'] }, async () => {
+      // policy, Mail on and not being restored, as they are when it is sent,
+      // and the account still as read above (account-identity.ts).
+      await underFinalStep({ userId, policies: ['mail.provider_delete'], modules: ['mail'], unchanged: [accountSnapshot('mail', account)] }, async () => {
         try {
           await runGuardedImap(connection as ProtocolConnection, () => connection.mailboxDelete(box.remote_name));
         } catch (error) {
