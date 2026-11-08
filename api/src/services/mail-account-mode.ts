@@ -79,12 +79,19 @@ async function modePolicyInput<T extends Record<string, unknown>>(userId: string
  * a switch to such a mode, and turning deletion at the provider on while it
  * is not allowed. Turning it off, and every other change, stays possible.
  */
-async function assertModeAllowed(userId: string, account: MailAccountIdentity | null | undefined, change: ModeChange, actor: PolicyActor = {}) {
-  const { assertAllowed } = require('./settings') as typeof import('./settings');
+// The policies a new account or a change of `account` needs: its mode, and
+// provider deletion turned on. Asked early (assertModeAllowed) and again in
+// the transaction that writes it (final-step.ts).
+function modePolicyKeys(account: MailAccountIdentity | null | undefined, change: ModeChange) {
   const keys: ('mail.mode.download' | 'mail.mode.sync' | 'mail.provider_delete')[] = [];
   if (!account || change.changed) keys.push(change.mode === 'sync' ? 'mail.mode.sync' : 'mail.mode.download');
   if (change.deleteEnabled && !(account && enabled(account.delete_emails_on_server))) keys.push('mail.provider_delete');
-  await assertAllowed(userId, keys, actor);
+  return keys;
 }
 
-export { mailAccountModeChange, addressConfirmed, sameProviderMailbox, modePolicyInput, assertModeAllowed };
+async function assertModeAllowed(userId: string, account: MailAccountIdentity | null | undefined, change: ModeChange, actor: PolicyActor = {}) {
+  const { assertAllowed } = require('./settings') as typeof import('./settings');
+  await assertAllowed(userId, modePolicyKeys(account, change), actor);
+}
+
+export { mailAccountModeChange, addressConfirmed, sameProviderMailbox, modePolicyInput, assertModeAllowed, modePolicyKeys };

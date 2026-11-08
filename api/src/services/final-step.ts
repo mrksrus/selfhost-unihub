@@ -111,5 +111,5 @@ async function whileFinalStepAllows(step: FinalStep, work: () => Promise<unknown
   }
 }
 
-export { assertFinalStep, underFinalStep, whileFinalStepAllows };
+export { assertFinalStep, underFinalStep, whileFinalStepAllows, isRefusal };
 export type { FinalStep };

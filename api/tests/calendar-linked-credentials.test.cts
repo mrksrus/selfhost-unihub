@@ -19,8 +19,10 @@ function calendarFixture(t: import('node:test').TestContext, { account = {}, mai
     paths.forEach((path, index) => { if (saved[index]) require.cache[path] = saved[index]; else delete require.cache[path]; });
   });
   const state: FixtureValue = { mail, relinked: [], published: [] };
-  stub(paths[0], { isModuleEnabled: async () => true, isModuleBackgroundEnabled: async () => true });
-  stub(paths[1], { isSectionRestoreActive: async () => false });
+  // The final check's reads (final-step.ts) too: Calendar on, no restore.
+  stub(paths[0], { isModuleEnabled: async () => true, isModuleBackgroundEnabled: async () => true,
+    lockedUserModules: async () => [{ id: 'calendar', enabled: true, background: true }] });
+  stub(paths[1], { isSectionRestoreActive: async () => false, lockedRestoreSections: async () => new Set() });
   stub(paths[2], new Proxy({ accountCredentialScope: () => null, ...caldav }, {
     get: (target, name) => name in target ? target[name] : () => assert.fail(`CalDAV ${String(name)} must not be called`),
   }));
@@ -37,6 +39,9 @@ function calendarFixture(t: import('node:test').TestContext, { account = {}, mai
   const writes: FixtureValue[] = [];
   const execute = async (sql: string, params: FixtureValue) => {
     if (sql.includes('FROM calendar_calendars c JOIN calendar_accounts a')) return [[{ calendar_row_id: params[0], account_id: 'linked', read_only: 0, url: 'https://dav.example.test/cal/' }]];
+    // The row as a transaction locks it, and the mail account it is linked to (gone: none).
+    if (sql.includes('FROM calendar_accounts WHERE id = ? AND user_id = ? FOR UPDATE') || sql.startsWith('SELECT is_active, mail_account_id FROM calendar_accounts')) return [[row]];
+    if (sql.startsWith('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LOCK IN SHARE MODE')) return [state.mailGone ? [] : [{ id: params[0] }]];
     if (sql.startsWith('SELECT * FROM calendar_accounts')) return [[row]];
     if (sql.startsWith('SELECT id FROM calendar_accounts')) return [sql.includes("provider = 'caldav'") && row.provider !== 'caldav' ? [] : [{ id: row.id }]];
     // The login through the calendar's current link. state.mail null:
@@ -56,7 +61,7 @@ function calendarFixture(t: import('node:test').TestContext, { account = {}, mai
     if (/^(UPDATE|DELETE|INSERT)/.test(sql.trim())) { writes.push([sql, params]); return [{ affectedRows: 1 }]; }
     return [[]];
   };
-  setDb({ execute, getConnection: async () => ({ execute, release() {} }) } as FixtureValue);
+  setDb({ execute, getConnection: async () => ({ execute, beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release() {} }) } as FixtureValue);
   return { sync: (require('../dist/src/services/calendar-sync') as typeof import('../src/services/calendar-sync')), writes, state, row };
 }
 

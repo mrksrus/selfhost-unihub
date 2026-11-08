@@ -849,6 +849,13 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     await sync();
     const dates = await rowsTitled('Weekly review');
     assert.equal(dates.length, 3);
+    // The calendar as restored from a backup: marked as a mail account's, not
+    // linked yet, with its own saved password, and that mail account connected.
+    const [[original]] = await pool.query<RowDataPacket[]>('SELECT account_email, provider_config, encrypted_password FROM calendar_accounts WHERE id = ?', [accountId]);
+    const mail = crypto.randomUUID();
+    await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active, encrypted_password) VALUES (?, ?, ?, 'custom', 'download', TRUE, ?)",
+      [mail, users.alex, original.account_email, encrypt('synthetic-mail-password')]);
+    await pool.execute("UPDATE calendar_accounts SET provider_config = JSON_SET(provider_config, '$.mailLinked', TRUE) WHERE id = ?", [accountId]);
     // A sync holds the account; the request passes its early check, then waits for it.
     const [held, go, checked] = [gate(), gate(), gate()];
     const holder = calendarSync.withAccountLock(accountId, async () => { held.open(); await go.reached; return { held: true }; }, 5);
@@ -872,12 +879,17 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
       assert.deepEqual([reply.status, reply.body.code, (reply.body.details as FixtureValue)?.policy], [403, 'POLICY_FORBIDS', 'bin.delete'], JSON.stringify(reply.body));
       assert.deepEqual(server.remote.writes, [], 'nothing sent to the server');
       assert.equal((await rowsTitled('Weekly review')).length, 3, 'every date stays');
+      const [[after]] = await pool.query<RowDataPacket[]>('SELECT mail_account_id, encrypted_password FROM calendar_accounts WHERE id = ?', [accountId]);
+      assert.deepEqual([after.mail_account_id, after.encrypted_password], [null, original.encrypted_password], 'still unlinked, with its own password');
     } finally {
       settings.assertAllowed = assertAllowed;
       go.open();
       await holder;
       await pending;
       await pool.execute("DELETE FROM setting_policies WHERE setting_key = 'policy.bin.delete'");
+      await pool.execute('UPDATE calendar_accounts SET mail_account_id = NULL, provider_config = ?, encrypted_password = ? WHERE id = ?',
+        [typeof original.provider_config === 'string' ? original.provider_config : JSON.stringify(original.provider_config), original.encrypted_password, accountId]);
+      await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
     }
     // Allowed again, the same request removes the date.
     await call(alex, 'DELETE', `/api/calendar/events/${dates[1].id}?scope=occurrence`);

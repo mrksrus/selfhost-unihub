@@ -8,6 +8,9 @@ import { CALENDAR_MULTI_ENABLED } from '../config';
 import { CALENDAR_PROVIDER_DEFAULT_CAPABILITIES, normalizeCalendarAccountProvider, serializeCalendarAccount } from './calendar';
 import * as calendarAccounts from './calendar-accounts';
 import * as calendarSync from './calendar-sync';
+import { withTransaction } from './transactions';
+import { assertFinalStep } from './final-step';
+import { conflict } from '../http/errors';
 
 // Adding, changing and removing a calendar account: POST, PUT and DELETE
 // /api/calendar/accounts[/:id] (routes/calendar.ts) and the administrator's
@@ -100,7 +103,7 @@ async function updateCalendarAccount(userId: string, id: string, body: Input) {
   const [existing] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
   if (existing.length === 0) return { error: 'Calendar account not found', status: 404 };
 
-  const updates = [];
+  const updates: string[] = [];
   const params: ExecuteValues[] = [];
   if (Object.prototype.hasOwnProperty.call(body, 'account_email')) {
     updates.push('account_email = ?');
@@ -145,7 +148,17 @@ async function updateCalendarAccount(userId: string, id: string, body: Input) {
   if (updates.length === 0) return { error: 'No fields to update', status: 400 };
 
   params.push(id, userId);
-  await db.execute(`UPDATE calendar_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
+  // Under the account's row, still linked as read above (its password and
+  // resume were decided from that), and Calendar's final check
+  // (final-step.ts): on and not being restored, as committed now.
+  await withTransaction(async cx => {
+    const [[current]] = await cx.execute<AccountRow[]>('SELECT mail_account_id FROM calendar_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [id, userId]);
+    if (!current || (current.mail_account_id ?? null) !== (account.mail_account_id ?? null)) {
+      throw conflict('MAIL_CALENDAR_CHANGED', 'This calendar account changed meanwhile. Try again.');
+    }
+    await assertFinalStep(cx, { userId, modules: ['calendar'] });
+    await cx.execute(`UPDATE calendar_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
+  });
   if (resume) calendarSync.syncCalendarAccountInBackground(id, { userId, reason: 'manual' });
   const [rows] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
   return { account: serializeCalendarAccount(rows[0]) };
