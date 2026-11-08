@@ -9,6 +9,7 @@ import { lockedUserModules } from './module-settings';
 import { lockedRestoreSections } from './restore-locks';
 import { sectionOf } from './access-policy';
 import { lockUnchanged } from './account-identity';
+import { assertCaller } from './caller-proof';
 import type { AccountSnapshot } from './account-identity';
 
 // The last check of every destructive step (F13): deleting for good,
@@ -23,7 +24,8 @@ import type { AccountSnapshot } from './account-identity';
 //
 //   0. before any of them, the person's lock (person-lock.ts) where the
 //      step is a change of the person's accounts;
-//   1. the step's own rows, in the step's own order (they come first;
+//   1. the step's own rows, in the step's own order (they come first; then
+//      the requesting person's row and session, shared, caller-proof.ts;
 //      accounts the step carries as `unchanged` are locked here, mail
 //      accounts before calendar accounts, by id);
 //   2. the rules revision row, shared, then the installation's policies;
@@ -61,6 +63,9 @@ const restoring = (module: string) => conflict('RESTORE_IN_PROGRESS', `Restore i
 
 /** Throws POLICY_FORBIDS, MODULE_DISABLED or RESTORE_IN_PROGRESS when the step may not happen now. */
 async function assertFinalStep(connection: SqlExecutor, { userId, policies = [], actor = {}, modules = [], background = false, anyRestore = false, unchanged = [] }: FinalStep): Promise<FinalStepAnswer> {
+  // The request's caller, as its route proved it, still signed in, active
+  // and (where the route asked) an administrator with the password entered.
+  await assertCaller(connection);
   // Mail accounts before calendar accounts, as everywhere else; then by id.
   const order = (snapshot: AccountSnapshot) => `${snapshot.kind === 'mail' ? 0 : 1}:${snapshot.id}`;
   for (const snapshot of [...unchanged].sort((a, b) => (order(a) < order(b) ? -1 : order(a) > order(b) ? 1 : 0))) {

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { outsideCaller } from './caller-proof';
 
 // A person's account management runs one change at a time. Adding, changing,
 // disconnecting or removing a mail or calendar account, a mail account's
@@ -65,7 +66,8 @@ async function withPersonLock<T>(userId: unknown, work: () => T | PromiseLike<T>
 
 /** Starts background work without the caller's lock: it takes the lock itself where it needs it. */
 function outsidePersonLock<T>(work: () => T): T {
-  return holding.exit(work);
+  // Nor the request's caller (caller-proof.ts): it is not the request.
+  return outsideCaller(() => holding.exit(work));
 }
 
 /** Whether the error is withPersonLock's `wait: false` refusal. */

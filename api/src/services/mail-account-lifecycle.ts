@@ -13,7 +13,7 @@ import { sqlList } from './mail-engine/job-kinds';
 import { recordAudit } from './audit';
 import { fileRemovalGate } from './file-removal-gate';
 import { assertFinalStep } from './final-step';
-import { accountSnapshot, assertUnchanged } from './account-identity';
+import { accountSnapshot, assertUnchanged, storedAccountId } from './account-identity';
 import { withPersonLock } from './person-lock';
 
 type IdRow = RowDataPacket & { id: string };
@@ -76,7 +76,7 @@ async function purgePreview(userId: string, accountId: string, executor: SqlExec
 const mail = () => require('./mail') as typeof import('./mail');
 
 async function disconnectAccount(userId: string, accountId: string, requested: Requested = {}) {
-  return withPersonLock(userId, () => disconnectNow(userId, accountId, requested));
+  return withPersonLock(userId, async () => disconnectNow(userId, await storedAccountId('mail', userId, accountId), requested));
 }
 
 async function disconnectNow(userId: string, accountId: string, { req = null, adminId }: Requested) {
@@ -161,7 +161,7 @@ async function assertPurgeConfirmed(userId: string, accountId: string, confirmat
 }
 
 async function purgeAccount(userId: string, accountId: string, confirmation: unknown, requested: Requested = {}) {
-  return withPersonLock(userId, () => purgeNow(userId, accountId, confirmation, requested));
+  return withPersonLock(userId, async () => purgeNow(userId, await storedAccountId('mail', userId, accountId), confirmation, requested));
 }
 
 async function purgeNow(userId: string, accountId: string, confirmation: unknown, { req = null, adminId }: Requested) {
@@ -240,7 +240,7 @@ async function purgeNow(userId: string, accountId: string, confirmation: unknown
 // already blocked; a purge refused after the disconnect (an operation became
 // unresolved meanwhile) leaves the account disconnected with its mail kept.
 async function disconnectAndPurgeAccount(userId: string, accountId: string, confirmation: unknown, requested: Requested = {}) {
-  return withPersonLock(userId, () => disconnectAndPurgeNow(userId, accountId, confirmation, requested));
+  return withPersonLock(userId, async () => disconnectAndPurgeNow(userId, await storedAccountId('mail', userId, accountId), confirmation, requested));
 }
 
 async function disconnectAndPurgeNow(userId: string, accountId: string, confirmation: unknown, requested: Requested) {

@@ -106,6 +106,9 @@ async function clearInstallationState(connection: Connection, run: { id: string;
     // a cross-calendar move's journal goes (the next sync shows a copy left
     // behind as an event of its own; nothing is deleted at the server) ...
     ['DELETE FROM calendar_event_moves', []],
+    // ... a folder deletion's record of what the servers answered goes (a new
+    // attempt asks the server again; mail-folder-delete.ts) ...
+    ['DELETE FROM mail_folder_deletions', []],
     // ... a scheduled draft comes back unscheduled, and a send that had
     // started is 'unknown', which is never sent again ...
     ["DELETE FROM mail_scheduled_sends WHERE status = 'scheduled'", []],

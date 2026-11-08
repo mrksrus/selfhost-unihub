@@ -10,7 +10,7 @@ import crypto from 'crypto';
 import { db } from '../state';
 import { withTransaction } from './transactions';
 import { assertFinalStep } from './final-step';
-import { accountSnapshot, assertUnchanged as assertUnchangedRow } from './account-identity';
+import { accountSnapshot, assertUnchanged as assertUnchangedRow, storedAccountId } from './account-identity';
 import { encrypt } from '../security/encryption';
 import { inspectMailCertificate, normalizeFingerprint } from '../security/mail-certificates';
 import {
@@ -159,7 +159,7 @@ async function createMailAccount(userId: string, input: Input, actor: PolicyActo
 }
 
 async function updateMailAccount(userId: string, id: string, body: Input, actor: PolicyActor = {}) {
-  return withPersonLock(userId, () => updateMailAccountNow(userId, id, body, actor));
+  return withPersonLock(userId, async () => updateMailAccountNow(userId, await storedAccountId('mail', userId, id), body, actor));
 }
 
 async function createMailAccountNow(userId: string, input: Input, actor: PolicyActor) {
@@ -600,8 +600,9 @@ async function updateMailAccountNow(userId: string, id: string, body: Input, act
 // row, the final check (final-step.ts: Mail on and not being restored) and
 // the account still as read (account-identity.ts); the removal job is
 // admitted in the same transaction.
-async function confirmSyncPolicy(userId: string, id: string, typed: unknown) {
+async function confirmSyncPolicy(userId: string, requestedId: string, typed: unknown) {
   return withPersonLock(userId, async () => {
+    const id = await storedAccountId('mail', userId, requestedId);
     const [[account]] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
     if (!account) return { error: 'Account not found', status: 404 };
     if (account.sync_mode !== 'sync') return { error: 'Only a Sync account has a Sync policy to confirm.', status: 409 };

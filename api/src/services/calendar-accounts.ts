@@ -29,7 +29,7 @@ import {
 import * as calendarSync from './calendar-sync';
 import { withTransaction } from './transactions';
 import { assertFinalStep } from './final-step';
-import { accountSnapshot, assertUnchanged, lockUnchanged } from './account-identity';
+import { accountSnapshot, assertUnchanged, lockUnchanged, storedAccountId } from './account-identity';
 import type { AccountSnapshot } from './account-identity';
 import { withPersonLock } from './person-lock';
 
@@ -540,7 +540,7 @@ function currentManualUrl(account: AccountRow | null) {
 // Under the person's lock (person-lock.ts), from the first read through
 // discovery to the commit.
 async function setMailCalendar(userId: string, mailAccountId: string, body: { enabled?: unknown; caldav_url?: unknown; time_zone?: unknown } = {}, actor: PolicyActor = {}) {
-  return withPersonLock(userId, () => setMailCalendarNow(userId, mailAccountId, body, actor));
+  return withPersonLock(userId, async () => setMailCalendarNow(userId, await storedAccountId('mail', userId, mailAccountId), body, actor));
 }
 
 async function setMailCalendarNow(userId: string, mailAccountId: string, { enabled, caldav_url: caldavUrl, time_zone: timeZone }: { enabled?: unknown; caldav_url?: unknown; time_zone?: unknown }, actor: PolicyActor) {

@@ -229,6 +229,20 @@ function imapListToFolders(entries: readonly { path?: unknown; flags?: Iterable<
   return results;
 }
 
+// A folder listing counts whole or not at all. An entry without a usable
+// mailbox name (a malformed or cut-off reply the client still accepted)
+// makes it incomplete, so nothing may be concluded from what it leaves out:
+// neither discovery retiring a folder nor a folder deletion settling one
+// (mail-folder-delete.ts).
+function completeImapListing<T extends { path?: unknown }>(entries: readonly T[] | null | undefined): readonly T[] {
+  if (!Array.isArray(entries) || !entries.length) throw new Error('Invalid server folder listing');
+  for (const entry of entries) {
+    const name = entry?.path;
+    if (typeof name !== 'string' || !name || name.length > 255 || name.includes('\0')) throw new Error('Incomplete server folder listing');
+  }
+  return entries;
+}
+
 async function listAvailableImapFolders(connection: ProtocolConnection, specialUses: Map<string, string> = new Map(), strict = false, allMailboxes: Set<string> | null = null) {
   try {
     if (typeof connection?.list !== 'function') {
@@ -236,7 +250,7 @@ async function listAvailableImapFolders(connection: ProtocolConnection, specialU
       return ['INBOX'];
     }
     const entries = await runGuardedImap(connection, () => connection.list());
-    if (strict && !Array.isArray(entries)) throw new Error('Invalid server folder listing');
+    if (strict) completeImapListing(entries);
     const folders = imapListToFolders(entries, specialUses, allMailboxes);
     if (strict && folders.length === 0) throw new Error('Server returned no selectable folders; retry required');
     return folders;
@@ -446,6 +460,7 @@ export {
   ensureDefaultMailFoldersForUser,
   mailFolderRoles,
   imapListToFolders,
+  completeImapListing,
   listAvailableImapFolders,
   isVirtualMailFolderName,
   registerCustomImapFoldersForUser,

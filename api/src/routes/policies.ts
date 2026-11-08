@@ -2,7 +2,9 @@ import type { ServerResponse } from 'node:http';
 import type { RouteRequest } from '../types';
 import type { AdminPoliciesResponse, EffectivePoliciesResponse } from '../contracts/policies';
 import { defineRoutes } from '../http/route';
-import { confirmPassword } from '../security/reauthentication';
+import { confirmPasswordHash } from '../security/reauthentication';
+import { getAuthTokenFromRequest } from '../auth';
+import { asCaller } from '../services/caller-proof';
 import { acknowledgePolicies, getAdminPolicies, getEffectivePolicies, updateAdminPolicies } from '../services/settings';
 
 // The data-safety policies (F13 on F1, contracts/policies.ts): what applies to
@@ -27,8 +29,9 @@ export = defineRoutes({
 
   'PUT /api/admin/policies': { auth: 'admin', permission: 'server.settings', module: null, restoreSection: null, body: { limit: 8192 },
     handler: async (req: RouteRequest, userId: string, body: unknown, res: ServerResponse) => {
-      const refused = await confirmPassword(userId, (body as { current_password?: unknown } | null)?.current_password, res);
-      if (refused) return refused;
-      return { ...await updateAdminPolicies(userId, body, { req }) };
+      const confirmed = await confirmPasswordHash(userId, (body as { current_password?: unknown } | null)?.current_password, res);
+      if ('refused' in confirmed) return confirmed.refused;
+      return { ...await asCaller({ userId, token: getAuthTokenFromRequest(req), admin: true, passwordHash: confirmed.passwordHash },
+        () => updateAdminPolicies(userId, body, { req })) };
     } },
 });

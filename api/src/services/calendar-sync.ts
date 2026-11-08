@@ -142,13 +142,18 @@ async function unlinkFromDeletedMail(executor: SqlExecutor, calendar: Pick<Accou
 // which is still gone, after Calendar's final check (final-step.ts), so a
 // restore admitted or Calendar turned off meanwhile refuses it and nothing
 // changes. Returns the configuration written, or null when the row changed
-// meanwhile. Under the person's lock (person-lock.ts), so no change of the
-// person's accounts runs between the reads below and the write.
-async function unlinkDanglingMail(account: Account, mailAccountId: string) {
+// meanwhile (its link, or a password saved since the sync read it). Under the
+// person's lock (person-lock.ts), so no change of the person's accounts runs
+// between the reads below and the write; a pause committed while the sync
+// waited for it stops the sync there (CALENDAR_SYNC_PAUSED), as does the
+// sync's own stop (`signal`).
+async function unlinkDanglingMail(account: Account, mailAccountId: string, signal?: AbortSignal) {
   return withPersonLock(account.user_id, () => withTransaction(async cx => {
-    const [[row]] = await cx.execute<(RowDataPacket & Pick<Account, 'id' | 'provider_config' | 'mail_account_id'>)[]>(
-      'SELECT id, provider_config, mail_account_id FROM calendar_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [account.id, account.user_id]);
-    if (!row || row.mail_account_id !== mailAccountId) return null;
+    signal?.throwIfAborted();
+    const [[row]] = await cx.execute<(RowDataPacket & Pick<Account, 'id' | 'provider_config' | 'mail_account_id' | 'encrypted_password' | 'is_active'>)[]>(
+      'SELECT id, provider_config, mail_account_id, encrypted_password, is_active FROM calendar_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [account.id, account.user_id]);
+    if (row && !Number(row.is_active)) throw STOP_REASONS.paused();
+    if (!row || row.mail_account_id !== mailAccountId || (row.encrypted_password ?? null) !== (account.encrypted_password ?? null)) return null;
     const [[mail]] = await cx.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LOCK IN SHARE MODE', [mailAccountId, account.user_id]);
     if (mail) return null;
     await assertFinalStep(cx, { userId: account.user_id, modules: ['calendar'] });
@@ -210,7 +215,7 @@ async function resolveLogin(account: Account, relinked = false, { write = true, 
   if (current.mail_account_id && !link.mail_id) {
     // Its mail account was deleted: the link goes, and it looks for a mail
     // account with its address again.
-    const written = write ? await unlinkDanglingMail(current, current.mail_account_id) : null;
+    const written = write ? await unlinkDanglingMail(current, current.mail_account_id, signal) : null;
     // Changed meanwhile: read once more, and then without writing.
     if (write && written === null) return resolveLogin(account, relinked, { write: !again, again: true, signal });
     current.provider_config = written ?? JSON.stringify({ ...((jsonValue(current.provider_config, {}) || {}) as AccountConfig), mailLinked: true });
@@ -294,7 +299,12 @@ async function accountLogin(account: Account, signal?: AbortSignal, { write = tr
 // Each entry is counted by the work using it and removed when the last one
 // ends, so the map holds only accounts with work running.
 const accountWork = new Map<string, { controller: AbortController; users: number }>();
-function beginAccountWork(accountId: string) {
+// An account's id as the database compares it (UUIDs, matched without case):
+// the key of every in-process map of an account here, so a stop, a pause or a
+// sync finds the same entry however a caller spelled the id.
+const keyOf = (accountId: unknown) => String(accountId || '').trim().toLowerCase();
+function beginAccountWork(id: string) {
+  const accountId = keyOf(id);
   let entry = accountWork.get(accountId);
   if (!entry) accountWork.set(accountId, entry = { controller: new AbortController(), users: 0 });
   const work = entry;
@@ -323,7 +333,8 @@ const STOP_REASONS = {
   // The person paused the account: work under way stops and writes nothing more.
   paused: () => syncError(PAUSED_MESSAGE, 409, 'CALENDAR_SYNC_PAUSED'),
 };
-function stopCalendarAccountWork(accountId: string, reason: StopReason = 'disconnected') {
+function stopCalendarAccountWork(id: string, reason: StopReason = 'disconnected') {
+  const accountId = keyOf(id);
   const entry = accountWork.get(accountId);
   accountWork.delete(accountId);
   entry?.controller.abort((STOP_REASONS[reason] || STOP_REASONS.disconnected)());
@@ -957,7 +968,7 @@ function userFacingError(error: ApiError) {
 // waitSeconds: how long to wait for a running one (the move's removal of an
 // old copy waits briefly). Busy, or no lock connection free: skipped.
 async function withAccountLock<T>(accountId: string, fn: () => Promise<T>, waitSeconds = 0): Promise<T | { skipped: true; reason: string; ok?: never }> {
-  const done = await withNamedLock('calendar-sync', accountId, fn, { waitSeconds });
+  const done = await withNamedLock('calendar-sync', keyOf(accountId), fn, { waitSeconds });
   return done ? done.value : { skipped: true, reason: 'busy' };
 }
 
@@ -969,7 +980,7 @@ async function syncLinkedCalendars(userId: string, mailAccountId: string) {
   const [rows] = await db.execute<(RowDataPacket & { id: string })[]>(`SELECT id FROM calendar_accounts
     WHERE user_id = ? AND mail_account_id = ? AND provider = 'caldav' AND is_active = TRUE`, [userId, mailAccountId]);
   for (const row of rows) {
-    if (inFlight.has(row.id)) followUps.add(row.id);
+    if (inFlight.has(keyOf(row.id))) followUps.add(keyOf(row.id));
     else syncCalendarAccountInBackground(row.id, { userId, reason: 'credentials' });
   }
 }
@@ -1000,12 +1011,22 @@ async function runAccountSync(accountId: string, { userId, reason, full, pass }:
 // status, and a mail account connected again meanwhile is not noted as
 // disconnected. Its reconnect may have joined this run instead of starting
 // one, so the calendar syncs again right after it.
-async function noteMissingLogin(account: Account, message: string) {
+// `seen`: the account as the sync read it before it found no login; a
+// password saved or a link changed since (while the sync waited for the
+// person's lock) makes that finding old, so the calendar syncs again instead.
+// `signal`: the sync's; stopped meanwhile (a pause), it notes nothing.
+async function noteMissingLogin(account: Account, message: string, { seen, signal }: { seen?: Pick<Account, 'encrypted_password' | 'mail_account_id'>; signal?: AbortSignal } = {}) {
   // Under the person's lock (person-lock.ts), the account's row and
   // Calendar's final check (final-step.ts): a restore admitted or Calendar
   // turned off meanwhile leaves the row as it is (false; the sync is paused).
   const noted = await withPersonLock(account.user_id, () => withTransaction(async cx => {
-    await cx.execute('SELECT id FROM calendar_accounts WHERE id = ? FOR UPDATE', [account.id]);
+    if (signal?.aborted) return 'refused' as const;
+    const [[row]] = await cx.execute<RowDataPacket[]>('SELECT is_active, encrypted_password, mail_account_id FROM calendar_accounts WHERE id = ? FOR UPDATE', [account.id]);
+    if (seen && row && ((row.encrypted_password ?? null) !== (seen.encrypted_password ?? null) || (row.mail_account_id ?? null) !== (seen.mail_account_id ?? null))) {
+      if (!Number(row.is_active)) return 'unchanged' as const;
+      await cx.execute("UPDATE calendar_accounts SET sync_status = 'pending', next_sync_at = NULL WHERE id = ? AND is_active = TRUE", [account.id]);
+      return 'again' as const;
+    }
     try { await assertFinalStep(cx, { userId: account.user_id, modules: ['calendar'] }); } catch (error) {
       if (isRefusal(error)) return 'refused' as const;
       throw error;
@@ -1022,7 +1043,7 @@ async function noteMissingLogin(account: Account, message: string) {
     return 'again' as const;
   }));
   if (noted === 'refused') return false;
-  if (noted === 'again') followUps.add(account.id);
+  if (noted === 'again') followUps.add(keyOf(account.id));
   publishCalendarChanged(account.user_id, account.id, 'status');
   return true;
 }
@@ -1044,7 +1065,7 @@ async function syncLocked(accountId: string, { userId, full, background = false 
       // Paused meanwhile (the account, Calendar, a restore): the sync stops and writes nothing.
       if (code === 'RESTORE_IN_PROGRESS' || code === 'MODULE_DISABLED' || code === 'CALENDAR_SYNC_PAUSED') return { skipped: true, reason: 'paused' };
       if (!code || !MISSING_LOGIN.has(code)) throw error;
-      if (!await noteMissingLogin(account, (error as ApiError).message)) return { skipped: true, reason: 'paused' };
+      if (!await noteMissingLogin(account, (error as ApiError).message, { seen: account, signal })) return { skipped: true, reason: 'paused' };
       return { skipped: true, reason: MISSING_LOGIN.get(code) };
     }
   }
@@ -1112,13 +1133,14 @@ async function syncLocked(accountId: string, { userId, full, background = false 
 // the mail account connected again only after it gave up asks for a new one
 // (followUps), started once it has ended.
 function syncCalendarAccount(accountId: string, { userId = null, reason = 'manual', full = false, pass }: SyncOptions = {}) {
-  const running = inFlight.get(accountId);
+  const key = keyOf(accountId);
+  const running = inFlight.get(key);
   if (running) return running;
   const run = runAccountSync(accountId, { userId, reason, full, pass }).finally(() => {
-    inFlight.delete(accountId);
-    if (followUps.delete(accountId)) syncCalendarAccountInBackground(accountId, { userId, reason: 'credentials' });
+    inFlight.delete(key);
+    if (followUps.delete(key)) syncCalendarAccountInBackground(accountId, { userId, reason: 'credentials' });
   });
-  inFlight.set(accountId, run);
+  inFlight.set(key, run);
   return run;
 }
 

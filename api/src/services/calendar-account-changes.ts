@@ -10,7 +10,7 @@ import * as calendarAccounts from './calendar-accounts';
 import * as calendarSync from './calendar-sync';
 import { withTransaction } from './transactions';
 import { assertFinalStep } from './final-step';
-import { accountSnapshot, lockUnchanged } from './account-identity';
+import { accountSnapshot, lockUnchanged, storedAccountId } from './account-identity';
 import { withPersonLock } from './person-lock';
 
 // Adding, changing and removing a calendar account: POST, PUT and DELETE
@@ -48,11 +48,11 @@ async function createCalendarAccount(userId: string, body: Input, actor: PolicyA
 }
 
 async function updateCalendarAccount(userId: string, id: string, body: Input) {
-  return withPersonLock(userId, () => updateNow(userId, id, body));
+  return withPersonLock(userId, async () => updateNow(userId, await storedAccountId('calendar', userId, id), body));
 }
 
 async function deleteCalendarAccount(userId: string, id: string, options: { actor?: PolicyActor; record?: (connection: SqlExecutor) => Promise<unknown> } = {}) {
-  return withPersonLock(userId, () => deleteNow(userId, id, options));
+  return withPersonLock(userId, async () => deleteNow(userId, await storedAccountId('calendar', userId, id), options));
 }
 
 // The mail account a linked calendar account takes its login from, as read now.

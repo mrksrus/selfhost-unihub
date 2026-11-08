@@ -4,7 +4,9 @@ import type { AdminClearModule, AdminDeleteResponse, AdminUserBackupsResponse } 
 import type { BinDeleteResponse, BinListResponse } from '../contracts/bin';
 import { defineRoutes } from '../http/route';
 import { clientError, notFound } from '../http/errors';
-import { confirmPassword } from '../security/reauthentication';
+import { confirmPasswordHash } from '../security/reauthentication';
+import { getAuthTokenFromRequest } from '../auth';
+import { asCaller } from '../services/caller-proof';
 import type { AuditDetails, AuditEntry } from '../services/audit';
 import { recordAudit, recordAuditIntent, settleAudit } from '../services/audit';
 import { assertPerson, assertPersonModule, personAccounts, personFromParam } from '../services/admin-path';
@@ -51,9 +53,12 @@ function change(handler: Handler, limit = 4096) {
   return { auth: 'admin' as const, permission: 'users.manage' as const, module: null, restoreSection: null, body: { limit },
     handler: async (req: Request, adminId: string, body: Body, res: ServerResponse) => {
       try {
-        const refused = await confirmPassword(adminId, body?.current_password, res);
-        if (refused) return refused;
-        return await handler(await asStored(req), adminId, body ?? {}, res);
+        const confirmed = await confirmPasswordHash(adminId, body?.current_password, res);
+        if ('refused' in confirmed) return confirmed.refused;
+        // The change may wait (the person's lock, rows); its final step asks
+        // again that the administrator is one, signed in, with this password.
+        return await asCaller({ userId: adminId, token: getAuthTokenFromRequest(req), admin: true, passwordHash: confirmed.passwordHash },
+          async () => handler(await asStored(req), adminId, body ?? {}, res));
       } catch (error) { return answer(error); }
     } };
 }

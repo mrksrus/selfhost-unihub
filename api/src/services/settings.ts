@@ -621,6 +621,8 @@ async function updateAdminPolicies(adminId: string, input: unknown, { req = null
     // The revision row is the lock between administrators saving at once.
     await cx.execute("INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES (?, '0')", [REVISION_KEY]);
     const revision = await policyRevision(cx, { lock: true });
+    // Once it is ours: the administrator still as their route proved them (caller-proof.ts).
+    await (require('./caller-proof') as typeof import('./caller-proof')).assertCaller(cx);
     const before = await loadPolicyLevels(cx);
     const after: PolicyLevel[] = before.map(level => new Map(level));
     const changed: { key: StoredPolicyKey; from: Value; to: Value }[] = [];

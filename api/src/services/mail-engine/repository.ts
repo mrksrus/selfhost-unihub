@@ -65,10 +65,9 @@ async function ensureMailbox({ userId, accountId, folderName, epoch = null, meta
     await cx.execute(`UPDATE mail_remote_mailboxes SET uidvalidity = ?, state = 'active', epoch_revision = epoch_revision + 1 WHERE id = ?`, [epoch, mailbox.id]);
   } else if (epoch !== null && mailbox.uidvalidity === null) {
     await cx.execute("UPDATE mail_remote_mailboxes SET uidvalidity = ?, state = 'active', epoch_revision = epoch_revision + 1 WHERE id = ?", [epoch, mailbox.id]);
-  } else if (epoch !== null && ['quarantined', 'missing', 'deleting'].includes(mailbox.state) && metadata.allowEpochChange !== false) {
+  } else if (epoch !== null && ['quarantined', 'missing'].includes(mailbox.state) && metadata.allowEpochChange !== false) {
     // Only a live SELECT (not a historical backfill) may lift mailbox quarantine
-    // or bring back a folder the server had stopped listing (or that a folder
-    // deletion without a known answer may have removed: mail-folder-delete.ts).
+    // or bring back a folder the server had stopped listing.
     await cx.execute("UPDATE mail_remote_mailboxes SET state = 'active', epoch_revision = epoch_revision + 1 WHERE id = ?", [mailbox.id]);
   }
   if (metadata.delimiter !== undefined || metadata.specialUse !== undefined || metadata.providerMailboxId !== undefined) {
@@ -81,17 +80,16 @@ async function ensureMailbox({ userId, accountId, folderName, epoch = null, meta
 // Called after a complete, successful LIST. A mailbox the server no longer
 // lists was deleted or renamed there: its occurrences stop counting as folder
 // membership (views and policy join active mailboxes only), but nothing is
-// deleted. ensureMailbox revives it if the folder is listed again. One whose
-// deletion went out without a known answer ('deleting') went, too.
+// deleted. ensureMailbox revives it if the folder is listed again.
 async function retireUnlistedMailboxes({ userId, accountId, listed }: { userId: string; accountId: string; listed: string[] }, cx: SqlExecutor = db) {
   if (!listed.length) throw new TypeError('A complete folder listing is required');
   const names = new Set(listed.map(pathName));
   const [known] = await cx.execute<(RowDataPacket & RemoteMailbox)[]>(`SELECT id, remote_name FROM mail_remote_mailboxes
-    WHERE user_id = ? AND mail_account_id = ? AND state IN ('active', 'deleting')`, [userId, accountId]);
+    WHERE user_id = ? AND mail_account_id = ? AND state = 'active'`, [userId, accountId]);
   const gone = known.filter(box => !names.has(box.remote_name));
   for (const box of gone)
     await cx.execute(`UPDATE mail_remote_mailboxes SET state = 'missing', epoch_revision = epoch_revision + 1
-      WHERE id = ? AND user_id = ? AND mail_account_id = ? AND state IN ('active', 'deleting')`, [box.id, userId, accountId]);
+      WHERE id = ? AND user_id = ? AND mail_account_id = ? AND state = 'active'`, [box.id, userId, accountId]);
   return gone.length;
 }
 // The provider address UniHub acts on (emails.remote_*) must name a copy the
