@@ -77,10 +77,15 @@ export function MailAccountModeSettings(props: Props) {
   const presetMode: Mode | null = preset && preset.value !== 'user_choice' ? (preset.value === 'sync' ? 'sync' : 'download') : null;
   const modeLock = (mode: Mode) => presetMode ? (presetMode === mode ? undefined : preset?.reason ?? undefined)
     : policyLock(policies[mode === 'sync' ? 'mail.mode.sync' : 'mail.mode.download']);
-  // "required" (mail.provider_delete) for new accounts waits for D39; only "forbidden" greys the choice here.
-  const deleteLock = policyLock(policies['mail.provider_delete']);
-  const { onModeChange, mode } = props;
+  // For a new account, "required" (mail.provider_delete) or the "download and delete" preset turns server deletion on and locks it.
+  const providerDelete = policies['mail.provider_delete'];
+  const requiredDelete = !!props.isNew && (providerDelete.value === 'required' || preset?.value === 'download_delete');
+  const deleteLock = requiredDelete
+    ? (providerDelete.value === 'required' ? providerDelete.reason : preset?.reason) ?? 'Your administrator requires new accounts to delete downloaded mail at the provider.'
+    : policyLock(providerDelete);
+  const { onModeChange, onDeleteChange, mode, deleteOnServer } = props;
   useEffect(() => { if (presetMode && mode !== presetMode) onModeChange(presetMode); }, [presetMode, mode, onModeChange]);
+  useEffect(() => { if (requiredDelete && mode === 'download' && !deleteOnServer) onDeleteChange(true); }, [requiredDelete, mode, deleteOnServer, onDeleteChange]);
 
   return <fieldset className="space-y-3">
     <legend className="mb-2 text-sm font-medium">How should UniHub handle this account?</legend>

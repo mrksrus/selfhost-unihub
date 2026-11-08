@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
 import { useBinActions } from '@/hooks/use-bin-actions';
+import { ACCOUNT_CHANGED, hasCode } from '@/lib/api-error';
 import {
   browserTimeZone, calendarApi, calendarQueryKeys, invalidateCalendarQueries,
   type CalendarAccount, type CalendarCalendar, type CalendarProvider,
@@ -25,6 +26,8 @@ export function useCalendarAccounts() {
   const bin = useBinActions('calendar');
   const refresh = () => { void invalidateCalendarQueries(client); };
   const failed = (title: string) => (error: Error) => toast({ title, description: error.message, variant: 'destructive' });
+  // 409 ACCOUNT_CHANGED wrote nothing: the server's sentence, and the accounts read again.
+  const failedOrChanged = (title: string) => (error: Error) => { if (hasCode(error, ACCOUNT_CHANGED)) refresh(); failed(title)(error); };
 
   const accountsQuery = useQuery({ queryKey: calendarQueryKeys.accounts, queryFn: ({ signal }) => calendarApi.fetchAccounts(signal) });
   const calendarsQuery = useQuery({ queryKey: calendarQueryKeys.calendars, queryFn: ({ signal }) => calendarApi.fetchCalendars(signal) });
@@ -52,7 +55,7 @@ export function useCalendarAccounts() {
   const deleteAccount = useMutation({
     mutationFn: (id: string) => calendarApi.deleteAccount(id),
     onSuccess: () => { refresh(); toast({ title: 'Account removed' }); },
-    onError: failed('Could not remove the account'),
+    onError: failedOrChanged('Could not remove the account'),
   });
 
   const syncAccount = useMutation({
@@ -68,7 +71,7 @@ export function useCalendarAccounts() {
       void client.invalidateQueries({ queryKey: ['mail-calendar'] });
       toast({ title: account.is_active ? 'Sync resumed' : 'Sync paused' });
     },
-    onError: failed('Could not change sync'),
+    onError: failedOrChanged('Could not change sync'),
   });
 
   const createCalendar = useMutation({

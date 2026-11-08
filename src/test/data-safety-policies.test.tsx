@@ -167,6 +167,27 @@ describe('policy greying', () => {
     expect(screen.getByRole('switch', { name: 'Calendar' })).toBeChecked();
   });
 
+  it('a calendar change refused because the mail account changed meanwhile shows the server\'s sentence and reads the link again', { timeout: 20_000 }, async () => {
+    const CHANGED = 'This account changed in the meantime. Try again.';
+    const account = { id: 'mail-a', email_address: 'a@example.com', provider: 'custom', is_active: true } as MailAccount;
+    const link = { enabled: true, account: { id: 'cal-a', provider: 'caldav', is_active: true, sync_status: 'ok', last_synced_at: null, provider_config: {} }, calendars: [], event_count: 3, provider: null };
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/policies/effective') return policiesAnswer();
+      if (path === '/mail/accounts/mail-a/calendar') return { data: { calendar: link } };
+      throw new Error(`unexpected GET ${path}`);
+    });
+    vi.mocked(api.put).mockResolvedValueOnce({ error: CHANGED, status: 409, code: 'ACCOUNT_CHANGED' } as never);
+    mountSignedIn(<MailCalendarSettings account={account} />);
+    const toggle = await screen.findByRole('switch', { name: 'Calendar' });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    const linkReads = () => vi.mocked(api.get).mock.calls.filter(([path]) => path === '/mail/accounts/mail-a/calendar').length;
+    const before = linkReads();
+    fireEvent.click(toggle);
+    fireEvent.click(await screen.findByRole('button', { name: 'Turn off' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Calendar not changed', description: CHANGED })));
+    await waitFor(() => expect(linkReads()).toBeGreaterThan(before));
+  });
+
   it('the linked calendar of a mail account follows accounts.remove and accounts.add', { timeout: 20_000 }, async () => {
     const REMOVE = 'Your administrator does not allow removing accounts.';
     const ADD = 'Your administrator does not allow adding accounts.';

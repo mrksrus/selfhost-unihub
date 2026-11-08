@@ -12,7 +12,7 @@ import {
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
-import { ApiError } from '@/lib/api-error';
+import { ACCOUNT_CHANGED, hasCode } from '@/lib/api-error';
 import { useModules } from '@/hooks/use-modules';
 import { usePolicy } from '@/hooks/use-policies';
 import { PolicyNote } from '@/components/ui/policy-note';
@@ -93,9 +93,9 @@ export function MailCalendarSettings({ account }: { account: MailAccount }) {
     },
     onError: (error: Error) => {
       // The link changed under the request (409): nothing was written; the current state is read again.
-      if (error instanceof ApiError && error.code === 'MAIL_CALENDAR_CHANGED') {
+      if (hasCode(error, 'MAIL_CALENDAR_CHANGED') || hasCode(error, ACCOUNT_CHANGED)) {
         void linkQuery.refetch();
-        toast({ title: 'Calendar not changed', description: 'This changed in the meantime. Try again.', variant: 'destructive' });
+        toast({ title: 'Calendar not changed', description: error.code === ACCOUNT_CHANGED ? error.message : 'This changed in the meantime. Try again.', variant: 'destructive' });
         return;
       }
       toast({ title: 'Calendar not changed', description: error.message, variant: 'destructive', duration: 10000 });
