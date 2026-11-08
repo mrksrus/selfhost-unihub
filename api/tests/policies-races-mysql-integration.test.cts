@@ -66,15 +66,16 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('the step never reached its pause')), 20000); })]); }
     finally { clearTimeout(timer); }
   };
-  // Holds the app's first statement containing `marker`, on the pool or on a
-  // connection taken from it, once it has answered, until `release()`.
-  function pauseAfter(marker: string) {
+  // Holds the app's statement containing `marker` (the first, or the
+  // `occurrence`-th), on the pool or on a connection taken from it, once it
+  // has answered, until `release()`.
+  function pauseAfter(marker: string, { occurrence = 1 } = {}) {
     const reached = deferred(), released = deferred();
-    let armed = true;
+    let seen = 0;
     type Execute = (this: unknown, sql: unknown, ...args: unknown[]) => Promise<unknown>;
     const holding = (original: Execute): Execute => async function (sql, ...args) {
       const result = await original.call(this, sql, ...args);
-      if (armed && String((sql as { sql?: string })?.sql ?? sql).includes(marker)) { armed = false; reached.resolve(); await released.promise; }
+      if (seen < occurrence && String((sql as { sql?: string })?.sql ?? sql).includes(marker) && ++seen === occurrence) { reached.resolve(); await released.promise; }
       return result;
     };
     const execute = pool.execute, getConnection = pool.getConnection;
@@ -482,5 +483,105 @@ test('a destructive step follows the rules in force when it acts, with an owner,
       await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
       await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
     }
+  });
+
+  // A restored CalDAV calendar of a mail account's address, not linked yet,
+  // with its own saved password, while that mail account is disconnected:
+  // every server write is refused, and a refusal must leave it as it is.
+  async function restoredServerCalendar(address: string) {
+    const mail = crypto.randomUUID(), account = crypto.randomUUID(), calendar = crypto.randomUUID();
+    const secret = encrypt('synthetic-calendar-password');
+    await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active, encrypted_password) VALUES (?, ?, ?, 'custom', 'download', FALSE, NULL)", [mail, users.alex, address]);
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, is_active, encrypted_password, base_url, provider_config)
+      VALUES (?, ?, 'caldav', ?, TRUE, ?, 'https://caldav.example.test/', '{"mailLinked":true}')`, [account, users.alex, address, secret]);
+    await pool.execute(`INSERT INTO calendar_calendars (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
+      VALUES (?, ?, ?, 'Restored', 'https://caldav.example.test/calendars/restored/', '#2563eb', TRUE, FALSE, FALSE, TRUE)`, [calendar, users.alex, account]);
+    return {
+      calendar,
+      unchanged: async (what: string) => {
+        const [[row]] = await pool.query<RowDataPacket[]>('SELECT mail_account_id, encrypted_password FROM calendar_accounts WHERE id = ?', [account]);
+        assert.deepEqual([what, row.mail_account_id, row.encrypted_password], [what, null, secret], 'still unlinked, with its password');
+      },
+      remove: async () => {
+        await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [account]);
+        await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+      },
+    };
+  }
+
+  await fromDefaults('S2b: a refused bin restore to a restored calendar leaves the calendar as it was', async () => {
+    const restored = await restoredServerCalendar('bin-restore@example.test');
+    const item = crypto.randomUUID(), uid = `${crypto.randomUUID()}@example.test`;
+    const ics = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:${uid}\r\nDTSTART:20300115T100000Z\r\nDTEND:20300115T110000Z\r\nSUMMARY:Synthetic\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`;
+    const payload = { provider: 'caldav', origin: null, event: { title: 'Synthetic', start_time: '2030-01-15 10:00:00', end_time: '2030-01-15 11:00:00' }, subtasks: [], attendees: [], task_order: [],
+      calendar: { id: restored.calendar, account_id: null, external_id: 'https://caldav.example.test/calendars/restored/', name: 'Restored' },
+      object: { href: 'https://caldav.example.test/calendars/restored/synthetic.ics', uid, ics }, occurrences: [] };
+    await pool.execute(`INSERT INTO bin_items (id, user_id, module, item_type, item_id, title, reason, payload, deleted_at, purge_after)
+      VALUES (?, ?, 'calendar', 'event', ?, 'Synthetic', 'deleted', ?, UTC_TIMESTAMP(), UTC_TIMESTAMP() + INTERVAL 30 DAY)`, [item, users.alex, crypto.randomUUID(), JSON.stringify(payload)]);
+    const reply = await alex.request('POST', `/api/bin/${item}/restore`, {});
+    assert.deepEqual([reply.status, reply.body.code], [409, 'MAIL_ACCOUNT_DISCONNECTED'], JSON.stringify(reply.body));
+    await restored.unchanged('bin restore');
+    assert.equal(await count('SELECT COUNT(*) AS count FROM bin_items WHERE id = ? AND restored_at IS NULL', [item]), 1, 'it stays in the bin');
+    await pool.execute('DELETE FROM bin_items WHERE id = ?', [item]);
+    await restored.remove();
+  });
+
+  await fromDefaults('S2c: a refused move to a restored calendar leaves the calendar and the event as they were', async () => {
+    const restored = await restoredServerCalendar('move@example.test');
+    const local = crypto.randomUUID(), list = crypto.randomUUID(), event = crypto.randomUUID();
+    await pool.execute("INSERT INTO calendar_accounts (id, user_id, provider, display_name) VALUES (?, ?, 'local', 'UniHub')", [local, users.alex]);
+    await pool.execute(`INSERT INTO calendar_calendars (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
+      VALUES (?, ?, ?, 'Errands', 'local-errands', '#2563eb', TRUE, FALSE, FALSE, FALSE)`, [list, users.alex, local]);
+    await pool.execute("INSERT INTO calendar_events (id, user_id, calendar_id, title, start_time, end_time) VALUES (?, ?, ?, 'Synthetic', '2030-01-15 10:00:00', '2030-01-15 11:00:00')", [event, users.alex, list]);
+    const reply = await alex.request('POST', `/api/calendar/events/${event}/move`, { calendar_id: restored.calendar });
+    assert.deepEqual([reply.status, reply.body.code], [409, 'MAIL_ACCOUNT_DISCONNECTED'], JSON.stringify(reply.body));
+    await restored.unchanged('move');
+    assert.deepEqual((await pool.query<RowDataPacket[]>('SELECT calendar_id FROM calendar_events WHERE id = ?', [event]))[0].map(row => row.calendar_id), [list], 'the event stays');
+    await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [local]);
+    await restored.remove();
+  });
+
+  // Over one batch (200) of contacts in alex's bin.
+  async function fillBin(items: number) {
+    const ids = Array.from({ length: items }, () => crypto.randomUUID());
+    await pool.query(`INSERT INTO bin_items (id, user_id, module, item_type, item_id, title, reason, payload, deleted_at, purge_after) VALUES ?`,
+      [ids.map((id, index) => [id, users.alex, 'contacts', 'contact', crypto.randomUUID(), 'Synthetic contact', 'deleted', '{}', new Date(Date.UTC(2030, 0, 1, 0, 0, index)), new Date(Date.UTC(2030, 1, 1))])]);
+    return ids;
+  }
+  const binLeft = () => count("SELECT COUNT(*) AS count FROM bin_items WHERE user_id = ? AND module = 'contacts'", [users.alex]);
+
+  await fromDefaults('Q1b: emptying the bin refused between batches answers how many items it already deleted', async () => {
+    await pool.execute("DELETE FROM bin_items WHERE user_id = ?", [users.alex]);
+    await fillBin(250);
+    // Held after the second batch's read, once the first batch is gone.
+    const pause = pauseAfter('SELECT * FROM bin_items WHERE user_id = ? AND restored_at IS NULL AND module IN', { occurrence: 2 });
+    const pending = alex.request('POST', '/api/bin/empty', { module: 'contacts' });
+    try {
+      await pause.reached();
+      await setPolicies({ 'bin.delete': 'forbidden' });
+      pause.release();
+      const reply = await pending;
+      const details = reply.body.details as FixtureValue;
+      assert.deepEqual([reply.status, reply.body.code, details?.policy, details?.deleted], [403, 'POLICY_FORBIDS', 'bin.delete', 200]);
+    } finally { pause.restore(); await pending; }
+    assert.equal(await binLeft(), 50, 'the second batch stays');
+    await setPolicies({ 'bin.delete': 'allowed' });
+    await pool.execute("DELETE FROM bin_items WHERE user_id = ?", [users.alex]);
+  });
+
+  await fromDefaults('Q1b: the administrator\'s emptying records each batch, so a failure on the second leaves the first one\'s count', async () => {
+    await pool.execute("DELETE FROM bin_items WHERE user_id = ?", [users.alex]);
+    await pool.execute("DELETE FROM audit_log WHERE action = 'admin.bin_emptied'");
+    await fillBin(250);
+    // The second batch's entry cannot be written: that batch rolls back.
+    await pool.query(`CREATE TRIGGER policy_races_second_batch BEFORE INSERT ON audit_log FOR EACH ROW
+      BEGIN IF NEW.action = 'admin.bin_emptied' AND (SELECT COUNT(*) FROM audit_log WHERE action = 'admin.bin_emptied') >= 1 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'synthetic audit outage'; END IF; END`);
+    try {
+      await call(admin, 'POST', `/api/admin/users/${users.alex}/bin/empty`, { module: 'contacts', current_password: password }, 500);
+    } finally { await pool.query('DROP TRIGGER policy_races_second_batch'); }
+    const [rows] = await pool.query<RowDataPacket[]>("SELECT details FROM audit_log WHERE action = 'admin.bin_emptied' AND target_user_id = ?", [users.alex]);
+    const details = rows.map(row => typeof row.details === 'string' ? JSON.parse(row.details) : row.details);
+    assert.deepEqual([rows.length, details[0]?.deleted, await binLeft()], [1, 200, 50], 'the entry names what was deleted, and only that');
+    await pool.execute("DELETE FROM bin_items WHERE user_id = ?", [users.alex]);
   });
 });
