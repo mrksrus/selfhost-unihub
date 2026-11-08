@@ -93,7 +93,8 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   still downloads and restores.
 - **Uploaded restore archives are removed seven days after the upload,**
   never while a restore validates or runs from one; before, they stayed until
-  deleted. Backups you made are never removed automatically.
+  deleted. After those seven days an upload can no longer be unlocked or
+  started; upload the backup again. Backups you made are never removed automatically.
 - **Backup and restore is a list of settings:** what to back up, "Include
   downloaded mail", what the backup holds and what it leaves out with counts,
   and the backups on this server. The

@@ -30,4 +30,9 @@ test('names unique per folder as Windows and macOS compare them', () => {
   assert.equal(names.take('Recordings', 'Caf\u00e9', '.wav'), 'Recordings/Caf\u00e9.wav');
   assert.equal(names.take('Recordings', 'Cafe\u0301', '.wav'), 'Recordings/Cafe\u0301 (2).wav');
   assert.equal(names.take('Other', 'Memo', '.wav'), 'Other/Memo.wav', 'another folder has its own names');
+  // Letters with more than one lower-case form, or an upper case of two letters.
+  assert.equal(names.take('Recordings', '\u03a3', '.wav'), 'Recordings/\u03a3.wav');
+  assert.equal(names.take('Recordings', '\u03c2', '.wav'), 'Recordings/\u03c2 (2).wav');
+  assert.equal(names.take('Recordings', 'Stra\u00dfe', '.wav'), 'Recordings/Stra\u00dfe.wav');
+  assert.equal(names.take('Recordings', 'STRASSE', '.wav'), 'Recordings/STRASSE (2).wav');
 });

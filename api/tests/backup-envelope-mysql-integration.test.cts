@@ -123,7 +123,10 @@ test('a user backup is an encrypted ZIP other programs open, with readable mail,
     await insert('mail_folders', { id: crypto.randomUUID(), user_id: users.source, slug: 'plain', display_name: 'Receipts', position: 8, is_system: 0, mail_account_id: accountId });
     // A subfolder named as a message of its parent is named, and two folders
     // whose portable names agree (R1 F1).
-    for (const [slug, display] of [['collide', 'Receipts/00001 2030-01-04 Same.eml'], ['workcolon', 'Work:Docs'], ['workquestion', 'Work?Docs']]) {
+    // And (R2-F1) two folders that share their first eight levels, and two
+    // folder records with the same name.
+    for (const [slug, display] of [['collide', 'Receipts/00001 2030-01-04 Same.eml'], ['workcolon', 'Work:Docs'], ['workquestion', 'Work?Docs'],
+      ['deep_i', 'A/B/C/D/E/F/G/H/I'], ['deep_j', 'A/B/C/D/E/F/G/H/J'], ['twin_1', 'Twin'], ['twin_2', 'Twin']]) {
       await insert('mail_folders', { id: crypto.randomUUID(), user_id: users.source, slug, display_name: display, position: 9, is_system: 0, mail_account_id: accountId });
     }
     const messages = [
@@ -136,6 +139,10 @@ test('a user backup is an encrypted ZIP other programs open, with readable mail,
       { folder: 'collide', subject: 'Child', received: '2030-01-07 08:00:00' },
       { folder: 'workcolon', subject: 'Colon', received: '2030-01-08 08:00:00' },
       { folder: 'workquestion', subject: 'Question', received: '2030-01-09 08:00:00' },
+      { folder: 'deep_i', subject: 'Deep I', received: '2030-01-10 08:00:00' },
+      { folder: 'deep_j', subject: 'Deep J', received: '2030-01-11 08:00:00' },
+      { folder: 'twin_1', subject: 'Twin one', received: '2030-01-12 08:00:00' },
+      { folder: 'twin_2', subject: 'Twin two', received: '2030-01-13 08:00:00' },
     ];
     const rawById = new Map<string, Buffer>();
     for (const [index, message] of messages.entries()) {
@@ -210,6 +217,21 @@ test('a user backup is an encrypted ZIP other programs open, with readable mail,
     assert.ok(byName.has('Mail/owner@example.test/Receipts/00002 2030-01-04 Same.eml'));
     assert.ok(byName.has('Mail/owner@example.test/Work_Docs/00001 2030-01-08 Colon.eml'));
     assert.ok(byName.has('Mail/owner@example.test/Work_Docs (2)/00001 2030-01-09 Question.eml'));
+    // Every source folder keeps a folder of its own: past eight levels the
+    // rest of the path is in the last folder's name, and two records with one
+    // name are two folders (R2-F1).
+    assert.ok(byName.has('Mail/owner@example.test/A/B/C/D/E/F/G/H - I/00001 2030-01-10 Deep I.eml'), [...byName.keys()].filter(name => name.includes('/A/')).join('\n'));
+    assert.ok(byName.has('Mail/owner@example.test/A/B/C/D/E/F/G/H - J/00001 2030-01-11 Deep J.eml'));
+    assert.ok(byName.has('Mail/owner@example.test/Twin/00001 2030-01-12 Twin one.eml'));
+    assert.ok(byName.has('Mail/owner@example.test/Twin (2)/00001 2030-01-13 Twin two.eml'));
+    const archived = JSON.parse(byName.get('UniHub restore data/backup.json')!.toString('utf8'));
+    const dirsBySlug = new Map<string, Set<string>>();
+    for (const file of archived.files.filter((item: FixtureValue) => item.kind === 'raw_email')) {
+      const slug = archived.data.emails.find((email: FixtureValue) => email.id === file.id).folder;
+      dirsBySlug.set(slug, new Set([...(dirsBySlug.get(slug) || []), path.posix.dirname(file.archive_path).normalize('NFC').toUpperCase()]));
+    }
+    assert.ok([...dirsBySlug.values()].every(dirs => dirs.size === 1), 'a source folder is one readable folder');
+    assert.equal(new Set([...dirsBySlug.values()].flatMap(dirs => [...dirs])).size, dirsBySlug.size, 'and no two share one');
     // No file has the name, as Windows and macOS compare names, of a folder another file is in.
     const folderNames = new Set(inner.flatMap(entry => entry.name.split('/').slice(0, -1).map((_, at, parts) => parts.slice(0, at + 1).join('/').normalize('NFC').toLowerCase())));
     assert.deepEqual(inner.filter(entry => folderNames.has(entry.name.normalize('NFC').toLowerCase())).map(entry => entry.name), []);
@@ -424,6 +446,98 @@ test('uploaded restore archives expire after seven days, never while a restore u
     // An expired upload can no longer start.
     assert.equal((await jobs.startRestoreJob(userId, created.validated.id)).status, 409);
     assert.equal(await jobs.cleanupExpiredRestoreArchives(), 0, 'a second pass finds nothing');
+  } finally {
+    if (owned) { const connection = await pool.getConnection(); try { await connection.query('SET FOREIGN_KEY_CHECKS=0'); const [tables] = await connection.query<RowDataPacket[]>('SHOW TABLES'); for (const row of tables) await connection.query('DROP TABLE ??', [Object.values(row)[0]]); } finally { await connection.query('SET FOREIGN_KEY_CHECKS=1'); connection.release(); } }
+    await pool.end(); await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('an uploaded archive past its seven days is not unlocked or started, atomically, also racing the sweep', { skip: !process.env.MYSQL_TEST_HOST, timeout: 300000 }, async () => {
+  const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
+  assert.match((process.env.MYSQL_TEST_DATABASE as string), /_test$/);
+  const settings = { host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306), database: process.env.MYSQL_TEST_DATABASE, user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD, timezone: 'Z' };
+  const pool = mysql.createPool({ ...settings, connectionLimit: 8 });
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-restore-deadline-'));
+  let owned = false;
+  try {
+    const [tables] = await pool.query<RowDataPacket[]>('SHOW TABLES'); assert.equal(tables.length, 0, 'Use an empty disposable test database'); owned = true;
+    const runtime = createBackupRuntime(directory, 'deadline-synthetic-key', pool);
+    await runtime('services/database').ensureSchema();
+    const userId = crypto.randomUUID();
+    await pool.execute('INSERT INTO users (id,email,password_hash,full_name) VALUES (?,?,?,?)', [userId, 'deadline@example.test', 'x', 'Deadline']);
+    const jobs = runtime('services/backup-restore-jobs');
+    const envelope = runtime('services/backup-envelope');
+    const passwordOf = (name: string) => `${name}-synthetic-password`;
+    // An envelope no key row names: it waits for its password.
+    const upload = async (name: string) => {
+      const inner = path.join(directory, `${name}-inner.zip`), outer = path.join(directory, `${name}.zip`);
+      await fs.writeFile(inner, handZip([{ name: 'UniHub restore data/manifest.json', data: Buffer.from('{}') }]));
+      await envelope.writeBackupEnvelope(inner, outer, { password: passwordOf(name), backupUuid: crypto.randomUUID() });
+      return jobs.createUploadedRestoreJob(userId, outer, {});
+    };
+    const deadline = (id: string, minutes: number) => pool.execute('UPDATE backup_restore_jobs SET expires_at = UTC_TIMESTAMP() + INTERVAL ? MINUTE WHERE id = ?', [minutes, id]);
+    const validated = (id: string) => pool.execute("UPDATE backup_restore_jobs SET status = 'validated', phase = 'validated' WHERE id = ?", [id]);
+    const row = async (id: string) => (await pool.execute<RowDataPacket[]>('SELECT status, archive_path, backup_uuid FROM backup_restore_jobs WHERE id = ?', [id]))[0][0];
+    const keys = async (uuid: string) => (await pool.execute<RowDataPacket[]>('SELECT 1 FROM backup_archive_keys WHERE backup_uuid = ?', [uuid]))[0].length;
+
+    // Before the deadline: unlock and start go through.
+    const early = await upload('early');
+    await deadline(early.id, 1);
+    assert.equal((await jobs.unlockRestoreJob(userId, early.id, passwordOf('early'))).error, undefined);
+    assert.equal(await keys(early.backup_uuid), 1);
+    const earlyStart = await upload('early-start');
+    await deadline(earlyStart.id, 1); await validated(earlyStart.id);
+    assert.equal((await jobs.startRestoreJob(userId, earlyStart.id)).error, undefined);
+
+    // After it, before any sweep: both are refused, and nothing changes.
+    const late = await upload('late');
+    await deadline(late.id, -1);
+    const refused = await jobs.unlockRestoreJob(userId, late.id, passwordOf('late'));
+    assert.deepEqual([refused.status, (await row(late.id)).status, await keys(late.backup_uuid)], [410, 'awaiting_password', 0]);
+    const lateStart = await upload('late-start');
+    await deadline(lateStart.id, -1); await validated(lateStart.id);
+    assert.equal((await jobs.startRestoreJob(userId, lateStart.id)).status, 410);
+    assert.equal((await row(lateStart.id)).status, 'validated');
+
+    // The job turns out to be past its deadline while an unlock or a start
+    // waits on its row (held here): the transition still sees it, and the
+    // sweep removes the upload afterwards. A check on the job as read before
+    // the transition would let them through.
+    for (const [name, act] of [
+      ['racing-unlock', (id: string) => jobs.unlockRestoreJob(userId, id, passwordOf('racing-unlock'))],
+      ['racing-start', (id: string) => jobs.startRestoreJob(userId, id)],
+    ] as const) {
+      const job = await upload(name);
+      await deadline(job.id, 1);
+      if (name === 'racing-start') await validated(job.id);
+      const holder = await mysql.createConnection(settings);
+      try {
+        await holder.beginTransaction();
+        await holder.execute('SELECT id FROM backup_restore_jobs WHERE id = ? FOR UPDATE', [job.id]);
+        const pending = act(job.id);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        // Well before the waiting statement began (it reads the clock once, as it starts).
+        await holder.execute('UPDATE backup_restore_jobs SET expires_at = UTC_TIMESTAMP() - INTERVAL 1 HOUR WHERE id = ?', [job.id]);
+        await holder.commit();
+        assert.equal((await pending).status, 410, name);
+      } finally {
+        await holder.end();
+      }
+      const { archive_path: archive, backup_uuid: uuid } = await row(job.id);
+      assert.equal(await keys(uuid), 0, `${name}: no key stored`);
+      assert.ok(await jobs.cleanupExpiredRestoreArchives() >= 1);
+      assert.deepEqual([(await row(job.id)).status, (await row(job.id)).archive_path, await fs.stat(archive).then(() => true, () => false)], ['expired', null, false], name);
+    }
+    // The unlocked and started jobs were not touched by the sweeps.
+    assert.notEqual((await row(early.id)).status, 'expired');
+    assert.notEqual((await row(earlyStart.id)).status, 'expired');
+    // Let the worker finish with them before the tables go.
+    const deadlineMs = Date.now() + 60000;
+    while (Date.now() < deadlineMs) {
+      const [busy] = await pool.execute<RowDataPacket[]>("SELECT id FROM backup_restore_jobs WHERE status IN ('uploaded', 'validating', 'queued', 'running')");
+      if (!busy.length) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
   } finally {
     if (owned) { const connection = await pool.getConnection(); try { await connection.query('SET FOREIGN_KEY_CHECKS=0'); const [tables] = await connection.query<RowDataPacket[]>('SHOW TABLES'); for (const row of tables) await connection.query('DROP TABLE ??', [Object.values(row)[0]]); } finally { await connection.query('SET FOREIGN_KEY_CHECKS=1'); connection.release(); } }
     await pool.end(); await fs.rm(directory, { recursive: true, force: true });

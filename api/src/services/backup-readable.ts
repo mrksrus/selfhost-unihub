@@ -75,7 +75,11 @@ function portableZipPath(value: unknown) {
 }
 
 interface PathNode { path: string; names: Map<string, string>; folders: Map<string, PathNode>; files: number }
-const folded = (name: string) => name.normalize('NFC').toLowerCase();
+// Names as case-insensitive file systems compare them, a little more
+// strictly: through upper case first, so letters with several lower-case
+// forms (Σ, σ, ς) or an upper-case form of two letters (ß, SS) meet, which
+// a plain lower-casing misses. A false match only adds "(2)".
+const folded = (name: string) => name.normalize('NFC').toUpperCase().toLowerCase().normalize('NFC');
 const pathNode = (path: string): PathNode => ({ path, names: new Map(), folders: new Map(), files: 0 });
 
 /**
@@ -162,18 +166,40 @@ function readableArchivePaths(data: Record<string, unknown>, files: readonly Arc
     .map(file => ({ file, email: emails.get(String(file.id))! }))
     .sort((a, b) => (parseDatetimeToMillis(a.email.received_at) ?? 0) - (parseDatetimeToMillis(b.email.received_at) ?? 0)
       || String(a.email.id).localeCompare(String(b.email.id)));
-  // Every folder first, by the source it stands for (account, then each
-  // level of the folder's own path), so folders keep their names and the
-  // messages take the names left in them.
+  // Every folder first, by the source it stands for, so folders keep their
+  // names and the messages take the names left in them. Each level is keyed
+  // by the account and the whole source path down to it, so shared parents
+  // are shared and nothing else is: a path deeper than MAIL_FOLDER_DEPTH
+  // folds its remaining levels into its last folder ("H - I"), keyed by the
+  // full path; folders of one account with the same path (different
+  // records) keep a folder each, the first by slug the path's own.
+  const MAIL_FOLDER_DEPTH = 8;
+  const sourceOf = (email: BackupRow) => {
+    const accountId = String(email.mail_account_id ?? '');
+    const slug = String(email.folder ?? '');
+    const parts = String(folders.get(slug)?.display_name || slug || 'Inbox').split('/').filter(part => part.trim());
+    return { accountId, slug, parts: parts.length ? parts : ['Inbox'] };
+  };
+  const pathKey = (accountId: string, parts: readonly string[]) => `${accountId}\0${parts.join('/')}`;
+  const slugsByPath = new Map<string, string[]>();
+  for (const { email } of messages) {
+    const { accountId, slug, parts } = sourceOf(email);
+    const slugs = slugsByPath.get(pathKey(accountId, parts)) || [];
+    if (!slugs.includes(slug)) slugs.push(slug);
+    slugsByPath.set(pathKey(accountId, parts), slugs.sort());
+  }
   const mailRoot = tree.folder(null, 'Mail');
   const folderOf = (email: BackupRow) => {
-    const accountId = String(email.mail_account_id ?? '');
+    const { accountId, slug, parts } = sourceOf(email);
     const account = accounts.get(accountId);
     let node = tree.folder(mailRoot, portableName(account?.email_address, { maxBytes: 64, fallback: 'Local mail' }), `account:${accountId}`);
-    const folder = folders.get(String(email.folder));
-    const parts = String(folder?.display_name || email.folder || 'Inbox').split('/').filter(part => part.trim()).slice(0, 8);
-    for (const [level, part] of (parts.length ? parts : ['Inbox']).entries()) {
-      node = tree.folder(node, portableName(part, { maxBytes: 64, fallback: 'Folder' }), `${accountId}\0${parts.slice(0, level + 1).join('/')}`);
+    const levels = parts.length <= MAIL_FOLDER_DEPTH ? parts : [...parts.slice(0, MAIL_FOLDER_DEPTH - 1), parts.slice(MAIL_FOLDER_DEPTH - 1).join(' - ')];
+    const own = pathKey(accountId, parts);
+    const shared = slugsByPath.get(own)!.indexOf(slug) > 0;
+    for (const [level, part] of levels.entries()) {
+      const last = level === levels.length - 1;
+      const identity = last ? `${own}${shared ? `\0slug:${slug}` : ''}` : pathKey(accountId, parts.slice(0, level + 1));
+      node = tree.folder(node, portableName(part, { maxBytes: 64, fallback: 'Folder' }), identity);
     }
     return node;
   };

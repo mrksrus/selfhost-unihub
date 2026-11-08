@@ -563,7 +563,7 @@ During mail restore:
 | Archive type | Retention |
 | --- | --- |
 | Generated backup | Until manually deleted |
-| Uploaded backup, not being validated or restored | Seven days after the upload |
+| Uploaded backup, not being validated or restored | Seven days after the upload; after that it can no longer be unlocked or started, and the hourly cleanup removes it |
 | Successful uploaded restore | Archive deleted after completion |
 | Restore-job history | Retained until manually deleted |
 

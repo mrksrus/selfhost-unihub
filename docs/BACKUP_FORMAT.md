@@ -71,7 +71,11 @@ part, and unique within a folder as Windows and macOS compare names (a second
 `Memo.wav` becomes `Memo (2).wav`). Files and subfolders of a folder share
 one set of names, so a message never takes the name a folder needs; two
 source folders whose portable names agree (`Work:Docs`, `Work?Docs`) become
-`Work_Docs` and `Work_Docs (2)`.
+`Work_Docs` and `Work_Docs (2)`. Names are compared through upper case, so
+`Σ`/`ς` and `ß`/`SS` count as one name. Every folder level stands for the
+whole source path down to it: a path deeper than eight levels keeps its first
+seven and puts the rest in the eighth folder's name (`H - I`), and two folder
+records with one name get a folder each.
 
 ZIP format 1 (before 0.28) keeps `manifest.json`, `checksums.json` and
 `data/backup.json` at the root and the files under `files/`. Readers decide
