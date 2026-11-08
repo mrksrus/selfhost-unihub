@@ -585,9 +585,11 @@ async function admitMove(userId: string, eventId: string, targetCalendarId: stri
   if (target.remote && !link && (merged.recurrence as string | null | undefined)) throw recurringMove();
 
   const sourceObjectId: string | null = link?.object.id ?? null;
-  // Both logins before anything is written, so a refusal changes nothing.
-  if (sourceObjectId) await calendarSync.resolveLogin(source!.remote!.account);
-  if (target.remote) await calendarSync.resolveLogin(target.remote.account);
+  // Both logins before anything is written, and without writing (no relink
+  // of a restored calendar), so a refusal changes nothing; the move's own
+  // requests link it.
+  if (sourceObjectId) await calendarSync.resolveLogin(source!.remote!.account, false, { write: false });
+  if (target.remote) await calendarSync.resolveLogin(target.remote.account, false, { write: false });
   // The version of the old copy the move may delete. A stored copy without
   // an ETag is read again: the same content gives its version; anything else
   // means the server has news, and the sync reads it first.
