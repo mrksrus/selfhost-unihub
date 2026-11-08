@@ -95,6 +95,26 @@ describe('Server settings → Policies', () => {
     expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Policies saved' }));
   });
 
+  // No longer an administrator (403 ADMIN_REQUIRED, caller-proof): nothing was saved; a word, the session read again, and out of the admin screens.
+  it('a save refused because the caller is no longer an administrator leaves the admin screen with a word', { timeout: 20_000 }, async () => {
+    vi.mocked(api.put).mockResolvedValueOnce({ error: 'Only an administrator can do this; nothing was changed.', status: 403, code: 'ADMIN_REQUIRED' } as never);
+    const retrySession = vi.fn(async () => {});
+    mountSignedIn(<Routes><Route path="/settings/admin/policies" element={<AdminPolicies />} /><Route path="/settings" element={<p>Settings home</p>} /></Routes>,
+      { user: ADMIN, path: '/settings/admin/policies', auth: { retrySession } });
+    const create = await screen.findByRole('combobox', { name: 'Creating backups' });
+    fireEvent.click(create);
+    fireEvent.click(await screen.findByRole('option', { name: 'Not allowed' }));
+    const bar = await screen.findByRole('region', { name: 'Unsaved changes' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Save changes…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Save the changed rules?' });
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "You're no longer an administrator." })));
+    expect(await screen.findByText('Settings home', {}, { timeout: 10_000 })).toBeInTheDocument();
+    expect(retrySession).toHaveBeenCalled();
+    expect(state.toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Policies saved' }));
+  });
+
   it('the administrator\'s password leaves the mutation cache once the save is answered', { timeout: 20_000 }, async () => {
     const client = testClient();
     mountSignedIn(<AdminPolicies />, { user: ADMIN, client });

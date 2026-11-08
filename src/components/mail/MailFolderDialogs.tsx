@@ -112,10 +112,10 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
         toast({ title: 'Folder partly deleted', description: [gone, left, copy].filter(Boolean).join(' '), variant: 'destructive', duration: 10000 });
         return;
       }
-      // An earlier attempt without an answer, and the server still lists the folder (409): nothing was sent; the folder stays.
-      if (hasCode(error, 'FOLDER_DELETE_UNCERTAIN')) {
+      // The folder was made again on the server after UniHub deleted it there (409): nothing was deleted now; another delete removes the new one.
+      if (hasCode(error, 'FOLDER_RECREATED')) {
         void invalidateMailQueries(queryClient);
-        toast({ title: 'Folder not deleted', description: `UniHub couldn't confirm the deletion on ${serverAddresses(slug)}; the folder is still there. Try again.`, variant: 'destructive', duration: 10000 });
+        toast({ title: 'Folder not deleted', description: `The folder was made again on ${serverAddresses(slug)} since you asked. Nothing was deleted; delete it again to remove the new one.`, variant: 'destructive', duration: 10000 });
         return;
       }
       // The mail server refused or could not be reached (502, in UniHub's words), or the account changed meanwhile (409): nothing was deleted.
