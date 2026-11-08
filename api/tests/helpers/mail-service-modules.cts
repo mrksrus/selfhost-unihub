@@ -13,8 +13,9 @@ const MAIL_ROUTE_MODULES = ['mail', 'mail-route-helpers', 'mail-folders', 'mail-
   .map(name => require.resolve(`../../dist/src/routes/${name}`))
   // Draft loading and sending live in a service the draft routes share with scheduled send;
   // the attachment route reads its file through mail-attachments (shared with download tickets);
-  // adding and changing an account through mail-account-changes (shared with the admin path).
-  .concat(['mail-drafts', 'mail-scheduled-send', 'mail-attachments', 'mail-account-changes'].map(name => require.resolve(`../../dist/src/services/${name}`)));
+  // adding and changing an account through mail-account-changes (shared with the admin path),
+  // whose final check opens its transaction through transactions and final-step on the stubbed database.
+  .concat(['mail-drafts', 'mail-scheduled-send', 'mail-attachments', 'mail-account-changes', 'transactions', 'final-step'].map(name => require.resolve(`../../dist/src/services/${name}`)));
 
 function evict(paths: FixtureValue) {
   const saved = new Map<string, NodeJS.Module | undefined>(paths.map((p: FixtureValue) => [p, require.cache[p]]));

@@ -191,18 +191,33 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
 
     // That relink raced with connecting the calendar of a newly added mail
     // account: the one just connected stays its calendar, and the restored
-    // one waits without using the mail login.
-    const connectedNow = crypto.randomUUID();
-    await connection.execute<ResultSetHeader>(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, provider_config, is_active, mail_account_id, created_at)
-      VALUES (?, ?, 'caldav', 'paused@example.test', '{"mailLinked":true}', TRUE, ?, UTC_TIMESTAMP() + INTERVAL 1 MINUTE)`, [connectedNow, paused.user, paused.mail]);
+    // one waits without using the mail login. Connected through the real
+    // connect (its discovery answered here), which unlinks the others in the
+    // transaction that writes it.
     // A restored subscription linked meanwhile too: unlinked, but not stopped.
     const subscription = crypto.randomUUID();
     await connection.execute<ResultSetHeader>(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, provider_config, is_active, mail_account_id)
       VALUES (?, ?, 'ics', 'paused@example.test', '{"mailLinked":true}', TRUE, ?)`, [subscription, paused.user, paused.mail]);
+    const caldavService = require('../dist/src/services/caldav') as FixtureValue;
     const stopped: FixtureValue[] = [], stopWork = calendarSync.stopCalendarAccountWork;
+    const find = caldavService.findCalDavServer, reconcile = calendarSync.reconcileCalendarList, inBackground = calendarSync.syncCalendarAccountInBackground;
+    const url = 'https://connected-now.example.test/dav/';
+    caldavService.findCalDavServer = async () => ({ server: { url, source: 'manual', label: 'Synthetic' }, discovery: { baseUrl: url, principalHref: '/principal/', calendars: [] }, credentialScope: { origin: 'https://connected-now.example.test' } });
+    (calendarSync as FixtureValue).reconcileCalendarList = async () => [];
+    (calendarSync as FixtureValue).syncCalendarAccountInBackground = () => undefined;
     calendarSync.stopCalendarAccountWork = (id, reason) => stopped.push([id, reason]);
-    try { await (require('../dist/src/services/calendar-accounts') as typeof import('../src/services/calendar-accounts')).keepMailCalendar(paused.user, paused.mail, connectedNow); }
-    finally { calendarSync.stopCalendarAccountWork = stopWork; }
+    let connectedNow: string;
+    try {
+      connectedNow = (await (require('../dist/src/services/calendar-accounts') as typeof import('../src/services/calendar-accounts')).connectCalDavAccount(
+        { userId: paused.user, emailAddress: 'paused@example.test', username: 'paused@example.test', password: 'synthetic-mail-password', mailAccountId: paused.mail },
+        { mail: { id: paused.mail } })).account.id;
+    } finally {
+      calendarSync.stopCalendarAccountWork = stopWork;
+      caldavService.findCalDavServer = find;
+      (calendarSync as FixtureValue).reconcileCalendarList = reconcile;
+      (calendarSync as FixtureValue).syncCalendarAccountInBackground = inBackground;
+    }
+    assert.equal((await calendarRow(connectedNow)).mail_account_id, paused.mail);
     assert.deepEqual(stopped, [[paused.calendarAccount, 'replaced']], 'Its running work, which read the mail login, stops');
     assert.equal((await calendarRow(subscription)).mail_account_id, null);
     await connection.execute<ResultSetHeader>('DELETE FROM calendar_accounts WHERE id = ?', [subscription]);

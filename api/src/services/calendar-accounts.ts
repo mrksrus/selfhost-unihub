@@ -127,25 +127,51 @@ async function writeCalDavAccount(cx: SqlExecutor, { userId, emailAddress, displ
   return accountId;
 }
 
-// How a connection is admitted (setMailCalendar): the policies it needs,
-// asked again in its transaction (an administrator's actor passes them), and
-// the account it replaces, removed in that same transaction.
+// A calendar account as a change saw it: the row it replaces must still be
+// this one (another connect may have taken it over for another mail account).
+interface ExpectedAccount { id: string; provider: string; mailAccountId: string | null; baseUrl: string | null; username: string | null }
+const expectedAccount = (row: AccountRow): ExpectedAccount => ({ id: row.id, provider: row.provider, mailAccountId: row.mail_account_id ?? null, baseUrl: row.base_url ?? null, username: row.username ?? null });
+const sameAccount = (row: AccountRow | undefined, expected: ExpectedAccount) => !!row && row.provider === expected.provider
+  && (row.mail_account_id ?? null) === expected.mailAccountId && (row.base_url ?? null) === expected.baseUrl && (row.username ?? null) === expected.username;
+
+// How a connection is admitted: the policies it needs, asked again in its
+// transaction (an administrator's actor passes them); for a mail account's
+// calendar, that mail account and the accounts linked to it as the change
+// saw them (`linked`; omitted for a new mail account, whose other links a
+// sync may have made and which are undone); and the account it replaces.
 interface Admission {
   actor?: PolicyActor;
   policies?: readonly PolicyKey[];
-  replaces?: string | null;
+  mail?: { id: string; linked?: readonly string[] };
+  replaces?: ExpectedAccount | null;
 }
 
+const changedMeanwhile = () => fail('The calendar of this mail account changed meanwhile. Try again.', 409, 'MAIL_CALENDAR_CHANGED');
+
 /**
- * Writes a new or taken-over calendar account in one transaction: under the
- * rows of the account taken over (`existing`, still as discovery found it,
- * or 409 MAIL_CALENDAR_CHANGED) and of the one it replaces, the final check
+ * Writes a new or taken-over calendar account in one transaction. Locked
+ * first: the mail account (shared, so it is not purged meanwhile) and the
+ * accounts linked to it, then the account taken over (`existing`) and the
+ * one replaced, by id. Each must still be as the change saw it, or 409
+ * MAIL_CALENDAR_CHANGED and nothing is written: the linked set, the account
+ * taken over (as discovery found it) and the one replaced (id, provider,
+ * mail link, server and login; one gone is drift too). Then the final check
  * (final-step.ts: the policies, Calendar on and not being restored), the
- * write, and the replaced account's removal. A refusal changes neither.
+ * write, the replaced account's removal, and any other account linked to
+ * the mail account unlinked. A refusal changes nothing.
  */
 async function commitAccount(userId: string, existing: { id: string; baseUrl: string; mailAccountId: string | null } | null, admission: Admission, write: (cx: SqlExecutor) => Promise<string>) {
   return withTransaction(async cx => {
-    const ids = [...new Set([existing?.id, admission.replaces].filter((id): id is string => Boolean(id)))].sort();
+    let linkedNow: (RowDataPacket & { id: string; provider: string })[] = [];
+    if (admission.mail) {
+      const [[mailRow]] = await cx.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LOCK IN SHARE MODE', [admission.mail.id, userId]);
+      if (!mailRow) throw fail('Account not found', 404);
+      [linkedNow] = await cx.execute<(RowDataPacket & { id: string; provider: string })[]>(
+        'SELECT id, provider FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? ORDER BY id FOR UPDATE', [userId, admission.mail.id]);
+      const expected = admission.mail.linked;
+      if (expected && [...expected].sort().join() !== linkedNow.map(row => row.id).join()) throw changedMeanwhile();
+    }
+    const ids = [...new Set([existing?.id, admission.replaces?.id].filter((id): id is string => Boolean(id)))].sort();
     const locked = new Map<string, AccountRow>();
     for (const id of ids) {
       const [[row]] = await cx.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [id, userId]);
@@ -153,24 +179,32 @@ async function commitAccount(userId: string, existing: { id: string; baseUrl: st
     }
     if (existing) {
       const now = locked.get(existing.id);
-      if (!now || now.provider !== 'caldav' || now.base_url !== existing.baseUrl || (now.mail_account_id ?? null) !== existing.mailAccountId) {
-        throw fail('The calendar of this mail account changed meanwhile. Try again.', 409, 'MAIL_CALENDAR_CHANGED');
-      }
+      if (!now || now.provider !== 'caldav' || now.base_url !== existing.baseUrl || (now.mail_account_id ?? null) !== existing.mailAccountId) throw changedMeanwhile();
     }
+    if (admission.replaces && !sameAccount(locked.get(admission.replaces.id), admission.replaces)) throw changedMeanwhile();
     await assertFinalStep(cx, { userId, policies: admission.policies ?? [], actor: admission.actor, modules: ['calendar'] });
     const accountId = await write(cx);
-    const replaced = admission.replaces && admission.replaces !== accountId && locked.has(admission.replaces) ? admission.replaces : null;
+    const replaced = admission.replaces && admission.replaces.id !== accountId ? admission.replaces.id : null;
     if (replaced) {
       const [calendars] = await cx.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM calendar_calendars WHERE account_id = ? AND user_id = ?', [replaced, userId]);
       await calendarSync.deleteCalendarsWithEvents(cx, userId, calendars.map(row => row.id));
       await cx.execute('DELETE FROM calendar_accounts WHERE id = ? AND user_id = ?', [replaced, userId]);
     }
-    return { accountId, replaced };
+    // The mail account's calendar is the one just written: another linked
+    // to it (one a sync linked by address meanwhile) waits again, unlinked.
+    const unlinked = linkedNow.filter(row => row.id !== accountId && row.id !== replaced);
+    for (const other of unlinked) await cx.execute('UPDATE calendar_accounts SET mail_account_id = NULL WHERE id = ? AND user_id = ?', [other.id, userId]);
+    return { accountId, replaced, unlinked };
   });
 }
 
-async function committedAccount(userId: string, { accountId, replaced }: { accountId: string; replaced: string | null }) {
+async function committedAccount(userId: string, { accountId, replaced, unlinked }: Awaited<ReturnType<typeof commitAccount>>) {
   if (replaced) publishCalendarChanged(userId, replaced, 'sync');
+  // The running work of an unlinked CalDAV one read the mail login; a subscription uses none.
+  for (const other of unlinked) {
+    if (other.provider === 'caldav') calendarSync.stopCalendarAccountWork(other.id, 'replaced');
+    publishCalendarChanged(userId, other.id, 'status');
+  }
   const [rows] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM calendar_accounts WHERE id = ?', [accountId]);
   return rows[0];
 }
@@ -410,20 +444,6 @@ async function restoredCalendarMail(account: AccountRow) {
   return null;
 }
 
-// A new mail account's calendar is the one just connected for it. A restored
-// one that a calendar sync linked to it by address meanwhile is unlinked again
-// (it then waits, like when the sync came later), and the running work of a
-// CalDAV one, which read the mail login, is stopped: a disconnect would no
-// longer find it.
-async function keepMailCalendar(userId: string, mailAccountId: string, accountId: string) {
-  const [others] = await db.execute<(RowDataPacket & { id: string; provider: string })[]>('SELECT id, provider FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? AND id <> ?', [userId, mailAccountId, accountId]);
-  for (const other of others) {
-    await db.execute('UPDATE calendar_accounts SET mail_account_id = NULL WHERE id = ? AND mail_account_id = ?', [other.id, mailAccountId]);
-    // A subscription uses no mail login and goes on.
-    if (other.provider === 'caldav') calendarSync.stopCalendarAccountWork(other.id, 'replaced');
-  }
-}
-
 async function describeLink(userId: string, mail: MailRow, account: AccountRow | null) {
   const provider = caldav.matchCalendarProvider({ emailAddress: mail.email_address, imapHost: mail.imap_host });
   const base = {
@@ -497,8 +517,9 @@ async function setMailCalendar(userId: string, mailAccountId: string, { enabled,
   await assertAllowed(userId, policies, actor);
 
   if (!enabled) {
-    // A restored one not linked yet goes as it is.
-    if (seen) await removeCalendarAccount(userId, seen.id, { actor });
+    // A restored one not linked yet goes as it is; one another connect took
+    // over for another mail account meanwhile stays (409).
+    if (seen) await removeCalendarAccount(userId, seen.id, { actor, expectMail: [seen.mail_account_id ?? null, mail.id] });
     return describeLink(userId, mail, null);
   }
 
@@ -535,7 +556,7 @@ async function setMailCalendar(userId: string, mailAccountId: string, { enabled,
     caldavUrl: manualUrl || null,
     mailAccountId: mail.id,
     timeZone,
-  }, { actor, policies, replaces: seen?.id ?? null });
+  }, { actor, policies, mail: { id: mail.id, linked: seen?.mail_account_id === mail.id ? [seen.id] : [] }, replaces: seen ? expectedAccount(seen) : null });
   const [rows] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM calendar_accounts WHERE id = ?', [connected.account.id]);
   return { ...await describeLink(userId, mail, rows[0]), server: connected.server || null, hint: connected.hint || null };
 }
@@ -549,7 +570,6 @@ export {
   linkedCalendarAccount,
   relinkRestoredCalendar,
   restoredCalendarMail,
-  keepMailCalendar,
   restoredMailCalendar,
   loadSerializedAccount,
 };

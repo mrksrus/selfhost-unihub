@@ -570,6 +570,17 @@ calendar's own password, and connecting a calendar account, together with
 removing the one a new address replaces, each commit in one transaction
 after Calendar's switch and restore lock (and, for a mail account's
 calendar, its policies) are asked again: a refusal changes neither account.
+Such a change acts only on the accounts it saw: under their rows the mail
+account's linked calendars, the account it takes over and the one it
+replaces or turns off must still be as read (link, server, login), or it
+answers `409 MAIL_CALENDAR_CHANGED` and writes nothing, so a calendar
+another mail account took over meanwhile is never removed. Reading a mail
+account's calendar writes nothing (a restored one shows `link_pending`).
+The sync's login drops a link to a deleted mail account, and notes a
+missing login, only under Calendar's check; refused, the sync pauses and
+the row stays. Saving a mail or calendar account's password or settings,
+and adding a mail account, ask again for the module (and for mail, its
+mode's policies and `accounts.add`) in the transaction that writes them.
 The bin's purge skips a module that is off or being restored. Emptying the bin is refused
 between batches with `403 POLICY_FORBIDS` and the number already deleted as
 `details.deleted`. A backup younger than its minimum is refused under the

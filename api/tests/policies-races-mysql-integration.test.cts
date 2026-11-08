@@ -939,4 +939,230 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
     await restored.remove();
   });
+
+  // Review r5: a change acts only on the accounts it saw, and every write of
+  // a calendar link, a stored password or an account's removal is checked
+  // again where it is written.
+  async function mailOf(address: string, username: string | null = null) {
+    const id = crypto.randomUUID();
+    await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, username, provider, sync_mode, is_active, encrypted_password) VALUES (?, ?, ?, ?, 'custom', 'download', TRUE, ?)",
+      [id, users.alex, address, username, encrypt('synthetic-mail-password')]);
+    return id;
+  }
+  // A mail account's calendar at its manual address, with one event and a subtask of UniHub's own.
+  async function linkedAt(mail: string, address: string, url: string) {
+    const account = crypto.randomUUID(), calendar = crypto.randomUUID(), event = crypto.randomUUID(), subtask = crypto.randomUUID();
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, username, is_active, mail_account_id, base_url, provider_config) VALUES (?, ?, 'caldav', ?, ?, TRUE, ?, ?, ?)`,
+      [account, users.alex, address, address, mail, url, JSON.stringify({ mailLinked: true, server: { url, source: 'manual' } })]);
+    await pool.execute(`INSERT INTO calendar_calendars (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
+      VALUES (?, ?, ?, 'Work', ?, '#2563eb', TRUE, FALSE, FALSE, TRUE)`, [calendar, users.alex, account, `${url}work/`]);
+    await pool.execute("INSERT INTO calendar_events (id, user_id, calendar_id, title, start_time, end_time) VALUES (?, ?, ?, 'Synthetic', '2030-01-15 10:00:00', '2030-01-15 11:00:00')", [event, users.alex, calendar]);
+    await pool.execute("INSERT INTO calendar_event_subtasks (id, event_id, user_id, title, is_done, position) VALUES (?, ?, ?, 'Only step', FALSE, 0)", [subtask, event, users.alex]);
+    return { account, event, subtask };
+  }
+  const linksOf = async (mail: string) => (await pool.query<RowDataPacket[]>('SELECT id FROM calendar_accounts WHERE mail_account_id = ? ORDER BY id', [mail]))[0].map(row => row.id);
+  // Discovery answers each address after its own gate opens (none: at once).
+  function discoveryHeld() {
+    const caldav = require('../dist/src/services/caldav') as FixtureValue;
+    const calendarSync = require('../dist/src/services/calendar-sync') as FixtureValue;
+    const find = caldav.findCalDavServer, reconcile = calendarSync.reconcileCalendarList, inBackground = calendarSync.syncCalendarAccountInBackground;
+    const gates = new Map<string, { reached: ReturnType<typeof deferred>; go: ReturnType<typeof deferred> }>();
+    caldav.findCalDavServer = async ({ explicitUrl }: { explicitUrl: string }) => {
+      const gate = gates.get(explicitUrl);
+      if (gate) { gate.reached.resolve(); await gate.go.promise; }
+      return { server: { url: explicitUrl, source: 'manual', label: 'Synthetic' }, discovery: { baseUrl: explicitUrl, principalHref: '/principal/', calendars: [] }, credentialScope: { origin: new URL(explicitUrl).origin } };
+    };
+    calendarSync.reconcileCalendarList = async () => [];
+    calendarSync.syncCalendarAccountInBackground = () => undefined;
+    return {
+      hold: (url: string) => { const gate = { reached: deferred(), go: deferred() }; gates.set(url, gate); return { reached: () => within(gate.reached.promise), go: () => gate.go.resolve() }; },
+      restore: () => { for (const gate of gates.values()) gate.go.resolve(); caldav.findCalDavServer = find; calendarSync.reconcileCalendarList = reconcile; calendarSync.syncCalendarAccountInBackground = inBackground; },
+    };
+  }
+
+  await fromDefaults('S1 r5: a replacement refuses once another connect took the old calendar over, which keeps its events and subtasks', async () => {
+    const address = 'replace-taken@example.test', oldUrl = 'https://old-taken.example.test/dav/', newUrl = 'https://new-taken.example.test/dav/';
+    const first = await mailOf(address), second = await mailOf('second-taken@example.test', address);
+    const old = await linkedAt(first, address, oldUrl);
+    const discovery = discoveryHeld();
+    const held = discovery.hold(newUrl);
+    let pending: ReturnType<typeof alex.request> | undefined;
+    try {
+      pending = alex.request('PUT', `/api/mail/accounts/${first}/calendar`, { enabled: true, caldav_url: newUrl });
+      await held.reached();
+      // The second mail account, with the same login, takes the old calendar over in place.
+      await call(alex, 'PUT', `/api/mail/accounts/${second}/calendar`, { enabled: true, caldav_url: oldUrl });
+      assert.deepEqual(await linksOf(second), [old.account]);
+      held.go();
+      const reply = await pending;
+      assert.deepEqual([reply.status, reply.body.code], [409, 'MAIL_CALENDAR_CHANGED'], JSON.stringify(reply.body));
+    } finally { discovery.restore(); await pending; }
+    assert.deepEqual(await linksOf(second), [old.account], 'still the second mail account\'s calendar');
+    assert.equal(await count('SELECT COUNT(*) AS count FROM calendar_events WHERE id = ?', [old.event]), 1, 'its event stays');
+    assert.equal(await count('SELECT COUNT(*) AS count FROM calendar_event_subtasks WHERE id = ?', [old.subtask]), 1, 'and its subtask');
+    assert.deepEqual(await linksOf(first), [], 'nothing was connected for the first one');
+    await pool.execute('DELETE FROM calendar_accounts WHERE user_id = ? AND (mail_account_id IN (?, ?) OR account_email = ?)', [users.alex, first, second, address]);
+    await pool.execute('DELETE FROM mail_accounts WHERE id IN (?, ?)', [first, second]);
+  });
+
+  await fromDefaults('S1 r5: of two replacements at once, the later one refuses, and the mail account keeps one calendar', async () => {
+    const address = 'replace-twice@example.test', oldUrl = 'https://old-twice.example.test/dav/';
+    const urls = ['https://one-twice.example.test/dav/', 'https://two-twice.example.test/dav/'];
+    const mail = await mailOf(address);
+    await linkedAt(mail, address, oldUrl);
+    const discovery = discoveryHeld();
+    const held = urls.map(url => discovery.hold(url));
+    const pending: ReturnType<typeof alex.request>[] = [];
+    try {
+      for (const [index, url] of urls.entries()) {
+        pending.push(alex.request('PUT', `/api/mail/accounts/${mail}/calendar`, { enabled: true, caldav_url: url }));
+        await held[index].reached();
+      }
+      held[0].go();
+      assert.equal((await pending[0]).status, 200, JSON.stringify((await pending[0]).body));
+      held[1].go();
+      const later = await pending[1];
+      assert.deepEqual([later.status, later.body.code], [409, 'MAIL_CALENDAR_CHANGED'], JSON.stringify(later.body));
+    } finally { discovery.restore(); await Promise.all(pending); }
+    const links = await linksOf(mail);
+    assert.equal(links.length, 1, 'one calendar linked');
+    assert.deepEqual((await pool.query<RowDataPacket[]>('SELECT base_url FROM calendar_accounts WHERE id = ?', [links[0]]))[0].map(row => row.base_url), [urls[0]]);
+    await pool.execute('DELETE FROM calendar_accounts WHERE user_id = ? AND account_email = ?', [users.alex, address]);
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('S1 r5: turning a mail calendar off keeps it once another mail account took it over', async () => {
+    const address = 'off-taken@example.test', url = 'https://off-taken.example.test/dav/';
+    const first = await mailOf(address), second = await mailOf('second-off@example.test', address);
+    const old = await linkedAt(first, address, url);
+    // Held once the request saw the first one's calendar.
+    const pause = pauseAfter('SELECT * FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? ORDER BY created_at ASC LIMIT 1');
+    const pending = alex.request('PUT', `/api/mail/accounts/${first}/calendar`, { enabled: false });
+    try {
+      await pause.reached();
+      await pool.execute('UPDATE calendar_accounts SET mail_account_id = ? WHERE id = ?', [second, old.account]);
+      pause.release();
+      const reply = await pending;
+      assert.deepEqual([reply.status, reply.body.code], [409, 'MAIL_CALENDAR_CHANGED'], JSON.stringify(reply.body));
+    } finally { pause.restore(); await pending; }
+    assert.deepEqual(await linksOf(second), [old.account]);
+    assert.equal(await count('SELECT COUNT(*) AS count FROM calendar_event_subtasks WHERE id = ?', [old.subtask]), 1);
+    await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [old.account]);
+    await pool.execute('DELETE FROM mail_accounts WHERE id IN (?, ?)', [first, second]);
+  });
+
+  await fromDefaults('S2 r5: a sync dropping a link to a deleted mail account changes nothing once a Calendar restore is admitted', async () => {
+    const caldav = require('../dist/src/services/caldav') as FixtureValue;
+    const calendarSync = require('../dist/src/services/calendar-sync') as typeof import('../src/services/calendar-sync');
+    const account = crypto.randomUUID(), restore = crypto.randomUUID();
+    const secret = encrypt('synthetic-calendar-password');
+    // Linked to a mail account that no longer exists.
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, is_active, encrypted_password, base_url, mail_account_id, provider_config, sync_status)
+      VALUES (?, ?, 'caldav', 'dangling@example.test', TRUE, ?, 'https://caldav.example.test/', ?, '{"mailLinked":true}', 'idle')`, [account, users.alex, secret, crypto.randomUUID()]);
+    const rowOf = async () => (await pool.query<RowDataPacket[]>('SELECT mail_account_id, encrypted_password, sync_status, sync_error FROM calendar_accounts WHERE id = ?', [account]))[0][0];
+    const before = await rowOf();
+    const listCalendars = caldav.listCalendars;
+    caldav.listCalendars = async () => { throw new Error('synthetic: no calendar server'); };
+    const pause = pauseAfter('SELECT ca.provider, ca.provider_config, ca.account_email');
+    const pending = calendarSync.syncCalendarAccount(account, { userId: users.alex }).then(result => result, (error: Error) => ({ error: error.message }));
+    try {
+      await pause.reached();
+      await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', '["calendar"]')`, [restore, users.alex]);
+      pause.release();
+      assert.deepEqual(await pending, { skipped: true, reason: 'paused' });
+    } finally { pause.restore(); await pending; caldav.listCalendars = listCalendars; }
+    assert.deepEqual(await rowOf(), before, 'link, password and status as they were');
+    await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
+    await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [account]);
+  });
+
+  await fromDefaults('Q3 r5: a mail calendar change that waits too long for a lock answers 503 CHANGE_IN_PROGRESS and changes nothing', async () => {
+    const address = 'lock-wait@example.test', url = 'https://lock-wait.example.test/dav/';
+    const mail = await mailOf(address);
+    const linked = await linkedAt(mail, address, url);
+    await pool.query("INSERT INTO system_settings (setting_key, setting_value) VALUES ('policy_revision', '0') ON DUPLICATE KEY UPDATE setting_key = setting_key");
+    // Another change holds the rules revision row.
+    const blocker = await pool.getConnection();
+    await blocker.beginTransaction();
+    await blocker.query("SELECT setting_value FROM system_settings WHERE setting_key = 'policy_revision' FOR UPDATE");
+    // The app's transactions wait one second here, not fifty.
+    const getConnection = pool.getConnection;
+    pool.getConnection = async function (this: typeof pool) {
+      const cx = await getConnection.call(this) as PoolConnection;
+      await cx.query('SET SESSION innodb_lock_wait_timeout = 1');
+      const release = cx.release;
+      cx.release = function (this: PoolConnection) {
+        cx.release = release;
+        void cx.query('SET SESSION innodb_lock_wait_timeout = 50').finally(() => release.call(cx));
+      };
+      return cx;
+    } as typeof pool.getConnection;
+    try {
+      const reply = await alex.request('PUT', `/api/mail/accounts/${mail}/calendar`, { enabled: false });
+      assert.deepEqual([reply.status, reply.body.code], [503, 'CHANGE_IN_PROGRESS'], JSON.stringify(reply.body));
+    } finally {
+      pool.getConnection = getConnection;
+      await blocker.rollback();
+      blocker.release();
+    }
+    assert.deepEqual(await linksOf(mail), [linked.account], 'the calendar stays');
+    await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [linked.account]);
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('sweep r5: a calendar account\'s new password is not saved once a Calendar restore is admitted', async () => {
+    const calendarSync = require('../dist/src/services/calendar-sync') as FixtureValue;
+    const account = crypto.randomUUID(), restore = crypto.randomUUID();
+    const secret = encrypt('synthetic-calendar-password');
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, username, is_active, encrypted_password, base_url, provider_config)
+      VALUES (?, ?, 'caldav', 'own-login@example.test', 'own-login', FALSE, ?, 'https://caldav.example.test/', '{}')`, [account, users.alex, secret]);
+    const inBackground = calendarSync.syncCalendarAccountInBackground;
+    calendarSync.syncCalendarAccountInBackground = () => undefined;
+    const pause = pauseAfter('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?');
+    const pending = alex.request('PUT', `/api/calendar/accounts/${account}`, { password: 'synthetic-new-password' });
+    try {
+      await pause.reached();
+      await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', '["calendar"]')`, [restore, users.alex]);
+      pause.release();
+      const reply = await pending;
+      assert.deepEqual([reply.status, reply.body.code], [409, 'RESTORE_IN_PROGRESS'], JSON.stringify(reply.body));
+    } finally { pause.restore(); await pending; calendarSync.syncCalendarAccountInBackground = inBackground; }
+    const [[row]] = await pool.query<RowDataPacket[]>('SELECT encrypted_password, is_active FROM calendar_accounts WHERE id = ?', [account]);
+    assert.deepEqual([row.encrypted_password, Number(row.is_active)], [secret, 0], 'its password and pause as they were');
+    await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
+    await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [account]);
+  });
+
+  await fromDefaults('sweep r5: a mail account is neither changed nor added once a Mail restore is admitted', async () => {
+    const mail = await mailOf('settings-change@example.test');
+    for (const what of ['change', 'add'] as const) {
+      const restore = crypto.randomUUID();
+      const mailService = require('../dist/src/services/mail') as FixtureValue;
+      const testImap = mailService.testImapConnection, hostPolicy = mailService.validateMailHostPolicy;
+      const reached = deferred(), go = deferred();
+      // A change is held after it read the account; an addition at its login test, which succeeds.
+      const pause = what === 'change' ? pauseAfter('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?') : null;
+      // The synthetic hosts do not resolve: the host policy and the login test answer here.
+      if (what === 'add') {
+        mailService.validateMailHostPolicy = async () => ({});
+        mailService.testImapConnection = async () => { reached.resolve(); await go.promise; return { success: true }; };
+      }
+      const before = await count('SELECT COUNT(*) AS count FROM mail_accounts WHERE user_id = ?', [users.alex]);
+      const pending = what === 'change'
+        ? alex.request('PUT', `/api/mail/accounts/${mail}`, { display_name: 'Changed meanwhile' })
+        : alex.request('POST', '/api/mail/accounts', { email_address: 'added-meanwhile@mail.example.test', provider: 'custom', encrypted_password: 'synthetic-mail-password',
+          imap_host: 'imap.mail.example.test', imap_port: 993, smtp_host: 'smtp.mail.example.test', smtp_port: 465 });
+      try {
+        if (pause) await pause.reached(); else await within(reached.promise);
+        await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', '["mail"]')`, [restore, users.alex]);
+        if (pause) pause.release(); else go.resolve();
+        const reply = await pending;
+        assert.deepEqual([what, reply.status, reply.body.code], [what, 409, 'RESTORE_IN_PROGRESS'], JSON.stringify(reply.body));
+      } finally { pause?.restore(); go.resolve(); mailService.testImapConnection = testImap; mailService.validateMailHostPolicy = hostPolicy; await pending; }
+      assert.equal(await count('SELECT COUNT(*) AS count FROM mail_accounts WHERE user_id = ?', [users.alex]), before, `${what}: no account added`);
+      assert.deepEqual((await pool.query<RowDataPacket[]>('SELECT display_name FROM mail_accounts WHERE id = ?', [mail]))[0].map(row => row.display_name), [null], `${what}: unchanged`);
+      await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
+    }
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
 });

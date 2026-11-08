@@ -2,7 +2,20 @@ import type { FixtureValue, With, RouteTable } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 
+// The final check's transaction (final-step.ts) on the fake database: a
+// connection running the same statements, the account row it locks, and no
+// rule, module switch or restore in force (its locking reads find nothing).
+function withConnection(db: { execute: (sql: string, params?: FixtureValue[]) => Promise<FixtureValue> }) {
+  const execute = async (sql: string, params: FixtureValue[] = []) => {
+    if (sql.includes('FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE')) return [[{ id: params[0] }]];
+    if (sql.includes('LOCK IN SHARE MODE')) return [[]];
+    return db.execute(sql, params);
+  };
+  return { ...db, getConnection: async () => ({ execute, beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release() {} }) };
+}
+
 function setRequireStub(modulePath: string, exports: FixtureValue) {
+  if (exports?.db?.execute && !exports.db.getConnection) exports = { ...exports, db: withConnection(exports.db) };
   require.cache[modulePath] = {
     id: modulePath,
     filename: modulePath,

@@ -147,6 +147,10 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
 - **A restored calendar of a mail account links to it on the next change or
   sync,** and the mail account's calendar setting says so until then;
   opening the setting changes nothing.
+- **Changing or turning off a mail account's calendar acts only on what you
+  saw.** When another change got there first, for example another mail
+  account took the calendar over, it is refused with "The calendar of this
+  mail account changed meanwhile. Try again." and nothing is removed.
 - **Restoring an older backup** brings back only what a new backup would
   hold and says what it left out. The ToDo state, subtasks and replies of its
   synced items wait for the calendar's next sync and are applied to the item
