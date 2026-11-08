@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter, useNavigate, type NavigateFunction } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useNavigate, type NavigateFunction } from 'react-router-dom';
 import { api } from '@/lib/api';
 import AdminPolicies from '@/pages/AdminPolicies';
 import AdminInstanceBackup from '@/pages/AdminInstanceBackup';
@@ -299,6 +299,29 @@ describe('Server settings → Instance backup', () => {
 });
 
 describe('Admin → Users → a person', () => {
+  // The server knows no such person (404 USER_NOT_FOUND, 400 INVALID_USER_ID): back to the list, with a word.
+  it('a person the server no longer knows sends the administrator back to the list', { timeout: 20_000 }, async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/admin/users') return { data: { users: USERS } };
+      if (path.startsWith('/admin/users/user-alex/')) return { error: 'User not found', status: 404, code: 'USER_NOT_FOUND' };
+      if (path === '/policies/effective') return policiesAnswer();
+      throw new Error(`unexpected GET ${path}`);
+    });
+    mountSignedIn(<Routes><Route path="/admin/users/:id" element={<AdminUserDetail />} /><Route path="/admin/users" element={<p>The list of users</p>} /></Routes>, { user: ADMIN, path: '/admin/users/user-alex' });
+    expect(await screen.findByText('The list of users', {}, { timeout: 10_000 })).toBeInTheDocument();
+    expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'This person no longer exists' }));
+    cleanup();
+    // A malformed id in the address is the same case.
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/admin/users') return { data: { users: USERS } };
+      if (path.startsWith('/admin/users/not-a-uuid/')) return { error: 'Invalid user id', status: 400, code: 'INVALID_USER_ID' };
+      if (path === '/policies/effective') return policiesAnswer();
+      throw new Error(`unexpected GET ${path}`);
+    });
+    mountSignedIn(<Routes><Route path="/admin/users/:id" element={<AdminUserDetail />} /><Route path="/admin/users" element={<p>The list of users</p>} /></Routes>, { user: ADMIN, path: '/admin/users/not-a-uuid' });
+    expect(await screen.findByText('The list of users', {}, { timeout: 10_000 })).toBeInTheDocument();
+  });
+
   it('a confirmation opened for one person closes when the page moves to another', { timeout: 20_000 }, async () => {
     let navigate!: NavigateFunction;
     function Page() { navigate = useNavigate(); return <AdminUserDetail />; }

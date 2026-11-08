@@ -292,6 +292,37 @@ describe('sync policy upgrade gate', () => {
     fireEvent.click(within(confirmDialog).getByRole('button', { name: /Turn on and remove/ }));
     expect(await within(confirmDialog).findByRole('alert')).toHaveTextContent('The address does not match this account.');
   });
+
+  // The confirmation waited for another change and was refused: the server's sentence stays in the dialog, the account is read again.
+  it('a confirmation refused because the account changed or a restore runs stays open with the sentence and reads the account again', async () => {
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    vi.mocked(api.post).mockResolvedValueOnce({ status: 409, error: 'This account changed in the meantime. Try again.', code: 'ACCOUNT_CHANGED' });
+    mountPanel([pending]);
+    fireEvent.click(screen.getByRole('button', { name: 'Review' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Confirm…' }));
+    const confirmDialog = await screen.findByRole('dialog', { name: 'Turn on mail-client behavior' });
+    fireEvent.change(within(confirmDialog).getByLabelText(/to confirm/), { target: { value: 'old@example.test' } });
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: /Turn on and remove/ }));
+    expect(await within(confirmDialog).findByRole('alert')).toHaveTextContent('This account changed in the meantime. Try again.');
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['mail-accounts'] });
+    expect(within(confirmDialog).getByLabelText(/to confirm/)).toHaveValue('old@example.test');
+    vi.mocked(api.post).mockResolvedValueOnce({ status: 409, error: 'A restore of Mail is running. Try again when it has finished.', code: 'RESTORE_IN_PROGRESS' });
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: /Turn on and remove/ }));
+    await waitFor(() => expect(within(confirmDialog).getByRole('alert')).toHaveTextContent('A restore of Mail is running.'));
+    expect(screen.getByRole('dialog', { name: 'Turn on mail-client behavior' })).toBeInTheDocument();
+  });
+
+  it('a confirmation refused because Mail is off closes the dialog and says so', async () => {
+    vi.mocked(api.post).mockResolvedValueOnce({ status: 403, error: 'Mail is turned off for this account.', code: 'MODULE_DISABLED' });
+    mountPanel([pending]);
+    fireEvent.click(screen.getByRole('button', { name: 'Review' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Confirm…' }));
+    const confirmDialog = await screen.findByRole('dialog', { name: 'Turn on mail-client behavior' });
+    fireEvent.change(within(confirmDialog).getByLabelText(/to confirm/), { target: { value: 'old@example.test' } });
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: /Turn on and remove/ }));
+    await waitFor(() => expect(toasts.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail is turned off', description: 'Mail is turned off for this account.' })));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Turn on mail-client behavior' })).not.toBeInTheDocument());
+  });
 });
 
 describe('provider sync warnings', () => {

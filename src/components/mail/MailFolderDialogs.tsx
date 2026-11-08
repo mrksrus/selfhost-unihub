@@ -77,6 +77,14 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
     },
   });
 
+  /** The mail servers a folder is on, for a refusal's wording: "a@example.org, b@example.org" or "the mail server". */
+  const serverAddresses = (slug: string) => {
+    const folder = folders.find(entry => entry.slug === slug);
+    const ids = folder ? [...new Set([folder.mail_account_id, ...(folder.connected_account_ids ?? [])].filter((id): id is string => !!id))] : [];
+    const addresses = ids.map(id => accounts.find(account => account.id === id)?.email_address).filter((address): address is string => !!address);
+    return addresses.length ? addresses.join(', ') : 'the mail server';
+  };
+
   const deleteFolder = useMutation({
     mutationFn: async ({ slug, server }: { slug: string; server: boolean }) => {
       const response = await api.delete<{ deletedMessages: number; movedMessages: number }>(`/mail/folders/${encodeURIComponent(slug)}${server ? '?server=1' : ''}`);
@@ -92,19 +100,30 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
         : (moved === 1 ? '1 message moved back to Inbox.' : `${moved} messages moved back to Inbox.`));
       toast({ title: server ? 'Folder deleted on the server' : 'Folder deleted', description: parts.join(' ') });
     },
-    onError: (error: Error) => {
-      // Deleted on some servers only (409): what went where, in plain words; folders are read again either way.
+    onError: (error: Error, { slug }) => {
+      // Deleted on some servers only, or everywhere but UniHub's copy (409): what went where, in plain words.
       if (hasCode(error, 'FOLDER_PARTLY_DELETED')) {
         void invalidateMailQueries(queryClient);
         const details = (error.details ?? {}) as { deleted_on?: string[]; remaining_on?: string[]; settled?: boolean };
         const gone = details.deleted_on?.length ? `Deleted on ${details.deleted_on.join(', ')}.` : '';
-        const left = details.remaining_on?.length ? `Still on ${details.remaining_on.join(', ')}: try again later.` : '';
-        const copy = details.settled === false ? 'UniHub updates its copy at the next folder check.' : '';
-        toast({ title: 'Folder partly deleted', description: [gone, left, copy].filter(Boolean).join(' ') || error.message, variant: 'destructive', duration: 10000 });
+        const left = details.remaining_on?.length ? `Still on ${details.remaining_on.join(', ')}: try again later.`
+          : 'Delete it again to finish; nothing is sent to the server again.';
+        const copy = details.remaining_on?.length && details.settled === false ? 'UniHub updates its copy at the next folder check.' : '';
+        toast({ title: 'Folder partly deleted', description: [gone, left, copy].filter(Boolean).join(' '), variant: 'destructive', duration: 10000 });
         return;
       }
-      // The account changed meanwhile (409): nothing was deleted; folders and accounts are read again.
-      if (hasCode(error, ACCOUNT_CHANGED)) void invalidateMailQueries(queryClient);
+      // An earlier attempt without an answer, and the server still lists the folder (409): nothing was sent; the folder stays.
+      if (hasCode(error, 'FOLDER_DELETE_UNCERTAIN')) {
+        void invalidateMailQueries(queryClient);
+        toast({ title: 'Folder not deleted', description: `UniHub couldn't confirm the deletion on ${serverAddresses(slug)}; the folder is still there. Try again.`, variant: 'destructive', duration: 10000 });
+        return;
+      }
+      // The mail server refused or could not be reached (502, in UniHub's words), or the account changed meanwhile (409): nothing was deleted.
+      if (hasCode(error, 'MAIL_SERVER_ERROR') || hasCode(error, ACCOUNT_CHANGED)) {
+        void invalidateMailQueries(queryClient);
+        toast({ title: 'Folder not deleted', description: error.message, variant: 'destructive', duration: 10000 });
+        return;
+      }
       toast({ title: 'Failed to delete folder', description: error.message, variant: 'destructive' });
     },
   });
