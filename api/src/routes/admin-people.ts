@@ -175,6 +175,7 @@ export = defineRoutes({
     const module = typeof values.module === 'string' ? values.module : null;
     // An entry for each batch, with the batch's deletion.
     const result: BinDeleteResponse = await emptyBin(userId, values, {
+      adminId,
       record: (cx, rows) => recordAudit({ action: 'admin.bin_emptied', actorId: adminId, targetUserId: userId, req, details: { deleted: rows.length, module } }, cx),
     });
     return { ...result };
@@ -184,6 +185,7 @@ export = defineRoutes({
     const userId = req.params.id, itemId = req.params.itemId;
     await assertPerson(userId);
     const result: BinDeleteResponse = await deleteBinItem(userId, itemId, {
+      adminId,
       record: cx => recordAudit({ action: 'admin.bin_item_deleted', actorId: adminId, targetUserId: userId, req, details: { bin_item: itemId } }, cx),
     });
     return { ...result };

@@ -555,7 +555,10 @@ A step that deletes or erases after waiting asks again when it acts, under the
 rules revision row: an administrator's save locks that row first, so it
 commits either before the step reads the rules or after the step. Deletion at
 the provider asks before queueing a message and holds the row while it sends
-the erase; the bin's purge reads its minimum after its row locks.
+the erase; the bin's purge reads its minimum after its row locks; a person's
+delete for good and each batch of emptying the bin ask for `bin.delete` after
+theirs; deleting a backup reads its minimum after locking the backup's row,
+in the transaction that deletes the row (its file goes after the commit).
 
 **The bin's minimum.** While `bin.delete` is forbidden, the bin keeps items at
 least as long as the administrator's minimum (`30`, `90` days or `forever`,

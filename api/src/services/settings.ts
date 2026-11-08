@@ -440,11 +440,11 @@ interface PolicyActor {
  * person the action it names; the request boundary passes every key a
  * route declares, a service or worker the one its action needs.
  */
-async function assertAllowed(userId: string, keys: PolicyKey | readonly PolicyKey[], { adminId }: PolicyActor = {}, executor: SqlExecutor = db): Promise<void> {
+async function assertAllowed(userId: string, keys: PolicyKey | readonly PolicyKey[], { adminId }: PolicyActor = {}, executor: SqlExecutor = db, { lock = false }: PolicyRead = {}): Promise<void> {
   if (adminId) return;
   const list = typeof keys === 'string' ? [keys] : keys;
   if (!list.length) return;
-  const levels = await loadPolicyLevels(executor);
+  const levels = await policyLevels(executor, lock);
   for (const key of list) {
     const resolved = effectivePolicy(key, levels);
     if (!resolved.allowed) throw policyForbids(key, resolved.reason ?? 'Your administrator does not allow this.');
