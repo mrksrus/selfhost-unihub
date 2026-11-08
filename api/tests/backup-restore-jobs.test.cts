@@ -92,6 +92,8 @@ test('restore honors cancellation accepted immediately before the final commit p
     },
   };
   const runtime = createBackupRuntime(directory, 'synthetic-commit-cancellation-key', pool);
+  // The rules allow restoring here; the policy check itself runs against the database in policies-races-mysql-integration.test.cts.
+  runtime('services/final-step').assertFinalStep = async () => ({ policy: () => ({ allowed: true }) });
   const backup = runtime('services/backup');
   backup.backupFromZipFile = async () => ({ backup: {}, fileSourcesByPath: new Map() });
   backup.importBackupForUser = async (_userId: FixtureValue, _payload: FixtureValue, options: FixtureValue) => {

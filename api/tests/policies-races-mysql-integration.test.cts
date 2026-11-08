@@ -2372,4 +2372,119 @@ test('a destructive step follows the rules in force when it acts, with an owner,
       await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [account]);
     }
   });
+
+  await fromDefaults('r11: a foreground operation admitted while a refused stop waited for its pause keeps its turn and checks its outcome', async () => {
+    const mail = await mailOf('late-foreground-r11@example.test'), email = crypto.randomUUID(), op = crypto.randomUUID();
+    await pool.execute("UPDATE mail_accounts SET sync_mode = 'sync' WHERE id = ?", [mail]);
+    await pool.execute("INSERT INTO emails (id, user_id, mail_account_id, from_address, to_addresses, folder, remote_folder, remote_uid, remote_uidvalidity) VALUES (?, ?, ?, 'sender@example.test', '[]', 'inbox', 'INBOX', 10, 80)", [email, users.alex, mail]);
+    await pool.execute(`INSERT INTO mail_writebacks (id, user_id, mail_account_id, email_id, action, target_value, base_value, target_folder, remote_folder, remote_uid, remote_uidvalidity, state, is_current, dispatched)
+      VALUES (?, ?, ?, ?, 'move', 'Archive', 'inbox', 'archive', 'INBOX', 10, 80, 'queued', TRUE, FALSE)`, [op, users.alex, mail, email]);
+    const runtime = require('../dist/src/services/mail-engine/runtime') as FixtureValue;
+    const modules = require('../dist/src/services/module-settings') as FixtureValue;
+    const jobs = require('../dist/src/services/mail-durable-jobs') as FixtureValue;
+    const operations = require('../dist/src/services/mail-engine/operations') as FixtureValue;
+    const connections = require('../dist/src/services/mail-engine/connection-pool') as FixtureValue;
+    const svc = mailServiceOf();
+    const saved = { acquire: connections.acquireImapConnection, release: connections.releaseImapConnection, process: operations.processDueOperations,
+      move: operations.applyMove, config: svc.buildImapConnectionConfig, stop: svc.stopOwnedMailAccountWork, pause: runtime.pauseAccount };
+    const entered = deferred(), go = deferred();
+    let acquired = 0, checked = 0, captured: FixtureValue = null, running: Promise<FixtureValue> = Promise.resolve();
+    await modules.setUserModules(users.alex, { modules: { mail: { enabled: true, background: false } } });
+    const job = await runtime.enqueueJob({ userId: users.alex, accountId: mail, operationId: op, kind: 'operation' });
+    const claimed = await runtime.claimDueJob({ workerId: 'r11-first', accountId: mail, kinds: ['operation'] });
+    assert.equal(claimed.id, job.id);
+    connections.acquireImapConnection = async () => { acquired++; return {}; };
+    connections.releaseImapConnection = () => {};
+    svc.buildImapConnectionConfig = async () => ({ imap: {} });
+    operations.applyMove = async () => { checked++; };
+    // Dispatched, then stopped before its answer was recorded.
+    operations.processDueOperations = async () => {
+      await pool.execute("UPDATE mail_writebacks SET state = 'executing', dispatched = TRUE WHERE id = ?", [op]);
+      entered.resolve(); await go.promise;
+      throw Object.assign(new Error('Synthetic interrupted running command'), { code: 'MAIL_WORKER_FENCED' });
+    };
+    // The person's operation is admitted and starts only once the stop has begun, before its pause fences it.
+    runtime.pauseAccount = async (...args: FixtureValue[]) => {
+      runtime.pauseAccount = saved.pause;
+      jobs.foregroundMutationAccounts.add(mail);
+      running = jobs.runDurableMailJob(claimed, new AbortController().signal, () => {}).catch((error: FixtureValue) => error);
+      await within(entered.promise);
+      return saved.pause(...args);
+    };
+    try {
+      svc.stopOwnedMailAccountWork = async (...args: FixtureValue[]) => {
+        captured = await saved.stop(...args);
+        go.resolve(); await running;
+        await setPolicies({ 'accounts.remove': 'forbidden' });
+        return captured;
+      };
+      const refused = await alex.request('DELETE', `/api/mail/accounts/${mail}`);
+      assert.deepEqual([refused.status, refused.body.code], [403, 'POLICY_FORBIDS'], JSON.stringify(refused.body));
+      svc.stopOwnedMailAccountWork = saved.stop;
+      assert.equal(captured.foreground, true, 'the stop counts the turn of the job its pause fenced');
+      const [[restored]] = await pool.query<RowDataPacket[]>('SELECT kind, state FROM mail_engine_jobs WHERE id = ?', [job.id]);
+      assert.deepEqual([restored.kind, restored.state], ['reconcile', 'queued']);
+      assert.equal(jobs.foregroundMutationAccounts.has(mail), true, 'and gives it back');
+      const next = await runtime.claimDueJob({ workerId: 'r11-reconcile', accountId: mail, kinds: ['reconcile'] });
+      assert.equal(next.id, job.id);
+      const result = await jobs.runDurableMailJob(next, new AbortController().signal, () => {});
+      assert.equal(result.success, true, JSON.stringify(result));
+      assert.deepEqual([acquired, checked], [2, 1], 'its outcome is checked with background sync off');
+    } finally {
+      go.resolve(); await running;
+      Object.assign(runtime, { pauseAccount: saved.pause });
+      Object.assign(connections, { acquireImapConnection: saved.acquire, releaseImapConnection: saved.release });
+      Object.assign(operations, { processDueOperations: saved.process, applyMove: saved.move });
+      Object.assign(svc, { buildImapConnectionConfig: saved.config, stopOwnedMailAccountWork: saved.stop });
+      jobs.foregroundMutationAccounts.delete(mail);
+      await modules.setUserModules(users.alex, { modules: { mail: { enabled: true, background: true } } });
+      await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+    }
+  });
+
+  await fromDefaults('r11: a restore start that waited is refused once restoring is forbidden, and a queued restore a later rule forbids applies nothing', async () => {
+    const created = await alex.request('POST', '/api/contacts', { name: { given: 'Archived rule r11' } });
+    assert.ok([200, 201].includes(created.status), JSON.stringify(created.body));
+    const contact = String((created.body.contact as FixtureValue).id);
+    const backup = require('../dist/src/services/backup') as FixtureValue, exportJobs = require('../dist/src/services/export-jobs') as FixtureValue;
+    const restoreJobs = require('../dist/src/services/backup-restore-jobs') as FixtureValue;
+    const entries = await backup.buildBackupArchiveEntriesForUser(users.alex, ['contacts'], { workDirectory: storage });
+    const job = crypto.randomUUID(), restore = crypto.randomUUID(), file = path.join(root('backups'), users.alex, `${job}.zip`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    await exportJobs.writeZip(entries, file);
+    const edited = await alex.request('PUT', `/api/contacts/${contact}`, { name: { given: 'Newer rule r11' }, version: (created.body.contact as FixtureValue).version });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+    await pool.execute("INSERT INTO data_export_jobs (id, user_id, status, phase, progress, file_path) VALUES (?, ?, 'ready', 'complete', 100, ?)", [job, users.alex, file]);
+    await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, source_type, source_export_job_id, status, operation, phase, requested_sections, conflict_mode, archive_path, validation_result)
+      VALUES (?, ?, 'generated', ?, 'validated', 'restore', 'validated', '["contacts"]', 'replace', ?, '{"valid":true,"errors":[]}')`, [restore, users.alex, job, file]);
+    const names = async () => (await pool.query<RowDataPacket[]>('SELECT first_name FROM contacts WHERE id = ?', [contact]))[0].map(row => row.first_name);
+    const restoreRow = async () => (await pool.query<RowDataPacket[]>('SELECT status, error FROM backup_restore_jobs WHERE id = ?', [restore]))[0][0];
+    const locks = require('../dist/src/services/person-lock') as FixtureValue, original = locks.withPersonLock, arrived = deferred(), go = deferred();
+    const holder = original(users.alex, () => go.promise);
+    locks.withPersonLock = async (...args: FixtureValue[]) => { if (args[0] === users.alex) arrived.resolve(); return original(...args); };
+    const pending = alex.request('POST', `/api/backup/restore-jobs/${restore}/start`, {});
+    try {
+      // The start passed the boundary and waits for the person's lock; the administrator forbids restoring meanwhile.
+      await within(arrived.promise); locks.withPersonLock = original;
+      await setPolicies({ 'backup.restore': 'forbidden' });
+      go.resolve(); await holder;
+      const reply = await pending;
+      assert.deepEqual([reply.status, reply.body.code], [403, 'POLICY_FORBIDS'], JSON.stringify(reply.body));
+      assert.equal((await restoreRow()).status, 'validated', 'not queued');
+      assert.deepEqual(await names(), ['Newer rule r11']);
+      // Queued while it was allowed, forbidden before the worker took it: it fails with the rule and applies nothing.
+      await pool.execute("UPDATE backup_restore_jobs SET status = 'queued', phase = 'queued' WHERE id = ?", [restore]);
+      await restoreJobs.runRestoreJob(restore);
+      const after = await restoreRow();
+      assert.equal(after.status, 'failed', 'with the rule\'s reason');
+      assert.ok(after.error);
+      assert.deepEqual(await names(), ['Newer rule r11'], 'the newer contact stays');
+    } finally {
+      go.resolve(); await holder; await pending; locks.withPersonLock = original;
+      await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
+      await pool.execute('DELETE FROM data_export_jobs WHERE id = ?', [job]);
+      await pool.execute('DELETE FROM contacts WHERE id = ?', [contact]);
+      fs.rmSync(file, { force: true });
+    }
+  });
 });
