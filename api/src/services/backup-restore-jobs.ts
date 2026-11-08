@@ -69,7 +69,10 @@ const UPLOAD_RETENTION_DAYS = 7;
 const ACTIVE_RESTORE_STATUSES = new Set(['queued', 'running', 'cancelling']);
 // An uploaded archive past its UPLOAD_RETENTION_DAYS is not unlocked or
 // started any more, also before the hourly sweep removes it (D36): part of
-// the same state change as the transition it guards.
+// the same state change as the transition it guards. MariaDB reads
+// UTC_TIMESTAMP() once, when a statement starts, so the transition first
+// takes the job's row (lockJobRow) and only then runs the statement that
+// compares the deadline: a wait for the row cannot carry an old clock past it.
 const NOT_EXPIRED_SQL = '(expires_at IS NULL OR expires_at > UTC_TIMESTAMP())';
 const EXPIRED_UPLOAD = 'This uploaded backup has expired. Upload it again to restore it.';
 const BUSY_RESTORE_STATUSES = new Set(['uploaded', 'validating', 'queued', 'running', 'cancelling']);
@@ -616,15 +619,22 @@ async function createRestoreFromExport(userId: string, exportJobId: string | nul
 // Why an unlock or start found no job to move: past its deadline (410), or
 // another state (409).
 type JobTransition = { error?: string; status?: number; job?: ReturnType<typeof serializeRestoreJob> };
+const expiredUpload = (): JobTransition => ({ error: EXPIRED_UPLOAD, status: 410 });
+
+async function lockJobRow(connection: SqlExecutor, userId: string, jobId: string | null) {
+  await connection.execute('SELECT id FROM backup_restore_jobs WHERE id = ? AND user_id = ? FOR UPDATE', [jobId, userId]);
+}
 async function refusedTransition(userId: string, jobId: string | null, changed: string): Promise<JobTransition> {
   const [rows] = await db.execute<RestoreJob[]>(
     `SELECT status, (expires_at IS NOT NULL AND expires_at <= UTC_TIMESTAMP()) AS past FROM backup_restore_jobs WHERE id = ? AND user_id = ?`, [jobId, userId]);
-  return rows[0] && (Number(rows[0].past) === 1 || rows[0].status === 'expired') ? { error: EXPIRED_UPLOAD, status: 410 } : { error: changed, status: 409 };
+  return rows[0] && (Number(rows[0].past) === 1 || rows[0].status === 'expired') ? expiredUpload() : { error: changed, status: 409 };
 }
 
 async function unlockRestoreJob(userId: string, jobId: string | null, password?: string): Promise<JobTransition> {
   const job = await getRestoreJob(userId, jobId);
   if (!job) return { error: 'Restore job not found', status: 404 };
+  // Removed by the sweep: the same answer as past its deadline.
+  if (job.status === 'expired') return expiredUpload();
   if (job.status !== 'awaiting_password' || !job.is_encrypted) {
     return { error: 'Restore job is not waiting for a password', status: 409 };
   }
@@ -651,6 +661,7 @@ async function unlockRestoreJob(userId: string, jobId: string | null, password?:
   // so a refused or expired unlock leaves no key behind. The sweep's write on
   // the row waits for it and then finds the job busy.
   const unlocked = await withTransaction(async connection => {
+    await lockJobRow(connection, userId, jobId);
     const [moved] = await connection.execute<ResultSetHeader>(
       `UPDATE backup_restore_jobs
        SET status = 'uploaded', phase = 'uploaded', operation = 'validate', progress = 0, error = NULL
@@ -688,6 +699,7 @@ async function unlockRestoreJob(userId: string, jobId: string | null, password?:
 async function startRestoreJob(userId: string, jobId: string | null): Promise<JobTransition> {
   const job = await getRestoreJob(userId, jobId);
   if (!job) return { error: 'Restore job not found', status: 404 };
+  if (job.status === 'expired') return expiredUpload();
   if (!['validated', 'failed', 'cancelled'].includes(job.status)) {
     return { error: 'Restore job must be validated before it can start', status: 409 };
   }
@@ -706,13 +718,17 @@ async function startRestoreJob(userId: string, jobId: string | null): Promise<Jo
   // Only from the state just read, with its archive and before an upload's
   // deadline: an upload that expired, or that the sweep removed meanwhile
   // (cleanupExpiredRestoreArchives), is not started.
-  const [started] = await db.execute<ResultSetHeader>(
-    `UPDATE backup_restore_jobs
-     SET status = ?, operation = ?, phase = ?, progress = 0, cancel_requested = 0, error = NULL, completed_at = NULL
-     WHERE id = ? AND user_id = ? AND status = ? AND archive_path = ? AND ${NOT_EXPIRED_SQL}`,
-    [retryValidation ? 'uploaded' : 'queued', retryValidation ? 'validate' : 'restore', retryValidation ? 'uploaded' : 'queued',
-      jobId, userId, job.status, job.archive_path]
-  );
+  const started = await withTransaction(async connection => {
+    await lockJobRow(connection, userId, jobId);
+    const [moved] = await connection.execute<ResultSetHeader>(
+      `UPDATE backup_restore_jobs
+       SET status = ?, operation = ?, phase = ?, progress = 0, cancel_requested = 0, error = NULL, completed_at = NULL
+       WHERE id = ? AND user_id = ? AND status = ? AND archive_path = ? AND ${NOT_EXPIRED_SQL}`,
+      [retryValidation ? 'uploaded' : 'queued', retryValidation ? 'validate' : 'restore', retryValidation ? 'uploaded' : 'queued',
+        jobId, userId, job.status, job.archive_path]
+    );
+    return moved;
+  });
   if (started.affectedRows !== 1) return refusedTransition(userId, jobId, 'The restore job changed meanwhile. Reload and try again.');
   scheduleRestoreWorker();
   return { job: serializeRestoreJob((await getRestoreJob(userId, jobId))!) };

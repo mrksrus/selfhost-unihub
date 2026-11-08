@@ -322,6 +322,16 @@ test('a user backup is an encrypted ZIP other programs open, with readable mail,
     assert.equal(again.job.status, 'uploaded');
     assert.equal((await settle(() => source('GET', `/backup/restore-jobs/${again.job.id}`), ['validated', 'failed'])).status, 'validated');
 
+    // Once the sweep has removed an upload past its seven days, unlock and
+    // start say so and how to go on, through the request handler (R3-F2).
+    const stale = await destination('POST', '/backup/import?sections=full', archive, 202);
+    assert.equal(stale.job.status, 'awaiting_password');
+    await pool.execute('UPDATE backup_restore_jobs SET expires_at = UTC_TIMESTAMP() - INTERVAL 1 MINUTE WHERE id IN (?, ?)', [stale.job.id, again.job.id]);
+    assert.ok(await runtime('services/backup-restore-jobs').cleanupExpiredRestoreArchives() >= 2);
+    const expiredAnswer = { error: 'This uploaded backup has expired. Upload it again to restore it.' };
+    assert.deepEqual(await destination('POST', `/backup/restore-jobs/${stale.job.id}/unlock`, { password }, 410), expiredAnswer);
+    assert.deepEqual(await source('POST', `/backup/restore-jobs/${again.job.id}/start`, {}, 410), expiredAnswer);
+
     // A changed byte in the encrypted entry is refused after the password was right.
     const envelope = runtime('services/backup-envelope');
     const tampered = Buffer.from(archive);
@@ -444,7 +454,7 @@ test('uploaded restore archives expire after seven days, never while a restore u
     }
     assert.ok(await fs.stat(paths.fresh), 'an upload younger than seven days stays');
     // An expired upload can no longer start.
-    assert.equal((await jobs.startRestoreJob(userId, created.validated.id)).status, 409);
+    assert.deepEqual(await jobs.startRestoreJob(userId, created.validated.id), { error: 'This uploaded backup has expired. Upload it again to restore it.', status: 410 });
     assert.equal(await jobs.cleanupExpiredRestoreArchives(), 0, 'a second pass finds nothing');
   } finally {
     if (owned) { const connection = await pool.getConnection(); try { await connection.query('SET FOREIGN_KEY_CHECKS=0'); const [tables] = await connection.query<RowDataPacket[]>('SHOW TABLES'); for (const row of tables) await connection.query('DROP TABLE ??', [Object.values(row)[0]]); } finally { await connection.query('SET FOREIGN_KEY_CHECKS=1'); connection.release(); } }
@@ -499,27 +509,41 @@ test('an uploaded archive past its seven days is not unlocked or started, atomic
     assert.equal((await jobs.startRestoreJob(userId, lateStart.id)).status, 410);
     assert.equal((await row(lateStart.id)).status, 'validated');
 
-    // The job turns out to be past its deadline while an unlock or a start
-    // waits on its row (held here): the transition still sees it, and the
-    // sweep removes the upload afterwards. A check on the job as read before
-    // the transition would let them through.
+    // An unlock or a start waits on the job's row (held here) while it turns
+    // out to be past its deadline: moved back meanwhile (a check on the job as
+    // read before the transition would let it through), or simply reached
+    // while waiting (R3-F1: a statement that waited for the row would compare
+    // the deadline with the clock of its start). The transition still sees it,
+    // and the sweep removes the upload afterwards.
     for (const [name, act] of [
       ['racing-unlock', (id: string) => jobs.unlockRestoreJob(userId, id, passwordOf('racing-unlock'))],
       ['racing-start', (id: string) => jobs.startRestoreJob(userId, id)],
+      ['waiting-unlock', (id: string) => jobs.unlockRestoreJob(userId, id, passwordOf('waiting-unlock'))],
+      ['waiting-start', (id: string) => jobs.startRestoreJob(userId, id)],
     ] as const) {
       const job = await upload(name);
-      await deadline(job.id, 1);
-      if (name === 'racing-start') await validated(job.id);
+      const waits = name.startsWith('waiting');
+      if (waits) await pool.execute('UPDATE backup_restore_jobs SET expires_at = UTC_TIMESTAMP() + INTERVAL 5 SECOND WHERE id = ?', [job.id]);
+      else await deadline(job.id, 1);
+      if (name.endsWith('start')) await validated(job.id);
       const holder = await mysql.createConnection(settings);
       try {
         await holder.beginTransaction();
         await holder.execute('SELECT id FROM backup_restore_jobs WHERE id = ? FOR UPDATE', [job.id]);
         const pending = act(job.id);
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        // Well before the waiting statement began (it reads the clock once, as it starts).
-        await holder.execute('UPDATE backup_restore_jobs SET expires_at = UTC_TIMESTAMP() - INTERVAL 1 HOUR WHERE id = ?', [job.id]);
+        if (waits) {
+          // The deadline, unchanged, passes while the action waits.
+          for (let passed = false; !passed; await new Promise(resolve => setTimeout(resolve, 250))) {
+            const [[clock]] = await pool.execute<RowDataPacket[]>('SELECT expires_at < UTC_TIMESTAMP() - INTERVAL 1 SECOND AS passed FROM backup_restore_jobs WHERE id = ?', [job.id]);
+            passed = Number(clock.passed) === 1;
+          }
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          // Well before the waiting statement began (it reads the clock once, as it starts).
+          await holder.execute('UPDATE backup_restore_jobs SET expires_at = UTC_TIMESTAMP() - INTERVAL 1 HOUR WHERE id = ?', [job.id]);
+        }
         await holder.commit();
-        assert.equal((await pending).status, 410, name);
+        assert.deepEqual(await pending, { error: 'This uploaded backup has expired. Upload it again to restore it.', status: 410 }, name);
       } finally {
         await holder.end();
       }
