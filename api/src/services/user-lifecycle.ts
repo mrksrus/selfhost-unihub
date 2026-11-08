@@ -14,6 +14,7 @@ import { fileRemovalGate } from './file-removal-gate';
 import { log } from '../log';
 import { recordAudit } from './audit';
 import { assertFinalStep } from './final-step';
+import { withPersonLock } from './person-lock';
 import type { AuthRequest } from '../types';
 
 type DeleteActor = 'self' | 'admin';
@@ -28,16 +29,40 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // mail work that could still write files, delete the users row (every table
 // cascades from it), then remove the files. A file that outlives its rows is a
 // hygiene problem; a row whose file is gone would be data loss, so files go last.
-async function deleteUser(userId: string, { actor, actorId = null, req = null }: { actor: DeleteActor; actorId?: string | null; req?: AuthRequest | null }): Promise<DeleteUserResult> {
+// Under the person's lock (person-lock.ts), whoever asks.
+async function deleteUser(userId: string, request: { actor: DeleteActor; actorId?: string | null; req?: AuthRequest | null }): Promise<DeleteUserResult> {
+  return withPersonLock(userId, () => deleteUserNow(userId, request));
+}
+
+async function deleteUserNow(userId: string, { actor, actorId = null, req = null }: { actor: DeleteActor; actorId?: string | null; req?: AuthRequest | null }): Promise<DeleteUserResult> {
   if ((await getActiveRestoreSections(userId)).size > 0) {
     throw conflict('RESTORE_IN_PROGRESS', 'Restore in progress. The account can be deleted when it has finished.');
   }
 
-  const { stopMailAccountWork } = require('./mail') as typeof import('./mail');
+  // Each with a pause of this change's own: refused, the mail work goes on
+  // as before (mail-sync-control.ts stopOwnedMailAccountWork).
+  const mail = require('./mail') as typeof import('./mail');
   const [accounts] = await db.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM mail_accounts WHERE user_id = ?', [userId]);
-  for (const account of accounts) {
-    await stopMailAccountWork(account.id, actor === 'admin' ? 'Account deleted by an administrator' : 'Account deleted');
+  const pauses: Awaited<ReturnType<typeof mail.stopOwnedMailAccountWork>>[] = [];
+  let removed: { deleted: boolean; files: Set<string>; recordingPaths: string[] };
+  try {
+    for (const account of accounts) pauses.push(await mail.stopOwnedMailAccountWork(account.id, actor === 'admin' ? 'Account deleted by an administrator' : 'Account deleted'));
+    removed = await removeRows(userId, { actor, actorId, req });
+  } catch (error) {
+    for (const pause of pauses) await mail.releaseOwnedMailAccountStop(pause);
+    throw error;
   }
+  if (!removed.deleted) throw notFound('USER_NOT_FOUND', 'User not found');
+
+  // The rows are gone; while an instance backup copies files, they go after it.
+  const removal = await fileRemovalGate.run(() => removeUserFiles(userId, removed.files, removed.recordingPaths));
+  const outcome: DeleteUserResult = removal === 'deferred' ? { files: { removed: 0, failed: 0, deferred: true } } : removal;
+  realtime.closeUser(userId);
+  return outcome;
+}
+
+// The files the rows name, then the rows: whether the users row went.
+async function removeRows(userId: string, { actor, actorId, req }: { actor: DeleteActor; actorId: string | null; req: AuthRequest | null }) {
 
   // Collected before the rows go, checked against the configured roots like
   // the routes always did: the row proves ownership, the root check keeps a
@@ -75,13 +100,7 @@ async function deleteUser(userId: string, { actor, actorId = null, req = null }:
     }
     return result.affectedRows > 0;
   });
-  if (!deleted) throw notFound('USER_NOT_FOUND', 'User not found');
-
-  // The rows are gone; while an instance backup copies files, they go after it.
-  const removal = await fileRemovalGate.run(() => removeUserFiles(userId, files, recordingPaths));
-  const outcome: DeleteUserResult = removal === 'deferred' ? { files: { removed: 0, failed: 0, deferred: true } } : removal;
-  realtime.closeUser(userId);
-  return outcome;
+  return { deleted, files, recordingPaths };
 }
 
 // Never throws: the rows are gone, so a file that stays behind is reported in

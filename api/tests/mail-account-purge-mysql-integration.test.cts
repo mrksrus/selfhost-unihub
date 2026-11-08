@@ -210,7 +210,7 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     try {
       connectedNow = (await (require('../dist/src/services/calendar-accounts') as typeof import('../src/services/calendar-accounts')).connectCalDavAccount(
         { userId: paused.user, emailAddress: 'paused@example.test', username: 'paused@example.test', password: 'synthetic-mail-password', mailAccountId: paused.mail },
-        { mail: { id: paused.mail } })).account.id;
+        { actor: {}, policies: ['accounts.add'], mail: { id: paused.mail } })).account.id;
     } finally {
       calendarSync.stopCalendarAccountWork = stopWork;
       caldavService.findCalDavServer = find;

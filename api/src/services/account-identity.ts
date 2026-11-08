@@ -9,7 +9,8 @@ import { conflict } from '../http/errors';
 // compares it there under the row's lock: another request that changed the
 // account meanwhile (its login, password, server, mode) makes the stale one
 // refuse with 409 ACCOUNT_CHANGED instead of overwriting or deleting what it
-// never saw. One comparison of every column that makes the account what it
+// never saw. A person's own changes no longer interleave (person-lock.ts);
+// this stays as the check under the row, for whatever else writes it. One comparison of every column that makes the account what it
 // is, so no path compares a chosen few and misses one. The stored password
 // is part of it only through a digest of the whole snapshot; the snapshot
 // itself holds no secret.
@@ -17,7 +18,8 @@ import { conflict } from '../http/errors';
 type AccountKind = 'calendar' | 'mail';
 
 const COLUMNS: Readonly<Record<AccountKind, readonly string[]>> = {
-  calendar: ['provider', 'base_url', 'discovery_url', 'account_email', 'username', 'encrypted_password'],
+  // With what a person sets on it (paused, its name), not what a sync writes (status, times).
+  calendar: ['provider', 'base_url', 'discovery_url', 'account_email', 'username', 'encrypted_password', 'is_active', 'display_name'],
   mail: ['provider', 'email_address', 'username', 'imap_host', 'imap_port', 'smtp_host', 'smtp_port', 'encrypted_password',
     'sync_mode', 'delete_emails_on_server', 'is_active', 'disconnected_at'],
 };

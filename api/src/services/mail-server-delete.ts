@@ -2,6 +2,7 @@ import type { Pool, RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, ApiError } from '../types';
 import type { ProtocolConnection, ProtocolError } from '../types/imap-protocol';
 import { withMailAccountLock } from './mail-account-lock';
+import { withPersonLock, isPersonLockBusy } from './person-lock';
 import crypto from 'crypto';
 import * as imapClient from './mail-imap-client';
 import { guardImapConnection, runGuardedImap, closeImapConnection } from './mail-imap-guard';
@@ -424,8 +425,15 @@ async function processMailServerDeletionForAccountUnlocked(accountId: string, { 
         // waits until the provider answered.
         // And still the account as this pass read it: deletion turned off,
         // or its login or server changed, stops the pass (account-identity.ts).
-        if (!await whileFinalStepAllows({ userId: account.user_id, policies: ['mail.provider_delete'], modules: ['mail'], background: true, unchanged: [chosen] },
-          () => deleteImapUid(connection!, uid))) { stopped = true; break; }
+        // Not while a change of the person's accounts runs (person-lock.ts):
+        // this pass holds the account's lock, which such a change may wait
+        // for, so it does not queue behind it but stops, and runs again later.
+        const erased = await withPersonLock(account.user_id, () => whileFinalStepAllows({ userId: account.user_id, policies: ['mail.provider_delete'], modules: ['mail'], background: true, unchanged: [chosen] },
+          () => deleteImapUid(connection!, uid)), { wait: false }).catch((error: unknown) => {
+          if (isPersonLockBusy(error)) return false;
+          throw error;
+        });
+        if (!erased) { stopped = true; break; }
         await markMailServerMessageDeleteStatus({ id: message.id, status: 'deleted', error: null });
         deleted++;
         processed++;

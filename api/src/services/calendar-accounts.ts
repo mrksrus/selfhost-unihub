@@ -11,6 +11,7 @@ import type { PolicyActor } from './settings';
 import type { PolicyKey } from '../contracts/policies';
 import crypto from 'crypto';
 import { db } from '../state';
+import { conflict } from '../http/errors';
 import { encrypt, decrypt } from '../security/encryption';
 import { isModuleEnabled } from './module-settings';
 import { isSectionRestoreActive } from './restore-locks';
@@ -30,6 +31,7 @@ import { withTransaction } from './transactions';
 import { assertFinalStep } from './final-step';
 import { accountSnapshot, assertUnchanged, lockUnchanged } from './account-identity';
 import type { AccountSnapshot } from './account-identity';
+import { withPersonLock } from './person-lock';
 
 interface AccountRow extends CalendarAccount { provider: string; encrypted_password?: string | null }
 interface MailRow extends MailAccountIdentity {
@@ -137,9 +139,12 @@ async function writeCalDavAccount(cx: SqlExecutor, { userId, emailAddress, displ
 // Each account a change chose is carried as its snapshot (account-identity.ts):
 // the mail account whose login discovery used, and the one whose login
 // matched an account taken over from another mail account.
+// What a remote account's commit asks again under its locks. Every caller
+// names the action's policies and who acts (an administrator's actor passes
+// them, F13): none is assumed.
 interface Admission {
-  actor?: PolicyActor;
-  policies?: readonly PolicyKey[];
+  actor: PolicyActor;
+  policies: readonly PolicyKey[];
   mail?: { id: string; linked?: readonly string[]; snapshot?: AccountSnapshot };
   replaces?: AccountSnapshot | null;
 }
@@ -187,7 +192,7 @@ async function commitAccount(userId: string, existing: { snapshot: AccountSnapsh
     }
     if (existing) assertUnchanged(locked.get(existing.snapshot.id), existing.snapshot);
     if (admission.replaces) assertUnchanged(locked.get(admission.replaces.id), admission.replaces);
-    await assertFinalStep(cx, { userId, policies: admission.policies ?? [], actor: admission.actor, modules: ['calendar'] });
+    await assertFinalStep(cx, { userId, policies: admission.policies, actor: admission.actor, modules: ['calendar'] });
     const accountId = await write(cx);
     const replaced = admission.replaces && admission.replaces.id !== accountId ? admission.replaces.id : null;
     if (replaced) {
@@ -268,7 +273,7 @@ async function probeIcsFeed(rawUrl: unknown) {
   return { url, name };
 }
 
-async function connectIcsSubscription({ userId, url: rawUrl, displayName, mailAccountId = null, emailAddress = null, timeZone }: IcsInput, admission: Admission = {}) {
+async function connectIcsSubscription({ userId, url: rawUrl, displayName, mailAccountId = null, emailAddress = null, timeZone }: IcsInput, admission: Admission) {
   await assertCalendarAvailable(userId);
   if (!rawUrl) throw fail('Enter the address of the calendar.', 400);
   const { url, name } = await probeIcsFeed(rawUrl);
@@ -288,7 +293,7 @@ interface ConnectedCalendar {
   hint?: string | null;
 }
 
-async function connectCalDavAccount({ userId, emailAddress, displayName, username, password, imapHost, caldavUrl, mailAccountId = null, timeZone }: ConnectInput, admission: Admission = {}): Promise<ConnectedCalendar> {
+async function connectCalDavAccount({ userId, emailAddress, displayName, username, password, imapHost, caldavUrl, mailAccountId = null, timeZone }: ConnectInput, admission: Admission): Promise<ConnectedCalendar> {
   await assertCalendarAvailable(userId);
   const provider = caldav.matchCalendarProvider({ emailAddress, imapHost });
   if (caldavUrl && looksLikeIcsFeed(caldavUrl, provider)) {
@@ -379,7 +384,7 @@ async function linkedCalendarAccount(userId: string, mail: MailAddress): Promise
   if (linked[0]) return linked[0];
   const candidate = await restoredMailCalendar(userId, mail);
   if (!candidate) return null;
-  const account = await linkExpectedCalendar(userId, mail, accountSnapshot('calendar', candidate));
+  const account = await linkExpectedCalendar(userId, mail, accountSnapshot('calendar', candidate), null);
   if (account) return account;
   // Another request linked one, or took the candidate, meanwhile.
   const [again] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? ORDER BY created_at ASC LIMIT 1', [userId, mail.id]);
@@ -394,9 +399,17 @@ async function linkedCalendarAccount(userId: string, mail: MailAddress): Promise
 // no longer this mail account's. Never another candidate. Linking drops a
 // restored password and `then` may resume the account: both only while
 // Calendar is on and not being restored, as committed now (final-step.ts).
-async function linkExpectedCalendar(userId: string, mail: MailAddress, expected: AccountSnapshot, then?: (connection: SqlExecutor, account: AccountRow) => Promise<unknown>): Promise<AccountRow | null> {
+// `mailSeen`: the mail account as the caller read it (its login decided a
+// resume), compared under its row; without it, its address must still be
+// the one the candidate was found by. The mail row is locked first.
+async function linkExpectedCalendar(userId: string, mail: MailAddress, expected: AccountSnapshot, mailSeen: AccountSnapshot | null, then?: (connection: SqlExecutor, account: AccountRow) => Promise<unknown>): Promise<AccountRow | null> {
   const expectedId = expected.id;
   return withTransaction(async connection => {
+    if (mailSeen) await lockUnchanged(connection, userId, mailSeen, { lock: 'share' });
+    else {
+      const [[current]] = await connection.execute<(RowDataPacket & MailAddress)[]>('SELECT id, email_address FROM mail_accounts WHERE id = ? AND user_id = ? LOCK IN SHARE MODE', [mail.id, userId]);
+      if (!current || String(current.email_address).toLowerCase() !== String(mail.email_address || '').toLowerCase()) throw conflict('ACCOUNT_CHANGED', 'This account changed in the meantime. Try again.');
+    }
     const [linked] = await connection.execute<(RowDataPacket & AccountRow)[]>(
       'SELECT * FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? ORDER BY created_at ASC FOR UPDATE', [userId, mail.id]);
     let account: AccountRow | null = null;
@@ -437,7 +450,17 @@ async function peekLinkedCalendarAccount(userId: string, mail: MailAddress): Pro
 // account read the link: it finds that mail account by address. Returns the
 // mail account id, or null when it belongs to none (or another account of
 // that mail account was linked first).
+// Under the person's lock (person-lock.ts), from the account read again
+// there: no change of the person's accounts runs between the reads and the link.
 async function relinkRestoredCalendar(account: AccountRow) {
+  if (account.mail_account_id || !account.account_email || !wasMailCalendar(account)) return null;
+  return withPersonLock(account.user_id, async () => {
+    const [[current]] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [account.id, account.user_id]);
+    return current ? relinkNow(current) : null;
+  });
+}
+
+async function relinkNow(account: AccountRow) {
   if (account.mail_account_id || !account.account_email || !wasMailCalendar(account)) return null;
   const [mails] = await db.execute<(RowDataPacket & MailAddress)[]>('SELECT id, email_address FROM mail_accounts WHERE user_id = ? AND LOWER(email_address) = LOWER(?) ORDER BY created_at ASC',
     [account.user_id, account.account_email]);
@@ -509,7 +532,13 @@ function currentManualUrl(account: AccountRow | null) {
 // from reads that change nothing; a restored calendar is linked, dropping
 // its own password, only once the change goes ahead, so a refused request
 // leaves it unlinked with its password.
-async function setMailCalendar(userId: string, mailAccountId: string, { enabled, caldav_url: caldavUrl, time_zone: timeZone }: { enabled?: unknown; caldav_url?: unknown; time_zone?: unknown } = {}, actor: PolicyActor = {}) {
+// Under the person's lock (person-lock.ts), from the first read through
+// discovery to the commit.
+async function setMailCalendar(userId: string, mailAccountId: string, body: { enabled?: unknown; caldav_url?: unknown; time_zone?: unknown } = {}, actor: PolicyActor = {}) {
+  return withPersonLock(userId, () => setMailCalendarNow(userId, mailAccountId, body, actor));
+}
+
+async function setMailCalendarNow(userId: string, mailAccountId: string, { enabled, caldav_url: caldavUrl, time_zone: timeZone }: { enabled?: unknown; caldav_url?: unknown; time_zone?: unknown }, actor: PolicyActor) {
   if (typeof enabled !== 'boolean') throw fail('enabled must be true or false', 400);
   if (caldavUrl !== undefined && caldavUrl !== null && typeof caldavUrl !== 'string') throw fail('Calendar address must be text', 400);
   const requestedUrl = caldavUrl == null ? undefined : caldavUrl.trim();
@@ -534,7 +563,7 @@ async function setMailCalendar(userId: string, mailAccountId: string, { enabled,
   if (!enabled) {
     // A restored one not linked yet goes as it is; one another connect took
     // over for another mail account meanwhile stays (409).
-    if (seen) await removeCalendarAccount(userId, seen.id, { actor, expectMail: [seen.mail_account_id ?? null, mail.id], snapshot: accountSnapshot('calendar', seen) });
+    if (seen) await removeCalendarAccount(userId, seen.id, { actor, expectMail: [seen.mail_account_id ?? null, mail.id], snapshot: accountSnapshot('calendar', seen), mail: accountSnapshot('mail', mail) });
     return describeLink(userId, mail, null);
   }
 
@@ -544,7 +573,7 @@ async function setMailCalendar(userId: string, mailAccountId: string, { enabled,
     // The account seen above, linked if it was a restored one, and resumed,
     // in one transaction; another request linked or removed one meanwhile
     // (this one wrote nothing then).
-    const existing = await linkExpectedCalendar(userId, mail, accountSnapshot('calendar', seen), (cx, account) => cx.execute(resumes
+    const existing = await linkExpectedCalendar(userId, mail, accountSnapshot('calendar', seen), accountSnapshot('mail', mail), (cx, account) => cx.execute(resumes
       ? "UPDATE calendar_accounts SET is_active = TRUE, encrypted_password = NULL, sync_status = 'pending', sync_error = NULL, next_sync_at = NULL WHERE id = ?"
       : 'UPDATE calendar_accounts SET next_sync_at = NULL WHERE id = ?', [account.id]));
     if (!existing) throw fail('The calendar of this mail account changed meanwhile. Try again.', 409, 'MAIL_CALENDAR_CHANGED');

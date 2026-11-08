@@ -1,9 +1,11 @@
 import type { RowDataPacket } from 'mysql2/promise';
+import crypto from 'node:crypto';
 import type { SqlExecutor, StoredFlag } from '../types';
 
 import { READ_ONLY_MAIL_JOB_KINDS } from './mail-sync-scheduler';
 import { evictImapConnections } from './mail-engine/connection-pool';
 import { db } from '../state';
+import { log } from '../log';
 import { isModuleEnabled, isModuleBackgroundEnabled } from './module-settings';
 import { isSectionRestoreActive } from './restore-locks';
 import { canRunModule } from './access-policy';
@@ -74,10 +76,20 @@ async function runMailOperationsNow(accountId: unknown, { foreground = false } =
 // inspectable until reconnect. A running operation job is aborted with the
 // account's other jobs, which hard-closes its guarded transport.
 async function stopMailAccountWork(accountId: unknown, reason = 'Account stopped') {
+  return Boolean(await stopWork(accountId, reason));
+}
+
+// A pause a change owns (stopOwnedMailAccountWork): its account, its own
+// reason and the pause that reason replaced.
+interface OwnedPause { userId: string; accountId: string; reason: string; prior: string | null }
+
+async function stopWork(accountId: unknown, reason: string): Promise<OwnedPause | null> {
   const key = normalizeMailAccountId(accountId);
   const [accounts] = await db.execute<RowDataPacket[]>('SELECT user_id FROM mail_accounts WHERE id = ?', [key]);
-  if (!accounts.length) return false;
-  await (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).pauseAccount({ userId: accounts[0].user_id, accountId: key, reason });
+  if (!accounts.length) return null;
+  const userId = accounts[0].user_id as string;
+  const paused = await (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).pauseAccount({ userId, accountId: key, reason });
+  const prior = paused?.prior ?? null;
   mailDeleteStopRequests.add(key);
   foregroundMutationAccounts.delete(key);
   durableScheduler.interruptAccount(key);
@@ -86,7 +98,21 @@ async function stopMailAccountWork(accountId: unknown, reason = 'Account stopped
   // eligible again until it resumes.
   (require('./mail-idle') as typeof import('./mail-idle')).idleSupervisor.stopAccount(key);
   inboxFollowUps.delete(key);
-  return true;
+  return { userId, accountId: key, reason, prior };
+}
+
+// stopMailAccountWork for a change that may still be refused: its reason is
+// marked as this change's own, and releaseOwnedMailAccountStop puts back the
+// pause it replaced (mail-engine/runtime.ts takeBackPause). Null without the account.
+async function stopOwnedMailAccountWork(accountId: unknown, reason: string) {
+  return stopWork(accountId, `${reason} [${crypto.randomUUID().slice(0, 8)}]`);
+}
+
+// After a refusal: the original refusal stays the answer, so a failure here is only logged.
+async function releaseOwnedMailAccountStop(pause: OwnedPause | null | undefined) {
+  if (!pause) return;
+  await (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).takeBackPause(pause)
+    .catch((error: Error) => log.warn('MAIL', `A refused change could not put back the pause of account ${pause.accountId}`, undefined, error));
 }
 
 // The user's Mail module choice changed (services/module-lifecycle.ts).
@@ -230,6 +256,8 @@ export {
   yieldMailReadWork,
   runMailOperationsNow,
   stopMailAccountWork,
+  stopOwnedMailAccountWork,
+  releaseOwnedMailAccountStop,
   onMailModuleChanged,
   scheduleMailAccountSync,
   getMailSyncState,
@@ -239,3 +267,4 @@ export {
   schedulePeriodicMailWork,
   enqueueIdleRefresh,
 };
+export type { OwnedPause };

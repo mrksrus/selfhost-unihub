@@ -17,6 +17,12 @@ function fixture(t: import('node:test').TestContext, settings: FixtureValue = {}
     // The final step's reads (final-step.ts): no rules revision, every policy at its default.
     if (sql.includes('FROM system_settings') || sql.includes('FROM setting_policies')) return [[]];
     if (sql.startsWith('SELECT COUNT(DISTINCT ca.id)')) return [[{ calendar_accounts: state.calendars, calendar_events: state.calendars * 3 }]];
+    // The whole row, which a disconnect compares under its lock (account-identity.ts).
+    if (sql.startsWith('SELECT * FROM mail_accounts')) {
+      return [state.owned && params[1] === 'owner' ? [{ id: 'account', user_id: 'owner', provider: 'custom', email_address: 'owner@example.test', username: null,
+        imap_host: 'imap.example.test', imap_port: 993, smtp_host: 'smtp.example.test', smtp_port: 465, encrypted_password: state.active ? 'encrypted' : null,
+        sync_mode: 'download', delete_emails_on_server: 0, is_active: state.active ? 1 : 0, disconnected_at: state.active ? null : '2030-01-01 00:00:00' }] : []];
+    }
     if (sql.startsWith('SELECT id') && sql.includes('FROM mail_accounts')) {
       return [state.owned && params[1] === 'owner' ? [{ id: 'account', email_address: 'owner@example.test', is_active: state.active ? 1 : 0 }] : []];
     }
@@ -40,7 +46,8 @@ function fixture(t: import('node:test').TestContext, settings: FixtureValue = {}
     rollback: async () => calls.push({ sql: 'ROLLBACK' }), release() {} };
   setDb({ execute, getConnection: async () => connection } as FixtureValue);
   require.cache[servicePath] = { id: servicePath, filename: servicePath, loaded: true, exports: {
-    stopMailAccountWork: async (id: FixtureValue) => cancellations.push(id),
+    stopOwnedMailAccountWork: async (id: FixtureValue, reason: string) => { cancellations.push(id); return { userId: 'owner', accountId: id, reason, prior: null }; },
+    releaseOwnedMailAccountStop: async (pause: FixtureValue) => { if (pause) cancellations.push(`released ${pause.accountId}`); },
     deleteStoredAttachmentFiles: async () => ({ deletedFiles: 0, failedFiles: 0 }),
   } } as NodeJS.Module;
   require.cache[modulesPath] = { id: modulesPath, filename: modulesPath, loaded: true, exports: {

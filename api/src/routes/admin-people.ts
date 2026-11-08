@@ -121,7 +121,7 @@ export = defineRoutes({
     const userId = req.params.id;
     await assertPersonModule(userId, 'calendar');
     return audited({ action: 'admin.calendar_account_added', actorId: adminId, targetUserId: userId, req, details: { calendar_account: null } },
-      async () => await createCalendarAccount(userId, withoutPassword(body)) as RouteResponse,
+      async () => await createCalendarAccount(userId, withoutPassword(body), { adminId }) as RouteResponse,
       result => ({ calendar_account: (result as { account?: { id?: string } }).account?.id ?? null }));
   }, 50000),
 
