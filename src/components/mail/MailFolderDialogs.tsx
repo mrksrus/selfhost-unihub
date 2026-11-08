@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Edit, Plus, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
-import { ACCOUNT_CHANGED, ApiError, hasCode } from '@/lib/api-error';
+import { ApiError, hasCode } from '@/lib/api-error';
 import { invalidateMailQueries, type MailAccount, type MailFolder } from '@/lib/mail-api';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
