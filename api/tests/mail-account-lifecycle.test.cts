@@ -13,7 +13,9 @@ function fixture(t: import('node:test').TestContext, settings: FixtureValue = {}
   const state = { owned: true, active: false, unresolved: 0, recovered: 0, calendars: 0, calendarEnabled: true, restoring: [], unresolvedAfterDisconnect: 0, audit: [] as string[], ...settings };
   const execute = async (sql: string, params: FixtureValue[] = []) => {
     calls.push({ sql, params });
-    if (sql.includes('FROM backup_restore_jobs')) return [state.restoring.length ? [{ requested_sections: JSON.stringify(state.restoring) }] : []];
+    if (sql.includes('FROM backup_restore_jobs')) return [state.restoring.length ? [{ status: 'running', requested_sections: JSON.stringify(state.restoring) }] : []];
+    // The final step's reads (final-step.ts): no rules revision, every policy at its default.
+    if (sql.includes('FROM system_settings') || sql.includes('FROM setting_policies')) return [[]];
     if (sql.startsWith('SELECT COUNT(DISTINCT ca.id)')) return [[{ calendar_accounts: state.calendars, calendar_events: state.calendars * 3 }]];
     if (sql.startsWith('SELECT id') && sql.includes('FROM mail_accounts')) {
       return [state.owned && params[1] === 'owner' ? [{ id: 'account', email_address: 'owner@example.test', is_active: state.active ? 1 : 0 }] : []];
@@ -43,6 +45,7 @@ function fixture(t: import('node:test').TestContext, settings: FixtureValue = {}
   } } as NodeJS.Module;
   require.cache[modulesPath] = { id: modulesPath, filename: modulesPath, loaded: true, exports: {
     isModuleEnabled: async (_userId: FixtureValue, id: FixtureValue) => id !== 'calendar' || state.calendarEnabled,
+    lockedUserModules: async () => ['mail', 'calendar'].map(id => ({ id, enabled: id !== 'calendar' || state.calendarEnabled, background: true })),
   } } as NodeJS.Module;
   delete require.cache[lifecyclePath];
   const api = require('../dist/src/services/mail-account-lifecycle') as typeof import('../src/services/mail-account-lifecycle');

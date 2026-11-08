@@ -46,7 +46,25 @@ async function getActiveRestoreSectionsByUser(connection: SqlExecutor = db, user
   return active;
 }
 
+const ACTIVE = new Set(['queued', 'running', 'cancelling']);
+
+/**
+ * The sections the person's restores write now, from a locking read of all
+ * of their restore jobs on a transaction's connection: it sees what is
+ * committed whatever the transaction read before, and the rows (and the gap
+ * for a new one) stay locked shared until it ends, so a restore admitted
+ * meanwhile (backup-restore-jobs.ts) waits for it (final-step.ts).
+ */
+async function lockedRestoreSections(userId: string, connection: SqlExecutor) {
+  const [rows] = await connection.execute<(RowDataPacket & { status: string; requested_sections: unknown })[]>(
+    'SELECT status, requested_sections FROM backup_restore_jobs WHERE user_id = ? LOCK IN SHARE MODE', [userId]);
+  const sections = new Set<string>();
+  for (const row of rows) if (ACTIVE.has(row.status)) for (const section of normalizeSections(row.requested_sections)) sections.add(section);
+  return sections;
+}
+
 export {
+  lockedRestoreSections,
   getActiveRestoreSections,
   isSectionRestoreActive,
   getActiveRestoreSectionsByUser,

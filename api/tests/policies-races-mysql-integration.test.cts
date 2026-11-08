@@ -67,9 +67,10 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     finally { clearTimeout(timer); }
   };
   // Holds the app's statement containing `marker` (the first, or the
-  // `occurrence`-th), on the pool or on a connection taken from it, once it
-  // has answered, until `release()`.
-  function pauseAfter(marker: string, { occurrence = 1 } = {}) {
+  // `occurrence`-th), on the pool or on a connection taken from it (only
+  // there with `onConnection`: a transaction's), once it has answered,
+  // until `release()`.
+  function pauseAfter(marker: string, { occurrence = 1, onConnection = false } = {}) {
     const reached = deferred(), released = deferred();
     let seen = 0;
     type Execute = (this: unknown, sql: unknown, ...args: unknown[]) => Promise<unknown>;
@@ -79,7 +80,7 @@ test('a destructive step follows the rules in force when it acts, with an owner,
       return result;
     };
     const execute = pool.execute, getConnection = pool.getConnection;
-    pool.execute = holding(execute as unknown as Execute) as unknown as typeof pool.execute;
+    if (!onConnection) pool.execute = holding(execute as unknown as Execute) as unknown as typeof pool.execute;
     pool.getConnection = async function (this: typeof pool) {
       const cx = await getConnection.call(this) as PoolConnection;
       const own = cx.execute, release = cx.release;
@@ -583,5 +584,359 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     const details = rows.map(row => typeof row.details === 'string' ? JSON.parse(row.details) : row.details);
     assert.deepEqual([rows.length, details[0]?.deleted, await binLeft()], [1, 200, 50], 'the entry names what was deleted, and only that');
     await pool.execute("DELETE FROM bin_items WHERE user_id = ?", [users.alex]);
+  });
+
+  // Review r3: each destructive step checks again in its final transaction,
+  // with current reads, and a restore's admission locks what that check
+  // reads (services/final-step.ts, docs/AUTH_ADMIN_SETTINGS.md "Lock order").
+
+  // The restore worker is held after its scan, so a started restore stays
+  // queued while the case looks at it; `settle` lets it go on to nothing.
+  function holdRestoreWorker() {
+    const hold = pauseAfter("WHERE status IN ('uploaded', 'queued')");
+    return { restore: hold.restore };
+  }
+  async function readyBackup() {
+    const job = crypto.randomUUID();
+    const file = write(path.join(root('backups'), users.alex, `${job}.unihub-backup`), 'synthetic encrypted archive');
+    await pool.execute(`INSERT INTO data_export_jobs (id, user_id, status, phase, progress, created_at, completed_at, file_path)
+      VALUES (?, ?, 'ready', 'complete', 100, UTC_TIMESTAMP() - INTERVAL 40 DAY, UTC_TIMESTAMP() - INTERVAL 40 DAY, ?)`, [job, users.alex, file]);
+    return { job, file };
+  }
+
+  await fromDefaults('S1: a restore started from a backup while its deletion runs keeps its source, and the deletion answers 409', async () => {
+    // The minimum makes the deletion read the backup again in its transaction (its snapshot then).
+    await setPolicies({ 'backup.server_retention_days': 30 });
+    const { job, file } = await readyBackup();
+    const restore = crypto.randomUUID();
+    await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, source_type, source_export_job_id, status, operation, phase, requested_sections, archive_path, validation_result)
+      VALUES (?, ?, 'generated', ?, 'failed', 'restore', 'failed', '["contacts"]', ?, '{"valid":true,"errors":[]}')`, [restore, users.alex, job, file]);
+    const worker = holdRestoreWorker();
+    const pause = pauseAfter('AS deletable_from', { onConnection: true });
+    const pending = alex.request('DELETE', `/api/backup/jobs/${job}`);
+    try {
+      await pause.reached();
+      // Retrying the failed restore, committed while the deletion holds the backup's row.
+      const started = await alex.request('POST', `/api/backup/restore-jobs/${restore}/start`, {});
+      assert.equal(started.status, 202, JSON.stringify(started.body));
+      pause.release();
+      const reply = await pending;
+      assert.equal(reply.status, 409, JSON.stringify(reply.body));
+    } finally { pause.restore(); await pending; }
+    const [[row]] = await pool.query<RowDataPacket[]>('SELECT status, source_export_job_id, archive_path FROM backup_restore_jobs WHERE id = ?', [restore]);
+    assert.deepEqual([row.status, row.source_export_job_id, row.archive_path], ['queued', job, file], 'the restore keeps its source');
+    assert.equal(await count('SELECT COUNT(*) AS count FROM data_export_jobs WHERE id = ?', [job]), 1);
+    assert.ok(fs.existsSync(file), 'and its archive');
+    await pool.execute("UPDATE backup_restore_jobs SET status = 'failed' WHERE id = ?", [restore]);
+    worker.restore();
+    await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
+    await pool.execute('DELETE FROM data_export_jobs WHERE id = ?', [job]);
+    await setPolicies({ 'backup.server_retention_days': null });
+  });
+
+  await fromDefaults('S1: a restore created from a backup while its deletion runs waits, then finds the backup gone', async () => {
+    await setPolicies({ 'backup.server_retention_days': 30 });
+    const { job, file } = await readyBackup();
+    const worker = holdRestoreWorker();
+    const pause = pauseAfter('AS deletable_from', { onConnection: true });
+    const pending = alex.request('DELETE', `/api/backup/jobs/${job}`);
+    let created: ReturnType<typeof alex.request> | undefined;
+    try {
+      await pause.reached();
+      created = alex.request('POST', `/api/backup/jobs/${job}/restore`, {});
+      // Long enough for an admission that does not wait for the backup's row to commit.
+      await new Promise(resolve => setTimeout(resolve, 500));
+      pause.release();
+      const [deletion, restore] = await Promise.all([pending, created]);
+      assert.deepEqual([deletion.status, restore.status], [200, 404], JSON.stringify([deletion.body, restore.body]));
+    } finally { pause.restore(); await pending; await created; }
+    assert.equal(await count('SELECT COUNT(*) AS count FROM backup_restore_jobs WHERE user_id = ?', [users.alex]), 0, 'no restore without its source');
+    assert.equal(fs.existsSync(file), false);
+    worker.restore();
+    await setPolicies({ 'backup.server_retention_days': null });
+  });
+
+  await fromDefaults('Q2: backup.delete forbidden while the person\'s delete runs keeps the backup', async () => {
+    await setPolicies({ 'backup.server_retention_days': 30 });
+    const { job, file } = await readyBackup();
+    // Past the boundary and the early check, before the transaction.
+    const pause = pauseAfter('AS deletable_from');
+    const pending = alex.request('DELETE', `/api/backup/jobs/${job}`);
+    try {
+      await pause.reached();
+      await setPolicies({ 'backup.delete': 'forbidden' });
+      pause.release();
+      const reply = await pending;
+      assert.deepEqual([reply.status, reply.body.code, (reply.body.details as FixtureValue)?.policy], [403, 'POLICY_FORBIDS', 'backup.delete'], JSON.stringify(reply.body));
+    } finally { pause.restore(); await pending; }
+    assert.equal(await count('SELECT COUNT(*) AS count FROM data_export_jobs WHERE id = ?', [job]), 1);
+    assert.ok(fs.existsSync(file), 'its archive stays');
+    await setPolicies({ 'backup.delete': 'allowed', 'backup.server_retention_days': null });
+    await pool.execute('DELETE FROM data_export_jobs WHERE id = ?', [job]);
+  });
+
+  await fromDefaults('Q3: a policy of clearing mail forbidden while the clear stops the accounts\' work keeps the accounts', async () => {
+    const mail = crypto.randomUUID();
+    await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active) VALUES (?, ?, 'clear-policy@example.test', 'custom', 'download', FALSE)", [mail, users.alex]);
+    const pause = pauseAfter('SELECT id FROM mail_accounts WHERE user_id = ? ORDER BY id');
+    const pending = alex.request('POST', '/api/settings/clear-mail-accounts', {});
+    try {
+      await pause.reached();
+      await setPolicies({ 'accounts.reset': 'forbidden' });
+      pause.release();
+      const reply = await pending;
+      assert.deepEqual([reply.status, reply.body.code, (reply.body.details as FixtureValue)?.policy], [403, 'POLICY_FORBIDS', 'accounts.reset'], JSON.stringify(reply.body));
+    } finally { pause.restore(); await pending; }
+    assert.equal(await count('SELECT COUNT(*) AS count FROM mail_accounts WHERE id = ?', [mail]), 1, 'the account stays');
+    await setPolicies({ 'accounts.reset': 'allowed' });
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('S2: clearing mail sees a Mail restore committed after its transaction first read', async () => {
+    const mail = crypto.randomUUID(), restore = crypto.randomUUID();
+    await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active) VALUES (?, ?, 'clear-snapshot@example.test', 'custom', 'download', FALSE)", [mail, users.alex]);
+    // In the clear's transaction, once it has read the module switches.
+    const pause = pauseAfter('FROM user_settings WHERE user_id = ? AND setting_key = ?', { onConnection: true });
+    const pending = alex.request('POST', '/api/settings/clear-mail-accounts', {});
+    try {
+      await pause.reached();
+      await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', '["mail"]')`, [restore, users.alex]);
+      pause.release();
+      const reply = await pending;
+      assert.deepEqual([reply.status, reply.body.code], [409, 'RESTORE_IN_PROGRESS'], JSON.stringify(reply.body));
+    } finally { pause.restore(); await pending; }
+    assert.equal(await count('SELECT COUNT(*) AS count FROM mail_accounts WHERE id = ?', [mail]), 1, 'the account stays');
+    await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('Q1: a mail calendar\'s restored account removed meanwhile is not replaced by another restored one', async () => {
+    const mail = crypto.randomUUID(), first = crypto.randomUUID(), second = crypto.randomUUID();
+    const secret = encrypt('synthetic-calendar-password');
+    await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active) VALUES (?, ?, 'two-restored@example.test', 'custom', 'download', FALSE)", [mail, users.alex]);
+    for (const [id, created] of [[first, '2030-01-01 00:00:00'], [second, '2030-01-02 00:00:00']]) {
+      await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, is_active, encrypted_password, provider_config, created_at)
+        VALUES (?, ?, 'caldav', 'two-restored@example.test', TRUE, ?, '{"mailLinked":true}', ?)`, [id, users.alex, secret, created]);
+    }
+    // After the request saw the first one, it is removed.
+    const pause = pauseAfter('AND LOWER(account_email) = LOWER(?)');
+    const pending = alex.request('PUT', `/api/mail/accounts/${mail}/calendar`, { enabled: true });
+    try {
+      await pause.reached();
+      await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [first]);
+      pause.release();
+      const reply = await pending;
+      assert.deepEqual([reply.status, reply.body.code], [409, 'MAIL_CALENDAR_CHANGED'], JSON.stringify(reply.body));
+    } finally { pause.restore(); await pending; }
+    const [[row]] = await pool.query<RowDataPacket[]>('SELECT mail_account_id, encrypted_password FROM calendar_accounts WHERE id = ?', [second]);
+    assert.deepEqual([row.mail_account_id, row.encrypted_password], [null, secret], 'the other one stays unlinked, with its password');
+    await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [second]);
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('Q4: a move\'s version check of a restored calendar\'s event links nothing when it fails or refuses', async () => {
+    const caldav = require('../dist/src/services/caldav') as typeof import('../src/services/caldav');
+    const calendarSync = require('../dist/src/services/calendar-sync') as typeof import('../src/services/calendar-sync');
+    // A connected mail account, and a restored calendar account of its address (not linked yet, its own password).
+    const mail = crypto.randomUUID(), account = crypto.randomUUID(), calendar = crypto.randomUUID();
+    const local = crypto.randomUUID(), list = crypto.randomUUID();
+    const secret = encrypt('synthetic-calendar-password');
+    await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active, encrypted_password) VALUES (?, ?, 'move-etag@example.test', 'custom', 'download', TRUE, ?)",
+      [mail, users.alex, encrypt('synthetic-mail-password')]);
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, is_active, encrypted_password, base_url, provider_config)
+      VALUES (?, ?, 'caldav', 'move-etag@example.test', TRUE, ?, 'https://caldav.example.test/', '{"mailLinked":true}')`, [account, users.alex, secret]);
+    await pool.execute(`INSERT INTO calendar_calendars (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
+      VALUES (?, ?, ?, 'Restored', 'https://caldav.example.test/calendars/restored/', '#2563eb', TRUE, FALSE, FALSE, TRUE)`, [calendar, users.alex, account]);
+    await pool.execute("INSERT INTO calendar_accounts (id, user_id, provider, display_name) VALUES (?, ?, 'local', 'UniHub')", [local, users.alex]);
+    await pool.execute(`INSERT INTO calendar_calendars (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
+      VALUES (?, ?, ?, 'Errands', 'local-errands-q4', '#2563eb', TRUE, FALSE, FALSE, FALSE)`, [list, users.alex, local]);
+    // One event of it, stored without an ETag.
+    const event = crypto.randomUUID(), object = crypto.randomUUID(), uid = `${crypto.randomUUID()}@example.test`;
+    const href = '/calendars/restored/synthetic-q4.ics';
+    const ics = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:${uid}\r\nDTSTART:20300115T100000Z\r\nDTEND:20300115T110000Z\r\nSUMMARY:Synthetic\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`;
+    await pool.execute("INSERT INTO calendar_events (id, user_id, calendar_id, title, start_time, end_time) VALUES (?, ?, ?, 'Synthetic', '2030-01-15 10:00:00', '2030-01-15 11:00:00')", [event, users.alex, calendar]);
+    await pool.execute(`INSERT INTO calendar_remote_objects (id, user_id, account_id, calendar_id, href, href_hash, etag, uid, ics) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+      [object, users.alex, account, calendar, href, crypto.createHash('sha256').update(href).digest('hex'), uid, ics]);
+    await pool.execute(`INSERT INTO calendar_event_external_refs (user_id, event_id, calendar_id, account_id, provider, external_event_id, external_etag, remote_object_id)
+      VALUES (?, ?, ?, ?, 'caldav', ?, NULL, ?)`, [users.alex, event, calendar, account, uid, object]);
+    const getCalendarObject = caldav.getCalendarObject, inBackground = calendarSync.syncCalendarAccountInBackground;
+    (calendarSync as { syncCalendarAccountInBackground: unknown }).syncCalendarAccountInBackground = () => undefined;
+    try {
+      for (const [what, answer, status, code] of [
+        ['the server cannot be read', async () => { throw new Error('synthetic upstream failure'); }, 500, undefined],
+        ['the server reports no version', async () => ({ etag: null, ics }), 409, 'CALDAV_CONFLICT'],
+      ] as const) {
+        (caldav as { getCalendarObject: unknown }).getCalendarObject = answer;
+        const reply = await alex.request('POST', `/api/calendar/events/${event}/move`, { calendar_id: list });
+        assert.deepEqual([what, reply.status, reply.body.code], [what, status, code], JSON.stringify(reply.body));
+        const [[row]] = await pool.query<RowDataPacket[]>('SELECT mail_account_id, encrypted_password FROM calendar_accounts WHERE id = ?', [account]);
+        assert.deepEqual([what, row.mail_account_id, row.encrypted_password], [what, null, secret], 'still unlinked, with its password');
+        assert.deepEqual((await pool.query<RowDataPacket[]>('SELECT calendar_id FROM calendar_events WHERE id = ?', [event]))[0].map(entry => entry.calendar_id), [calendar], 'the event stays');
+      }
+    } finally {
+      (caldav as { getCalendarObject: unknown }).getCalendarObject = getCalendarObject;
+      (calendarSync as { syncCalendarAccountInBackground: unknown }).syncCalendarAccountInBackground = inBackground;
+    }
+    await pool.execute('DELETE FROM calendar_accounts WHERE id IN (?, ?)', [account, local]);
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  // Review r4: a restored calendar's relink, and a mail calendar's address
+  // replaced, write only under Calendar's final check (final-step.ts).
+  await fromDefaults('S1 r4: a restored calendar is not linked, nor its password dropped, once Calendar is restored or off meanwhile', async () => {
+    const calendarAccounts = require('../dist/src/services/calendar-accounts') as typeof import('../src/services/calendar-accounts');
+    const calendarSync = require('../dist/src/services/calendar-sync') as typeof import('../src/services/calendar-sync');
+    const inBackground = calendarSync.syncCalendarAccountInBackground;
+    (calendarSync as { syncCalendarAccountInBackground: unknown }).syncCalendarAccountInBackground = () => undefined;
+    try {
+      for (const caller of ['person', 'administrator'] as const) {
+        for (const late of ['restore', 'module off'] as const) {
+          const what = `${caller}, ${late}`;
+          const address = `relink-${caller}-${late.replace(' ', '-')}@example.test`;
+          const mail = crypto.randomUUID(), calendar = crypto.randomUUID(), restore = crypto.randomUUID();
+          const secret = encrypt('synthetic-calendar-password');
+          await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active, encrypted_password) VALUES (?, ?, ?, 'custom', 'download', TRUE, ?)",
+            [mail, users.alex, address, encrypt('synthetic-mail-password')]);
+          await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, is_active, encrypted_password, provider_config) VALUES (?, ?, 'caldav', ?, TRUE, ?, '{"mailLinked":true}')`,
+            [calendar, users.alex, address, secret]);
+          // Held once the request has seen the restored calendar, past its early checks.
+          const pause = pauseAfter('AND mail_account_id IS NULL AND LOWER(account_email)');
+          const pending = caller === 'person'
+            ? alex.request('PUT', `/api/mail/accounts/${mail}/calendar`, { enabled: true }).then(reply => ({ status: reply.status, code: reply.body.code }))
+            : calendarAccounts.setMailCalendar(users.alex, mail, { enabled: true }, { adminId: users.admin })
+              .then(() => ({ status: 200, code: undefined }), (error: FixtureValue) => ({ status: error.status, code: error.code }));
+          try {
+            await pause.reached();
+            if (late === 'restore') await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', '["calendar"]')`, [restore, users.alex]);
+            else await call(alex, 'PUT', '/api/modules', { modules: { calendar: { enabled: false } } });
+            pause.release();
+            const answer = await pending;
+            assert.deepEqual([what, answer.status, answer.code], [what, late === 'restore' ? 409 : 403, late === 'restore' ? 'RESTORE_IN_PROGRESS' : 'MODULE_DISABLED']);
+          } finally { pause.restore(); await pending; }
+          const [[row]] = await pool.query<RowDataPacket[]>('SELECT mail_account_id, encrypted_password FROM calendar_accounts WHERE id = ?', [calendar]);
+          assert.deepEqual([what, row.mail_account_id, row.encrypted_password], [what, null, secret], 'still unlinked, with its password');
+          await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
+          if (late === 'module off') await call(alex, 'PUT', '/api/modules', { modules: { calendar: { enabled: true } } });
+          await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [calendar]);
+          await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+        }
+      }
+    } finally { (calendarSync as { syncCalendarAccountInBackground: unknown }).syncCalendarAccountInBackground = inBackground; }
+  });
+
+  await fromDefaults('Q2 r4: a mail calendar\'s new address refused after its discovery leaves the old account and the one it would take over as they were', async () => {
+    const caldav = require('../dist/src/services/caldav') as FixtureValue;
+    const calendarSync = require('../dist/src/services/calendar-sync') as FixtureValue;
+    const address = 'replace-r4@example.test', url = 'https://new.example.test/dav/', oldUrl = 'https://old.example.test/dav/';
+    const mail = crypto.randomUUID(), old = crypto.randomUUID(), restored = crypto.randomUUID();
+    const secret = encrypt('synthetic-restored-password');
+    await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active, encrypted_password) VALUES (?, ?, ?, 'custom', 'download', TRUE, ?)",
+      [mail, users.alex, address, encrypt('synthetic-mail-password')]);
+    // The account linked now, at its manual address, and a restored one of the new address.
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, username, is_active, mail_account_id, base_url, provider_config) VALUES (?, ?, 'caldav', ?, ?, TRUE, ?, ?, ?)`,
+      [old, users.alex, address, address, mail, oldUrl, JSON.stringify({ mailLinked: true, server: { url: oldUrl, source: 'manual' } })]);
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, username, is_active, base_url, encrypted_password, provider_config) VALUES (?, ?, 'caldav', ?, ?, TRUE, ?, ?, ?)`,
+      [restored, users.alex, address, address, url, secret, JSON.stringify({ mailLinked: true, server: { url, source: 'manual' } })]);
+    const find = caldav.findCalDavServer, reconcile = calendarSync.reconcileCalendarList, inBackground = calendarSync.syncCalendarAccountInBackground;
+    let discovering = deferred(), discovered = deferred();
+    caldav.findCalDavServer = async () => {
+      discovering.resolve(); await discovered.promise;
+      return { server: { url, source: 'manual', label: 'Synthetic' }, discovery: { baseUrl: url, principalHref: '/principal/', calendars: [] }, credentialScope: { origin: 'https://new.example.test' } };
+    };
+    calendarSync.reconcileCalendarList = async () => [];
+    calendarSync.syncCalendarAccountInBackground = () => undefined;
+    const accountsOf = async () => (await pool.query<RowDataPacket[]>('SELECT id, mail_account_id, encrypted_password FROM calendar_accounts WHERE id IN (?, ?) ORDER BY id', [old, restored]))[0]
+      .map(row => [row.id, row.mail_account_id, row.encrypted_password]);
+    const before = await accountsOf();
+    let pending: ReturnType<typeof alex.request> | undefined;
+    try {
+      pending = alex.request('PUT', `/api/mail/accounts/${mail}/calendar`, { enabled: true, caldav_url: url });
+      await within(discovering.promise);
+      await setPolicies({ 'accounts.remove': 'forbidden' });
+      discovered.resolve();
+      const reply = await pending;
+      assert.deepEqual([reply.status, reply.body.code, (reply.body.details as FixtureValue)?.policy], [403, 'POLICY_FORBIDS', 'accounts.remove'], JSON.stringify(reply.body));
+      assert.deepEqual(await accountsOf(), before, 'both accounts as they were');
+      // Allowed again, the same change takes the restored one over and removes the old one together.
+      await setPolicies({ 'accounts.remove': 'allowed' });
+      discovering = deferred(); discovered = deferred(); discovered.resolve();
+      await call(alex, 'PUT', `/api/mail/accounts/${mail}/calendar`, { enabled: true, caldav_url: url });
+      assert.deepEqual(await accountsOf(), [[restored, mail, null]], 'taken over, linked, the old one gone');
+    } finally {
+      discovered.resolve();
+      await pending;
+      caldav.findCalDavServer = find; calendarSync.reconcileCalendarList = reconcile; calendarSync.syncCalendarAccountInBackground = inBackground;
+    }
+    await pool.execute('DELETE FROM calendar_accounts WHERE id IN (?, ?)', [old, restored]);
+    await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  // A restored calendar of a connected mail account's address, not linked yet, with its own password.
+  async function restoredUnlinked(address: string) {
+    const mail = crypto.randomUUID(), calendar = crypto.randomUUID();
+    const secret = encrypt('synthetic-calendar-password');
+    await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active, encrypted_password) VALUES (?, ?, ?, 'custom', 'download', TRUE, ?)",
+      [mail, users.alex, address, encrypt('synthetic-mail-password')]);
+    await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, is_active, encrypted_password, base_url, provider_config)
+      VALUES (?, ?, 'caldav', ?, TRUE, ?, 'https://caldav.example.test/', '{"mailLinked":true}')`, [calendar, users.alex, address, secret]);
+    return {
+      mail, calendar,
+      unchanged: async (what: string) => {
+        const [[row]] = await pool.query<RowDataPacket[]>('SELECT mail_account_id, encrypted_password FROM calendar_accounts WHERE id = ?', [calendar]);
+        assert.deepEqual([what, row.mail_account_id, row.encrypted_password], [what, null, secret], 'still unlinked, with its password');
+      },
+      remove: async () => {
+        await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [calendar]);
+        await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+      },
+    };
+  }
+
+  await fromDefaults('r5: reading a mail account\'s calendar shows a restored one as waiting to be linked, and writes nothing', async () => {
+    const restored = await restoredUnlinked('read-only-link@example.test');
+    const answer = await call(alex, 'GET', `/api/mail/accounts/${restored.mail}/calendar`);
+    await restored.unchanged('read');
+    assert.deepEqual([answer.calendar.enabled, answer.calendar.link_pending, answer.calendar.account?.id], [true, true, restored.calendar]);
+    await call(blair, 'GET', `/api/mail/accounts/${restored.mail}/calendar`, undefined, 404);
+    await restored.remove();
+  });
+
+  await fromDefaults('r5: a read while a Calendar restore is admitted leaves the restored calendar as it was', async () => {
+    const restored = await restoredUnlinked('read-during-restore@example.test');
+    const restore = crypto.randomUUID();
+    // Held once the read has found the restored calendar, past its early checks.
+    const pause = pauseAfter('AND mail_account_id IS NULL AND LOWER(account_email)');
+    const pending = alex.request('GET', `/api/mail/accounts/${restored.mail}/calendar`);
+    try {
+      await pause.reached();
+      await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', '["calendar"]')`, [restore, users.alex]);
+      pause.release();
+      await pending;
+    } finally { pause.restore(); await pending; }
+    await restored.unchanged('read during a restore');
+    await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
+    await restored.remove();
+  });
+
+  await fromDefaults('r5: a sync that would link a restored calendar stops when a Calendar restore is admitted under its lock', async () => {
+    const caldav = require('../dist/src/services/caldav') as FixtureValue;
+    const calendarSync = require('../dist/src/services/calendar-sync') as typeof import('../src/services/calendar-sync');
+    const restored = await restoredUnlinked('sync-during-restore@example.test');
+    const restore = crypto.randomUUID();
+    // No calendar server: a sync that got past its login fails there, which this case does not need.
+    const listCalendars = caldav.listCalendars;
+    caldav.listCalendars = async () => { throw new Error('synthetic: no calendar server'); };
+    // Held at the sync's login, under its account lock and past its gate.
+    const pause = pauseAfter('SELECT ca.provider, ca.provider_config, ca.account_email');
+    const pending = calendarSync.syncCalendarAccount(restored.calendar, { userId: users.alex }).then(result => result, (error: Error) => ({ error: error.message }));
+    try {
+      await pause.reached();
+      await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', '["calendar"]')`, [restore, users.alex]);
+      pause.release();
+      assert.deepEqual(await pending, { skipped: true, reason: 'paused' });
+    } finally { pause.restore(); await pending; caldav.listCalendars = listCalendars; }
+    await restored.unchanged('sync during a restore');
+    await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
+    await restored.remove();
   });
 });

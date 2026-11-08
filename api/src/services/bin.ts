@@ -338,9 +338,10 @@ interface BinDeleteActor {
  * Removes items for good, in one transaction, then their files. A synced
  * item being created at its server again stops (its journal row goes with
  * it); a copy the server took meanwhile shows with the next sync as an item
- * of its own. For the person, bin.delete is asked again in each transaction
- * after its row locks, as the purge asks for its minimum: the request
- * boundary's answer may be older than an administrator's save.
+ * of its own. Each transaction ends with the final step (final-step.ts)
+ * after its row locks: bin.delete for the person (the request boundary's
+ * answer may be older than an administrator's save), and the switch and
+ * restore lock of every module the items belong to.
  */
 async function deleteForGood(userId: string, rows: readonly BinRow[], { adminId, record }: BinDeleteActor = {}) {
   if (!rows.length) return 0;
@@ -350,8 +351,8 @@ async function deleteForGood(userId: string, rows: readonly BinRow[], { adminId,
     await connection.execute(`SELECT id FROM calendar_event_moves WHERE user_id = ? AND bin_item_id IN (${placeholders(ids)}) FOR UPDATE`, [userId, ...ids]);
     const locked = await ownedItems(connection, userId, ids, { lock: true });
     if (!locked.length) return [];
-    const { assertAllowed } = require('./settings') as typeof import('./settings');
-    await assertAllowed(userId, 'bin.delete', { adminId }, connection, { lock: true });
+    const { assertFinalStep } = require('./final-step') as typeof import('./final-step');
+    await assertFinalStep(connection, { userId, policies: ['bin.delete'], actor: { adminId }, modules: [...new Set(locked.map(row => row.module))] });
     await connection.execute(`DELETE FROM bin_items WHERE user_id = ? AND id IN (${placeholders(locked.map(row => row.id))})`, [userId, ...locked.map(row => row.id)]);
     if (record) await record(connection, locked);
     return locked;
@@ -452,6 +453,7 @@ async function purgeBin({ now = new Date(), active = () => true }: PurgeOptions 
         if (module === 'contacts') {
           merges += await withTransaction(async cx => {
             await lockPersonForRetention(cx, userId, 'share');
+            if (!await purgeMayGo(cx, userId, module)) return 0;
             const days = await retentionNow(userId, cx, true);
             return days === null ? 0 : purgeMergeRecords(cx, userId, { now, minDays: Math.max(days, MERGE_UNDO_DAYS) });
           });
@@ -475,7 +477,9 @@ async function purgeBin({ now = new Date(), active = () => true }: PurgeOptions 
             const restoring = new Set(journals.map(row => String(row.bin_item_id)));
             const [locked] = await cx.execute<BinRow[]>(
               `SELECT * FROM bin_items FORCE INDEX (PRIMARY) WHERE id IN (${placeholders(ids)}) AND user_id = ? ORDER BY id FOR UPDATE`, [...ids, userId]);
-            // The locks above may have waited while an administrator raised the floor.
+            // The locks above may have waited while an administrator raised
+            // the floor, switched the module off or a restore was admitted.
+            if (!await purgeMayGo(cx, userId, module)) return { removed: [] as BinRow[], last: null };
             const keep = await retentionNow(userId, cx, true);
             if (keep === null) return { removed: [] as BinRow[], last: null };
             // Still due by its time and the retention in force now; an undone merge's rows go at their time.
@@ -496,6 +500,21 @@ async function purgeBin({ now = new Date(), active = () => true }: PurgeOptions 
     }
   }
   return { items, merges };
+}
+
+/**
+ * The purge's final step (final-step.ts): the module on and not being
+ * restored, as committed now; a refusal leaves the items for a later hour.
+ */
+async function purgeMayGo(cx: SqlExecutor, userId: string, module: BinModule) {
+  const { assertFinalStep } = require('./final-step') as typeof import('./final-step');
+  try {
+    await assertFinalStep(cx, { userId, modules: [module] });
+    return true;
+  } catch (error) {
+    if (error instanceof ApiError && (error.code === 'MODULE_DISABLED' || error.code === 'RESTORE_IN_PROGRESS')) return false;
+    throw error;
+  }
 }
 
 /**

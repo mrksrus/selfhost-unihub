@@ -20,6 +20,9 @@ import crypto from 'crypto';
 import { db } from '../state';
 import { decrypt } from '../security/encryption';
 import { canRunModule } from './access-policy';
+import { assertFinalStep, underFinalStep } from './final-step';
+import { changeInProgress, isLockWaitTimeout } from '../http/errors';
+import type { PolicyActor } from './settings';
 import { publishCalendarChanged } from './realtime';
 import { sweepRemoteRanks } from './task-order';
 import { isDeadlock, DEADLOCK_RETRIES } from './transactions';
@@ -241,8 +244,10 @@ async function requestIdentities(executor: SqlExecutor, userId: string, accountI
   return identities;
 }
 
-async function accountLogin(account: Account, signal?: AbortSignal) {
-  const { username, encryptedPassword } = await resolveLogin(account);
+// `write: false`: before a change is admitted, the login without linking a
+// restored calendar or unlinking one from deleted mail (resolveLogin).
+async function accountLogin(account: Account, signal?: AbortSignal, { write = true }: { write?: boolean } = {}) {
+  const { username, encryptedPassword } = await resolveLogin(account, false, { write });
   // Missing values are passed on as null, as before; davRequest treats them as absent.
   return {
     username: username as string | undefined,
@@ -350,15 +355,19 @@ async function deleteCalendarsWithEvents(connection: SqlExecutor, userId: string
   await connection.execute(`DELETE FROM calendar_calendars WHERE user_id = ? AND id IN (${placeholders})`, [userId, ...calendarIds]);
 }
 
-// inTransaction: written with the deletion (an administrator's activity-log entry).
-async function deleteCalendarAccount(userId: string, accountId: string, inTransaction?: (connection: SqlExecutor) => Promise<unknown>) {
+// Under the account's row, the final check (final-step.ts): accounts.remove
+// (an administrator's actor passes it), Calendar on and not being restored.
+// record: written with the deletion (an administrator's activity-log entry).
+async function deleteCalendarAccount(userId: string, accountId: string, { actor = {}, record }: { actor?: PolicyActor; record?: (connection: SqlExecutor) => Promise<unknown> } = {}) {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
+    await connection.execute('SELECT id FROM calendar_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
+    await assertFinalStep(connection, { userId, policies: ['accounts.remove'], actor, modules: ['calendar'] });
     const [calendars] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_calendars WHERE account_id = ? AND user_id = ?', [accountId, userId]);
     await deleteCalendarsWithEvents(connection, userId, calendars.map(row => row.id));
     await connection.execute('DELETE FROM calendar_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
-    if (inTransaction) await inTransaction(connection);
+    if (record) await record(connection);
     await connection.commit();
   } catch (error) {
     await connection.rollback();
@@ -938,7 +947,7 @@ async function runAccountSync(accountId: string, { userId, reason, full, pass }:
     try {
       // Registered and checked in one step: a stop before this has ended the pass.
       if (pass?.aborted) throw STOP_REASONS.stopping();
-      return await syncLocked(accountId, { userId, full }, work.signal);
+      return await syncLocked(accountId, { userId, full, background }, work.signal);
     } finally { work.release(); }
   });
 }
@@ -966,14 +975,19 @@ async function noteMissingLogin(account: Account, message: string) {
 
 const MISSING_LOGIN = new Map([['MAIL_ACCOUNT_DISCONNECTED', 'mail-disconnected'], ['CALDAV_NO_PASSWORD', 'no-password'], ['MAIL_CALENDAR_UNLINKED', 'mail-unlinked']]);
 
-async function syncLocked(accountId: string, { userId, full }: SyncOptions, signal: AbortSignal) {
-  // Reloaded under the lock: a change while the lock was awaited counts.
+async function syncLocked(accountId: string, { userId, full, background = false }: SyncOptions & { background?: boolean }, signal: AbortSignal) {
+  // Reloaded under the lock: a change while the lock was awaited counts,
+  // and so do Calendar switched off and a restore admitted meanwhile.
   const account = await loadAccount(accountId, userId);
   if (!account || !account.is_active) return { skipped: true, reason: 'inactive' };
+  if (!await canRunModule(account.user_id, 'calendar', { background })) return { skipped: true, reason: 'paused' };
   let login: Login | null = null;
   if (account.provider === 'caldav') {
+    // Linking a restored calendar on the way is guarded (linkExpectedCalendar):
+    // a restore admitted after the check above refuses it, and the sync stops.
     try { login = await accountLogin(account, signal); } catch (error) {
       const code = (error as ApiError).code;
+      if (code === 'RESTORE_IN_PROGRESS' || code === 'MODULE_DISABLED') return { skipped: true, reason: 'paused' };
       if (!code || !MISSING_LOGIN.has(code)) throw error;
       await noteMissingLogin(account, (error as ApiError).message);
       return { skipped: true, reason: MISSING_LOGIN.get(code) };
@@ -1110,10 +1124,12 @@ function assertWritable({ account, calendar }: BaseContext) {
 
 // Every writeback reads its login here, for a linked calendar from its mail
 // account, so a disconnected mail account's login is never used.
-async function withWriteContext<T>(base: BaseContext, write: (ctx: WriteContext) => Promise<T>): Promise<T> {
+// `linking: false` for a read before the change is admitted: its login
+// links nothing (accountLogin).
+async function withWriteContext<T>(base: BaseContext, write: (ctx: WriteContext) => Promise<T>, { linking = true }: { linking?: boolean } = {}): Promise<T> {
   const work = beginAccountWork(base.account.id);
   try {
-    return await write({ ...base, login: await accountLogin(base.account, work.signal), timeZone: await resolveTimeZone(base.account) });
+    return await write({ ...base, login: await accountLogin(base.account, work.signal, { write: linking }), timeZone: await resolveTimeZone(base.account) });
   } finally { work.release(); }
 }
 
@@ -1272,7 +1288,11 @@ async function pushEventDelete({ userId, event, scope, beforeRemove }: EventInpu
       const ics = ical.removeOccurrenceIcs(link.object.ics, link.recurrenceId, { userTimeZone: ctx.timeZone });
       if (ics) {
         await fenceTaskLocks();
-        const { etag } = await caldav.putCalendarObject({ url, ics, etag: link.object.etag, ...ctx.login }).catch(error => handleConflict(ctx, error));
+        // The date is gone for good (no bin copy): sent under the final check
+        // (final-step.ts), bin.delete and Calendar on and not being restored
+        // as committed now, held until the server answered.
+        const { etag } = await underFinalStep({ userId, policies: ['bin.delete'], modules: ['calendar'] },
+          () => caldav.putCalendarObject({ url, ics, etag: link.object.etag, ...ctx.login })).catch(error => handleConflict(ctx, error));
         await fenceTaskLocks();
         const object = await storeObject(db, ctx.account, ctx.calendar, { id: link.object.id, href: link.object.href, etag, ics });
         await applyObject(rebuildContext(ctx), ctx.calendar, object);
@@ -1291,7 +1311,11 @@ async function pushEventDelete({ userId, event, scope, beforeRemove }: EventInpu
 // Route response for a failed sync or writeback. Raw server statuses must not
 // reach the browser as-is: a 401 there would look like an expired session.
 function calendarErrorResponse(error: unknown, fallback: string) {
-  if ((error as ApiError)?.code && (error as ApiError).status) return { error: (error as ApiError).message, status: (error as ApiError).status, code: (error as ApiError).code };
+  if (isLockWaitTimeout(error)) return changeInProgress();
+  if ((error as ApiError)?.code && (error as ApiError).status) {
+    const { message, status, code, details } = error as ApiError & { details?: unknown };
+    return { error: message, status, code, ...(details === undefined ? {} : { details }) };
+  }
   if ((error as ApiError)?.status === 401) return { error: 'The calendar server rejected the login. Update the password of this account.', status: 422, code: 'CALDAV_AUTH_FAILED' };
   if ((error as ApiError)?.status === 403) return { error: 'The calendar server refused this change.', status: 422, code: 'CALDAV_FORBIDDEN' };
   if ((error as ApiError)?.status) return { error: `The calendar server could not complete the request (${(error as ApiError).status}).`, status: 502, code: 'CALDAV_SERVER_ERROR' };

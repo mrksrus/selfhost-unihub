@@ -24,6 +24,7 @@ import { db } from '../state';
 import { ApiError, badRequest, notFound } from '../http/errors';
 import { log } from '../log';
 import { withTransaction } from './transactions';
+import { assertFinalStep } from './final-step';
 import { getActiveRestoreSections } from './restore-locks';
 import { fileRemovalGate } from './file-removal-gate';
 
@@ -455,6 +456,9 @@ async function removeContactPhoto(userId: string, contactId: string): Promise<bo
       await lockOwnedContact(cx, userId, contactId);
       const row = await currentPhoto(cx, userId, contactId);
       if (!row) return null;
+      // Deleted for good (no bin): the route's policy and Contacts' gates,
+      // as they are now (final-step.ts).
+      await assertFinalStep(cx, { userId, policies: ['bin.delete'], modules: ['contacts'] });
       await cx.execute('DELETE FROM contact_photos WHERE contact_id = ? AND user_id = ?', [contactId, userId]);
       await cx.execute('UPDATE contacts SET version = version + 1 WHERE id = ? AND user_id = ?', [contactId, userId]);
       return [row.sha256, row.thumb_sha256];

@@ -595,8 +595,9 @@ async function admitMove(userId: string, eventId: string, targetCalendarId: stri
   // means the server has news, and the sync reads it first.
   let sourceEtag: string | null = link?.object.etag ?? null;
   if (link && !sourceEtag) {
+    // Not admitted yet: read with the login that links nothing.
     const found = await calendarSync.withWriteContext(source!.remote!, ctx =>
-      caldav.getCalendarObject({ url: calendarSync.objectUrl(ctx.account, { href: link.object.href }), ...ctx.login }));
+      caldav.getCalendarObject({ url: calendarSync.objectUrl(ctx.account, { href: link.object.href }), ...ctx.login }), { linking: false });
     if (!found?.etag || found.ics !== link.object.ics) {
       await db.execute('UPDATE calendar_calendars SET remote_ctag = NULL WHERE id = ?', [source!.id]);
       calendarSync.syncCalendarAccountInBackground(source!.remote!.account.id, { userId, reason: 'conflict' });

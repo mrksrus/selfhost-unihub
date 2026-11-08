@@ -1,5 +1,6 @@
 import type { ExecuteValues, RowDataPacket } from 'mysql2/promise';
 import type { ApiError, SqlExecutor } from '../types';
+import type { PolicyActor } from './settings';
 import type { CalendarAccount } from '../types/calendar';
 import crypto from 'crypto';
 import { db } from '../state';
@@ -150,8 +151,9 @@ async function updateCalendarAccount(userId: string, id: string, body: Input) {
   return { account: serializeCalendarAccount(rows[0]) };
 }
 
-// inTransaction: written with the deletion (routes/admin-people.ts, the administrator's entry).
-async function deleteCalendarAccount(userId: string, id: string, { inTransaction }: { inTransaction?: (connection: SqlExecutor) => Promise<unknown> } = {}) {
+// actor and record: an administrator's (routes/admin-people.ts), who passes
+// accounts.remove, and their entry, written with the deletion.
+async function deleteCalendarAccount(userId: string, id: string, { actor = {}, record }: { actor?: PolicyActor; record?: (connection: SqlExecutor) => Promise<unknown> } = {}) {
   if (!CALENDAR_MULTI_ENABLED) return disabled();
   if (!id) return { error: 'Invalid account id', status: 400 };
   const [accounts] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
@@ -169,7 +171,7 @@ async function deleteCalendarAccount(userId: string, id: string, { inTransaction
   }
 
   // Only the copies in UniHub are removed; the server keeps its calendars.
-  await calendarAccounts.removeCalendarAccount(userId, id, inTransaction);
+  await calendarAccounts.removeCalendarAccount(userId, id, { actor, record });
   return { message: 'Calendar account deleted' };
 }
 

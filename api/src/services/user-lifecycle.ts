@@ -13,6 +13,7 @@ import { realtime } from './realtime';
 import { fileRemovalGate } from './file-removal-gate';
 import { log } from '../log';
 import { recordAudit } from './audit';
+import { assertFinalStep } from './final-step';
 import type { AuthRequest } from '../types';
 
 type DeleteActor = 'self' | 'admin';
@@ -62,6 +63,12 @@ async function deleteUser(userId: string, { actor, actorId = null, req = null }:
   const recordingPaths = recordings.map(row => row.storage_path).filter((value): value is string => Boolean(value));
 
   const deleted = await withTransaction(async connection => {
+    // Under the person's row, the final check (final-step.ts): their own
+    // request still allowed (account.delete), and no restore of theirs
+    // admitted meanwhile.
+    const [[person]] = await connection.execute<RowDataPacket[]>('SELECT id FROM users WHERE id = ? FOR UPDATE', [userId]);
+    if (!person) return false;
+    await assertFinalStep(connection, { userId, policies: actor === 'self' ? ['account.delete'] : [], anyRestore: true });
     const [result] = await connection.execute<ResultSetHeader>('DELETE FROM users WHERE id = ?', [userId]);
     if (result.affectedRows > 0) {
       await recordAudit({ action: actor === 'admin' ? 'admin.user_deleted' : 'auth.account_deleted', actorId, targetUserId: userId, req }, connection);

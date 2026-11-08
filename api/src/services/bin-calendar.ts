@@ -177,7 +177,9 @@ const syncBusy = (): Refusal => ({ error: 'This calendar is being synced right n
  * written until the bin item is committed: a sync running meanwhile would
  * see the item gone at the server and remove its rows before the bin took
  * them. Deleting one date of a repeating server event removes it at the
- * server for good, so bin.delete must allow it (F13), checked before.
+ * server for good, so bin.delete must allow it (F13): asked before, for a
+ * quick answer, and again under the final check when the server is written
+ * (calendar-sync.ts pushEventDelete).
  */
 async function deleteEventToBin(userId: string, event: CalendarEvent, scope: 'series' | 'occurrence'): Promise<{ binned: string | null } | { refused: Refusal }> {
   const write = await calendarSync.describeEventWrite(userId, event);

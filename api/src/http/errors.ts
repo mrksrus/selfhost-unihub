@@ -29,10 +29,19 @@ const conflict = (code: string, message: string, details?: unknown) => new ApiEr
 // A type alias, not an interface: a route returns it where RouteResponse is expected.
 type ClientErrorResponse = { error: string; status: number; code?: string; details?: unknown };
 
+// A change that waited too long for rows another change holds (MariaDB's
+// lock wait timeout) was rolled back and did nothing; the request can simply
+// be sent again. Nothing replays it here: a provider command is never sent
+// twice by the server (final-step.ts takes its locks before the command).
+const changeInProgress = (): ClientErrorResponse => ({ error: 'Another change is in progress. Try again in a moment.', status: 503, code: 'CHANGE_IN_PROGRESS' });
+const isLockWaitTimeout = (error: unknown) => (error as { code?: unknown } | null | undefined)?.code === 'ER_LOCK_WAIT_TIMEOUT';
+
 // Route catch blocks and the request boundary answer a caught error through
-// this: a 4xx with a message meant for the client keeps it, everything else
-// becomes the route's fallback text with status 500.
+// this: a 4xx with a message meant for the client keeps it, a lock wait
+// timeout is a 503 to try again, everything else becomes the route's
+// fallback text with status 500.
 function clientError(error: unknown, fallback: string): ClientErrorResponse {
+  if (isLockWaitTimeout(error)) return changeInProgress();
   const thrown = error as (ThrownError & { expose?: boolean; details?: unknown }) | null | undefined;
   const status = thrown?.status;
   if (typeof status === 'number' && Number.isInteger(status) && status >= 400 && status < 500 && thrown!.expose !== false) {
@@ -46,5 +55,5 @@ function clientError(error: unknown, fallback: string): ClientErrorResponse {
   return { error: fallback, status: 500 };
 }
 
-export { ApiError, badRequest, unauthorized, forbidden, notFound, conflict, clientError };
+export { ApiError, badRequest, unauthorized, forbidden, notFound, conflict, clientError, changeInProgress, isLockWaitTimeout };
 export type { ClientErrorResponse };

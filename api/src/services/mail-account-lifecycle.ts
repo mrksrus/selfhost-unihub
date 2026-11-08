@@ -12,6 +12,7 @@ import { UNRESOLVED, sqlStates } from './mail-engine/operation-states';
 import { sqlList } from './mail-engine/job-kinds';
 import { recordAudit } from './audit';
 import { fileRemovalGate } from './file-removal-gate';
+import { assertFinalStep } from './final-step';
 
 type IdRow = RowDataPacket & { id: string };
 interface CalendarCounts { calendar_accounts: number | string; calendar_events: number | string }
@@ -77,7 +78,7 @@ async function disconnectAccount(userId: string, accountId: string, { req = null
       await connection.beginTransaction();
       const [[account]] = await connection.execute<RowDataPacket[]>('SELECT id, disconnected_at FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
       if (!account) throw fail('Account not found', 404);
-      if (await isSectionRestoreActive(userId, 'mail', connection)) throw fail('Mail restore is in progress');
+      await assertFinalStep(connection, { userId, policies: ['accounts.remove'], actor: { adminId }, modules: ['mail'] });
       // Recorded with the change; disconnecting again changes nothing worth a record.
       if (!account.disconnected_at) {
         await recordAudit({ action: adminId ? 'admin.mail_account_removed' : 'mail.account_disconnected', actorId: adminId ?? userId, targetUserId: userId, req, details: { mail_account: accountId } }, connection);
@@ -137,12 +138,6 @@ async function purgeAccount(userId: string, accountId: string, confirmation: unk
   if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore is in progress');
   const initialPreview = await purgePreview(userId, accountId);
   if (initialPreview.blocked) throw fail(initialPreview.reason);
-  // Links a restored calendar (allowed now: Calendar is on and not being
-  // restored), so the transaction below removes it with the account.
-  if (initialPreview.calendar_accounts) {
-    const [[mail]] = await db.execute<(RowDataPacket & { id: string; email_address: string })[]>('SELECT id, email_address FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
-    if (mail) await (require('./calendar-accounts') as typeof import('./calendar-accounts')).linkedCalendarAccount(userId, mail);
-  }
   await (require('./mail') as typeof import('./mail')).stopMailAccountWork(accountId, 'Account purging');
   return withMailAccountLock(accountId, async () => {
     const connection = await db.getConnection();
@@ -150,15 +145,23 @@ async function purgeAccount(userId: string, accountId: string, confirmation: unk
     let preview: Awaited<ReturnType<typeof purgePreview>> | undefined, linkedCalendars: IdRow[] = [];
     try {
       await connection.beginTransaction();
-      const [[account]] = await connection.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
+      const [[account]] = await connection.execute<(RowDataPacket & { id: string; email_address: string })[]>('SELECT id, email_address FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
       if (!account) throw fail('Account not found', 404);
       // Admission locks item rows. Acquire them before the final unresolved-effect
       // check, preventing a concurrently accepted command from escaping the gate.
       const [messages] = await connection.execute<(IdRow & { raw_storage_path: string | null })[]>('SELECT id, raw_storage_path FROM emails WHERE mail_account_id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
       [linkedCalendars] = await connection.execute<IdRow[]>('SELECT id FROM calendar_accounts WHERE mail_account_id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
+      // A restored calendar is linked again only when its link is next read;
+      // until then it is found by address and mark, locked here so a link
+      // meanwhile waits, and removed with the account.
+      if (!linkedCalendars.length) {
+        const restored = await (require('./calendar-accounts') as typeof import('./calendar-accounts')).restoredMailCalendar(userId, account, connection, { lock: true });
+        if (restored) linkedCalendars = [restored as IdRow];
+      }
       preview = await purgePreview(userId, accountId, connection);
       if (preview.blocked) throw fail(preview.reason);
-      if (await isSectionRestoreActive(userId, 'mail', connection)) throw fail('Mail restore is in progress');
+      await assertFinalStep(connection, { userId, policies: ['accounts.remove', 'accounts.reset'], actor: { adminId },
+        modules: linkedCalendars.length ? ['mail', 'calendar'] : ['mail'] });
       [attachments] = await connection.execute<(RowDataPacket & { storage_path: string })[]>(`SELECT a.storage_path FROM email_attachments a
         JOIN emails e ON e.id = a.email_id AND e.user_id = a.user_id WHERE e.mail_account_id = ? AND e.user_id = ?`, [accountId, userId]);
       rawPaths = messages.map(row => row.raw_storage_path);
@@ -170,7 +173,7 @@ async function purgeAccount(userId: string, accountId: string, confirmation: unk
         const [calendars] = await connection.execute<IdRow[]>(`SELECT id FROM calendar_calendars WHERE user_id = ? AND account_id IN (${placeholders})`,
           [userId, ...linkedCalendars.map(row => row.id)]);
         await (require('./calendar-sync') as typeof import('./calendar-sync')).deleteCalendarsWithEvents(connection, userId, calendars.map(row => row.id));
-        await connection.execute('DELETE FROM calendar_accounts WHERE mail_account_id = ? AND user_id = ?', [accountId, userId]);
+        await connection.execute(`DELETE FROM calendar_accounts WHERE user_id = ? AND id IN (${placeholders})`, [userId, ...linkedCalendars.map(row => row.id)]);
       }
       await connection.execute('DELETE FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
       await recordAudit({ action: adminId ? 'admin.mail_account_reset' : 'mail.account_purged', actorId: adminId ?? userId, targetUserId: userId, req,

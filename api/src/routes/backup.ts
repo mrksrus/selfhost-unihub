@@ -6,7 +6,7 @@ import path from 'path';
 import { db } from '../state';
 import { BACKUP_UPLOAD_MAX_SIZE } from '../config';
 import { defineRoutes } from '../http/route';
-import { clientError } from '../http/errors';
+import { changeInProgress, clientError, isLockWaitTimeout } from '../http/errors';
 import type { PolicyDeclaration, RouteTable } from '../http/route';
 import {
   startDataExportJob,
@@ -32,7 +32,7 @@ import {
 import { revealProtectedRecoveryPassword } from '../services/backup-container';
 import { BACKUP_DISABLED_MESSAGE, DISABLED_BACKUP_ROUTES } from '../services/backup-availability';
 import { downloadMailChoice } from '../services/backup-classes';
-import { assertBackupDeletable } from '../services/backup-policy';
+import { assertBackupDeletable, assertBackupDeletableNow } from '../services/backup-policy';
 import { SECTION_POLICIES, ACCOUNT_SECTION } from '../services/backup-catalog';
 import { BACKUP_VERSION } from '../services/backup-format';
 
@@ -81,6 +81,7 @@ function isTemporaryBackupUpload(req: Request, body: Input) {
 }
 
 const failed = (error: unknown, fallback: string, logLabel: string): RouteResponse => {
+  if (isLockWaitTimeout(error)) return changeInProgress();
   console.error(`${logLabel}:`, error);
   const thrown = error as ApiError;
   return { error: thrown.status ? thrown.message : fallback, status: thrown.code === 'BACKUP_SECTION_UNSUPPORTED' ? 400 : thrown.status && thrown.status < 500 ? thrown.status : 500 };
@@ -209,7 +210,7 @@ const routes: RouteTable = defineRoutes({
   'DELETE /api/backup/jobs/:id': write(async (req, userId) => {
     try {
       await assertBackupDeletable(userId, req.params.id);
-      return await deleteDataExportJob(userId, req.params.id, { authorize: cx => assertBackupDeletable(userId, req.params.id, {}, cx, { lock: true }) });
+      return await deleteDataExportJob(userId, req.params.id, { authorize: cx => assertBackupDeletableNow(cx, userId, req.params.id) });
     } catch (error) {
       if ((error as ApiError).code === 'POLICY_FORBIDS') return clientError(error, 'Failed to delete backup job');
       return failed(error, 'Failed to delete backup job', 'Delete backup job error');
@@ -252,7 +253,10 @@ const routes: RouteTable = defineRoutes({
   }),
 
   'DELETE /api/backup/restore-jobs/:id': write(async (req, userId) => {
-    try { return await deleteRestoreJob(userId, req.params.id); } catch (error) { return failed(error, 'Failed to delete restore job', 'Delete restore job error'); }
+    try { return await deleteRestoreJob(userId, req.params.id); } catch (error) {
+      if ((error as ApiError).code === 'POLICY_FORBIDS') return clientError(error, 'Failed to delete restore job');
+      return failed(error, 'Failed to delete restore job', 'Delete restore job error');
+    }
   }, { destructive: ['backup.delete'] }),
 
   // The JSON export of releases before 0.9: gone, said plainly.
