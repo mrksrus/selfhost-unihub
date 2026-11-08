@@ -117,6 +117,28 @@ describe('the bin', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/bin/empty', { module: 'contacts' }));
   });
 
+  // Emptying runs in batches; a rule set meanwhile stops it between two. The answer says how many
+  // items went before, and the list is read again so it no longer shows them.
+  it('an emptying the server stopped says how many items went before, and reads the bin again', { timeout: 20_000 }, async () => {
+    answerGets(ITEMS);
+    vi.mocked(api.post).mockResolvedValueOnce({ error: DELETE_REASON, status: 403, code: 'POLICY_FORBIDS', details: { deleted: 2 } } as never);
+    mountSignedIn(<BinView module="contacts" />);
+    await screen.findAllByRole('listitem');
+    const reads = () => vi.mocked(api.get).mock.calls.filter(([path]) => String(path).startsWith('/bin')).length;
+    const before = reads();
+    fireEvent.click(screen.getByRole('button', { name: 'Empty bin' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete for good' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Emptying stopped', description: expect.stringContaining('2 items were deleted before your administrator stopped deleting from the bin') })));
+    await waitFor(() => expect(reads()).toBeGreaterThan(before));
+    // Without a count, the refusal reads as the rule; the list is read again all the same.
+    vi.mocked(api.post).mockResolvedValueOnce({ error: DELETE_REASON, status: 403, code: 'POLICY_FORBIDS' } as never);
+    const again = reads();
+    fireEvent.click(screen.getByRole('button', { name: 'Empty bin' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete for good' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not empty the bin', description: DELETE_REASON })));
+    await waitFor(() => expect(reads()).toBeGreaterThan(again));
+  });
+
   it('greys Delete for good and Empty bin out with the reason when a policy forbids deleting', async () => {
     answerGets(ITEMS, policiesAnswer({ 'bin.delete': { value: 'forbidden', reason: DELETE_REASON } }));
     mountSignedIn(<BinView module="contacts" />);
@@ -423,6 +445,29 @@ describe('the bin', () => {
     mountSignedIn(<BinView module="recordings" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Restore Standup notes' }, { timeout: 10_000 }));
     await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not restore', description: expect.stringContaining('Ask your administrator') })));
+  });
+
+  // D33 and D34: 30 days by default; an administrator's minimum greys the shorter choices with its reason.
+  it('Settings → Bin greys the choices under the administrator\'s minimum out with the reason', async () => {
+    answerGets([]);
+    const settings = userSettingsAnswer();
+    settings.data.settings.bin_retention = { value: '90', source: 'policy', locked: false, floor: '90' };
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/settings/values') return settings;
+      if (path.startsWith('/bin')) return { data: { items: [], retention: '90' } };
+      if (path === '/policies/effective') return policiesAnswer();
+      return { data: {} };
+    });
+    mountSignedIn(<BinSettings />);
+    const select = await screen.findByRole('combobox', { name: 'Keep deleted items for' });
+    await waitFor(() => expect(select).toHaveTextContent('90 days'));
+    expect(select).toBeEnabled();
+    expect(screen.getByText('Your administrator keeps deleted items at least 90 days.')).toBeInTheDocument();
+    fireEvent.click(select);
+    for (const shorter of ['7 days', '30 days']) expect(await screen.findByRole('option', { name: shorter })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('option', { name: 'Until I delete them' })).not.toHaveAttribute('aria-disabled');
+    fireEvent.click(screen.getByRole('option', { name: '7 days' }));
+    expect(api.put).not.toHaveBeenCalled();
   });
 
   it('Settings → Bin saves the retention as a user setting', async () => {

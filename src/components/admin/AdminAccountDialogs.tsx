@@ -6,7 +6,10 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioRow } from '@/components/ui/radio';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { TargetLine } from '@/components/admin/PasswordConfirmDialog';
+import { mailProviders } from '@/components/mail/mail-page-model';
 
 // The administrator's dialogs for a person's accounts (F13, accounts.admin_manage):
 // the same fields as the person's own add dialog, plus the administrator's
@@ -25,15 +28,18 @@ function Field({ id, label, hint, ...props }: { id: string; label: string; hint?
   );
 }
 
-const emptyMail = (): MailFields => ({ email_address: '', display_name: '', username: '', encrypted_password: '', imap_host: '', imap_port: 993, smtp_host: '', smtp_port: 587, sync_mode: 'download', delete_emails_on_server: false });
+// The same provider choice as the person's own dialog: it fills the servers of a known provider, and the server requires it.
+const emptyMail = (): MailFields => ({ email_address: '', display_name: '', provider: 'custom', username: '', encrypted_password: '', imap_host: '', imap_port: 993, smtp_host: '', smtp_port: 587, sync_mode: 'download', delete_emails_on_server: false });
 
 /**
  * Adds a mail account for the person, or changes one. Editing keeps the
  * stored password unless a new one is typed; the address cannot change.
  */
-export function AdminMailAccountDialog({ account, open, onClose, pending, onSubmit }: {
+export function AdminMailAccountDialog({ account, open, onClose, pending, onSubmit, target }: {
   account: AdminMailAccount | null; open: boolean; onClose: () => void; pending: boolean;
   onSubmit: (fields: Partial<MailFields>, currentPassword: string) => void;
+  /** The person the account belongs to, always shown. */
+  target?: string;
 }) {
   const [fields, setFields] = useState<MailFields>(emptyMail);
   // The server fields the administrator typed into; the others stay as they are on the account.
@@ -42,11 +48,15 @@ export function AdminMailAccountDialog({ account, open, onClose, pending, onSubm
   useEffect(() => {
     setAdminPassword('');
     setEdited(new Set());
-    setFields(open && account ? { ...emptyMail(), email_address: account.email_address, display_name: account.display_name ?? '', sync_mode: account.sync_mode, delete_emails_on_server: account.delete_emails_on_server } : emptyMail());
+    setFields(open && account ? { ...emptyMail(), email_address: account.email_address, display_name: account.display_name ?? '', provider: account.provider, sync_mode: account.sync_mode, delete_emails_on_server: account.delete_emails_on_server } : emptyMail());
   }, [open, account]);
   const set = <K extends keyof MailFields>(key: K, value: MailFields[K]) => {
     setFields(current => ({ ...current, [key]: value }));
     setEdited(current => new Set(current).add(key));
+  };
+  const changeProvider = (provider: string) => {
+    const known = mailProviders.find(entry => entry.value === provider);
+    setFields(current => ({ ...current, provider, imap_host: known?.imapHost || '', smtp_host: known?.smtpHost || '', imap_port: known?.imapPort || 993, smtp_port: known?.smtpPort || 587 }));
   };
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -60,6 +70,8 @@ export function AdminMailAccountDialog({ account, open, onClose, pending, onSubm
     } else {
       onSubmit({ ...fields, username: fields.username || fields.email_address, delete_emails_on_server: fields.sync_mode === 'download' && fields.delete_emails_on_server }, adminPassword);
     }
+    // Sent: the administrator's password lives in no state beyond the request; a refusal asks for it again.
+    setAdminPassword('');
   };
   return (
     <Dialog open={open} onOpenChange={next => { if (!next && !pending) onClose(); }}>
@@ -68,7 +80,19 @@ export function AdminMailAccountDialog({ account, open, onClose, pending, onSubm
           <DialogTitle>{account ? `Change ${account.email_address}` : 'Add a mail account'}</DialogTitle>
           <DialogDescription>{account ? 'Only the fields you fill in change; the password stays unless you type a new one.' : 'The account is checked against its servers as if the person added it, and recorded in the activity log.'}</DialogDescription>
         </DialogHeader>
+        {target && <TargetLine target={target} />}
         <form className="space-y-4" onSubmit={submit}>
+          {!account && (
+            <div className="space-y-1.5">
+              <Label htmlFor="admin-mail-provider">Provider</Label>
+              <Select value={fields.provider ?? 'custom'} onValueChange={changeProvider}>
+                <SelectTrigger id="admin-mail-provider"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {mailProviders.map(entry => <SelectItem key={entry.value} value={entry.value}>{entry.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className="grid gap-3 sm:grid-cols-2">
             <Field id="admin-mail-address" label="Email address" type="email" required value={fields.email_address} disabled={!!account} onChange={event => set('email_address', event.target.value)} autoComplete="off" />
             <Field id="admin-mail-name" label="Display name" value={fields.display_name ?? ''} onChange={event => set('display_name', event.target.value)} autoComplete="off" />
@@ -104,9 +128,10 @@ export function AdminMailAccountDialog({ account, open, onClose, pending, onSubm
 const emptyCalendar = (): CalendarFields => ({ provider: 'caldav', url: '', account_email: '', display_name: '', username: '', password: '' });
 
 /** Adds a calendar account (CalDAV or an ICS subscription) for the person, or changes one. */
-export function AdminCalendarAccountDialog({ account, open, onClose, pending, onSubmit }: {
+export function AdminCalendarAccountDialog({ account, open, onClose, pending, onSubmit, target }: {
   account: AdminCalendarAccount | null; open: boolean; onClose: () => void; pending: boolean;
   onSubmit: (fields: Partial<CalendarFields>, currentPassword: string) => void;
+  target?: string;
 }) {
   const [fields, setFields] = useState<CalendarFields>(emptyCalendar);
   const [adminPassword, setAdminPassword] = useState('');
@@ -123,6 +148,7 @@ export function AdminCalendarAccountDialog({ account, open, onClose, pending, on
       for (const key of ['url', 'username', 'password'] as const) if (fields[key]) change[key] = fields[key];
       onSubmit(change, adminPassword);
     } else onSubmit(fields, adminPassword);
+    setAdminPassword('');
   };
   return (
     <Dialog open={open} onOpenChange={next => { if (!next && !pending) onClose(); }}>
@@ -131,6 +157,7 @@ export function AdminCalendarAccountDialog({ account, open, onClose, pending, on
           <DialogTitle>{account ? `Change ${account.display_name || account.account_email || 'the calendar account'}` : 'Add a calendar account'}</DialogTitle>
           <DialogDescription>{account ? 'Only the fields you fill in change.' : 'A CalDAV server (HTTPS) or a calendar subscription, checked as if the person added it.'}</DialogDescription>
         </DialogHeader>
+        {target && <TargetLine target={target} />}
         <form className="space-y-4" onSubmit={submit}>
           {!account && (
             <fieldset className="space-y-1">

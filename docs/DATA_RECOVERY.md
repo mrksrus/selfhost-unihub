@@ -56,17 +56,23 @@ the disaster-recovery copy; the account backups below move one person's data.
 `api/src/services/instance-backup.ts` runs it, `instance-backup-format.ts`
 defines the file, `instance-restore.ts` restores it.
 
-**Configuration, from the environment only** (`api/src/config.ts`). The admin
-page (Settings > Server settings > Instance backup) shows it and can start a
-run; it cannot change it, and no backup file is ever offered for download, so
-a stolen admin session can neither redirect the backups nor read them.
+**Configuration.** The destination and the key come from the environment
+only (`api/src/config.ts`). The admin page (Settings > Server settings >
+Instance backup) shows them and can start a run; it cannot change them, and no
+backup file is ever offered for download, so a stolen admin session can
+neither redirect the backups nor read them. The schedule, the time of the
+daily run and how many backups are kept, is an installation setting the
+administrator changes on that page with their password
+(`PUT /api/admin/instance-backup/settings`, activity-log entry
+`admin.instance_backup_settings_changed`); until then the variables below
+apply. It takes effect without a restart.
 
 | Variable | Meaning |
 | --- | --- |
 | `INSTANCE_BACKUP_DIR` | An absolute directory inside the container on a volume or mount of its own (another disk, a NAS share). Unset: the backup is off. Inside `/app/uploads` or a stored-file root: startup refuses it. It must exist and be writable by uid 10001; UniHub never creates it, so a missing mount fails the run instead of filling the container. Nothing else writes there: it is UniHub's alone. |
 | `INSTANCE_BACKUP_KEY` or `INSTANCE_BACKUP_KEY_FILE` | At least 32 random bytes as hex or base64 (`openssl rand -base64 48`). Unset: the backup is off. Shorter, or the value of `JWT_SECRET`, `ENCRYPTION_KEY`, `ENCRYPTION_KEY_PREVIOUS` or `BACKUP_MASTER_KEY`: startup refuses it. Never derived from another key. |
-| `INSTANCE_BACKUP_TIME` | The daily run, `HH:MM` in UTC; default `03:30`. |
-| `INSTANCE_BACKUP_KEEP` | How many succeeded backups stay, 1 to 1000; default 14. |
+| `INSTANCE_BACKUP_TIME` | The daily run, `HH:MM` in UTC, until the administrator sets one on the page; default `03:30`. |
+| `INSTANCE_BACKUP_KEEP` | How many succeeded backups stay, 1 to 1000, until the administrator sets a number on the page; default 14. |
 
 Without a destination and a key the server runs normally and the admin page
 says what is missing. The defaults are `INSTANCE_BACKUP_DEFAULT_TIME_UTC` and

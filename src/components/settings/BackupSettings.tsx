@@ -11,6 +11,9 @@ import {
   BACKUP_ACTIVE, RESTORE_ACTIVE, RevealAlreadyShown, RevealUncertain, backupApi, backupQueryKeys, getBackupDownloadAction, prepareBackupDownload, revealRecoveryPasswordOnce,
   type BackupContents, type BackupDataClass, type BackupExportSectionId, type BackupImportResult, type BackupJob, type BackupSectionId, type CalendarMode, type ConflictMode, type CredentialsMode, type RestoreJob, type RestoreOptions,
 } from '@/lib/backup-api';
+import { OPEN_OUTSIDE_STEPS, OPEN_OUTSIDE_UNIHUB, deletableFrom } from '@/lib/backup';
+import { ApiError } from '@/lib/api-error';
+import { policiesQueryKey } from '@/lib/policies-api';
 import { copyText, downloadTicket, saveFile } from '@/lib/platform';
 import { jobPollInterval } from '@/lib/job-polling';
 import { Button } from '@/components/ui/button';
@@ -32,7 +35,8 @@ import { cn } from '@/lib/utils';
 // downloaded mail by choice or policy, never what a provider holds. The
 // archive leaves the server through a download ticket (F9). A policy can
 // forbid creating, restoring or deleting: the control greys out with the
-// server's reason.
+// server's reason. An administrator's retention is a minimum (D36): Delete
+// greys out on a backup younger than that, with the date it opens.
 
 /** What each data class means to the person. */
 const CLASS_WORDS: Record<BackupDataClass, string> = {
@@ -81,6 +85,16 @@ const RESTORE_STATUS: Record<RestoreJob['status'], string> = {
   uploaded: 'Uploaded', awaiting_password: 'Needs its recovery password', validating: 'Checking', validated: 'Checked, ready to restore', queued: 'Waiting',
   running: 'Restoring', cancelling: 'Stopping', cancelled: 'Stopped', completed: 'Restored', failed: 'Failed', expired: 'Expired',
 };
+
+/** How to open a backup outside UniHub (D37): the short sentence, with the steps behind a disclosure. */
+function OpenOutsideHint({ className }: { className?: string }) {
+  return (
+    <details className={cn('text-xs text-muted-foreground', className)} data-testid="open-outside-hint">
+      <summary className="cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{OPEN_OUTSIDE_UNIHUB} <span className="underline underline-offset-4">How to open it</span></summary>
+      <ol className="mt-2 list-decimal space-y-1 pl-5">{OPEN_OUTSIDE_STEPS.map(step => <li key={step}>{step}</li>)}</ol>
+    </details>
+  );
+}
 
 /** What an archive holds and what it leaves out, from its manifest, with the server's notes. */
 export function BackupContentsList({ contents, notes, className }: { contents: BackupContents | null | undefined; notes?: string[]; className?: string }) {
@@ -150,6 +164,8 @@ export default function BackupSettings({ active }: { active: boolean }) {
   const sectionLabels = new Map([...importSections, ...exportSections].map(({ id, label }) => [id, label]));
   const sectionLabel = (id: string) => sectionLabels.get(id) || id;
   const refreshJobs = () => { void queryClient.invalidateQueries({ queryKey: backupQueryKeys.jobs }); };
+  // The rules decide which backup may be deleted: read them again each time the section opens, so a rule changed meanwhile shows.
+  useEffect(() => { if (active) void queryClient.invalidateQueries({ queryKey: policiesQueryKey }); }, [active, queryClient]);
   const refreshRestores = () => { void queryClient.invalidateQueries({ queryKey: backupQueryKeys.restoreJobs }); };
   const failed = (title: string) => (error: Error) => toast({ title, description: error.message, variant: 'destructive' });
 
@@ -218,7 +234,12 @@ export default function BackupSettings({ active }: { active: boolean }) {
     onError: failed('Could not start the backup'),
   });
   const cancel = useSessionMutation({ mutationFn: (job: BackupJob) => backupApi.cancel(job.id), onSuccess: refreshJobs, onError: failed('Could not stop the backup') });
-  const remove = useSessionMutation({ mutationFn: (job: BackupJob) => backupApi.delete(job.id), onSuccess: () => { refreshJobs(); toast({ title: 'Backup deleted' }); }, onError: failed('Could not delete the backup') });
+  const remove = useSessionMutation({ mutationFn: (job: BackupJob) => backupApi.delete(job.id), onSuccess: () => { refreshJobs(); toast({ title: 'Backup deleted' }); },
+    onError: (error: Error) => {
+      // The server decides (D36): a refusal under a rule this page did not know yet shows the server's words and reloads rules and backups.
+      if (error instanceof ApiError && error.code === 'POLICY_FORBIDS') { void queryClient.invalidateQueries({ queryKey: policiesQueryKey }); refreshJobs(); }
+      failed('Could not delete the backup')(error);
+    } });
   // The ticket is fetched in the request and handed to the browser or the app
   // only in the session-guarded callback: a late answer starts no download.
   const download = useSessionMutation({ mutationFn: (job: BackupJob) => prepareBackupDownload(job), onSuccess: ticket => downloadTicket(ticket), onError: failed('Could not download the backup') });
@@ -310,8 +331,11 @@ export default function BackupSettings({ active }: { active: boolean }) {
     chosen.includes('calendar') ? 'events and tasks of calendar servers' : null,
     ...(capabilities?.exclusions ?? []).map(entry => entry.replace(/\.$/, '').replace(/^./, c => c.toLowerCase())),
   ].filter((entry): entry is string => !!entry);
-  const retentionText = retentionPolicy.value ? `The server keeps each backup ${retentionPolicy.value} days, then removes it.` : 'The server keeps them until you delete them.';
+  // D36: the administrator's days are a minimum, never an expiry.
+  const minimumDays = retentionPolicy.value;
+  const retentionText = minimumDays ? `Your administrator keeps each backup at least ${minimumDays} days; after that you can delete it. Nothing is deleted on its own.` : 'The server keeps them until you delete them.';
   const busy = create.isPending || upload.isPending || unlock.isPending;
+  const now = Date.now();
   // The restore choices are fixed while the server prepares a job with them.
   const preparing = upload.isPending || restoreStored.isPending;
 
@@ -369,11 +393,16 @@ export default function BackupSettings({ active }: { active: boolean }) {
         : jobs.map(job => {
           const running = BACKUP_ACTIVE.includes(job.status);
           const title = job.scope === 'full' ? 'Full backup' : `${job.requested_sections.map(sectionLabel).join(', ')} backup`;
+          const opens = job.status === 'ready' ? deletableFrom(job, minimumDays) : null;
+          const held = !!opens && Date.parse(opens) > now;
+          // The server's own words for the rule, then the date this backup opens.
+          const deleteLock = deletePolicy.lock ?? (!held ? undefined
+            : `${retentionPolicy.reason ?? (minimumDays ? `Your backups are kept at least ${minimumDays} days.` : 'Your administrator keeps this backup for now.')} This one can be deleted from ${formatDay(opens)}.`);
           const meta = [
             job.status === 'running' ? `Creating ${job.progress}%` : BACKUP_STATUS[job.status],
             formatWhen(job.completed_at || job.started_at || job.created_at),
             job.file_size ? formatBytes(job.file_size) : null,
-            job.keep_until ? `kept until ${formatDay(job.keep_until)}` : null,
+            held ? `kept at least until ${formatDay(opens)}` : null,
           ].filter(Boolean).join(' · ');
           const age = !job.encryption_enabled ? 'Not encrypted, made before 0.28.' : job.contents === null && job.status === 'ready' ? 'Made before 0.28; what it holds is read when it is restored.' : null;
           const lost = passwordLost.has(job.id) && !job.recovery_password_available;
@@ -392,6 +421,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                     <p className="text-xs text-muted-foreground">Left out: {job.contents.left_out.map(entry => `${entry.what}${entry.count !== undefined ? ` (${entry.count.toLocaleString()})` : ''}`).join(', ')}.</p>
                   )}
                   {job.error && <p className="text-xs text-destructive">{job.error}</p>}
+                  {job.downloaded_at && job.encryption_enabled && <OpenOutsideHint className="mt-1" />}
                 </div>
                 <div className="flex shrink-0 items-center gap-1 touch:gap-3">
                   {job.status === 'ready' && <>
@@ -407,7 +437,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         {job.status === 'ready' && <PolicyMenuItem className="sm:hidden" lock={restorePolicy.lock} disabled={!available || busy || preparing} onClick={() => restoreStored.mutate({ job, options })}>Restore</PolicyMenuItem>}
-                        <PolicyMenuItem lock={deletePolicy.lock} className="text-destructive focus:text-destructive" onClick={() => remove.mutate(job)}>Delete</PolicyMenuItem>
+                        <PolicyMenuItem lock={deleteLock} className="text-destructive focus:text-destructive" onClick={() => remove.mutate(job)}>Delete</PolicyMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   )}
@@ -421,7 +451,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
 
     <SettingsSection title="Restore" description="Upload a backup, or choose one above, and review what it holds before anything is restored.">
       {restorePolicy.lock && <SettingsBlock><PolicyNote reason={restorePolicy.lock} className="mt-0" /></SettingsBlock>}
-      <SettingsRow label="Backup file" htmlFor="backup-import-file" description="A .unihub-backup file, or a .zip backup made before 0.28.">
+      <SettingsRow label="Backup file" htmlFor="backup-import-file" description="The downloaded .zip, unchanged. Older .unihub-backup files and .zip backups made before 0.28 import too.">
         <Input id="backup-import-file" type="file" className="w-full sm:w-72" accept="application/zip,application/vnd.unihub.backup,.zip,.unihub-backup"
           disabled={!available || busy || !!restorePolicy.lock}
           onChange={event => { setImportFile(event.target.files?.[0] || null); resetReview(); setRestorePassword(''); }} />
@@ -611,6 +641,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
               <input type="checkbox" className="mt-1 h-4 w-4 accent-accent" checked={recoverySaved} onChange={event => setRecoverySaved(event.target.checked)} />
               <span>I have saved the recovery password.</span>
             </label>
+            <OpenOutsideHint />
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={closeRecovery} disabled={!recoverySaved}>Close</Button>
               <Button disabled={!recoverySaved || download.isPending} onClick={() => { if (recoveryJob) download.mutate(recoveryJob); closeRecovery(); }}>

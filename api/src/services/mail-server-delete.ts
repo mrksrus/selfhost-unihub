@@ -1,4 +1,4 @@
-import type { RowDataPacket } from 'mysql2/promise';
+import type { Pool, RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, ApiError } from '../types';
 import type { ProtocolConnection, ProtocolError } from '../types/imap-protocol';
 import { withMailAccountLock } from './mail-account-lock';
@@ -16,6 +16,7 @@ import { toBooleanFlag, buildImapConnectionConfig } from './mail-host-policy';
 import { normalizeMailAccountId, isMailAccountSyncRunning } from './mail-durable-jobs';
 import { rawRoot, mailPathUnderRoot } from './mail-storage';
 import { fileRemovalGate } from './file-removal-gate';
+import { withTransaction } from './transactions';
 
 interface QueueInput {
   connection?: SqlExecutor;
@@ -106,6 +107,16 @@ function getCurrentBoxUidValidity(connection: ProtocolConnection | null) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
+// mail.provider_delete forbidden (F13): nothing more is queued or deleted at
+// the provider, also for an account whose switch is on; the queue waits and
+// goes on once the policy allows it again. Changing the policy deletes nothing.
+// The early checks are plain reads; the steps that queue or erase ask again
+// under the rules lock (settings.ts policyLevels), after their last wait.
+async function providerDeletionForbidden(userId: string, executor: SqlExecutor = db, { lock = false } = {}) {
+  const { resolvePolicy } = require('./settings') as typeof import('./settings');
+  return !(await resolvePolicy(userId, 'mail.provider_delete', executor, { lock })).allowed;
+}
+
 async function recordMailServerMessageForDeletion({
   connection = db,
   userId,
@@ -125,31 +136,40 @@ async function recordMailServerMessageForDeletion({
   const folderName = String(sourceFolder || '');
   if (!userId || !accountId || !emailId || !folderName || !normalizedUid || !epoch
     || rawFormat !== 'exact_octets' || rawVerified !== true) return false;
+  // On the caller's connection: an import holds its transaction while it queues.
+  if (await providerDeletionForbidden(userId, connection)) return false;
   if (!await verifyArchive({ raw_storage_path: rawStoragePath, raw_sha256: rawSha256,
     raw_bytes: rawBytes, raw_format: rawFormat, raw_verified: rawVerified }, { root: rawRoot() })) return false;
 
-  await connection.execute(
-    `INSERT INTO mail_server_messages
-       (id, user_id, mail_account_id, email_id, source_folder, imap_uid, imap_uidvalidity)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE
-       imap_uidvalidity = IF(mail_server_messages.email_id = VALUES(email_id)
-         AND mail_server_messages.imap_uidvalidity = VALUES(imap_uidvalidity), VALUES(imap_uidvalidity), mail_server_messages.imap_uidvalidity)`,
-    [
-      crypto.randomUUID(),
-      userId,
-      accountId,
-      emailId,
-      folderName,
-      normalizedUid,
-      imapUidValidity === undefined ? null : imapUidValidity,
-    ]
-  );
-  return true;
+  // Asked again on the connection that queues the row, inside its
+  // transaction (an import's own, else one of its own here): the archive
+  // check above may have waited while an administrator forbade it.
+  const queue = async (cx: SqlExecutor) => {
+    if (await providerDeletionForbidden(userId, cx, { lock: true })) return false;
+    await cx.execute(
+      `INSERT INTO mail_server_messages
+         (id, user_id, mail_account_id, email_id, source_folder, imap_uid, imap_uidvalidity)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         imap_uidvalidity = IF(mail_server_messages.email_id = VALUES(email_id)
+           AND mail_server_messages.imap_uidvalidity = VALUES(imap_uidvalidity), VALUES(imap_uidvalidity), mail_server_messages.imap_uidvalidity)`,
+      [
+        crypto.randomUUID(),
+        userId,
+        accountId,
+        emailId,
+        folderName,
+        normalizedUid,
+        imapUidValidity === undefined ? null : imapUidValidity,
+      ]
+    );
+    return true;
+  };
+  return typeof (connection as Partial<Pool>).getConnection === 'function' ? withTransaction(queue, connection as Pool) : queue(connection);
 }
 
 async function seedMailServerDeletionQueueForAccount({ userId, accountId, connection = db }: { userId: string; accountId: string; connection?: SqlExecutor }) {
-  if (!userId || !accountId) return { queued: 0 };
+  if (!userId || !accountId || await providerDeletionForbidden(userId, connection)) return { queued: 0 };
   let queued = 0, afterId = '';
   for (;;) {
     const [emails] = await connection.execute<RowDataPacket[]>(
@@ -251,6 +271,7 @@ async function isMailServerDeletionStillEnabled(accountId: string) {
   if (!account || account.sync_mode === 'sync') return false;
   if (!toBooleanFlag(account.delete_emails_on_server) || !toBooleanFlag(account.is_active)) return false;
   if (!await canRunModule(account.user_id, 'mail', { background: true })) return false;
+  if (await providerDeletionForbidden(account.user_id)) return false;
   if (!account.server_delete_grace_until) return false;
   return new Date(account.server_delete_grace_until).getTime() <= Date.now();
 }
@@ -287,6 +308,9 @@ async function processMailServerDeletionForAccountUnlocked(accountId: string, { 
     if (await isSectionRestoreActive(account.user_id, 'mail')) {
       return { accountId: normalizedAccountId, skipped: true, reason: 'mail_restore_running' };
     }
+    if (await providerDeletionForbidden(account.user_id)) {
+      return { accountId: normalizedAccountId, skipped: true, reason: 'policy_forbids' };
+    }
 
     const config = await buildImapConnectionConfig(account as RowDataPacket & Parameters<typeof buildImapConnectionConfig>[0]);
     if (!config) return { accountId: normalizedAccountId, success: false, error: 'No password configured for this account' };
@@ -322,6 +346,7 @@ async function processMailServerDeletionForAccountUnlocked(accountId: string, { 
     let skipped = 0;
     let stopped = false;
 
+    const { whilePolicyAllows } = require('./settings') as typeof import('./settings');
     for (const message of messages) {
       if (!(await isMailServerDeletionStillEnabled(normalizedAccountId))) {
         stopped = true;
@@ -392,7 +417,10 @@ async function processMailServerDeletionForAccountUnlocked(accountId: string, { 
           await markMailServerMessageDeleteStatus({ id: message.id, status: 'skipped', error: 'Archive/source changed before dispatch.' });
           skipped++; processed++; continue;
         }
-        await deleteImapUid(connection, uid);
+        // The erase itself holds the rules lock: forbidden by a save that
+        // committed during the reads above, it stops here; a save begun
+        // now waits until the provider answered.
+        if (!await whilePolicyAllows(account.user_id, 'mail.provider_delete', () => deleteImapUid(connection!, uid))) { stopped = true; break; }
         await markMailServerMessageDeleteStatus({ id: message.id, status: 'deleted', error: null });
         deleted++;
         processed++;

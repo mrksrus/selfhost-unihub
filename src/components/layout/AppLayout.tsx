@@ -12,6 +12,7 @@ import BottomNav from './BottomNav';
 import GlobalCommandPalette from '@/components/GlobalCommandPalette';
 import { MailPeek } from '@/components/mail/MailPeek';
 import { PreferenceAccent } from '@/components/theme/PreferenceAccent';
+import { PolicyNoticeDialog } from '@/components/policies/PolicyNoticeDialog';
 import { Button } from '@/components/ui/button';
 import { EmptyState, StartingScreen } from '@/components/ui/page-states';
 
@@ -69,6 +70,8 @@ const AppLayout = () => {
       </main>
       <GlobalCommandPalette />
       <MailPeek />
+      {/* The data rules' notice (D38) opens over whichever page the app starts on. */}
+      <PolicyNoticeDialog />
       <BottomNav />
     </div>
   );

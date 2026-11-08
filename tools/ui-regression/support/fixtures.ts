@@ -260,6 +260,7 @@ const POLICIES_ADMIN = {
     value: key in POLICY_SET ? POLICY_SET[key].value : POLICY_DEFAULTS[key], source: key in POLICY_SET ? 'policy' : 'default', default: POLICY_DEFAULTS[key],
     values: POLICY_VALUES[key] ?? ['allowed', 'forbidden'], effect: key === 'mail.mode.sync' ? 'Existing Sync accounts keep working.' : key === 'bin.delete' ? 'Items stay in the bin until restored.' : null,
   }])),
+  bin_min_retention: { value: 'forever', source: 'default', default: 'forever', values: ['30', '90', 'forever'], applies: true, effect: 'Applies while deleting from the bin for good is not allowed; people may keep items longer.' },
   revision: 2,
 };
 
@@ -300,7 +301,7 @@ export const BIN_ITEMS = [
 ];
 
 const INSTANCE_BACKUP = {
-  enabled: true, missing: [], destination: '/backups/unihub', key_fingerprint: 'k1:7f3a…c9e2', time_utc: '03:30', keep: 14, next_run_at: at('06-16T03:30:00.000Z'),
+  enabled: true, missing: [], destination: '/backups/unihub', key_fingerprint: 'k1:7f3a…c9e2', time_utc: '03:30', keep: 14, schedule_source: 'environment', schedule_defaults: { time_utc: '03:30', keep: 14 }, next_run_at: at('06-16T03:30:00.000Z'),
   last_run: { id: 'ib-1', trigger: 'schedule', actor_email: null, status: 'succeeded', file_name: 'unihub-instance-20260615T0330Z-0.28.0.uhib', size_bytes: 1_310_000_000, app_version: '0.28.0', error: null, started_at: at('06-15T03:30:00.000Z'), finished_at: at('06-15T03:41:00.000Z') },
   last_success: null, kept: { count: 14, bytes: 18_000_000_000 }, running: false,
   restore_command: 'node /app/api/dist/scripts/instance-restore.js --file <backup.uhib> --key-file <instance key>',

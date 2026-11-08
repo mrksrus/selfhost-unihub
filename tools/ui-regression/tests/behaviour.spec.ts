@@ -7,7 +7,7 @@ import type { Page } from '@playwright/test';
 import { RICH_TASK, TASKS } from '../support/fixtures.ts';
 import { touchViolations } from '../support/geometry.ts';
 import { expectOnlyKnown, KNOWN_DEFECTS } from '../support/known-defects.ts';
-import { expect, pointerIsCoarse, test, VIEWPORTS } from '../support/test.ts';
+import { expect, pointerIsCoarse, test, THEMES, VIEWPORTS } from '../support/test.ts';
 
 // Synthetic files for the composer's attachments.
 const SYNTHETIC_PDF = { name: 'quarterly-report.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 synthetic') };
@@ -425,6 +425,90 @@ test.describe('the phone composer leaves the message room with the keyboard open
         // Full screen: the composer starts at the very top and spans the width.
         const frame = (await dialog.boundingBox())!;
         expect({ x: frame.x, y: frame.y, width: frame.width }).toEqual({ x: 0, y: 0, width });
+      });
+    });
+  }
+});
+
+// D38: the notice of the data rules with every rule in force, on a small
+// phone (360×640). The dialog stays inside the viewport, its rules scroll and
+// the title and OK can be read and tapped; no control of it is cut off.
+const EVERY_RULE = [
+  'Your administrator does not allow Download mode for new mail accounts.',
+  'Your administrator does not allow Sync mode for new mail accounts.',
+  'New mail accounts use Download mode and delete mail at the provider.',
+  'Your administrator requires mail to be deleted at the provider once it is downloaded.',
+  'Your backups always include downloaded mail.',
+  'Your administrator does not allow creating backups.',
+  'Your administrator does not allow restoring backups.',
+  'Your administrator does not allow deleting backups.',
+  'Your backups are kept at least 365 days: until then nobody can delete them.',
+  'Your administrator does not allow adding mail or calendar accounts.',
+  'Your administrator does not allow removing mail or calendar accounts.',
+  'Your administrator does not allow resetting an account\'s data.',
+  'Your administrator does not allow deleting your account.',
+  'Your administrator does not allow deleting all data of a page.',
+  'Your administrator does not allow deleting items from the bin for good.',
+];
+const SMALL_PHONE = { viewport: { width: 360, height: 640 }, hasTouch: true, isMobile: true } as const;
+
+test.describe('D38 the full rules notice fits a small phone', () => {
+  test.use(SMALL_PHONE);
+  for (const theme of THEMES) {
+    test.describe(theme, () => {
+      test.use({ theme });
+
+      test(`every rule, 360×640 (${theme})`, async ({ page, open, settle, api }) => {
+        // The person's rules: the synthetic answer with every rule in force and not yet confirmed (a page route answers before the context's router).
+        const base = api.handle(new URL(`${process.env.UNIHUB_UI_ORIGIN}/api/policies/effective`), 'GET', null).body as Record<string, unknown>;
+        await page.route('**/api/policies/effective', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...base, revision: 3, acknowledged_revision: 2, rules: EVERY_RULE }) }));
+        await page.route('**/api/policies/acknowledge', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ acknowledged_revision: 3 }) }));
+        await open('/todo');
+        const dialog = page.getByRole('dialog', { name: 'Your administrator changed the data rules' });
+        await expect(dialog).toBeVisible();
+        await settle();
+        const { width, height } = SMALL_PHONE.viewport;
+        const inside = (box: { x: number; y: number; width: number; height: number } | null, what: string) => {
+          expect(box, `${what} has a box`).not.toBeNull();
+          expect(box!.y, `${what} starts below the top edge`).toBeGreaterThanOrEqual(0);
+          expect(box!.x, `${what} starts right of the left edge`).toBeGreaterThanOrEqual(0);
+          expect(box!.y + box!.height, `${what} ends above the bottom edge`).toBeLessThanOrEqual(height + 0.5);
+          expect(box!.x + box!.width, `${what} ends left of the right edge`).toBeLessThanOrEqual(width + 0.5);
+        };
+        inside(await dialog.boundingBox(), 'the dialog');
+        inside(await dialog.getByRole('heading', { name: 'Your administrator changed the data rules' }).boundingBox(), 'the title');
+        const ok = dialog.getByRole('button', { name: 'OK' });
+        inside(await ok.boundingBox(), 'OK');
+        await expect(ok).toBeFocused();
+        // The rules scroll inside the dialog: the last one comes into view without moving title or OK.
+        const body = dialog.getByTestId('notice-body');
+        expect(await body.evaluate(element => element.scrollHeight - element.clientHeight)).toBeGreaterThan(40);
+        const items = dialog.getByRole('list', { name: 'Rules in force' }).getByRole('listitem');
+        await expect(items).toHaveCount(EVERY_RULE.length);
+        const okBefore = await ok.boundingBox();
+        // Without a pointer: Tab reaches the rules (OK, Close, then the rules, as the focus loop wraps), the keys scroll them
+        // until the last one is readable, and Tab goes on to the footer; Shift+Tab comes back.
+        await page.keyboard.press('Tab');
+        await expect(dialog.getByRole('button', { name: 'Close' })).toBeFocused();
+        await page.keyboard.press('Tab');
+        await expect(body).toBeFocused();
+        await page.keyboard.press('PageDown');
+        await expect.poll(() => body.evaluate(element => element.scrollTop), { message: 'PageDown scrolls the rules' }).toBeGreaterThan(100);
+        for (let step = 0; step < 12 && (await body.evaluate(element => element.scrollTop + element.clientHeight < element.scrollHeight - 1)); step++) await page.keyboard.press('ArrowDown');
+        inside(await items.last().boundingBox(), 'the last rule, after the keys');
+        expect(await ok.boundingBox()).toEqual(okBefore);
+        await page.keyboard.press('Tab');
+        await expect(dialog.getByRole('link', { name: 'Open Settings › Profile' })).toBeFocused();
+        await page.keyboard.press('Tab');
+        await expect(ok).toBeFocused();
+        await page.keyboard.press('Shift+Tab');
+        await page.keyboard.press('Shift+Tab');
+        await expect(body).toBeFocused();
+        // A visible focus ring from the tokens on the region.
+        expect(await body.evaluate(element => getComputedStyle(element).boxShadow)).not.toBe('none');
+        expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
+        await ok.tap();
+        await expect(dialog).toBeHidden();
       });
     });
   }

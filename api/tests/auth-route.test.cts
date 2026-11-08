@@ -88,7 +88,7 @@ test('password change invalidates all sessions and clears auth cookies', async (
   assert.ok(calls.some(call => call.sql === 'DELETE FROM sessions WHERE user_id = ?'));
 });
 
-test('public signup mode endpoint defaults to disabled', async (t) => {
+test('public signup mode endpoint defaults to disabled, with no data rules while every policy is at its default', async (t) => {
   const routePath = require.resolve('../dist/src/routes/auth');
   const authPath = require.resolve('../dist/src/auth');
   const statePath = require.resolve('../dist/src/state');
@@ -139,7 +139,7 @@ test('public signup mode endpoint defaults to disabled', async (t) => {
   });
 
   const routes = require('../dist/src/routes/auth') as typeof import('../src/routes/auth');
-  assert.deepEqual(await routes['GET /api/auth/signup-mode'].handler(), { signup_mode: 'disabled' });
+  assert.deepEqual(await routes['GET /api/auth/signup-mode'].handler(), { signup_mode: 'disabled', data_rules: [] });
 });
 
 // COOKIE_SECURE is read once at load, so each mode runs in its own process.

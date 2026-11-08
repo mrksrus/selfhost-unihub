@@ -491,7 +491,7 @@ These are not covered yet; do not report them as passing.
   CalDAV dialects stay with [live mail testing](LIVE_MAIL_TESTING.md) and the
   maintainer's real accounts.
 - **The instance backup's schedule.** The drill uses Back up now; the daily
-  run at `INSTANCE_BACKUP_TIME`, the number kept and a destination on another
+  run at its set time, the number kept and a destination on another
   machine are checked on the live server.
 - **Real devices and providers.** Manufacturer-specific Android behaviour and
   live mail or calendar providers stay manual ([live mail testing](LIVE_MAIL_TESTING.md)).

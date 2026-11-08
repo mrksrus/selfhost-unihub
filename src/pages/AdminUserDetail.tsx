@@ -6,11 +6,13 @@ import { ChevronLeft, LockKeyhole, MoreHorizontal, Plus } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { useToast } from '@/hooks/use-toast';
 import {
-  addAdminCalendarAccount, addAdminMailAccount, adminUserQueryKeys, adminUsersQueryKey, clearAdminUserModule, deleteAdminUserBackup, emptyAdminUserBin,
-  fetchAdminUserAccounts, fetchAdminUserBackups, fetchAdminUsers, removeAdminCalendarAccount, removeAdminMailAccount, updateAdminCalendarAccount, updateAdminMailAccount,
+  AdminHostTrustError, addAdminCalendarAccount, addAdminMailAccount, adminUserQueryKeys, adminUsersQueryKey, clearAdminUserModule, deleteAdminUserBackup, deleteAdminUserBinItem, emptyAdminUserBin,
+  fetchAdminUserAccounts, fetchAdminUserBackups, fetchAdminUserBin, fetchAdminUsers, removeAdminCalendarAccount, removeAdminMailAccount, updateAdminCalendarAccount, updateAdminMailAccount,
   type AdminCalendarAccount, type AdminClearModule, type AdminMailAccount,
 } from '@/lib/admin-api';
-import { BIN_MODULES, type BinModule } from '@/lib/bin-api';
+import { BIN_MODULES, groupBinItems, type BinItem, type BinModule } from '@/lib/bin-api';
+import type { MailHostTrustResult } from '@/components/mail/mail-page-model';
+import { HostTrustDetails } from '@/components/mail/MailAccountDialog';
 import type { BackupJob } from '@/lib/backup-api';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -20,6 +22,9 @@ import { SettingsPanel } from '@/components/settings/SettingsPanel';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog';
 import { AdminCalendarAccountDialog, AdminMailAccountDialog } from '@/components/admin/AdminAccountDialogs';
+
+// The person's own list labels sections from the server's capabilities; here the ids and status words are shown as written, in sentence case.
+const sentenceCase = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
 
 // Admin → Users → a person: their mail and calendar accounts, backups, bin
 // and data (F13, accounts.admin_manage). A rule that forbids the person an
@@ -49,6 +54,9 @@ type Confirm = { userId: string; generation: number; title: string; description:
 type For<T> = T & { userId: string; password: string; generation: number };
 type AccountDialog<A> = { open: boolean; account: A | null; generation: number };
 const CLOSED = { open: false, account: null, generation: 0 };
+/** A mail server the administrator may trust: the fields of the refused request, to send again with the fingerprints. */
+type HostTrustAsk = { userId: string; generation: number; account: AdminMailAccount | null; fields: Parameters<typeof updateAdminMailAccount>[2]; trust: MailHostTrustResult };
+const BIN_KINDS: Record<BinItem['item_type'], string> = { contact: 'contact', event: 'event', task: 'task', recording: 'recording', calendar: 'calendar' };
 
 function mailMeta(account: AdminMailAccount) {
   return [account.sync_mode === 'download' ? (account.delete_emails_on_server ? 'Download, deletes at the provider' : 'Download') : 'Sync',
@@ -69,6 +77,7 @@ const AdminUserDetail = () => {
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [mailDialog, setMailDialog] = useState<AccountDialog<AdminMailAccount>>(CLOSED);
   const [calendarDialog, setCalendarDialog] = useState<AccountDialog<AdminCalendarAccount>>(CLOSED);
+  const [hostTrust, setHostTrust] = useState<HostTrustAsk | null>(null);
   const generations = useRef(0);
   const openConfirm = (spec: Omit<Confirm, 'generation'>) => setConfirm({ ...spec, generation: ++generations.current });
   const openMailDialog = (account: AdminMailAccount | null) => setMailDialog({ open: true, account, generation: ++generations.current });
@@ -81,18 +90,29 @@ const AdminUserDetail = () => {
   const person = usersQuery.data?.find(entry => entry.id === id) ?? null;
   const accountsQuery = useQuery({ queryKey: adminUserQueryKeys.accounts(id), queryFn: ({ signal }) => fetchAdminUserAccounts(id, signal), enabled: admin && !!id });
   const backupsQuery = useQuery({ queryKey: adminUserQueryKeys.backups(id), queryFn: ({ signal }) => fetchAdminUserBackups(id, signal), enabled: admin && !!id });
+  const binQuery = useQuery({ queryKey: adminUserQueryKeys.bin(id), queryFn: ({ signal }) => fetchAdminUserBin(id, signal), enabled: admin && !!id });
   const refreshAccounts = (userId: string) => { void client.invalidateQueries({ queryKey: adminUserQueryKeys.accounts(userId) }); };
   const refreshBackups = (userId: string) => { void client.invalidateQueries({ queryKey: adminUserQueryKeys.backups(userId) }); };
+  const refreshBin = (userId: string) => { void client.invalidateQueries({ queryKey: adminUserQueryKeys.bin(userId) }); };
   const done = (title: string, generation: number, refresh: () => void) => { refresh(); closeConfirm(generation); toast({ title }); };
   const failed = (title: string) => (error: Error) => toast({ title, description: error.message, variant: 'destructive' });
   // Another person's page: nothing opened for the previous one may stay.
-  useEffect(() => { setConfirm(null); setMailDialog(CLOSED); setCalendarDialog(CLOSED); }, [id]);
+  useEffect(() => { setConfirm(null); setMailDialog(CLOSED); setCalendarDialog(CLOSED); setHostTrust(null); }, [id]);
 
   const saveMail = useSecretMutation({
     mutationFn: ({ userId, account, fields, password }: For<{ account: AdminMailAccount | null; fields: Parameters<typeof updateAdminMailAccount>[2] }>) =>
       account ? updateAdminMailAccount(userId, account.id, fields, password) : addAdminMailAccount(userId, fields as Parameters<typeof addAdminMailAccount>[1], password),
-    onSuccess: (_result, { userId, account, generation }) => { refreshAccounts(userId); closeMailDialog(generation); toast({ title: account ? 'Mail account changed' : 'Mail account added' }); },
-    onError: failed('Could not save the mail account'),
+    onSuccess: (_result, { userId, account, generation }) => { refreshAccounts(userId); closeMailDialog(generation); closeHostTrust(generation); toast({ title: account ? 'Mail account changed' : 'Mail account added' }); },
+    onError: (error: Error, { userId, account, fields, generation }) => {
+      // The mail server could not be verified: the administrator reviews its certificates and may trust them, with their password again.
+      if (error instanceof AdminHostTrustError && userId === id) { setHostTrust({ userId, generation, account, fields, trust: error.trust }); return; }
+      failed('Could not save the mail account')(error);
+    },
+  });
+  const closeHostTrust = (generation: number) => setHostTrust(current => (current?.generation === generation ? null : current));
+  const trustAndSave = (ask: HostTrustAsk, password: string) => saveMail.mutate({
+    userId: ask.userId, generation: ask.generation, account: ask.account, password,
+    fields: { ...ask.fields, accept_host_trust: true, trusted_imap_fingerprint256: ask.trust.certificates.imap?.fingerprint256 ?? undefined, trusted_smtp_fingerprint256: ask.trust.certificates.smtp?.fingerprint256 ?? undefined },
   });
   const saveCalendar = useSecretMutation({
     mutationFn: ({ userId, account, fields, password }: For<{ account: AdminCalendarAccount | null; fields: Parameters<typeof updateAdminCalendarAccount>[2] }>) =>
@@ -117,17 +137,27 @@ const AdminUserDetail = () => {
   });
   const emptyBin = useSecretMutation({
     mutationFn: ({ userId, module, password }: For<{ module?: BinModule }>) => emptyAdminUserBin(userId, password, module),
-    onSuccess: (deleted, { generation }) => done(deleted === 0 ? 'The bin was already empty' : `${deleted} ${deleted === 1 ? 'item' : 'items'} deleted for good`, generation, () => {}),
+    onSuccess: (deleted, { userId, generation }) => done(deleted === 0 ? 'The bin was already empty' : `${deleted} ${deleted === 1 ? 'item' : 'items'} deleted for good`, generation, () => refreshBin(userId)),
     onError: failed('Could not empty the bin'),
+  });
+  const removeBinItem = useSecretMutation({
+    mutationFn: ({ userId, itemId, password }: For<{ itemId: string }>) => deleteAdminUserBinItem(userId, itemId, password),
+    onSuccess: (_deleted, { userId, generation }) => done('Deleted for good', generation, () => refreshBin(userId)),
+    onError: failed('Could not delete the item'),
   });
   const clear = useSecretMutation({
     mutationFn: ({ userId, module, password }: For<{ module: AdminClearModule }>) => clearAdminUserModule(userId, module, password),
     onSuccess: (_result, { userId, module, generation }) => done(`${CLEAR_TARGETS.find(target => target.module === module)?.label} deleted`, generation, () => { refreshAccounts(userId); refreshBackups(userId); }),
     onError: failed('Could not delete the data'),
   });
-  const pending = removeMail.isPending || removeCalendar.isPending || removeBackup.isPending || emptyBin.isPending || clear.isPending;
+  const pending = removeMail.isPending || removeCalendar.isPending || removeBackup.isPending || emptyBin.isPending || removeBinItem.isPending || clear.isPending;
 
   const name = person?.full_name || person?.email || 'this person';
+  // Every dialog names the person it acts for, with the address so that two people of one name stay apart.
+  const target = person ? (person.full_name ? `${person.full_name} (${person.email})` : person.email) : name;
+  const binItems = binQuery.data?.items ?? [];
+  const binCount = (module: BinModule) => binItems.filter(item => item.module === module).length;
+  const nothingAtAll = accountsQuery.data && backupsQuery.data && binQuery.data && accountsQuery.data.mail_accounts.length === 0 && accountsQuery.data.calendar_accounts.length === 0 && backupsQuery.data.length === 0 && binItems.length === 0;
   const body = !admin ? <p className="text-sm text-muted-foreground">Only admins can see this page.</p>
     : usersQuery.isLoading ? <LoadingState label="Loading the account…" />
     : usersQuery.error ? <ErrorState title="Could not load the account" error={usersQuery.error} onRetry={() => void usersQuery.refetch()} retrying={usersQuery.isFetching} />
@@ -137,11 +167,14 @@ const AdminUserDetail = () => {
         <p className="mb-8 max-w-prose text-sm text-muted-foreground">
           What you do here is done for {name} as if they did it, with your password, and recorded in the activity log. A rule that forbids them an action does not apply to you.
         </p>
+        {nothingAtAll && (
+          <p role="status" className="mb-8 max-w-prose text-sm text-muted-foreground">{name} has no mail or calendar accounts, no backups on this server and nothing in their bin yet. Their data can still be deleted below.</p>
+        )}
 
         <SettingsSection title="Mail accounts" action={<Button size="sm" variant="outline" onClick={() => openMailDialog(null)}><Plus aria-hidden="true" />Add mail account</Button>}>
           {accountsQuery.isLoading ? <SettingsBlock><LoadingState compact label="Loading accounts…" /></SettingsBlock>
             : accountsQuery.error ? <SettingsBlock><ErrorState title="Could not load the accounts" error={accountsQuery.error} onRetry={() => void accountsQuery.refetch()} retrying={accountsQuery.isFetching} /></SettingsBlock>
-            : accountsQuery.data!.mail_accounts.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">No mail accounts.</p></SettingsBlock>
+            : accountsQuery.data!.mail_accounts.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">{name} has no mail accounts.</p></SettingsBlock>
             : accountsQuery.data!.mail_accounts.map(account => (
               <SettingsRow key={account.id} label={account.display_name ? `${account.display_name} (${account.email_address})` : account.email_address} description={mailMeta(account)}>
                 <DropdownMenu>
@@ -165,7 +198,7 @@ const AdminUserDetail = () => {
         <SettingsSection title="Calendar accounts" action={<Button size="sm" variant="outline" onClick={() => openCalendarDialog(null)}><Plus aria-hidden="true" />Add calendar account</Button>}>
           {accountsQuery.isLoading ? <SettingsBlock><LoadingState compact label="Loading accounts…" /></SettingsBlock>
             : accountsQuery.error ? null
-            : accountsQuery.data!.calendar_accounts.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">No calendar accounts.</p></SettingsBlock>
+            : accountsQuery.data!.calendar_accounts.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">{name} has no calendar accounts.</p></SettingsBlock>
             : accountsQuery.data!.calendar_accounts.map(account => (
               <SettingsRow key={account.id} label={account.display_name || account.account_email || 'Calendars'} description={calendarMeta(account)}>
                 {account.provider !== 'local' && (
@@ -186,30 +219,45 @@ const AdminUserDetail = () => {
         <SettingsSection title="Backups" description="Backups kept on this server for this person. They cannot be downloaded here.">
           {backupsQuery.isLoading ? <SettingsBlock><LoadingState compact label="Loading backups…" /></SettingsBlock>
             : backupsQuery.error ? <SettingsBlock><ErrorState title="Could not load the backups" error={backupsQuery.error} onRetry={() => void backupsQuery.refetch()} retrying={backupsQuery.isFetching} /></SettingsBlock>
-            : backupsQuery.data!.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">No backups.</p></SettingsBlock>
+            : backupsQuery.data!.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">{name} has no backups on this server.</p></SettingsBlock>
             : backupsQuery.data!.map((job: BackupJob) => (
-              <SettingsRow key={job.id} label={<span className="flex items-center gap-1.5">{job.encryption_enabled && <LockKeyhole aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />}{job.scope === 'full' ? 'Full backup' : `${job.requested_sections.join(', ')} backup`}</span>}
-                description={[job.status, formatWhen(job.completed_at || job.created_at), job.file_size ? formatBytes(job.file_size) : null, job.keep_until ? `kept until ${formatWhen(job.keep_until)}` : null].filter(Boolean).join(' · ')}>
+              <SettingsRow key={job.id} label={<span className="flex items-center gap-1.5">{job.encryption_enabled && <LockKeyhole aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />}{job.scope === 'full' ? 'Full backup' : `${job.requested_sections.map(sentenceCase).join(', ')} backup`}</span>}
+                description={[sentenceCase(job.status), formatWhen(job.completed_at || job.created_at), job.file_size ? formatBytes(job.file_size) : null, ].filter(Boolean).join(' · ')}>
                 <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" disabled={['queued', 'running', 'cancelling'].includes(job.status)} onClick={() => openConfirm({
-                  userId: id, title: 'Delete this backup?', description: 'The archive is removed from the server. A downloaded copy is not affected.', action: 'Delete backup', destructive: true,
+                  userId: id, title: `Delete this backup of ${name}?`, description: 'The archive is removed from the server, whatever the minimum your rule keeps it for. A copy they downloaded is not affected.', action: 'Delete backup', destructive: true,
                   run: (password, generation) => removeBackup.mutate({ userId: id, generation, jobId: job.id, password }) })}>Delete</Button>
               </SettingsRow>
             ))}
         </SettingsSection>
 
-        <SettingsSection title="Bin" description="What they deleted waits in their bin until it is restored or gone for good.">
-          {BIN_MODULES.map(module => (
-            <SettingsRow key={module.id} label={module.label}>
-              <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => openConfirm({
-                userId: id, title: `Empty the ${module.label.toLowerCase()} bin of ${name}?`, description: 'Everything in it is deleted for good and cannot be restored.', action: 'Delete for good', destructive: true,
-                run: (password, generation) => emptyBin.mutate({ userId: id, generation, module: module.id, password }) })}>Empty</Button>
-            </SettingsRow>
-          ))}
-          <SettingsRow label="Everything">
-            <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => openConfirm({
-              userId: id, title: `Empty the bin of ${name}?`, description: 'Everything in it is deleted for good and cannot be restored.', action: 'Delete for good', destructive: true,
-              run: (password, generation) => emptyBin.mutate({ userId: id, generation, password }) })}>Empty bin</Button>
-          </SettingsRow>
+        <SettingsSection title="Bin" description={`What ${name} deleted waits in their bin until it is restored or gone for good. Deleting here is allowed whatever the bin rule says for them.`}
+          action={<Button size="sm" variant="outline" className="text-destructive hover:text-destructive" disabled={binItems.length === 0} onClick={() => openConfirm({
+            userId: id, title: `Empty the bin of ${name}?`, description: `${binItems.length} ${binItems.length === 1 ? 'item is' : 'items are'} deleted for good and cannot be restored.`, action: 'Delete for good', destructive: true,
+            run: (password, generation) => emptyBin.mutate({ userId: id, generation, password }) })}>Empty bin</Button>}>
+          {binQuery.isLoading ? <SettingsBlock><LoadingState compact label="Loading the bin…" /></SettingsBlock>
+            : binQuery.error ? <SettingsBlock><ErrorState title="Could not load the bin" error={binQuery.error} onRetry={() => void binQuery.refetch()} retrying={binQuery.isFetching} /></SettingsBlock>
+            : binItems.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">The bin of {name} is empty.</p></SettingsBlock>
+            : <>
+              {BIN_MODULES.filter(module => binCount(module.id) > 0).map(module => (
+                <SettingsRow key={module.id} label={module.label} description={`${binCount(module.id)} ${binCount(module.id) === 1 ? 'item' : 'items'}`}>
+                  <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => openConfirm({
+                    userId: id, title: `Empty the ${module.label.toLowerCase()} bin of ${name}?`, description: 'Everything in it is deleted for good and cannot be restored.', action: 'Delete for good', destructive: true,
+                    run: (password, generation) => emptyBin.mutate({ userId: id, generation, module: module.id, password }) })}>Empty</Button>
+                </SettingsRow>
+              ))}
+              {groupBinItems(binItems).map(group => {
+                const lead = group[0];
+                const title = lead.title || `Untitled ${BIN_KINDS[lead.item_type]}`;
+                return (
+                  <SettingsRow key={lead.group_id ?? lead.id} label={<>{title}<span className="font-normal text-muted-foreground"> · {BIN_MODULES.find(module => module.id === lead.module)?.label ?? lead.module}</span></>}
+                    description={[`Deleted ${formatWhen(lead.deleted_at)}`, lead.purge_after ? `gone for good ${formatWhen(lead.purge_after)}` : 'kept until restored or deleted', group.length > 1 ? `with ${group.length - 1} ${group.length === 2 ? 'item' : 'items'}` : null].filter(Boolean).join(' · ')}>
+                    <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" aria-label={`Delete ${title} for good`} onClick={() => openConfirm({
+                      userId: id, title: `Delete ${title} for good?`, description: group.length > 1 ? `${group.length} items of ${name} are deleted for good and cannot be restored.` : `It is deleted from the bin of ${name} for good and cannot be restored.`, action: 'Delete for good', destructive: true,
+                      run: (password, generation) => removeBinItem.mutate({ userId: id, generation, itemId: lead.id, password }) })}>Delete for good</Button>
+                  </SettingsRow>
+                );
+              })}
+            </>}
         </SettingsSection>
 
         <SettingsSection title="Delete data" description="The same as the person's Settings › Delete data. Only a backup brings it back.">
@@ -229,12 +277,17 @@ const AdminUserDetail = () => {
       <PageHeader title="Settings" scope={person ? `Users · ${name}` : 'Users'}
         back={<Button variant="ghost" size="icon" aria-label="Back to users" asChild><Link to="/admin/users"><ChevronLeft aria-hidden="true" /></Link></Button>} />
       <PageBody width="reading">{body}</PageBody>
-      <PasswordConfirmDialog open={!!confirm && confirm.userId === id} onClose={() => setConfirm(null)} title={confirm?.title ?? ''} description={confirm?.description ?? ''}
+      <PasswordConfirmDialog open={!!confirm && confirm.userId === id} onClose={() => setConfirm(null)} title={confirm?.title ?? ''} description={confirm?.description ?? ''} target={target}
         actionLabel={confirm?.action ?? ''} destructive={confirm?.destructive} pending={pending} onConfirm={password => { if (confirm?.userId === id) confirm.run(password, confirm.generation); }} />
-      <AdminMailAccountDialog open={mailDialog.open} account={mailDialog.account} onClose={() => setMailDialog(CLOSED)} pending={saveMail.isPending}
+      <AdminMailAccountDialog open={mailDialog.open} account={mailDialog.account} onClose={() => setMailDialog(CLOSED)} pending={saveMail.isPending} target={target}
         onSubmit={(fields, password) => saveMail.mutate({ userId: id, generation: mailDialog.generation, account: mailDialog.account, fields, password })} />
-      <AdminCalendarAccountDialog open={calendarDialog.open} account={calendarDialog.account} onClose={() => setCalendarDialog(CLOSED)} pending={saveCalendar.isPending}
+      <AdminCalendarAccountDialog open={calendarDialog.open} account={calendarDialog.account} onClose={() => setCalendarDialog(CLOSED)} pending={saveCalendar.isPending} target={target}
         onSubmit={(fields, password) => saveCalendar.mutate({ userId: id, generation: calendarDialog.generation, account: calendarDialog.account, fields, password })} />
+      <PasswordConfirmDialog open={!!hostTrust && hostTrust.userId === id} onClose={() => { if (!saveMail.isPending) setHostTrust(null); }} title="Trust this mail server?"
+        description="The server's certificate could not be verified. Compare the fingerprints with the ones on the mail server before the account trusts them." target={target}
+        actionLabel="Trust and save" pending={saveMail.isPending} onConfirm={password => { if (hostTrust?.userId === id) trustAndSave(hostTrust, password); }}>
+        {hostTrust && <div className="max-h-[40dvh] space-y-3 overflow-y-auto"><HostTrustDetails trust={hostTrust.trust} /></div>}
+      </PasswordConfirmDialog>
     </PageShell>
   );
 };

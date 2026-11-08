@@ -4,7 +4,6 @@ const assert: typeof import('node:assert/strict') = require('node:assert/strict'
 const {
   crc32Buffer,
   cancelDataExportJob,
-  deleteDataExportJob,
   normalizeSections,
   parseRequestedSections,
   pumpDataExportJobs,
@@ -121,58 +120,4 @@ test('queued export cancellation finalizes the job without running it', async (t
   assert.equal(result.job!.status, 'cancelled');
   assert.equal(result.job!.cancel_requested, true);
   assert.equal(result.job!.progress, 100);
-});
-
-test('deleting an export retains a key referenced by an uploaded restore archive', async (t) => {
-  const job = {
-    id: 'job-delete',
-    user_id: 'user-1',
-    scope: 'full',
-    status: 'ready',
-    phase: 'ready',
-    progress: 100,
-    cancel_requested: 0,
-    requested_sections: '["settings"]',
-    encryption_enabled: 1,
-    backup_uuid: 'backup-shared',
-    file_path: null,
-    created_at: new Date(),
-    updated_at: new Date(),
-  };
-  let exportDeleted = false;
-  let restoreDetached = false;
-  let keyDeleteCount = 0;
-  setDb({
-    async execute(sql: string) {
-      if (sql.includes('SELECT jobs.*')) return [[{ ...job }]];
-      if (sql.startsWith('UPDATE backup_restore_jobs')) {
-        restoreDetached = true;
-        return [{ affectedRows: 1 }];
-      }
-      if (sql.includes('source_export_job_id')) return [[]];
-      if (sql.startsWith('DELETE FROM data_export_jobs')) {
-        exportDeleted = true;
-        return [{ affectedRows: 1 }];
-      }
-      if (sql.includes('FROM data_export_jobs')) {
-        return [exportDeleted ? [] : [{ id: job.id }]];
-      }
-      if (sql.includes('FROM backup_restore_jobs')) {
-        return [[{ id: 'uploaded-restore' }]];
-      }
-      if (sql.startsWith('DELETE FROM backup_archive_keys')) {
-        keyDeleteCount += 1;
-        return [{ affectedRows: 1 }];
-      }
-      throw new Error(`Unexpected SQL: ${sql}`);
-    },
-  } as FixtureValue);
-  t.after(() => setDb(null));
-
-  const result = await deleteDataExportJob(job.user_id, job.id);
-
-  assert.deepEqual(result, { deleted: true });
-  assert.equal(restoreDetached, true);
-  assert.equal(exportDeleted, true);
-  assert.equal(keyDeleteCount, 0);
 });

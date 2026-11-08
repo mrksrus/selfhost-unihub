@@ -1,5 +1,5 @@
 import { api } from '@/lib/api';
-import { unwrap } from '@/lib/api-error';
+import { ApiError, unwrap } from '@/lib/api-error';
 
 export interface AdminUser {
   id: string;
@@ -157,20 +157,36 @@ export function auditActionLabel(entry: Pick<AuditEntry, 'action' | 'details'>) 
 }
 
 // ── Policies (Server settings → Policies) ─────────────────────────
-import type { AdminPoliciesResponse, AdminPoliciesUpdateRequest, PolicyValues } from '../../api/src/contracts/policies';
+import type { AdminBinMinimumRetention, AdminPoliciesResponse, AdminPoliciesUpdateRequest, BinMinimumRetention, PolicyValues } from '../../api/src/contracts/policies';
 export type { AdminPolicy, AdminPoliciesResponse } from '../../api/src/contracts/policies';
 
 export const adminPoliciesQueryKey = ['admin', 'policies'] as const;
 
-export async function fetchAdminPolicies(signal?: AbortSignal): Promise<AdminPoliciesResponse> {
-  const answer = unwrap(await api.get<AdminPoliciesResponse>('/admin/policies', { signal }));
+/**
+ * The bin's minimum retention while bin.delete is forbidden (D34): 30 or 90
+ * days, or until restored (the default). The server resolves it as the floor
+ * of each person's bin_retention setting; it is its own field of the
+ * administrator's routes (bin_min_retention). A server without it leaves
+ * the choice greyed out.
+ */
+export type BinMinimum = BinMinimumRetention;
+export type AdminBinMinimum = AdminBinMinimumRetention;
+export type AdminPoliciesAnswer = AdminPoliciesResponse;
+
+export async function fetchAdminPolicies(signal?: AbortSignal): Promise<AdminPoliciesAnswer> {
+  const answer = unwrap(await api.get<AdminPoliciesAnswer>('/admin/policies', { signal }));
   if (!answer?.policies) throw new Error('The server did not answer with its policies.');
   return answer;
 }
 
-/** Saves the changed values only, with the administrator's password; the answer is every policy as now set. */
-export async function saveAdminPolicies(values: Partial<PolicyValues>, currentPassword: string): Promise<AdminPoliciesResponse> {
-  const answer = unwrap(await api.put<AdminPoliciesResponse>('/admin/policies', { values, current_password: currentPassword } satisfies AdminPoliciesUpdateRequest));
+/**
+ * Saves the changed values only, with the administrator's password; the
+ * answer is every policy as now set. `binMinimum` travels as its own field
+ * (AdminPoliciesUpdateRequest.bin_min_retention) when it changed.
+ */
+export async function saveAdminPolicies(values: Partial<PolicyValues>, currentPassword: string, binMinimum?: BinMinimum): Promise<AdminPoliciesAnswer> {
+  const body: AdminPoliciesUpdateRequest = { values, current_password: currentPassword, ...(binMinimum ? { bin_min_retention: binMinimum } : {}) };
+  const answer = unwrap(await api.put<AdminPoliciesAnswer>('/admin/policies', body));
   if (!answer?.policies) throw new Error('The server did not answer with its policies.');
   return answer;
 }
@@ -183,7 +199,8 @@ import type {
   AdminClearModule, AdminDeleteResponse, AdminMailAccount, AdminMailAccountCreateRequest, AdminMailAccountUpdateRequest,
   AdminUserAccountsResponse, AdminUserBackupsResponse,
 } from '../../api/src/contracts/admin-accounts';
-import type { BinModule } from '../../api/src/contracts/bin';
+import type { BinDeleteResponse, BinListResponse, BinModule } from '../../api/src/contracts/bin';
+import type { MailHostTrustResult } from '@/components/mail/mail-page-model';
 export type {
   AdminCalendarAccount, AdminCalendarAccountCreateRequest, AdminCalendarAccountUpdateRequest, AdminClearModule, AdminMailAccount,
   AdminMailAccountCreateRequest, AdminMailAccountUpdateRequest, AdminUserAccountsResponse,
@@ -192,6 +209,23 @@ export type {
 export const adminUserQueryKeys = {
   accounts: (userId: string) => ['admin', 'users', userId, 'accounts'] as const,
   backups: (userId: string) => ['admin', 'users', userId, 'backups'] as const,
+  bin: (userId: string) => ['admin', 'users', userId, 'bin'] as const,
+};
+
+/**
+ * The person's mail server could not be verified: the server answers 409
+ * with the certificates to review (as for the person's own add), and the
+ * administrator may trust them with accept_host_trust and the fingerprints.
+ */
+export class AdminHostTrustError extends ApiError {
+  constructor(response: Parameters<typeof unwrap>[0], readonly trust: MailHostTrustResult) {
+    super(response);
+    this.name = 'AdminHostTrustError';
+  }
+}
+const unwrapAccount = <T>(response: Parameters<typeof unwrap>[0] & { data?: T; requiresHostTrustConfirmation?: unknown; mailHostTrust?: unknown }) => {
+  if (response.error && response.status === 409 && response.requiresHostTrustConfirmation && response.mailHostTrust) throw new AdminHostTrustError(response, response.mailHostTrust as MailHostTrustResult);
+  return unwrap(response);
 };
 
 const userPath = (userId: string, rest: string) => `/admin/users/${encodeURIComponent(userId)}${rest}`;
@@ -206,10 +240,10 @@ export async function fetchAdminUserBackups(userId: string, signal?: AbortSignal
   return unwrap(await api.get<AdminUserBackupsResponse>(userPath(userId, '/backups'), { signal }))?.jobs ?? [];
 }
 export async function addAdminMailAccount(userId: string, account: Omit<AdminMailAccountCreateRequest, 'current_password'>, currentPassword: string) {
-  return unwrap(await api.post<AdminAccountResponse<AdminMailAccount>>(userPath(userId, '/mail-accounts'), withPassword(account, currentPassword)))?.account;
+  return unwrapAccount(await api.post<AdminAccountResponse<AdminMailAccount>>(userPath(userId, '/mail-accounts'), withPassword(account, currentPassword)))?.account;
 }
 export async function updateAdminMailAccount(userId: string, accountId: string, change: Omit<AdminMailAccountUpdateRequest, 'current_password'>, currentPassword: string) {
-  return unwrap(await api.put<AdminAccountResponse<AdminMailAccount>>(userPath(userId, `/mail-accounts/${encodeURIComponent(accountId)}`), withPassword(change, currentPassword)))?.account;
+  return unwrapAccount(await api.put<AdminAccountResponse<AdminMailAccount>>(userPath(userId, `/mail-accounts/${encodeURIComponent(accountId)}`), withPassword(change, currentPassword)))?.account;
 }
 /** Disconnects the account; `purge` also deletes UniHub's copy of its mail (the provider keeps it). */
 export async function removeAdminMailAccount(userId: string, accountId: string, currentPassword: string, purge = false) {
@@ -226,6 +260,15 @@ export async function removeAdminCalendarAccount(userId: string, accountId: stri
 }
 export async function deleteAdminUserBackup(userId: string, jobId: string, currentPassword: string) {
   return deleted(unwrap(await api.delete<AdminDeleteResponse>(userPath(userId, `/backups/${encodeURIComponent(jobId)}`), { current_password: currentPassword })));
+}
+/** The person's bin as they see it (GET /api/admin/users/:id/bin). */
+export async function fetchAdminUserBin(userId: string, signal?: AbortSignal): Promise<BinListResponse> {
+  const answer = unwrap(await api.get<BinListResponse>(userPath(userId, '/bin'), { signal }));
+  return { items: answer?.items ?? [], retention: answer?.retention ?? '30' };
+}
+/** Deletes one item of the person's bin for good. */
+export async function deleteAdminUserBinItem(userId: string, itemId: string, currentPassword: string) {
+  return unwrap(await api.delete<BinDeleteResponse>(userPath(userId, `/bin/${encodeURIComponent(itemId)}`), { current_password: currentPassword }))?.deleted ?? 0;
 }
 export async function emptyAdminUserBin(userId: string, currentPassword: string, module?: BinModule) {
   return deleted(unwrap(await api.post<AdminDeleteResponse>(userPath(userId, '/bin/empty'), withPassword(module ? { module } : {}, currentPassword) satisfies AdminBinEmptyRequest)));

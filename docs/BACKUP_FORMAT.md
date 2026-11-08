@@ -330,7 +330,11 @@ are validated as a schema 7 archive's are, so state UniHub cannot store
 refuses the restore instead of disappearing. Its Download-mode mail stays
 whatever today's choice says, since it may be the only copy. The manifest and
 the restore result carry `contents`: the classes included, what was left out
-with counts, and notes (`contracts/backup.ts`).
+with counts, and notes (`contracts/backup.ts`). The installation's data-safety
+rules (`setting_policies`, `policy.<key>`), their revision and the instance
+backup's schedule (`system_settings`), and each person's confirmation of the
+rules (`policy_notices`) are never archived: a restore leaves the destination
+server's rules in force, and its people confirm them there.
 
 Applications that read only schemas 1–6 (0.27.x and older) refuse a schema 7
 backup before restoring anything.

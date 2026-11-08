@@ -60,7 +60,20 @@ test(`server deletion worker: ${scenario}`, async (t) => {
   let modulePaused = scenario === 'module-paused';
   const statusUpdates: FixtureValue[] = [];
   const imapCalls: FixtureValue[] = [];
+  // Whether the rules revision is held (settings.ts whilePolicyAllows) when each IMAP command is sent.
+  let rulesHeld = false;
+  const heldDuring: boolean[] = [];
   const db = {
+    getConnection: async () => ({
+      beginTransaction: async () => {},
+      execute: async (sql: string, params: FixtureValue[] = []) => {
+        if (sql.includes('LOCK IN SHARE MODE') && sql.includes('system_settings')) rulesHeld = true;
+        return db.execute(sql, params);
+      },
+      commit: async () => { rulesHeld = false; },
+      rollback: async () => { rulesHeld = false; },
+      release() {},
+    }),
     execute: async (sql: string, params: FixtureValue[] = []) => {
       if (sql.includes('FROM user_settings')) return [[{ setting_value: JSON.stringify({ mail: { background: !modulePaused } }) }]];
       if (sql.includes('SELECT user_id FROM mail_accounts WHERE id = ?')) return [[{ user_id: 'user-1' }]];
@@ -129,6 +142,7 @@ test(`server deletion worker: ${scenario}`, async (t) => {
       },
       exec: async (command: FixtureValue, attributes: FixtureValue) => {
         imapCalls.push([command, ...attributes.flatMap(flat)]);
+        heldDuring.push(rulesHeld);
         return { next() {}, response: {} };
       },
     }),
@@ -172,6 +186,7 @@ test(`server deletion worker: ${scenario}`, async (t) => {
     ['UID STORE', '10', '+FLAGS.SILENT', '\\Deleted'],
     ['UID EXPUNGE', '10'],
   ]);
+  assert.deepEqual(heldDuring, [true, true], 'the erase is sent while the rules are held');
 });
 
 }

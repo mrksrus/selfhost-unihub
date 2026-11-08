@@ -12,6 +12,7 @@ import {
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
+import { ApiError } from '@/lib/api-error';
 import { useModules } from '@/hooks/use-modules';
 import { usePolicy } from '@/hooks/use-policies';
 import { PolicyNote } from '@/components/ui/policy-note';
@@ -90,7 +91,15 @@ export function MailCalendarSettings({ account }: { account: MailAccount }) {
       if (!payload.enabled) toast({ title: 'Calendar turned off', description: 'Its events were removed from UniHub. Nothing was deleted on the server.' });
       else if (next.account) toast({ title: 'Calendar connected', description: `${next.account.provider_config?.server?.label || 'Server'} · ${next.calendars.length} calendar${next.calendars.length === 1 ? '' : 's'}. Events appear as the first sync finishes.` });
     },
-    onError: (error: Error) => toast({ title: 'Calendar not changed', description: error.message, variant: 'destructive', duration: 10000 }),
+    onError: (error: Error) => {
+      // The link changed under the request (409): nothing was written; the current state is read again.
+      if (error instanceof ApiError && error.code === 'MAIL_CALENDAR_CHANGED') {
+        void linkQuery.refetch();
+        toast({ title: 'Calendar not changed', description: 'This changed in the meantime. Try again.', variant: 'destructive' });
+        return;
+      }
+      toast({ title: 'Calendar not changed', description: error.message, variant: 'destructive', duration: 10000 });
+    },
   });
 
   const syncNow = useMutation({

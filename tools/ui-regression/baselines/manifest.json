@@ -23,12 +23,12 @@
   },
   "baselines": {
     "admin-policies-wide-dark.png": {
-      "sha256": "b31093805a9f1450aaa858e73be024c3e754f647e8105b774e6c072abc3dbd84",
-      "bytes": 141443
+      "sha256": "23863f3d6489457b7ba1db41c81df82960f70f05bf2d65686674cb16ffb82146",
+      "bytes": 139926
     },
     "admin-policies-wide-light.png": {
-      "sha256": "63365d5afe7e1421fee5c0448f1b616636f6cf413a710ecec6abb000b751b5d8",
-      "bytes": 145001
+      "sha256": "cccf51052c5fb3638233ca1afddf31f8cdd280ff9d0c849a694eb898d320ed72",
+      "bytes": 143516
     },
     "bin-phone-dark.png": {
       "sha256": "368ab0af0cef3b0f14868e91ee743795b4f19657eb06561b0aa30f87fc8140d1",
@@ -659,6 +659,46 @@
         "settings-appearance-wide-light.png",
         "settings-pages-wide-dark.png",
         "settings-pages-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-07T20:34:38.143Z",
+      "reason": "admin-policies-wide: the Backups rules read as a minimum (D36, maintainer 2026-11-07): 'Deleting backups' description and 'Keep users' backups at least' row; content within the accepted design (P-27), E2 stream",
+      "source": {
+        "commit": "e010a03c63669f434bcfac8749bdddf8b1f1ecdf",
+        "branch": "wip/0.28.0-e2",
+        "dirty": false,
+        "digest": "ded6ba7e1355659cfdc72f7c63f18ae09e7b200e579b1381772699c14a3036e6"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [],
+      "changed": [
+        "admin-policies-wide-dark.png",
+        "admin-policies-wide-light.png"
       ],
       "removed": []
     }

@@ -463,8 +463,10 @@ async function restoreSyncedItem(userId: string, row: BinRow, choice: RestoreCho
     return restoreLocalItem(userId, row, !target || !uid ? 'Its calendar is gone; restored to your default list.' : 'Its calendar is read-only now; restored to your default list.');
   }
   if (!target.account.is_active) throw conflict('CALENDAR_SYNC_PAUSED', 'Sync is paused for this calendar account. Resume it to restore this item to its calendar.');
-  // The login before anything is written, so a missing password changes nothing.
-  await calendarSync.resolveLogin(target.account).catch(serverRefusal);
+  // The login before anything is written, without writing (no relink of a
+  // restored calendar), so a missing password or disconnected mail account
+  // changes nothing; the restore's own requests link it.
+  await calendarSync.resolveLogin(target.account, false, { write: false }).catch(serverRefusal);
   const calendarId = target.calendar.id;
   const plan = await withTransaction(async cx => {
     await lockBinOwner(cx, userId);

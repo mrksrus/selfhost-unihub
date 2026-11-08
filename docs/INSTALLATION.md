@@ -83,7 +83,7 @@ the runtime names shown below. Do not paste actual secrets into public issues.
 | `UNIHUB_BACKUP_MASTER_KEY` | `BACKUP_MASTER_KEY` | Optional | A separate persistent key for server-side backup unlocking. If blank, the app uses `ENCRYPTION_KEY`. Set it before first use if wanted, then preserve it. |
 | `UNIHUB_INSTANCE_BACKUP_DIR` | `INSTANCE_BACKUP_DIR` | Optional | Where the instance backup writes, inside the container, for example `/backup`; mount a disk or share of its own there (see [section 5](#5-keep-storage-and-startup-defaults)). Blank: no instance backup. |
 | `UNIHUB_INSTANCE_BACKUP_KEY` | `INSTANCE_BACKUP_KEY` | Optional | The instance backup's own key, at least 32 random bytes (`openssl rand -base64 48`), never one of the keys above. Blank: no instance backup. |
-| `UNIHUB_INSTANCE_BACKUP_TIME`, `UNIHUB_INSTANCE_BACKUP_KEEP` | `INSTANCE_BACKUP_TIME`, `INSTANCE_BACKUP_KEEP` | Optional | The daily time (`HH:MM`, UTC) and how many backups are kept; blank keeps 03:30 and 14. |
+| `UNIHUB_INSTANCE_BACKUP_TIME`, `UNIHUB_INSTANCE_BACKUP_KEEP` | `INSTANCE_BACKUP_TIME`, `INSTANCE_BACKUP_KEEP` | Optional | The daily time (`HH:MM`, UTC) and how many backups are kept, until an administrator sets them in Server settings > Instance backup; blank keeps 03:30 and 14. |
 
 Generate each database password/key separately. This produces a single-line value
 without shell interpolation characters such as `$`:

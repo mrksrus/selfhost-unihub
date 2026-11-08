@@ -951,10 +951,12 @@ async function deleteRecording(userId: string, recordingId: string) {
  * good (data.clear); the bin keeps what is in it. The rows go first, then
  * each file as a recording's delete removes it (removeRecordingName).
  */
-async function clearRecordings(userId: string) {
+// inTransaction: written with the deletion (data-clear.ts, the administrator's entry).
+async function clearRecordings(userId: string, inTransaction?: (connection: SqlExecutor, deleted: number) => Promise<unknown>) {
   const removed = await withTransaction(async connection => {
     const [rows] = await connection.execute<RowDataPacket[]>('SELECT id, storage_path FROM recordings WHERE user_id = ? FOR UPDATE', [userId]);
     if (rows.length) await connection.execute('DELETE FROM recordings WHERE user_id = ?', [userId]);
+    if (inTransaction) await inTransaction(connection, rows.length);
     return rows;
   });
   for (const row of removed) {

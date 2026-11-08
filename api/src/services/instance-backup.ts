@@ -1,7 +1,7 @@
 import type { PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import type { InstanceBackupRun, InstanceBackupStatus } from '../contracts/instance-backup';
 import type { InstanceBackupConfig } from '../config';
-import type { DatabaseConfig, SqlExecutor } from '../types';
+import type { AuthRequest, DatabaseConfig, SqlExecutor } from '../types';
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -9,9 +9,9 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import packageJson = require('../../package.json');
 import { db } from '../state';
-import { INSTANCE_BACKUP, mayBeSecretGeneration, readSecretFile, rememberSecretGeneration, secretGenerationNames } from '../config';
+import { INSTANCE_BACKUP, INSTANCE_BACKUP_MAX_KEEP, mayBeSecretGeneration, readSecretFile, rememberSecretGeneration, secretGenerationNames } from '../config';
 import { log } from '../log';
-import { conflict } from '../http/errors';
+import { badRequest, conflict } from '../http/errors';
 import { getDatabaseConfig } from './database-config';
 import { fileRemovalGate } from './file-removal-gate';
 import { attachmentsRoot, rawRoot } from './mail-storage';
@@ -369,7 +369,8 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
     await syncDirectory(settings.dir);
     // Succeeded and what retention removes, in one transaction: the run
     // counts together with the removal of the oldest beyond the kept count.
-    const removing = await recordSuccess(row.id, { name, bytes, sha256, migrationId: manifest.migration_id }, settings);
+    // The count kept as the administrator set it now (D35), not at the start.
+    const removing = await recordSuccess(row.id, { name, bytes, sha256, migrationId: manifest.migration_id }, await scheduleSettings());
     log.info(LOG, 'Succeeded', { run: row.id, bytes, files: manifest.files.count, seconds: Math.round((Date.now() - startedAt) / 1000) });
     await removeBackupFiles(settings.dir, removing);
   } catch (error) {
@@ -782,18 +783,74 @@ function latestSlot(now: Date, timeUtc: string) {
   return slot;
 }
 
-function nextRun(now: Date, timeUtc: string) {
+// One scheduled run a UTC day: a slot is due while no scheduled run started
+// on its day, so a time moved later after the day's run waits for tomorrow.
+const utcDay = (time: Date) => new Date(Date.UTC(time.getUTCFullYear(), time.getUTCMonth(), time.getUTCDate()));
+
+/** The first slot after `now` on a UTC day without a scheduled run (`lastScheduled`: when the latest one started). */
+function nextRun(now: Date, timeUtc: string, lastScheduled: Date | null = null) {
   const next = latestSlot(now, timeUtc);
   next.setUTCDate(next.getUTCDate() + 1);
+  if (lastScheduled && lastScheduled >= utcDay(next)) next.setUTCDate(next.getUTCDate() + 1);
   return next;
+}
+
+// ── The administrator's schedule (D35) ────────────────────────────────
+// The time of the daily run (UTC) and how many backups are kept are
+// installation settings (system_settings) an administrator changes on the
+// page; INSTANCE_BACKUP_TIME and _KEEP, or the defaults 03:30 and 14, hold
+// until then. The destination and the key stay in the environment (F10).
+// The schedule's tick reads them every minute and a run reads the count when
+// it succeeds, so a change needs no restart. A lower count removes the
+// oldest backups at the next verified success, as the count always does.
+
+const TIME_SETTING = 'instance_backup_time_utc';
+const KEEP_SETTING = 'instance_backup_keep';
+const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+interface ScheduleSettings { timeUtc: string; keep: number; source: 'admin' | 'environment' }
+
+/** The schedule in force: the administrator's values, else the environment's (or the defaults). */
+async function scheduleSettings(executor: SqlExecutor = db): Promise<ScheduleSettings> {
+  const [rows] = await executor.execute<RowDataPacket[]>('SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN (?, ?)', [TIME_SETTING, KEEP_SETTING]);
+  const stored = new Map(rows.map(row => [String(row.setting_key), String(row.setting_value)]));
+  const time = stored.get(TIME_SETTING), keepText = stored.get(KEEP_SETTING), keep = Number(keepText);
+  const timeOk = time !== undefined && TIME_PATTERN.test(time);
+  const keepOk = keepText !== undefined && /^\d+$/.test(keepText) && keep >= 1 && keep <= INSTANCE_BACKUP_MAX_KEEP;
+  return { timeUtc: timeOk ? time : config.timeUtc, keep: keepOk ? keep : config.keep, source: timeOk || keepOk ? 'admin' : 'environment' };
+}
+
+/**
+ * PUT /api/admin/instance-backup/settings, after the route checked the
+ * administrator's password: both values in one transaction with the
+ * activity-log entry. Deletes nothing by itself.
+ */
+async function updateInstanceBackupSchedule(adminId: string, input: unknown, { req = null }: { req?: AuthRequest | null } = {}): Promise<InstanceBackupStatus> {
+  const body = (input ?? {}) as { time_utc?: unknown; keep?: unknown };
+  if (typeof body.time_utc !== 'string' || !TIME_PATTERN.test(body.time_utc)) throw badRequest('INSTANCE_BACKUP_TIME_INVALID', 'The time must be HH:MM, 24-hour, in UTC.');
+  if (!Number.isSafeInteger(body.keep) || (body.keep as number) < 1 || (body.keep as number) > INSTANCE_BACKUP_MAX_KEEP) {
+    throw badRequest('INSTANCE_BACKUP_KEEP_INVALID', `Keep a whole number of backups from 1 to ${INSTANCE_BACKUP_MAX_KEEP}.`);
+  }
+  const next = { timeUtc: body.time_utc, keep: body.keep as number };
+  const { recordAudit } = require('./audit') as typeof import('./audit');
+  await inTransaction('START TRANSACTION', async connection => {
+    // Locked in a fixed order, so two administrators saving at once take turns.
+    for (const key of [KEEP_SETTING, TIME_SETTING]) await connection.execute('SELECT setting_value FROM system_settings WHERE setting_key = ? FOR UPDATE', [key]);
+    const before = await scheduleSettings(connection);
+    await connection.execute(`INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?), (?, ?)
+      ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`, [TIME_SETTING, next.timeUtc, KEEP_SETTING, String(next.keep)]);
+    await recordAudit({ action: 'admin.instance_backup_settings_changed', actorId: adminId, req,
+      details: { from_time_utc: before.timeUtc, time_utc: next.timeUtc, from_keep: before.keep, keep: next.keep } }, connection);
+  });
+  return getInstanceBackupStatus();
 }
 
 /** The schedule's tick (background-work.ts): one scheduled run per day, also when the server was down at the time. */
 async function runDueInstanceBackup(now = new Date()) {
   if (!enabled() || current || !isWorkerOwner()) return null;
-  const slot = latestSlot(now, config.timeUtc);
+  const day = utcDay(latestSlot(now, (await scheduleSettings()).timeUtc));
   const [[done]] = await db.execute<RowDataPacket[]>("SELECT 1 AS done FROM instance_backups WHERE trigger_kind = 'schedule' AND started_at >= ? LIMIT 1",
-    [slot.toISOString().slice(0, 19).replace('T', ' ')]);
+    [day.toISOString().slice(0, 19).replace('T', ' ')]);
   if (done) return null;
   return runInstanceBackup({ trigger: 'schedule' }).catch(error => {
     if ((error as { code?: string }).code !== 'INSTANCE_BACKUP_RUNNING') throw error;
@@ -809,7 +866,8 @@ async function runDueInstanceBackup(now = new Date()) {
 async function getInstanceBackupStatus(now = new Date()): Promise<InstanceBackupStatus> {
   const on = enabled();
   const active = current !== null;
-  const { rows, success, kept, runningRows } = await inTransaction(SNAPSHOT, async connection => {
+  const schedule = await scheduleSettings();
+  const { rows, success, kept, runningRows, lastScheduled } = await inTransaction(SNAPSHOT, async connection => {
     const [runs] = await connection.execute<RunRow[]>(`SELECT b.*, u.email AS actor_email FROM instance_backups b LEFT JOIN users u ON u.id = b.actor_id
       ORDER BY b.started_at DESC, b.id DESC LIMIT ${RUNS_SHOWN}`);
     const [[latest]] = await connection.execute<RunRow[]>(`SELECT b.*, u.email AS actor_email FROM instance_backups b LEFT JOIN users u ON u.id = b.actor_id
@@ -817,16 +875,19 @@ async function getInstanceBackupStatus(now = new Date()): Promise<InstanceBackup
     const [[keptRow]] = await connection.execute<RowDataPacket[]>(`SELECT COUNT(*) AS count, COALESCE(SUM(size_bytes), 0) AS bytes FROM instance_backups
       WHERE status = 'succeeded' AND removed_at IS NULL`);
     const [[running]] = await connection.execute<RowDataPacket[]>("SELECT COUNT(*) AS count FROM instance_backups WHERE status = 'running'");
-    return { rows: runs, success: latest as RunRow | undefined, kept: keptRow, runningRows: running };
+    const [[scheduled]] = await connection.execute<RowDataPacket[]>("SELECT MAX(started_at) AS started FROM instance_backups WHERE trigger_kind = 'schedule'");
+    return { rows: runs, success: latest as RunRow | undefined, kept: keptRow, runningRows: running, lastScheduled: scheduled.started ? new Date(iso(scheduled.started)!) : null };
   });
   return {
     enabled: on,
     missing: [...config.missing],
     destination: config.dir,
     key_fingerprint: on ? keyFingerprint(config.key!) : null,
-    time_utc: config.timeUtc,
-    keep: config.keep,
-    next_run_at: on ? nextRun(now, config.timeUtc).toISOString() : null,
+    time_utc: schedule.timeUtc,
+    keep: schedule.keep,
+    schedule_source: schedule.source,
+    schedule_defaults: { time_utc: config.timeUtc, keep: config.keep },
+    next_run_at: on ? nextRun(now, schedule.timeUtc, lastScheduled).toISOString() : null,
     last_run: rows[0] ? serializeRun(rows[0]) : null,
     last_success: success ? serializeRun(success) : null,
     kept: { count: Number(kept.count), bytes: Number(kept.bytes) },
@@ -850,6 +911,8 @@ export {
   runInstanceBackup,
   stopInstanceBackup,
   runDueInstanceBackup,
+  scheduleSettings,
+  updateInstanceBackupSchedule,
   recoverInterruptedInstanceBackups,
   applyRetention,
   getInstanceBackupStatus,

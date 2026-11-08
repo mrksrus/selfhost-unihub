@@ -8,8 +8,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.28.0
 
-Data safety: encrypted backups that hold only your own data, a bin for what
-you delete, and a backup of the whole installation. The first start after
+Data safety: encrypted backups that hold only your own data and open outside
+UniHub, a bin for what you delete, a backup of the whole installation, and
+rules an administrator sets for what may be deleted. The first start after
 the upgrade runs database upgrade 25, which takes longer on large calendars;
 back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
 
@@ -36,23 +37,57 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   is not kept in the bin.
 - **Choose how long the bin keeps items:** 7, 30 or 90 days or until you
   delete them (30 to start with). Changing it applies to what is already in
-  the bin.
+  the bin. While an administrator does not allow deleting from the bin for
+  good, it keeps items at least as long as the minimum they set (30 or 90
+  days or for good), and the shorter choices are greyed out with the reason.
 - **The bin is in your backups.** Items in the bin travel with their section
   (contacts, calendar, recordings) and come back into the bin with the time
   they had left: a recording with its file, a contact with its photo.
+- **Data-safety rules for administrators.** Server settings → Policies sets,
+  for everyone on the server: which mail modes new accounts may use and
+  which one they start in, whether mail is deleted at the provider (each
+  person's choice, never, or always for new Download accounts), whether
+  backups always include downloaded mail, whether people may create, restore
+  or delete backups, how long a backup is kept at least before its owner can
+  delete it (30, 90 or 365 days; nothing is deleted automatically), and
+  whether people may add or remove mail and calendar accounts, delete
+  UniHub's copy of an account's mail, delete their UniHub account, use
+  Delete data, or delete from the bin for good. Every rule starts as UniHub
+  behaved before, so nothing changes until an administrator changes one, and
+  changing one deletes nothing. Saving asks for the administrator's password,
+  and the activity log records each changed rule with its old and new value.
+- **A rule shows where it applies.** A control a rule forbids stays where it
+  is, greyed out, with the reason in plain words; a backup younger than the
+  minimum says from which date it can be deleted. The server refuses the
+  action anyway, also when a rule changes while a deletion waits.
+- **Everyone is told when the rules change.** After an administrator changes
+  a rule, everyone sees the rules in force once at the next start and
+  confirms them with OK; closed without OK, the notice comes back at the next
+  start. Settings → Profile lists them at any time, and the sign-up form
+  lists them before an account is made.
+- **An administrator can act for a person.** Admin → Users → a person shows
+  their mail and calendar accounts (without credentials), backups and bin.
+  With their own password, an administrator adds, changes or removes an
+  account, deletes UniHub's copy of an account's mail, deletes a backup,
+  empties the bin or deletes one item for good, and deletes a page's data
+  for that person, also where a rule forbids the person to. The activity log
+  records each action with the person concerned.
 - **Instance backup.** With a destination (`INSTANCE_BACKUP_DIR`, a mount of
   its own) and its own key (`INSTANCE_BACKUP_KEY` or `_FILE`) set, UniHub
   backs up the whole installation, the database and every stored file,
-  encrypted, daily at `INSTANCE_BACKUP_TIME` (03:30 UTC) and on "Back up
-  now", keeping the newest `INSTANCE_BACKUP_KEEP` (14). A backup counts only
-  after it has been read back whole with the key; a failed one leaves no
-  file, and a run never writes over another run's file (also on a share
-  without hard links). Files deleted while a backup copies are removed after
-  it. The destination is for UniHub alone. Without the settings it is off and
+  encrypted, daily and on "Back up now", keeping the newest ones. The time
+  of the daily run (UTC) and how many are kept are set on the page with the
+  administrator's password and apply without a restart; until then
+  `INSTANCE_BACKUP_TIME` (03:30 UTC) and `INSTANCE_BACKUP_KEEP` (14) apply.
+  A backup counts only after it has been read back whole with the key; a
+  failed one leaves no file, and a run never writes over another run's file
+  (also on a share without hard links). Files deleted while a backup copies
+  are removed after it. The destination is for UniHub alone. Without the settings it is off and
   the server runs as before. The backup holds none of the installation's
   keys; keep them in a password manager. Server settings → Instance backup
-  shows its status, its configuration, the last and next run and "Back up
-  now"; there is no download from the web page.
+  shows its status, its destination and key fingerprint, the schedule, the
+  last and next run and "Back up now"; there is no download from the web
+  page.
 - **Restore command.** `node /app/api/src/instance-restore.js --file
   <backup> --key-file <key>` restores an instance backup into an empty
   installation and signs everyone out; mail accounts stay paused until
@@ -114,6 +149,13 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   30 days, also by restoring a merged contact from the bin; after that, the
   merged-away contacts stay for the rest of your retention and come back on
   their own.
+- **Deleting your UniHub account asks for your password,** and a wrong one
+  deletes nothing.
+- **Delete data for mail accounts waits for the provider.** It is refused
+  while a change sent to a provider has an unknown outcome, as deleting one
+  account with its mail already was. When calendars are connected from those
+  accounts, it is also refused while Calendar is switched off or being
+  restored.
 - Startup refuses an instance backup key shorter than 32 bytes or equal to
   another secret (also written another way, such as base64 for hex), and a
   backup destination inside the stored files.
@@ -167,6 +209,9 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   list chooser (`new-task`, wide and phone) keeps the chosen list's name in
   front and puts the account annotation at the end of the control, and its
   options wrap a long name with the dot on the first line.
+- Changed pictures `admin-policies` (wide, dark and light): the Backups
+  rules read as a minimum (D36), "Keep users' backups at least" and
+  "Deleting backups", with the bin minimum row; wording only, same layout.
 
 ## 0.27.2
 

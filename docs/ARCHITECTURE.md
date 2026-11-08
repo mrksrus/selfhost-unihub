@@ -490,7 +490,7 @@ previous run is still going (`services/timers.ts`). These sixteen run:
 | 1 minute | Calendar accounts whose `next_sync_at` is due |
 | 1 minute | Process eligible mail-server deletion queue rows |
 | 1 minute | Database pool counts, logged every 15 minutes and every minute while busy |
-| 1 minute | The instance backup when its daily time (`INSTANCE_BACKUP_TIME`, UTC) has passed without a scheduled run (`instance-backup.ts`); only while it is configured |
+| 1 minute | The instance backup when its daily time (set by the administrator, else `INSTANCE_BACKUP_TIME`, UTC) has passed without a scheduled run (`instance-backup.ts`); only while it is configured |
 | 1 hour | Delete expired sessions |
 | 1 hour | Delete finished mail engine jobs older than 7 days |
 | 1 hour | Delete expired recording upload temp files |

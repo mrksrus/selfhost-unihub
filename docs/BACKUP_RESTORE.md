@@ -12,7 +12,9 @@ account references become null with a warning; live references remain required.
 
 Uploaded archives are removed after a successful restore, on deletion, or
 seven days after the upload, never while a restore validates or runs from
-one. Backups people make stay until they delete them.
+one. Backups people make stay until they delete them; an administrator's
+rule can keep each one for a minimum time first (see
+[Administrator rules](#administrator-rules)).
 
 See [Recovery contracts](DATA_RECOVERY.md) for developer requirements and
 [Backup format](BACKUP_FORMAT.md) for historical compatibility.
@@ -562,7 +564,7 @@ During mail restore:
 
 | Archive type | Retention |
 | --- | --- |
-| Generated backup | Until manually deleted |
+| Generated backup | Until manually deleted; while `backup.server_retention_days` is set, its owner cannot delete it before that many days after it was made (a failed or cancelled one can go at once). Nothing removes it automatically |
 | Uploaded backup, not being validated or restored | Seven days after the upload; after that it can no longer be unlocked or started, and the hourly cleanup removes it |
 | Successful uploaded restore | Archive deleted after completion |
 | Restore-job history | Retained until manually deleted |
@@ -570,6 +572,24 @@ During mail restore:
 Deleting a restore job removes its retained uploaded archive. Its unlock key is
 removed when no other backup or retained restore archive for that user still
 references the same backup UUID. Running jobs must be stopped before deletion.
+
+### Administrator rules
+
+The [data-safety policies](AUTH_ADMIN_SETTINGS.md#data-safety-policies) an
+administrator sets apply to backups on the server, which refuses with `403
+POLICY_FORBIDS` and the rule's reason before anything changes:
+
+| Policy | Effect |
+| --- | --- |
+| `backup.create` | `forbidden`: no new backup (`POST /api/backup/jobs`) |
+| `backup.restore` | `forbidden`: no upload, no restore from a retained backup and no start of a restore (`POST /api/backup/import`, `/jobs/:id/restore`, `/restore-jobs/:id/start`) |
+| `backup.delete` | `forbidden`: no deleting a backup or a restore job (`DELETE /api/backup/jobs/:id`, `/restore-jobs/:id`) |
+| `backup.download_mail` | `always`: "Include downloaded mail" is checked and greyed with the reason; a backup holds Download-mode mail whatever the request says |
+| `backup.server_retention_days` | 30, 90 or 365: deleting a backup younger than that, or one still being made, is refused with the date from which it can go (`services/backup-policy.ts`); it is read again in the transaction that deletes the row |
+
+An administrator can still delete a person's backup, also before its minimum
+age, on Admin > Users with their password; the activity log records it
+([the administrator's path](AUTH_ADMIN_SETTINGS.md#the-administrators-path-for-a-person)).
 
 ## API Reference
 
@@ -580,7 +600,7 @@ All endpoints require authentication. State-changing endpoints require CSRF.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/backup/jobs` | List generated backup jobs |
-| `POST` | `/api/backup/jobs` | Start a full/section backup; encryption defaults on |
+| `POST` | `/api/backup/jobs` | Start a full/section backup, always encrypted |
 | `GET` | `/api/backup/capabilities` | Sections for import (`sections`) and backup creation (`export_sections`) |
 | `GET` | `/api/backup/jobs/:id` | Get backup status |
 | `GET` | `/api/backup/jobs/:id/download` | Stream a ready backup with range support |
@@ -605,7 +625,9 @@ Uploads use `application/zip`, `application/octet-stream`, or
 `application/vnd.unihub.backup`. Downloads are `application/zip` (a 0.27
 container keeps `application/vnd.unihub.backup` and its extension).
 
-`POST /api/backup/jobs` takes `{"sections": "full" | [...], "encrypt": true}`.
+`POST /api/backup/jobs` takes `{"sections": "full" | [...],
+"include_download_mail": true}`; leaving out `include_download_mail` includes
+the mail, and an older client's `encrypt` is ignored.
 Section IDs are `settings`, `contacts`, `calendar`, `mail`, `recordings` and
 `accounts` (Account settings). `accounts` applies to Mail and Calendar/ToDo only
 when they are not also selected. The job's `requested_sections` keeps

@@ -1,6 +1,7 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { AuthRequest, SqlExecutor } from '../types';
 
+import crypto from 'crypto';
 import { db } from '../state';
 import { getClientIP } from '../auth';
 import { currentRequestId, log } from '../log';
@@ -15,7 +16,13 @@ const AUDIT_ACTIONS = [
   'auth.signin', 'auth.signin_failed', 'auth.password_changed', 'auth.two_factor_enabled', 'auth.two_factor_disabled',
   'auth.recovery_codes_replaced', 'auth.session_revoked', 'auth.account_deleted',
   'admin.password_reset', 'admin.role_changed', 'admin.two_factor_reset', 'admin.user_activated', 'admin.user_deactivated',
-  'admin.user_deleted', 'admin.signup_mode_changed', 'admin.instance_backup_started',
+  'admin.user_deleted', 'admin.signup_mode_changed', 'admin.instance_backup_started', 'admin.instance_backup_settings_changed',
+  // Data-safety policies and the administrator's path for a person (F13):
+  // the target is the person whose data changed.
+  'admin.policy_changed',
+  'admin.mail_account_added', 'admin.mail_account_changed', 'admin.mail_account_removed', 'admin.mail_account_reset',
+  'admin.calendar_account_added', 'admin.calendar_account_changed', 'admin.calendar_account_removed',
+  'admin.backup_deleted', 'admin.bin_emptied', 'admin.bin_item_deleted', 'admin.data_cleared',
   'mail.account_disconnected', 'mail.account_purged',
 ] as const;
 type AuditAction = typeof AUDIT_ACTIONS[number];
@@ -45,6 +52,31 @@ async function recordAudit({ action, actorId, targetUserId = null, req = null, d
 /** For a change that already committed: a lost entry is logged, never a failed request. */
 async function recordAuditAfter(entry: AuditEntry) {
   await recordAudit(entry).catch(error => log.error('AUDIT', 'Could not record an audit entry', error, { action: entry.action }));
+}
+
+// A change with no one transaction to write its entry in (it talks to a
+// provider, or it is another service's): the entry is written first, with
+// outcome 'pending', and the change only starts once it is stored, so no
+// change ever lacks one. settleAudit then records 'done' and what only the
+// change knows (the new account's id), or, when the request answered an
+// error, 'unknown' with that answer: an error answer does not prove the
+// change wrote nothing before it. An entry left 'pending' (a crash, a failed
+// write) also says the change may have happened.
+type AuditOutcome = 'pending' | 'done' | 'unknown';
+
+/** Writes the entry before the change, with outcome 'pending'; throws on failure. Returns its id. */
+async function recordAuditIntent(entry: AuditEntry): Promise<string> {
+  const id = crypto.randomUUID();
+  const details = { ...entry.details, outcome: 'pending' satisfies AuditOutcome };
+  await db.execute(`INSERT INTO audit_log (id, actor_id, action, target_user_id, ip_address, request_id, details)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`, [id, entry.actorId, entry.action, entry.targetUserId ?? null, clientAddress(entry.req), currentRequestId(), JSON.stringify(details)]);
+  return id;
+}
+
+/** Records the outcome of the change of an intent; a failure is logged, the entry then stays 'pending'. */
+async function settleAudit(id: string, outcome: Exclude<AuditOutcome, 'pending'>, details: AuditDetails = {}) {
+  await db.execute('UPDATE audit_log SET details = JSON_MERGE_PATCH(COALESCE(details, JSON_OBJECT()), ?) WHERE id = ?', [JSON.stringify({ ...details, outcome }), id])
+    .catch(error => log.error('AUDIT', 'Could not record the outcome of an audit entry', error, { id }));
 }
 
 interface AuditRow extends RowDataPacket {
@@ -79,5 +111,5 @@ async function pruneAuditLog(executor: SqlExecutor = db) {
   return result.affectedRows;
 }
 
-export { AUDIT_ACTIONS, RETENTION_DAYS, recordAudit, recordAuditAfter, listAuditLog, pruneAuditLog };
-export type { AuditAction, AuditDetails };
+export { AUDIT_ACTIONS, RETENTION_DAYS, recordAudit, recordAuditAfter, recordAuditIntent, settleAudit, listAuditLog, pruneAuditLog };
+export type { AuditAction, AuditDetails, AuditEntry };

@@ -19,9 +19,8 @@ export const BIN_RETENTIONS: { value: BinRetention; label: string }[] = [
 ];
 
 /**
- * The default until D33 is decided and the registry carries `bin_retention`:
- * 30 days, the same as the 0.26 merge undo. Change it here and in the
- * registry's default together.
+ * The default (D33, 2026-11-07): 30 days, the same as the 0.26 merge undo.
+ * Change it here and in the registry's default together.
  */
 export const DEFAULT_BIN_RETENTION: BinRetention = '30';
 

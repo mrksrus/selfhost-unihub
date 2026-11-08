@@ -156,4 +156,68 @@ test('a failed export removes its archive through the removal gate, and keeps it
     reopen = null;
     assert.equal(fs.existsSync(archiveOf(during)), false, 'removed when the copy ends');
   });
+
+  // A cancel and the worker each change the status only from the one its
+  // statement reads, so failed and cancelled stay as they are.
+  const worksOn = (sql: string) => sql.startsWith('SELECT * FROM data_export_jobs WHERE id = ?');
+  const cancelReads = (sql: string) => sql.includes('LEFT JOIN backup_archive_keys');
+
+  await t.test('a cancel that read the job queued leaves it ready when the worker finished it meanwhile', async () => {
+    const jobId = await queueJob();
+    let cancel: Promise<FixtureValue> | null = null;
+    let held = false;
+    let reached!: () => void, go!: () => void;
+    const read = new Promise<void>(resolve => { reached = resolve; }), release = new Promise<void>(resolve => { go = resolve; });
+    await runWith(jobId, async (sql, _values, run) => {
+      const result = await run();
+      if (!cancel && worksOn(sql)) {
+        // The cancel reads the job before the worker takes it, and writes after the worker finished.
+        cancel = jobs.cancelDataExportJob(owner, jobId);
+        await read;
+      } else if (!held && cancelReads(sql)) {
+        held = true;
+        reached();
+        await release;
+      }
+      return result;
+    });
+    go();
+    const answer = await cancel!;
+    const row = await rowOf(jobId);
+    assert.deepEqual([answer.status, row.status], [409, 'ready'], JSON.stringify(answer));
+    assert.equal(fs.existsSync(archiveOf(jobId)), true, 'the finished archive stays');
+    assert.equal(await keysOf(jobId), 1);
+  });
+
+  await t.test('a cancel asked while the worker publishes the job ends it cancelled, with its archive and key removed', async () => {
+    const jobId = await queueJob();
+    let answer: FixtureValue = null;
+    await runWith(jobId, async (sql, values, run) => {
+      // Past the worker's last cancel check, before its ready row.
+      if (!answer && isReadyUpdate(sql, values)) answer = await jobs.cancelDataExportJob(owner, jobId);
+      return run();
+    });
+    const row = await rowOf(jobId);
+    assert.deepEqual([answer.job?.status, row.status], ['cancelling', 'cancelled'], 'the cancel is not lost');
+    assert.equal(fs.existsSync(archiveOf(jobId)), false, 'its archive is removed');
+    assert.equal(await keysOf(jobId), 0);
+  });
+
+  // Moved from export-jobs-utils.test.cts, now that the delete runs in a transaction.
+  await t.test('deleting an export detaches restores made from it and keeps the key an uploaded archive of the same backup names', async () => {
+    const jobId = crypto.randomUUID(), done = crypto.randomUUID(), uploaded = crypto.randomUUID(), backupUuid = crypto.randomUUID();
+    await pool.execute(`INSERT INTO data_export_jobs (id, user_id, scope, status, phase, progress, requested_sections, encryption_enabled, backup_uuid)
+      VALUES (?, ?, 'full', 'ready', 'ready', 100, '["settings"]', 1, ?)`, [jobId, owner, backupUuid]);
+    await pool.execute("INSERT INTO backup_archive_keys (backup_uuid, user_id, export_job_id, server_wrapped_key) VALUES (?, ?, ?, 'synthetic-wrapped-key')", [backupUuid, owner, jobId]);
+    await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, source_type, source_export_job_id, status, archive_path, backup_uuid)
+      VALUES (?, ?, 'export', ?, 'completed', '/synthetic/from-export.unihub-backup', ?), (?, ?, 'upload', NULL, 'uploaded', '/synthetic/upload.unihub-backup', ?)`,
+    [done, owner, jobId, backupUuid, uploaded, owner, backupUuid]);
+    assert.deepEqual(await jobs.deleteDataExportJob(owner, jobId), { deleted: true });
+    assert.equal(Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS count FROM data_export_jobs WHERE id = ?', [jobId]))[0][0].count), 0);
+    const [[detached]] = await pool.query<RowDataPacket[]>('SELECT source_export_job_id, archive_path FROM backup_restore_jobs WHERE id = ?', [done]);
+    assert.deepEqual([detached.source_export_job_id, detached.archive_path], [null, null]);
+    assert.equal(Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS count FROM backup_archive_keys WHERE backup_uuid = ?', [backupUuid]))[0][0].count), 1, 'the uploaded archive still needs its key');
+    await pool.execute('DELETE FROM backup_restore_jobs WHERE id IN (?, ?)', [done, uploaded]);
+    await pool.execute('DELETE FROM backup_archive_keys WHERE backup_uuid = ?', [backupUuid]);
+  });
 });

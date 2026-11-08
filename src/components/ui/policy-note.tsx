@@ -24,7 +24,7 @@ export function PolicyMenuItem({ lock, children, className, disabled, ...props }
   return (
     <DropdownMenuItem {...props} disabled={disabled || !!lock} className={cn(lock && 'items-start', className)}>
       {lock ? (
-        <span className="flex min-w-0 flex-col">
+        <span className="flex min-w-0 max-w-xs flex-col">
           <span>{children}</span>
           <span className="flex items-start gap-1 whitespace-normal text-xs text-muted-foreground"><Lock aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0" />{lock}</span>
         </span>

@@ -20,7 +20,8 @@ export interface AuthContextType {
   isOffline?: boolean;
   offlineSavedAt?: string;
   setUser: (user: User | null) => void;
-  signUp: (email: string, password: string, fullName: string) => Promise<{ error: Error | null; requiresApproval?: boolean }>;
+  /** `rulesRevision`: the revision of the data rules the form listed, confirmed with the account (D38). */
+  signUp: (email: string, password: string, fullName: string, rulesRevision?: number | null) => Promise<{ error: Error | null; requiresApproval?: boolean }>;
   signIn: (email: string, password: string) => Promise<{ error: Error | null; requires2fa?: boolean; challengeToken?: string }>;
   verifyTwoFactorLogin: (challengeToken: string, code: string) => Promise<{ error: Error | null; usedRecoveryCode?: boolean; recoveryCodesRemaining?: number }>;
   signOut: () => Promise<void>;

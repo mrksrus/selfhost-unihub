@@ -65,13 +65,21 @@ export function useBinActions(module?: BinModule, { onDestinationAsked }: { onDe
   const remove = useSessionMutation({
     mutationFn: (id: string) => binApi.delete(id),
     onSuccess: () => { void invalidateBinQueries(client); toast({ title: 'Deleted for good' }); },
-    onError: failed('Could not delete'),
+    // The list is read again after a refusal too: it may still show an item the server has removed meanwhile.
+    onError: error => { void invalidateBinQueries(client); failed('Could not delete')(error); },
   });
 
   const empty = useSessionMutation({
     mutationFn: (target: BinModule | undefined) => binApi.empty(target),
     onSuccess: deleted => { void invalidateBinQueries(client); toast({ title: deleted === 0 ? 'The bin was already empty' : `${plural(deleted, 'item')} deleted for good` }); },
-    onError: failed('Could not empty the bin'),
+    onError: error => {
+      // Emptying runs in batches. A rule set meanwhile stops it between two: the server says how many
+      // items the earlier batches deleted (details.deleted); those stay deleted, the list is read again.
+      void invalidateBinQueries(client);
+      const deleted = error instanceof ApiError && error.code === 'POLICY_FORBIDS' ? Number((error.details as { deleted?: unknown } | undefined)?.deleted) : 0;
+      if (deleted > 0) toast({ title: 'Emptying stopped', description: `${plural(deleted, 'item')} ${deleted === 1 ? 'was' : 'were'} deleted before your administrator stopped deleting from the bin. The rest stays in the bin.`, variant: 'destructive' });
+      else failed('Could not empty the bin')(error);
+    },
   });
 
   /**

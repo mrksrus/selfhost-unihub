@@ -87,6 +87,7 @@ const calendarSync = require('../services/calendar-sync') as typeof import('../s
 const calendarMove = require('../services/calendar-move') as typeof import('../services/calendar-move');
 const binCalendar = require('../services/bin-calendar') as typeof import('../services/bin-calendar');
 const calendarAccounts = require('../services/calendar-accounts') as typeof import('../services/calendar-accounts');
+const calendarAccountChanges = require('../services/calendar-account-changes') as typeof import('../services/calendar-account-changes');
 
 const has = (body: Record<string, unknown>, key: string) => Object.prototype.hasOwnProperty.call(body, key);
 
@@ -170,63 +171,11 @@ export = {
     }
   },
 
+  // The same steps as the administrator's path (services/calendar-account-changes.ts).
   'POST /api/calendar/accounts': async (req: Request, userId: string | null, body: Input) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
-    if (!CALENDAR_MULTI_ENABLED) return { error: 'Calendar multi-account feature disabled', status: 503 };
     try {
-      const provider = normalizeCalendarAccountProvider(body.provider || 'local');
-      if (!provider) return { error: 'Unsupported calendar account type', status: 400 };
-      if (provider === 'caldav') {
-        if (!body.password) return { error: 'A password is needed to connect the calendar.', status: 400 };
-        const login = String(body.username || body.account_email || '').trim();
-        if (!login) return { error: 'Enter the user name or email address of the calendar account.', status: 400 };
-        const email = String(body.account_email || (login.includes('@') ? login : '')).trim() || null;
-        return await calendarAccounts.connectCalDavAccount({
-          userId, emailAddress: email, displayName: body.display_name?.trim() || null, username: login,
-          password: String(body.password), caldavUrl: body.url ? String(body.url).trim() : null, timeZone: body.time_zone,
-        });
-      }
-      if (provider === 'ics') {
-        return await calendarAccounts.connectIcsSubscription({
-          userId, url: body.url ? String(body.url).trim() : '', displayName: body.display_name?.trim() || null, timeZone: body.time_zone,
-        });
-      }
-
-      const accountId = crypto.randomUUID();
-      const capabilities = CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.local;
-
-      await db.execute(
-        `INSERT INTO calendar_accounts
-          (id, user_id, provider, account_email, display_name, capabilities, is_active)
-         VALUES (?, ?, 'local', ?, ?, ?, ?)`,
-        [
-          accountId,
-          userId,
-          body.account_email?.trim() || null,
-          body.display_name?.trim() || null,
-          JSON.stringify(capabilities),
-          body.is_active === false ? 0 : 1,
-        ]
-      );
-
-      await db.execute(
-        `INSERT INTO calendar_calendars
-          (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
-         VALUES (?, ?, ?, ?, ?, ?, TRUE, TRUE, FALSE, TRUE)`,
-        [
-          crypto.randomUUID(),
-          userId,
-          accountId,
-          body.default_calendar_name?.trim() || 'Default',
-          'local-default',
-          body.default_calendar_color || '#2563eb',
-        ]
-      );
-
-      const [rows] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
-      const created = rows[0];
-      const account = serializeCalendarAccount(created);
-      return { account };
+      return await calendarAccountChanges.createCalendarAccount(userId, body);
     } catch (error) {
       return calendarSync.calendarErrorResponse(error, 'Failed to connect the calendar');
     }
@@ -234,60 +183,8 @@ export = {
 
   'PUT /api/calendar/accounts/:id': async (req: Request, userId: string | null, body: Input) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
-    if (!CALENDAR_MULTI_ENABLED) return { error: 'Calendar multi-account feature disabled', status: 503 };
     try {
-      const id = getCalendarAccountIdFromReq(req)!;
-      if (!id) return { error: 'Invalid account id', status: 400 };
-      const [existing] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
-      if (existing.length === 0) return { error: 'Calendar account not found', status: 404 };
-
-      const updates = [];
-      const params: ExecuteValues[] = [];
-      if (Object.prototype.hasOwnProperty.call(body, 'account_email')) {
-        updates.push('account_email = ?');
-        params.push(body.account_email?.trim() || null);
-      }
-      if (Object.prototype.hasOwnProperty.call(body, 'display_name')) {
-        updates.push('display_name = ?');
-        params.push(body.display_name?.trim() || null);
-      }
-      const account = existing[0];
-      const remote = isRemoteProvider(account.provider);
-      let resume = false;
-      if (has(body, 'password') && body.password) {
-        if (account.provider !== 'caldav') return { error: 'Only CalDAV accounts have a password', status: 400 };
-        // A calendar connected from a mail account uses the mail password.
-        if (account.mail_account_id) return { error: 'Change the password in the settings of the mail account.', status: 400 };
-        updates.push('encrypted_password = ?');
-        params.push((require('../security/encryption') as typeof import('../security/encryption')).encrypt(String(body.password)));
-        if (has(body, 'username') && String(body.username || '').trim()) {
-          updates.push('username = ?');
-          params.push(String(body.username).trim().slice(0, 255));
-        }
-        resume = true;
-      }
-      if (has(body, 'is_active')) {
-        // Resumed only with a login: its own password, or a connected mail account.
-        if (body.is_active !== false && account.provider === 'caldav' && !resume) {
-          const missing = await calendarSync.resolveLogin(account).then(() => null, (error: ApiError) => error);
-          if (missing?.code === 'CALDAV_NO_PASSWORD') return { error: 'Enter the password again to resume sync.', status: 409, code: 'CALDAV_NO_PASSWORD' };
-          if (missing) return calendarSync.calendarErrorResponse(missing, 'Could not resume sync');
-        }
-        updates.push('is_active = ?');
-        params.push(body.is_active === false ? 0 : 1);
-        // Cleared: a user's pause is never resumed by a mail reconnect.
-        if (body.is_active === false && remote) updates.push("sync_status = 'paused'", 'sync_error = NULL');
-        if (body.is_active !== false) resume = true;
-      }
-      resume = resume && remote && body.is_active !== false;
-      if (resume) updates.push("sync_status = 'pending'", 'sync_error = NULL', 'next_sync_at = NULL', 'is_active = TRUE');
-      if (updates.length === 0) return { error: 'No fields to update', status: 400 };
-
-      params.push(id, userId);
-      await db.execute(`UPDATE calendar_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
-      if (resume) calendarSync.syncCalendarAccountInBackground(id, { userId, reason: 'manual' });
-      const [rows] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
-      return { account: serializeCalendarAccount(rows[0]) };
+      return await calendarAccountChanges.updateCalendarAccount(userId, getCalendarAccountIdFromReq(req)!, body);
     } catch (error) {
       console.error('Update calendar account error:', error);
       return clientError(error, 'Failed to update calendar account');
@@ -296,27 +193,8 @@ export = {
 
   'DELETE /api/calendar/accounts/:id': async (req: Request, userId: string | null) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
-    if (!CALENDAR_MULTI_ENABLED) return { error: 'Calendar multi-account feature disabled', status: 503 };
     try {
-      const id = getCalendarAccountIdFromReq(req)!;
-      if (!id) return { error: 'Invalid account id', status: 400 };
-      const [accounts] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
-      if (accounts.length === 0) return { error: 'Calendar account not found', status: 404 };
-
-      const account = accounts[0];
-      if (account.provider === 'local') {
-        const [localCountRows] = await db.execute<CountRow[]>(
-          `SELECT COUNT(*) AS count FROM calendar_accounts WHERE user_id = ? AND provider = 'local'`,
-          [userId]
-        );
-        if (Number(localCountRows[0]?.count || 0) <= 1) {
-          return { error: 'Cannot delete the last local calendar account', status: 400 };
-        }
-      }
-
-      // Only the copies in UniHub are removed; the server keeps its calendars.
-      await calendarAccounts.removeCalendarAccount(userId, id);
-      return { message: 'Calendar account deleted' };
+      return await calendarAccountChanges.deleteCalendarAccount(userId, getCalendarAccountIdFromReq(req)!);
     } catch (error) {
       console.error('Delete calendar account error:', error);
       return clientError(error, 'Failed to delete calendar account');

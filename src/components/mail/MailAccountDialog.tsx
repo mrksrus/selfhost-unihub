@@ -10,7 +10,7 @@ import { MailModeImpactPanel } from '@/components/mail/MailModeImpactPanel';
 import { MailAccountSyncWarnings, MailSyncPolicyNotice } from '@/components/mail/MailSyncPolicyGate';
 import { needsSyncPolicyDecision } from '@/lib/mail-api';
 import { MailCalendarAddOption, MailCalendarSettings } from '@/components/mail/MailCalendarSettings';
-import { mailProviders, type MailHostAssessment, type MailHostCertificate } from '@/components/mail/mail-page-model';
+import { mailProviders, type MailHostAssessment, type MailHostCertificate, type MailHostTrustResult } from '@/components/mail/mail-page-model';
 import { reconnects, type MailAccountEditor } from '@/hooks/use-mail-account-editor';
 import type { MailAccount } from '@/lib/mail-api';
 
@@ -50,27 +50,36 @@ const renderTrustSection = (label: 'IMAP' | 'SMTP', assessment?: MailHostAssessm
   </div>
 );
 
-function HostTrustConfirmation({ editor }: { editor: MailAccountEditor }) {
-  if (!editor.pendingHostTrust) return null;
+/** What the server found about a mail server that could not be verified: warnings and the certificates to compare. Shared with the administrator's path. */
+export function HostTrustDetails({ trust }: { trust: MailHostTrustResult }) {
   return (
-    <div className="space-y-4 mt-4">
-      {editor.pendingHostTrust.trust.warnings.length > 0 && (
+    <>
+      {trust.warnings.length > 0 && (
         <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
           <p className="font-medium text-warning mb-2">Warnings</p>
           <ul className="list-disc pl-5 space-y-1">
-            {editor.pendingHostTrust.trust.warnings.map((warning) => (
+            {trust.warnings.map((warning) => (
               <li key={warning}>{warning}</li>
             ))}
           </ul>
         </div>
       )}
-      {editor.pendingHostTrust.trust.certificates.imap && renderTrustSection('IMAP', editor.pendingHostTrust.trust.assessments.imap, editor.pendingHostTrust.trust.certificates.imap)}
-      {editor.pendingHostTrust.trust.certificates.smtp && renderTrustSection('SMTP', editor.pendingHostTrust.trust.assessments.smtp, editor.pendingHostTrust.trust.certificates.smtp)}
-      {editor.pendingHostTrust.trust.requiresInsecureTls && (
+      {trust.certificates.imap && renderTrustSection('IMAP', trust.assessments.imap, trust.certificates.imap)}
+      {trust.certificates.smtp && renderTrustSection('SMTP', trust.assessments.smtp, trust.certificates.smtp)}
+      {trust.requiresInsecureTls && (
         <p className="text-sm text-muted-foreground">
           If you continue, this account trusts these certificates even though they could not be verified. Compare the fingerprints with the ones on your mail server. If the server later shows a different certificate that cannot be verified, UniHub stops connecting until you confirm it.
         </p>
       )}
+    </>
+  );
+}
+
+function HostTrustConfirmation({ editor }: { editor: MailAccountEditor }) {
+  if (!editor.pendingHostTrust) return null;
+  return (
+    <div className="space-y-4 mt-4">
+      <HostTrustDetails trust={editor.pendingHostTrust.trust} />
       <div className="flex justify-end gap-3 pt-2">
         <Button type="button" variant="outline" onClick={() => editor.denyHostTrust()}>
           Deny

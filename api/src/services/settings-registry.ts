@@ -1,5 +1,5 @@
 import type { SettingScope } from '../contracts/settings';
-import type { PolicyKey, PolicyValues } from '../contracts/policies';
+import type { BinMinimumRetention, PolicyKey, PolicyValues } from '../contracts/policies';
 
 // The settings registry (F1): every option of every scope, with its type,
 // default and, where an administrator may set a minimum, how strict each
@@ -59,9 +59,9 @@ export const SETTINGS = {
     // A view rule (mail-snooze.ts): which lists show a message while it is
     // snoozed. 'hide' is the behaviour before 0.25.
     snoozed_messages: { scope: 'user', kind: { type: 'enum', values: ['hide', 'keep'] }, default: 'hide' },
-    // How long the bin keeps deleted items (services/bin.ts, D13). Keeping
-    // longer is stricter, so an administrator's policy is a minimum. The
-    // default is a placeholder until D33 is answered.
+    // How long the bin keeps deleted items (services/bin.ts, D13, D33).
+    // Keeping longer is stricter, so an administrator's policy is a minimum;
+    // while bin.delete is forbidden, BIN_MIN_RETENTION is one (D34).
     bin_retention: { scope: 'user', kind: { type: 'enum', values: ['7', '30', '90', 'forever'] }, default: '30', strictness: ['7', '30', '90', 'forever'] },
   },
   mail_account: {
@@ -125,9 +125,11 @@ export const POLICIES: { readonly [K in PolicyKey]: PolicyEntry<PolicyValues[K]>
   'backup.create': allowance('Your administrator does not allow creating backups.'),
   'backup.restore': allowance('Your administrator does not allow restoring backups.'),
   'backup.delete': allowance('Your administrator does not allow deleting backups.'),
+  // A minimum (D36): the backup routes refuse deleting a younger backup
+  // (services/backup-policy.ts); nothing is deleted automatically.
   'backup.server_retention_days': {
-    kind: { type: 'integer', min: 30, max: 365, values: [30, 90, 365], nullable: true }, default: null, refuses: [],
-    reasons: Object.fromEntries([30, 90, 365].map(days => [String(days), `The server keeps each of your backups for ${days} days, then removes it.`])),
+    kind: { type: 'integer', min: 30, max: 365, values: [30, 90, 365], nullable: true }, default: null, strictness: ['null', '30', '90', '365'], refuses: [],
+    reasons: Object.fromEntries([30, 90, 365].map(days => [String(days), `Your backups are kept at least ${days} days: until then nobody can delete them.`])),
   },
   'accounts.add': allowance('Your administrator does not allow adding accounts.'),
   'accounts.remove': allowance('Your administrator does not allow removing accounts.'),
@@ -137,4 +139,32 @@ export const POLICIES: { readonly [K in PolicyKey]: PolicyEntry<PolicyValues[K]>
   'account.delete': allowance('Your administrator does not allow deleting your UniHub account.'),
   'data.clear': allowance('Your administrator does not allow deleting data.', 'bin.delete'),
   'bin.delete': allowance('Your administrator does not allow deleting items from the bin for good.'),
+};
+
+// The bin's minimum retention while bin.delete is forbidden (D34), stored as
+// policy.bin.min_retention. It only ever adds a floor to the person's
+// bin_retention (services/settings.ts), so it refuses nothing itself.
+export const BIN_MIN_RETENTION: PolicyEntry<BinMinimumRetention> = {
+  kind: { type: 'enum', values: ['30', '90', 'forever'] }, default: 'forever', strictness: ['30', '90', 'forever'], refuses: [],
+  reasons: {
+    30: 'Deleted items stay in the bin for at least 30 days.',
+    90: 'Deleted items stay in the bin for at least 90 days.',
+    forever: 'Deleted items stay in the bin until they are restored.',
+  },
+};
+
+// What a key's restrictive value means for data that already exists, for the
+// administrator's page. Changing a policy deletes nothing (F13).
+export const POLICY_EFFECTS: Readonly<Partial<Record<PolicyKey | 'bin.min_retention', string>>> = {
+  'mail.mode.download': 'Existing Download accounts keep working; adding one or switching to Download is refused.',
+  'mail.mode.sync': 'Existing Sync accounts keep working; adding one or switching to Sync is refused.',
+  'mail.mode.new_accounts': 'Existing accounts keep their mode.',
+  'mail.provider_delete': 'Not allowed: accounts that delete at the provider stop deleting there. Required: applies to new Download accounts only.',
+  'backup.download_mail': 'Applies to backups made from now on.',
+  'backup.delete': 'Existing backups stay until an administrator deletes them.',
+  'backup.server_retention_days': 'A backup younger than this cannot be deleted by its owner; nothing is deleted automatically.',
+  'accounts.remove': 'Existing accounts keep working.',
+  'account.delete': 'Administrators can still delete accounts.',
+  'bin.delete': 'The automatic purge then keeps items for the minimum below.',
+  'bin.min_retention': 'Applies while deleting from the bin for good is not allowed; people may keep items longer.',
 };

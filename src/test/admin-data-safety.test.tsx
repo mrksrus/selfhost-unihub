@@ -10,7 +10,7 @@ import { SessionQueryProvider } from '@/components/SessionQueryProvider';
 import { AuthContext, type AuthContextType } from '@/contexts/auth-context';
 import { AdminMailAccountDialog } from '@/components/admin/AdminAccountDialogs';
 import type { AdminPoliciesResponse } from '@/lib/admin-api';
-import type { InstanceBackupStatus } from '@/lib/instance-backup-api';
+import { instanceBackupQueryKey, type InstanceBackupStatus } from '@/lib/instance-backup-api';
 import { DEFAULT_POLICY_VALUES, POLICY_KEYS } from '@/lib/policies-api';
 import { ADMIN, mountSignedIn, policiesAnswer, stubBrowserApis, testClient } from './helpers/data-safety';
 
@@ -29,12 +29,17 @@ const adminPolicies = (): AdminPoliciesResponse => ({
   policies: Object.fromEntries(POLICY_KEYS.map(key => [key, { value: DEFAULT_POLICY_VALUES[key], source: 'default', default: DEFAULT_POLICY_VALUES[key], values: VALUES[key] ?? ['allowed', 'forbidden'], effect: key === 'mail.mode.sync' ? 'Existing Sync accounts keep working.' : null }])) as AdminPoliciesResponse['policies'],
 });
 const instanceStatus = (fields: Partial<InstanceBackupStatus> = {}): InstanceBackupStatus => ({
-  enabled: false, missing: ['destination', 'key'], destination: null, key_fingerprint: null, time_utc: '03:30', keep: 14, next_run_at: null, last_run: null, last_success: null,
+  enabled: false, missing: ['destination', 'key'], destination: null, key_fingerprint: null, time_utc: '03:30', keep: 14, schedule_source: 'environment', schedule_defaults: { time_utc: '03:30', keep: 14 }, next_run_at: null, last_run: null, last_success: null,
   kept: { count: 0, bytes: 0 }, running: false, runs: [], restore_command: 'node /app/api/dist/scripts/instance-restore.js --file <backup.uhib> --key-file <key>', ...fields,
 });
 const USERS = [{ id: 'user-admin', email: 'admin@example.com', full_name: 'Avery Admin', role: 'admin', is_active: true, created_at: '2026-01-01T00:00:00.000Z' },
   { id: 'user-alex', email: 'alex@example.com', full_name: 'Alex Example', role: 'user', is_active: true, two_factor_enabled: true, created_at: '2026-01-02T00:00:00.000Z' },
   { id: 'user-blair', email: 'blair@example.com', full_name: 'Blair Example', role: 'user', is_active: true, created_at: '2026-01-03T00:00:00.000Z' }];
+const BIN_ITEMS = [
+  { id: 'bin-1', module: 'contacts', item_type: 'contact', title: 'Grace Hopper', reason: 'deleted', group_id: null, deleted_at: '2026-06-10T09:00:00.000Z', purge_after: '2026-07-10T09:00:00.000Z', provider: 'local', origin: null },
+  { id: 'bin-2', module: 'calendar', item_type: 'event', title: 'Seed swap', reason: 'calendar_deleted', group_id: 'grp', deleted_at: '2026-06-11T09:00:00.000Z', purge_after: null, provider: 'local', origin: null },
+  { id: 'bin-3', module: 'calendar', item_type: 'calendar', title: 'Garden club', reason: 'calendar_deleted', group_id: 'grp', deleted_at: '2026-06-11T09:00:00.000Z', purge_after: null, provider: 'local', origin: null },
+];
 const MAIL_ACCOUNT = { id: 'm1', email_address: 'alex@mail.example.com', display_name: null, provider: 'custom', sync_mode: 'sync', delete_emails_on_server: false, is_active: true, sync_status: 'ok', last_synced_at: null, disconnected_at: null };
 
 beforeEach(() => {
@@ -46,8 +51,10 @@ beforeEach(() => {
     if (path === '/admin/users') return { data: { users: USERS } };
     if (path === '/admin/users/user-alex/accounts') return { data: { user_id: 'user-alex', mail_accounts: [MAIL_ACCOUNT], calendar_accounts: [] } };
     if (path === '/admin/users/user-alex/backups') return { data: { jobs: [] } };
+    if (path === '/admin/users/user-alex/bin') return { data: { items: BIN_ITEMS, retention: '30' } };
     if (path === '/admin/users/user-blair/accounts') return { data: { user_id: 'user-blair', mail_accounts: [], calendar_accounts: [] } };
     if (path === '/admin/users/user-blair/backups') return { data: { jobs: [] } };
+    if (path === '/admin/users/user-blair/bin') return { data: { items: [], retention: '30' } };
     throw new Error(`unexpected GET ${path}`);
   });
   vi.mocked(api.put).mockImplementation(async (path: string, body: unknown) => {
@@ -103,7 +110,160 @@ describe('Server settings → Policies', () => {
   });
 });
 
+describe('Server settings → Policies: the bin\'s minimum (D34)', () => {
+  it('greys the minimum out until the bin rule forbids deleting, then saves it with the bin rule', { timeout: 20_000 }, async () => {
+    const withMinimum = (values: Record<string, unknown> = {}, minimum: '30' | '90' | 'forever' = 'forever') => {
+      const answer = adminPolicies() as AdminPoliciesResponse & { bin_min_retention: unknown };
+      for (const [key, value] of Object.entries(values)) answer.policies[key as keyof typeof answer.policies] = { ...answer.policies[key as keyof typeof answer.policies], value, source: 'policy' } as never;
+      answer.bin_min_retention = { value: minimum, source: minimum === 'forever' ? 'default' : 'policy', default: 'forever', values: ['30', '90', 'forever'], applies: answer.policies['bin.delete'].value === 'forbidden', effect: 'The automatic purge waits at least this long.' };
+      return answer;
+    };
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/admin/policies') return { data: withMinimum() };
+      if (path === '/policies/effective') return policiesAnswer();
+      throw new Error(`unexpected GET ${path}`);
+    });
+    vi.mocked(api.put).mockImplementation(async (path: string, body: unknown) => {
+      const { values, bin_min_retention } = body as { values: Record<string, unknown>; bin_min_retention?: '30' | '90' | 'forever' };
+      return path === '/admin/policies' ? { data: withMinimum(values, bin_min_retention) } : { data: {} };
+    });
+    mountSignedIn(<AdminPolicies />, { user: ADMIN });
+    const minimum = await screen.findByRole('combobox', { name: 'Deleted items are kept at least' });
+    expect(minimum).toBeDisabled();
+    expect(minimum).toHaveTextContent('Until restored (default)');
+    expect(screen.getByText(/Applies once "Users may empty the bin or delete for good" is not allowed/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('combobox', { name: 'Users may empty the bin or delete for good' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Not allowed' }));
+    await waitFor(() => expect(minimum).toBeEnabled());
+    fireEvent.click(minimum);
+    fireEvent.click(await screen.findByRole('option', { name: '90 days' }));
+    expect(screen.getByRole('region', { name: 'Unsaved changes' })).toHaveTextContent('2 rules changed');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Save the changed rules?' });
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/policies', { values: { 'bin.delete': 'forbidden' }, bin_min_retention: '90', current_password: 'admin-pw' }));
+    // Saved: the row shows the server's answer and the bar is gone.
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Unsaved changes' })).not.toBeInTheDocument());
+    expect(screen.getByRole('combobox', { name: 'Deleted items are kept at least' })).toHaveTextContent('90 days');
+  });
+
+  it('shows the minimum greyed out with the reason on a server without it', async () => {
+    mountSignedIn(<AdminPolicies />, { user: ADMIN });
+    const minimum = await screen.findByRole('combobox', { name: 'Deleted items are kept at least' });
+    expect(minimum).toBeDisabled();
+    expect(screen.getByText(/This server does not offer a minimum yet/)).toBeInTheDocument();
+    // D36 reads as a minimum.
+    expect(screen.getByRole('combobox', { name: 'Keep users\' backups at least' })).toHaveTextContent('No minimum (default)');
+  });
+});
+
 describe('Server settings → Instance backup', () => {
+  // D35: the schedule is set here with the administrator's password; destination and key stay read-only.
+  it('saves the schedule with the administrator\'s password and shows the time in their zone too', { timeout: 20_000 }, async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/admin/instance-backup') return { data: instanceStatus({ enabled: true, missing: [], destination: '/backups', key_fingerprint: 'k1' }) };
+      throw new Error(`unexpected GET ${path}`);
+    });
+    vi.mocked(api.put).mockImplementation(async (path: string, body: unknown) => {
+      if (path === '/admin/instance-backup/settings') { const { time_utc, keep } = body as { time_utc: string; keep: number }; return { data: instanceStatus({ enabled: true, missing: [], destination: '/backups', key_fingerprint: 'k1', time_utc, keep, schedule_source: 'admin' }) }; }
+      throw new Error(`unexpected PUT ${path}`);
+    });
+    mountSignedIn(<AdminInstanceBackup />, { user: ADMIN });
+    expect(await screen.findByText('03:30 UTC')).toBeInTheDocument();
+    // The browser's zone in tests is UTC: the local reading is the same clock time with its zone's name.
+    expect(screen.getAllByText(/3:30.*(UTC|GMT|Universal).*for you/).length).toBeGreaterThan(0);
+    // Destination and key cannot be edited: they are text, not inputs.
+    expect(screen.queryByRole('textbox', { name: /Destination|Key/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Change schedule…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Change the schedule?' });
+    fireEvent.change(within(dialog).getByLabelText('Time (UTC)'), { target: { value: '22:15' } });
+    fireEvent.change(within(dialog).getByLabelText('Backups kept'), { target: { value: '7' } });
+    const save = within(dialog).getByRole('button', { name: 'Save schedule' });
+    expect(save).toBeDisabled();
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(save);
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/instance-backup/settings', { time_utc: '22:15', keep: 7, current_password: 'admin-pw' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByText('22:15 UTC')).toBeInTheDocument();
+    expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Schedule saved' }));
+  });
+
+  // The status polls every three seconds while a backup runs. A changed answer
+  // must leave the administrator's unsaved fields alone; Save sends what they typed.
+  it('a status answer that arrives while the schedule is being edited leaves the typed values alone', { timeout: 20_000 }, async () => {
+    let status = instanceStatus({ enabled: true, missing: [], destination: '/backups', key_fingerprint: 'k1', running: true });
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/admin/instance-backup') return { data: status };
+      throw new Error(`unexpected GET ${path}`);
+    });
+    vi.mocked(api.put).mockImplementation(async (path: string, body: unknown) => {
+      if (path === '/admin/instance-backup/settings') { const { time_utc, keep } = body as { time_utc: string; keep: number }; return { data: instanceStatus({ ...status, time_utc, keep, schedule_source: 'admin' }) }; }
+      throw new Error(`unexpected PUT ${path}`);
+    });
+    const client = testClient();
+    mountSignedIn(<AdminInstanceBackup />, { user: ADMIN, client });
+    fireEvent.click(await screen.findByRole('button', { name: 'Change schedule…' }, { timeout: 5000 }));
+    const dialog = await screen.findByRole('dialog', { name: 'Change the schedule?' });
+    fireEvent.change(within(dialog).getByLabelText('Time (UTC)'), { target: { value: '22:15' } });
+    fireEvent.change(within(dialog).getByLabelText('Backups kept'), { target: { value: '7' } });
+    // The run finishes and the server reports another schedule (set by a second administrator meanwhile).
+    status = instanceStatus({ ...status, running: false, time_utc: '04:00', keep: 21, schedule_source: 'admin' });
+    await act(async () => { await client.refetchQueries({ queryKey: instanceBackupQueryKey }); });
+    await waitFor(() => expect(screen.getByText('04:00 UTC')).toBeInTheDocument());
+    expect(within(dialog).getByLabelText('Time (UTC)')).toHaveValue('22:15');
+    expect(within(dialog).getByLabelText('Backups kept')).toHaveValue(7);
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save schedule' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/instance-backup/settings', { time_utc: '22:15', keep: 7, current_password: 'admin-pw' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    // Opened again, the fields start from what the server holds now.
+    fireEvent.click(screen.getByRole('button', { name: 'Change schedule…' }));
+    const again = await screen.findByRole('dialog', { name: 'Change the schedule?' });
+    expect(within(again).getByLabelText('Time (UTC)')).toHaveValue('22:15');
+    expect(within(again).getByLabelText('Backups kept')).toHaveValue(7);
+  });
+
+  it('a refused password empties the field and keeps the dialog open for another try', { timeout: 20_000 }, async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/admin/instance-backup') return { data: instanceStatus({ enabled: true, missing: [], destination: '/backups', key_fingerprint: 'k1' }) };
+      throw new Error(`unexpected GET ${path}`);
+    });
+    vi.mocked(api.put).mockResolvedValueOnce({ error: 'The password is not correct.', status: 403, code: 'ADMIN_PASSWORD_INCORRECT' });
+    mountSignedIn(<AdminInstanceBackup />, { user: ADMIN });
+    fireEvent.click(await screen.findByRole('button', { name: 'Change schedule…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Change the schedule?' });
+    const password = within(dialog).getByLabelText('Your password');
+    fireEvent.change(password, { target: { value: 'wrong-pw' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save schedule' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not save the schedule', description: 'The password is not correct.' })));
+    expect(screen.getByRole('dialog', { name: 'Change the schedule?' })).toBeInTheDocument();
+    await waitFor(() => expect((password as HTMLInputElement).value).toBe(''));
+    expect(within(dialog).getByRole('button', { name: 'Save schedule' })).toBeDisabled();
+  });
+
+  it('refuses an impossible number of kept backups before asking for the password', async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/admin/instance-backup') return { data: instanceStatus({ enabled: true, missing: [], destination: '/backups', key_fingerprint: 'k1' }) };
+      throw new Error(`unexpected GET ${path}`);
+    });
+    mountSignedIn(<AdminInstanceBackup />, { user: ADMIN });
+    fireEvent.click(await screen.findByRole('button', { name: 'Change schedule…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Change the schedule?' });
+    fireEvent.change(within(dialog).getByLabelText('Backups kept'), { target: { value: '0' } });
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(/between 1 and 1000/);
+    expect(within(dialog).getByRole('button', { name: 'Save schedule' })).toBeDisabled();
+    expect(api.put).not.toHaveBeenCalled();
+  });
+
+  it('says destination and key are not configured and where to set them', async () => {
+    mountSignedIn(<AdminInstanceBackup />, { user: ADMIN });
+    expect(await screen.findAllByText('Not configured')).toHaveLength(2);
+    expect(screen.getByText(/set INSTANCE_BACKUP_DIR to a mount outside the uploads folder, then restart/)).toBeInTheDocument();
+    expect(screen.getByText(/set INSTANCE_BACKUP_KEY or INSTANCE_BACKUP_KEY_FILE \(at least 32 random bytes\), then restart/)).toBeInTheDocument();
+  });
+
   it('shows the server\'s restore command and says why a run was refused', { timeout: 20_000 }, async () => {
     vi.mocked(api.get).mockImplementation(async (path: string) => {
       if (path === '/admin/instance-backup') return { data: instanceStatus({ enabled: true, missing: [], destination: '/backups', key_fingerprint: 'k1', restore_command: 'node /app/api/dist/scripts/instance-restore.js --file <backup.uhib> --key-file <key>' }) };
@@ -189,7 +349,86 @@ describe('Admin → Users → a person', () => {
     for (const key of ['smtp_port', 'imap_host', 'smtp_host', 'username', 'encrypted_password']) expect(change).not.toHaveProperty(key);
   });
 
-  it('removes a mail account with its mail after the administrator\'s password, and adds one with the person\'s fields', async () => {
+  it('every confirmation and account dialog names the person it acts for', { timeout: 20_000 }, async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/admin/users') return { data: { users: USERS } };
+      if (path === '/admin/users/user-alex/accounts') return { data: { user_id: 'user-alex', mail_accounts: [], calendar_accounts: [] } };
+      if (path === '/admin/users/user-alex/bin') return { data: { items: [], retention: '30' } };
+      if (path === '/admin/users/user-alex/backups') return { data: { jobs: [{ id: 'bk-1', scope: 'full', status: 'ready', phase: 'done', progress: 100, cancel_requested: false, requested_sections: [], file_size: 1_000_000, file_sha256: 'x', content_type: 'application/vnd.unihub.backup', encryption_enabled: true, backup_uuid: 'u', recovery_password_available: false, recovery_password_revealed: true, server_unlock_available: true, keep_until: '2099-01-01T00:00:00.000Z', contents: null, error: null, created_at: '2026-06-01T10:00:00.000Z', updated_at: '2026-06-01T10:00:00.000Z', started_at: null, completed_at: '2026-06-01T10:05:00.000Z', downloaded_at: null }] } };
+      if (path === '/policies/effective') return policiesAnswer();
+      throw new Error(`unexpected GET ${path}`);
+    });
+    mountSignedIn(<AdminUserDetail />, { user: ADMIN, path: '/admin/users/user-alex', routePath: '/admin/users/:id' });
+    // Nothing of theirs but a backup: the sections say so with their name.
+    expect(await screen.findByText('Alex Example has no mail accounts.')).toBeInTheDocument();
+    expect(screen.getByText('Alex Example has no calendar accounts.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    const confirm = await screen.findByRole('dialog', { name: 'Delete this backup of Alex Example?' });
+    expect(within(confirm).getByTestId('confirm-target')).toHaveTextContent('For Alex Example (alex@example.com)');
+    // The administrator's path is not held by the minimum; the row shows no deadline, since the job's stored one may be stale (D36).
+    expect(within(confirm).getByText(/whatever the minimum your rule keeps it for/)).toBeInTheDocument();
+    expect(screen.queryByText(/kept at least until/)).not.toBeInTheDocument();
+    fireEvent.change(within(confirm).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Delete backup' }));
+    await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/admin/users/user-alex/backups/bk-1', { current_password: 'admin-pw' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add calendar account' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add a calendar account' });
+    expect(within(dialog).getByTestId('confirm-target')).toHaveTextContent('For Alex Example (alex@example.com)');
+  });
+
+  it('says when a person has nothing at all on this server', async () => {
+    mountSignedIn(<AdminUserDetail />, { user: ADMIN, path: '/admin/users/user-blair', routePath: '/admin/users/:id' });
+    expect(await screen.findByText(/Blair Example has no mail or calendar accounts, no backups on this server and nothing in their bin yet/)).toHaveAttribute('role', 'status');
+    expect(screen.getByText('The bin of Blair Example is empty.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Empty bin' })).toBeDisabled();
+  });
+
+  it('shows the person\'s bin, a group as one row, and deletes one item for good with the administrator\'s password', { timeout: 20_000 }, async () => {
+    mountSignedIn(<AdminUserDetail />, { user: ADMIN, path: '/admin/users/user-alex', routePath: '/admin/users/:id' });
+    expect(await screen.findByText('Grace Hopper')).toBeInTheDocument();
+    // The calendar and its event are one row, named by the calendar.
+    expect(screen.getByText('Garden club')).toBeInTheDocument();
+    expect(screen.queryByText('Seed swap')).not.toBeInTheDocument();
+    expect(screen.getByText(/with 1 item/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Empty bin' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Grace Hopper for good' }));
+    const confirm = await screen.findByRole('dialog', { name: 'Delete Grace Hopper for good?' });
+    expect(within(confirm).getByTestId('confirm-target')).toHaveTextContent('Alex Example (alex@example.com)');
+    fireEvent.change(within(confirm).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Delete for good' }));
+    await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/admin/users/user-alex/bin/bin-1', { current_password: 'admin-pw' }));
+  });
+
+  it('a mail server that cannot be verified asks the administrator to trust it, then sends the fingerprints with their password again', { timeout: 20_000 }, async () => {
+    const trust = { blocked: false, requiresConfirmation: true, requiresInsecureTls: true, warnings: ['The certificate is self-signed.'],
+      assessments: { imap: { host: 'imap.example.com', port: 993, knownProvider: false, allowlisted: false, blocked: false }, smtp: { host: 'smtp.example.com', port: 587, knownProvider: false, allowlisted: false, blocked: false } },
+      certificates: { imap: { fingerprint256: 'AA:BB', authorized: false, subject: { CN: 'imap.example.com' } }, smtp: { fingerprint256: 'CC:DD', authorized: false, subject: { CN: 'smtp.example.com' } } } };
+    vi.mocked(api.post).mockResolvedValueOnce({ error: 'Review mail server authenticity before continuing.', status: 409, requiresHostTrustConfirmation: true, mailHostTrust: trust } as never)
+      .mockResolvedValueOnce({ data: { account: MAIL_ACCOUNT } });
+    mountSignedIn(<AdminUserDetail />, { user: ADMIN, path: '/admin/users/user-alex', routePath: '/admin/users/:id' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Add mail account' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add a mail account' });
+    fireEvent.change(within(dialog).getByLabelText('Email address'), { target: { value: 'new@mail.example.com' } });
+    fireEvent.change(within(dialog).getByLabelText('Mail password'), { target: { value: 'mail-secret' } });
+    fireEvent.change(within(dialog).getByLabelText('IMAP server'), { target: { value: 'imap.example.com' } });
+    fireEvent.change(within(dialog).getByLabelText('SMTP server'), { target: { value: 'smtp.example.com' } });
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add account' }));
+    const ask = await screen.findByRole('dialog', { name: 'Trust this mail server?' });
+    expect(within(ask).getByText(/AA:BB/)).toBeInTheDocument();
+    expect(within(ask).getByText('The certificate is self-signed.')).toBeInTheDocument();
+    expect(within(ask).getByTestId('confirm-target')).toHaveTextContent('Alex Example (alex@example.com)');
+    // The password was dropped with the refused request: it is asked for again.
+    fireEvent.change(within(ask).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(ask).getByRole('button', { name: 'Trust and save' }));
+    await waitFor(() => expect(api.post).toHaveBeenLastCalledWith('/admin/users/user-alex/mail-accounts', expect.objectContaining({
+      email_address: 'new@mail.example.com', accept_host_trust: true, trusted_imap_fingerprint256: 'AA:BB', trusted_smtp_fingerprint256: 'CC:DD', provider: 'custom', current_password: 'admin-pw',
+    })));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail account added' })));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('removes a mail account with its mail after the administrator\'s password, and adds one with the person\'s fields', { timeout: 20_000 }, async () => {
     mountSignedIn(<AdminUserDetail />, { user: ADMIN, path: '/admin/users/user-alex', routePath: '/admin/users/:id' });
     await screen.findByText('alex@mail.example.com');
     fireEvent.pointerDown(screen.getByRole('button', { name: 'Actions for alex@mail.example.com' }), { button: 0, ctrlKey: false });
@@ -210,7 +449,7 @@ describe('Admin → Users → a person', () => {
     fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add account' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/users/user-alex/mail-accounts', expect.objectContaining({
-      email_address: 'new@mail.example.com', username: 'new@mail.example.com', encrypted_password: 'mail-secret', imap_host: 'imap.example.com', smtp_host: 'smtp.example.com', sync_mode: 'sync', current_password: 'admin-pw',
+      email_address: 'new@mail.example.com', username: 'new@mail.example.com', encrypted_password: 'mail-secret', imap_host: 'imap.example.com', smtp_host: 'smtp.example.com', sync_mode: 'sync', provider: 'custom', current_password: 'admin-pw',
     })));
   });
 });

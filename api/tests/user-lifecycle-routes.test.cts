@@ -80,25 +80,32 @@ test('admin user deletion keeps its own checks and reports the service refusal',
   assert.deepEqual(internal, { error: 'Failed to delete user', status: 500 }, 'database text stays in the log');
 });
 
-test('self deletion calls the service as the owner and clears cookies only after it succeeded', async (t) => {
+test('self deletion asks for the password, calls the service as the owner and clears cookies only after it succeeded', async (t) => {
   const cleared: string[] = [];
   const lifecycle = lifecycleStub();
+  // The password check itself runs against the database in policies-admin-mysql-integration.test.cts.
+  const reauthentication = { OWN_CODES: {}, confirmPassword: async (userId: string, password: unknown) => password === 'right-password' ? null
+    : { error: 'Current password is incorrect', code: 'PASSWORD_INCORRECT', status: 403 } };
   stubModules(t, {
     '../dist/src/state': { db: { execute: async (sql: string) => { throw new Error(`Unexpected query: ${sql}`); } } },
     '../dist/src/auth': { clearAuthCookie: () => cleared.push('auth'), clearCsrfCookie: () => cleared.push('csrf') },
     '../dist/src/services/user-lifecycle': lifecycle,
+    '../dist/src/security/reauthentication': reauthentication,
   }, ['../dist/src/routes/settings']);
   const routes = require('../dist/src/routes/settings') as RouteTable<typeof import('../src/routes/settings')>;
   const req = { url: '/api/settings/account', headers: {} } as FixtureValue;
 
-  assert.deepEqual(await routes['DELETE /api/settings/account'].handler(req, 'user-1', {}, {} as FixtureValue), { deleted: true });
+  assert.equal((await routes['DELETE /api/settings/account'].handler(req, 'user-1', {}, {} as FixtureValue)).status, 403);
+  assert.deepEqual([lifecycle.calls, cleared], [[], []], 'nothing happens without the password');
+  const confirmed = { current_password: 'right-password' };
+  assert.deepEqual(await routes['DELETE /api/settings/account'].handler(req, 'user-1', confirmed, {} as FixtureValue), { deleted: true });
   assert.deepEqual(lifecycle.calls, [['user-1', { actor: 'self', actorId: 'user-1', req }]]);
   assert.deepEqual(cleared, ['auth', 'csrf']);
 
   const { conflict } = require('../dist/src/http/errors') as typeof import('../src/http/errors');
   stubModules(t, { '../dist/src/services/user-lifecycle': lifecycleStub(conflict('RESTORE_IN_PROGRESS', 'Restore in progress.')) }, ['../dist/src/routes/settings']);
   const reloaded = require('../dist/src/routes/settings') as RouteTable<typeof import('../src/routes/settings')>;
-  const refused = await reloaded['DELETE /api/settings/account'].handler(req, 'user-1', {}, {} as FixtureValue);
+  const refused = await reloaded['DELETE /api/settings/account'].handler(req, 'user-1', confirmed, {} as FixtureValue);
   assert.deepEqual([refused.status, refused.code], [409, 'RESTORE_IN_PROGRESS']);
   assert.deepEqual(cleared, ['auth', 'csrf'], 'a refused deletion keeps the session');
 });

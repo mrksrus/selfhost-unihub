@@ -59,7 +59,13 @@ disabled module's routes before anything else. Workers ask
 (module enabled, background allowed when unattended, no restore of its section)
 or take the per-user map from `blockedBackgroundModulesByUser` when they scan
 every user in one pass; services that report the module and restore causes
-differently keep their own two checks.
+differently keep their own two checks. The boundary checks the caller's
+switch and restore lock, so a route acting on another person's data checks
+that person's in its service before any change: the administrator's path for a
+person (`services/admin-path.ts` for accounts, the bin's per-module gates,
+`services/data-clear.ts`) refuses with `403 MODULE_DISABLED` while the person's
+module is off and `409 RESTORE_IN_PROGRESS` while their section is restored
+([Auth and admin](AUTH_ADMIN_SETTINGS.md#the-administrators-path-for-a-person)).
 The recovery catalog declares durable data and remains independent of visibility.
 Settings are archived under `user_settings.module_preferences`; the order is a
 separate `user_settings.module_order` JSON list of module IDs. `PUT /api/modules`

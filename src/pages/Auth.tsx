@@ -10,7 +10,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, Lock } from 'lucide-react';
+import { Loader2, Lock, ShieldCheck } from 'lucide-react';
 import { z } from 'zod';
 
 const emailSchema = z.email('Please enter a valid email address');
@@ -29,6 +29,10 @@ const Auth = () => {
   const [twoFactorChallengeToken, setTwoFactorChallengeToken] = useState<string | null>(null);
   const [twoFactorCode, setTwoFactorCode] = useState('');
   const [signupMode, setSignupMode] = useState<SignupMode>('disabled');
+  // The rules that limit a new person on this server (D38), told before they create the account.
+  const [dataRules, setDataRules] = useState<string[]>([]);
+  // The revision of the rules shown: sent with the sign-up, so the account confirms those and no later ones.
+  const [rulesRevision, setRulesRevision] = useState<number | null>(null);
 
   useEffect(() => {
     if (user) {
@@ -38,8 +42,11 @@ const Auth = () => {
 
   useEffect(() => {
     let cancelled = false;
-    void fetchPublicSignupMode().then(mode => {
-      if (!cancelled) setSignupMode(mode);
+    void fetchPublicSignupMode().then(({ mode, dataRules: rules, rulesRevision: revision }) => {
+      if (cancelled) return;
+      setSignupMode(mode);
+      setDataRules(rules);
+      setRulesRevision(revision);
     });
     return () => {
       cancelled = true;
@@ -123,7 +130,7 @@ const Auth = () => {
     if (!validateForm()) return;
     
     setLoading(true);
-    const { error, requiresApproval } = await signUp(email, password, fullName);
+    const { error, requiresApproval } = await signUp(email, password, fullName, rulesRevision);
     setLoading(false);
     
     if (error) {
@@ -319,6 +326,17 @@ const Auth = () => {
                         <p className="text-sm text-destructive">{errors.password}</p>
                       )}
                     </div>
+                    {dataRules.length > 0 && signupMode !== 'disabled' && (
+                      <section aria-labelledby="signup-rules-title" className="space-y-1.5 border-l-2 border-border pl-3 text-sm">
+                        <h2 id="signup-rules-title" className="flex items-center gap-1.5 font-medium">
+                          <ShieldCheck aria-hidden="true" className="h-4 w-4 text-muted-foreground" />Rules on this server
+                        </h2>
+                        <ul className="list-disc space-y-0.5 pl-5 text-muted-foreground">
+                          {dataRules.map(rule => <li key={rule}>{rule}</li>)}
+                        </ul>
+                        <p className="text-xs text-muted-foreground">Set by the administrator. You are told when they change.</p>
+                      </section>
+                    )}
                     <Button type="submit" className="w-full" disabled={loading || signupMode === 'disabled'}>
                       {loading ? (
                         <>

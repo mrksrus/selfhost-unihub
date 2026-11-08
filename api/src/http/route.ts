@@ -40,7 +40,7 @@ interface UploadBody {
 // action with 403 POLICY_FORBIDS before any side effect; assertRouteTable
 // checks that each named key exists and can refuse. A rule that depends on
 // the body (a mail mode, the provider-delete switch) cannot be declared here:
-// its service is to check it with the same function (0.28 C2).
+// its service checks it with the same function (services/mail-account-mode.ts).
 type PolicyDeclaration = PolicyKey | { policy: PolicyKey; query: Readonly<Record<string, string | readonly string[]>> };
 
 interface RoutePolicy {

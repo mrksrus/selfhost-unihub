@@ -11,11 +11,14 @@ export class ApiError extends Error {
   readonly status?: number;
   readonly code?: string;
   readonly requestId?: string;
+  /** What the server adds to a refusal, for example how far a stopped operation got (`{ deleted }`). */
+  readonly details?: unknown;
   constructor(response: FailedResponse) {
     super(response.error || 'The request failed.');
     this.name = 'ApiError';
     this.status = response.status;
     if (typeof response.code === 'string') this.code = response.code;
+    if (response.details !== undefined) this.details = response.details;
     if (typeof response.requestId === 'string') this.requestId = response.requestId;
   }
 }

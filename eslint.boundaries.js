@@ -60,7 +60,7 @@ export const VIEWS_USING_API_CLIENT = {
 // (database-readiness, service-supervisor, drop-privileges) run as their own
 // processes before the API; converting them is optional.
 export const API_FILES_USING_CONSOLE = {
-  ceiling: 35,
+  ceiling: 34,
   files: [
     "api/src/database-readiness.ts",
     "api/src/routes/admin.ts",
@@ -72,7 +72,6 @@ export const API_FILES_USING_CONSOLE = {
     "api/src/routes/mail-folders.ts",
     "api/src/routes/mail-messages.ts",
     "api/src/routes/mail-operations.ts",
-    "api/src/routes/mail-route-helpers.ts",
     "api/src/routes/mail-sync.ts",
     "api/src/routes/notifications.ts",
     "api/src/routes/offline.ts",
