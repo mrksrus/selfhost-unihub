@@ -629,6 +629,8 @@ accepted meanwhile cannot slip past. It unlinks the calendars connected from
 the accounts, so while there are any it is also a change to Calendar: refused
 while Calendar is off (`403 MODULE_DISABLED`) or being restored (`409
 RESTORE_IN_PROGRESS`), before any work stops and again under the locks.
+Mail's own switch and restore lock are checked again under those locks too,
+so a Mail restore that starts while the work stops is not passed by.
 
 Account deletion (`services/user-lifecycle.ts`, shared with the admin route)
 stops the user's mail work, deletes the `users` row (every table cascades from

@@ -108,6 +108,10 @@ async function clearMailAccounts(userId: string, actor: ClearActor): Promise<Cle
     await cx.execute('SELECT COUNT(*) AS count FROM emails WHERE user_id = ? FOR UPDATE', [userId]);
     const [linked] = await cx.execute<Linked[]>(`SELECT id, provider, provider_config, mail_account_id FROM calendar_accounts
       WHERE user_id = ? AND mail_account_id IS NOT NULL FOR UPDATE`, [userId]);
+    // Mail's own switch and restore lock as they are now, after stopping the
+    // work and the waits for these locks (the first plain read of this
+    // transaction), as purging one account checks them.
+    await assertModuleWritable(userId, 'mail', cx);
     if (await countUnresolved(userId, cx)) throw unresolvedOperations();
     if (linked.length) await assertModuleWritable(userId, 'calendar', cx);
     const [files] = await cx.execute<(RowDataPacket & { storage_path: string | null })[]>('SELECT storage_path FROM email_attachments WHERE user_id = ?', [userId]);
