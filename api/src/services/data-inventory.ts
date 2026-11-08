@@ -115,6 +115,10 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
       'id trigger_kind actor_id status file_name size_bytes sha256 key_fingerprint app_version migration_id error started_at finished_at removed_at completion_seq'],
   ].map(([name, treatment, reason, columns]) => [name, Object.freeze({ ...excluded(treatment, reason, columns),
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 25])) })])),
+  // Upgrade step 26 (0.28.0).
+  mail_folder_deletions: Object.freeze({ ...excluded('deliberately_excluded', 'A folder deletion in progress at a mail server belongs to this installation; a restore must not replay provider deletes. The folder comes back as the archive has it, and the next folder check finds what the server holds.',
+    'id user_id mail_account_id remote_name uidvalidity state attempt created_at updated_at'),
+  introducedIn: Object.fromEntries('id user_id mail_account_id remote_name uidvalidity state attempt created_at updated_at'.split(' ').map(column => [column, 26])) }),
 });
 
 // Every table states who owns a row, whether it can be shared, its data
@@ -207,6 +211,7 @@ const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.fr
   mail_folder_recovery_items: { owner: 'user', shareable: false, dataClass: MAIL_CONTENT, module: 'mail', restore: 'Restored with its email as filing history.' },
   mail_scheduled_sends: { owner: 'user', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: the draft comes back unscheduled.' },
   mail_server_messages: { owner: 'user', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: provider deletion bookkeeping; a restore replays no remote delete.' },
+  mail_folder_deletions: { owner: 'user', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: a folder deletion in progress at this installation\'s mail servers. A personal restore leaves the destination\'s own rows; an instance restore drops the dump\'s. Nothing runs from it: a new deletion asks the server again.' },
   mail_sync_state: { owner: 'user', shareable: false, dataClass: 'installation', module: 'mail', restore: 'Never restored: provider progress is found again after sign-in.' },
   // The mail engine (data schema 5 and 6): provider evidence exported and
   // quarantined, never executed again; leases, cursors and jobs rebuilt.

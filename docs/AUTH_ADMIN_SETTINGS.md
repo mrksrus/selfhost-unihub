@@ -583,15 +583,32 @@ commit and the provider command it guards; a restore's admission holds it
 only for the admission. The sync takes it around its own account writes
 (linking a restored calendar, dropping a link to deleted mail, noting a
 missing login) and reads the account again under it: an account paused
-meanwhile is not linked, keeps its password, and its sync stops without
-writing (a pause also stops the account's running work). The erase worker
-asks for the lock without waiting and stops for now when a change runs.
-The lock is keyed by the person's id as the database compares it (without
-case); an administrator's routes take the person's id only as a UUID
-(`400 INVALID_USER_ID` otherwise) and use its stored spelling. Two of a
+meanwhile is not linked or unlinked, keeps its password, and its sync stops
+without writing (a pause also stops the account's running work); a
+password saved meanwhile is not noted missing, the calendar syncs again
+with it. The erase worker asks for the lock without waiting and stops for
+now when a change runs. The lock is keyed by the person's id as the
+database compares it (without case); an administrator's routes take the
+person's id only as a UUID (`400 INVALID_USER_ID` otherwise) and use its
+stored spelling. An account's id is resolved to its stored spelling the
+same way before a change takes its locks, and every in-process map of an
+account's work (its lock, running sync, connections, IDLE, foreground
+turn) folds case, so a pause through another spelling still stops it. Two of a
 person's changes therefore never interleave: the later one starts from
 what the earlier one left. The final check still covers what others commit
 meanwhile: rules, module switches, restores.
+
+Who asked is checked again there too (`services/caller-proof.ts`). Deleting
+one's own account, an administrator's change for a person
+(`/api/admin/users/:id/...` accounts, backups, bin, clears), saving the
+rules and saving the instance backup's schedule each carry what their route
+proved: the session, the administrator role where needed and the password
+entered again. The final check, and those two saves after their own row
+locks, read the person's row and session again with shared locks: a session
+signed out or ended meanwhile (a password reset, a deactivation) answers
+`401 SESSION_ENDED`, another stored password `403 PASSWORD_CHANGED`, a lost
+administrator role `403 ADMIN_REQUIRED`, and nothing changes. Background
+work a request starts does not carry it.
 
 Such a change also acts only on the accounts it saw. It carries a snapshot
 of each account it chose (`services/account-identity.ts`: provider, server,
@@ -605,21 +622,34 @@ and write nothing. The mail account's set of linked calendars, and the
 link of the one it turns off, are checked the same way and answer `409
 MAIL_CALENDAR_CHANGED`. A folder on several mail accounts is deleted at the
 provider only after every one of them was connected and checked, under one
-final check held until the last server answered. Each step is recorded in
-the mailbox's provider evidence (`mail_remote_mailboxes.state`) in a
-transaction of its own: `deleting` before the DELETE goes out, `missing`
-once the server confirmed it, back as it was when the server refused it.
-What the servers answered counts even when the check's own end fails. A
-server that fails a DELETE after others succeeded stops the rest, the
-deleted copies are settled locally and never sent again (a retry settles
-them without a DELETE), and the answer is `409 FOLDER_PARTLY_DELETED` with
-`details.deleted_on`, `details.remaining_on` (addresses) and
-`details.settled`. A DELETE sent without a known answer stays `deleting`:
-the next attempt lists the server's folders first, treats one no longer
-listed as deleted, and sends nothing while it is still listed (`409
-FOLDER_DELETE_UNCERTAIN`; the next mail sync records what the server has).
-A server's refusal with nothing deleted is `502 MAIL_SERVER_ERROR` in
-UniHub's words; the server's own text goes only to the log. Reading a mail
+final check held until the last server answered. Before anything is sent,
+each server is asked what it holds under the name: its complete folder
+listing and STATUS of that name. A DELETE goes only to the mailbox
+generation (UIDVALIDITY) STATUS reports; a folder is taken as gone only
+when both say so (a listing with an entry it cannot read proves nothing,
+for folder discovery too); anything unclear is `502 MAIL_SERVER_ERROR` with
+nothing changed. Each step is recorded apart from the live mailbox state
+discovery keeps, in `mail_folder_deletions` (upgrade step 26), with that
+generation, in transactions of their own: `sending` before a DELETE can go
+out, `deleted` once the server confirmed it, gone when the server refused
+or once UniHub settled the folder. Until the first DELETE is sent, a
+failure (the record's own commit included) takes the record back and stays
+the answer. What the servers answered counts even when the check's own end
+fails. A server that fails a DELETE after others succeeded stops the rest,
+the deleted copies are settled locally (only that generation's mail) and
+never sent again (a retry settles them without a DELETE), and the answer
+is `409 FOLDER_PARTLY_DELETED` with `details.deleted_on`,
+`details.remaining_on` (addresses) and `details.settled`. A DELETE sent
+without a known answer is checked on the next attempt: proven gone, it is
+settled without one; the same generation still there, it is sent again. A
+folder made again under the name since a DELETE went (another
+UIDVALIDITY, from the server or a folder check) is never taken for the one
+deleted: the attempt answers `409 FOLDER_RECREATED`, sends nothing and
+forgets the old record, so the next attempt deletes the new folder as a
+deletion of its own. A server's refusal with nothing deleted is `502
+MAIL_SERVER_ERROR` in UniHub's words; the server's own text goes only to
+the log. The record is never in a personal backup; an instance restore
+drops it. Reading a mail
 account's calendar writes nothing (a restored one shows `link_pending`).
 The sync's login drops a link to a deleted mail account, and notes a
 missing login, only under Calendar's check; refused, the sync pauses and
@@ -640,8 +670,12 @@ own pause is still there, so a restore or module switch since keeps its
 pause, and the change's error (for example `409 RESTORE_IN_PROGRESS`) stays
 the answer. What it puts back: the earlier pause (not a Mail switched-off
 one once Mail is on again), and the jobs it stopped as they were, an
-accepted provider change's job and its foreground turn included; one it
-stopped while running resumes as a check of its outcome, never sent again.
+accepted provider change's job and its foreground turn included (also the
+turn of one it stopped while running). One it stopped while running
+resumes as a check of its outcome when the operation was dispatched, never
+sent again, and as the operation itself when it was not: the pause moved
+the account's generation on, so the stopped worker can dispatch nothing
+after it.
 A settings change that went through ends its own pause as after a
 reconnect.
 The bin's purge skips a module that is off or being restored. Emptying the bin is refused

@@ -90,11 +90,16 @@ test('self deletion asks for the password, calls the service as the owner and cl
   const cleared: string[] = [];
   const lifecycle = lifecycleStub();
   // The password check itself runs against the database in policies-admin-mysql-integration.test.cts.
-  const reauthentication = { OWN_CODES: {}, confirmPassword: async (userId: string, password: unknown) => password === 'right-password' ? null
-    : { error: 'Current password is incorrect', code: 'PASSWORD_INCORRECT', status: 403 } };
+  const reauthentication = { OWN_CODES: {}, confirmPasswordHash: async (userId: string, password: unknown) => password === 'right-password' ? { passwordHash: 'stored-hash-1' }
+    : { refused: { error: 'Current password is incorrect', code: 'PASSWORD_INCORRECT', status: 403 } } };
+  // The deletion runs as this session, with the hash the password matched: its final step asks again (caller-proof.ts).
+  const callerProof = require('../dist/src/services/caller-proof') as typeof import('../src/services/caller-proof');
+  const proofs: FixtureValue[] = [];
+  const deleteUser = lifecycle.deleteUser;
+  lifecycle.deleteUser = async (...args: FixtureValue[]) => { proofs.push(callerProof.currentCaller()); return (deleteUser as FixtureValue)(...args); };
   stubModules(t, {
     '../dist/src/state': { db: { execute: async (sql: string) => { throw new Error(`Unexpected query: ${sql}`); } } },
-    '../dist/src/auth': { clearAuthCookie: () => cleared.push('auth'), clearCsrfCookie: () => cleared.push('csrf') },
+    '../dist/src/auth': { clearAuthCookie: () => cleared.push('auth'), clearCsrfCookie: () => cleared.push('csrf'), getAuthTokenFromRequest: () => 'synthetic-session-token' },
     '../dist/src/services/user-lifecycle': lifecycle,
     '../dist/src/security/reauthentication': reauthentication,
   }, ['../dist/src/routes/settings']);
@@ -106,6 +111,8 @@ test('self deletion asks for the password, calls the service as the owner and cl
   const confirmed = { current_password: 'right-password' };
   assert.deepEqual(await routes['DELETE /api/settings/account'].handler(req, 'user-1', confirmed, {} as FixtureValue), { deleted: true });
   assert.deepEqual(lifecycle.calls, [['user-1', { actor: 'self', actorId: 'user-1', req }]]);
+  assert.deepEqual(proofs, [{ userId: 'user-1', token: 'synthetic-session-token', passwordHash: 'stored-hash-1' }]);
+  assert.equal(callerProof.currentCaller(), null, 'and only while it runs');
   assert.deepEqual(cleared, ['auth', 'csrf']);
 
   const { conflict } = require('../dist/src/http/errors') as typeof import('../src/http/errors');

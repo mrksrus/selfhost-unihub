@@ -228,11 +228,13 @@ function createDurableMailScheduler(run: RunJob, { repository = runtime, concurr
     }
     return changed;
   }
+  // Account ids are UUIDs the database matches without case.
+  const sameAccount = (left: string, right: string) => String(left).toLowerCase() === String(right).toLowerCase();
   async function yieldReadWork(accountId: string) {
     // Accepted operations already exist before admission calls this. Abort
     // *only* read-only transports and wait until their fenced account lease
     // has been completed; do not race another writer with a still-open fetch.
-    const reads = [...running.values()].filter(({ job }) => job.mail_account_id === accountId &&
+    const reads = [...running.values()].filter(({ job }) => sameAccount(job.mail_account_id, accountId) &&
       READ_ONLY_MAIL_JOB_KINDS.has(job.kind));
     for (const { controller } of reads) controller.abort('interactive-yield');
     await Promise.all(reads.map(({ finished }) => finished));
@@ -240,7 +242,7 @@ function createDurableMailScheduler(run: RunJob, { repository = runtime, concurr
   }
   function interruptAccount(accountId: string) {
     for (const { controller, job } of running.values()) {
-      if (job.mail_account_id === accountId) controller.abort('account-stop');
+      if (sameAccount(job.mail_account_id, accountId)) controller.abort('account-stop');
     }
   }
   function stop() {

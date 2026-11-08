@@ -195,9 +195,9 @@ async function pauseAccount({ userId, accountId, reason }: JobOwner & { reason: 
 // on again by now. The jobs it stopped come back as they were, not as after
 // a reconnect: a queued one is queued again, an accepted operation's
 // included (foreground admission is the caller's, mail-sync-control.ts); one
-// it stopped while running resumes as a reconcile of its operation, which
-// checks a command that may have gone out instead of sending it again, or
-// as the same read. Jobs paused by anything else stay as they are.
+// it stopped while running resumes as a reconcile of its operation when that
+// was dispatched, which checks a command that may have gone out instead of
+// sending it again, else as the same operation or read. Jobs paused by anything else stay as they are.
 // `committed`: the change went through (new settings or login), so its jobs
 // end as after a reconnect (resumeAccount): reads go on, an earlier provider
 // job is retired for review. Whether it put the earlier state back.
@@ -226,9 +226,18 @@ async function takeBackPause({ userId, accountId, reason, prior, jobs = [] }: Jo
       if (job.state === 'queued') {
         await cx.execute("UPDATE mail_engine_jobs SET state = 'queued', due_at = UTC_TIMESTAMP() WHERE id = ? AND mail_account_id = ? AND state = 'paused'", [job.id, accountId]);
       } else {
-        await cx.execute(`UPDATE mail_engine_jobs SET state = 'queued', kind = IF(operation_id IS NULL, kind, 'reconcile'),
-          phase = IF(operation_id IS NULL, 'revalidation', 'recovery'), lease_owner = NULL, lease_until = NULL, worker_generation = NULL,
-          due_at = UTC_TIMESTAMP(), completed_at = NULL WHERE id = ? AND mail_account_id = ? AND state = 'paused'`, [job.id, accountId]);
+        // The pause moved the account's generation on, so the stopped
+        // executor can no longer begin a dispatch (beginOperationAttempt):
+        // the operation's dispatch flag is final. Dispatched, its outcome is
+        // checked (as after a lost lease, recoverExpiredJobs); not, it runs
+        // as the operation it was.
+        await cx.execute(`UPDATE mail_writebacks w JOIN mail_engine_jobs j ON j.operation_id = w.id AND j.mail_account_id = w.mail_account_id
+          SET w.state = 'reconciling', w.status = 'pending'
+          WHERE j.id = ? AND j.mail_account_id = ? AND j.state = 'paused' AND w.dispatched = TRUE AND w.state IN (${sqlStates('executing', 'verifying')})`, [job.id, accountId]);
+        await cx.execute(`UPDATE mail_engine_jobs j LEFT JOIN mail_writebacks w ON w.id = j.operation_id AND w.mail_account_id = j.mail_account_id
+          SET j.state = 'queued', j.kind = IF(COALESCE(w.dispatched, FALSE), 'reconcile', j.kind),
+          j.phase = IF(COALESCE(w.dispatched, FALSE), 'recovery', 'revalidation'), j.lease_owner = NULL, j.lease_until = NULL, j.worker_generation = NULL,
+          j.due_at = UTC_TIMESTAMP(), j.completed_at = NULL WHERE j.id = ? AND j.mail_account_id = ? AND j.state = 'paused'`, [job.id, accountId]);
       }
     }
     return true;

@@ -40,6 +40,10 @@ function checkCancelled(signal?: AbortSignal) {
   }
 }
 const foregroundMutationAccounts = new Set<string>();
+// The accounts whose running mutation job is the person's own (it took the
+// foreground turn): a change that stops the account and is then refused
+// gives that turn back to the job it requeues (mail-sync-control.ts).
+const foregroundRunningAccounts = new Set<string>();
 
 function normalizeMailAccountId(accountId: unknown) {
   return String(accountId || '').trim();
@@ -138,9 +142,16 @@ async function durableJobIdle(job: ClaimedJob, account: EngineAccount) {
 // account's next job after a foreground admission uses the interactive rules
 // (module enabled, follow-up refresh); due-scan retries are background work.
 async function runDurableMutationJob(job: ClaimedJob, signal: AbortSignal, report: JobReport) {
+  const key = normalizeMailAccountId(job.mail_account_id);
+  const background = !foregroundMutationAccounts.delete(key);
+  if (!background) foregroundRunningAccounts.add(key);
+  try {
+    return await runMutationLocked(job, signal, report, background);
+  } finally { if (!background) foregroundRunningAccounts.delete(key); }
+}
+async function runMutationLocked(job: ClaimedJob, signal: AbortSignal, report: JobReport, background: boolean) {
   const runtime = require('./mail-engine/runtime') as typeof import('./mail-engine/runtime');
   const accountId = job.mail_account_id;
-  const background = !foregroundMutationAccounts.delete(accountId);
   return withMailAccountLock(accountId, async () => {
     let connection: ProtocolConnection | undefined, account: EngineAccount | undefined, needsSync = false, reusable = false;
     const fence = () => runtime.assertFence({ accountId, jobId: job.id, workerId: job.lease_owner,
@@ -310,6 +321,7 @@ async function startMailEngineScheduler() { await durableScheduler.start(); }
 export {
   durableScheduler,
   foregroundMutationAccounts,
+  foregroundRunningAccounts,
   normalizeMailAccountId,
   isMailAccountSyncRunning,
   isAnyMailAccountSyncRunning,

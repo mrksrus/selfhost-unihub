@@ -10,7 +10,7 @@ import { isModuleEnabled, isModuleBackgroundEnabled } from './module-settings';
 import { isSectionRestoreActive } from './restore-locks';
 import { canRunModule } from './access-policy';
 import { toBooleanFlag } from './mail-host-policy';
-import { durableScheduler, foregroundMutationAccounts, normalizeMailAccountId } from './mail-durable-jobs';
+import { durableScheduler, foregroundMutationAccounts, foregroundRunningAccounts, normalizeMailAccountId } from './mail-durable-jobs';
 import { mailDeleteStopRequests } from './mail-server-delete';
 import { publishMailJob } from './realtime';
 import { USER_PAUSES } from './mail-engine/rollout';
@@ -89,8 +89,9 @@ async function stopWork(accountId: unknown, reason: string): Promise<OwnedPause 
   const [accounts] = await db.execute<RowDataPacket[]>('SELECT user_id FROM mail_accounts WHERE id = ?', [key]);
   if (!accounts.length) return null;
   const userId = accounts[0].user_id as string;
+  // The person's own operation, waiting for its turn or running now.
+  const foreground = foregroundMutationAccounts.has(key) || foregroundRunningAccounts.has(key);
   const paused = await (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).pauseAccount({ userId, accountId: key, reason });
-  const foreground = foregroundMutationAccounts.has(key);
   mailDeleteStopRequests.add(key);
   foregroundMutationAccounts.delete(key);
   durableScheduler.interruptAccount(key);
@@ -119,7 +120,7 @@ async function releaseOwnedMailAccountStop(pause: OwnedPause | null | undefined,
     if (!await (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).takeBackPause(pause, undefined, { committed })) return;
     // Its stop told an erase pass and a pending foreground operation to stop; neither applies any more.
     mailDeleteStopRequests.delete(pause.accountId);
-    if (pause.foreground) foregroundMutationAccounts.add(pause.accountId);
+    if (pause.foreground && !committed) foregroundMutationAccounts.add(pause.accountId);
   } catch (error) {
     log.warn('MAIL', `A change could not put back the pause of account ${pause.accountId}`, undefined, error);
   }

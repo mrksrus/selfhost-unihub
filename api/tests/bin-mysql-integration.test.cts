@@ -1256,9 +1256,9 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
         [object.id, users.alex, accountId, work, `${WORK}${object.id}.ics`, sha(`${WORK}${object.id}.ics`), object.uid, eventIcs(`${object.uid} `, 'Bulk padded', clock)]);
     }
     context.after(() => pool.execute(`DELETE FROM calendar_remote_objects WHERE id IN (${bulk.map(() => '?').join(', ')})`, bulk.map(object => object.id)));
-    // The upgrade: step 25 again, as an installation of 0.27 runs it.
+    // The upgrade: step 25 again (and the steps after it), as an installation of 0.27 runs it.
     const calendarReads = hooks.watch(/FROM calendar_remote_objects WHERE calendar_id = \?/);
-    await pool.execute('DELETE FROM schema_migrations WHERE id = 25');
+    await pool.execute('DELETE FROM schema_migrations WHERE id >= 25');
     await runMigrations(pool, MIGRATIONS, BASELINE);
     // Two calendars have changes (Work and the feed): each one's UIDs are read
     // once (a page and the empty one after it), not once for every change.
