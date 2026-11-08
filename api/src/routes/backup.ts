@@ -209,7 +209,7 @@ const routes: RouteTable = defineRoutes({
   'DELETE /api/backup/jobs/:id': write(async (req, userId) => {
     try {
       await assertBackupDeletable(userId, req.params.id);
-      return await deleteDataExportJob(userId, req.params.id);
+      return await deleteDataExportJob(userId, req.params.id, { authorize: cx => assertBackupDeletable(userId, req.params.id, {}, cx, { lock: true }) });
     } catch (error) {
       if ((error as ApiError).code === 'POLICY_FORBIDS') return clientError(error, 'Failed to delete backup job');
       return failed(error, 'Failed to delete backup job', 'Delete backup job error');

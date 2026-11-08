@@ -24,8 +24,8 @@ import { clearModuleData, isClearTarget } from '../services/data-clear';
 // person's module switch and restore lock). Reading needs users.read.
 // Every change has its entry before it answers: in the transaction of the
 // change where the service has one (calendar account removal, the bin, the
-// clears, mail account removal), else written first and settled after
-// (audited).
+// clears, mail account removal, a backup), else written first and settled
+// after (audited).
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 type Body = Record<string, unknown> & { current_password?: unknown };
 type Handler = (req: Request, adminId: string, body: Body, res: ServerResponse) => Promise<RouteResponse>;
@@ -154,8 +154,9 @@ export = defineRoutes({
   'DELETE /api/admin/users/:id/backups/:jobId': change(async (req, adminId) => {
     const userId = req.params.id, jobId = req.params.jobId;
     await assertPerson(userId);
-    const result = await audited({ action: 'admin.backup_deleted', actorId: adminId, targetUserId: userId, req, details: { backup_job: jobId } },
-      async () => await deleteDataExportJob(userId, jobId) as RouteResponse);
+    const result = await deleteDataExportJob(userId, jobId, {
+      record: cx => recordAudit({ action: 'admin.backup_deleted', actorId: adminId, targetUserId: userId, req, details: { backup_job: jobId } }, cx),
+    }) as RouteResponse;
     if (failed(result)) return result;
     return deleted(1, result);
   }),
