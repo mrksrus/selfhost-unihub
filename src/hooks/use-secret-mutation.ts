@@ -33,7 +33,7 @@ export function useSecretMutation<TData = unknown, TError = Error, TVariables = 
   const mutation = useSessionMutation<TData, TError, TVariables, TContext>({
     ...options,
     gcTime: 0,
-    onError: (error, variables, context) => {
+    onError: (error, variables, onMutateResult, context) => {
       if (hasCode(error, 'PASSWORD_CHANGED')) {
         toast({ title: 'Your password was changed meanwhile. Sign in again.', description: 'Nothing was changed.', variant: 'destructive' });
         void auth?.signOut?.();
@@ -45,7 +45,7 @@ export function useSecretMutation<TData = unknown, TError = Error, TVariables = 
         navigate('/settings', { replace: true });
         return;
       }
-      return options.onError?.(error, variables, context as TContext);
+      return options.onError?.(error, variables, onMutateResult, context);
     },
   });
   const { isSuccess, isError, reset } = mutation;
