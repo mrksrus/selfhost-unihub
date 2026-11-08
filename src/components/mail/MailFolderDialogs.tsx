@@ -93,6 +93,16 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
       toast({ title: server ? 'Folder deleted on the server' : 'Folder deleted', description: parts.join(' ') });
     },
     onError: (error: Error) => {
+      // Deleted on some servers only (409): what went where, in plain words; folders are read again either way.
+      if (hasCode(error, 'FOLDER_PARTLY_DELETED')) {
+        void invalidateMailQueries(queryClient);
+        const details = (error.details ?? {}) as { deleted_on?: string[]; remaining_on?: string[]; settled?: boolean };
+        const gone = details.deleted_on?.length ? `Deleted on ${details.deleted_on.join(', ')}.` : '';
+        const left = details.remaining_on?.length ? `Still on ${details.remaining_on.join(', ')}: try again later.` : '';
+        const copy = details.settled === false ? 'UniHub updates its copy at the next folder check.' : '';
+        toast({ title: 'Folder partly deleted', description: [gone, left, copy].filter(Boolean).join(' ') || error.message, variant: 'destructive', duration: 10000 });
+        return;
+      }
       // The account changed meanwhile (409): nothing was deleted; folders and accounts are read again.
       if (hasCode(error, ACCOUNT_CHANGED)) void invalidateMailQueries(queryClient);
       toast({ title: 'Failed to delete folder', description: error.message, variant: 'destructive' });

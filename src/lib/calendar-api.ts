@@ -350,7 +350,7 @@ export const calendarApi = {
     default_calendar_color?: string;
   }): Promise<{ account: CalendarAccount; calendars?: CalendarCalendar[]; server?: { url: string; label: string }; hint?: string | null }> {
     const response = await api.post<{ account: CalendarAccount; calendars?: CalendarCalendar[]; server?: { url: string; label: string }; hint?: string | null }>('/calendar/accounts', payload);
-    if (response.error) throw new Error(response.error);
+    if (response.error) throw new ApiError(response);
     if (!response.data?.account) throw new Error('Calendar account response missing');
     return response.data;
   },

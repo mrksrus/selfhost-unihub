@@ -99,6 +99,14 @@ export function useMailAccountEditor() {
             title: 'Calendar connected',
             description: `${count} calendar${count === 1 ? '' : 's'}${server ? ` on ${server}` : ''}. Events appear as the first sync finishes.`,
           });
+        } else if (data.calendarSync.code === 'POLICY_FORBIDS') {
+          // The mail account is in; a rule (accounts.add) refused the calendar at its final check.
+          toast({
+            title: "Mail account added; its calendar wasn't connected",
+            description: data.calendarSync.warning || 'Your administrator does not allow adding accounts.',
+            variant: 'destructive',
+            duration: 10000,
+          });
         } else {
           toast({
             title: 'Mail connected, calendar not connected',

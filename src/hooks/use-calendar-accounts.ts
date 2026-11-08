@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
 import { useBinActions } from '@/hooks/use-bin-actions';
 import { ACCOUNT_CHANGED, hasCode } from '@/lib/api-error';
+import { policiesQueryKey } from '@/lib/policies-api';
 import {
   browserTimeZone, calendarApi, calendarQueryKeys, invalidateCalendarQueries,
   type CalendarAccount, type CalendarCalendar, type CalendarProvider,
@@ -49,7 +50,11 @@ export function useCalendarAccounts() {
           : `${count !== undefined ? `${count} calendar${count === 1 ? '' : 's'}${data.server?.label ? ` on ${data.server.label}` : ''}. ` : ''}Events appear as the first sync finishes.`,
       });
     },
-    onError: failed('Could not add the calendar account'),
+    onError: error => {
+      // accounts.add refused at the final check (403): the rules are read again, so the add control greys out with its reason.
+      if (hasCode(error, 'POLICY_FORBIDS')) void client.invalidateQueries({ queryKey: policiesQueryKey });
+      failed('Could not add the calendar account')(error);
+    },
   });
 
   const deleteAccount = useMutation({

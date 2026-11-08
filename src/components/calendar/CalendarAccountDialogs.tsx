@@ -24,12 +24,15 @@ const emptyAccount: NewCalendarAccount = { provider: 'local', account_email: '',
 
 export function AddCalendarAccountDialog({ open, onOpenChange, data }: { open: boolean; onOpenChange: (open: boolean) => void; data: CalendarAccounts }) {
   const [form, setForm] = useState(emptyAccount);
-  useEffect(() => { if (open) setForm(emptyAccount); }, [open]);
+  const { reset } = data.createAccount;
+  useEffect(() => { if (open) { setForm(emptyAccount); reset(); } }, [open, reset]);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     data.createAccount.mutate(form, { onSuccess: () => onOpenChange(false) });
   };
   const pending = data.createAccount.isPending;
+  // A refusal (a rule, a login, a server not found) stays in the dialog with the typed values, for another try.
+  const refusal = data.createAccount.error?.message ?? null;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -78,6 +81,7 @@ export function AddCalendarAccountDialog({ open, onOpenChange, data }: { open: b
             <Label htmlFor="calendar-account-name">Display name</Label>
             <Input id="calendar-account-name" value={form.display_name} onChange={event => setForm(prev => ({ ...prev, display_name: event.target.value }))} />
           </div>
+          {refusal && !pending && <p role="alert" className="text-sm text-destructive">{refusal}</p>}
           <DialogFooter className="gap-2 sm:gap-0">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
             <Button type="submit" disabled={pending}>

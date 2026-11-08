@@ -6,6 +6,8 @@ import type { MailAccount, MailFolder } from '@/lib/mail-api';
 import { MailFolderDialogs } from '@/components/mail/MailFolderDialogs';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }));
+const state = vi.hoisted(() => ({ toast: vi.fn() }));
+vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }), clearToasts: vi.fn() }));
 
 const account = { id: 'acc-1', email_address: 'alex@example.test', is_active: true } as MailAccount;
 const folders: MailFolder[] = [
@@ -19,6 +21,7 @@ function show() {
   render(<QueryClientProvider client={client}>
     <MailFolderDialogs open onOpenChange={() => {}} activeMailAccountId="acc-1" folders={folders} accounts={[account]} selectedFolder="inbox" onSelectFolder={() => {}} />
   </QueryClientProvider>);
+  return client;
 }
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -47,5 +50,19 @@ describe('deleting a mail folder', () => {
     expect(action).toBeEnabled();
     fireEvent.click(action);
     await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/mail/folders/projects?server=1'));
+  });
+
+  // Deleted on one account's server, not yet on another's (409 FOLDER_PARTLY_DELETED): what went where, and the folders read again.
+  it('a folder deleted on some servers only says where it went and where it stays, and reads the folders again', async () => {
+    vi.mocked(api.delete).mockResolvedValue({ status: 409, error: 'The folder was deleted on some servers only.', code: 'FOLDER_PARTLY_DELETED',
+      details: { deleted_on: ['a@example.org'], remaining_on: ['b@example.org'], settled: true } });
+    const client = show();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Projects' }));
+    await screen.findByText('Delete Projects?');
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete on server and in UniHub' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Folder partly deleted', description: 'Deleted on a@example.org. Still on b@example.org: try again later.' })));
+    expect(invalidate).toHaveBeenCalled();
   });
 });

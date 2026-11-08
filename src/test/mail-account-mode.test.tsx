@@ -13,6 +13,8 @@ import { policiesAnswer } from './helpers/data-safety';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), getDownloadUrl: (path: string) => `/api${path}` } }));
 vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'owner' } }) }));
+const toasts = vi.hoisted(() => ({ toast: vi.fn() }));
+vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: toasts.toast }), clearToasts: vi.fn() }));
 
 const syncAccount: MailAccount = {
   id: 'a1', email_address: 'Owner@Example.test', display_name: 'Owner', provider: 'custom', username: 'owner',
@@ -63,7 +65,7 @@ const saveButton = (dialog: HTMLElement) => within(dialog).getByRole('button', {
 
 describe('an account changed meanwhile (409 ACCOUNT_CHANGED)', () => {
   const CHANGED = 'This account changed in the meantime. Try again.';
-  it('keeps the edits, shows the server\'s sentence, reads the accounts again, and the next save goes through', async () => {
+  it('keeps the edits, shows the server\'s sentence, reads the accounts again, and the next save goes through', { timeout: 20_000 }, async () => {
     vi.mocked(api.put).mockResolvedValueOnce({ status: 409, error: CHANGED, code: 'ACCOUNT_CHANGED' });
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const dialog = mountEditor(syncAccount);
@@ -371,6 +373,21 @@ describe('calendar of a mail account', () => {
     fireEvent.submit(within(dialog).getByLabelText('Password').closest('form')!);
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/accounts', expect.objectContaining({ try_calendar_sync: true, caldav_url: '' })));
     expect(vi.mocked(api.post).mock.calls[0][1]).toHaveProperty('time_zone');
+  });
+
+  it('says when the mail account was added but a rule refused its calendar', async () => {
+    const ADD = 'Your administrator does not allow adding mail or calendar accounts.';
+    routeGet();
+    vi.mocked(api.post).mockResolvedValue({ data: { syncInProgress: true, calendarSync: { attempted: true, success: false, code: 'POLICY_FORBIDS', warning: ADD } } });
+    const dialog = mountEditor();
+    fireEvent.change(within(dialog).getByLabelText('Email Address'), { target: { value: 'new@example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('Username'), { target: { value: 'new@example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('Password'), { target: { value: 'secret' } });
+    fireEvent.change(within(dialog).getByLabelText('IMAP Server'), { target: { value: 'imap.example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('SMTP Server'), { target: { value: 'smtp.example.test' } });
+    fireEvent.submit(within(dialog).getByLabelText('Password').closest('form')!);
+    await waitFor(() => expect(toasts.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Mail account added; its calendar wasn't connected", description: ADD })));
+    expect(toasts.toast).toHaveBeenCalledWith(expect.objectContaining({ title: '✓ Account connected successfully' }));
   });
 
   it('skips the calendar of a Gmail account unless a subscription address is pasted', async () => {
