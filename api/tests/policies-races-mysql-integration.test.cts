@@ -296,6 +296,25 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     assert.deepEqual((await pool.query<RowDataPacket[]>('SELECT delete_status FROM mail_server_messages WHERE id = ?', [queue]))[0].map(row => row.delete_status), ['pending'], 'it waits for the policy');
   });
 
+  await fromDefaults('S1: a Download import queues provider deletion on its own transaction, without a second connection', async () => {
+    // The real import and the real queueing helper: the policy is read on the
+    // import's connection (the pool guard fails this file on a second one).
+    const { persistImportedMessage } = require('../dist/src/services/mail-import') as typeof import('../src/services/mail-import');
+    const raw = Buffer.from('From: sender@example.test\r\nSubject: Synthetic import\r\n\r\nBody\r\n');
+    let emailId = '';
+    await persistImportedMessage({ db: pool, account: { user_id: users.alex, sync_mode: 'download' } as FixtureValue, accountId: account, folderName: 'INBOX', uid: 8, uidValidity: 1,
+      messageId: '<synthetic-import@example.test>', fullEmail: raw, parsed: { subject: 'Synthetic import', text: 'Body', attachments: [] },
+      fromAddress: 'sender@example.test', fromName: null, toAddresses: ['alex@example.test'], folder: 'inbox', isRead: false,
+      archiveRaw: async ({ emailId: id }) => {
+        emailId = id;
+        const file = write(path.join(root('raw'), users.alex, `${id}.eml`), raw);
+        return { rawStoragePath: file, rawSha256: crypto.createHash('sha256').update(raw).digest('hex'), rawBytes: raw.length, rawFormat: 'exact_octets', rawVerified: true };
+      },
+      enqueueDeletion: worker.recordMailServerMessageForDeletion });
+    assert.equal(await count('SELECT COUNT(*) AS count FROM emails WHERE id = ?', [emailId]), 1, 'the message is stored');
+    assert.equal(await count("SELECT COUNT(*) AS count FROM mail_server_messages WHERE email_id = ? AND delete_status = 'pending'", [emailId]), 1, 'and queued for deletion at the provider');
+  });
+
   await fromDefaults('R5: the administrator\'s deletion for a person does not happen without its activity-log entry', async () => {
     const reject = async (action: string) => pool.query(`CREATE TRIGGER policy_races_audit BEFORE INSERT ON audit_log FOR EACH ROW
       BEGIN IF NEW.action = '${action}' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'synthetic audit outage'; END IF; END`);
@@ -310,7 +329,7 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     } finally { await pool.query('DROP TRIGGER policy_races_audit'); }
     assert.equal(await count('SELECT COUNT(*) AS count FROM bin_items WHERE id = ?', [item]), 0, 'emptying, with its own entry, took it');
     assert.equal(await count("SELECT COUNT(*) AS count FROM audit_log WHERE action = 'admin.bin_emptied' AND target_user_id = ?", [users.alex]), 1);
-    // Written first where the change is another service's: no entry, nothing deleted.
+    // A backup's row and entry go in one transaction too.
     const job = crypto.randomUUID();
     await pool.execute("INSERT INTO data_export_jobs (id, user_id, status, phase, progress, created_at) VALUES (?, ?, 'ready', 'complete', 100, UTC_TIMESTAMP())", [job, users.alex]);
     await reject('admin.backup_deleted');
@@ -321,7 +340,7 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     await call(admin, 'DELETE', `/api/admin/users/${users.alex}/backups/${job}`, { current_password: password });
     const [[entry]] = await pool.query<RowDataPacket[]>("SELECT actor_id, target_user_id, details FROM audit_log WHERE action = 'admin.backup_deleted'");
     const details = typeof entry.details === 'string' ? JSON.parse(entry.details) : entry.details;
-    assert.deepEqual([entry.actor_id, entry.target_user_id, details], [users.admin, users.alex, { backup_job: job, outcome: 'done' }]);
+    assert.deepEqual([entry.actor_id, entry.target_user_id, details], [users.admin, users.alex, { backup_job: job }]);
   });
 
   // A mail account of alex's with a calendar connected from it.
@@ -367,5 +386,101 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     assert.equal((await call(alex, 'PUT', `/api/mail/accounts/${mail}/calendar`, { enabled: false })).calendar.enabled, false);
     assert.equal(await count('SELECT COUNT(*) AS count FROM calendar_accounts WHERE id = ?', [restored]), 0);
     await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+  });
+
+  await fromDefaults('Q1: the person\'s delete for good and emptying the bin stop when bin.delete is forbidden while they run', async () => {
+    const binned = async () => {
+      const id = crypto.randomUUID();
+      await pool.execute(`INSERT INTO bin_items (id, user_id, module, item_type, item_id, title, reason, payload, deleted_at, purge_after)
+        VALUES (?, ?, 'contacts', 'contact', ?, 'Synthetic contact', 'deleted', '{}', UTC_TIMESTAMP(), UTC_TIMESTAMP() + INTERVAL 30 DAY)`, [id, users.alex, crypto.randomUUID()]);
+      return id;
+    };
+    // Each request is held after its first read of the bin, past the request boundary.
+    for (const [what, request] of [
+      ['delete for good', (id: string) => alex.request('DELETE', `/api/bin/${id}`)],
+      ['empty the bin', () => alex.request('POST', '/api/bin/empty', { module: 'contacts' })],
+    ] as const) {
+      const item = await binned();
+      const pause = pauseAfter('SELECT * FROM bin_items WHERE user_id');
+      const pending = request(item);
+      try {
+        await pause.reached();
+        await setPolicies({ 'bin.delete': 'forbidden' });
+        pause.release();
+        const reply = await pending;
+        assert.deepEqual([what, reply.status, reply.body.code, (reply.body.details as FixtureValue)?.policy], [what, 403, 'POLICY_FORBIDS', 'bin.delete']);
+      } finally { pause.restore(); await pending; }
+      assert.equal(await count('SELECT COUNT(*) AS count FROM bin_items WHERE id = ?', [item]), 1, `${what}: the item stays`);
+      await setPolicies({ 'bin.delete': 'allowed' });
+      await pool.execute('DELETE FROM bin_items WHERE id = ?', [item]);
+    }
+  });
+
+  await fromDefaults('Q2: a backup minimum raised while the person\'s delete runs keeps the backup and its archive', async () => {
+    await setPolicies({ 'backup.server_retention_days': 30 });
+    const job = crypto.randomUUID();
+    const file = write(path.join(root('backups'), users.alex, `${job}.unihub-backup`), 'synthetic encrypted archive');
+    await pool.execute("INSERT INTO data_export_jobs (id, user_id, status, phase, progress, created_at, completed_at, file_path) VALUES (?, ?, 'ready', 'complete', 100, UTC_TIMESTAMP() - INTERVAL 40 DAY, UTC_TIMESTAMP() - INTERVAL 40 DAY, ?)", [job, users.alex, file]);
+    // Old enough for 30 days when it is first checked; 90 days are committed before it goes.
+    const pause = pauseAfter('AS deletable_from');
+    const pending = alex.request('DELETE', `/api/backup/jobs/${job}`);
+    try {
+      await pause.reached();
+      await setPolicies({ 'backup.server_retention_days': 90 });
+      pause.release();
+      const reply = await pending;
+      assert.deepEqual([reply.status, reply.body.code, (reply.body.details as FixtureValue)?.policy], [403, 'POLICY_FORBIDS', 'backup.server_retention_days']);
+    } finally { pause.restore(); await pending; }
+    assert.equal(await count('SELECT COUNT(*) AS count FROM data_export_jobs WHERE id = ?', [job]), 1);
+    assert.ok(fs.existsSync(file), 'its archive stays');
+    // The administrator's path may still delete it.
+    await call(admin, 'DELETE', `/api/admin/users/${users.alex}/backups/${job}`, { current_password: password });
+    assert.equal(fs.existsSync(file), false);
+  });
+
+  await fromDefaults('S2: resuming a restored calendar while its mail account is disconnected is refused and changes nothing', async () => {
+    const secret = encrypt('synthetic-calendar-password');
+    // The person's mail link, the person's own calendar route and the administrator's path.
+    for (const route of ['mail link', 'calendar account', 'administrator'] as const) {
+      const address = `resume-${route.replace(/ /g, '-')}@example.test`;
+      const mail = crypto.randomUUID(), calendar = crypto.randomUUID();
+      await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active, encrypted_password) VALUES (?, ?, ?, 'custom', 'download', FALSE, NULL)", [mail, users.alex, address]);
+      await pool.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, is_active, encrypted_password, provider_config) VALUES (?, ?, 'caldav', ?, FALSE, ?, '{"mailLinked":true}')`,
+        [calendar, users.alex, address, secret]);
+      const reply = route === 'mail link' ? await alex.request('PUT', `/api/mail/accounts/${mail}/calendar`, { enabled: true })
+        : route === 'calendar account' ? await alex.request('PUT', `/api/calendar/accounts/${calendar}`, { is_active: true })
+          : await admin.request('PUT', `/api/admin/users/${users.alex}/calendar-accounts/${calendar}`, { is_active: true, current_password: password });
+      assert.deepEqual([route, reply.status, reply.body.code], [route, 409, 'MAIL_ACCOUNT_DISCONNECTED'], JSON.stringify(reply.body));
+      const [[row]] = await pool.query<RowDataPacket[]>('SELECT mail_account_id, encrypted_password, is_active FROM calendar_accounts WHERE id = ?', [calendar]);
+      assert.deepEqual([route, row.mail_account_id, row.encrypted_password, Number(row.is_active)], [route, null, secret, 0], 'still unlinked, with its password');
+      if (route === 'administrator') {
+        // A refusal is recorded as its answer, not as proof that nothing changed.
+        const [[entry]] = await pool.query<RowDataPacket[]>("SELECT details FROM audit_log WHERE action = 'admin.calendar_account_changed' AND target_user_id = ? ORDER BY created_at DESC LIMIT 1", [users.alex]);
+        const details = typeof entry.details === 'string' ? JSON.parse(entry.details) : entry.details;
+        assert.deepEqual([details.outcome, details.status, details.code], ['unknown', 409, 'MAIL_ACCOUNT_DISCONNECTED']);
+      }
+      await pool.execute('DELETE FROM calendar_accounts WHERE id = ?', [calendar]);
+      await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+    }
+  });
+
+  await fromDefaults('Q3: clearing mail waits for a Mail restore that starts while it stops the accounts\' work', async () => {
+    for (const caller of ['person', 'administrator'] as const) {
+      const mail = crypto.randomUUID(), restore = crypto.randomUUID();
+      await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active) VALUES (?, ?, 'clear@example.test', 'custom', 'download', FALSE)", [mail, users.alex]);
+      const pause = pauseAfter('SELECT id FROM mail_accounts WHERE user_id = ? ORDER BY id');
+      const pending = caller === 'person' ? alex.request('POST', '/api/settings/clear-mail-accounts', {})
+        : admin.request('POST', `/api/admin/users/${users.alex}/clear/mail-accounts`, { current_password: password });
+      try {
+        await pause.reached();
+        await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', '["mail"]')`, [restore, users.alex]);
+        pause.release();
+        const reply = await pending;
+        assert.deepEqual([caller, reply.status, reply.body.code], [caller, 409, 'RESTORE_IN_PROGRESS'], JSON.stringify(reply.body));
+      } finally { pause.restore(); await pending; }
+      assert.equal(await count('SELECT COUNT(*) AS count FROM mail_accounts WHERE id = ?', [mail]), 1, `${caller}: the account stays`);
+      await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restore]);
+      await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+    }
   });
 });
