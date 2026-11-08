@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { ACCOUNT_CHANGED, ApiError, hasCode } from '@/lib/api-error';
+import { policiesQueryKey } from '@/lib/policies-api';
 import type { MailAccount } from '@/lib/mail-api';
 import { useToast } from '@/hooks/use-toast';
 import { browserTimeZone } from '@/lib/calendar-api';
@@ -67,7 +69,7 @@ export function useMailAccountEditor() {
       if (response.status === 409 && response.requiresHostTrustConfirmation) {
         throw createHostTrustError(response.error || 'Review mail server authenticity before continuing.', response.mailHostTrust);
       }
-      if (response.error) throw new Error(response.error);
+      if (response.error) throw new ApiError(response);
       return response.data ?? {};
     },
     onSuccess: (data) => {
@@ -97,6 +99,14 @@ export function useMailAccountEditor() {
             title: 'Calendar connected',
             description: `${count} calendar${count === 1 ? '' : 's'}${server ? ` on ${server}` : ''}. Events appear as the first sync finishes.`,
           });
+        } else if (data.calendarSync.code === 'POLICY_FORBIDS') {
+          // The mail account is in; a rule (accounts.add) refused the calendar at its final check.
+          toast({
+            title: "Mail account added; its calendar wasn't connected",
+            description: data.calendarSync.warning || 'Your administrator does not allow adding accounts.',
+            variant: 'destructive',
+            duration: 10000,
+          });
         } else {
           toast({
             title: 'Mail connected, calendar not connected',
@@ -115,6 +125,12 @@ export function useMailAccountEditor() {
         setPendingHostTrust({ mode: 'add', account: variables, trust: error.mailHostTrust! });
         return;
       }
+      // A rule set while the login was being tested (403 POLICY_FORBIDS naming the policy): the reason
+      // stays in the dialog and the rules are read again, so the form takes the forced value for the next try.
+      if (hasCode(error, 'POLICY_FORBIDS') && ['mail.mode.new_accounts', 'mail.provider_delete'].includes(String((error.details as { policy?: unknown } | undefined)?.policy))) {
+        void queryClient.invalidateQueries({ queryKey: policiesQueryKey });
+      }
+      setSaveError(error.message);
       toast({
         title: 'Failed to add mail account',
         description: error.message,
@@ -136,7 +152,7 @@ export function useMailAccountEditor() {
       if (response.status === 409 && response.requiresHostTrustConfirmation) {
         throw createHostTrustError(response.error || 'Review mail server authenticity before continuing.', response.mailHostTrust);
       }
-      if (response.error) throw new Error(response.error);
+      if (response.error) throw new ApiError(response);
       return response.data;
     },
     onSuccess: () => {
@@ -157,6 +173,8 @@ export function useMailAccountEditor() {
       // Keep every edit; show the reason next to the confirmation it needs.
       setSaveError(error.message);
       if (isConfirmationError(error)) setServerRequiresConfirmation(true);
+      // Changed meanwhile (409): nothing was written; the account and its calendar are read again, the edits stay.
+      if (hasCode(error, ACCOUNT_CHANGED)) { queryClient.invalidateQueries({ queryKey: ['mail-accounts'] }); queryClient.invalidateQueries({ queryKey: ['mail-calendar'] }); }
       toast({
         title: 'Failed to update account',
         description: error.message,

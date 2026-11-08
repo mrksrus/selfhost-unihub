@@ -8,6 +8,8 @@ import { lockedPolicies, policyForbids } from './settings';
 import { lockedUserModules } from './module-settings';
 import { lockedRestoreSections } from './restore-locks';
 import { sectionOf } from './access-policy';
+import { lockUnchanged } from './account-identity';
+import type { AccountSnapshot } from './account-identity';
 
 // The last check of every destructive step (F13): deleting for good,
 // clearing, removing or resetting an account, deleting a backup, erasing at
@@ -19,7 +21,11 @@ import { sectionOf } from './access-policy';
 // (current, whatever the transaction read before), and those locks are held
 // until it commits:
 //
-//   1. the step's own rows, in the step's own order (they come first);
+//   0. before any of them, the person's lock (person-lock.ts) where the
+//      step is a change of the person's accounts;
+//   1. the step's own rows, in the step's own order (they come first;
+//      accounts the step carries as `unchanged` are locked here, mail
+//      accounts before calendar accounts, by id);
 //   2. the rules revision row, shared, then the installation's policies;
 //   3. the person's module switches row, shared;
 //   4. the person's restore jobs (every row and the gap for a new one), shared.
@@ -41,6 +47,8 @@ interface FinalStep {
   background?: boolean;
   /** Refused while any restore of the person runs (deleting the account). */
   anyRestore?: boolean;
+  /** Accounts the step chose before it waited, still as it saw them (account-identity.ts): locked shared, first, by id. */
+  unchanged?: readonly AccountSnapshot[];
 }
 
 interface FinalStepAnswer {
@@ -52,7 +60,12 @@ const moduleOff = (module: string) => forbidden('MODULE_DISABLED', 'This module 
 const restoring = (module: string) => conflict('RESTORE_IN_PROGRESS', `Restore in progress for ${module}. This section is temporarily read-only.`);
 
 /** Throws POLICY_FORBIDS, MODULE_DISABLED or RESTORE_IN_PROGRESS when the step may not happen now. */
-async function assertFinalStep(connection: SqlExecutor, { userId, policies = [], actor = {}, modules = [], background = false, anyRestore = false }: FinalStep): Promise<FinalStepAnswer> {
+async function assertFinalStep(connection: SqlExecutor, { userId, policies = [], actor = {}, modules = [], background = false, anyRestore = false, unchanged = [] }: FinalStep): Promise<FinalStepAnswer> {
+  // Mail accounts before calendar accounts, as everywhere else; then by id.
+  const order = (snapshot: AccountSnapshot) => `${snapshot.kind === 'mail' ? 0 : 1}:${snapshot.id}`;
+  for (const snapshot of [...unchanged].sort((a, b) => (order(a) < order(b) ? -1 : order(a) > order(b) ? 1 : 0))) {
+    await lockUnchanged(connection, userId, snapshot, { lock: 'share' });
+  }
   const policy = await lockedPolicies(connection);
   if (!actor.adminId) {
     for (const key of policies) {
@@ -75,7 +88,7 @@ async function assertFinalStep(connection: SqlExecutor, { userId, policies = [],
   return { policy };
 }
 
-const REFUSALS = new Set(['POLICY_FORBIDS', 'MODULE_DISABLED', 'RESTORE_IN_PROGRESS']);
+const REFUSALS = new Set(['POLICY_FORBIDS', 'MODULE_DISABLED', 'RESTORE_IN_PROGRESS', 'ACCOUNT_CHANGED']);
 const isRefusal = (error: unknown) => error instanceof ApiError && REFUSALS.has(error.code);
 
 /**

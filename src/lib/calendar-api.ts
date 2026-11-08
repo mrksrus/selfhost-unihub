@@ -350,7 +350,7 @@ export const calendarApi = {
     default_calendar_color?: string;
   }): Promise<{ account: CalendarAccount; calendars?: CalendarCalendar[]; server?: { url: string; label: string }; hint?: string | null }> {
     const response = await api.post<{ account: CalendarAccount; calendars?: CalendarCalendar[]; server?: { url: string; label: string }; hint?: string | null }>('/calendar/accounts', payload);
-    if (response.error) throw new Error(response.error);
+    if (response.error) throw new ApiError(response);
     if (!response.data?.account) throw new Error('Calendar account response missing');
     return response.data;
   },
@@ -384,14 +384,14 @@ export const calendarApi = {
     password: string;
   }>): Promise<CalendarAccount> {
     const response = await api.put<{ account: CalendarAccount }>(`/calendar/accounts/${id}`, payload);
-    if (response.error) throw new Error(response.error);
+    if (response.error) throw new ApiError(response);
     if (!response.data?.account) throw new Error('Calendar account response missing');
     return response.data.account;
   },
 
   async deleteAccount(id: string): Promise<void> {
     const response = await api.delete(`/calendar/accounts/${id}`);
-    if (response.error) throw new Error(response.error);
+    if (response.error) throw new ApiError(response);
   },
 
   async fetchCalendars(signal?: AbortSignal): Promise<CalendarCalendar[]> {

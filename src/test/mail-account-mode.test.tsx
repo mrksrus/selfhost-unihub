@@ -8,9 +8,13 @@ import { useMailAccountEditor } from '@/hooks/use-mail-account-editor';
 import { api } from '@/lib/api';
 import type { MailAccount, MailModeImpact } from '@/lib/mail-api';
 import { setOfflineMode } from '@/lib/offline';
+import { AuthContext, type AuthContextType } from '@/contexts/auth-context';
+import { policiesAnswer } from './helpers/data-safety';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), getDownloadUrl: (path: string) => `/api${path}` } }));
 vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'owner' } }) }));
+const toasts = vi.hoisted(() => ({ toast: vi.fn() }));
+vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: toasts.toast }), clearToasts: vi.fn() }));
 
 const syncAccount: MailAccount = {
   id: 'a1', email_address: 'Owner@Example.test', display_name: 'Owner', provider: 'custom', username: 'owner',
@@ -58,6 +62,68 @@ const chooseWindow = (dialog: HTMLElement, label: string, option: string) => {
 };
 const impactCalls = () => vi.mocked(api.get).mock.calls.map(([endpoint]) => endpoint).filter(endpoint => endpoint.includes('/mode-impact'));
 const saveButton = (dialog: HTMLElement) => within(dialog).getByRole('button', { name: 'Save Changes' });
+
+describe('an account changed meanwhile (409 ACCOUNT_CHANGED)', () => {
+  const CHANGED = 'This account changed in the meantime. Try again.';
+  it('keeps the edits, shows the server\'s sentence, reads the accounts again, and the next save goes through', { timeout: 20_000 }, async () => {
+    vi.mocked(api.put).mockResolvedValueOnce({ status: 409, error: CHANGED, code: 'ACCOUNT_CHANGED' });
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const dialog = mountEditor(syncAccount);
+    chooseWindow(dialog, 'Trash & spam: keep the last', '2 weeks');
+    expect(await within(dialog).findByText('Nothing will be removed from UniHub.')).toBeInTheDocument();
+    fireEvent.click(saveButton(dialog));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(CHANGED);
+    expect(within(dialog).getByLabelText('Trash & spam: keep the last')).toHaveTextContent('2 weeks');
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['mail-accounts'] });
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    fireEvent.click(saveButton(dialog));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2));
+    expect(api.put).toHaveBeenLastCalledWith('/mail/accounts/a1', expect.objectContaining({ trash_window_days: 14 }));
+  });
+});
+
+describe('a rule set while the login was being tested (403 POLICY_FORBIDS)', () => {
+  const FORCED = 'New mail accounts use Download mode and delete mail at the provider, as your administrator set.';
+  const REQUIRED = 'Your administrator requires mail to be deleted at the provider once it is downloaded.';
+  const fill = (dialog: HTMLElement) => {
+    fireEvent.change(within(dialog).getByLabelText('Email Address'), { target: { value: 'new@example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('Username'), { target: { value: 'new@example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('Password'), { target: { value: 'secret' } });
+    fireEvent.change(within(dialog).getByLabelText('IMAP Server'), { target: { value: 'imap.example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('SMTP Server'), { target: { value: 'smtp.example.test' } });
+  };
+  it('shows the reason, reads the rules again so the form takes the forced values, and the next try succeeds with them', { timeout: 20_000 }, async () => {
+    let policies = policiesAnswer();
+    vi.mocked(api.get).mockImplementation(async (endpoint: string) => {
+      if (endpoint === '/policies/effective') return policies;
+      if (endpoint === '/modules') return { data: { modules: [{ id: 'calendar', enabled: true, visible: true }] } };
+      return { data: impact() };
+    });
+    vi.mocked(api.post).mockResolvedValueOnce({ status: 403, error: FORCED, code: 'POLICY_FORBIDS', details: { policy: 'mail.mode.new_accounts', reason: FORCED } });
+    const session = { user: { id: 'owner' }, isOffline: false } as unknown as AuthContextType;
+    render(<AuthContext.Provider value={session}><QueryClientProvider client={client}><EditorHarness /></QueryClientProvider></AuthContext.Provider>);
+    fireEvent.click(screen.getByRole('button', { name: 'Add account' }));
+    const dialog = screen.getByRole('dialog');
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/policies/effective', expect.anything()));
+    fill(dialog);
+    const syncRadio = within(dialog).getByDisplayValue('sync');
+    fireEvent.click(syncRadio);
+    expect(syncRadio).toBeChecked();
+    // The administrator forces Download with provider deletion while the login is being tested.
+    policies = policiesAnswer({ 'mail.mode.new_accounts': { value: 'download_delete', allowed: true, reason: FORCED }, 'mail.provider_delete': { value: 'required', allowed: true, reason: REQUIRED } });
+    fireEvent.submit(within(dialog).getByLabelText('Password').closest('form')!);
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(FORCED);
+    await waitFor(() => expect(within(dialog).getByDisplayValue('download')).toBeChecked());
+    expect(within(dialog).getByDisplayValue('sync')).toBeDisabled();
+    const deleteBox = within(dialog).getByRole('checkbox', { name: /Delete emails on server/ });
+    await waitFor(() => expect(deleteBox).toBeChecked());
+    expect(deleteBox).toBeDisabled();
+    expect(within(dialog).getByLabelText('Email Address')).toHaveValue('new@example.test');
+    vi.mocked(api.post).mockResolvedValueOnce({ data: { syncInProgress: true } });
+    fireEvent.submit(within(dialog).getByLabelText('Password').closest('form')!);
+    await waitFor(() => expect(api.post).toHaveBeenLastCalledWith('/mail/accounts', expect.objectContaining({ sync_mode: 'download', delete_emails_on_server: true, email_address: 'new@example.test' })));
+  });
+});
 
 describe('pre-save impact for an existing account', () => {
   it('fetches the impact of a window change and requires the typed address before saving', { timeout: 20_000 }, async () => {
@@ -307,6 +373,21 @@ describe('calendar of a mail account', () => {
     fireEvent.submit(within(dialog).getByLabelText('Password').closest('form')!);
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/accounts', expect.objectContaining({ try_calendar_sync: true, caldav_url: '' })));
     expect(vi.mocked(api.post).mock.calls[0][1]).toHaveProperty('time_zone');
+  });
+
+  it('says when the mail account was added but a rule refused its calendar', async () => {
+    const ADD = 'Your administrator does not allow adding mail or calendar accounts.';
+    routeGet();
+    vi.mocked(api.post).mockResolvedValue({ data: { syncInProgress: true, calendarSync: { attempted: true, success: false, code: 'POLICY_FORBIDS', warning: ADD } } });
+    const dialog = mountEditor();
+    fireEvent.change(within(dialog).getByLabelText('Email Address'), { target: { value: 'new@example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('Username'), { target: { value: 'new@example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('Password'), { target: { value: 'secret' } });
+    fireEvent.change(within(dialog).getByLabelText('IMAP Server'), { target: { value: 'imap.example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('SMTP Server'), { target: { value: 'smtp.example.test' } });
+    fireEvent.submit(within(dialog).getByLabelText('Password').closest('form')!);
+    await waitFor(() => expect(toasts.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Mail account added; its calendar wasn't connected", description: ADD })));
+    expect(toasts.toast).toHaveBeenCalledWith(expect.objectContaining({ title: '✓ Account connected successfully' }));
   });
 
   it('skips the calendar of a Gmail account unless a subscription address is pasted', async () => {

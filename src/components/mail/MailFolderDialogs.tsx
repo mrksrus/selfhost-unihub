@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Edit, Plus, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { ACCOUNT_CHANGED, ApiError, hasCode } from '@/lib/api-error';
 import { invalidateMailQueries, type MailAccount, type MailFolder } from '@/lib/mail-api';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
@@ -79,7 +80,7 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
   const deleteFolder = useMutation({
     mutationFn: async ({ slug, server }: { slug: string; server: boolean }) => {
       const response = await api.delete<{ deletedMessages: number; movedMessages: number }>(`/mail/folders/${encodeURIComponent(slug)}${server ? '?server=1' : ''}`);
-      if (response.error) throw new Error(response.error);
+      if (response.error) throw new ApiError(response);
       return { slug, server, deleted: response.data?.deletedMessages ?? 0, moved: response.data?.movedMessages ?? 0 };
     },
     onSuccess: ({ slug, server, deleted, moved }) => {
@@ -92,6 +93,18 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
       toast({ title: server ? 'Folder deleted on the server' : 'Folder deleted', description: parts.join(' ') });
     },
     onError: (error: Error) => {
+      // Deleted on some servers only (409): what went where, in plain words; folders are read again either way.
+      if (hasCode(error, 'FOLDER_PARTLY_DELETED')) {
+        void invalidateMailQueries(queryClient);
+        const details = (error.details ?? {}) as { deleted_on?: string[]; remaining_on?: string[]; settled?: boolean };
+        const gone = details.deleted_on?.length ? `Deleted on ${details.deleted_on.join(', ')}.` : '';
+        const left = details.remaining_on?.length ? `Still on ${details.remaining_on.join(', ')}: try again later.` : '';
+        const copy = details.settled === false ? 'UniHub updates its copy at the next folder check.' : '';
+        toast({ title: 'Folder partly deleted', description: [gone, left, copy].filter(Boolean).join(' ') || error.message, variant: 'destructive', duration: 10000 });
+        return;
+      }
+      // The account changed meanwhile (409): nothing was deleted; folders and accounts are read again.
+      if (hasCode(error, ACCOUNT_CHANGED)) void invalidateMailQueries(queryClient);
       toast({ title: 'Failed to delete folder', description: error.message, variant: 'destructive' });
     },
   });

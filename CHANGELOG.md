@@ -151,6 +151,23 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   saw.** When another change got there first, for example another mail
   account took the calendar over, it is refused with "The calendar of this
   mail account changed meanwhile. Try again." and nothing is removed.
+- **Your account changes take turns.** A second change to your mail or
+  calendar accounts, from another tab or device, waits for the first instead
+  of running into it, and starts from what the first left. When an account
+  changed anyway while you edited it, the change is refused with "This
+  account changed in the meantime. Try again.", writes nothing, and keeps
+  what you typed while the account is read again.
+- **A folder deleted on only some of its servers says where.** When a
+  folder on several mail accounts is deleted and one server fails after
+  others succeeded, UniHub stops, says on which accounts it went and on
+  which it is still there, and never deletes the gone copies again.
+- **Adding an account under a rule set during its sign-in test.** When an
+  administrator changes a rule while UniHub tests the sign-in of a new mail
+  or calendar account, adding it is refused with the rule's reason and your
+  entries stay in the dialog; for a mail mode or a provider deletion the
+  rule requires, the dialog then fills in and locks the required values and
+  the next try succeeds. A new mail account whose calendar a rule refused
+  is added and says that its calendar wasn't connected, and why.
 - **Restoring an older backup** brings back only what a new backup would
   hold and says what it left out. The ToDo state, subtasks and replies of its
   synced items wait for the calendar's next sync and are applied to the item

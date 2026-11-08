@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { ACCOUNT_CHANGED, ApiError, hasCode } from '@/lib/api-error';
 import { invalidateMailQueries, mailQueryKeys } from '@/lib/mail-api';
 import { useToast } from '@/hooks/use-toast';
 import type { MailPurgePreview } from '@/components/mail/mail-page-model';
@@ -26,7 +27,7 @@ export function useMailAccountRemoval(onPurged: () => void) {
   const deleteAccount = useMutation({
     mutationFn: async (id: string) => {
       const response = await api.delete(`/mail/accounts/${encodeURIComponent(id)}`);
-      if (response.error) throw new Error(response.error);
+      if (response.error) throw new ApiError(response);
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
@@ -35,6 +36,8 @@ export function useMailAccountRemoval(onPurged: () => void) {
       toast({ title: 'Mail account disconnected', description: 'Your local mail is retained. Reconnect in account settings with credentials.' });
     },
     onError: (error: Error) => {
+      // Changed meanwhile (409): nothing was written; the list is read again.
+      if (hasCode(error, ACCOUNT_CHANGED)) void queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
       toast({ title: 'Failed to disconnect account', description: error.message, variant: 'destructive' });
     },
   });
@@ -66,7 +69,7 @@ export function useMailAccountRemoval(onPurged: () => void) {
     // The server checks the typed address too.
     mutationFn: async ({ id, disconnect, address }: { id: string; disconnect: boolean; address: string }) => {
       const response = await api.delete(`/mail/accounts/${encodeURIComponent(id)}?purge=true${disconnect ? '&disconnect=true' : ''}&confirm_purge=${encodeURIComponent(address.trim())}`);
-      if (response.error) throw new Error(response.error);
+      if (response.error) throw new ApiError(response);
     },
     onSuccess: (_result, { disconnect }) => {
       void invalidateMailQueries(queryClient);

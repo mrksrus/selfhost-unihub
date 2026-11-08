@@ -28,6 +28,7 @@ import { controlPool } from './side-pools';
 import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
 import { attachmentsRoot, rawRoot } from './mail-storage';
 import { isAnyDraftSendRunning } from './mail-drafts';
+import { withPersonLock } from './person-lock';
 import {
   isAnyMailAccountSyncRunning,
   isAnyMailServerDeleteRunning,
@@ -540,7 +541,9 @@ async function createUploadedRestoreJob(userId: string, sourcePath: string, opti
   }
 
   try {
-    await db.execute(
+    // Admitted under the person's lock (person-lock.ts), only for the write:
+    // a change of the person's accounts in progress finishes first.
+    await withPersonLock(userId, () => db.execute(
       `INSERT INTO backup_restore_jobs
          (id, user_id, source_type, status, operation, phase, progress, requested_sections,
           conflict_mode, calendar_mode, credentials_mode, archive_path, archive_size,
@@ -561,7 +564,7 @@ async function createUploadedRestoreJob(userId: string, sourcePath: string, opti
         encrypted ? 1 : 0,
         new Date(Date.now() + (UPLOAD_RETENTION_DAYS * 24 * 60 * 60 * 1000)),
       ]
-    );
+    ));
   } catch (error) {
     await fs.promises.rm(targetPath, { force: true }).catch(() => {});
     throw error;
@@ -574,8 +577,9 @@ async function createRestoreFromExport(userId: string, exportJobId: string | nul
   // Admission (docs/AUTH_ADMIN_SETTINGS.md, "Lock order"): the backup's row
   // first, shared, so its deletion either finished (not found) or waits and
   // then sees this restore; then the person's restores, a current read.
+  // Under the person's lock (person-lock.ts), for the admission only.
   type Admitted = { error: string; status: number } | { jobId: string };
-  const admitted = await withTransaction(async (connection): Promise<Admitted> => {
+  const admitted = await withPersonLock(userId, () => withTransaction(async (connection): Promise<Admitted> => {
     const [[exportJob]] = await connection.execute<RestoreJob[]>(
       'SELECT * FROM data_export_jobs WHERE id = ? AND user_id = ? LOCK IN SHARE MODE',
       [exportJobId, userId]
@@ -612,7 +616,7 @@ async function createRestoreFromExport(userId: string, exportJobId: string | nul
       ]
     );
     return { jobId };
-  });
+  }));
   if (!('jobId' in admitted)) return { error: admitted.error, status: admitted.status };
   scheduleRestoreWorker();
   return { job: serializeRestoreJob((await getRestoreJob(userId, admitted.jobId))!) };
@@ -670,8 +674,9 @@ async function unlockRestoreJob(userId: string, jobId: string | null, password?:
   // The job leaves awaiting_password only while it still waits, with its
   // archive, before its deadline; the key is stored in the same transaction,
   // so a refused or expired unlock leaves no key behind. The sweep's write on
-  // the row waits for it and then finds the job busy.
-  const unlocked = await withTransaction(async connection => {
+  // the row waits for it and then finds the job busy. Admitted under the
+  // person's lock (person-lock.ts), for the write only.
+  const unlocked = await withPersonLock(userId, () => withTransaction(async connection => {
     await lockJobRow(connection, userId, jobId);
     const [moved] = await connection.execute<ResultSetHeader>(
       `UPDATE backup_restore_jobs
@@ -701,7 +706,7 @@ async function unlockRestoreJob(userId: string, jobId: string | null, password?:
       ]
     );
     return true;
-  });
+  }));
   if (!unlocked) return refusedTransition(userId, jobId, 'Restore job is not waiting for a password');
   scheduleRestoreWorker();
   return { job: serializeRestoreJob((await getRestoreJob(userId, jobId))!) };
@@ -715,8 +720,9 @@ async function startRestoreJob(userId: string, jobId: string | null): Promise<Jo
   // the sweep removed, or one past its deadline, answers 410: the deadline
   // is compared by statements that run after the row lock (NOT_EXPIRED_SQL),
   // so a wait for it carries no old clock, and the sweep's write on the row
-  // waits and then finds the job busy.
-  const admitted = await withTransaction(async (connection): Promise<JobTransition | { started: true }> => {
+  // waits and then finds the job busy. Under the person's lock
+  // (person-lock.ts), for the admission only.
+  const admitted = await withPersonLock(userId, () => withTransaction(async (connection): Promise<JobTransition | { started: true }> => {
     const [[job]] = await connection.execute<RestoreJob[]>(
       'SELECT * FROM backup_restore_jobs WHERE id = ? AND user_id = ? FOR UPDATE',
       [jobId, userId]
@@ -746,7 +752,7 @@ async function startRestoreJob(userId: string, jobId: string | null): Promise<Jo
     // Under the row lock only the deadline can have moved since the read.
     if (moved.affectedRows !== 1) return expiredUpload();
     return { started: true };
-  });
+  }));
   if (!('started' in admitted)) return admitted;
   scheduleRestoreWorker();
   return { job: serializeRestoreJob((await getRestoreJob(userId, jobId))!) };

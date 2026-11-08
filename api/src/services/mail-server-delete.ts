@@ -2,6 +2,7 @@ import type { Pool, RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, ApiError } from '../types';
 import type { ProtocolConnection, ProtocolError } from '../types/imap-protocol';
 import { withMailAccountLock } from './mail-account-lock';
+import { withPersonLock, isPersonLockBusy } from './person-lock';
 import crypto from 'crypto';
 import * as imapClient from './mail-imap-client';
 import { guardImapConnection, runGuardedImap, closeImapConnection } from './mail-imap-guard';
@@ -347,6 +348,7 @@ async function processMailServerDeletionForAccountUnlocked(accountId: string, { 
     let stopped = false;
 
     const { whileFinalStepAllows } = require('./final-step') as typeof import('./final-step');
+    const chosen = (require('./account-identity') as typeof import('./account-identity')).accountSnapshot('mail', account as RowDataPacket & { id: string });
     for (const message of messages) {
       if (!(await isMailServerDeletionStillEnabled(normalizedAccountId))) {
         stopped = true;
@@ -421,8 +423,17 @@ async function processMailServerDeletionForAccountUnlocked(accountId: string, { 
         // or its background work switched off or a Mail restore admitted
         // during the reads above, it stops here; any of them begun now
         // waits until the provider answered.
-        if (!await whileFinalStepAllows({ userId: account.user_id, policies: ['mail.provider_delete'], modules: ['mail'], background: true },
-          () => deleteImapUid(connection!, uid))) { stopped = true; break; }
+        // And still the account as this pass read it: deletion turned off,
+        // or its login or server changed, stops the pass (account-identity.ts).
+        // Not while a change of the person's accounts runs (person-lock.ts):
+        // this pass holds the account's lock, which such a change may wait
+        // for, so it does not queue behind it but stops, and runs again later.
+        const erased = await withPersonLock(account.user_id, () => whileFinalStepAllows({ userId: account.user_id, policies: ['mail.provider_delete'], modules: ['mail'], background: true, unchanged: [chosen] },
+          () => deleteImapUid(connection!, uid)), { wait: false }).catch((error: unknown) => {
+          if (isPersonLockBusy(error)) return false;
+          throw error;
+        });
+        if (!erased) { stopped = true; break; }
         await markMailServerMessageDeleteStatus({ id: message.id, status: 'deleted', error: null });
         deleted++;
         processed++;

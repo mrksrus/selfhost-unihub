@@ -252,6 +252,7 @@ export function MailAccountDialog({ editor, trigger, touch = false }: { editor: 
             />
             {editor.editingAccount && <MailModeImpactPanel account={editor.editingAccount} review={editor.modeReview}
               typedAddress={editor.typedAddress} onTypedAddressChange={editor.setTypedAddress} saveError={editor.saveError} />}
+            {!editor.editingAccount && editor.saveError && <p role="alert" className="text-sm text-destructive">{editor.saveError}</p>}
             {editor.editingAccount && editor.modeReview.blocked && !editor.modeReview.loading && <p id="mail-account-save-hint" className="text-xs text-muted-foreground">
               Type the account address above to save.
             </p>}

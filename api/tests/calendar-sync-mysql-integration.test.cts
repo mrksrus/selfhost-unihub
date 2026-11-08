@@ -473,7 +473,7 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       let readded;
       try {
         readded = await calendarAccounts.connectCalDavAccount({ userId, emailAddress: 'archive@example.test', username: 'second-login',
-          password: 'synthetic-mail-password', imapHost: 'imap.example.test', mailAccountId: readdedMail });
+          password: 'synthetic-mail-password', imapHost: 'imap.example.test', mailAccountId: readdedMail }, { actor: {}, policies: ['accounts.add'] });
         await new Promise(resolve => setImmediate(resolve));
       } finally { calendarSync.syncCalendarAccountInBackground = backgroundSync; }
       assert.equal(readded.account.id, restoredLogin);
