@@ -122,6 +122,27 @@ describe('policy greying', () => {
     expect(onModeChange).not.toHaveBeenCalled();
   });
 
+  // A restored calendar account is shown as the mail account's calendar before the guarded change links it (link_pending).
+  it('says when the calendar shown is a restored one that links on the next change', async () => {
+    const account = { id: 'mail-a', email_address: 'a@example.com', provider: 'custom', is_active: true } as MailAccount;
+    const PENDING = 'Restored from a backup; it links to this mail account on the next change or sync.';
+    let link = { enabled: true, link_pending: true, account: { id: 'cal-a', provider: 'caldav', is_active: true, sync_status: 'ok', last_synced_at: null, provider_config: {} }, calendars: [], event_count: 3, provider: null };
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === '/policies/effective') return policiesAnswer();
+      if (path === '/mail/accounts/mail-a/calendar') return { data: { calendar: link } };
+      throw new Error(`unexpected GET ${path}`);
+    });
+    const pending = mountSignedIn(<MailCalendarSettings account={account} />);
+    expect(await screen.findByText(PENDING)).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Calendar' })).toBeChecked();
+    pending.unmount();
+    link = { ...link, link_pending: false };
+    mountSignedIn(<MailCalendarSettings account={account} />);
+    await screen.findByRole('switch', { name: 'Calendar' });
+    await waitFor(() => expect(screen.getByText('Synced with this account. Changes are applied right away.')).toBeInTheDocument());
+    expect(screen.queryByText(PENDING)).not.toBeInTheDocument();
+  });
+
   // The link changed under the request (another device, a sync): the server wrote nothing (409) and the page reads the link again.
   it('a calendar change the server refuses as changed meanwhile says so and reads the link again', { timeout: 20_000 }, async () => {
     const account = { id: 'mail-a', email_address: 'a@example.com', provider: 'custom', is_active: true } as MailAccount;

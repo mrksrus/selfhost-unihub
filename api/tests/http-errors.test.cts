@@ -11,6 +11,9 @@ test('clientError forwards only 4xx errors meant for the client; driver and file
     { error: 'Failed to update event', status: 500 });
   assert.deepEqual(clientError(Object.assign(new Error("ENOENT: no such file or directory, open '/app/uploads/recordings/x.webm'"), { code: 'ENOENT', errno: -2 }), 'Failed to delete recording'),
     { error: 'Failed to delete recording', status: 500 });
+  // A change that waited too long for another one's rows was rolled back: a 503 to send again, without the driver's text.
+  assert.deepEqual(clientError(Object.assign(new Error('Lock wait timeout exceeded; try restarting transaction'), { code: 'ER_LOCK_WAIT_TIMEOUT', errno: 1205, sqlState: 'HY000' }), 'Failed to delete backup job'),
+    { error: 'Another change is in progress. Try again in a moment.', status: 503, code: 'CHANGE_IN_PROGRESS' });
   // A status outside 4xx, a non-error value and an error whose text is internal all stay generic.
   assert.deepEqual(clientError(Object.assign(new Error('upstream'), { status: 502 }), 'Failed'), { error: 'Failed', status: 500 });
   assert.deepEqual(clientError(null, 'Failed'), { error: 'Failed', status: 500 });

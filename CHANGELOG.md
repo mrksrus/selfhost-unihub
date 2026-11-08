@@ -59,7 +59,16 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
 - **A rule shows where it applies.** A control a rule forbids stays where it
   is, greyed out, with the reason in plain words; a backup younger than the
   minimum says from which date it can be deleted. The server refuses the
-  action anyway, also when a rule changes while a deletion waits.
+  action anyway, and every refusal says why.
+- **Deleting checks once more as it happens.** Every step that deletes,
+  clears, removes an account or erases mail at the provider asks again at
+  the moment it acts whether the rules allow it, whether its page is
+  switched on and whether a restore of it is running; a rule changed, a page
+  switched off or a restore started while it waited stops it before
+  anything is deleted. Emptying the bin stopped part-way says how many items
+  already went. When another change holds what the step needs for too long,
+  it answers "Another change is in progress. Try again in a moment." and
+  changes nothing.
 - **Everyone is told when the rules change.** After an administrator changes
   a rule, everyone sees the rules in force once at the next start and
   confirms them with OK; closed without OK, the notice comes back at the next
@@ -135,6 +144,9 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   and the backups on this server. The
   review of a backup to restore lists the same, with the server's notes, also
   for old archives.
+- **A restored calendar of a mail account links to it on the next change or
+  sync,** and the mail account's calendar setting says so until then;
+  opening the setting changes nothing.
 - **Restoring an older backup** brings back only what a new backup would
   hold and says what it left out. The ToDo state, subtasks and replies of its
   synced items wait for the calendar's next sync and are applied to the item

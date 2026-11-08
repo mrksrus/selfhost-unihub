@@ -60,7 +60,7 @@ test(`server deletion worker: ${scenario}`, async (t) => {
   let modulePaused = scenario === 'module-paused';
   const statusUpdates: FixtureValue[] = [];
   const imapCalls: FixtureValue[] = [];
-  // Whether the rules revision is held (settings.ts whilePolicyAllows) when each IMAP command is sent.
+  // Whether the rules revision is held (final-step.ts whileFinalStepAllows) when each IMAP command is sent.
   let rulesHeld = false;
   const heldDuring: boolean[] = [];
   const db = {

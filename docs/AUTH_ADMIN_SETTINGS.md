@@ -551,15 +551,61 @@ younger than `backup.server_retention_days`, or one still being made, is
 refused with the date from which it can be deleted
 (`services/backup-policy.ts`); a failed or cancelled one can go at once.
 
-A step that deletes or erases after waiting asks again when it acts, under the
-rules revision row: an administrator's save locks that row first, so it
-commits either before the step reads the rules or after the step. Deletion at
-the provider asks before queueing a message and holds the row while it sends
-the erase; the bin's purge reads its minimum after its row locks; a person's
-delete for good and each batch of emptying the bin ask for `bin.delete` after
-theirs (refused between batches, emptying answers `403 POLICY_FORBIDS` with
-the number already deleted as `details.deleted`); deleting a backup reads its minimum after locking the backup's row,
-in the transaction that deletes the row (its file goes after the commit).
+**The final check.** The boundary's answer, and a service's early checks, can
+be older than what holds when the step acts: an administrator's save, a module
+switched off, a restore admitted while the step waited. So every destructive
+step asks once more in the transaction that deletes, after its own row locks
+and on that transaction's connection, with locking (current) reads held until
+it commits (`services/final-step.ts`): the policies of its route (an
+administrator's actor passes them), and the switch and restore lock of every
+module it writes. A refusal is the same `403 POLICY_FORBIDS`, `403
+MODULE_DISABLED` or `409 RESTORE_IN_PROGRESS` as at the boundary, and nothing
+is deleted. A provider command (erasing a message, deleting a folder at the
+provider, deleting one date of a repeating server event, which is gone for
+good and so needs `bin.delete`) runs on a connection of its own that holds
+the check's locks while the command is sent, so nothing it checked changes
+before the provider answered; the erase worker skips a refused message and
+stops. Linking a restored calendar to its mail account, which drops the
+calendar's own password, and connecting a calendar account, together with
+removing the one a new address replaces, each commit in one transaction
+after Calendar's switch and restore lock (and, for a mail account's
+calendar, its policies) are asked again: a refusal changes neither account.
+The bin's purge skips a module that is off or being restored. Emptying the bin is refused
+between batches with `403 POLICY_FORBIDS` and the number already deleted as
+`details.deleted`. A backup younger than its minimum is refused under the
+backup's row, its file goes after the commit.
+
+**Lock order.** Every destructive step, and everything that changes what it
+checks, takes its locks in this order:
+
+1. the step's own rows where it locks them before it changes them (the
+   backup, the bin items, the accounts, their messages and linked
+   calendars, the calendar accounts a connection takes over or replaces,
+   the person's row), in the step's order; a bulk clear of contacts or
+   calendars and the purge of merge records lock their rows with the
+   DELETE or UPDATE that follows the check, which holds its locks to
+   commit all the same;
+2. the rules revision row (`system_settings` `policy_revision`), shared, then
+   the installation's policies; an administrator's save locks it first,
+   exclusively;
+3. the person's module switches row (`user_settings` `module_preferences`),
+   shared; a switch writes it;
+4. the person's restore jobs, every row and the gap for a new one, shared.
+
+A step or a save that waits longer than the database allows (MariaDB's lock
+wait timeout) is rolled back and answers `503 CHANGE_IN_PROGRESS`, "Another
+change is in progress. Try again in a moment."; nothing is retried for it,
+least of all a provider command, which is never sent before its check holds.
+
+Admitting a restore locks the backup's row first when it is made from one
+(shared), then its own job row, then reads the person's other jobs as current
+rows: creating one from a backup, starting or retrying it. Unlocking an upload,
+which only sends it to validation, locks its job row. Starting and unlocking
+compare an upload's seven-day deadline in statements that run after the job's
+row lock, so a wait for the lock cannot carry an earlier clock past it.
+Deleting a backup takes the backup's row, then reads the restores made from it
+as current rows and answers `409` while one is in use. Each therefore either
+commits before the step reads it or waits until the step has committed.
 
 **The bin's minimum.** While `bin.delete` is forbidden, the bin keeps items at
 least as long as the administrator's minimum (`30`, `90` days or `forever`,

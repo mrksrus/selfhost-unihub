@@ -952,11 +952,16 @@ async function deleteRecording(userId: string, recordingId: string) {
  * each file as a recording's delete removes it (removeRecordingName).
  */
 // inTransaction: written with the deletion (data-clear.ts, the administrator's entry).
-async function clearRecordings(userId: string, inTransaction?: (connection: SqlExecutor, deleted: number) => Promise<unknown>) {
+async function clearRecordings(userId: string, { authorize, record }: {
+  /** The final check (final-step.ts), under the recordings' rows. */
+  authorize?: (connection: SqlExecutor) => Promise<unknown>;
+  record?: (connection: SqlExecutor, deleted: number) => Promise<unknown>;
+} = {}) {
   const removed = await withTransaction(async connection => {
     const [rows] = await connection.execute<RowDataPacket[]>('SELECT id, storage_path FROM recordings WHERE user_id = ? FOR UPDATE', [userId]);
+    if (authorize) await authorize(connection);
     if (rows.length) await connection.execute('DELETE FROM recordings WHERE user_id = ?', [userId]);
-    if (inTransaction) await inTransaction(connection, rows.length);
+    if (record) await record(connection, rows.length);
     return rows;
   });
   for (const row of removed) {

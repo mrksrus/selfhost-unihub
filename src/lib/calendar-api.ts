@@ -127,6 +127,8 @@ export interface MailCalendarLink {
   calendars: Pick<CalendarCalendar, 'id' | 'name' | 'color' | 'read_only' | 'is_visible'>[];
   event_count: number;
   provider: { id: string; label: string; supported: boolean; hint: string | null } | null;
+  /** The account is a restored calendar not yet linked to this mail account; it links on the next change or sync. */
+  link_pending?: boolean;
 }
 
 export const isRemoteCalendarAccount = (account?: Pick<CalendarAccount, 'provider'> | null) => (

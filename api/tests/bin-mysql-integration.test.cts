@@ -842,6 +842,48 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     assert.equal((await rowsTitled('Daily standup')).length, 2);
   });
 
+  await t.test('one date deleted while bin.delete is forbidden during the wait for its account is refused, and nothing is sent', async () => {
+    clock += 86400000;
+    const href = `${WORK}weekly-review.ics`;
+    server.store(href, eventIcs(`${crypto.randomUUID()}@example.test`, 'Weekly review', clock, ['RRULE:FREQ=DAILY;COUNT=3']));
+    await sync();
+    const dates = await rowsTitled('Weekly review');
+    assert.equal(dates.length, 3);
+    // A sync holds the account; the request passes its early check, then waits for it.
+    const [held, go, checked] = [gate(), gate(), gate()];
+    const holder = calendarSync.withAccountLock(accountId, async () => { held.open(); await go.reached; return { held: true }; }, 5);
+    await held.reached;
+    const settings = require('../dist/src/services/settings') as FixtureValue;
+    const assertAllowed = settings.assertAllowed;
+    settings.assertAllowed = async (...args: FixtureValue[]) => {
+      const answer = await assertAllowed(...args);
+      if (Array.isArray(args[1]) && args[1].includes('bin.delete')) checked.open();
+      return answer;
+    };
+    let pending: ReturnType<typeof alex.request> | undefined;
+    try {
+      server.remote.writes.length = 0;
+      pending = alex.request('DELETE', `/api/calendar/events/${dates[1].id}?scope=occurrence`);
+      assert.ok((await within(checked.reached, 5000)).done, 'the early check passed');
+      await pool.execute("INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked) VALUES ('installation', '', 'policy.bin.delete', 'forbidden', 0)");
+      go.open();
+      await holder;
+      const reply = await pending;
+      assert.deepEqual([reply.status, reply.body.code, (reply.body.details as FixtureValue)?.policy], [403, 'POLICY_FORBIDS', 'bin.delete'], JSON.stringify(reply.body));
+      assert.deepEqual(server.remote.writes, [], 'nothing sent to the server');
+      assert.equal((await rowsTitled('Weekly review')).length, 3, 'every date stays');
+    } finally {
+      settings.assertAllowed = assertAllowed;
+      go.open();
+      await holder;
+      await pending;
+      await pool.execute("DELETE FROM setting_policies WHERE setting_key = 'policy.bin.delete'");
+    }
+    // Allowed again, the same request removes the date.
+    await call(alex, 'DELETE', `/api/calendar/events/${dates[1].id}?scope=occurrence`);
+    assert.equal((await rowsTitled('Weekly review')).length, 2);
+  });
+
   await t.test('a repeating synced event with details on several dates waits in the bin for a calendar that can take it', async () => {
     clock += 86400000;
     const uid = `${crypto.randomUUID()}@example.test`;

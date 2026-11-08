@@ -346,7 +346,7 @@ async function processMailServerDeletionForAccountUnlocked(accountId: string, { 
     let skipped = 0;
     let stopped = false;
 
-    const { whilePolicyAllows } = require('./settings') as typeof import('./settings');
+    const { whileFinalStepAllows } = require('./final-step') as typeof import('./final-step');
     for (const message of messages) {
       if (!(await isMailServerDeletionStillEnabled(normalizedAccountId))) {
         stopped = true;
@@ -417,10 +417,12 @@ async function processMailServerDeletionForAccountUnlocked(accountId: string, { 
           await markMailServerMessageDeleteStatus({ id: message.id, status: 'skipped', error: 'Archive/source changed before dispatch.' });
           skipped++; processed++; continue;
         }
-        // The erase itself holds the rules lock: forbidden by a save that
-        // committed during the reads above, it stops here; a save begun
-        // now waits until the provider answered.
-        if (!await whilePolicyAllows(account.user_id, 'mail.provider_delete', () => deleteImapUid(connection!, uid))) { stopped = true; break; }
+        // The erase itself is the final step (final-step.ts): forbidden, Mail
+        // or its background work switched off or a Mail restore admitted
+        // during the reads above, it stops here; any of them begun now
+        // waits until the provider answered.
+        if (!await whileFinalStepAllows({ userId: account.user_id, policies: ['mail.provider_delete'], modules: ['mail'], background: true },
+          () => deleteImapUid(connection!, uid))) { stopped = true; break; }
         await markMailServerMessageDeleteStatus({ id: message.id, status: 'deleted', error: null });
         deleted++;
         processed++;

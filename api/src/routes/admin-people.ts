@@ -13,6 +13,7 @@ import { disconnectAccount, disconnectAndPurgeAccount } from '../services/mail-a
 import { createCalendarAccount, deleteCalendarAccount, updateCalendarAccount } from '../services/calendar-account-changes';
 import { deleteDataExportJob, listDataExportJobs } from '../services/export-jobs';
 import { deleteBinItem, emptyBin, listBin } from '../services/bin';
+import { assertBackupDeletableNow } from '../services/backup-policy';
 import { clearModuleData, isClearTarget } from '../services/data-clear';
 
 // The administrator's path for one person (F13, accounts.admin_manage;
@@ -137,7 +138,8 @@ export = defineRoutes({
     const userId = req.params.id, accountId = req.params.accountId;
     await assertPersonModule(userId, 'calendar');
     const result = await deleteCalendarAccount(userId, accountId, {
-      inTransaction: cx => recordAudit({ action: 'admin.calendar_account_removed', actorId: adminId, targetUserId: userId, req, details: { calendar_account: accountId } }, cx),
+      actor: { adminId },
+      record: cx => recordAudit({ action: 'admin.calendar_account_removed', actorId: adminId, targetUserId: userId, req, details: { calendar_account: accountId } }, cx),
     }) as RouteResponse;
     if (failed(result)) return result;
     return deleted(1, result);
@@ -155,6 +157,7 @@ export = defineRoutes({
     const userId = req.params.id, jobId = req.params.jobId;
     await assertPerson(userId);
     const result = await deleteDataExportJob(userId, jobId, {
+      authorize: cx => assertBackupDeletableNow(cx, userId, jobId, { adminId }),
       record: cx => recordAudit({ action: 'admin.backup_deleted', actorId: adminId, targetUserId: userId, req, details: { backup_job: jobId } }, cx),
     }) as RouteResponse;
     if (failed(result)) return result;

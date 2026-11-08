@@ -397,10 +397,14 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       const mailLink = async (id: FixtureValue) => (await connection.execute<RowDataPacket[]>('SELECT mail_account_id, provider_config, encrypted_password FROM calendar_accounts WHERE id = ?', [id]))[0][0];
       assert.equal((await mailLink(standalone)).mail_account_id, null);
 
-      // Connected before 0.17: no server entry in its configuration.
+      // Connected before 0.17: no server entry in its configuration. Reading
+      // shows it as waiting to be linked and writes nothing; the sync's login
+      // (linkedCalendarAccount, guarded) links it.
       const older = await insertCalDav(userId, 'link@example.test', legacy);
       link = await calendarAccounts.getMailCalendarLink(userId, mailId);
-      assert.equal(link.account!.id, older);
+      assert.deepEqual([link.account!.id, link.link_pending], [older, true]);
+      assert.equal((await mailLink(older)).mail_account_id, null, 'reading links nothing');
+      assert.equal((await calendarAccounts.linkedCalendarAccount(userId, { id: mailId, email_address: 'link@example.test' }))!.id, older);
       const linked = await mailLink(older);
       assert.equal(linked.mail_account_id, mailId);
       assert.equal(config(linked.provider_config).mailLinked, true, 'the mark survives a backup');

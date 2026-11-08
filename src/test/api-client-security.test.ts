@@ -95,6 +95,18 @@ describe('api client security', () => {
     const draft = await api.put('/mail/drafts/d1', { attachments: [] });
     expect(draft.error).toContain('attachment');
   });
+  // A lock-wait timeout answers 503 CHANGE_IN_PROGRESS with its own sentence: the person reads that, not a generic server error.
+  it('shows the server\'s own words for a 503 that carries them, with its code', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, status: 503, statusText: 'Service Unavailable',
+      headers: { get: () => 'application/json' },
+      json: async () => ({ error: 'Another change is in progress. Try again in a moment.', code: 'CHANGE_IN_PROGRESS' }),
+    }) as unknown as typeof fetch);
+    api.setCsrfToken('csrf-token-value');
+    const response = await api.put('/mail/accounts/m1/calendar', { enabled: false });
+    expect(response).toMatchObject({ status: 503, code: 'CHANGE_IN_PROGRESS', error: 'Another change is in progress. Try again in a moment.' });
+  });
+
   it('forwards AbortSignal and preserves cancellation as a rejected request', async () => {
     const controller = new AbortController();
     const cancelled = new DOMException('Cancelled', 'AbortError');

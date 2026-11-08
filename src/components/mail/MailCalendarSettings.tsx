@@ -131,6 +131,9 @@ export function MailCalendarSettings({ account }: { account: MailAccount }) {
             <p className="text-xs text-muted-foreground">
               {link?.enabled ? 'Synced with this account. Changes are applied right away.' : 'Sync the calendar of this mail account.'}
             </p>
+            {link?.enabled && link.link_pending && (
+              <p className="text-xs text-muted-foreground">Restored from a backup; it links to this mail account on the next change or sync.</p>
+            )}
           </div>
         </div>
         {linkQuery.isLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-label="Loading calendar settings" /> : (
