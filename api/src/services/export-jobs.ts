@@ -390,13 +390,17 @@ function serializeJob(row: ExportRow) {
   };
 }
 
-async function updateJob(jobId: string, fields: Record<string, ExecuteValues>) {
+// from: the statuses the row may have for the write to apply, read by the
+// statement itself; returns whether it applied. A status change goes only
+// from a status that leads to it, so failed and cancelled stay as they are.
+async function updateJob(jobId: string, fields: Record<string, ExecuteValues>, { from }: { from?: readonly string[] } = {}) {
   const keys = Object.keys(fields);
-  if (!keys.length) return;
-  await db.execute(
-    `UPDATE data_export_jobs SET ${keys.map(key => `${key} = ?`).join(', ')} WHERE id = ?`,
-    [...keys.map(key => fields[key]), jobId]
+  if (!keys.length) return false;
+  const [result] = await db.execute<ResultSetHeader>(
+    `UPDATE data_export_jobs SET ${keys.map(key => `${key} = ?`).join(', ')} WHERE id = ?${from ? ` AND status IN (${from.map(() => '?').join(', ')})` : ''}`,
+    [...keys.map(key => fields[key]), jobId, ...(from ?? [])]
   );
+  return result.affectedRows > 0;
 }
 
 async function checkExportCancelled(jobId: string, executor: SqlExecutor = db) {
@@ -469,13 +473,14 @@ async function runDataExportJob(jobId: string) {
     const job = rows[0];
     if (!job || job.status === 'ready' || job.status === 'cancelled') return;
     if (job.cancel_requested) throw new BackupJobCancelledError();
-    await updateJob(jobId!, {
+    // Only a job still queued is taken: one cancelled since the read above stays so.
+    if (!await updateJob(jobId!, {
       status: 'running',
       phase: 'collecting',
       progress: 5,
       error: null,
       started_at: job.started_at || new Date(),
-    });
+    }, { from: ['queued'] })) return;
     const sections = parseRequestedSections(job.requested_sections);
     // A job an older release queued without encryption is encrypted as well.
     if (!job.encryption_enabled) await updateJob(jobId!, { encryption_enabled: 1 });
@@ -553,7 +558,9 @@ async function runDataExportJob(jobId: string) {
     if (stat.size > BACKUP_UPLOAD_MAX_SIZE) {
       throw new Error('Backup exceeds the import upload limit. Export smaller sections so the downloaded archive can be restored.');
     }
-    await updateJob(jobId!, {
+    // Ready only while still running: a cancel asked meanwhile (cancelling)
+    // ends the job as cancelled, with its archive and key removed.
+    if (!await updateJob(jobId!, {
       status: 'ready',
       phase: 'ready',
       progress: 100,
@@ -564,7 +571,7 @@ async function runDataExportJob(jobId: string) {
       backup_uuid: backupUuid,
       contents: contents ? JSON.stringify(contents) : null,
       completed_at: new Date(),
-    });
+    }, { from: ['running'] })) throw new BackupJobCancelledError();
   } catch (error) {
     // A .partial file no row names and the instance backup leaves out.
     if (temporaryZipPath) await fs.promises.rm(temporaryZipPath, { force: true }).catch(() => {});
@@ -765,35 +772,54 @@ async function markBackupDownloaded(userId: string, jobId: string) {
   await db.execute('UPDATE data_export_jobs SET downloaded_at = UTC_TIMESTAMP() WHERE id = ? AND user_id = ?', [jobId, userId]);
 }
 
-async function deleteDataExportJob(userId: string, jobId: string | null) {
+interface DeleteJobOptions {
+  // Run in the deletion's transaction after the job's row is locked, on its
+  // connection: a refusal thrown here deletes nothing (backup-policy.ts, the
+  // person's minimum age), and an activity-log entry written here commits
+  // with the deletion (the administrator's path).
+  authorize?: (connection: SqlExecutor) => Promise<void>;
+  record?: (connection: SqlExecutor) => Promise<void>;
+}
+
+async function deleteDataExportJob(userId: string, jobId: string | null, { authorize, record }: DeleteJobOptions = {}) {
+  const active = (status: string) => ['queued', 'running', 'cancelling'].includes(status);
   const job = await getDataExportJob(userId, jobId);
   if (!job) return { error: 'Backup job not found', status: 404 };
-  if (['queued', 'running', 'cancelling'].includes(job.status)) {
-    return { error: 'Stop the backup before deleting it', status: 409 };
-  }
-  const [activeRestore] = await db.execute<ExportRow[]>(
-    `SELECT id FROM backup_restore_jobs
-     WHERE source_export_job_id = ? AND user_id = ?
-       AND status IN ('uploaded', 'validating', 'validated', 'queued', 'running', 'cancelling')
-     LIMIT 1`,
-    [jobId, userId]
-  );
-  if (activeRestore.length) {
-    return { error: 'This backup is currently used by a restore job', status: 409 };
-  }
-  await db.execute(
-    `UPDATE backup_restore_jobs
-     SET source_export_job_id = NULL, archive_path = NULL
-     WHERE source_export_job_id = ? AND user_id = ?`,
-    [jobId, userId]
-  );
-  await db.execute('DELETE FROM data_export_jobs WHERE id = ? AND user_id = ?', [jobId, userId]);
-  await pruneArchiveKeyIfUnreferenced(userId, job.backup_uuid);
-  // The row first; the file then, after an instance backup's copy when one
-  // runs (file-removal-gate.ts). Its name is the job's own, so nothing can
-  // name it again.
-  if (job.file_path && isBackupPathUnderRoot(job.file_path)) {
-    const file = path.resolve(job.file_path);
+  if (active(job.status)) return { error: 'Stop the backup before deleting it', status: 409 };
+  // Under the job's row: the worker's writes to it wait, so what is checked
+  // is what is deleted.
+  type Outcome = { error: string; status: number } | { row: ExportRow };
+  const outcome = await withTransaction(async (connection): Promise<Outcome> => {
+    const [[row]] = await connection.execute<ExportRow[]>('SELECT status, file_path, backup_uuid FROM data_export_jobs WHERE id = ? AND user_id = ? FOR UPDATE', [jobId, userId]);
+    if (!row) return { error: 'Backup job not found', status: 404 };
+    if (authorize) await authorize(connection);
+    if (active(row.status)) return { error: 'Stop the backup before deleting it', status: 409 };
+    const [activeRestore] = await connection.execute<ExportRow[]>(
+      `SELECT id FROM backup_restore_jobs
+       WHERE source_export_job_id = ? AND user_id = ?
+         AND status IN ('uploaded', 'validating', 'validated', 'queued', 'running', 'cancelling')
+       LIMIT 1`,
+      [jobId, userId]
+    );
+    if (activeRestore.length) return { error: 'This backup is currently used by a restore job', status: 409 };
+    await connection.execute(
+      `UPDATE backup_restore_jobs
+       SET source_export_job_id = NULL, archive_path = NULL
+       WHERE source_export_job_id = ? AND user_id = ?`,
+      [jobId, userId]
+    );
+    await connection.execute('DELETE FROM data_export_jobs WHERE id = ? AND user_id = ?', [jobId, userId]);
+    if (record) await record(connection);
+    return { row };
+  });
+  if (!('row' in outcome)) return outcome;
+  const { row } = outcome;
+  await pruneArchiveKeyIfUnreferenced(userId, row.backup_uuid);
+  // The row first, known committed; the file then, after an instance
+  // backup's copy when one runs (file-removal-gate.ts). Its name is the
+  // job's own, so nothing can name it again.
+  if (row.file_path && isBackupPathUnderRoot(row.file_path)) {
+    const file = path.resolve(row.file_path);
     await fileRemovalGate.run(() => fs.promises.rm(file, { force: true }).catch(() => {}));
   }
   return { deleted: true };
@@ -805,21 +831,20 @@ async function cancelDataExportJob(userId: string, jobId: string | null) {
   if (!['queued', 'running', 'cancelling'].includes(job.status)) {
     return { error: 'Backup job is not running', status: 409 };
   }
-  if (job.status === 'queued') {
-    await updateJob(jobId!, {
-      cancel_requested: 1,
-      status: 'cancelled',
-      phase: 'cancelled',
-      progress: 100,
-      completed_at: new Date(),
-    });
-  } else {
-    await updateJob(jobId!, {
-      cancel_requested: 1,
-      status: 'cancelling',
-      phase: 'cancelling',
-    });
-  }
+  // Each write applies only from the status its statement reads: a job the
+  // worker took meanwhile is asked to stop, one that ended stays as it is.
+  const cancelled = await updateJob(jobId!, {
+    cancel_requested: 1,
+    status: 'cancelled',
+    phase: 'cancelled',
+    progress: 100,
+    completed_at: new Date(),
+  }, { from: ['queued'] }) || await updateJob(jobId!, {
+    cancel_requested: 1,
+    status: 'cancelling',
+    phase: 'cancelling',
+  }, { from: ['running', 'cancelling'] });
+  if (!cancelled) return { error: 'Backup job is not running', status: 409 };
   return { job: serializeJob((await getDataExportJob(userId, jobId))!) };
 }
 

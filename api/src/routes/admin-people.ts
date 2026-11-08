@@ -24,8 +24,8 @@ import { clearModuleData, isClearTarget } from '../services/data-clear';
 // person's module switch and restore lock). Reading needs users.read.
 // Every change has its entry before it answers: in the transaction of the
 // change where the service has one (calendar account removal, the bin, the
-// clears, mail account removal), else written first and settled after
-// (audited).
+// clears, mail account removal, a backup), else written first and settled
+// after (audited).
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 type Body = Record<string, unknown> & { current_password?: unknown };
 type Handler = (req: Request, adminId: string, body: Body, res: ServerResponse) => Promise<RouteResponse>;
@@ -60,20 +60,22 @@ function answer(error: unknown): RouteResponse {
 
 const failed = (result: RouteResponse) => typeof result.error === 'string' || (typeof result.status === 'number' && result.status >= 400);
 
-// The entry first; the change runs only once it is stored. A refusal settles
-// it as failed; an error without a status leaves it pending, as the change
-// may have happened.
+// The entry first; the change runs only once it is stored. A success
+// settles it as done. An error answer settles it as unknown with the answer,
+// as the service may have written part of the change before it refused; an
+// error without a status leaves it pending.
 async function audited(entry: AuditEntry, change: () => Promise<RouteResponse>, outcome: (result: RouteResponse) => AuditDetails = () => ({})) {
   const id = await recordAuditIntent(entry);
+  const answered = (status: unknown, code: unknown) => settleAudit(id, 'unknown', { status: typeof status === 'number' ? status : null, code: typeof code === 'string' ? code : null });
   let result: RouteResponse;
   try {
     result = await change();
   } catch (error) {
-    const status = (error as { status?: number }).status;
-    if (status && status < 500) await settleAudit(id, 'failed');
+    const { status, code } = error as { status?: number; code?: string };
+    if (status && status < 500) await answered(status, code);
     throw error;
   }
-  if (failed(result)) await settleAudit(id, 'failed'); else await settleAudit(id, 'done', outcome(result));
+  if (failed(result)) await answered(result.status, result.code); else await settleAudit(id, 'done', outcome(result));
   return result;
 }
 const deleted = (count: number, extra: RouteResponse = {}): RouteResponse => ({ ...extra, deleted: count } satisfies AdminDeleteResponse & RouteResponse);
@@ -152,8 +154,9 @@ export = defineRoutes({
   'DELETE /api/admin/users/:id/backups/:jobId': change(async (req, adminId) => {
     const userId = req.params.id, jobId = req.params.jobId;
     await assertPerson(userId);
-    const result = await audited({ action: 'admin.backup_deleted', actorId: adminId, targetUserId: userId, req, details: { backup_job: jobId } },
-      async () => await deleteDataExportJob(userId, jobId) as RouteResponse);
+    const result = await deleteDataExportJob(userId, jobId, {
+      record: cx => recordAudit({ action: 'admin.backup_deleted', actorId: adminId, targetUserId: userId, req, details: { backup_job: jobId } }, cx),
+    }) as RouteResponse;
     if (failed(result)) return result;
     return deleted(1, result);
   }),
@@ -173,6 +176,7 @@ export = defineRoutes({
     const module = typeof values.module === 'string' ? values.module : null;
     // An entry for each batch, with the batch's deletion.
     const result: BinDeleteResponse = await emptyBin(userId, values, {
+      adminId,
       record: (cx, rows) => recordAudit({ action: 'admin.bin_emptied', actorId: adminId, targetUserId: userId, req, details: { deleted: rows.length, module } }, cx),
     });
     return { ...result };
@@ -182,6 +186,7 @@ export = defineRoutes({
     const userId = req.params.id, itemId = req.params.itemId;
     await assertPerson(userId);
     const result: BinDeleteResponse = await deleteBinItem(userId, itemId, {
+      adminId,
       record: cx => recordAudit({ action: 'admin.bin_item_deleted', actorId: adminId, targetUserId: userId, req, details: { bin_item: itemId } }, cx),
     });
     return { ...result };

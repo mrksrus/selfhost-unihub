@@ -373,10 +373,12 @@ and calendar events removed, never a password, code, token or mail address. Entr
 got deleted stay, without its address. An entry written for a change that runs
 in a transaction commits or rolls back with it. An administrator's change for a
 person always has its entry: in the change's transaction where there is one
-(removing a calendar or mail account, the bin, Delete data), else written
-first with `outcome: "pending"` and then set to `done` or `failed` (adding or
-changing an account, deleting a backup); an entry that cannot be written stops
-the change, and one left `pending` means the change may have happened.
+(removing a calendar or mail account, deleting a backup, the bin, Delete
+data), else written first with `outcome: "pending"` and then set to `done`,
+or to `unknown` with the `status` and `code` of an error answer (adding or
+changing an account). An entry that cannot be written stops the change; one
+left `pending` or `unknown` means the change may have happened, as an error
+answer does not prove nothing was written before it.
 Entries older than 365 days are deleted by the hourly session cleanup. The
 log is server-local: backups and restores do not carry it. Admins read it in
 Settings > Server settings > Activity.
@@ -553,7 +555,11 @@ A step that deletes or erases after waiting asks again when it acts, under the
 rules revision row: an administrator's save locks that row first, so it
 commits either before the step reads the rules or after the step. Deletion at
 the provider asks before queueing a message and holds the row while it sends
-the erase; the bin's purge reads its minimum after its row locks.
+the erase; the bin's purge reads its minimum after its row locks; a person's
+delete for good and each batch of emptying the bin ask for `bin.delete` after
+theirs (refused between batches, emptying answers `403 POLICY_FORBIDS` with
+the number already deleted as `details.deleted`); deleting a backup reads its minimum after locking the backup's row,
+in the transaction that deletes the row (its file goes after the commit).
 
 **The bin's minimum.** While `bin.delete` is forbidden, the bin keeps items at
 least as long as the administrator's minimum (`30`, `90` days or `forever`,
@@ -624,6 +630,8 @@ accepted meanwhile cannot slip past. It unlinks the calendars connected from
 the accounts, so while there are any it is also a change to Calendar: refused
 while Calendar is off (`403 MODULE_DISABLED`) or being restored (`409
 RESTORE_IN_PROGRESS`), before any work stops and again under the locks.
+Mail's own switch and restore lock are checked again under those locks too,
+so a Mail restore that starts while the work stops is not passed by.
 
 Account deletion (`services/user-lifecycle.ts`, shared with the admin route)
 stops the user's mail work, deletes the `users` row (every table cascades from

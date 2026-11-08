@@ -310,6 +310,18 @@ async function relinkRestoredCalendar(account: AccountRow) {
   return null;
 }
 
+// The mail account relinkRestoredCalendar would link a restored calendar to,
+// without linking it.
+async function restoredCalendarMail(account: AccountRow) {
+  if (account.mail_account_id || !account.account_email || !wasMailCalendar(account)) return null;
+  const [mails] = await db.execute<(RowDataPacket & MailAddress)[]>('SELECT id, email_address FROM mail_accounts WHERE user_id = ? AND LOWER(email_address) = LOWER(?) ORDER BY created_at ASC',
+    [account.user_id, account.account_email]);
+  for (const mail of mails) {
+    if ((await peekLinkedCalendarAccount(account.user_id, mail))?.id === account.id) return mail.id;
+  }
+  return null;
+}
+
 // A new mail account's calendar is the one just connected for it. A restored
 // one that a calendar sync linked to it by address meanwhile is unlinked again
 // (it then waits, like when the sync came later), and the running work of a
@@ -364,8 +376,10 @@ function currentManualUrl(account: AccountRow | null) {
 // Turning a mail account's calendar on adds a calendar account, turning it
 // off removes one: accounts.add and accounts.remove (F13), which depend on
 // the body and so are checked here; an administrator's actor passes them.
-// They are decided from a read that changes nothing, so a refused request
-// leaves a restored calendar unlinked and its password in place.
+// They and every other refusal (a disconnected mail account) are decided
+// from reads that change nothing; a restored calendar is linked, dropping
+// its own password, only once the change goes ahead, so a refused request
+// leaves it unlinked with its password.
 async function setMailCalendar(userId: string, mailAccountId: string, { enabled, caldav_url: caldavUrl, time_zone: timeZone }: { enabled?: unknown; caldav_url?: unknown; time_zone?: unknown } = {}, actor: PolicyActor = {}) {
   if (typeof enabled !== 'boolean') throw fail('enabled must be true or false', 400);
   if (caldavUrl !== undefined && caldavUrl !== null && typeof caldavUrl !== 'string') throw fail('Calendar address must be text', 400);
@@ -385,20 +399,22 @@ async function setMailCalendar(userId: string, mailAccountId: string, { enabled,
     return { url, addressChanged, policies };
   };
   const seen = await peekLinkedCalendarAccount(userId, mail);
-  await assertAllowed(userId, change(seen).policies, actor);
-  const existing = await linkedCalendarAccount(userId, mail);
-  // Another request changed the link meanwhile: asked again for what is linked now.
-  if (existing?.id !== seen?.id) await assertAllowed(userId, change(existing).policies, actor);
+  const { url: seenUrl, addressChanged, policies } = change(seen);
+  await assertAllowed(userId, policies, actor);
 
   if (!enabled) {
-    if (existing) await removeCalendarAccount(userId, existing.id);
+    // A restored one not linked yet goes as it is.
+    if (seen) await removeCalendarAccount(userId, seen.id);
     return describeLink(userId, mail, null);
   }
 
-  const { url: existingUrl, addressChanged } = change(existing);
-  if (existing && !addressChanged) {
-    if (existing.provider === 'caldav' && !existing.is_active) {
-      if (!Number(mail.connected)) throw fail(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED');
+  if (seen && !addressChanged) {
+    const resumes = seen.provider === 'caldav' && !seen.is_active;
+    if (resumes && !Number(mail.connected)) throw fail(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED');
+    const existing = await linkedCalendarAccount(userId, mail);
+    // Another request linked or removed one meanwhile (this one wrote nothing then).
+    if (!existing || existing.id !== seen.id) throw fail('The calendar of this mail account changed meanwhile. Try again.', 409, 'MAIL_CALENDAR_CHANGED');
+    if (resumes) {
       await db.execute(
         "UPDATE calendar_accounts SET is_active = TRUE, encrypted_password = NULL, sync_status = 'pending', sync_error = NULL, next_sync_at = NULL WHERE id = ?",
         [existing.id]
@@ -411,11 +427,11 @@ async function setMailCalendar(userId: string, mailAccountId: string, { enabled,
   }
 
   const password = mail.encrypted_password ? decrypt(mail.encrypted_password) : null;
-  const manualUrl = requestedUrl !== undefined ? requestedUrl : existingUrl;
+  const manualUrl = requestedUrl !== undefined ? requestedUrl : seenUrl;
   const subscription = manualUrl && looksLikeIcsFeed(manualUrl, caldav.matchCalendarProvider({ emailAddress: mail.email_address, imapHost: mail.imap_host }));
   if (!subscription && (!Number(mail.connected) || !password)) throw fail(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED');
   // Connect the new address first; the old calendars are only replaced once
-  // it works.
+  // it works. A restored CalDAV account of the address is taken over there.
   const connected = await connectCalDavAccount({
     userId,
     emailAddress: mail.email_address,
@@ -427,9 +443,9 @@ async function setMailCalendar(userId: string, mailAccountId: string, { enabled,
     mailAccountId: mail.id,
     timeZone,
   });
-  if (existing && existing.id !== connected.account.id) {
-    const [still] = await db.execute<RowDataPacket[]>('SELECT id FROM calendar_accounts WHERE id = ?', [existing.id]);
-    if (still.length) await removeCalendarAccount(userId, existing.id);
+  if (seen && seen.id !== connected.account.id) {
+    const [still] = await db.execute<RowDataPacket[]>('SELECT id FROM calendar_accounts WHERE id = ?', [seen.id]);
+    if (still.length) await removeCalendarAccount(userId, seen.id);
   }
   const [rows] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM calendar_accounts WHERE id = ?', [connected.account.id]);
   return { ...await describeLink(userId, mail, rows[0]), server: connected.server || null, hint: connected.hint || null };
@@ -443,6 +459,7 @@ export {
   setMailCalendar,
   linkedCalendarAccount,
   relinkRestoredCalendar,
+  restoredCalendarMail,
   keepMailCalendar,
   restoredMailCalendar,
   loadSerializedAccount,

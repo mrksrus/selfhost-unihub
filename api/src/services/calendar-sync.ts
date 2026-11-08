@@ -166,7 +166,10 @@ function loginName(link: { mail_account_id?: string | null; mail_id?: string | n
   return link.username || link.account_email;
 }
 
-async function resolveLogin(account: Account, relinked = false): Promise<{ username: string | null | undefined; encryptedPassword: string }> {
+// write: false answers the same, refusals included, without writing: it
+// neither drops the link to a deleted mail account nor links a restored
+// calendar to its mail account (for checking a change before it is made).
+async function resolveLogin(account: Account, relinked = false, { write = true }: { write?: boolean } = {}): Promise<{ username: string | null | undefined; encryptedPassword: string }> {
   const [[link]] = await db.execute<LoginLink[]>(`SELECT ca.provider, ca.provider_config, ca.account_email, ca.username, ca.encrypted_password, ca.mail_account_id,
       m.id AS mail_id, ${LOGIN_MAIL_USERNAME} AS mail_username, m.encrypted_password AS mail_password,
       (${MAIL_CONNECTED_SQL}) AS mail_connected
@@ -178,13 +181,19 @@ async function resolveLogin(account: Account, relinked = false): Promise<{ usern
   if (current.mail_account_id && !link.mail_id) {
     // Its mail account was deleted: the link goes, and it looks for a mail
     // account with its address again.
-    current.provider_config = await unlinkFromDeletedMail(db, current, current.mail_account_id);
+    current.provider_config = write ? await unlinkFromDeletedMail(db, current, current.mail_account_id)
+      : JSON.stringify({ ...((jsonValue(current.provider_config, {}) || {}) as AccountConfig), mailLinked: true });
     current.mail_account_id = null;
     if (current.provider === 'caldav') current.encrypted_password = null;
   }
   if (!current.mail_account_id) {
     const mailCalendar = wasMailCalendar(current);
-    if (mailCalendar && !relinked && await (require('./calendar-accounts') as typeof import('./calendar-accounts')).relinkRestoredCalendar(current)) return resolveLogin(account, true);
+    if (mailCalendar && !relinked) {
+      const calendarAccounts = require('./calendar-accounts') as typeof import('./calendar-accounts');
+      if (write && await calendarAccounts.relinkRestoredCalendar(current)) return resolveLogin(account, true);
+      const mailAccountId = write ? null : await calendarAccounts.restoredCalendarMail(current);
+      if (mailAccountId) return mailLogin(current.user_id, mailAccountId);
+    }
     const marked = ((jsonValue(current.provider_config, {}) || {}) as AccountConfig).mailLinked === true;
     const mailExists = mailCalendar && await mailAccountWithAddress(current);
     if (mailExists) throw syncError(MAIL_HAS_OTHER_CALENDAR_MESSAGE, 409, 'MAIL_CALENDAR_UNLINKED');
@@ -195,6 +204,16 @@ async function resolveLogin(account: Account, relinked = false): Promise<{ usern
   if (!Number(link.mail_connected)) throw syncError(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED');
   // MAIL_CONNECTED_SQL requires a stored mail password.
   return { username: loginName(link), encryptedPassword: link.mail_password! };
+}
+
+// The login a calendar would get from the mail account it is about to be
+// linked to (resolveLogin without writing).
+async function mailLogin(userId: string, mailAccountId: string) {
+  const [[link]] = await db.execute<LoginLink[]>(`SELECT m.id AS mail_id, ${LOGIN_MAIL_USERNAME} AS mail_username, m.encrypted_password AS mail_password,
+      (${MAIL_CONNECTED_SQL}) AS mail_connected
+    FROM mail_accounts m WHERE m.id = ? AND m.user_id = ?`, [mailAccountId, userId]);
+  if (!link || !Number(link.mail_connected)) throw syncError(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED');
+  return { username: loginName({ ...link, mail_account_id: mailAccountId }), encryptedPassword: link.mail_password! };
 }
 
 /**

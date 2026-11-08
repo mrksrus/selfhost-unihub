@@ -325,10 +325,12 @@ async function restoreBinItem(userId: string, id: string, input?: unknown) {
 
 /**
  * The administrator who deletes for the person (routes/admin-people.ts):
- * `record` writes their activity-log entry for what one transaction deleted,
- * on its connection, so the rows and the entry commit together or not at all.
+ * bin.delete does not stop them (F13), and `record` writes their
+ * activity-log entry for what one transaction deleted, on its connection,
+ * so the rows and the entry commit together or not at all.
  */
 interface BinDeleteActor {
+  adminId?: string;
   record?: (connection: SqlExecutor, deleted: readonly BinRow[]) => Promise<void>;
 }
 
@@ -336,9 +338,11 @@ interface BinDeleteActor {
  * Removes items for good, in one transaction, then their files. A synced
  * item being created at its server again stops (its journal row goes with
  * it); a copy the server took meanwhile shows with the next sync as an item
- * of its own.
+ * of its own. For the person, bin.delete is asked again in each transaction
+ * after its row locks, as the purge asks for its minimum: the request
+ * boundary's answer may be older than an administrator's save.
  */
-async function deleteForGood(userId: string, rows: readonly BinRow[], { record }: BinDeleteActor = {}) {
+async function deleteForGood(userId: string, rows: readonly BinRow[], { adminId, record }: BinDeleteActor = {}) {
   if (!rows.length) return 0;
   const ids = rows.map(row => row.id);
   const deleted = await withTransaction(async connection => {
@@ -346,6 +350,8 @@ async function deleteForGood(userId: string, rows: readonly BinRow[], { record }
     await connection.execute(`SELECT id FROM calendar_event_moves WHERE user_id = ? AND bin_item_id IN (${placeholders(ids)}) FOR UPDATE`, [userId, ...ids]);
     const locked = await ownedItems(connection, userId, ids, { lock: true });
     if (!locked.length) return [];
+    const { assertAllowed } = require('./settings') as typeof import('./settings');
+    await assertAllowed(userId, 'bin.delete', { adminId }, connection, { lock: true });
     await connection.execute(`DELETE FROM bin_items WHERE user_id = ? AND id IN (${placeholders(locked.map(row => row.id))})`, [userId, ...locked.map(row => row.id)]);
     if (record) await record(connection, locked);
     return locked;
@@ -374,7 +380,9 @@ async function deleteBinItem(userId: string, id: string, actor: BinDeleteActor =
 /**
  * POST /api/bin/empty: the person's bin, or one module's part of it; modules
  * that are off or being restored keep theirs. Batch by batch, each its own
- * transaction (and the administrator's entry with it).
+ * transaction (and the administrator's entry with it). When bin.delete is
+ * forbidden between batches, the refusal names what the earlier batches
+ * deleted (`details.deleted`); those stay deleted.
  */
 async function emptyBin(userId: string, input: unknown, actor: BinDeleteActor = {}): Promise<BinDeleteResponse> {
   const module = parseModule(input && typeof input === 'object' ? (input as { module?: unknown }).module : undefined);
@@ -386,7 +394,12 @@ async function emptyBin(userId: string, input: unknown, actor: BinDeleteActor = 
     const [rows] = open.length ? await db.execute<BinRow[]>(
       `SELECT * FROM bin_items WHERE user_id = ? AND restored_at IS NULL AND module IN (${placeholders(open)}) ORDER BY deleted_at, id LIMIT ${PURGE_BATCH}`, [userId, ...open]) : [[] as BinRow[]];
     if (!rows.length) break;
-    deleted += await deleteForGood(userId, rows, actor);
+    try {
+      deleted += await deleteForGood(userId, rows, actor);
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'POLICY_FORBIDS') error.details = { ...(error.details as object), deleted };
+      throw error;
+    }
     if (rows.length < PURGE_BATCH) break;
   }
   return { deleted };
