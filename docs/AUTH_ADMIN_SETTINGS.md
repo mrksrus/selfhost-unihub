@@ -373,10 +373,12 @@ and calendar events removed, never a password, code, token or mail address. Entr
 got deleted stay, without its address. An entry written for a change that runs
 in a transaction commits or rolls back with it. An administrator's change for a
 person always has its entry: in the change's transaction where there is one
-(removing a calendar or mail account, the bin, Delete data), else written
-first with `outcome: "pending"` and then set to `done` or `failed` (adding or
-changing an account, deleting a backup); an entry that cannot be written stops
-the change, and one left `pending` means the change may have happened.
+(removing a calendar or mail account, deleting a backup, the bin, Delete
+data), else written first with `outcome: "pending"` and then set to `done`,
+or to `unknown` with the `status` and `code` of an error answer (adding or
+changing an account). An entry that cannot be written stops the change; one
+left `pending` or `unknown` means the change may have happened, as an error
+answer does not prove nothing was written before it.
 Entries older than 365 days are deleted by the hourly session cleanup. The
 log is server-local: backups and restores do not carry it. Admins read it in
 Settings > Server settings > Activity.

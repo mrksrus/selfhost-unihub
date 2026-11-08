@@ -57,10 +57,12 @@ async function recordAuditAfter(entry: AuditEntry) {
 // A change with no one transaction to write its entry in (it talks to a
 // provider, or it is another service's): the entry is written first, with
 // outcome 'pending', and the change only starts once it is stored, so no
-// change ever lacks one. settleAudit then records the outcome ('done' or
-// 'failed') and what only the change knows (the new account's id). An entry
-// left 'pending' (a crash, a failed write) says the change may have happened.
-type AuditOutcome = 'pending' | 'done' | 'failed';
+// change ever lacks one. settleAudit then records 'done' and what only the
+// change knows (the new account's id), or, when the request answered an
+// error, 'unknown' with that answer: an error answer does not prove the
+// change wrote nothing before it. An entry left 'pending' (a crash, a failed
+// write) also says the change may have happened.
+type AuditOutcome = 'pending' | 'done' | 'unknown';
 
 /** Writes the entry before the change, with outcome 'pending'; throws on failure. Returns its id. */
 async function recordAuditIntent(entry: AuditEntry): Promise<string> {

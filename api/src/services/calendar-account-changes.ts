@@ -126,8 +126,10 @@ async function updateCalendarAccount(userId: string, id: string, body: Input) {
   }
   if (has(body, 'is_active')) {
     // Resumed only with a login: its own password, or a connected mail account.
+    // Asked without writing: a refusal leaves a restored calendar unlinked
+    // with its password; the sync links it once resumed.
     if (body.is_active !== false && account.provider === 'caldav' && !resume) {
-      const missing = await calendarSync.resolveLogin(account).then(() => null, (error: ApiError) => error);
+      const missing = await calendarSync.resolveLogin(account, false, { write: false }).then(() => null, (error: ApiError) => error);
       if (missing?.code === 'CALDAV_NO_PASSWORD') return { error: 'Enter the password again to resume sync.', status: 409, code: 'CALDAV_NO_PASSWORD' };
       if (missing) return calendarSync.calendarErrorResponse(missing, 'Could not resume sync');
     }

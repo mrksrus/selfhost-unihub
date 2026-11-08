@@ -60,20 +60,22 @@ function answer(error: unknown): RouteResponse {
 
 const failed = (result: RouteResponse) => typeof result.error === 'string' || (typeof result.status === 'number' && result.status >= 400);
 
-// The entry first; the change runs only once it is stored. A refusal settles
-// it as failed; an error without a status leaves it pending, as the change
-// may have happened.
+// The entry first; the change runs only once it is stored. A success
+// settles it as done. An error answer settles it as unknown with the answer,
+// as the service may have written part of the change before it refused; an
+// error without a status leaves it pending.
 async function audited(entry: AuditEntry, change: () => Promise<RouteResponse>, outcome: (result: RouteResponse) => AuditDetails = () => ({})) {
   const id = await recordAuditIntent(entry);
+  const answered = (status: unknown, code: unknown) => settleAudit(id, 'unknown', { status: typeof status === 'number' ? status : null, code: typeof code === 'string' ? code : null });
   let result: RouteResponse;
   try {
     result = await change();
   } catch (error) {
-    const status = (error as { status?: number }).status;
-    if (status && status < 500) await settleAudit(id, 'failed');
+    const { status, code } = error as { status?: number; code?: string };
+    if (status && status < 500) await answered(status, code);
     throw error;
   }
-  if (failed(result)) await settleAudit(id, 'failed'); else await settleAudit(id, 'done', outcome(result));
+  if (failed(result)) await answered(result.status, result.code); else await settleAudit(id, 'done', outcome(result));
   return result;
 }
 const deleted = (count: number, extra: RouteResponse = {}): RouteResponse => ({ ...extra, deleted: count } satisfies AdminDeleteResponse & RouteResponse);
