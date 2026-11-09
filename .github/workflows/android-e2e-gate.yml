@@ -1,0 +1,254 @@
+name: Android e2e gate (0.28.0, one-off)
+
+# One-off release gate for 0.28.0 (docs/RELEASE_CONTRACT.md, "The candidate
+# Android app's debug build passes the flows under tools/e2e/android/"): the
+# whole suite with the candidate's debug app against the candidate's server,
+# on a standard runner because the maintainer's machine is too small for the
+# emulator. Plus the B-24 control: the v0.27.2 debug app against the same
+# server, app-update.test.mjs only. This branch is f78d9ac plus this file.
+on:
+  push:
+    branches: [ "ci/android-e2e-0280" ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: mrksrus/selfhost-unihub
+  # The image PR #99's run 42594167668 tested and kept as candidate-<tree> for f78d9ac.
+  CANDIDATE_SHA: f78d9acaec64d78ce5e93e9d7d6cc3d2065e98e5
+  CANDIDATE_TREE: 11a7c568a58f2b7a8371c2feb2b8a7f21058edb0
+  CANDIDATE_DIGEST: sha256:94658699a634648db82921f2b538764d1360bb969b76cfe1882daef96b561707
+  GREENMAIL_VERSION: 2.1.15
+  GREENMAIL_SHA256: 91d58798698cac357f015365240383b936ced2f2a1a9f7db37d9e3e1a31391b1
+  RADICALE_VERSION: 3.5.10
+  # The MariaDB tarball of docs/DEVELOPMENT.md (scripts/local-db.sh).
+  MARIADB_VERSION: 11.8.9
+  MARIADB_SHA256: 32f8871a2aa38b36aa418b7f4abc6fc0c6ef1ba5a45798cacb2afa52c8a6113b
+
+concurrency:
+  group: android-e2e-gate
+  cancel-in-progress: true
+
+jobs:
+  android-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    env:
+      UNIHUB_E2E_STATE: ${{ github.workspace }}/.e2e-state
+      UNIHUB_E2E_CA: ${{ github.workspace }}/.e2e-ca
+      UNIHUB_E2E_EMULATOR_PORT: "5560"
+      GATE_LOGS: ${{ github.workspace }}/gate-logs
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          # v0.25.1 (the app 26-09 updates from) and v0.27.2 (the B-24 control).
+          fetch-depth: 0
+          fetch-tags: true
+
+      # The tested source: this branch is the candidate plus this workflow, and
+      # the candidate's tree is the one the kept image was built from.
+      - name: Check the candidate
+        run: |
+          [ "$(git rev-parse HEAD^)" = "$CANDIDATE_SHA" ] || { echo "HEAD^ is not $CANDIDATE_SHA" >&2; exit 1; }
+          [ "$(git rev-parse "$CANDIDATE_SHA^{tree}")" = "$CANDIDATE_TREE" ] || { echo "the candidate's tree is not $CANDIDATE_TREE" >&2; exit 1; }
+          changed="$(git diff --name-only "$CANDIDATE_SHA" HEAD)"
+          [ "$changed" = .github/workflows/android-e2e-gate.yml ] || { echo "unexpected changes: $changed" >&2; exit 1; }
+          {
+            echo "### Candidate"
+            echo "- Source: \`$CANDIDATE_SHA\` (tree \`$CANDIDATE_TREE\`) plus this workflow only"
+            echo "- Image of that tree: \`$REGISTRY/$IMAGE_NAME@$CANDIDATE_DIGEST\` (its nginx mime.types are used)"
+            echo "- The stack runs from this source (tools/e2e/stack.sh local mode): the Android tests read the host's nginx logs and need the debug app at /downloads/unihub.apk"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Read the image's Node.js version
+        id: node
+        run: |
+          version="$(grep -E '^FROM ' Dockerfile | tail -n 1 | sed -nE 's/^FROM node:([0-9]+\.[0-9]+\.[0-9]+)-alpine@sha256:[0-9a-f]{64}$/\1/p')"
+          [ -n "$version" ] || { echo 'The Dockerfile final stage must be FROM node:<x.y.z>-alpine@sha256:<digest>.' >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+          npm ci
+          npm --prefix api ci
+          npm --prefix tools/e2e ci
+
+      - name: Cache GreenMail
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/unihub-e2e/greenmail
+          key: greenmail-${{ env.GREENMAIL_VERSION }}
+
+      - name: Install the synthetic providers
+        run: |
+          bash scripts/install-test-providers.sh
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+
+      # The stack's local mode: nginx with the image's mime.types, and MariaDB
+      # from its tarball as in docs/DEVELOPMENT.md.
+      - name: Install nginx and MariaDB
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nginx >/dev/null
+          sudo systemctl stop nginx || true
+          container="$(docker create "$REGISTRY/$IMAGE_NAME@$CANDIDATE_DIGEST")"
+          docker cp "$container:/etc/nginx/mime.types" "$RUNNER_TEMP/mime.types"
+          docker rm "$container" >/dev/null
+          tarball="mariadb-$MARIADB_VERSION-linux-systemd-x86_64.tar.gz"
+          curl --fail --silent --show-error --location -o "$RUNNER_TEMP/$tarball" "https://downloads.mariadb.org/rest-api/mariadb/$MARIADB_VERSION/$tarball"
+          echo "$MARIADB_SHA256  $RUNNER_TEMP/$tarball" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/mariadb"
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/mariadb" --strip-components=1
+          rm -f -- "$RUNNER_TEMP/$tarball"
+          {
+            echo "UNIHUB_E2E_NGINX=/usr/sbin/nginx"
+            echo "UNIHUB_E2E_MIME_TYPES=$RUNNER_TEMP/mime.types"
+            echo "UNIHUB_DB_HOME=$RUNNER_TEMP/mariadb"
+          } >> "$GITHUB_ENV"
+
+      # Debug builds as tools/e2e/android.sh builds them, all three in this job
+      # so they share the runner's debug key (26-09 and the control update the
+      # installed app). The candidate's stays where the stack offers it.
+      - name: Build the debug apps
+        run: |
+          build() { (cd "$1/android" && ./gradlew -q --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process assembleDebug); }
+          mkdir -p "$RUNNER_TEMP/apps"
+          build .
+          for version in 0.25.1 0.27.2; do
+            git worktree add --detach "$RUNNER_TEMP/src-$version" "v$version"
+            build "$RUNNER_TEMP/src-$version"
+            cp "$RUNNER_TEMP/src-$version/android/app/build/outputs/apk/debug/app-debug.apk" "$RUNNER_TEMP/apps/unihub-$version-debug.apk"
+          done
+          signer() { "$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)/apksigner" verify --print-certs "$1" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p'; }
+          candidate=android/app/build/outputs/apk/debug/app-debug.apk
+          {
+            echo "### Debug apps"
+            echo "| App | sha256 | signer |"
+            echo "|---|---|---|"
+            for apk in "$candidate" "$RUNNER_TEMP/apps/unihub-0.25.1-debug.apk" "$RUNNER_TEMP/apps/unihub-0.27.2-debug.apk"; do
+              echo "| \`${apk##*/}\` | \`$(sha256sum "$apk" | cut -d' ' -f1)\` | \`$(signer "$apk" | cut -c1-16)…\` |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$(signer "$candidate")" = "$(signer "$RUNNER_TEMP/apps/unihub-0.25.1-debug.apk")" ] && [ "$(signer "$candidate")" = "$(signer "$RUNNER_TEMP/apps/unihub-0.27.2-debug.apk")" ] \
+            || { echo "The debug apps are not signed alike" >&2; exit 1; }
+
+      - name: Start the end-to-end stack
+        run: tools/e2e/stack.sh up
+
+      - name: Enable KVM for the Android emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # The emulator action runs each script line on its own, so the gate is one script.
+      - name: Write the gate script
+        run: |
+          cat > "$RUNNER_TEMP/gate.sh" <<'GATE'
+          #!/usr/bin/env bash
+          # The suite once (npm run android's files, one at a time: one emulator),
+          # each failing file again on its own up to twice, then the B-24 control.
+          set -u
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$GATE_LOGS/evidence"
+          export UNIHUB_E2E_EVIDENCE=$GATE_LOGS/evidence
+          export UNIHUB_E2E_PREVIOUS_APK=$RUNNER_TEMP/apps/unihub-0.25.1-debug.apk
+          adb() { "$ANDROID_HOME/platform-tools/adb" -s "emulator-$UNIHUB_E2E_EMULATOR_PORT" "$@"; }
+          adb logcat -v time > "$GATE_LOGS/logcat.txt" 2>&1 &
+          logcat=$!
+          summary() { echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          counts() { grep -E '^ℹ (pass|fail|skipped|cancelled) ' "$1" | sed 's/^ℹ //' | paste -sd, -; }
+          run() { # <log> <files...>
+            local log=$1; shift
+            echo "::group::$(basename "$log")"
+            (cd tools/e2e && node --test --test-concurrency=1 "$@") > "$log" 2>&1
+            local status=$?
+            grep -E '^(✔|✖|﹣)' "$log"
+            echo "::endgroup::"
+            return $status
+          }
+          # The candidate's debug app, installed and connected to the stack.
+          tools/e2e/android.sh up --no-build
+          summary "### Suite (candidate app)"
+          run "$GATE_LOGS/suite.1.log" android/*.test.mjs; suite=$?
+          summary "- suite.1: exit $suite ($(counts "$GATE_LOGS/suite.1.log"))"
+          summary '```'
+          grep -E '^(✔|✖|﹣)' "$GATE_LOGS/suite.1.log" | cut -c1-160 >> "$GITHUB_STEP_SUMMARY"
+          summary '```'
+          result=0
+          failed=$(sed -n '/failing tests:/,$p' "$GATE_LOGS/suite.1.log" | grep -oE '^test at android/[a-z0-9-]+\.test\.mjs' | sed 's/^test at //' | sort -u)
+          for file in $failed; do
+            name=$(basename "$file" .test.mjs)
+            passed=false
+            for attempt in 2 3; do
+              tools/e2e/android.sh up --no-build
+              if run "$GATE_LOGS/$name.$attempt.log" "$file"; then passed=true; fi
+              summary "- $name attempt $attempt: $($passed && echo pass || echo fail) ($(counts "$GATE_LOGS/$name.$attempt.log"))"
+              $passed && break
+            done
+            $passed || result=1
+          done
+          [ "$suite" = 0 ] || [ -n "$failed" ] || result=1
+          # B-24 control: the v0.27.2 debug app as the app under test (an older
+          # version, so it is uninstalled first); the stack still offers the
+          # candidate's debug app as the update.
+          summary "### B-24 control (v0.27.2 debug app)"
+          for attempt in 1 2 3; do
+            adb uninstall io.github.mrksrus.unihub >/dev/null 2>&1 || true
+            adb install "$RUNNER_TEMP/apps/unihub-0.27.2-debug.apk" >/dev/null
+            tools/e2e/android.sh connect
+            summary "- installed: $(adb shell dumpsys package io.github.mrksrus.unihub | grep -m1 versionName | tr -d ' \r')"
+            if run "$GATE_LOGS/control-0.27.2.$attempt.log" android/app-update.test.mjs; then control=pass; else control=fail; fi
+            summary "- control attempt $attempt: $control ($(counts "$GATE_LOGS/control-0.27.2.$attempt.log"))"
+            [ "$control" = pass ] && break
+          done
+          kill "$logcat" 2>/dev/null || true
+          exit $result
+          GATE
+          chmod +x "$RUNNER_TEMP/gate.sh"
+
+      - name: Run the Android suite and the B-24 control
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 36
+          arch: x86_64
+          target: google_apis
+          # tools/e2e/android.sh only touches the test AVD on its port.
+          avd-name: unihub35
+          emulator-port: 5560
+          cores: 2
+          ram-size: 2048M
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -prop ro.hw_timeout_multiplier=3
+          script: bash "$RUNNER_TEMP/gate.sh"
+
+      - name: Show the stack's logs
+        if: failure()
+        run: tail -n 50 "$UNIHUB_E2E_STATE"/log/*.log || true
+
+      # Synthetic data only.
+      - name: Keep the gate logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-e2e-gate-attempt${{ github.run_attempt }}
+          path: |
+            gate-logs/
+            .e2e-state/log/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Stop the stack
+        if: always()
+        run: tools/e2e/stack.sh down || true
