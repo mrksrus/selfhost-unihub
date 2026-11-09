@@ -40,6 +40,8 @@ interface SchedulerOptions {
   now?: () => number;
   /** False while another API process runs the background work (worker-owner.ts): jobs stay queued for it. */
   canRun?: () => boolean;
+  /** After each run; `completed`: its completion was committed (not fenced by a pause or a lost lease). */
+  onFinished?: (job: ClaimedJob, outcome: { completed: boolean }) => void;
 }
 // The kinds are declared in mail-engine/job-kinds.ts; these are the
 // scheduler's views of them (a Set for per-job checks, a list for claims).
@@ -50,7 +52,8 @@ const MUTATION_MAIL_JOB_KINDS = MUTATION_KINDS;
 // never waits behind other accounts' long history or body scans. (A read-only
 // job of the same account holds its lease; yieldReadWork releases that one.)
 function createDurableMailScheduler(run: RunJob, { repository = runtime, concurrency = 2, readConcurrency = concurrency,
-  workerId = randomUUID(), onState = () => {}, pollMs = 1000, leaseSeconds = 30, recoveryMs = 15000, now = Date.now, canRun = () => true }: SchedulerOptions = {}) {
+  workerId = randomUUID(), onState = () => {}, pollMs = 1000, leaseSeconds = 30, recoveryMs = 15000, now = Date.now, canRun = () => true,
+  onFinished = () => {} }: SchedulerOptions = {}) {
   if (typeof run !== 'function' || !Number.isInteger(concurrency) || concurrency < 1
     || !Number.isInteger(readConcurrency) || readConcurrency < 1 || readConcurrency > concurrency) throw new TypeError('Invalid mail worker');
   const running = new Map<string, RunningJob>();
@@ -80,7 +83,7 @@ function createDurableMailScheduler(run: RunJob, { repository = runtime, concurr
     const runningJob = { controller, job, finished, cancellationRequested: false };
     running.set(job.id, runningJob);
     let heartbeatError: unknown = null;
-    let heartbeatPending = false;
+    let heartbeatPending = false, completed = false;
     const heartbeat = setInterval(() => {
       // One heartbeat at a time: on a slow database, overlapping ones would
       // only add waiters for the pool the job itself needs.
@@ -145,6 +148,7 @@ function createDurableMailScheduler(run: RunJob, { repository = runtime, concurr
       const transaction = repository === runtime ? (require('./mail-engine/repository') as typeof import('./mail-engine/repository')).withTransaction : repository.withTransaction;
       if (typeof transaction === 'function') await transaction(completion);
       else await completion(undefined); // injectable legacy test repositories
+      completed = true;
       onState({ ...job, state, result });
     } catch (error) {
       const yielded = controller.signal.reason === 'interactive-yield' && !runningJob.cancellationRequested
@@ -164,11 +168,13 @@ function createDurableMailScheduler(run: RunJob, { repository = runtime, concurr
           };
           if (typeof transaction === 'function') await transaction(completion);
           else await completion(undefined);
+          completed = true;
         } catch (finishError) { if ((finishError as NodeJS.ErrnoException)?.code !== 'MAIL_WORKER_FENCED') onState({ ...job, state: 'error', error: (finishError as Error).message }); }
       }
       onState({ ...job, state: yielded ? 'idle' : 'error', error: yielded ? null : (error as Error).message });
     } finally {
       clearInterval(heartbeat);
+      onFinished(job, { completed });
       running.delete(job.id);
       release();
       if (!stopped) void drain().catch(error => onState({ state: 'error', error: (error as Error).message }));

@@ -653,9 +653,11 @@ connection included), it puts back exactly what it replaced, only while its
 own pause is still there, so a restore or module switch since keeps its
 pause, and the change's error (for example `409 RESTORE_IN_PROGRESS`) stays
 the answer. What it puts back: the earlier pause (not a Mail switched-off
-one once Mail is on again), and the jobs it stopped as they were, an
-accepted provider change's job and its foreground turn included (also the
-turn of one it stopped while running). One it stopped while running
+one once Mail is on again), and the jobs it stopped as they were, each
+accepted provider change's job with its own foreground turn included (also
+one it stopped while running, however long it had run). A turn belongs to
+the job its change queued, so two changes keep two turns and no other job of
+the account, such as a background retry, can take one. One it stopped while running
 resumes as a check of its outcome when the operation was dispatched, never
 sent again, and as the operation itself when it was not: the pause moved
 the account's generation on, so the stopped worker can dispatch nothing

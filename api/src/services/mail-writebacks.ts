@@ -28,7 +28,7 @@ interface EmailRow extends RowDataPacket {
   remote_uidvalidity: number | string | null;
 }
 interface OperationRow extends RowDataPacket, ProviderOperation { dispatched: StoredFlag; is_current: StoredFlag }
-interface MutationOptions { idempotencyKey?: string | null; operationIds?: string[]; revisions?: number[] }
+interface MutationOptions { idempotencyKey?: string | null; operationIds?: string[]; revisions?: number[]; jobIds?: Map<string, string[]> }
 interface ReceiptResponse extends Record<string, unknown> {
   recovery_required?: boolean;
   operation_ids?: string[];
@@ -159,9 +159,10 @@ async function queueChanges(cx: SqlExecutor, userId: string, emails: EmailRow[],
         VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending','queued',TRUE,?,?,?)`,
       [id, userId, email.mail_account_id, email.id, action, target, base, targetFolder, email.remote_folder,
         email.remote_uid, email.remote_uidvalidity, revision, options.idempotencyKey || null, source?.id || null]);
-      await runtime.enqueueJob({ userId, accountId: email.mail_account_id, operationId: id, kind: 'operation', priority: 0,
+      const job = await runtime.enqueueJob({ userId, accountId: email.mail_account_id, operationId: id, kind: 'operation', priority: 0,
         foreground: Number(email.is_active) === 1 }, cx);
       operationIds.push(id); revisions.push(revision); accounts.add(email.mail_account_id);
+      options.jobIds?.set(email.mail_account_id, [...options.jobIds.get(email.mail_account_id) || [], job.id]);
     }
   }
   return accounts;
@@ -173,9 +174,9 @@ async function mutateMessages(userId: string, ids: string[], changes: Record<str
   const requestHash = canonicalRequest(ids, changes);
   if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore in progress');
   if (!await isModuleEnabled(userId, 'mail')) throw fail('Mail module is disabled');
-  let accounts = new Set<string>(), replayed = false;
+  let accounts = new Set<string>(), jobIds = new Map<string, string[]>(), replayed = false;
   const response = await repository.withTransaction(async cx => {
-    accounts = new Set<string>(); replayed = false;
+    accounts = new Set<string>(); jobIds = new Map(); replayed = false;
     if (key) {
       const receipt = await claimReceipt({ userId, clientKey: key, requestHash, response: { pending: true } }, cx);
       if (receipt.replayed) { replayed = true; return receiptResponse(receipt.response); }
@@ -188,7 +189,7 @@ async function mutateMessages(userId: string, ids: string[], changes: Record<str
     if (!await canRunModule(userId, 'mail', { executor: cx })) throw fail('Mail is paused');
     await validate(cx, emails);
     const operationIds: string[] = [], revisions: number[] = [];
-    accounts = await queueChanges(cx, userId, emails, changes, { idempotencyKey: key, operationIds, revisions });
+    accounts = await queueChanges(cx, userId, emails, changes, { idempotencyKey: key, operationIds, revisions, jobIds });
     const result = { message: accounts.size ? 'Provider changes queued' : 'Messages updated', sync_pending: accounts.size > 0,
       operation_ids: operationIds, accepted_revision: revisions.length ? Math.max(...revisions) : null };
     if (key) await repository.finishReceipt({ userId, clientKey: key, requestHash, response: result }, cx);
@@ -200,7 +201,7 @@ async function mutateMessages(userId: string, ids: string[], changes: Record<str
   publishMailChanged(userId, onlyAccount, 'local');
   if (response.operation_ids?.length) publishMailOperation(userId, { accountId: onlyAccount,
     operationIds: response.operation_ids, state: 'accepted' });
-  for (const accountId of accounts) runOperationsSoon(accountId, { foreground: true });
+  for (const accountId of accounts) runOperationsSoon(accountId, { foregroundJobIds: jobIds.get(accountId) || [] });
   return response;
 }
 async function getOperationReceipt(userId: string, key: string) {
@@ -294,8 +295,8 @@ async function cancelForAccount(cx: SqlExecutor, accountId: string, userId: stri
 // Operation and reconcile jobs run on the durable mail scheduler
 // (runDurableMutationJob in mail-durable-jobs.ts). This only starts them
 // without waiting for its next poll; the HTTP response never waits for a read
-// job to yield.
-function runOperationsSoon(accountId: string, options?: { foreground?: boolean }) {
+// job to yield. foregroundJobIds: the jobs the person's own change queued.
+function runOperationsSoon(accountId: string, options?: { foregroundJobIds: string[] }) {
   setImmediate(() => (require('./mail') as typeof import('./mail')).runMailOperationsNow(accountId, options)
     .catch(error => console.error('[MAIL WRITEBACK] Could not start provider changes:', (error as ApiError).code || 'unavailable')));
 }
@@ -352,16 +353,16 @@ async function retryWriteback(userId: string, id: string) {
   if (op.action === 'move' && Number(op.dispatched)) {
     await db.execute(`UPDATE mail_writebacks SET state='reconciling',status='pending',available_at=UTC_TIMESTAMP()
       WHERE id=? AND user_id=? AND state IN (${sqlList(MOVE_RECHECK)})`, [id, userId]);
-    await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: id,
+    const job = await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: id,
       kind: 'reconcile', priority: 0, foreground: true });
-    runOperationsSoon(op.mail_account_id, { foreground: true });
+    runOperationsSoon(op.mail_account_id, { foregroundJobIds: [job.id] });
     publishMailOperation(userId, { accountId: op.mail_account_id, operationIds: [id], state: 'reconciling' });
     // No provider mutation. The bounded outcome checker takes this ID.
     return { message: 'Move outcome check queued', retry_action: 'check_outcome' };
   }
   if (!await requeue(userId, op)) throw fail('This change cannot be safely retried; check provider outcome.');
-  await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: id, kind: 'operation', priority: 0, foreground: true });
-  runOperationsSoon(op.mail_account_id, { foreground: true });
+  const job = await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: id, kind: 'operation', priority: 0, foreground: true });
+  runOperationsSoon(op.mail_account_id, { foregroundJobIds: [job.id] });
   publishMailOperation(userId, { accountId: op.mail_account_id, operationIds: [id], state: 'queued' });
   return { message: 'Retry queued', retry_action: 'retry' };
 }

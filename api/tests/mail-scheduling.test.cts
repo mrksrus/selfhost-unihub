@@ -189,7 +189,7 @@ test('accepted changes nudge the durable scheduler as foreground work; the due s
   assert.equal(result.sync_pending, true);
   assert.deepEqual(nudges, [], 'the HTTP response does not wait for a read job to yield');
   await tick();
-  assert.deepEqual(nudges, [['acct', { foreground: true }]]);
+  assert.deepEqual(nudges, [['acct', { foregroundJobIds: ['job-' + result.operation_ids![0]] }]], 'the job it queued gets the turn, not the account');
   nudges.length = 0;
   assert.equal(await runDueWritebacks(), 2);
   await tick();
@@ -292,7 +292,7 @@ test('account stop aborts a running operation job and destroys its guarded socke
     if (sql.includes('FROM backup_restore_jobs') || sql.includes('FROM user_settings')) return [[]];
     remoteCommands++; assert.fail(`Unexpected provider/mutation SQL after stop: ${sql}`);
   }) } as FixtureValue);
-  await mail.runMailOperationsNow('stop-account', { foreground: true });
+  await mail.runMailOperationsNow('stop-account', { foregroundJobIds: ['stop-job'] });
   for (let i = 0; i < 50 && !entered; i++) await tick();
   assert.equal(entered, true);
   assert.equal(mail.isMailAccountSyncRunning('stop-account'), true);
