@@ -315,6 +315,9 @@ async function validateRestoreJob(job: RestoreJob) {
 }
 
 async function restoreValidatedJob(job: RestoreJob) {
+  // Not started once restoring is forbidden: the job fails with the rule's
+  // reason (a current read; the restore's own transaction asks again).
+  await restoreAllowed(db, job.user_id);
   await cleanupRestoredFiles(job);
   await updateRestoreJob(job.id, {
     status: 'running',
@@ -361,6 +364,8 @@ async function restoreValidatedJob(job: RestoreJob) {
         // Publishing phase=commit prevents new cancellation requests. Honor a
         // request accepted just before that boundary before marking completion.
         await checkRestoreCancelled(job.id, controlPool());
+        // And the rule, read under its lock in the restore's own transaction.
+        await restoreAllowed(connection, job.user_id);
         await connection.execute(
           `UPDATE backup_restore_jobs
            SET status = 'completed',
@@ -542,8 +547,9 @@ async function createUploadedRestoreJob(userId: string, sourcePath: string, opti
 
   try {
     // Admitted under the person's lock (person-lock.ts), only for the write:
-    // a change of the person's accounts in progress finishes first.
-    await withPersonLock(userId, () => db.execute(
+    // a change of the person's accounts in progress finishes first; and
+    // under the rules in force then (restoreAllowed).
+    await withPersonLock(userId, () => withTransaction(async connection => { await restoreAllowed(connection, userId); return connection.execute(
       `INSERT INTO backup_restore_jobs
          (id, user_id, source_type, status, operation, phase, progress, requested_sections,
           conflict_mode, calendar_mode, credentials_mode, archive_path, archive_size,
@@ -564,7 +570,7 @@ async function createUploadedRestoreJob(userId: string, sourcePath: string, opti
         encrypted ? 1 : 0,
         new Date(Date.now() + (UPLOAD_RETENTION_DAYS * 24 * 60 * 60 * 1000)),
       ]
-    ));
+    ); }));
   } catch (error) {
     await fs.promises.rm(targetPath, { force: true }).catch(() => {});
     throw error;
@@ -588,6 +594,7 @@ async function createRestoreFromExport(userId: string, exportJobId: string | nul
     if (exportJob.status !== 'ready' || !exportJob.file_path) {
       return { error: 'Backup is not ready', status: 409 };
     }
+    await restoreAllowed(connection, userId);
     const normalized = normalizeRestoreOptions({
       ...options,
       sections: options.sections || parseJsonValue(exportJob.requested_sections, 'full'),
@@ -620,6 +627,16 @@ async function createRestoreFromExport(userId: string, exportJobId: string | nul
   if (!('jobId' in admitted)) return { error: admitted.error, status: admitted.status };
   scheduleRestoreWorker();
   return { job: serializeRestoreJob((await getRestoreJob(userId, admitted.jobId))!) };
+}
+
+// backup.restore as it is now, under the rules revision's lock (final-step.ts),
+// after the person's lock and the job's own rows: a request that waited is
+// refused with POLICY_FORBIDS once an administrator forbade restoring
+// meanwhile. The restore itself asks again before it starts and in its own
+// transaction before it commits (restoreValidatedJob), so a queued restore a
+// later rule forbids applies nothing.
+async function restoreAllowed(connection: SqlExecutor, userId: string) {
+  await assertFinalStep(connection, { userId, policies: ['backup.restore'] });
 }
 
 /** A current read of the person's restores, which a destructive step's final check also locks (final-step.ts). */
@@ -738,6 +755,7 @@ async function startRestoreJob(userId: string, jobId: string | null): Promise<Jo
     if (Number(deadline.live) !== 1) return expiredUpload();
     const validation = parseJsonValue(job.validation_result, null) as { valid?: boolean; errors?: string[] } | null;
     const retryValidation = !validation?.valid || Boolean(validation.errors?.length);
+    await restoreAllowed(connection, userId);
     if (await otherActiveRestore(connection, userId, jobId)) return { error: 'Another restore is already running', status: 409 };
     if (!job.archive_path || !fs.existsSync(job.archive_path)) {
       return { error: 'The retained backup archive is no longer available', status: 410 };

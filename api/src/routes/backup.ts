@@ -84,7 +84,9 @@ const failed = (error: unknown, fallback: string, logLabel: string): RouteRespon
   if (isLockWaitTimeout(error)) return changeInProgress();
   console.error(`${logLabel}:`, error);
   const thrown = error as ApiError;
-  return { error: thrown.status ? thrown.message : fallback, status: thrown.code === 'BACKUP_SECTION_UNSUPPORTED' ? 400 : thrown.status && thrown.status < 500 ? thrown.status : 500 };
+  const status = thrown.code === 'BACKUP_SECTION_UNSUPPORTED' ? 400 : thrown.status && thrown.status < 500 ? thrown.status : 500;
+  // A refusal keeps its code (POLICY_FORBIDS from an admission's final check).
+  return { error: thrown.status ? thrown.message : fallback, status, ...(status < 500 && typeof thrown.code === 'string' ? { code: thrown.code } : {}) };
 };
 
 type Handler = (req: Request, userId: string, body: Input, res: ServerResponse) => Promise<RouteResponse | undefined>;

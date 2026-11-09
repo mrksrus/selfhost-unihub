@@ -69,6 +69,9 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   already went. When another change holds what the step needs for too long,
   it answers "Another change is in progress. Try again in a moment." and
   changes nothing.
+- **A restore follows the rules in force.** A restore that a newer rule of
+  the administrator forbids is refused with the reason, also one that was
+  already waiting to start, and applies nothing.
 - **Everyone is told when the rules change.** After an administrator changes
   a rule, everyone sees the rules in force once at the next start and
   confirms them with OK; closed without OK, the notice comes back at the next
@@ -159,8 +162,9 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   what you typed while the account is read again.
 - **A folder deleted on only some of its servers says where.** When a
   folder on several mail accounts is deleted and one server fails after
-  others succeeded, UniHub stops, says on which accounts it went and on
-  which it is still there, and never deletes the gone copies again.
+  others succeeded, UniHub stops and says on which accounts it went and on
+  which it is still there. On the accounts where it went, it is gone in
+  UniHub at once; deleting it again finishes on the others.
 - **Adding an account under a rule set during its sign-in test.** When an
   administrator changes a rule while UniHub tests the sign-in of a new mail
   or calendar account, adding it is refused with the rule's reason and your

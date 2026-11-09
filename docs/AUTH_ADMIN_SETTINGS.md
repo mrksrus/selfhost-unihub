@@ -699,11 +699,18 @@ least of all a provider command, which is never sent before its check holds.
 Admitting a restore (an upload, creating one from a backup, unlocking,
 starting or retrying it) takes the person's lock first, for the admission
 only. Then it locks the backup's row when it is made from one (shared), then
-its own job row, then reads the person's other jobs as current rows: creating
-one from a backup, starting or retrying it. Unlocking an upload, which only
-sends it to validation, locks its job row. Starting and unlocking
-compare an upload's seven-day deadline in statements that run after the job's
-row lock, so a wait for the lock cannot carry an earlier clock past it.
+its own job row. Starting and unlocking then answer an upload past its
+seven-day deadline with `410` and the re-upload sentence, compared in
+statements that run after the job's row lock, so a wait for the lock cannot
+carry an earlier clock past it. Then an upload, creating one from a backup,
+starting and retrying ask `backup.restore` again under the rules lock (the
+final check, `403 POLICY_FORBIDS`; so an expired upload still says to upload
+it again), and the last three read the person's other jobs as current rows
+before the job moves. Unlocking an upload, which only sends it to
+validation, locks its job row. The restore itself asks `backup.restore`
+again before it starts and in its own transaction before it commits, so a
+queued restore a later rule forbids fails with the rule's reason and applies
+nothing.
 Deleting a backup takes the backup's row, then reads the restores made from it
 as current rows and answers `409` while one is in use. Each therefore either
 commits before the step reads it or waits until the step has committed.

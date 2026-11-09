@@ -10,7 +10,7 @@ import { isModuleEnabled, isModuleBackgroundEnabled } from './module-settings';
 import { isSectionRestoreActive } from './restore-locks';
 import { canRunModule } from './access-policy';
 import { toBooleanFlag } from './mail-host-policy';
-import { durableScheduler, foregroundMutationAccounts, foregroundRunningAccounts, normalizeMailAccountId } from './mail-durable-jobs';
+import { durableScheduler, foregroundJobs, foregroundMutationAccounts, normalizeMailAccountId } from './mail-durable-jobs';
 import { mailDeleteStopRequests } from './mail-server-delete';
 import { publishMailJob } from './realtime';
 import { USER_PAUSES } from './mail-engine/rollout';
@@ -89,9 +89,12 @@ async function stopWork(accountId: unknown, reason: string): Promise<OwnedPause 
   const [accounts] = await db.execute<RowDataPacket[]>('SELECT user_id FROM mail_accounts WHERE id = ?', [key]);
   if (!accounts.length) return null;
   const userId = accounts[0].user_id as string;
-  // The person's own operation, waiting for its turn or running now.
-  const foreground = foregroundMutationAccounts.has(key) || foregroundRunningAccounts.has(key);
+  // The person's own operation: one waiting for its turn, before or after the
+  // pause, or one of the jobs the pause fenced that took that turn (also one
+  // admitted, or ended, while the pause waited for its rows).
+  const waiting = foregroundMutationAccounts.has(key);
   const paused = await (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).pauseAccount({ userId, accountId: key, reason });
+  const foreground = waiting || foregroundMutationAccounts.has(key) || (paused?.jobs ?? []).some(job => foregroundJobs.has(job.id));
   mailDeleteStopRequests.add(key);
   foregroundMutationAccounts.delete(key);
   durableScheduler.interruptAccount(key);
@@ -116,6 +119,8 @@ async function stopOwnedMailAccountWork(accountId: unknown, reason: string) {
 // itself instead (resumeAccount).
 async function releaseOwnedMailAccountStop(pause: OwnedPause | null | undefined, { committed = false }: { committed?: boolean } = {}) {
   if (!pause) return;
+  // The turn of a job it fenced is carried by `pause.foreground` from here on.
+  for (const job of pause.jobs) foregroundJobs.delete(job.id);
   try {
     if (!await (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).takeBackPause(pause, undefined, { committed })) return;
     // Its stop told an erase pass and a pending foreground operation to stop; neither applies any more.

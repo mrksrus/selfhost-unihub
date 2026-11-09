@@ -40,10 +40,19 @@ function checkCancelled(signal?: AbortSignal) {
   }
 }
 const foregroundMutationAccounts = new Set<string>();
-// The accounts whose running mutation job is the person's own (it took the
-// foreground turn): a change that stops the account and is then refused
-// gives that turn back to the job it requeues (mail-sync-control.ts).
-const foregroundRunningAccounts = new Set<string>();
+// The mutation jobs that took the person's own (foreground) turn, by job id,
+// with when they did: a change that stops the account and is then refused
+// gives that turn back when it requeues one of them (mail-sync-control.ts),
+// whether the job was still running when the stop's pause fenced it or had
+// already ended. Kept by job, not by account, so it matches the jobs a pause
+// actually fenced; an entry older than any stop's wait is dropped.
+const foregroundJobs = new Map<string, number>();
+const FOREGROUND_JOB_MEMORY_MS = 15 * 60 * 1000;
+function noteForegroundJob(jobId: string) {
+  const now = Date.now();
+  for (const [id, at] of foregroundJobs) if (now - at > FOREGROUND_JOB_MEMORY_MS) foregroundJobs.delete(id);
+  foregroundJobs.set(jobId, now);
+}
 
 function normalizeMailAccountId(accountId: unknown) {
   return String(accountId || '').trim();
@@ -144,10 +153,8 @@ async function durableJobIdle(job: ClaimedJob, account: EngineAccount) {
 async function runDurableMutationJob(job: ClaimedJob, signal: AbortSignal, report: JobReport) {
   const key = normalizeMailAccountId(job.mail_account_id);
   const background = !foregroundMutationAccounts.delete(key);
-  if (!background) foregroundRunningAccounts.add(key);
-  try {
-    return await runMutationLocked(job, signal, report, background);
-  } finally { if (!background) foregroundRunningAccounts.delete(key); }
+  if (!background) noteForegroundJob(job.id);
+  return runMutationLocked(job, signal, report, background);
 }
 async function runMutationLocked(job: ClaimedJob, signal: AbortSignal, report: JobReport, background: boolean) {
   const runtime = require('./mail-engine/runtime') as typeof import('./mail-engine/runtime');
@@ -321,7 +328,7 @@ async function startMailEngineScheduler() { await durableScheduler.start(); }
 export {
   durableScheduler,
   foregroundMutationAccounts,
-  foregroundRunningAccounts,
+  foregroundJobs,
   normalizeMailAccountId,
   isMailAccountSyncRunning,
   isAnyMailAccountSyncRunning,

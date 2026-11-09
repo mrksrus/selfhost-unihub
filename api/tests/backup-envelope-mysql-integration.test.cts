@@ -552,6 +552,24 @@ test('an uploaded archive past its seven days is not unlocked or started, atomic
       assert.ok(await jobs.cleanupExpiredRestoreArchives() >= 1);
       assert.deepEqual([(await row(job.id)).status, (await row(job.id)).archive_path, await fs.stat(archive).then(() => true, () => false)], ['expired', null, false], name);
     }
+    // An administrator forbids restoring while uploads wait: the start's own
+    // check of the rule comes after the deadline, so an expired upload still
+    // says to upload it again, and a waiting one is refused with the rule
+    // and stays as it was. (An upload itself is refused under that rule.)
+    const expiredForbidden = await upload('forbidden-expired');
+    await deadline(expiredForbidden.id, -1); await validated(expiredForbidden.id);
+    const liveForbidden = await upload('forbidden-live');
+    await deadline(liveForbidden.id, 1); await validated(liveForbidden.id);
+    await pool.execute(`INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked)
+      VALUES ('installation', '', 'policy.backup.restore', 'forbidden', FALSE)`);
+    try {
+      await assert.rejects(upload('forbidden-upload'), { status: 403, code: 'POLICY_FORBIDS' });
+      assert.deepEqual(await jobs.startRestoreJob(userId, expiredForbidden.id), { error: 'This uploaded backup has expired. Upload it again to restore it.', status: 410 });
+      await assert.rejects(jobs.startRestoreJob(userId, liveForbidden.id), { status: 403, code: 'POLICY_FORBIDS' });
+      assert.equal((await row(liveForbidden.id)).status, 'validated');
+    } finally {
+      await pool.execute("DELETE FROM setting_policies WHERE setting_key = 'policy.backup.restore'");
+    }
     // The unlocked and started jobs were not touched by the sweeps.
     assert.notEqual((await row(early.id)).status, 'expired');
     assert.notEqual((await row(earlyStart.id)).status, 'expired');
