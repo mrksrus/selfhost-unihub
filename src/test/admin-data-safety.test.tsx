@@ -544,6 +544,60 @@ describe('Admin → Users → a person', () => {
     expect(state.toast).not.toHaveBeenCalledWith(expect.objectContaining({ description: 'Nothing was changed.' }));
   });
 
+  it('a group delete whose session ends between two members sends no further member', { timeout: 20_000 }, async () => {
+    let answer!: (value: unknown) => void;
+    vi.mocked(api.delete).mockImplementationOnce(() => new Promise(resolve => { answer = resolve; }) as never);
+    const mounted = render(
+      <AuthContext.Provider value={{ user: ADMIN, isOffline: false } as unknown as AuthContextType}>
+        <SessionQueryProvider privateSession><MemoryRouter initialEntries={['/admin/users/user-alex']}><Routes><Route path="/admin/users/:id" element={<AdminUserDetail />} /></Routes></MemoryRouter></SessionQueryProvider>
+      </AuthContext.Provider>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Garden club for good' }, { timeout: 10_000 }));
+    const confirm = await screen.findByRole('dialog', { name: 'Delete Garden club for good?' });
+    fireEvent.change(within(confirm).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Delete for good' }));
+    await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/admin/users/user-alex/bin/bin-3', { current_password: 'admin-pw' }));
+    // The session ends (a sign-out, another account) while the first member's answer is on its way.
+    mounted.unmount();
+    state.toast.mockClear();
+    await act(async () => answer({ data: { deleted: 1 } }));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+    // The second member is not sent under whatever session comes next; nothing is shown.
+    expect(api.delete).toHaveBeenCalledTimes(1);
+    expect(state.toast).not.toHaveBeenCalled();
+  });
+
+  it('Show older items waits while the bin is read again after a delete, so the refresh is not lost', { timeout: 20_000 }, async () => {
+    const gets = vi.mocked(api.get).getMockImplementation()!;
+    let binReadsSeen = 0;
+    let refetched!: (value: unknown) => void;
+    vi.mocked(api.get).mockImplementation(async (path: string, ...rest: unknown[]) => {
+      if (!path.startsWith('/admin/users/user-alex/bin')) return (gets as (p: string, ...r: unknown[]) => Promise<unknown>)(path, ...rest) as never;
+      if (path.includes('before=')) return { data: { items: BIN_ITEMS.slice(1), retention: '30', next_cursor: null } } as never;
+      binReadsSeen += 1;
+      if (binReadsSeen === 1) return { data: { items: [BIN_ITEMS[0]], retention: '30', next_cursor: 'cursor-1' } } as never;
+      // The read after the delete: held until the test lets it answer, without Grace (another newer item remains on the first page).
+      return new Promise(resolve => { refetched = () => resolve({ data: { items: [{ ...BIN_ITEMS[0], id: 'bin-0', title: 'Ada Lovelace' }], retention: '30', next_cursor: 'cursor-1' } }); }) as never;
+    });
+    mountSignedIn(<AdminUserDetail />, { user: ADMIN, path: '/admin/users/user-alex', routePath: '/admin/users/:id' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Grace Hopper for good' }, { timeout: 10_000 }));
+    const confirm = await screen.findByRole('dialog', { name: 'Delete Grace Hopper for good?' });
+    fireEvent.change(within(confirm).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Delete for good' }));
+    await waitFor(() => expect(binReadsSeen).toBe(2));
+    // The confirmation is over (the delete succeeded); the bin is still being read again. The closing
+    // dialog may still hide the page from assistive technology for a moment, hence `hidden`.
+    const older = screen.getByRole('button', { name: 'Show older items', hidden: true });
+    expect(older).toBeDisabled();
+    fireEvent.click(older);
+    await act(async () => refetched(undefined));
+    await waitFor(() => expect(screen.queryByText('Grace Hopper')).not.toBeInTheDocument());
+    expect(api.get).not.toHaveBeenCalledWith(expect.stringContaining('before='), expect.anything());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Show older items', hidden: true })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Show older items', hidden: true }));
+    expect(await screen.findByText('Garden club')).toBeInTheDocument();
+  });
+
   it('a mail server that cannot be verified asks the administrator to trust it, then sends the fingerprints with their password again', { timeout: 20_000 }, async () => {
     const trust = { blocked: false, requiresConfirmation: true, requiresInsecureTls: true, warnings: ['The certificate is self-signed.'],
       assessments: { imap: { host: 'imap.example.com', port: 993, knownProvider: false, allowlisted: false, blocked: false }, smtp: { host: 'smtp.example.com', port: 587, knownProvider: false, allowlisted: false, blocked: false } },
