@@ -27,6 +27,9 @@ possible.
 - **Files.** Uploaded backup archives and restores use the folders under
   `BACKUP_ARCHIVES_ROOT`, and restored recordings `RECORDINGS_ROOT`, when
   those are set. Unset (the image's default), every path is as before.
+  Uploads that 0.28.0 kept in `/app/uploads/backups/restores` while
+  `BACKUP_ARCHIVES_ROOT` was set stay usable there and are still deleted
+  from there when they expire.
 - **Android app.** 0.28.1's app is 0.28.0's app with the new version number;
   install it when it is offered. The window is 0.28.1, 0.28.0, 0.27.2 and
   0.27.1: the 0.27.0 app leaves it, so update a phone that still has it.

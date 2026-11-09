@@ -868,6 +868,25 @@ async function resumePendingRestoreJobs() {
   return interrupted.length;
 }
 
+// Up to 0.28.0 uploads were kept here whatever BACKUP_ARCHIVES_ROOT said; one
+// it left still expires from here.
+const LEGACY_RESTORE_ROOT = '/app/uploads/backups/restores';
+
+// The stored archive as a file inside one of the restore folders, after
+// following links (a link in a folder must not lead a deletion outside it);
+// null for anything else, or when it is gone.
+async function managedRestoreArchive(stored: string, roots: readonly string[]) {
+  const resolved = path.resolve(stored);
+  for (const root of new Set(roots.map(dir => path.resolve(dir)))) {
+    if (!resolved.startsWith(`${root}${path.sep}`)) continue;
+    try {
+      const [real, realRoot] = await Promise.all([fs.promises.realpath(resolved), fs.promises.realpath(root)]);
+      if (real.startsWith(`${realRoot}${path.sep}`)) return real;
+    } catch { /* gone, or its folder is */ }
+  }
+  return null;
+}
+
 /**
  * Removes uploaded restore archives UPLOAD_RETENTION_DAYS after their upload
  * (the worker owner, hourly: background-work.ts), never while a restore
@@ -877,7 +896,7 @@ async function resumePendingRestoreJobs() {
  * Uploads live outside what the instance backup copies, so no removal gate
  * is needed. Backups the user made are not touched.
  */
-async function cleanupExpiredRestoreArchives() {
+async function cleanupExpiredRestoreArchives({ legacyRoot = LEGACY_RESTORE_ROOT }: { legacyRoot?: string } = {}) {
   const busy = [...BUSY_RESTORE_STATUSES];
   const [rows] = await db.execute<RestoreJob[]>(
     `SELECT id, user_id, archive_path, backup_uuid FROM backup_restore_jobs
@@ -898,9 +917,8 @@ async function cleanupExpiredRestoreArchives() {
     if (marked.affectedRows !== 1) continue;
     expired += 1;
     await cleanupJobWork(job);
-    if (path.resolve(job.archive_path!).startsWith(`${path.resolve(RESTORE_ROOT)}${path.sep}`)) {
-      await fs.promises.rm(job.archive_path!, { force: true }).catch(() => {});
-    }
+    const archive = await managedRestoreArchive(job.archive_path!, [RESTORE_ROOT, legacyRoot]);
+    if (archive) await fs.promises.rm(archive, { force: true }).catch(() => {});
     await pruneArchiveKeyIfUnreferenced(job.user_id, job.backup_uuid!);
   }
   return expired;

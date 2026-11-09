@@ -456,6 +456,38 @@ test('uploaded restore archives expire after seven days, never while a restore u
     // An expired upload can no longer start.
     assert.deepEqual(await jobs.startRestoreJob(userId, created.validated.id), { error: 'This uploaded backup has expired. Upload it again to restore it.', status: 410 });
     assert.equal(await jobs.cleanupExpiredRestoreArchives(), 0, 'a second pass finds nothing');
+
+    // Uploads that 0.28.0 kept in its fixed restore folder (it ignored
+    // BACKUP_ARCHIVES_ROOT there) expire from it too; nothing outside the
+    // two restore folders is deleted, also not through a link inside one.
+    const legacyRoot = path.join(directory, 'legacy', 'backups', 'restores');
+    const outside = path.join(directory, 'outside');
+    await fs.mkdir(path.join(legacyRoot, userId), { recursive: true });
+    await fs.mkdir(outside, { recursive: true });
+    const stored = async (archive: string) => {
+      const id = crypto.randomUUID();
+      await pool.execute(`INSERT INTO backup_restore_jobs (id, user_id, source_type, status, archive_path, archive_size, expires_at)
+        VALUES (?, ?, 'upload', 'validated', ?, 9, UTC_TIMESTAMP() - INTERVAL 1 MINUTE)`, [id, userId, archive]);
+      return id;
+    };
+    const legacyFile = path.join(legacyRoot, userId, 'kept-by-0280.zip');
+    await fs.writeFile(legacyFile, 'synthetic');
+    const strayFile = path.join(outside, 'not-an-upload.zip');
+    await fs.writeFile(strayFile, 'synthetic');
+    const linkTarget = path.join(outside, 'linked-target.zip');
+    await fs.writeFile(linkTarget, 'synthetic');
+    const link = path.join(legacyRoot, userId, 'link-out.zip');
+    await fs.symlink(linkTarget, link);
+    const legacyJobs = [await stored(legacyFile), await stored(strayFile), await stored(link)];
+    assert.equal(await jobs.cleanupExpiredRestoreArchives({ legacyRoot }), 3);
+    const exists = (file: string) => fs.lstat(file).then(() => true, () => false);
+    assert.equal(await exists(legacyFile), false, 'an upload in the 0.28.0 restore folder is deleted when it expires');
+    assert.equal(await exists(strayFile), true, 'a path outside both restore folders is never deleted');
+    assert.equal(await exists(linkTarget), true, 'a link in the restore folder does not lead a deletion outside it');
+    for (const id of legacyJobs) {
+      const [[row]] = await pool.execute<RowDataPacket[]>('SELECT status, archive_path FROM backup_restore_jobs WHERE id = ?', [id]);
+      assert.deepEqual([row.status, row.archive_path], ['expired', null]);
+    }
   } finally {
     if (owned) { const connection = await pool.getConnection(); try { await connection.query('SET FOREIGN_KEY_CHECKS=0'); const [tables] = await connection.query<RowDataPacket[]>('SHOW TABLES'); for (const row of tables) await connection.query('DROP TABLE ??', [Object.values(row)[0]]); } finally { await connection.query('SET FOREIGN_KEY_CHECKS=1'); connection.release(); } }
     await pool.end(); await fs.rm(directory, { recursive: true, force: true });
