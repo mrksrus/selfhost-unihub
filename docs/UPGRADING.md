@@ -34,6 +34,41 @@ Going back to 0.27.x means restoring that backup: 0.27.x does not know step
 order"). Backups made by 0.28.0 use **data schema 7** and are always
 encrypted. An older UniHub cannot read them; 0.28.0 reads every older backup.
 
+- **Every backup is a password-protected ZIP.** The "Encrypt backups"
+  switch is gone and an API client's `encrypt: false` is ignored. Each
+  backup's recovery password is shown once, before its first download; keep
+  it with the file. 7-Zip and similar programs open the file with it. The
+  0.27 `.unihub-backup` files and the unencrypted ZIPs from before still
+  restore.
+- **Uploaded restore archives are removed seven days after the upload,**
+  never while a restore validates or runs from one; after that, upload the
+  backup again. Before, they stayed until deleted. Backups people made are
+  never removed automatically.
+- **Data-safety rules, as UniHub behaved before until you change them.**
+  Settings > Server settings > Policies lets an administrator require
+  downloaded mail in backups, keep backups for a minimum time, and stop
+  people from deleting their account, backups, accounts or data, or from
+  deleting from the bin for good (the bin then keeps items for a minimum
+  time).
+  Nothing changes until a rule is set, and setting one deletes nothing.
+  When an administrator changes what the rules say, everyone sees the rules
+  once at the next start and confirms them with OK; the sign-up form lists
+  them too. Rules are installation data: no person's backup carries them.
+  Saving them, an administrator's change for a person and the instance
+  backup's schedule ask for the administrator's password, and deleting
+  one's own account asks for one's own (`current_password` in
+  `DELETE /api/settings/account` for API clients).
+- **The instance backup's schedule is set on its page.**
+  `UNIHUB_INSTANCE_BACKUP_TIME` and `UNIHUB_INSTANCE_BACKUP_KEEP` are its
+  starting values; once an administrator saves a time and a count in Server
+  settings > Instance backup, those apply and the variables no longer do. The
+  destination and the key stay in the environment only. A lower count
+  removes the oldest backups at the next verified run.
+- **Still one API process.** A person's account changes now take turns
+  through a lock inside the API process, one more reason to run UniHub as
+  one app container with MariaDB. A change that waits longer than the
+  database allows answers 503 "Another change is in progress. Try again in a
+  moment."
 - **Instance backup, off until you set it up.** UniHub can now back up the
   whole installation itself: the database and every stored file, encrypted,
   daily to a disk or share you mount. Mount a destination of its own (not
