@@ -25,9 +25,10 @@ test('HTTP sync acknowledgement is prompt and status never includes another owne
   } } as NodeJS.Module;
   setDb({ execute: (async (sql: string, params: FixtureValue) => {
     if (sql.includes('FROM mail_accounts')) {
+      // Ids compare as MariaDB's collation does, ignoring case; the row has the stored spelling.
       if (sql.includes('WHERE id = ? AND user_id = ?')) {
         const owned = params[1] === 'alice' ? 'alice-mail' : 'bob-mail';
-        return [params[0] === owned ? [{ id: owned, is_active: 1, sync_status: 'idle' }] : []];
+        return [String(params[0]).toLowerCase() === owned ? [{ id: owned, is_active: 1, sync_status: 'idle' }] : []];
       }
       const owned = params[0] === 'alice' ? [{ id: 'alice-mail', sync_status: 'idle' }] : [{ id: 'bob-mail', sync_status: 'idle' }];
       return [params.length > 1 ? owned.filter(row => row.id === params[1]) : owned];
@@ -39,8 +40,10 @@ test('HTTP sync acknowledgement is prompt and status never includes another owne
   assert.equal((await routes['POST /api/mail/sync'](req('/api/mail/sync') as FixtureValue, 'alice', { account_id: 'bob-mail' })).status, 404);
   const accepted = await routes['POST /api/mail/sync'](req('/api/mail/sync') as FixtureValue, 'alice', { account_id: 'alice-mail' });
   assert.deepEqual([accepted.status, accepted.started, accepted.alreadyRunning], [202, true, false]);
-  const again = await routes['POST /api/mail/sync'](req('/api/mail/sync') as FixtureValue, 'alice', { account_id: 'alice-mail' });
-  assert.deepEqual([again.status, again.started, again.alreadyRunning], [200, false, true]);
+  // Another spelling of the same id is the same account and its one sync.
+  const again = await routes['POST /api/mail/sync'](req('/api/mail/sync') as FixtureValue, 'alice', { account_id: 'ALICE-MAIL' });
+  assert.deepEqual([again.status, again.started, again.alreadyRunning, again.account_id], [200, false, true, 'alice-mail']);
+  assert.deepEqual([...jobs.keys()], ['alice-mail']);
   const status = await routes['GET /api/mail/sync/status'](req('/api/mail/sync/status') as FixtureValue, 'alice');
   assert.deepEqual(status.accounts!.map((row) => row.account_id), ['alice-mail']);
   assert.equal((await routes['GET /api/mail/sync/status'](req('/api/mail/sync/status?account_id=bob-mail') as FixtureValue, 'alice')).status, 404);
@@ -49,7 +52,7 @@ test('HTTP sync acknowledgement is prompt and status never includes another owne
   assert.equal((await cancel(req('/api/mail/sync/cancel') as FixtureValue, 'alice', {})).status, 400);
   assert.equal((await cancel(req('/api/mail/sync/cancel') as FixtureValue, 'alice', { account_id: 'bob-mail' })).status, 404);
   assert.deepEqual(cancellations, [], 'foreign or invalid cancellation never reaches the scheduler');
-  const cancelled = await cancel(req('/api/mail/sync/cancel') as FixtureValue, 'alice', { account_id: 'alice-mail' });
+  const cancelled = await cancel(req('/api/mail/sync/cancel') as FixtureValue, 'alice', { account_id: 'Alice-Mail' });
   assert.equal(cancelled.status, 202);
   assert.equal(cancelled.cancellationRequested, true);
   assert.deepEqual(cancellations, ['alice-mail']);

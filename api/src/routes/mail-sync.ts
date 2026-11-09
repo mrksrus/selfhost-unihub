@@ -92,16 +92,17 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
-      const { account_id } = body;
-      if (!account_id) return { error: 'Account ID required', status: 400 };
+      if (!body?.account_id) return { error: 'Account ID required', status: 400 };
 
       // Verify account belongs to user before scheduling any provider work.
       const [accounts] = await db.execute<RowDataPacket[]>(
         'SELECT id, is_active FROM mail_accounts WHERE id = ? AND user_id = ?',
-        [account_id, userId]
+        [body.account_id, userId]
       );
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
       if (!accounts[0].is_active) return { error: 'Mail account is inactive', status: 409 };
+      // The stored spelling: the scheduler's keys and the jobs' rows match it exactly.
+      const account_id = String(accounts[0].id);
 
       const job = await scheduleMailAccountSync(account_id);
       job.promise.then(result => {
@@ -123,10 +124,10 @@ export = {
     try {
       const [accounts] = await db.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
       if (!accounts.length) return { error: 'Account not found', status: 404 };
-      const requested = await cancelMailAccountSync(accountId);
+      const requested = await cancelMailAccountSync(String(accounts[0].id));
       // A running IMAP command stops cooperatively. The status endpoint, not
       // this acknowledgement, establishes when its cleanup has completed.
-      return { success: true, account_id: accountId, cancellationRequested: requested,
+      return { success: true, account_id: String(accounts[0].id), cancellationRequested: requested,
         message: requested ? 'Cancellation requested; check sync status.' : 'No active sync for this account.',
         status: requested ? 202 : 200 };
     } catch (error) {
