@@ -127,8 +127,11 @@ test('deleting a user removes their rows and files under every root, nothing of 
     assert.deepEqual(await everythingOf(a), intact);
     assert.deepEqual(await everythingOf(b), intact);
 
+    // From a live session of the administrator's: the deletion's final step asks again that it is (services/caller-proof.ts).
+    const adminToken = `synthetic-lifecycle-admin-session-${admin}`;
+    await (require('../dist/src/services/sessions') as typeof import('../src/services/sessions')).createSession({ userId: admin, token: adminToken, expiresAt: new Date(Date.now() + 3600_000) }, connection);
     const adminDelete = (actor: string, target: string) =>
-      adminRoutes['DELETE /api/admin/users/:id'].handler({ url: `/api/admin/users/${target}`, headers: {}, params: { id: target } } as FixtureValue, actor,
+      adminRoutes['DELETE /api/admin/users/:id'].handler({ url: `/api/admin/users/${target}`, headers: { cookie: `auth-token=${adminToken}` }, params: { id: target } } as FixtureValue, actor,
         { current_password: 'synthetic-lifecycle-admin-password' } as FixtureValue, response() as FixtureValue);
 
     // A restore writing for A: the admin's request is refused and nothing of A changes.

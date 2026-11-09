@@ -37,6 +37,17 @@ Fixes after 0.28.0. No database upgrade and no configuration change.
   attachment files, but left each message's original file in the server's
   uploads, where nobody could see it but it still took space. It is now
   deleted as when one account is deleted.
+- **There is always an administrator left.** Two administrators removing,
+  demoting or deactivating each other at the same moment could both succeed
+  and leave the server without one, and the only administrator could delete
+  their own account in Settings. Now one of the two changes is refused, and
+  the last administrator's account cannot be deleted.
+- **An administrator's change of a person checks the administrator again as
+  it happens.** Resetting a password, changing a role, deactivating or
+  deleting a person went through even if the administrator was signed out,
+  lost the administrator role or changed their password while it waited.
+  Now it is refused and nothing changes, as for the other administrator
+  changes since 0.28.0.
 
 ## 0.28.0
 

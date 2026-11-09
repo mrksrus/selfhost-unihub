@@ -386,9 +386,15 @@ Settings > Server settings > Activity.
 Safety checks:
 
 - admins cannot delete their own account through the admin delete endpoint
-- the last active admin cannot be deleted
-- the last active admin cannot be demoted
-- the last active admin cannot be deactivated
+- the last active admin cannot be deleted (also not through Settings > Delete
+  account), demoted or deactivated (`400 LAST_ADMIN`). The check locks every
+  active admin's row in the transaction of the change, so two admins removing
+  each other at once leave one
+- changing a person's password, role or status and deleting a person ask
+  again, in the transaction that writes, that the admin is still an active
+  admin, signed in with this session and with the password entered
+  (`services/caller-proof.ts`): `401 SESSION_ENDED`, `403 ADMIN_REQUIRED` or
+  `403 PASSWORD_CHANGED`, and nothing changes
 - admins cannot reset their own 2FA through the admin endpoint
 - deactivating a user deletes their sessions
 - deleting a user removes their rows and their files (mail attachments, raw

@@ -198,13 +198,15 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     const steward = crypto.randomUUID();
     await pool.execute<ResultSetHeader>("INSERT INTO users (id,email,password_hash,role,is_active) VALUES (?,'steward@example.test',?,'admin',TRUE)",
       [steward, await hashPassword('synthetic-steward-password')]);
+    // From a live session of the steward's own: the change's final step asks again that it is (services/caller-proof.ts).
+    await addSession(steward, 'steward-session');
     await addSession(person, 'person-phone');
     const stored = async () => (await pool.execute<RowDataPacket[]>('SELECT role, password_hash FROM users WHERE id = ?', [person]))[0][0];
     const before = await stored();
     const setPassword = async (body: FixtureValue) => (await adminRoutes['PUT /api/admin/users/:id/password'].handler(
-      request('admin-session', `/api/admin/users/${person}/password`, { id: person }) as FixtureValue, steward, body, response() as FixtureValue)) as FixtureValue;
+      request('steward-session', `/api/admin/users/${person}/password`, { id: person }) as FixtureValue, steward, body, response() as FixtureValue)) as FixtureValue;
     const setRole = async (body: FixtureValue) => (await adminRoutes['PUT /api/admin/users/:id/role'].handler(
-      request('admin-session', `/api/admin/users/${person}/role`, { id: person }) as FixtureValue, steward, body, response() as FixtureValue)) as FixtureValue;
+      request('steward-session', `/api/admin/users/${person}/role`, { id: person }) as FixtureValue, steward, body, response() as FixtureValue)) as FixtureValue;
     assert.deepEqual([(await setPassword({ new_password: 'synthetic-new-person-password' })).code, (await setRole({ role: 'admin' })).code],
       ['ADMIN_PASSWORD_REQUIRED', 'ADMIN_PASSWORD_REQUIRED']);
     assert.equal((await setPassword({ new_password: 'synthetic-new-person-password', current_password: 'wrong' })).status, 403);
@@ -222,9 +224,9 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     const leaver = crypto.randomUUID();
     await pool.execute<ResultSetHeader>("INSERT INTO users (id,email,password_hash,role,is_active) VALUES (?,'leaver@example.test','x','user',TRUE)", [leaver]);
     const setActive = async (body: FixtureValue) => (await adminRoutes['PUT /api/admin/users/:id/activate'].handler(
-      request('admin-session', `/api/admin/users/${leaver}/activate`, { id: leaver }) as FixtureValue, steward, body, response() as FixtureValue)) as FixtureValue;
+      request('steward-session', `/api/admin/users/${leaver}/activate`, { id: leaver }) as FixtureValue, steward, body, response() as FixtureValue)) as FixtureValue;
     const remove = async (body: FixtureValue) => (await adminRoutes['DELETE /api/admin/users/:id'].handler(
-      request('admin-session', `/api/admin/users/${leaver}`, { id: leaver }) as FixtureValue, steward, body, response() as FixtureValue)) as FixtureValue;
+      request('steward-session', `/api/admin/users/${leaver}`, { id: leaver }) as FixtureValue, steward, body, response() as FixtureValue)) as FixtureValue;
     const leaverRow = async () => (await pool.execute<RowDataPacket[]>('SELECT is_active FROM users WHERE id = ?', [leaver]))[0][0];
     assert.deepEqual([(await setActive({ is_active: false })).code, (await remove({})).code], ['ADMIN_PASSWORD_REQUIRED', 'ADMIN_PASSWORD_REQUIRED']);
     assert.equal((await remove({ current_password: 'wrong' })).status, 403);

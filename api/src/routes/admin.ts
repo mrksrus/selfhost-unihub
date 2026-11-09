@@ -1,5 +1,5 @@
 import type { RowDataPacket } from 'mysql2/promise';
-import type { RouteRequest, ApiError } from '../types';
+import type { RouteRequest, ApiError, SqlExecutor } from '../types';
 import fs from 'fs';
 import path from 'path';
 import { db } from '../state';
@@ -9,14 +9,16 @@ import { RECORDINGS_ROOT } from '../services/recordings';
 import { BACKUPS_ROOT } from '../services/export-jobs';
 import { realtime } from '../services/realtime';
 import { endUserSessions, lockOwnSession } from '../services/sessions';
-import { deleteUser } from '../services/user-lifecycle';
+import { assertKeepsAnAdmin, deleteUser } from '../services/user-lifecycle';
+import { asCaller, assertCaller } from '../services/caller-proof';
+import { withTransaction } from '../services/transactions';
 import { listAuditLog, recordAudit, recordAuditAfter } from '../services/audit';
 import { clientError } from '../http/errors';
 import {
   hashPassword,
   getAuthTokenFromRequest,
 } from '../auth';
-import { confirmPassword } from '../security/reauthentication';
+import { confirmPassword, confirmPasswordHash } from '../security/reauthentication';
 import { disableTwoFactor } from '../services/two-factor';
 import { getSignupMode, isSignupMode, setSignupMode } from '../services/settings';
 import { defineRoutes } from '../http/route';
@@ -41,6 +43,12 @@ async function getActiveAdminCount() {
 // Changing another person's password, role or 2FA, deactivating or deleting
 // them needs the admin's own password again, so a stolen or unattended admin
 // session cannot take over or remove an account (security/reauthentication.ts).
+// The person's row, locked for the change: false when they are gone.
+async function lockPerson(connection: SqlExecutor, id: string) {
+  const [rows] = await connection.execute<RowDataPacket[]>('SELECT id FROM users WHERE id = ? FOR UPDATE', [id]);
+  return rows.length > 0;
+}
+
 // The person of `:id` as stored (admin-path.ts personFromParam): one
 // spelling of their id for the checks below and for every change.
 async function storedPerson(req: Request): Promise<{ id: string } | { refused: ReturnType<typeof clientError> }> {
@@ -49,6 +57,15 @@ async function storedPerson(req: Request): Promise<{ id: string } | { refused: R
 
 function confirmAdminPassword(userId: string, body: Input, res?: import('node:http').ServerResponse | null) {
   return confirmPassword(userId, body?.current_password, res);
+}
+
+// The change of a person's password, role or status, or their deletion, as
+// the administrator who asked (services/caller-proof.ts): its final step asks
+// again, under its locks, that they are still an active administrator,
+// signed in with this session and, where they entered it, this password
+// (`passwordHash`, the hash it matched; null when none was asked).
+function asAdmin<T>(req: Request, userId: string, passwordHash: string | null, work: () => Promise<T>) {
+  return asCaller({ userId, token: getAuthTokenFromRequest(req), admin: true, passwordHash }, work);
 }
 
 async function getUserRoleStatus(targetId: string) {
@@ -300,17 +317,24 @@ export = defineRoutes({
     }
 
     try {
-      const refused = await confirmAdminPassword(userId, body, res);
-      if (refused) return refused;
+      const confirmed = await confirmPasswordHash(userId, body?.current_password, res);
+      if ('refused' in confirmed) return confirmed.refused;
       const newHash = await hashPassword(new_password);
-      await db.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, targetId]);
-      // Invalidate all sessions so the user must re-login
-      await endUserSessions(targetId);
+      const found = await asAdmin(req, userId, confirmed.passwordHash, () => withTransaction(async connection => {
+        if (!await lockPerson(connection, targetId)) return false;
+        await assertCaller(connection);
+        await connection.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, targetId]);
+        // Invalidate all sessions so the user must re-login
+        await endUserSessions(targetId, connection);
+        return true;
+      }));
+      if (!found) return { error: 'User not found', status: 404 };
       realtime.closeUser(targetId);
       await recordAuditAfter({ action: 'admin.password_reset', actorId: userId, targetUserId: targetId, req });
       return { message: 'Password updated successfully' };
     } catch (error) {
-      return { error: 'Failed to update password', status: 500 };
+      if (!(error as ApiError).status) console.error('Admin password reset error:', error);
+      return clientError(error, 'Failed to update password');
     }
   } },
 
@@ -380,14 +404,15 @@ export = defineRoutes({
     }
 
     try {
-      const refused = await confirmAdminPassword(userId, body, res);
-      if (refused) return refused;
+      const confirmed = await confirmPasswordHash(userId, body?.current_password, res);
+      if ('refused' in confirmed) return confirmed.refused;
       const targetUser = await getUserRoleStatus(id);
       if (!targetUser) return { error: 'User not found', status: 404 };
+      // A quick answer before any work stops; deleteUser checks again under its locks.
       if (targetUser.role === 'admin' && targetUser.is_active && (await getActiveAdminCount()) <= 1) {
         return { error: 'Cannot delete the last active admin', status: 400 };
       }
-      await deleteUser(id, { actor: 'admin', actorId: userId, req });
+      await asAdmin(req, userId, confirmed.passwordHash, () => deleteUser(id, { actor: 'admin', actorId: userId, req }));
       return { message: 'User deleted' };
     } catch (error) {
       if (!(error as ApiError).status) console.error('Admin delete user error:', error);
@@ -406,19 +431,21 @@ export = defineRoutes({
     }
 
     try {
-      const refused = await confirmAdminPassword(userId, body, res);
-      if (refused) return refused;
-      const targetUser = await getUserRoleStatus(id);
-      if (!targetUser) return { error: 'User not found', status: 404 };
-      if (targetUser.role === 'admin' && nextRole === 'user' && targetUser.is_active && (await getActiveAdminCount()) <= 1) {
-        return { error: 'Cannot demote the last active admin', status: 400 };
-      }
-      await db.execute('UPDATE users SET role = ? WHERE id = ?', [nextRole, id]);
+      const confirmed = await confirmPasswordHash(userId, body?.current_password, res);
+      if ('refused' in confirmed) return confirmed.refused;
+      const found = await asAdmin(req, userId, confirmed.passwordHash, () => withTransaction(async connection => {
+        if (nextRole === 'user') await assertKeepsAnAdmin(connection, id, 'demote');
+        if (!await lockPerson(connection, id)) return false;
+        await assertCaller(connection);
+        await connection.execute('UPDATE users SET role = ? WHERE id = ?', [nextRole, id]);
+        return true;
+      }));
+      if (!found) return { error: 'User not found', status: 404 };
       await recordAuditAfter({ action: 'admin.role_changed', actorId: userId, targetUserId: id, req, details: { role: nextRole } });
       return { message: `User role set to ${nextRole}` };
     } catch (error) {
-      console.error('Update user role error:', error);
-      return { error: 'Failed to update user role', status: 500 };
+      if (!(error as ApiError).status) console.error('Update user role error:', error);
+      return clientError(error, 'Failed to update user role');
     }
   } },
 
@@ -431,24 +458,27 @@ export = defineRoutes({
 
     try {
       // Activating gives an account back; taking it away is confirmed.
+      let passwordHash: string | null = null;
       if (!is_active) {
-        const refused = await confirmAdminPassword(userId, body, res);
-        if (refused) return refused;
+        const confirmed = await confirmPasswordHash(userId, body?.current_password, res);
+        if ('refused' in confirmed) return confirmed.refused;
+        passwordHash = confirmed.passwordHash;
       }
-      const targetUser = await getUserRoleStatus(id);
-      if (!targetUser) return { error: 'User not found', status: 404 };
-      if (!is_active && targetUser.role === 'admin' && targetUser.is_active && (await getActiveAdminCount()) <= 1) {
-        return { error: 'Cannot deactivate the last active admin', status: 400 };
-      }
-      await db.execute('UPDATE users SET is_active = ? WHERE id = ?', [!!is_active, id]);
-      if (!is_active) {
-        await endUserSessions(id);
-        realtime.closeUser(id);
-      }
+      const found = await asAdmin(req, userId, passwordHash, () => withTransaction(async connection => {
+        if (!is_active) await assertKeepsAnAdmin(connection, id, 'deactivate');
+        if (!await lockPerson(connection, id)) return false;
+        await assertCaller(connection);
+        await connection.execute('UPDATE users SET is_active = ? WHERE id = ?', [!!is_active, id]);
+        if (!is_active) await endUserSessions(id, connection);
+        return true;
+      }));
+      if (!found) return { error: 'User not found', status: 404 };
+      if (!is_active) realtime.closeUser(id);
       await recordAuditAfter({ action: is_active ? 'admin.user_activated' : 'admin.user_deactivated', actorId: userId, targetUserId: id, req });
       return { message: is_active ? 'User activated' : 'User deactivated' };
     } catch (error) {
-      return { error: 'Failed to update user status', status: 500 };
+      if (!(error as ApiError).status) console.error('Update user status error:', error);
+      return clientError(error, 'Failed to update user status');
     }
   } },
 

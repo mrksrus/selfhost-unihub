@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { db } from '../state';
-import { conflict, notFound } from '../http/errors';
+import { badRequest, conflict, notFound } from '../http/errors';
 import { withTransaction } from './transactions';
 import { getActiveRestoreSections } from './restore-locks';
 import { attachmentsRoot, rawRoot, mailPathUnderRoot, ownedMailPath } from './mail-storage';
@@ -15,16 +15,36 @@ import { log } from '../log';
 import { recordAudit } from './audit';
 import { assertFinalStep } from './final-step';
 import { withPersonLock } from './person-lock';
-import type { AuthRequest } from '../types';
+import type { AuthRequest, SqlExecutor } from '../types';
 
 type DeleteActor = 'self' | 'admin';
 interface DeleteUserResult { files: { removed: number; failed: number; deferred?: boolean } }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+type AdminLoss = 'delete' | 'demote' | 'deactivate';
+const LAST_ADMIN: Readonly<Record<AdminLoss, string>> = {
+  delete: 'Cannot delete the last active admin',
+  demote: 'Cannot demote the last active admin',
+  deactivate: 'Cannot deactivate the last active admin',
+};
+
+/**
+ * In the transaction of a change that deletes, demotes or deactivates
+ * `userId`: refuses it when they are the only active administrator. Every
+ * active administrator's row is locked first, in id order, so two such
+ * changes (each removing a different administrator) take turns and the
+ * second counts what the first left. A route may refuse earlier for a quick
+ * answer; this is the check that holds.
+ */
+async function assertKeepsAnAdmin(connection: SqlExecutor, userId: string, loss: AdminLoss) {
+  const [admins] = await connection.execute<RowDataPacket[]>("SELECT id FROM users WHERE role = 'admin' AND is_active = TRUE ORDER BY id FOR UPDATE");
+  if (admins.length <= 1 && admins.some(row => String(row.id) === userId)) throw badRequest('LAST_ADMIN', LAST_ADMIN[loss]);
+}
+
 // Removing a person's account, whether they ask (DELETE /api/settings/account)
 // or an administrator does (DELETE /api/admin/users/:id). The routes keep their
-// own checks (password, role, last admin); this owns the order that keeps the
+// own checks (password, role); this owns the last-admin check and the order that keeps the
 // outcome recoverable: refuse while a restore writes for this person, stop the
 // mail work that could still write files, delete the users row (every table
 // cascades from it), then remove the files. A file that outlives its rows is a
@@ -93,6 +113,8 @@ async function removeRows(userId: string, { actor, actorId, req }: { actor: Dele
     // Under the person's row, the final check (final-step.ts): their own
     // request still allowed (account.delete), and no restore of theirs
     // admitted meanwhile.
+    // An administrator's account, also their own, never the last one.
+    await assertKeepsAnAdmin(connection, userId, 'delete');
     const [[person]] = await connection.execute<RowDataPacket[]>('SELECT id FROM users WHERE id = ? FOR UPDATE', [userId]);
     if (!person) return false;
     await assertFinalStep(connection, { userId, policies: actor === 'self' ? ['account.delete'] : [], anyRestore: true });
@@ -141,4 +163,4 @@ async function removeUserFiles(userId: string, files: Set<string>, recordingPath
 }
 
 export type { DeleteActor, DeleteUserResult };
-export { deleteUser };
+export { assertKeepsAnAdmin, deleteUser };
