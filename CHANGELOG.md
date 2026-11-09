@@ -32,6 +32,11 @@ Fixes after 0.28.0. No database upgrade and no configuration change.
   microphone answers; a refused microphone returns the page to its idle
   state, and a start abandoned by leaving the page or switching accounts
   releases the microphone when it answers late.
+- **Clearing all mail accounts also deletes the stored messages.** Settings →
+  Delete data → Mail accounts removed the accounts, their mail and the
+  attachment files, but left each message's original file in the server's
+  uploads, where nobody could see it but it still took space. It is now
+  deleted as when one account is deleted.
 
 ## 0.28.0
 

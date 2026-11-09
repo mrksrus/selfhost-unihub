@@ -131,6 +131,7 @@ Attachment files are deleted when:
 
 - a mail account is deleted through `DELETE /api/mail/accounts/:id`
 - all mail accounts are cleared through `POST /api/settings/clear-mail-accounts`
+  (with the stored raw messages, as when one account is purged)
 - the user account is deleted through `DELETE /api/settings/account`
 
 There is no age-based attachment cleanup job.

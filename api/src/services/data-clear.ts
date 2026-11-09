@@ -10,6 +10,7 @@ import { assertAllowed } from './settings';
 import { assertFinalStep } from './final-step';
 import { recordAudit } from './audit';
 import { withPersonLock } from './person-lock';
+import { fileRemovalGate } from './file-removal-gate';
 import type { PolicyActor } from './settings';
 
 // Settings → Delete data: every item of one module, for good (no bin). The
@@ -126,10 +127,12 @@ async function clearMailAccounts(userId: string, actor: ClearActor): Promise<Cle
     await finalCheck(cx, userId, 'mail-accounts', actor, linked.length ? ['mail', 'calendar'] : ['mail']);
     if (await countUnresolved(userId, cx)) throw unresolvedOperations();
     const [files] = await cx.execute<(RowDataPacket & { storage_path: string | null })[]>('SELECT storage_path FROM email_attachments WHERE user_id = ?', [userId]);
+    // Every message goes with its account (emails.mail_account_id cascades), and its raw .eml with it.
+    const [raws] = await cx.execute<(RowDataPacket & { raw_storage_path: string })[]>('SELECT raw_storage_path FROM emails WHERE user_id = ? AND raw_storage_path IS NOT NULL', [userId]);
     const [result] = await cx.execute<ResultSetHeader>('DELETE FROM mail_accounts WHERE user_id = ?', [userId]);
     for (const calendar of linked) await unlinkFromDeletedMail(cx, calendar, calendar.mail_account_id);
     if (actor.adminId) await recordAudit(auditEntry(userId, 'mail-accounts', result.affectedRows || 0, actor), cx);
-    return { deleted: result.affectedRows || 0, linkedCalendars: linked, attachments: files };
+    return { deleted: result.affectedRows || 0, linkedCalendars: linked, attachments: files, rawPaths: raws.map(row => row.raw_storage_path) };
   });
   let outcome: Awaited<ReturnType<typeof clear>>;
   try {
@@ -141,18 +144,25 @@ async function clearMailAccounts(userId: string, actor: ClearActor): Promise<Cle
   }
   // The accounts and their jobs are gone, and with them their turns.
   for (const pause of pauses) await mail.endOwnedMailAccountStop(pause);
-  const { deleted, linkedCalendars, attachments } = outcome;
+  const { deleted, linkedCalendars, attachments, rawPaths } = outcome;
   const { publishCalendarChanged } = require('./realtime') as typeof import('./realtime');
   for (const calendar of linkedCalendars) {
     if (calendar.provider === 'caldav') stopCalendarAccountWork(calendar.id, 'unlinked');
     publishCalendarChanged(userId, calendar.id, 'status');
   }
   const fileResult = await mail.deleteStoredAttachmentFiles(attachments.map(row => row.storage_path));
+  // As purging one account does: only files no row names any more, and after
+  // an instance backup's copy when one runs (file-removal-gate.ts).
+  const { removeUnreferencedRaw } = require('./mail-account-lifecycle') as typeof import('./mail-account-lifecycle');
+  const rawRemoval = await fileRemovalGate.run(() => removeUnreferencedRaw(userId, rawPaths));
+  const rawResult = rawRemoval === 'deferred' ? { deletedFiles: 0, failedFiles: 0 } : rawRemoval;
   return {
     message: `Deleted ${deleted} mail account(s). Removed ${fileResult.deletedFiles} attachment file(s).`,
     deleted,
     deletedAttachmentFiles: fileResult.deletedFiles,
     failedAttachmentFiles: fileResult.failedFiles,
+    deletedRawFiles: rawResult.deletedFiles,
+    failedRawFiles: rawResult.failedFiles,
   };
 }
 

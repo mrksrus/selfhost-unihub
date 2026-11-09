@@ -774,7 +774,7 @@ These routes are for the current user and require CSRF:
 | DELETE | `/api/settings/account` | Delete current user and associated uploaded files; needs `{ "current_password": "..." }` (`account.delete`) |
 | POST | `/api/settings/clear-contacts` | Delete all contacts in the list; contacts in the bin stay until it is emptied (`data.clear`) |
 | POST | `/api/settings/clear-calendar` | Delete calendar/to-do data and recreate default local calendar; events and tasks in the bin stay until it is emptied (`data.clear`, `accounts.remove`) |
-| POST | `/api/settings/clear-mail-accounts` | Delete all mail accounts and attachment files (`data.clear`, `accounts.remove`, `accounts.reset`); `409 MAIL_OPERATIONS_UNRESOLVED` while a provider change has an unresolved outcome; with calendars connected from mail, also Calendar's module switch and restore lock |
+| POST | `/api/settings/clear-mail-accounts` | Delete all mail accounts with their attachment files and stored raw messages (`data.clear`, `accounts.remove`, `accounts.reset`); `409 MAIL_OPERATIONS_UNRESOLVED` while a provider change has an unresolved outcome; with calendars connected from mail, also Calendar's module switch and restore lock |
 | POST | `/api/settings/clear-recordings` | Delete all recordings in the library and their files; recordings in the bin, and their files, stay until it is emptied (`data.clear`) |
 | GET | `/api/settings/mail-sender-candidates` | Suggest sender/domain rule candidates from local mail |
 

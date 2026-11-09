@@ -235,8 +235,46 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     // a copy of the mail password.
     await connection.execute<ResultSetHeader>(`UPDATE calendar_accounts SET mail_account_id = ?, provider_config = '{"server":{"url":"https://dav.example.test"}}',
       encrypted_password = ? WHERE id = ?`, [paused.mail, encrypt('old-copy'), paused.calendarAccount]);
+    // Every message has its raw .eml and one an attachment, as after an
+    // import; clearing removes the person's files as purging one account does
+    // and leaves another person's.
+    const fsp = require('node:fs/promises') as typeof import('node:fs/promises');
+    const pathModule = require('node:path') as typeof import('node:path');
+    const os = require('node:os') as typeof import('node:os');
+    const storage = await fsp.mkdtemp(pathModule.join(os.tmpdir(), 'unihub-clear-mail-'));
+    const roots = { raw: process.env.MAIL_RAW_STORAGE_ROOT, attachment: process.env.MAIL_ATTACHMENT_UPLOAD_ROOT };
+    process.env.MAIL_RAW_STORAGE_ROOT = pathModule.join(storage, 'mail-raw');
+    process.env.MAIL_ATTACHMENT_UPLOAD_ROOT = pathModule.join(storage, 'attachments');
+    t.after(async () => {
+      if (roots.raw === undefined) delete process.env.MAIL_RAW_STORAGE_ROOT; else process.env.MAIL_RAW_STORAGE_ROOT = roots.raw;
+      if (roots.attachment === undefined) delete process.env.MAIL_ATTACHMENT_UPLOAD_ROOT; else process.env.MAIL_ATTACHMENT_UPLOAD_ROOT = roots.attachment;
+      await fsp.rm(storage, { recursive: true, force: true });
+    });
+    const storeFiles = async (user: string) => {
+      const [messages] = await connection.execute<RowDataPacket[]>('SELECT id FROM emails WHERE user_id = ? ORDER BY id', [user]);
+      const files: string[] = [];
+      for (const message of messages) {
+        const raw = pathModule.join(process.env.MAIL_RAW_STORAGE_ROOT!, user, `${message.id}-${crypto.randomUUID()}.eml`);
+        await fsp.mkdir(pathModule.dirname(raw), { recursive: true });
+        await fsp.writeFile(raw, 'Subject: synthetic\r\n\r\nSynthetic body\r\n');
+        await connection.execute('UPDATE emails SET raw_storage_path = ? WHERE id = ?', [raw, message.id]);
+        files.push(raw);
+      }
+      const attachment = pathModule.join(process.env.MAIL_ATTACHMENT_UPLOAD_ROOT!, user, `${crypto.randomUUID()}.bin`);
+      await fsp.mkdir(pathModule.dirname(attachment), { recursive: true });
+      await fsp.writeFile(attachment, 'synthetic attachment');
+      await connection.execute(`INSERT INTO email_attachments (id, user_id, email_id, filename, content_type, size_bytes, storage_path)
+        VALUES (?, ?, ?, 'note.txt', 'text/plain', 20, ?)`, [crypto.randomUUID(), user, messages[0].id, attachment]);
+      return [...files, attachment];
+    };
+    const exists = (file: string) => fsp.access(file).then(() => true, () => false);
+    const clearedFiles = await storeFiles(paused.user);
+    const keptFiles = await storeFiles(other.user);
+    assert.equal(clearedFiles.length, 3);
     const settingsRoutes = require('../dist/src/routes/settings') as typeof import('../src/routes/settings');
     await settingsRoutes['POST /api/settings/clear-mail-accounts'].handler({} as FixtureValue, paused.user);
+    assert.deepEqual(await Promise.all(clearedFiles.map(exists)), [false, false, false], 'The raw messages and the attachment are gone');
+    assert.deepEqual(await Promise.all(keptFiles.map(exists)), [true, true, true], "Another person's files stay");
     const [[cleared]] = await connection.execute<RowDataPacket[]>('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
     assert.equal(cleared.mail_account_id, null);
     assert.equal(cleared.encrypted_password, null, 'The copy goes with the link');
