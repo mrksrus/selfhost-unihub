@@ -381,7 +381,7 @@ async function scanMailboxSlice({ db, connection, account, folder, stream = 'rec
     return repository.ensureMailbox({
       userId: account.user_id, accountId: account.id, folderName: folder.folderName, epoch,
       metadata: { localFolderSlug: folder.dbFolderName, delimiter: folder.delimiter || '/',
-        specialUse: folder.specialUse || null } }, executor);
+        specialUse: folder.specialUse || null, providerMailboxId: selected.mailboxId } }, executor);
   }, db);
   if (targetUid !== null && targetUid > remoteUpper) return { stream, mailboxId: mailbox.id,
     processed: 0, inserted: 0, covered: false, more: false, upper: remoteUpper, currentUpper: remoteUpper };

@@ -1,7 +1,7 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError, SqlExecutor } from '../types';
 import { folderConnections } from '../services/mail-folder-reconciliation';
-import { deleteMailFolder, SERVER_DELETE_VALUES } from '../services/mail-folder-delete';
+import { deleteMailFolder, folderServerCopies, SERVER_DELETE_VALUES } from '../services/mail-folder-delete';
 import { folderMembershipSql, membershipCountQuery, unreadMembershipQuery } from '../services/mail-folder-view';
 import { keepsSnoozedInLists } from '../services/mail-snooze';
 import { filingAccountId, folderAcceptsAccount } from '../services/mail-filing';
@@ -117,6 +117,7 @@ async function getMailFolderRowsWithCounts(userId: string, accountId: string | n
     },
   ]));
   const links = await folderConnections(userId);
+  const copies = await folderServerCopies(userId);
   const [legacyRows] = await db.execute<RowDataPacket[]>('SELECT folder, COUNT(*) AS count FROM emails WHERE user_id = ? AND is_legacy = TRUE GROUP BY folder', [userId]);
   const legacyCounts = new Map(legacyRows.map(row => [row.folder, Number(row.count)]));
   for (const row of legacyRows) {
@@ -129,6 +130,8 @@ async function getMailFolderRowsWithCounts(userId: string, accountId: string | n
     // What a notification filter's 'role:<role>' matches (Settings' folder picker).
     roles: mailFolderRoles(folder),
     connected_account_ids: links.get(folder.slug) || [],
+    // What deleting it at the provider names (FolderDeleteRequest).
+    server_copies: copies.get(folder.slug) || [],
     legacy_count: legacyCounts.get(folder.slug) || 0,
     total_count: countsByFolder.get(folder.slug)?.total_count || 0,
     unread_count: countsByFolder.get(folder.slug)?.unread_count || 0,
@@ -279,15 +282,16 @@ export = {
   },
 
   // `?server=1` deletes a server folder on the mail server as well, with its
-  // messages; without it only a folder that exists just in UniHub can go.
-  'DELETE /api/mail/folders/:slug': async (req: Request, userId: string | null) => {
+  // messages, and the body names the copies shown (FolderDeleteRequest);
+  // without it only a folder that exists just in UniHub can go.
+  'DELETE /api/mail/folders/:slug': async (req: Request, userId: string | null, body: Input) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try {
       const slug = normalizeMailFolderSlug(req.params.slug);
       if (!slug) return { error: 'Folder is required', status: 400 };
       const url = new URL(req.url, `http://${req.headers.host}`);
       const server = SERVER_DELETE_VALUES.includes(url.searchParams.get('server') || '');
-      const result = await deleteMailFolder({ userId, slug, server });
+      const result = await deleteMailFolder({ userId, slug, server, copies: (body as { copies?: unknown } | null)?.copies });
       return { deleted: true, ...result, folders: await getMailFolderRowsWithCounts(userId) };
     } catch (error) {
       if (!(error as ApiError).status) console.error('Delete mail folder error:', error);

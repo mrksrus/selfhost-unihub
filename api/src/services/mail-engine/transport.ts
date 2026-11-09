@@ -74,7 +74,7 @@ async function selectMailbox(connection: ProtocolConnection, { folder, readOnly 
     const uidvalidity = uint32(box.uidValidity, 'UIDVALIDITY');
     const uidnext = box.uidNext ? uint32(box.uidNext, 'UIDNEXT') : null;
     const highestmodseq = optionalModseq(box.highestModseq);
-    return { folder, uidvalidity, uidnext, highestmodseq, nomodseq: !!box.noModseq, readOnly: !!box.readOnly,
+    return { folder, uidvalidity, uidnext, highestmodseq, nomodseq: !!box.noModseq, readOnly: !!box.readOnly, mailboxId: objectId(box.mailboxId),
       capabilities: { move: advertised(connection, 'MOVE'),
         condstore: connection.enabled?.has('CONDSTORE') === true && !box.noModseq && highestmodseq !== null,
         uidplus: advertised(connection, 'UIDPLUS'), xGmExt1: advertised(connection, 'X-GM-EXT-1') } };
@@ -249,4 +249,53 @@ async function nativeMove(connection: ProtocolConnection, { uid, uidvalidity, so
         ? 'both' : codes[0]?.placement || null, reason: mappingStatus === 'valid' ? null : mappingStatus === 'missing' ? 'COPYUID not provided' : 'COPYUID malformed or inconsistent' } };
   } finally { detach(); }
 }
-export { selectMailbox, fetchMetadataWindow, fetchRawMessage, setFlag, nativeMove };
+// A server's MAILBOXID (RFC 8474 objectid: 1 to 255 of A-Z a-z 0-9 _ -), or null.
+function objectId(value: unknown) {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,255}$/.test(value) ? value : null;
+}
+function nonexistent(error: unknown) {
+  const reply = error as ProtocolError & { serverResponseCode?: string };
+  return reply?.serverResponseCode === 'NONEXISTENT' || responseCode(reply?.response)?.key === 'NONEXISTENT';
+}
+/**
+ * The generation of the mailbox with this exact name as the server holds it
+ * now: its UIDVALIDITY, and its MAILBOXID where the server advertises
+ * OBJECTID. STATUS neither selects the mailbox nor matches wildcards in its
+ * name. null only for the NONEXISTENT response code (RFC 5530); any other
+ * NO or BAD, a lost connection, or a reply without one well-formed STATUS
+ * for this name throws, so absence is never inferred from wording or from a
+ * listing.
+ */
+async function mailboxGeneration(connection: ProtocolConnection, folder: string) {
+  folderName(folder);
+  const encoded = imapTools.encodePath(connection, imapTools.normalizePath(connection, folder));
+  const items = [{ type: 'ATOM', value: 'UIDVALIDITY' }, ...(advertised(connection, 'OBJECTID') ? [{ type: 'ATOM', value: 'MAILBOXID' }] : [])];
+  const replies: { uidvalidity: unknown; mailboxId: unknown }[] = [];
+  const text = (value: unknown) => Buffer.isBuffer(value) ? value.toString('latin1') : typeof value === 'string' ? value : null;
+  const onStatus = async (untagged: ParsedResponse) => {
+    const [name, list] = ((untagged as { attributes?: unknown[] }).attributes || []) as [{ value?: unknown } | undefined, unknown];
+    const named = text(name?.value);
+    // Another mailbox's STATUS (unsolicited) is not this one's answer.
+    if (named === null || !(named === encoded || encoded === 'INBOX' && named.toUpperCase() === 'INBOX')) return;
+    const reply: { uidvalidity: unknown; mailboxId: unknown } = { uidvalidity: null, mailboxId: null };
+    if (Array.isArray(list)) for (let index = 0; index + 1 < list.length; index += 2) {
+      const key = String((list[index] as { value?: unknown })?.value ?? '').toUpperCase(), value = list[index + 1] as { value?: unknown } | { value?: unknown }[];
+      if (key === 'UIDVALIDITY') reply.uidvalidity = (value as { value?: unknown })?.value;
+      if (key === 'MAILBOXID') reply.mailboxId = Array.isArray(value) ? value[0]?.value : value?.value;
+    }
+    replies.push(reply);
+  };
+  try {
+    await runGuardedImap(connection, () => execTagged(connection, 'STATUS', [{ type: 'STRING', value: encoded }, items], { untagged: { STATUS: onStatus } }));
+  } catch (error) {
+    if (nonexistent(error)) return null;
+    throw error;
+  }
+  if (replies.length !== 1) throw Object.assign(new Error('STATUS answered without exactly one reply for the mailbox'), { code: 'MAIL_IMAP_MALFORMED' });
+  let uidvalidity: number;
+  try { uidvalidity = uint32(replies[0].uidvalidity, 'UIDVALIDITY'); } catch {
+    throw Object.assign(new Error('STATUS answered without a valid UIDVALIDITY'), { code: 'MAIL_IMAP_MALFORMED' });
+  }
+  return { uidvalidity: String(uidvalidity), mailboxId: objectId(replies[0].mailboxId) };
+}
+export { selectMailbox, fetchMetadataWindow, fetchRawMessage, setFlag, nativeMove, mailboxGeneration, nonexistent };

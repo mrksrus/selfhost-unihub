@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Edit, Plus, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { ApiError, hasCode } from '@/lib/api-error';
-import { invalidateMailQueries, type MailAccount, type MailFolder } from '@/lib/mail-api';
+import { invalidateMailQueries, type FolderDeleteRequest, type FolderPartlyDeletedDetails, type MailAccount, type MailFolder } from '@/lib/mail-api';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -38,6 +38,8 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
   const queryClient = useQueryClient();
   const [folderToDelete, setFolderToDelete] = useState<MailFolder | null>(null);
   const [deleteOnServer, setDeleteOnServer] = useState(false);
+  // A folder deleted on some of its servers only: what happened on each.
+  const [partlyDeleted, setPartlyDeleted] = useState<{ name: string; details: FolderPartlyDeletedDetails } | null>(null);
   const [newFolderName, setNewFolderName] = useState('');
   const [editingFolderSlug, setEditingFolderSlug] = useState<string | null>(null);
   const [editingFolderName, setEditingFolderName] = useState('');
@@ -78,10 +80,14 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
   });
 
   const deleteFolder = useMutation({
-    mutationFn: async ({ slug, server }: { slug: string; server: boolean }) => {
-      const response = await api.delete<{ deletedMessages: number; movedMessages: number }>(`/mail/folders/${encodeURIComponent(slug)}${server ? '?server=1' : ''}`);
+    // The copies the person was shown go with the request: the server deletes only those, while each is still the folder shown.
+    mutationFn: async ({ folder }: { folder: MailFolder }) => {
+      const copies = folder.server_copies ?? [];
+      const server = copies.length > 0;
+      const body: FolderDeleteRequest | undefined = server ? { copies } : undefined;
+      const response = await api.delete<{ deletedMessages: number; movedMessages: number }>(`/mail/folders/${encodeURIComponent(folder.slug)}${server ? '?server=1' : ''}`, body);
       if (response.error) throw new ApiError(response);
-      return { slug, server, deleted: response.data?.deletedMessages ?? 0, moved: response.data?.movedMessages ?? 0 };
+      return { slug: folder.slug, server, deleted: response.data?.deletedMessages ?? 0, moved: response.data?.movedMessages ?? 0 };
     },
     onSuccess: ({ slug, server, deleted, moved }) => {
       void invalidateMailQueries(queryClient);
@@ -92,27 +98,24 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
         : (moved === 1 ? '1 message moved back to Inbox.' : `${moved} messages moved back to Inbox.`));
       toast({ title: server ? 'Folder deleted on the server' : 'Folder deleted', description: parts.join(' ') });
     },
-    onError: (error: Error) => {
+    onError: (error: Error, { folder }) => {
       // Whatever the answer, the folders are read again: a part may have gone, or the server holds something else now.
       void invalidateMailQueries(queryClient);
-      // Deleted on some servers only, or everywhere but UniHub's copy (409): what went where, in plain words.
-      if (hasCode(error, 'FOLDER_PARTLY_DELETED')) {
-        const details = (error.details ?? {}) as { deleted_on?: string[]; remaining_on?: string[]; settled?: boolean };
-        const gone = details.deleted_on?.length ? `Deleted on ${details.deleted_on.join(', ')}.` : '';
-        const left = details.remaining_on?.length ? `Still on ${details.remaining_on.join(', ')}: try again later.`
-          : 'Delete it again to finish; nothing is sent to the server again.';
-        const copy = details.remaining_on?.length && details.settled === false ? 'UniHub updates its copy at the next folder check.' : '';
-        toast({ title: 'Folder partly deleted', description: [gone, left, copy].filter(Boolean).join(' '), variant: 'destructive', duration: 10000 });
+      // Deleted on some servers only (409): which ones, and what the others need.
+      if (hasCode(error, 'FOLDER_PARTLY_DELETED') && Array.isArray((error.details as FolderPartlyDeletedDetails | undefined)?.copies)) {
+        setPartlyDeleted({ name: folder.display_name, details: error.details as FolderPartlyDeletedDetails });
         return;
       }
-      // Nothing deleted: the mail server failed or refused (502, in UniHub's words), the account changed meanwhile,
-      // a rule, Mail off or a restore refused the final check. The server's sentence says which.
+      // Nothing deleted: the mail server failed or refused (502, in UniHub's words), the folder changed since it was
+      // shown (FOLDER_CHANGED), the account changed meanwhile, a rule, Mail off or a restore refused. The server's sentence says which.
       toast({ title: 'Folder not deleted', description: error.message, variant: 'destructive', duration: 10000 });
     },
   });
 
-  // A folder is on the server when an account's server folder is connected to it.
-  const serverAccountIds = folderToDelete ? [...new Set([folderToDelete.mail_account_id, ...(folderToDelete.connected_account_ids ?? [])].filter((id): id is string => !!id))] : [];
+  // A folder is on the server when the listing names server copies of it; deleting it deletes those. (An offline
+  // copy of the list has none; there the connected accounts tell, and nothing can be deleted until back online.)
+  const serverAccountIds = [...new Set(folderToDelete?.server_copies ? folderToDelete.server_copies.map(copy => copy.account_id)
+    : [folderToDelete?.mail_account_id, ...(folderToDelete?.connected_account_ids ?? [])].filter((id): id is string => !!id))];
   const onServer = serverAccountIds.length > 0;
   const serverAccounts = serverAccountIds.map(id => accounts.find(account => account.id === id)?.email_address).filter(Boolean).join(', ');
   const total = folderToDelete?.total_count ?? 0;
@@ -236,7 +239,7 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
             disabled={onServer && !deleteOnServer}
             onClick={() => {
               if (folderToDelete) {
-                deleteFolder.mutate({ slug: folderToDelete.slug, server: onServer });
+                deleteFolder.mutate({ folder: folderToDelete });
                 setFolderToDelete(null);
               }
             }}
@@ -246,5 +249,41 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+
+    <AlertDialog open={!!partlyDeleted} onOpenChange={(open) => !open && setPartlyDeleted(null)}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {partlyDeleted?.details.copies.every(copy => copy.outcome === 'deleted')
+              ? `${partlyDeleted.name} was deleted on the mail server`
+              : `${partlyDeleted?.name || 'The folder'} was deleted on some servers only`}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {partlyDeleted?.details.settled === false
+              ? 'UniHub could not update its own copy yet. Delete the folder again to finish.'
+              : 'It stays in UniHub for the servers that still have it.'}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <ul className="divide-y divide-border rounded-md border border-border text-sm" aria-label="Result on each mail server">
+          {partlyDeleted?.details.copies.map(copy => (
+            <li key={`${copy.account_id}:${copy.email_address}`} className="px-3 py-2">
+              <p className="truncate font-medium">{copy.email_address}</p>
+              <p className={copy.outcome === 'deleted' ? 'text-muted-foreground' : 'text-warning'}>{COPY_OUTCOME[copy.outcome]}</p>
+            </li>
+          ))}
+        </ul>
+        <AlertDialogFooter>
+          <AlertDialogAction onClick={() => setPartlyDeleted(null)}>Close</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   </>;
 }
+
+// What each server's copy needs after a partial delete, in the person's words.
+const COPY_OUTCOME: Record<FolderPartlyDeletedDetails['copies'][number]['outcome'], string> = {
+  deleted: 'Deleted',
+  changed: 'Not deleted: the folder changed on this server since it was shown. Check it, then delete it again.',
+  failed: 'Not deleted: the server did not delete it. Try again later.',
+  not_tried: 'Not deleted: stopped after an earlier server failed. Delete the folder again.',
+};

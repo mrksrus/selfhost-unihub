@@ -2,6 +2,8 @@ import type { QueryClient } from '@tanstack/react-query';
 import { ApiError } from '@/lib/api-error';
 import { api } from '@/lib/api';
 import type { MailListRow, MailThreadListResponse, MailThreadResponse, MailThreadSummary } from '../../api/src/contracts/mail-threads';
+import type { FolderServerCopy } from '../../api/src/contracts/mail';
+export type { FolderCopyOutcome, FolderDeleteRequest, FolderPartlyDeletedDetails, FolderServerCopy } from '../../api/src/contracts/mail';
 export type { MailListRow, MailThreadListResponse, MailThreadParticipant, MailThreadResponse, MailThreadSummary } from '../../api/src/contracts/mail-threads';
 
 export interface MailAccount {
@@ -173,6 +175,8 @@ export interface MailUnreadCountsResponse {
 
 export interface MailFolder {
   connected_account_ids?: string[];
+  /** Its copies on mail servers, with the generation deleting it names (none for a folder only UniHub has). */
+  server_copies?: FolderServerCopy[];
   legacy_count?: number;
   mail_account_id?: string | null;
   special_use?: string | null;

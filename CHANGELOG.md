@@ -6,6 +6,36 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.28.2
+
+A fix after 0.28.1. No database upgrade and no configuration change (see
+[Upgrading](docs/UPGRADING.md#0282-folder-delete-across-servers)).
+
+### Fixed
+
+- **Deleting a mail folder deletes only the folder you saw.** Deleting a
+  folder at the mail server worked by its name alone. A second try, or a
+  request still waiting while the first ran, could delete a folder that
+  another mail app had created again under the same name in the meantime. The
+  folder list now tells UniHub which copy of the folder you saw on each
+  server (its UIDVALIDITY, and its MAILBOXID where the server has one), and
+  UniHub checks each copy just before deleting it. A folder that changed is
+  left alone and the dialog asks you to look again; nothing is deleted on any
+  server.
+- **"Does not exist" is no longer taken as deleted.** When a server answered
+  a folder deletion with "does not exist" but without the standard code that
+  says so, UniHub also counted the folder as deleted if the server's folder
+  list (which can be incomplete) left it out, and removed its mail in
+  UniHub. It now counts a folder as gone only when the server says so with
+  that code; otherwise the folder stays and the dialog asks you to try again
+  after a refresh.
+- **The dialog shows what happened on each server.** A folder on several
+  mail accounts that was deleted on some servers only showed a short notice.
+  The dialog now lists each account with its result: deleted, changed since
+  you saw it, not deleted by the server, or not tried yet.
+- A page opened before the update asks you to reload UniHub before it
+  deletes a folder at the mail server.
+
 ## 0.28.1
 
 Fixes after 0.28.0. No database upgrade and no configuration change (see

@@ -104,11 +104,25 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     return file;
   }
   const encrypt = (text: string) => (require('../dist/src/security/encryption') as typeof import('../src/security/encryption')).encrypt(text);
-  // A synthetic mail server's folders: its LIST. A fake connection spreads
-  // it and adds its own DELETE.
+  // A synthetic mail server's folders, each with its UIDVALIDITY: its LIST,
+  // and STATUS (a folder it no longer has answers NONEXISTENT). A fake
+  // connection spreads it and adds its own DELETE.
   const folderServer = (folders: Record<string, number> = { Shared: 1 }) => ({
+    enabled: new Set(), capabilities: new Map(),
     list: async () => ['INBOX', ...Object.keys(folders)].map(path => ({ path, flags: new Set() })),
+    exec: async (command: string, [name]: { value: string }[], options?: FixtureValue) => {
+      assert.equal(command, 'STATUS');
+      if (!(name.value in folders)) throw nonexistent(name.value);
+      await options.untagged.STATUS({ attributes: [{ type: 'STRING', value: name.value }, [{ type: 'ATOM', value: 'UIDVALIDITY' }, { type: 'ATOM', value: String(folders[name.value]) }]] });
+      return { next() {}, response: {} };
+    },
   });
+  // A folder's server copy as a sync read it (UIDVALIDITY 1, as folderServer's default), and the copies a person's folder list shows.
+  const readBox = async (accountId: string, name: string, epoch = 1) => {
+    const repository = require('../dist/src/services/mail-engine/repository') as typeof import('../src/services/mail-engine/repository');
+    await repository.withTransaction(cx => repository.ensureMailbox({ userId: users.alex, accountId, folderName: name, epoch }, cx), pool);
+  };
+  const shownCopies = async (slug: string) => (await (require('../dist/src/services/mail-folder-delete') as typeof import('../src/services/mail-folder-delete')).folderServerCopies(users.alex)).get(slug) ?? [];
   // A DELETE of a folder the server no longer has, answered as Dovecot does.
   const nonexistent = (name: string) => Object.assign(new Error(`Mailbox doesn't exist: ${name}`), { responseStatus: 'NO', serverResponseCode: 'NONEXISTENT' });
   // Each case starts with every policy at its default and no restore, whatever an earlier one left.
@@ -1354,9 +1368,10 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     const mail = await mailOf('folder-r6@example.test'), folder = crypto.randomUUID();
     await pool.execute("INSERT INTO mail_folders (id, user_id, slug, display_name, is_system, mail_account_id) VALUES (?, ?, 'projects-r6', 'Projects', FALSE, ?)", [folder, users.alex, mail]);
     await pool.execute("INSERT INTO mail_folder_remote_boxes (folder_id, mail_account_id, remote_name) VALUES (?, ?, 'Projects')", [folder, mail]);
+    await readBox(mail, 'Projects');
     const deleted: string[] = [];
     const connecting = deferred(), connected = deferred();
-    const outcome = deleteMailFolder({ userId: users.alex, slug: 'projects-r6', server: true }, {
+    const outcome = deleteMailFolder({ userId: users.alex, slug: 'projects-r6', server: true, copies: await shownCopies('projects-r6') }, {
       connect: async () => { connecting.resolve(); await connected.promise;
         return (require('../dist/src/services/mail-imap-guard') as FixtureValue).guardImapConnection({ on() {}, close() {}, ...folderServer({ Projects: 1 }),
           mailboxDelete: async (name: string) => { deleted.push(name); } }); },
@@ -1720,9 +1735,10 @@ test('a destructive step follows the rules in force when it acts, with an owner,
       const folder = crypto.randomUUID(), slug = `shared-${failing}-r7`;
       await pool.execute('INSERT INTO mail_folders (id, user_id, slug, display_name, is_system) VALUES (?, ?, ?, \'Shared\', FALSE)', [folder, users.alex, slug]);
       await pool.execute("INSERT INTO mail_folder_remote_boxes (folder_id, mail_account_id, remote_name) VALUES (?, ?, 'Shared'), (?, ?, 'Shared')", [folder, accounts[0], folder, accounts[1]]);
+      for (const account of accounts) await readBox(account, 'Shared');
       const commands: string[] = [], visited: string[] = [];
       const second = { reached: deferred(), go: deferred() };
-      const outcome = deleteMailFolder({ userId: users.alex, slug, server: true }, {
+      const outcome = deleteMailFolder({ userId: users.alex, slug, server: true, copies: await shownCopies(slug) }, {
         connect: async (account: FixtureValue) => {
           visited.push(account.id);
           if (!failing && visited.length === 2) { second.reached.resolve(); await second.go.promise; }
@@ -1742,7 +1758,8 @@ test('a destructive step follows the rules in force when it acts, with an owner,
           assert.deepEqual(commands, [], 'no DELETE sent at all');
           assert.equal(await count('SELECT COUNT(*) AS count FROM mail_folder_remote_boxes WHERE folder_id = ?', [folder]), 2);
         } else {
-          assert.deepEqual(await outcome, { status: 409, code: 'FOLDER_PARTLY_DELETED', details: { deleted_on: [addresses[0]], remaining_on: [addresses[1]], settled: true } });
+          assert.deepEqual(await outcome, { status: 409, code: 'FOLDER_PARTLY_DELETED', details: { deleted_on: [addresses[0]], remaining_on: [addresses[1]], settled: true,
+            copies: [{ account_id: accounts[0], email_address: addresses[0], outcome: 'deleted' }, { account_id: accounts[1], email_address: addresses[1], outcome: 'failed' }] } });
           assert.deepEqual(commands, accounts, 'each sent once');
           assert.deepEqual((await pool.query<RowDataPacket[]>('SELECT mail_account_id FROM mail_folder_remote_boxes WHERE folder_id = ?', [folder]))[0].map(row => row.mail_account_id), [accounts[1]],
             'the deleted copy is settled; the folder stays for the other account');
@@ -2017,6 +2034,7 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     const folder = crypto.randomUUID(), slug = `${tag}-folder`;
     await pool.execute("INSERT INTO mail_folders (id, user_id, slug, display_name, is_system) VALUES (?, ?, ?, 'Synthetic shared', FALSE)", [folder, users.alex, slug]);
     await pool.execute("INSERT INTO mail_folder_remote_boxes (folder_id, mail_account_id, remote_name) VALUES (?, ?, 'Shared'), (?, ?, 'Shared')", [folder, accounts[0], folder, accounts[1]]);
+    for (const account of accounts) await readBox(account, 'Shared');
     const remove = async () => { await pool.execute('DELETE FROM mail_folders WHERE id = ?', [folder]); await pool.execute('DELETE FROM mail_accounts WHERE id IN (?, ?)', accounts); };
     return { accounts, folder, slug, remove };
   }
@@ -2034,7 +2052,7 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     } as typeof pool.getConnection;
     let result: FixtureValue;
     try {
-      result = await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true },
+      result = await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true, copies: await shownCopies(fx.slug) },
         { connect: async (account: FixtureValue) => guarded({ ...folderServer(), mailboxDelete: async () => { commands.push(account.id); } }) as FixtureValue });
     } finally { pool.getConnection = getConnection; }
     assert.deepEqual(commands, fx.accounts, 'each DELETE sent once');
@@ -2058,15 +2076,16 @@ test('a destructive step follows the rules in force when it acts, with an owner,
       delete servers.get(account.id)![name];
     } }) as FixtureValue;
     try {
-      const first = await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true }, { connect }).then(() => null, (error: FixtureValue) => error);
+      const first = await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true, copies: await shownCopies(fx.slug) }, { connect }).then(() => null, (error: FixtureValue) => error);
       assert.deepEqual([first?.code, first?.details?.settled], ['FOLDER_PARTLY_DELETED', false], String(first?.message));
       assert.deepEqual(first?.details?.deleted_on.length, 1);
       secondFails = false;
       await modules.setUserModules(users.alex, { modules: { mail: { enabled: true } } });
       assert.deepEqual(commands, [fx.accounts[0], fx.accounts[1]], 'nothing is sent again by itself');
-      // Deleting it again asks both servers again: the first has no such folder any more, the second deletes it.
-      await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true }, { connect });
-      assert.deepEqual(commands, [fx.accounts[0], fx.accounts[1], fx.accounts[0], fx.accounts[1]]);
+      // Deleting it again asks both servers again: the first answers that it has no such folder (NONEXISTENT to
+      // STATUS) and gets no DELETE, the second deletes it.
+      await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true, copies: await shownCopies(fx.slug) }, { connect });
+      assert.deepEqual(commands, [fx.accounts[0], fx.accounts[1], fx.accounts[1]]);
       assert.equal(await count('SELECT COUNT(*) AS count FROM mail_folders WHERE id = ?', [fx.folder]), 0);
     } finally { finalStep.underFinalStep = original; await modules.setUserModules(users.alex, { modules: { mail: { enabled: true } } }); }
     await fx.remove();
@@ -2078,7 +2097,7 @@ test('a destructive step follows the rules in force when it acts, with an owner,
       commands.push(account.id);
       if (account.id === fx.accounts[0]) throw new Error('synthetic connection lost');
     } }) as FixtureValue;
-    const reply = await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true }, { connect }).then(() => null, (error: FixtureValue) => error);
+    const reply = await folderDeletion().deleteMailFolder({ userId: users.alex, slug: fx.slug, server: true, copies: await shownCopies(fx.slug) }, { connect }).then(() => null, (error: FixtureValue) => error);
     assert.deepEqual([reply?.status, reply?.code], [502, 'MAIL_SERVER_ERROR']);
     assert.doesNotMatch(String(reply?.message), /synthetic connection lost/, 'in UniHub\'s words');
     assert.deepEqual(commands, [fx.accounts[0]], 'the rest is not sent, and the first not again');
@@ -2093,7 +2112,7 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     (service as FixtureValue).deleteMailFolder = (request: FixtureValue) => deleteMailFolder(request, { connect: async () => guarded({ ...folderServer(),
       mailboxDelete: async () => { throw Object.assign(new Error('synthetic server busy'), { responseStatus: 'NO', responseText: 'Synthetic raw provider text' }); } }) as FixtureValue });
     try {
-      const reply = await alex.request('DELETE', `/api/mail/folders/${fx.slug}?server=1`);
+      const reply = await alex.request('DELETE', `/api/mail/folders/${fx.slug}?server=1`, { copies: await shownCopies(fx.slug) });
       assert.deepEqual([reply.status, reply.body.code], [502, 'MAIL_SERVER_ERROR'], JSON.stringify(reply.body));
       assert.doesNotMatch(JSON.stringify(reply.body), /raw provider text|server busy/i);
     } finally { (service as FixtureValue).deleteMailFolder = deleteMailFolder; }

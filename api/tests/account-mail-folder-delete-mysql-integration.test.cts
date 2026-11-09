@@ -5,11 +5,18 @@ const { randomUUID } = (require('node:crypto') as typeof import('node:crypto'));
 const { EventEmitter } = (require('node:events') as typeof import('node:events'));
 const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
 
-// A guarded IMAP client with only what folder deletion uses.
-function fakeConnection(mailboxDelete: (name: string) => Promise<unknown>, listed: string[] = ['INBOX']) {
+// A guarded IMAP client with only what folder deletion uses: STATUS of the
+// folders it holds (name and UIDVALIDITY; any other answers NONEXISTENT), and DELETE.
+function fakeConnection(mailboxDelete: (name: string) => Promise<unknown>, boxes: Record<string, number> = { Projects: 17, Receipts: 18, Gone: 19 }) {
   const { guardImapConnection } = require('../dist/src/services/mail-imap-guard') as typeof import('../src/services/mail-imap-guard');
   const client = Object.assign(new EventEmitter(), { usable: true, isClosed: false, close() { client.isClosed = true; }, mailboxDelete,
-    list: async () => listed.map(path => ({ path, flags: new Set() })) });
+    enabled: new Set(), capabilities: new Map(),
+    exec: async (command: string, [name]: { value: string }[], options: { untagged: Record<string, (reply: unknown) => Promise<void>> }) => {
+      assert.equal(command, 'STATUS');
+      if (!(name.value in boxes)) throw commandFailed({ responseStatus: 'NO', serverResponseCode: 'NONEXISTENT', responseText: 'Unknown Mailbox' });
+      await options.untagged.STATUS({ attributes: [{ type: 'STRING', value: name.value }, [{ type: 'ATOM', value: 'UIDVALIDITY' }, { type: 'ATOM', value: String(boxes[name.value]) }]] });
+      return { next() {}, response: {} };
+    } });
   return guardImapConnection(client as unknown as import('../src/types/imap-protocol').ProtocolConnection);
 }
 const commandFailed = (reply: Record<string, unknown>) => Object.assign(new Error('Command failed'), reply);
@@ -68,7 +75,9 @@ test('real MySQL: a local folder empties into Inbox; a server folder goes only t
   await pool.execute<ResultSetHeader>("INSERT INTO mail_sender_rules (id,user_id,match_type,match_value,target_folder) VALUES (?,?,'domain','example.test','projects')", [rule, owner]);
   await pool.execute<ResultSetHeader>("INSERT INTO mail_folder_rule_overrides (rule_id,mail_account_id,target_folder) VALUES (?,?,'projects')", [rule, account]);
 
-  const { deleteMailFolder } = require('../dist/src/services/mail-folder-delete') as typeof import('../src/services/mail-folder-delete');
+  const { deleteMailFolder, folderServerCopies } = require('../dist/src/services/mail-folder-delete') as typeof import('../src/services/mail-folder-delete');
+  // The copies the person's folder list shows.
+  const shown = async (slug: string) => (await folderServerCopies(owner, pool)).get(slug) ?? [];
   const folderRows = async (slug: string) => (await pool.execute<RowDataPacket[]>('SELECT id FROM mail_folders WHERE user_id = ? AND slug = ?', [owner, slug]))[0].length;
   const emailFolder = async (id: string) => (await pool.execute<RowDataPacket[]>('SELECT folder FROM emails WHERE id = ?', [id]))[0][0]?.folder ?? null;
   const mailboxState = async (id: string) => (await pool.execute<RowDataPacket[]>('SELECT state FROM mail_remote_mailboxes WHERE id = ?', [id]))[0][0]?.state;
@@ -91,24 +100,26 @@ test('real MySQL: a local folder empties into Inbox; a server folder goes only t
   await assert.rejects(deleteMailFolder({ userId: owner, slug: 'missing' }, { pool }), { status: 404 });
   await assert.rejects(deleteMailFolder({ userId: owner, slug: 'projects' }, { pool }), { status: 409 });
   // Another user's folder is not visible.
-  await assert.rejects(deleteMailFolder({ userId: randomUUID(), slug: 'projects', server: true }, { pool }), { status: 404 });
+  await assert.rejects(deleteMailFolder({ userId: randomUUID(), slug: 'projects', server: true, copies: await shown('projects') }, { pool }), { status: 404 });
+  const projects = await shown('projects');
+  assert.deepEqual(projects, [{ account_id: account, remote_name: 'Projects', uidvalidity: '17', mailbox_id: null }]);
 
   // A failed login is not a missing folder, even when its wording says "does not exist".
   const deletedNames: string[] = [];
   const loginFails = () => Promise.reject(commandFailed({ responseStatus: 'NO', responseText: 'User does not exist' }));
-  await assert.rejects(deleteMailFolder({ userId: owner, slug: 'projects', server: true }, { pool, connect: loginFails }), { status: 502 });
+  await assert.rejects(deleteMailFolder({ userId: owner, slug: 'projects', server: true, copies: projects }, { pool, connect: loginFails }), { status: 502 });
   await untouched();
   // The server refusing leaves everything as it was.
   const refused = () => Promise.resolve(fakeConnection(async () => { throw commandFailed({ responseStatus: 'NO', responseText: 'Permission denied' }); }));
-  await assert.rejects(deleteMailFolder({ userId: owner, slug: 'projects', server: true }, { pool, connect: refused }), { status: 502 });
-  // So does a "does not exist" reply for a folder the server still lists.
-  const stillListed = () => Promise.resolve(fakeConnection(async () => { throw commandFailed({ responseStatus: 'NO', responseText: 'Mailbox does not exist' }); }, ['INBOX', 'Projects']));
-  await assert.rejects(deleteMailFolder({ userId: owner, slug: 'projects', server: true }, { pool, connect: stillListed }), { status: 502 });
+  await assert.rejects(deleteMailFolder({ userId: owner, slug: 'projects', server: true, copies: projects }, { pool, connect: refused }), { status: 502 });
+  // A "does not exist" reply without the NONEXISTENT code proves nothing: refresh and try again.
+  const missingWording = () => Promise.resolve(fakeConnection(async () => { throw commandFailed({ responseStatus: 'NO', responseText: 'Mailbox does not exist' }); }));
+  await assert.rejects(deleteMailFolder({ userId: owner, slug: 'projects', server: true, copies: projects }, { pool, connect: missingWording }), { status: 409, code: 'FOLDER_CHANGED' });
   await untouched();
 
   // Deleted on the server: only the message whose last copy was there goes.
   const connect = () => Promise.resolve(fakeConnection(async (name: string) => { deletedNames.push(name); return { path: name }; }));
-  const result = await deleteMailFolder({ userId: owner, slug: 'projects', server: true }, { pool, connect });
+  const result = await deleteMailFolder({ userId: owner, slug: 'projects', server: true, copies: projects }, { pool, connect });
   assert.deepEqual(deletedNames, ['Projects']);
   assert.deepEqual(result.server, [{ accountId: account, remoteName: 'Projects', emailAddress: 'mail@example.test' }]);
   assert.equal(result.deletedMessages, 1);
@@ -135,8 +146,9 @@ test('real MySQL: a local folder empties into Inbox; a server folder goes only t
   const goneId = randomUUID();
   await pool.execute<ResultSetHeader>("INSERT INTO mail_folders (id,user_id,slug,display_name,is_system,mail_account_id) VALUES (?,?,'gone','Gone',0,?)", [goneId, owner, account]);
   await pool.execute<ResultSetHeader>("INSERT INTO mail_folder_remote_boxes (folder_id,mail_account_id,remote_name) VALUES (?,?,'Gone')", [goneId, account]);
-  const absent = () => Promise.resolve(fakeConnection(async () => { throw commandFailed({ responseStatus: 'NO', serverResponseCode: 'NONEXISTENT', responseText: 'Unknown Mailbox: Gone' }); }, ['INBOX', 'Gone']));
-  const gone = await deleteMailFolder({ userId: owner, slug: 'gone', server: true }, { pool, connect: absent });
+  await repository.withTransaction(cx => repository.ensureMailbox({ userId: owner, accountId: account, folderName: 'Gone', epoch: 19 }, cx), pool);
+  const absent = () => Promise.resolve(fakeConnection(async () => { throw commandFailed({ responseStatus: 'NO', serverResponseCode: 'NONEXISTENT', responseText: 'Unknown Mailbox: Gone' }); }));
+  const gone = await deleteMailFolder({ userId: owner, slug: 'gone', server: true, copies: await shown('gone') }, { pool, connect: absent });
   assert.equal(gone.server.length, 1);
   assert.equal(await folderRows('gone'), 0);
 });

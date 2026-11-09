@@ -117,11 +117,30 @@ makes it active through `ensureMailbox`.
 Deleting a custom folder on the server (`DELETE /api/mail/folders/:slug?server=1`,
 `mail-folder-delete.ts`; `server=true` as well) is refused with `POLICY_FORBIDS`
 while an administrator's `mail.provider_delete` policy forbids deleting mail at
-the provider. Otherwise it stops the account's read jobs, sends IMAP DELETE and
-only then changes local rows, in one transaction. A login or connection failure,
-or a refusal, changes nothing; a DELETE reply with `NONEXISTENT` (or a "does not
-exist" reply for a folder the server no longer lists) counts as deleted. The
-mailbox is retired as above. An item filed there is removed only when its last
+the provider. The request body names the copies the person was shown
+(`{ copies }`, the folder's `server_copies` in `GET /api/mail/folders`): each
+account, the exact mailbox name and its generation, UIDVALIDITY and, where the
+server advertises OBJECTID, MAILBOXID (stored by discovery and scans as
+`provider_mailbox_id`). A folder deleted and created again under the same name
+has another generation. A request without copies answers `400
+FOLDER_COPIES_REQUIRED`; copies that differ from what UniHub knows (another
+generation, an account added or gone) answer `409 FOLDER_CHANGED` before any
+connection, and a copy UniHub has not read yet (no UIDVALIDITY) waits for a
+sync. Then the account's read jobs stop, and under the final check STATUS reads
+every copy's current generation (STATUS takes the name literally, never as a
+pattern); one that differs answers `409 FOLDER_CHANGED` and nothing is sent to
+any server. Each copy is read again right before its own IMAP DELETE. A copy
+counts as deleted only on the server's word: DELETE answered OK, or the
+`NONEXISTENT` response code to its STATUS (no DELETE is sent) or its DELETE. A
+"does not exist" reply without the code is no proof: nothing is settled, the
+answer is `409 FOLDER_CHANGED` ("refresh the folders and try again"), and a
+complete folder listing retires the mailbox once the server stops listing it.
+A login or connection failure, or a refusal, changes nothing. Only then do
+local rows change, in one transaction, and only for a mailbox row that still
+has the deleted generation: a folder created again and read by a sync in
+between stays, linked to the folder. Nothing is kept between attempts: a
+retry starts from the listing, and a copy already deleted answers
+`NONEXISTENT` to its STATUS. The mailbox is retired as above. An item filed there is removed only when its last
 present copy was in that mailbox; one still present in another active mailbox
 (a Gmail label, All Mail) is filed there and re-pointed to that copy. Drafts,
 items without a copy there, Legacy or cross-filed items and items with an
@@ -691,9 +710,11 @@ folder on that account's server.
 | GET | `/api/mail/folders` | List folders with total/unread counts |
 | POST | `/api/mail/folders` | Create app-owned folder |
 | PUT | `/api/mail/folders/:slug` | Reposition folders or rename system-folder display labels |
-| DELETE | `/api/mail/folders/:slug` | Reject system deletion or unsupported synced-folder deletion |
+| DELETE | `/api/mail/folders/:slug` | Delete a custom folder; `?server=1` with `{ copies }` deletes its server copies too |
 
-System folders cannot be deleted. Synced custom-folder deletion returns a conflict response.
+System folders cannot be deleted. A folder on a mail server goes only with
+`?server=1` and the copies shown (see above); without `server` it answers a
+conflict response.
 
 ### Accounts
 

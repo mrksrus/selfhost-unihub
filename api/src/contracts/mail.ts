@@ -33,3 +33,30 @@ export interface ScheduleResponse { schedule: ScheduledSend }
 /** POST /api/mail/emails/:id/snooze */
 export interface SnoozeRequest { until: string }
 export interface SnoozeResponse { id: string; snoozed_until: string | null }
+
+/**
+ * One server copy of a mail folder as UniHub last read it (GET /api/mail/folders,
+ * `server_copies`): the account, the mailbox's exact name there and its
+ * generation, UIDVALIDITY and, where the server has OBJECTID, MAILBOXID. A
+ * folder deleted and created again under the same name has another
+ * generation. uidvalidity is null while UniHub has not read the mailbox yet.
+ */
+export interface FolderServerCopy { account_id: string; remote_name: string; uidvalidity: string | null; mailbox_id: string | null }
+/**
+ * DELETE /api/mail/folders/:slug?server=1: the copies the person was shown.
+ * The server deletes only those, and only while each still has that generation.
+ */
+export interface FolderDeleteRequest { copies: FolderServerCopy[] }
+/**
+ * What happened to each copy, in the details of 409 FOLDER_PARTLY_DELETED:
+ * deleted (or already gone), changed since it was shown (refresh and try
+ * again), failed at the server, or not tried after an earlier one failed.
+ */
+export interface FolderCopyOutcome { account_id: string; email_address: string; outcome: 'deleted' | 'changed' | 'failed' | 'not_tried' }
+export interface FolderPartlyDeletedDetails {
+  deleted_on: string[];
+  remaining_on: string[];
+  /** Whether UniHub's own copy of the deleted ones was updated. */
+  settled: boolean;
+  copies: FolderCopyOutcome[];
+}

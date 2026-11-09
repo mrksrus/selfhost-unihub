@@ -629,17 +629,23 @@ link of the one it turns off, are checked the same way and answer `409
 MAIL_CALENDAR_CHANGED`. A folder on several mail accounts is deleted at the
 provider only after every one of them was connected and checked, under one
 final check held until the last server answered; a refusal sends no
-DELETE. What the servers answered counts even when the check's own end
-fails. A server that fails a DELETE after others succeeded stops the rest,
-the deleted copies are settled locally at once and this attempt sends
-nothing again, and the answer is `409 FOLDER_PARTLY_DELETED` with
-`details.deleted_on`, `details.remaining_on` (addresses) and
-`details.settled`. UniHub sends no DELETE again by itself and keeps no
-record across attempts: deleting the folder again asks every server
-again, and one that already deleted its copy answers that it has none (as
-in 0.27). A server's refusal, or a DELETE without an answer, with nothing
-deleted is `502 MAIL_SERVER_ERROR` in UniHub's words; the server's own
-text goes only to the log. Reading a mail
+DELETE. Deleting it names the copies the person was shown, each with its
+generation (UIDVALIDITY, MAILBOXID where the server has OBJECTID), and
+STATUS reads every copy again before the first DELETE: a copy created
+again under the name anywhere answers `409 FOLDER_CHANGED` and nothing is
+sent to any server (docs/MAIL_SYNC.md). What the servers answered counts
+even when the check's own end fails. A server that fails after others
+succeeded stops the rest, the deleted copies are settled locally at once
+and this attempt sends nothing again, and the answer is `409
+FOLDER_PARTLY_DELETED` with `details.deleted_on`, `details.remaining_on`
+(addresses), `details.settled` and `details.copies` (each account's
+outcome: `deleted`, `changed`, `failed` or `not_tried`), which the folders
+dialog lists. UniHub sends no DELETE again by itself and keeps no record
+across attempts: deleting the folder again starts from the folder list,
+and a copy already deleted answers `NONEXISTENT` to its STATUS. A server's
+refusal, or a DELETE without an answer, with nothing deleted is `502
+MAIL_SERVER_ERROR` in UniHub's words; the server's own text goes only to
+the log. Reading a mail
 account's calendar writes nothing (a restored one shows `link_pending`).
 The sync's login drops a link to a deleted mail account, and notes a
 missing login, only under Calendar's check; refused, the sync pauses and

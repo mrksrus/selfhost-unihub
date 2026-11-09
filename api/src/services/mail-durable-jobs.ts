@@ -262,7 +262,7 @@ async function runDurableMailJob(job: ClaimedJob, signal: AbortSignal, report: J
         const mailbox = await (require('./mail-engine/repository') as typeof import('./mail-engine/repository')).withTransaction((executor: SqlExecutor) =>
           (require('./mail-engine/repository') as typeof import('./mail-engine/repository')).ensureMailbox({ userId: account.user_id,
             accountId, folderName: folder.remoteName, epoch: selected.uidvalidity,
-            metadata: { localFolderSlug: folder.slug,
+            metadata: { localFolderSlug: folder.slug, providerMailboxId: selected.mailboxId,
               specialUse: allMailboxes.has(folder.remoteName) ? 'all' : specialUses.get(folder.remoteName) || null } }, executor), db);
         // These are durable independent jobs, never a global inventory equality gate.
         for (const [kind, priority] of account.sync_mode === 'sync'
