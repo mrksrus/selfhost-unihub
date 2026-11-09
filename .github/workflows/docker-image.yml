@@ -1043,6 +1043,204 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # The flows under tools/e2e/android/ with the candidate's debug app in an
+  # Android 16 emulator against this source's e2e stack (its local mode: the
+  # tests read the host's nginx logs, and the stack offers the debug app at
+  # /downloads/unihub.apk), on a standard runner. Only the image's nginx
+  # mime.types come from the image under test. Each file that fails runs
+  # again on its own, up to twice; the summary lists every attempt.
+  android-e2e:
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      UNIHUB_E2E_STATE: ${{ github.workspace }}/.e2e-state
+      UNIHUB_E2E_CA: ${{ github.workspace }}/.e2e-ca
+      UNIHUB_E2E_EMULATOR_PORT: "5560"
+      SUITE_LOGS: ${{ github.workspace }}/android-e2e-logs
+      # The MariaDB tarball of docs/DEVELOPMENT.md (scripts/local-db.sh).
+      MARIADB_VERSION: 11.8.9
+      MARIADB_SHA256: 32f8871a2aa38b36aa418b7f4abc6fc0c6ef1ba5a45798cacb2afa52c8a6113b
+      # The app the contacts update case (26-09) starts from.
+      PREVIOUS_APP: 0.25.1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Read the image's Node.js version
+        id: node
+        run: |
+          version="$(grep -E '^FROM ' Dockerfile | tail -n 1 | sed -nE 's/^FROM node:([0-9]+\.[0-9]+\.[0-9]+)-alpine@sha256:[0-9a-f]{64}$/\1/p')"
+          [ -n "$version" ] || { echo 'The Dockerfile final stage must be FROM node:<x.y.z>-alpine@sha256:<digest>.' >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+          npm ci
+          npm --prefix api ci
+          npm --prefix tools/e2e ci
+
+      - name: Cache GreenMail
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/unihub-e2e/greenmail
+          key: greenmail-${{ env.GREENMAIL_VERSION }}
+
+      - name: Install the synthetic providers
+        run: |
+          bash scripts/install-test-providers.sh
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+
+      # nginx with the mime.types of the image under test (read from the
+      # registry; a fork's run builds this commit), and MariaDB from its tarball.
+      - name: Install nginx and MariaDB
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nginx >/dev/null
+          sudo systemctl stop nginx || true
+          if [ -n "$IMAGE" ]; then docker pull --quiet "$IMAGE" && docker tag "$IMAGE" unihub:ci
+          else docker build --quiet --tag unihub:ci .; fi
+          container="$(docker create unihub:ci)"
+          docker cp "$container:/etc/nginx/mime.types" "$RUNNER_TEMP/mime.types"
+          docker rm "$container" >/dev/null
+          docker image rm unihub:ci >/dev/null
+          tarball="mariadb-$MARIADB_VERSION-linux-systemd-x86_64.tar.gz"
+          curl --fail --silent --show-error --location -o "$RUNNER_TEMP/$tarball" "https://downloads.mariadb.org/rest-api/mariadb/$MARIADB_VERSION/$tarball"
+          echo "$MARIADB_SHA256  $RUNNER_TEMP/$tarball" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/mariadb"
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/mariadb" --strip-components=1
+          rm -f -- "$RUNNER_TEMP/$tarball"
+          {
+            echo "UNIHUB_E2E_NGINX=/usr/sbin/nginx"
+            echo "UNIHUB_E2E_MIME_TYPES=$RUNNER_TEMP/mime.types"
+            echo "UNIHUB_DB_HOME=$RUNNER_TEMP/mariadb"
+          } >> "$GITHUB_ENV"
+
+      # Debug builds as tools/e2e/android.sh builds them, both in this job so
+      # they share the runner's debug key (26-09 updates the installed app).
+      # The candidate's stays where the stack offers it.
+      - name: Build the debug apps
+        run: |
+          build() { (cd "$1/android" && ./gradlew -q --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process assembleDebug); }
+          build .
+          git worktree add --detach "$RUNNER_TEMP/src-$PREVIOUS_APP" "v$PREVIOUS_APP"
+          build "$RUNNER_TEMP/src-$PREVIOUS_APP"
+          mkdir -p "$RUNNER_TEMP/apps"
+          cp "$RUNNER_TEMP/src-$PREVIOUS_APP/android/app/build/outputs/apk/debug/app-debug.apk" "$RUNNER_TEMP/apps/unihub-$PREVIOUS_APP-debug.apk"
+          git worktree remove --force "$RUNNER_TEMP/src-$PREVIOUS_APP"
+          echo "UNIHUB_E2E_PREVIOUS_APK=$RUNNER_TEMP/apps/unihub-$PREVIOUS_APP-debug.apk" >> "$GITHUB_ENV"
+
+      - name: Start the end-to-end stack
+        run: tools/e2e/stack.sh up
+
+      - name: Enable KVM for the Android emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # The emulator action runs each script line on its own, so the suite is one script.
+      - name: Write the suite script
+        run: |
+          cat > "$RUNNER_TEMP/android-e2e.sh" <<'SUITE'
+          #!/usr/bin/env bash
+          # npm run android's files once, one at a time (one emulator), then
+          # each failing file again on its own, up to twice.
+          set -u
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$SUITE_LOGS"
+          adb() { "$ANDROID_HOME/platform-tools/adb" -s "emulator-$UNIHUB_E2E_EMULATOR_PORT" "$@"; }
+          adb logcat -v time > "$SUITE_LOGS/logcat.txt" 2>&1 &
+          logcat=$!
+          summary() { echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          counts() { grep -E '^ℹ (pass|fail|skipped|cancelled) ' "$1" | sed 's/^ℹ //' | paste -sd, -; }
+          run() { # <log> <files...> (relative to tools/e2e)
+            local log=$1; shift
+            echo "::group::$(basename "$log")"
+            (cd tools/e2e && node --test --test-concurrency=1 "$@") > "$log" 2>&1
+            local status=$?
+            grep -E '^(✔|✖|﹣)' "$log"
+            echo "::endgroup::"
+            return $status
+          }
+          tools/e2e/android.sh up --no-build
+          summary "### Android e2e (candidate debug app, Android 16)"
+          run "$SUITE_LOGS/suite.1.log" 'android/*.test.mjs'; suite=$?
+          summary "- suite: exit $suite ($(counts "$SUITE_LOGS/suite.1.log"))"
+          summary '```'
+          grep -E '^(✔|✖|﹣)' "$SUITE_LOGS/suite.1.log" | cut -c1-160 >> "$GITHUB_STEP_SUMMARY"
+          summary '```'
+          result=0
+          failed=$(sed -n '/failing tests:/,$p' "$SUITE_LOGS/suite.1.log" | grep -oE '^test at android/[a-z0-9-]+\.test\.mjs' | sed 's/^test at //' | sort -u)
+          for file in $failed; do
+            name=$(basename "$file" .test.mjs)
+            passed=false
+            for attempt in 2 3; do
+              tools/e2e/android.sh up --no-build
+              if run "$SUITE_LOGS/$name.$attempt.log" "$file"; then passed=true; fi
+              summary "- $name attempt $attempt: $($passed && echo pass || echo fail) ($(counts "$SUITE_LOGS/$name.$attempt.log"))"
+              $passed && break
+            done
+            $passed || result=1
+          done
+          # A failed run whose failing files could not be read fails as it is.
+          [ "$suite" = 0 ] || [ -n "$failed" ] || result=1
+          kill "$logcat" 2>/dev/null || true
+          exit $result
+          SUITE
+          chmod +x "$RUNNER_TEMP/android-e2e.sh"
+
+      - name: Run the Android suite
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 36
+          arch: x86_64
+          target: google_apis
+          # tools/e2e/android.sh only touches the test AVD on its port.
+          avd-name: unihub35
+          emulator-port: 5560
+          cores: 2
+          ram-size: 2048M
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -prop ro.hw_timeout_multiplier=3
+          script: bash "$RUNNER_TEMP/android-e2e.sh"
+
+      - name: Show the stack's logs
+        if: failure()
+        run: tail -n 50 "$UNIHUB_E2E_STATE"/log/*.log || true
+
+      # Synthetic data only.
+      - name: Keep the Android e2e logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unihub-android-e2e-attempt${{ github.run_attempt }}
+          path: |
+            android-e2e-logs/
+            .e2e-state/log/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Stop the stack
+        if: always()
+        run: tools/e2e/stack.sh down || true
+
   # Each of the three releases before this one upgrades to the image under
   # test with its data, and its export imports into a fresh installation
   # (scripts/upgrade-check.mts, docs/RELEASE_CONTRACT.md). The releases are
@@ -1175,13 +1373,14 @@ jobs:
   # Every test job passed: the tested digest gets its lasting tags. Nothing is
   # built here.
   publish:
-    needs: [build, api-tests, frontend, android-window, container, android-10, android-16, android-16-servers, e2e, upgrade, evidence]
+    needs: [build, api-tests, frontend, android-window, container, android-10, android-16, android-16-servers, e2e, android-e2e, upgrade, evidence]
     if: >-
       ${{ !cancelled() && needs.build.result == 'success' && needs.build.outputs.image != ''
         && needs.api-tests.result == 'success' && needs.frontend.result == 'success'
         && needs.android-window.result == 'success' && needs.container.result == 'success'
         && needs.android-10.result == 'success' && needs.android-16.result == 'success'
         && needs.android-16-servers.result == 'success' && needs.e2e.result == 'success'
+        && needs.android-e2e.result == 'success'
         && needs.upgrade.result == 'success' && needs.evidence.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10

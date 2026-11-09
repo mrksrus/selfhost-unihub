@@ -55,10 +55,14 @@ A run uses only standard `ubuntu-latest` runners of the free plan, up to the
 `api-tests`, `frontend`, `build` and `android-window` start together; once
 `build` has pushed the image, `container`, `android-10`, `android-16` (one
 job per script), `android-16-servers` (the real-server pairings over four
-emulators, `--part k/4`), `upgrade` (one job per previous release) and `e2e`
+emulators, `--part k/4`), `upgrade` (one job per previous release), `e2e`
 (one job per target; desktop in four: the scheduled-send and snooze files,
 which wait on server timers, each alone, and every other file split in two
-by turns) start together. Its only caches are npm's downloads and one
+by turns) and `android-e2e` (the flows under `tools/e2e/android/`) start
+together. `android-e2e` runs the stack in its local mode from the pull
+request's source, with only the nginx `mime.types` read from the image under
+test, and runs each file that fails again on its own, up to twice; the run
+summary lists every attempt and its logs are kept 3 days. Its only caches are npm's downloads and one
 GreenMail entry, shared by the jobs that run the test providers.
 
 `evidence` gathers the evidence of `container`, the four server parts and the
@@ -115,7 +119,7 @@ published.
 | The Android apps work against real servers: the candidate app against this image and each earlier server release in the window, and each earlier app against this image. Connecting, signing in with and without a two-factor code, staying signed in after the app is ended, an upload through Android's document picker, a byte-identical download, the microphone permission and a recording, Open with, Share and Save to Downloads for a mailed file (app and server from 0.25.0), and signing out, each confirmed on the server (Android 16) | `scripts/android-server-check.mts --part k/4` on four Android 16 emulators (`android-16-servers`; each part's table is in its log and the run summary) | an emulator and `adb`; `--local <url> --apk <apk>` against `tools/e2e/stack.sh` ([below](#what-the-android-server-check-proves)) |
 | A published image carries the release-signed Android app | Check and keep the Android app | — |
 | Every user flow covered by the end-to-end suite works through the image (its nginx and API, production settings), MariaDB and synthetic mail and CalDAV providers, on desktop, phone and Android-app targets | `e2e` job, one per target: `tools/e2e/stack.sh up` with `UNIHUB_E2E_IMAGE`, then `npx e2e run --exclude-tag providers --target <target>` | `tools/e2e/stack.sh up`, then `npm test` in `tools/e2e` ([e2e](../tools/e2e/README.md)); real providers (`npm run test:providers`) only locally |
-| The candidate Android app's debug build passes the flows under `tools/e2e/android/` against the candidate server (attachments in the phone composer) | not in CI yet: run locally on the candidate | `tools/e2e/android.sh up`, then `npm run android` in `tools/e2e` |
+| The candidate Android app's debug build passes the flows under `tools/e2e/android/` against the candidate server (attachments in the phone composer) | `android-e2e`: `tools/e2e/stack.sh up` (local mode), then `npm run android`'s files on an Android 16 emulator, the 0.25.1 debug app as `UNIHUB_E2E_PREVIOUS_APK` | `tools/e2e/android.sh up`, then `npm run android` in `tools/e2e` |
 
 `scripts/pwa-update-check.mts` exits with 75 when headless Chrome itself stops
 answering (a browser-level DevTools command times out), which says nothing
