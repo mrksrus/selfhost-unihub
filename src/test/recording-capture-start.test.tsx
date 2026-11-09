@@ -216,6 +216,20 @@ describe('cancelling a start that already holds the microphone', () => {
     hook.unmount();
   });
 
+  it('a track whose release throws still lets the audio context and the next start go', async () => {
+    holdModule();
+    const hook = renderHook(() => useAudioCapture(options('owner')));
+    const { track, run } = await startUntilModule(hook.result.current.start);
+    track.stop.mockImplementation(() => { throw new Error('synthetic track release failure'); });
+    await act(async () => { await hook.result.current.stop(); });
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(contexts[0].close).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.starting).toBe(false);
+    await act(async () => { settleModule(); await run; });
+    expect(createCapture).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
   it('leaving the page lets go of them at once while the worklet module is still loading', async () => {
     holdModule();
     const view = mount();
