@@ -1,7 +1,7 @@
 import { useCallback, useContext, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { MutateOptions, UseMutationOptions, UseMutationResult } from '@tanstack/react-query';
-import { useSessionMutation } from '@/hooks/use-session-mutation';
+import { useMutation, type MutateOptions, type UseMutationOptions, type UseMutationResult } from '@tanstack/react-query';
+import { useSessionScope } from '@/lib/session-scope';
 import { useToast } from '@/hooks/use-toast';
 import { AuthContext } from '@/contexts/auth-context';
 import { hasCode } from '@/lib/api-error';
@@ -11,14 +11,15 @@ import { hasCode } from '@/lib/api-error';
  * the administrator's password confirming an action. TanStack keeps a
  * mutation's variables in its cache while it runs and, once settled, for the
  * garbage-collection time; here its variables are only a number, and the
- * real ones (the secret with them) stay in this component for the request's
- * own life: they are dropped when it settles, when the component unmounts
- * and so when the session ends (SessionQueryProvider is mounted per
- * session). The mutation is also reset as soon as it settles and collected
- * at once. Feedback belongs in the callbacks, which get the real variables:
- * the result and the error are not kept either, and, as for every session
- * mutation, the callbacks run only while the session the request started in
- * is still the current one.
+ * real ones (the secret with them) are kept beside the request for its own
+ * life, as its body is: they are dropped once it settles and its callbacks
+ * ran, also when the page was left meanwhile (the callbacks still get them,
+ * so a success still refreshes what it changed) or the session ended (the
+ * callbacks are skipped, the variables dropped all the same). The mutation
+ * is also reset as soon as it settles and collected at once. Feedback
+ * belongs in the callbacks: the result and the error are not kept either,
+ * and, as for every session mutation (useSessionMutation), the callbacks run
+ * only while the session the request started in is still the current one.
  *
  * The server proves the caller before such a change (caller-proof.ts) and
  * answers for everyone here: 403 PASSWORD_CHANGED (the password changed
@@ -36,11 +37,12 @@ export function useSecretMutation<TData = unknown, TError = Error, TVariables = 
   const auth = useContext(AuthContext);
   const navigate = useNavigate();
   const { toast } = useToast();
+  const scope = useSessionScope();
+  // Not cleared when the page unmounts: a pending request's callbacks still need its entry.
   const secrets = useRef(new Map<number, TVariables>());
   const next = useRef(0);
-  useEffect(() => { const held = secrets.current; return () => held.clear(); }, []);
   const of = (handle: number) => secrets.current.get(handle) as TVariables;
-  const mutation = useSessionMutation<TData, TError, number, TContext>({
+  const mutation = useMutation<TData, TError, number, TContext>({
     ...options,
     gcTime: 0,
     mutationFn: (handle, context) => {
@@ -48,11 +50,13 @@ export function useSecretMutation<TData = unknown, TError = Error, TVariables = 
       return mutationFn(of(handle), context);
     },
     onMutate: onMutate && ((handle, context) => onMutate(of(handle), context)),
-    onSuccess: onSuccess && ((data, handle, onMutateResult, context) => onSuccess(data, of(handle), onMutateResult, context)),
-    onSettled: (data, error, handle, onMutateResult, context) => {
-      try { return onSettled?.(data, error, of(handle), onMutateResult, context); } finally { secrets.current.delete(handle); }
+    onSuccess: onSuccess && ((data, handle, onMutateResult, context) => (scope.ended ? undefined : onSuccess(data, of(handle), onMutateResult, context))),
+    // TanStack runs this after onSuccess or onError, whether or not the page is still there.
+    onSettled: async (data, error, handle, onMutateResult, context) => {
+      try { if (!scope.ended) await onSettled?.(data, error, of(handle), onMutateResult, context); } finally { secrets.current.delete(handle); }
     },
     onError: (error, handle, onMutateResult, context) => {
+      if (scope.ended) return;
       const variables = of(handle);
       const outcome = partly?.(variables) ?? 'Nothing was changed.';
       if (hasCode(error, 'PASSWORD_CHANGED')) {
@@ -69,13 +73,8 @@ export function useSecretMutation<TData = unknown, TError = Error, TVariables = 
       return onError?.(error, variables, onMutateResult, context);
     },
   });
-  const { isSuccess, isError, reset, variables: settled, mutate: mutateHandle, mutateAsync: mutateHandleAsync } = mutation;
-  // A request answered after its session ended runs no callbacks (useSessionMutation); its variables go here.
-  useEffect(() => {
-    if (!isSuccess && !isError) return;
-    if (settled !== undefined) secrets.current.delete(settled);
-    reset();
-  }, [isSuccess, isError, settled, reset]);
+  const { isSuccess, isError, reset, mutate: mutateHandle, mutateAsync: mutateHandleAsync } = mutation;
+  useEffect(() => { if (isSuccess || isError) reset(); }, [isSuccess, isError, reset]);
   // The variables of a call's own callbacks are the real ones, kept by the call.
   const hold = useCallback((variables: TVariables, callbacks?: MutateOptions<TData, TError, TVariables, TContext>) => {
     const handle = ++next.current;
