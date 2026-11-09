@@ -24,6 +24,14 @@ Fixes after 0.28.0. No database upgrade and no configuration change.
   task buttons. The subject is now shortened on one line, and the same
   dialog layout no longer lets a long folder name widen the Mail folders
   dialog.
+- **Record no longer starts a second recording while the microphone question
+  is still open.** On the Recordings page, another tap on Record while the
+  browser or Android still asked for the microphone started a second capture
+  that wrote into the same recording, and Stop could leave the first
+  microphone on. Record now waits, disabled with a spinner, until the
+  microphone answers; a refused microphone returns the page to its idle
+  state, and a start abandoned by leaving the page or switching accounts
+  releases the microphone when it answers late.
 
 ## 0.28.0
 
