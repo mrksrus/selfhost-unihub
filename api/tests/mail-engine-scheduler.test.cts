@@ -386,3 +386,39 @@ test('a process that does not own the background work leaves queued jobs for the
   assert.equal(claims, 1);
   await scheduler.stop();
 });
+
+test('a run counts as finished only once its completion is committed; a fenced one is left to the stop that fenced it', async () => {
+  const jobs: FixtureValue = [
+    { id: 'done-op', user_id: 'owner', mail_account_id: 'A', operation_id: 'one', kind: 'operation', priority: 0, state: 'queued' },
+    { id: 'fenced-op', user_id: 'owner', mail_account_id: 'B', operation_id: 'two', kind: 'operation', priority: 0, state: 'queued' },
+    { id: 'failed-op', user_id: 'owner', mail_account_id: 'C', operation_id: 'three', kind: 'operation', priority: 0, state: 'queued' },
+  ];
+  const outcomes: FixtureValue[] = [];
+  const repo = {
+    withTransaction: (fn: FixtureValue) => fn({ execute: async () => [[]] }),
+    recoverExpiredJobs: async () => ({ jobs: 0, operations: 0 }),
+    async claimDueJob() {
+      const next: FixtureValue = jobs.find((j: FixtureValue) => j.state === 'queued');
+      if (!next) return null;
+      next.state = 'running'; next.lease_owner = 'worker'; next.worker_generation = 1;
+      return { ...next };
+    },
+    async enqueueJob() { throw new Error('no continuation expected'); },
+    async updateJob() { return { cancellationRequested: false }; },
+    async completeJob({ jobId, state }: FixtureValue) {
+      // A pause took the job while it ran.
+      if (jobId === 'fenced-op') throw Object.assign(new Error('fenced'), { code: 'MAIL_WORKER_FENCED' });
+      jobs.find((j: FixtureValue) => j.id === jobId).state = state;
+    },
+  };
+  const scheduler = createDurableMailScheduler((async (job: FixtureValue) => {
+    if (job.id === 'failed-op') throw new Error('provider unavailable');
+    return { success: true };
+  }) as FixtureValue, { repository: repo as FixtureValue, concurrency: 3, pollMs: 60000,
+    onFinished: (job: FixtureValue, outcome: FixtureValue) => { outcomes.push([job.id, outcome.completed]); } });
+  try {
+    await scheduler.start();
+    await until(() => outcomes.length === 3);
+    assert.deepEqual(outcomes.sort(), [['done-op', true], ['failed-op', true], ['fenced-op', false]]);
+  } finally { scheduler.stop(); }
+});

@@ -10,7 +10,7 @@ import { isModuleEnabled, isModuleBackgroundEnabled } from './module-settings';
 import { isSectionRestoreActive } from './restore-locks';
 import { canRunModule } from './access-policy';
 import { toBooleanFlag } from './mail-host-policy';
-import { durableScheduler, foregroundJobs, foregroundMutationAccounts, normalizeMailAccountId } from './mail-durable-jobs';
+import { durableScheduler, dropEndedForegroundJobs, foregroundJobs, foregroundJobsOf, giveForegroundTurns, normalizeMailAccountId } from './mail-durable-jobs';
 import { mailDeleteStopRequests } from './mail-server-delete';
 import { publishMailJob } from './realtime';
 import { USER_PAUSES } from './mail-engine/rollout';
@@ -61,12 +61,13 @@ async function yieldMailReadWork(accountId: unknown) {
 // call this after enqueueing so the work starts now, not at the next poll: a
 // read-only job of the same account yields its lease at a safe boundary, and
 // the scheduler keeps a slot read-only jobs cannot take (see readConcurrency).
-// foreground marks the account's next mutation job as user-initiated: it runs
-// while background sync is off and refreshes with a follow-up sync.
-async function runMailOperationsNow(accountId: unknown, { foreground = false } = {}) {
+// foregroundJobIds: the jobs a user-initiated change queued (enqueueJob's
+// rows). Each gets its own turn: it runs while background sync is off and
+// refreshes with a follow-up sync (mail-durable-jobs.ts foregroundJobs).
+async function runMailOperationsNow(accountId: unknown, { foregroundJobIds = [] }: { foregroundJobIds?: readonly string[] } = {}) {
   const key = normalizeMailAccountId(accountId);
   if (!key) return false;
-  if (foreground) foregroundMutationAccounts.add(key);
+  giveForegroundTurns(key, foregroundJobIds);
   await durableScheduler.yieldReadWork(key);
   await durableScheduler.drain();
   return true;
@@ -80,37 +81,38 @@ async function stopMailAccountWork(accountId: unknown, reason = 'Account stopped
 }
 
 // A pause a change owns (stopOwnedMailAccountWork): its account, its own
-// reason, the pause and jobs it replaced, and whether the account's next
-// operation was the person's own (foreground) when it stopped.
-interface OwnedPause { userId: string; accountId: string; reason: string; prior: string | null; jobs: { id: string; state: 'queued' | 'running' }[]; foreground: boolean }
+// reason, the pause and jobs it replaced, and which of those jobs held the
+// person's own (foreground) turn when it stopped them.
+interface OwnedPause { userId: string; accountId: string; reason: string; prior: string | null; jobs: { id: string; state: 'queued' | 'running' }[]; foregroundJobs: string[] }
 
-async function stopWork(accountId: unknown, reason: string): Promise<OwnedPause | null> {
+async function stopWork(accountId: unknown, reason: string, { owned = false } = {}): Promise<OwnedPause | null> {
   const key = normalizeMailAccountId(accountId);
   const [accounts] = await db.execute<RowDataPacket[]>('SELECT user_id FROM mail_accounts WHERE id = ?', [key]);
   if (!accounts.length) return null;
   const userId = accounts[0].user_id as string;
-  // The person's own operation: one waiting for its turn, before or after the
-  // pause, or one of the jobs the pause fenced that took that turn (also one
-  // admitted, or ended, while the pause waited for its rows).
-  const waiting = foregroundMutationAccounts.has(key);
   const paused = await (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).pauseAccount({ userId, accountId: key, reason });
-  const foreground = waiting || foregroundMutationAccounts.has(key) || (paused?.jobs ?? []).some(job => foregroundJobs.has(job.id));
+  // A fenced run's completion fails, so the turn of every job this pause
+  // stopped is still there, also one given while the pause waited for its rows.
+  const turns = (paused?.jobs ?? []).map(job => job.id).filter(id => foregroundJobs.has(id));
+  // A change's own stop keeps them, and those of jobs queued since, for its
+  // release; any other stop ends the account's turns (a reconnect retires its
+  // provider jobs; a job queued later runs as background work).
+  if (!owned) for (const id of foregroundJobsOf(key)) foregroundJobs.delete(id);
   mailDeleteStopRequests.add(key);
-  foregroundMutationAccounts.delete(key);
   durableScheduler.interruptAccount(key);
   evictImapConnections(key);
   // The IDLE session is a provider connection too; a paused account is not
   // eligible again until it resumes.
   (require('./mail-idle') as typeof import('./mail-idle')).idleSupervisor.stopAccount(key);
   inboxFollowUps.delete(key);
-  return { userId, accountId: key, reason, prior: paused?.prior ?? null, jobs: paused?.jobs ?? [], foreground };
+  return { userId, accountId: key, reason, prior: paused?.prior ?? null, jobs: paused?.jobs ?? [], foregroundJobs: turns };
 }
 
 // stopMailAccountWork for a change that may still be refused: its reason is
 // marked as this change's own, and releaseOwnedMailAccountStop puts back the
 // pause it replaced (mail-engine/runtime.ts takeBackPause). Null without the account.
 async function stopOwnedMailAccountWork(accountId: unknown, reason: string) {
-  return stopWork(accountId, `${reason} [${crypto.randomUUID().slice(0, 8)}]`);
+  return stopWork(accountId, `${reason} [${crypto.randomUUID().slice(0, 8)}]`, { owned: true });
 }
 
 // After a refusal: the original refusal stays the answer, so a failure here is only logged.
@@ -119,16 +121,25 @@ async function stopOwnedMailAccountWork(accountId: unknown, reason: string) {
 // itself instead (resumeAccount).
 async function releaseOwnedMailAccountStop(pause: OwnedPause | null | undefined, { committed = false }: { committed?: boolean } = {}) {
   if (!pause) return;
-  // The turn of a job it fenced is carried by `pause.foreground` from here on.
-  for (const job of pause.jobs) foregroundJobs.delete(job.id);
+  let handedOn = false;
   try {
-    if (!await (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).takeBackPause(pause, undefined, { committed })) return;
-    // Its stop told an erase pass and a pending foreground operation to stop; neither applies any more.
-    mailDeleteStopRequests.delete(pause.accountId);
-    if (pause.foreground && !committed) foregroundMutationAccounts.add(pause.accountId);
+    if (await (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).takeBackPause(pause, undefined, { committed })) {
+      // Its stop told an erase pass to stop; that no longer applies.
+      mailDeleteStopRequests.delete(pause.accountId);
+      // Refused: each job it requeued has its own turn again, by id. Another
+      // job of the account, or a job of another account, cannot take one.
+      if (!committed) { giveForegroundTurns(pause.accountId, pause.foregroundJobs); handedOn = true; }
+    }
   } catch (error) {
+    // Unknown whether its jobs were requeued: they keep their turns until they run or a later stop ends them.
+    handedOn = true;
     log.warn('MAIL', `A change could not put back the pause of account ${pause.accountId}`, undefined, error);
   }
+  // Went through, or another pause took over: its jobs were retired or stay
+  // fenced by that pause, so their turns end here.
+  if (!handedOn) for (const id of pause.foregroundJobs) foregroundJobs.delete(id);
+  if (committed) await dropEndedForegroundJobs(pause.accountId).catch(error =>
+    log.warn('MAIL', `Could not check the queued changes of account ${pause.accountId}`, undefined, error));
 }
 
 // The user's Mail module choice changed (services/module-lifecycle.ts).

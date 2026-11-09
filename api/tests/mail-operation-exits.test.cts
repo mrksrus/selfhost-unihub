@@ -126,7 +126,7 @@ test('retry/cancel flags match what the endpoints accept for every stuck state',
     const op = { id: 'op', user_id: 'owner', mail_account_id: 'account', email_id: 'item', remote_folder: 'INBOX',
       remote_uid: 12, remote_uidvalidity: 9, attempts: 8, ...(row as FixtureValue) };
     const sql: FixtureValue[] = [], enqueued: FixtureValue[] = [];
-    t.mock.method(runtime, 'enqueueJob', async (job: FixtureValue) => { enqueued.push(job); });
+    t.mock.method(runtime, 'enqueueJob', async (job: FixtureValue) => { enqueued.push(job); return { id: `job-${enqueued.length}` }; });
     t.mock.method(runtime, 'claimDueJob', async () => null);
     const execute = async (text: string, args: FixtureValue[] = []) => {
       sql.push({ text, args });

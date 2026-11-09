@@ -98,7 +98,7 @@ function operationJob(t: import('node:test').TestContext, accountId: string, { p
 for (const background of [false, true]) test(`post-writeback follow-up sync is ${background ? 'background' : 'follow-up'}, never manual`, async t => {
   const accountId = `follow-${background}`;
   const job = operationJob(t, accountId);
-  await mail.runMailOperationsNow(accountId, { foreground: !background });
+  await mail.runMailOperationsNow(accountId, { foregroundJobIds: background ? [] : [`op-job-${accountId}`] });
   await job.finished();
   assert.deepEqual(job.completions, ['idle']);
   assert.deepEqual(job.processed, [background]);
@@ -116,7 +116,7 @@ test('background off: a due-scan operation job pauses without connecting; a clic
   });
   await t.test('foreground change', async t => {
     const job = operationJob(t, 'bg-off', { prefs });
-    await mail.runMailOperationsNow('bg-off', { foreground: true });
+    await mail.runMailOperationsNow('bg-off', { foregroundJobIds: ['op-job-bg-off'] });
     await job.finished();
     assert.deepEqual(job.completions, ['idle']);
     assert.deepEqual(job.followUps, [['bg-off', { followUp: true }]]);

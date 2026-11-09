@@ -39,19 +39,32 @@ function checkCancelled(signal?: AbortSignal) {
     throw error;
   }
 }
-const foregroundMutationAccounts = new Set<string>();
-// The mutation jobs that took the person's own (foreground) turn, by job id,
-// with when they did: a change that stops the account and is then refused
-// gives that turn back when it requeues one of them (mail-sync-control.ts),
-// whether the job was still running when the stop's pause fenced it or had
-// already ended. Kept by job, not by account, so it matches the jobs a pause
-// actually fenced; an entry older than any stop's wait is dropped.
-const foregroundJobs = new Map<string, number>();
-const FOREGROUND_JOB_MEMORY_MS = 15 * 60 * 1000;
-function noteForegroundJob(jobId: string) {
-  const now = Date.now();
-  for (const [id, at] of foregroundJobs) if (now - at > FOREGROUND_JOB_MEMORY_MS) foregroundJobs.delete(id);
-  foregroundJobs.set(jobId, now);
+// The person's own (foreground) turns, by mutation job id, with the job's
+// account. A foreground admission (runMailOperationsNow) gives the jobs it
+// queued their turn; with background sync off only a job holding one runs.
+// No entry is consumed by being read or by a pause. Each one leaves
+// - when its job's run is completed (onFinished below), a turn used;
+// - when a stop fences its job for good: a disconnect or module stop at once,
+//   a change's own stop when the change went through (mail-sync-control.ts);
+// - or with its job's row: a change that went through drops the account's
+//   turns whose job ended or is gone (dropEndedForegroundJobs).
+// A refused change's stop hands each turn back to the exact job it fenced.
+const foregroundJobs = new Map<string, string>();
+function giveForegroundTurns(accountId: string, jobIds: readonly string[]) {
+  for (const id of jobIds) if (typeof id === 'string' && id) foregroundJobs.set(id, accountId);
+}
+function foregroundJobsOf(accountId: string) {
+  return [...foregroundJobs].filter(([, account]) => account === accountId).map(([id]) => id);
+}
+// Turns of the account whose job is no longer queued, running or paused (a
+// reconnect retired it, the account was deleted): no executor can use them.
+async function dropEndedForegroundJobs(accountId: string) {
+  const ids = foregroundJobsOf(accountId);
+  if (!ids.length) return;
+  const [live] = await db.execute<RowDataPacket[]>(`SELECT id FROM mail_engine_jobs WHERE id IN (${ids.map(() => '?').join(',')})
+    AND state IN ('queued','running','paused')`, ids);
+  const alive = new Set(live.map(row => row.id as string));
+  for (const id of ids) if (!alive.has(id)) foregroundJobs.delete(id);
 }
 
 function normalizeMailAccountId(accountId: unknown) {
@@ -147,20 +160,14 @@ async function durableJobIdle(job: ClaimedJob, account: EngineAccount) {
   return false;
 }
 // Provider writes (operation) and their outcome checks (reconcile). The account
-// lock serializes them with settings changes and server deletion. Only the
-// account's next job after a foreground admission uses the interactive rules
+// lock serializes them with settings changes and server deletion. Only a job
+// holding a foreground turn (foregroundJobs) uses the interactive rules
 // (module enabled, follow-up refresh); due-scan retries are background work.
 async function runDurableMutationJob(job: ClaimedJob, signal: AbortSignal, report: JobReport) {
-  const key = normalizeMailAccountId(job.mail_account_id);
-  const background = !foregroundMutationAccounts.delete(key);
-  if (!background) noteForegroundJob(job.id);
-  return runMutationLocked(job, signal, report, background);
-}
-async function runMutationLocked(job: ClaimedJob, signal: AbortSignal, report: JobReport, background: boolean) {
   const runtime = require('./mail-engine/runtime') as typeof import('./mail-engine/runtime');
   const accountId = job.mail_account_id;
   return withMailAccountLock(accountId, async () => {
-    let connection: ProtocolConnection | undefined, account: EngineAccount | undefined, needsSync = false, reusable = false;
+    let connection: ProtocolConnection | undefined, account: EngineAccount | undefined, needsSync = false, reusable = false, background = true;
     const fence = () => runtime.assertFence({ accountId, jobId: job.id, workerId: job.lease_owner,
       generation: Number(job.worker_generation) });
     try {
@@ -168,6 +175,9 @@ async function runMutationLocked(job: ClaimedJob, signal: AbortSignal, report: J
       checkCancelled(signal);
       if ((await fence()).cancellationRequested) return { cancelled: true };
       [[account]] = await db.execute<(RowDataPacket & EngineAccount)[]>('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, job.user_id]);
+      // Read after the claim's own queries, so an admission's turn, given just
+      // after its commit, is already there.
+      background = !foregroundJobs.has(job.id);
       if (!account || account.sync_mode !== 'sync' || !toBooleanFlag(account.is_active) || account.disconnected_at
         || !await canRunModule(account.user_id, 'mail', { background })) return { paused: true };
       const config = await (require('./mail') as typeof import('./mail')).buildImapConnectionConfig(account, { keepalive: false });
@@ -311,7 +321,10 @@ async function runDurableMailJob(job: ClaimedJob, signal: AbortSignal, report: J
 
 // Three slots, at most two for read-only work: one is always free for accepted
 // provider changes of any account (see createDurableMailScheduler).
-const durableScheduler = createDurableMailScheduler(runDurableMailJob, { concurrency: 3, readConcurrency: 2, canRun: isWorkerOwner, onState: state => {
+const durableScheduler = createDurableMailScheduler(runDurableMailJob, { concurrency: 3, readConcurrency: 2, canRun: isWorkerOwner,
+  // A run whose completion was fenced keeps its turn: the stop or the lease
+  // recovery that fenced it decides what happens to the job.
+  onFinished: (job, { completed }) => { if (completed) foregroundJobs.delete(job.id); }, onState: state => {
   if (!state.mail_account_id) return;
   publishMailJob(state); // live status for the account owner's open tabs
   // Operator log: job kind, account id and the stored error text only — no
@@ -327,8 +340,10 @@ async function startMailEngineScheduler() { await durableScheduler.start(); }
 
 export {
   durableScheduler,
-  foregroundMutationAccounts,
   foregroundJobs,
+  giveForegroundTurns,
+  foregroundJobsOf,
+  dropEndedForegroundJobs,
   normalizeMailAccountId,
   isMailAccountSyncRunning,
   isAnyMailAccountSyncRunning,

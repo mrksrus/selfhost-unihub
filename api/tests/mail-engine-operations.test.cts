@@ -231,7 +231,7 @@ test('restored receipt warns instead of promising provider acceptance; default l
   assert.deepEqual(queries.at(-1).args, ['owner', '200']);
 });
 test('admission commits receipt, intent and job together; exact replay never appends', async t => {
-  const receipts = new Map(), admitted: FixtureValue[] = [], jobs: FixtureValue[] = [], history: FixtureValue[] = [], nudged: FixtureValue[] = [];
+  const receipts = new Map(), admitted: FixtureValue[] = [], jobs: FixtureValue[] = [], jobIds: string[] = [], history: FixtureValue[] = [], nudged: FixtureValue[] = [];
   t.mock.method((require('../dist/src/services/mail') as typeof import('../src/services/mail')), 'runMailOperationsNow', async (id: FixtureValue, options: FixtureValue) => { nudged.push([id, options]); return true; });
   const email = { id: 'item', user_id: 'owner', mail_account_id: 'account', sync_mode: 'sync', is_active: 1,
     remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9, is_read: 0 };
@@ -261,8 +261,9 @@ test('admission commits receipt, intent and job together; exact replay never app
       if (sql.includes('SELECT id FROM mail_accounts WHERE id')) return [[{ id: 'account' }]];
       if (sql.startsWith('SELECT paused_reason FROM mail_engine_accounts')) return [[{ paused_reason: null }]];
       if (sql.includes('SELECT id FROM mail_writebacks WHERE id')) return [[{ id: admitted.at(-1).id }]];
+      if (sql.startsWith('SELECT * FROM mail_engine_jobs WHERE id = ?')) return [[{ id: args[0] }]];
       if (sql.includes('SELECT * FROM mail_engine_jobs')) return [[]];
-      if (sql.startsWith('INSERT INTO mail_engine_jobs')) { jobs.push(args[4]); return [{ affectedRows: 1 }]; }
+      if (sql.startsWith('INSERT INTO mail_engine_jobs')) { jobs.push(args[4]); jobIds.push(args[0]); return [{ affectedRows: 1 }]; }
       throw new Error(`Unexpected SQL: ${sql}`);
     },
   };
@@ -279,7 +280,7 @@ test('admission commits receipt, intent and job together; exact replay never app
   assert(history.some(sql => sql.includes('FOR UPDATE')));
   await new Promise(resolve => setImmediate(resolve));
   // Each admission that queued a change starts it; a replay or refused key does not.
-  assert.deepEqual(nudged, [['account', { foreground: true }], ['account', { foreground: true }]]);
+  assert.deepEqual(nudged, [['account', { foregroundJobIds: [jobIds[0]] }], ['account', { foregroundJobIds: [jobIds[1]] }]]);
 });
 test('dispatch attempt is committed before mutation and stale lease cannot fence another write', async () => {
   const steps: FixtureValue[] = [], op = { id: 'op', user_id: 'owner', mail_account_id: 'account', email_id: 'item', state: 'queued',
