@@ -527,3 +527,67 @@ describe('the bin inside a page', () => {
     expect(screen.getByRole('list', { name: 'Deleted items', hidden: true })).toBeInTheDocument();
   });
 });
+
+// The server answers the bin a page at a time (up to 2,000 items in whole groups). Covered here
+// with network-mocked pages: an e2e with that many items would be too heavy.
+type BinPage = { items: BinItem[]; next_cursor: string | null };
+/** The bin's pages, newest first: no cursor answers the first, `before=cursor-N` the Nth; `refuse` answers that cursor instead while set. */
+function answerPages(pages: BinPage[], refuse: { before: string; answer: unknown } | null = null) {
+  const state = { refuse };
+  answerGets([]);
+  const gets = vi.mocked(api.get).getMockImplementation()!;
+  vi.mocked(api.get).mockImplementation(async (path: string, ...rest: unknown[]) => {
+    if (!path.startsWith('/bin')) return (gets as (p: string, ...r: unknown[]) => Promise<unknown>)(path, ...rest) as never;
+    const before = new URLSearchParams(path.split('?')[1] ?? '').get('before');
+    if (state.refuse && before === state.refuse.before) return state.refuse.answer as never;
+    return { data: { retention: '30', ...(before ? pages[Number(before.replace('cursor-', ''))] : pages[0]) } } as never;
+  });
+  return state;
+}
+const firstPageReads = () => vi.mocked(api.get).mock.calls.filter(([path]) => typeof path === 'string' && path.startsWith('/bin') && !path.includes('before=')).length;
+const INVALID = { status: 400, error: 'This link to older bin items is not valid. Load the bin again from the newest items.', code: 'BIN_INVALID' };
+
+describe('the bin in pages', () => {
+  const PAGES: BinPage[] = [{ items: [ITEMS[0], ITEMS[3]], next_cursor: 'cursor-1' }, { items: [ITEMS[1], ITEMS[2]], next_cursor: null }];
+
+  it('shows the newest page with "Show older items", appends the next page, and hides the row on the last page', { timeout: 20_000 }, async () => {
+    answerPages(PAGES);
+    mountSignedIn(<BinView />);
+    const list = await screen.findByRole('list', { name: 'Deleted items' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Show older items' }));
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/bin?before=cursor-1', expect.anything()));
+    await waitFor(() => expect(within(list).getAllByRole('listitem')).toHaveLength(3));
+    expect(within(list).getAllByRole('listitem').find(row => row.textContent?.includes('Jane Doe'))).toHaveTextContent('With 1 item: J. Doe');
+    expect(screen.queryByRole('button', { name: 'Show older items' })).not.toBeInTheDocument();
+    // A group from an older page restores as the others do.
+    fireEvent.click(screen.getByRole('button', { name: 'Restore Jane Doe' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/bin/restore', { ids: ['bin-merge-a'] }));
+  });
+
+  it('a cursor the server no longer accepts reloads the bin from the newest items and says so in the server\'s words', { timeout: 20_000 }, async () => {
+    answerPages(PAGES, { before: 'cursor-1', answer: INVALID });
+    mountSignedIn(<BinView />);
+    await screen.findByRole('list', { name: 'Deleted items' });
+    const before = firstPageReads();
+    fireEvent.click(screen.getByRole('button', { name: 'Show older items' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not load older items', description: INVALID.error })));
+    await waitFor(() => expect(firstPageReads()).toBeGreaterThan(before));
+    const list = await screen.findByRole('list', { name: 'Deleted items' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+    expect(await screen.findByRole('button', { name: 'Show older items' })).toBeInTheDocument();
+  });
+
+  it('an older page that fails keeps the loaded items and offers to try again', { timeout: 20_000 }, async () => {
+    const pages = answerPages(PAGES, { before: 'cursor-1', answer: { status: 500, error: 'The database is busy.' } });
+    mountSignedIn(<BinView />);
+    const list = await screen.findByRole('list', { name: 'Deleted items' });
+    fireEvent.click(screen.getByRole('button', { name: 'Show older items' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load older items. The database is busy.');
+    expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+    pages.refuse = null;
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(within(list).getAllByRole('listitem')).toHaveLength(3));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+});

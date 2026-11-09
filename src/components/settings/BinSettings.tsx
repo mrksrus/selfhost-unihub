@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useContext } from 'react';
@@ -21,10 +21,10 @@ export default function BinSettings() {
   const isOffline = !!useContext(AuthContext)?.isOffline;
   const client = useQueryClient();
   const settings = useQuery({ ...userSettingsQueryOptions, enabled: !isOffline });
-  const bin = useQuery({ ...binQueryOptions(), enabled: !isOffline });
+  const bin = useInfiniteQuery({ ...binQueryOptions(), enabled: !isOffline });
   const setting = settings.data?.bin_retention;
   // The bin's own answer carries the retention too, for a server whose settings answer is late.
-  const retention = setting?.value ?? bin.data?.retention;
+  const retention = setting?.value ?? bin.data?.pages[0]?.retention;
   const lock = retentionLock(setting);
 
   const save = useMutation({

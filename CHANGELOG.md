@@ -20,7 +20,9 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   synced ones), lists with their events, and recordings go to the bin instead
   of being gone at once; mail keeps its Trash folders. Every delete says
   "Moved to the bin" with Undo. Each page's panel has a Bin entry to restore
-  or delete for good, and Settings → Bin shows everything together. Restore
+  or delete for good, and Settings → Bin shows everything together. When the
+  bin holds many items, it shows the newest and a Show older items row at the
+  end loads the rest. Restore
   brings an item back as it was: a contact with its photo, values and UIDs, a
   task with its subtasks, done state and place in the list, a recording with
   its file. Several contacts deleted together, a merge, or a list with its

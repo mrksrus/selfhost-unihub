@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSecretMutation } from '@/hooks/use-secret-mutation';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ChevronLeft, LockKeyhole, MoreHorizontal, Plus } from 'lucide-react';
+import { ChevronLeft, Loader2, LockKeyhole, MoreHorizontal, Plus } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { useToast } from '@/hooks/use-toast';
 import { hasCode } from '@/lib/api-error';
@@ -26,6 +26,7 @@ import { AdminCalendarAccountDialog, AdminMailAccountDialog } from '@/components
 
 // The person's own list labels sections from the server's capabilities; here the ids and status words are shown as written, in sentence case.
 const sentenceCase = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
 // Admin → Users → a person: their mail and calendar accounts, backups, bin
 // and data (F13, accounts.admin_manage). A rule that forbids the person an
@@ -92,7 +93,18 @@ const AdminUserDetail = () => {
   const person = usersQuery.data?.find(entry => entry.id === id) ?? null;
   const accountsQuery = useQuery({ queryKey: adminUserQueryKeys.accounts(id), queryFn: ({ signal }) => fetchAdminUserAccounts(id, signal), enabled: admin && !!id });
   const backupsQuery = useQuery({ queryKey: adminUserQueryKeys.backups(id), queryFn: ({ signal }) => fetchAdminUserBackups(id, signal), enabled: admin && !!id });
-  const binQuery = useQuery({ queryKey: adminUserQueryKeys.bin(id), queryFn: ({ signal }) => fetchAdminUserBin(id, signal), enabled: admin && !!id });
+  // The bin a page at a time, as the person's own (whole groups, newest first); "Show older items" appends the next page.
+  const binQuery = useInfiniteQuery({
+    queryKey: adminUserQueryKeys.bin(id), queryFn: ({ pageParam, signal }) => fetchAdminUserBin(id, pageParam, signal),
+    initialPageParam: null as string | null, getNextPageParam: page => page.next_cursor, enabled: admin && !!id,
+  });
+  // A cursor the server no longer accepts (400 BIN_INVALID): the bin is read again from the newest items, with the server's word.
+  const invalidCursor = hasCode(binQuery.error, 'BIN_INVALID') ? binQuery.error : null;
+  useEffect(() => {
+    if (!invalidCursor) return;
+    toast({ title: 'Could not load older items', description: invalidCursor.message, variant: 'destructive' });
+    void client.resetQueries({ queryKey: adminUserQueryKeys.bin(id), exact: true });
+  }, [invalidCursor, client, id, toast]);
   const refreshAccounts = (userId: string) => { void client.invalidateQueries({ queryKey: adminUserQueryKeys.accounts(userId) }); };
   const refreshBackups = (userId: string) => { void client.invalidateQueries({ queryKey: adminUserQueryKeys.backups(userId) }); };
   const refreshBin = (userId: string) => { void client.invalidateQueries({ queryKey: adminUserQueryKeys.bin(userId) }); };
@@ -166,6 +178,8 @@ const AdminUserDetail = () => {
       return itemIds.length;
     },
     onSuccess: (count, { userId, generation }) => done(count > 1 ? `${count} items deleted for good` : 'Deleted for good', generation, () => refreshBin(userId)),
+    // The shared handler's "Nothing was changed" does not hold once members went: it says this instead.
+    partly: ({ itemIds }) => groupDeleted.current ? `${groupDeleted.current} of ${itemIds.length} items were deleted for good before; ${plural(itemIds.length - groupDeleted.current, 'item')} ${itemIds.length - groupDeleted.current === 1 ? 'remains' : 'remain'} in the bin.` : null,
     onError: (error: Error, { userId, itemIds, generation }) => {
       const deleted = groupDeleted.current;
       if (deleted === 0) { failed('Could not delete the item')(error); return; }
@@ -173,7 +187,7 @@ const AdminUserDetail = () => {
       refreshBin(userId);
       closeConfirm(generation);
       const remaining = itemIds.length - deleted;
-      toast({ title: `${deleted} of ${itemIds.length} items deleted for good`, description: `${remaining} ${remaining === 1 ? 'item remains' : 'items remain'} in the bin. ${error.message}`, variant: 'destructive', duration: 10000 });
+      toast({ title: `${deleted} of ${itemIds.length} items deleted for good`, description: `${plural(remaining, 'item')} ${remaining === 1 ? 'remains' : 'remain'} in the bin. ${error.message}`, variant: 'destructive', duration: 10000 });
     },
   });
   const clear = useSecretMutation({
@@ -186,7 +200,8 @@ const AdminUserDetail = () => {
   const name = person?.full_name || person?.email || 'this person';
   // Every dialog names the person it acts for, with the address so that two people of one name stay apart.
   const target = person ? (person.full_name ? `${person.full_name} (${person.email})` : person.email) : name;
-  const binItems = binQuery.data?.items ?? [];
+  const binItems = binQuery.data?.pages.flatMap(page => page.items) ?? [];
+  const olderItems = binQuery.hasNextPage;
   const binCount = (module: BinModule) => binItems.filter(item => item.module === module).length;
   const nothingAtAll = accountsQuery.data && backupsQuery.data && binQuery.data && accountsQuery.data.mail_accounts.length === 0 && accountsQuery.data.calendar_accounts.length === 0 && backupsQuery.data.length === 0 && binItems.length === 0;
   const body = !admin ? <p className="text-sm text-muted-foreground">Only admins can see this page.</p>
@@ -263,14 +278,14 @@ const AdminUserDetail = () => {
 
         <SettingsSection title="Bin" description={`What ${name} deleted waits in their bin until it is restored or gone for good. Deleting here is allowed whatever the bin rule says for them.`}
           action={<Button size="sm" variant="outline" className="text-destructive hover:text-destructive" disabled={binItems.length === 0} onClick={() => openConfirm({
-            userId: id, title: `Empty the bin of ${name}?`, description: `${binItems.length} ${binItems.length === 1 ? 'item is' : 'items are'} deleted for good and cannot be restored.`, action: 'Delete for good', destructive: true,
+            userId: id, title: `Empty the bin of ${name}?`, description: olderItems ? 'Everything in it, also the older items not shown yet, is deleted for good and cannot be restored.' : `${plural(binItems.length, 'item')} ${binItems.length === 1 ? 'is' : 'are'} deleted for good and cannot be restored.`, action: 'Delete for good', destructive: true,
             run: (password, generation) => emptyBin.mutate({ userId: id, generation, password }) })}>Empty bin</Button>}>
           {binQuery.isLoading ? <SettingsBlock><LoadingState compact label="Loading the bin…" /></SettingsBlock>
-            : binQuery.error ? <SettingsBlock><ErrorState title="Could not load the bin" error={binQuery.error} onRetry={() => void binQuery.refetch()} retrying={binQuery.isFetching} /></SettingsBlock>
+            : binQuery.error && !binQuery.isFetchNextPageError ? <SettingsBlock><ErrorState title="Could not load the bin" error={binQuery.error} onRetry={() => void binQuery.refetch()} retrying={binQuery.isFetching} /></SettingsBlock>
             : binItems.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">The bin of {name} is empty.</p></SettingsBlock>
             : <>
               {BIN_MODULES.filter(module => binCount(module.id) > 0).map(module => (
-                <SettingsRow key={module.id} label={module.label} description={`${binCount(module.id)} ${binCount(module.id) === 1 ? 'item' : 'items'}`}>
+                <SettingsRow key={module.id} label={module.label} description={`${plural(binCount(module.id), 'item')}${olderItems ? ' shown' : ''}`}>
                   <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => openConfirm({
                     userId: id, title: `Empty the ${module.label.toLowerCase()} bin of ${name}?`, description: 'Everything in it is deleted for good and cannot be restored.', action: 'Delete for good', destructive: true,
                     run: (password, generation) => emptyBin.mutate({ userId: id, generation, module: module.id, password }) })}>Empty</Button>
@@ -288,6 +303,18 @@ const AdminUserDetail = () => {
                   </SettingsRow>
                 );
               })}
+              {binQuery.isFetchNextPageError && !invalidCursor && (
+                <SettingsRow label={<span role="alert" className="text-destructive">Could not load older items</span>} description={binQuery.error?.message}>
+                  <Button variant="outline" size="sm" onClick={() => void binQuery.fetchNextPage()} disabled={binQuery.isFetchingNextPage}>Try again</Button>
+                </SettingsRow>
+              )}
+              {olderItems && !binQuery.isFetchNextPageError && (
+                <SettingsRow label="Older items" description="The bin holds more than is shown.">
+                  <Button variant="outline" size="sm" onClick={() => void binQuery.fetchNextPage()} disabled={binQuery.isFetchingNextPage}>
+                    {binQuery.isFetchingNextPage && <Loader2 aria-hidden="true" className="animate-spin" />}Show older items
+                  </Button>
+                </SettingsRow>
+              )}
             </>}
         </SettingsSection>
 

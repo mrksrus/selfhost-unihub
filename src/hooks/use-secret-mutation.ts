@@ -21,10 +21,12 @@ import { hasCode } from '@/lib/api-error';
  * meanwhile: sign in again) and 403 ADMIN_REQUIRED (no longer an
  * administrator: leave the admin screens). 401 SESSION_ENDED takes the
  * shared path of every 401 (the API client ends the session). Nothing was
- * changed in any of these cases.
+ * changed in any of these cases, unless the action has several steps and
+ * `partly` says what the earlier steps did (the group delete): then the
+ * notice says that instead.
  */
 export function useSecretMutation<TData = unknown, TError = Error, TVariables = void, TContext = unknown>(
-  options: UseMutationOptions<TData, TError, TVariables, TContext>,
+  { partly, ...options }: UseMutationOptions<TData, TError, TVariables, TContext> & { partly?: (variables: TVariables) => string | null },
 ) {
   // The session where one is mounted; a view rendered on its own (unit tests) may have none.
   const auth = useContext(AuthContext);
@@ -34,13 +36,14 @@ export function useSecretMutation<TData = unknown, TError = Error, TVariables = 
     ...options,
     gcTime: 0,
     onError: (error, variables, onMutateResult, context) => {
+      const outcome = partly?.(variables) ?? 'Nothing was changed.';
       if (hasCode(error, 'PASSWORD_CHANGED')) {
-        toast({ title: 'Your password was changed meanwhile. Sign in again.', description: 'Nothing was changed.', variant: 'destructive' });
+        toast({ title: 'Your password was changed meanwhile. Sign in again.', description: outcome, variant: 'destructive' });
         void auth?.signOut?.();
         return;
       }
       if (hasCode(error, 'ADMIN_REQUIRED')) {
-        toast({ title: "You're no longer an administrator.", description: 'Nothing was changed.', variant: 'destructive' });
+        toast({ title: "You're no longer an administrator.", description: outcome, variant: 'destructive' });
         void auth?.retrySession?.();
         navigate('/settings', { replace: true });
         return;

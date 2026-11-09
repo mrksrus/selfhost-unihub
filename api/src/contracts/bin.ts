@@ -41,12 +41,8 @@ export interface BinItem {
 export interface BinListResponse {
   items: BinItem[];
   retention: BinRetention;
-  /**
-   * Older items remain: pass it as `before` for the next page; null on the
-   * last page. The server always sends it (optional here only until the
-   * screens read it).
-   */
-  next_cursor?: string | null;
+  /** Older items remain: pass it as `before` for the next page; null on the last page. */
+  next_cursor: string | null;
 }
 
 /**
