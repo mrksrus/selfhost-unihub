@@ -570,8 +570,42 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
     await step('microphone', async () => {
       const before = new Set((await recordings()).map(item => item.id));
       await navigateTo('Recordings');
-      await tapOn('Record', /^Record$/, { cls: /Button/ });
-      const allow = await waitFor('Android\'s microphone question', find(/^(While using the app|Allow|ALLOW|Only this time)$/), 60_000);
+      // On CI the first pairing on a fresh emulator sometimes got neither Android's
+      // question nor a failure message after the tap. A second tap could start a
+      // second capture while the first is still pending, so Record is tapped again
+      // only with proof that nothing is pending: after "Could not start recording"
+      // (that start gave up; the reason is the text after the title, best effort),
+      // or after ending the app, which ends any pending start with it. logcat from
+      // a stalled try is kept with the evidence.
+      const question = find(/^(While using the app|Allow|ALLOW|Only this time)$/);
+      const failures: string[] = [];
+      let allow: UiNode | undefined;
+      for (let attempt = 0; attempt < 3 && !allow; attempt++) {
+        if (attempt > 0) await waitFor('the failed start\'s message to close', nodes => nodes.length > 0 && !nodes.some(node => node.text === 'Could not start recording'), 30_000);
+        await tapOn('Record', /^Record$/, { cls: /Button/ });
+        const outcome = await waitFor('Android\'s microphone question', nodes => {
+          const asked = question(nodes);
+          if (asked) return { asked };
+          const failed = nodes.findIndex(node => node.text === 'Could not start recording');
+          return failed >= 0 ? { failed: nodes.slice(failed + 1).find(node => node.text)?.text || 'no reason shown' } : undefined;
+        }, 60_000).catch((error: Error) => ({ stalled: error }));
+        if ('asked' in outcome) allow = outcome.asked;
+        else if ('failed' in outcome) {
+          failures.push(`could not start: ${outcome.failed}`);
+          log(`       recording could not start: ${outcome.failed}`);
+        } else {
+          const logcat = path.join(evidence, `${pairing.app}-app-${pairing.server}-server-microphone-logcat-${attempt + 1}.txt`);
+          let saved = `logcat: ${path.basename(logcat)}`;
+          try { fs.writeFileSync(logcat, adb('logcat', '-d', '-t', '400')); } catch (error) { saved = `logcat not saved: ${(error as Error).message.split('\n')[0]}`; }
+          failures.push(`no question and no message (${saved})`);
+          if (attempt === 2) throw new Error(`${outcome.stalled.message} [tries: ${failures.join('; ')}]`);
+          log(`       no microphone question and no message; ending the app and trying again (${saved})`);
+          shell(`am force-stop ${PACKAGE}`);
+          shell(`am start -n ${PACKAGE}/.MainActivity`);
+          await navigateTo('Recordings');
+        }
+      }
+      if (!allow) throw new Error(`recording could not start (${failures.join('; ')})`);
       tap(allow);
       await waitFor('the running recorder', find(/^Stop$/, /Button/), 60_000);
       const granted = shell(`dumpsys package ${PACKAGE}`).includes('android.permission.RECORD_AUDIO: granted=true');
@@ -582,7 +616,7 @@ async function runPairing(pairing: Pairing, run: string): Promise<Step[]> {
       await tapUntil('Save recording', /^Save recording$/, nodes => !find(/^Save the recording$/)(nodes), { cls: /Button/ });
       recorded = await until('the recording on the server', async () => (await recordings()).find(item => !before.has(item.id)), 120_000);
       if (!(Number(recorded.size_bytes) > 0)) throw new Error('the recording reached the server empty');
-      return `permission asked and granted; ${recorded.size_bytes} bytes recorded with the microphone reached the server`;
+      return `permission asked and granted${failures.length ? ` after ${failures.length} failed start(s): ${failures.join('; ')}` : ''}; ${recorded.size_bytes} bytes recorded with the microphone reached the server`;
     });
     await step('download', async () => {
       if (!recorded) throw new Error('no recording on the server to download (the microphone step failed)');
