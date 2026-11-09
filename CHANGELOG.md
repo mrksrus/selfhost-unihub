@@ -236,10 +236,6 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   saving the rules or the instance backup's schedule check again, just
   before they act, that the session is still signed in, the password the
   same and the administrator still one; otherwise nothing changes.
-- **Mail changes you make run while background sync is off.** Marking,
-  starring or moving several messages now sends every one of those changes,
-  and asking again for a change that is still waiting sends it; before, only
-  the first ran and the rest waited until background sync was on again.
 - **A download in the Android app no longer closes the app** when Android's
   download service has not started yet, for example right after the phone
   starts; the app says the file could not be saved, and you can try again.

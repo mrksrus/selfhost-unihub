@@ -98,16 +98,15 @@ async function claimReceipt(input: Parameters<typeof repository.recordReceipt>[0
   }
 }
 // Caller holds email row locks and a transaction. Never delete an accepted intent.
-// An accepted intent's active job (its outcome check once recovery made it
-// one), or a new one of the kind the due scan would queue for it.
+// An accepted intent's active job, whatever its kind (enqueueJob finds it
+// under its row lock, also when recovery made it an outcome check while this
+// request waited), or a new one of the kind the due scan would queue for the
+// intent as it is now (`op` was read under its row lock).
 async function intentJob(cx: SqlExecutor, userId: string, op: OperationRow) {
-  const [[active]] = await cx.execute<RowDataPacket[]>(`SELECT kind FROM mail_engine_jobs WHERE user_id=? AND mail_account_id=? AND operation_id=?
-    AND kind IN ('operation','reconcile') AND state IN ('queued','running','paused')
-    ORDER BY CASE state WHEN 'queued' THEN 0 WHEN 'running' THEN 1 ELSE 2 END, created_at LIMIT 1`, [userId, op.mail_account_id, op.id]);
-  return admitIntentJob(cx, userId, op, active?.kind ?? (op.state === 'reconciling' && op.action === 'move' ? 'reconcile' : 'operation'));
+  return admitIntentJob(cx, userId, op, op.state === 'reconciling' && op.action === 'move' ? 'reconcile' : 'operation');
 }
-// The job a person's request admits for an accepted intent (enqueueJob
-// returns an active one of the kind as it is).
+// The job a person's request admits for an accepted intent: its active one
+// (enqueueJob), or a new one.
 async function admitIntentJob(cx: SqlExecutor, userId: string, op: Pick<OperationRow, 'id' | 'mail_account_id'>, kind: 'operation' | 'reconcile') {
   const job = await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: op.id, kind, priority: 0, foreground: true }, cx);
   // Paused by background sync being off, not by a pause of the account: due
