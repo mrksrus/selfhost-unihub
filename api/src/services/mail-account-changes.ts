@@ -24,6 +24,7 @@ import {
   testImapConnection,
   stopOwnedMailAccountWork,
   releaseOwnedMailAccountStop,
+  endOwnedMailAccountStop,
   scheduleMailAccountSync,
 } from './mail';
 import { withPersonLock } from './person-lock';
@@ -558,7 +559,9 @@ async function updateMailAccountNow(userId: string, id: string, body: Input, act
       resumed = true;
     }
   } finally {
-    if (!resumed) await releaseOwnedMailAccountStop(pause, { committed });
+    // Resumed: the reconnect ended the pause; its stop's turns end with it.
+    if (resumed) await endOwnedMailAccountStop(pause);
+    else await releaseOwnedMailAccountStop(pause, { committed });
   }
 
   if (modeChange.changed) {

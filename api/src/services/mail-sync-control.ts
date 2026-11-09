@@ -137,8 +137,18 @@ async function releaseOwnedMailAccountStop(pause: OwnedPause | null | undefined,
   }
   // Went through, or another pause took over: its jobs were retired or stay
   // fenced by that pause, so their turns end here.
-  if (!handedOn) for (const id of pause.foregroundJobs) foregroundJobs.delete(id);
-  if (committed) await dropEndedForegroundJobs(pause.accountId).catch(error =>
+  if (committed) await endOwnedMailAccountStop(pause);
+  else if (!handedOn) for (const id of pause.foregroundJobs) foregroundJobs.delete(id);
+}
+
+// A change that went through and keeps its own pause as the account's fence
+// (a disconnect, a purge, clearing mail, deleting the person), or a
+// reconnect that resumed the account itself: its stop's turns end, as do the
+// account's turns whose job can no longer run. A job queued since keeps its own.
+async function endOwnedMailAccountStop(pause: OwnedPause | null | undefined) {
+  if (!pause) return;
+  for (const id of pause.foregroundJobs) foregroundJobs.delete(id);
+  await dropEndedForegroundJobs(pause.accountId).catch(error =>
     log.warn('MAIL', `Could not check the queued changes of account ${pause.accountId}`, undefined, error));
 }
 
@@ -285,6 +295,7 @@ export {
   stopMailAccountWork,
   stopOwnedMailAccountWork,
   releaseOwnedMailAccountStop,
+  endOwnedMailAccountStop,
   onMailModuleChanged,
   scheduleMailAccountSync,
   getMailSyncState,

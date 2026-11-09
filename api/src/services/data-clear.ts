@@ -139,6 +139,8 @@ async function clearMailAccounts(userId: string, actor: ClearActor): Promise<Cle
     for (const pause of pauses) await mail.releaseOwnedMailAccountStop(pause);
     throw error;
   }
+  // The accounts and their jobs are gone, and with them their turns.
+  for (const pause of pauses) await mail.endOwnedMailAccountStop(pause);
   const { deleted, linkedCalendars, attachments } = outcome;
   const { publishCalendarChanged } = require('./realtime') as typeof import('./realtime');
   for (const calendar of linkedCalendars) {

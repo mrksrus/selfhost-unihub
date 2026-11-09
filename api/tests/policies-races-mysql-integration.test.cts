@@ -2616,6 +2616,83 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     } finally { Date.now = realNow; await fx.cleanup(running); }
   });
 
+  await fromDefaults('r13: asking again for a change that is already waiting gives its own job the turn, queued or paused by background sync being off', async () => {
+    const fx = await foregroundCase('repeat-r13@example.test');
+    const writebacks = require('../dist/src/services/mail-writebacks') as FixtureValue;
+    const jobs = require('../dist/src/services/mail-durable-jobs') as FixtureValue;
+    const mails: string[] = [];
+    try {
+      for (const variant of ['queued', 'paused'] as const) {
+        // An accepted change a background retry holds (an account each: one
+        // run sends the account's other due changes in its batch).
+        const { mail } = await fx.account(variant);
+        mails.push(mail);
+        const email = crypto.randomUUID(), op = crypto.randomUUID();
+        await pool.execute("INSERT INTO emails (id, user_id, mail_account_id, from_address, to_addresses, folder, remote_folder, remote_uid, remote_uidvalidity) VALUES (?, ?, ?, 'sender@example.test', '[]', 'inbox', 'INBOX', 70, 80)", [email, users.alex, mail]);
+        await pool.execute(`INSERT INTO mail_writebacks (id, user_id, mail_account_id, email_id, action, target_value, base_value, remote_folder, remote_uid, remote_uidvalidity, state, is_current, dispatched)
+          VALUES (?, ?, ?, ?, 'read', '1', '0', 'INBOX', 70, 80, 'retry_wait', TRUE, FALSE)`, [op, users.alex, mail, email]);
+        const job = await fx.runtime.enqueueJob({ userId: users.alex, accountId: mail, operationId: op, kind: 'operation' });
+        if (variant === 'paused') {
+          const waited = await fx.runNext(mail, ['operation']);
+          assert.deepEqual([waited.id, waited.result], [job.id, { paused: true }], 'a background retry waits while background sync is off');
+        }
+        // The person asks for the same change again.
+        const reply = await writebacks.mutateMessages(users.alex, [email], { read: 1 });
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(reply.operation_ids, [op], `${variant}: the same intent, not a new one`);
+        const next = await fx.runNext(mail, ['operation']);
+        assert.deepEqual([next.id, next.result.success], [job.id, true], `${variant}: the change asked for again runs: ${JSON.stringify(next.result)}`);
+        assert.equal(fx.sent.filter(id => id === op).length, 1, `${variant}: sent once`);
+        assert.equal(await count("SELECT COUNT(*) AS count FROM mail_engine_jobs WHERE mail_account_id = ? AND kind = 'operation'", [mail]), 1, `${variant}: no second job`);
+      }
+    } finally {
+      for (const [id, account] of [...jobs.foregroundJobs]) if (mails.includes(account)) jobs.foregroundJobs.delete(id);
+      await fx.cleanup();
+    }
+  });
+
+  await fromDefaults('r13: a disconnect, purge, clear-all, person deletion or reconnect that went through leaves no foreground turn behind', async () => {
+    const writebacks = require('../dist/src/services/mail-writebacks') as FixtureValue;
+    const jobs = require('../dist/src/services/mail-durable-jobs') as FixtureValue;
+    const lifecycle = require('../dist/src/services/mail-account-lifecycle') as FixtureValue;
+    const scheduler = jobs.durableScheduler, saved = { drain: scheduler.drain, yieldReadWork: scheduler.yieldReadWork };
+    // Accepted changes wait for a slot, as behind other accounts' work.
+    scheduler.drain = async () => {}; scheduler.yieldReadWork = async () => false;
+    const stubs = mailStubbed();
+    try {
+      for (const path of ['disconnect', 'purge', 'clear-all', 'person deletion', 'reconnect'] as const) {
+        const name = `turns-${path.replace(/ /g, '-')}-r13`, owner = crypto.randomUUID(), mail = crypto.randomUUID(), email = crypto.randomUUID();
+        users[name] = owner;
+        await pool.execute('INSERT INTO users (id, email, password_hash, full_name) VALUES (?, ?, ?, ?)', [owner, `${name}@example.test`, passwordHash, name]);
+        const client = await signIn(name);
+        await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active, encrypted_password) VALUES (?, ?, ?, 'custom', 'sync', TRUE, ?)",
+          [mail, owner, `${name}-mail@example.test`, encrypt('synthetic-mail-password')]);
+        await pool.execute("INSERT INTO emails (id, user_id, mail_account_id, from_address, to_addresses, folder, remote_folder, remote_uid, remote_uidvalidity) VALUES (?, ?, ?, 'sender@example.test', '[]', 'inbox', 'INBOX', 10, 80)", [email, owner, mail]);
+        // Only this path's turns, so the map is empty afterwards or not.
+        jobs.foregroundJobs.clear();
+        try {
+          const reply = await writebacks.mutateMessages(owner, [email], { read: 1 });
+          await new Promise(resolve => setImmediate(resolve));
+          const [[job]] = await pool.query<RowDataPacket[]>('SELECT id FROM mail_engine_jobs WHERE operation_id = ?', [reply.operation_ids[0]]);
+          assert.equal(jobs.foregroundJobs.get(job.id), mail, `${path}: the change's job has its turn`);
+          let answer;
+          if (path === 'disconnect' || path === 'purge') {
+            answer = await client.request('DELETE', `/api/mail/accounts/${mail}`);
+            if (path === 'purge') { assert.equal(answer.status, 200, JSON.stringify(answer.body)); answer = { status: 200, body: await lifecycle.purgeAccount(owner, mail, `${name}-mail@example.test`) }; }
+          } else if (path === 'clear-all') answer = await client.request('POST', '/api/settings/clear-mail-accounts', {});
+          else if (path === 'person deletion') answer = await client.request('DELETE', '/api/settings/account', { current_password: password });
+          else answer = await client.request('PUT', `/api/mail/accounts/${mail}`, { is_active: true });
+          assert.equal(answer.status, 200, `${path}: ${JSON.stringify(answer.body)}`);
+          assert.deepEqual([...jobs.foregroundJobs.keys()], [], `${path}: no turn is left`);
+        } finally {
+          jobs.foregroundJobs.clear();
+          await pool.execute('DELETE FROM mail_accounts WHERE id = ?', [mail]);
+          await pool.execute('DELETE FROM users WHERE id = ?', [owner]);
+        }
+      }
+    } finally { stubs.restore(); Object.assign(scheduler, saved); }
+  });
+
   await fromDefaults('r11: a restore start that waited is refused once restoring is forbidden, and a queued restore a later rule forbids applies nothing', async () => {
     const created = await alex.request('POST', '/api/contacts', { name: { given: 'Archived rule r11' } });
     assert.ok([200, 201].includes(created.status), JSON.stringify(created.body));
