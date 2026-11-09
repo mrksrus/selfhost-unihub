@@ -9,6 +9,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.provider.MediaStore
 import android.util.Log
+import android.webkit.CookieManager
 import android.webkit.MimeTypeMap
 import android.widget.Toast
 import androidx.core.content.FileProvider
@@ -30,10 +31,14 @@ import java.util.concurrent.RejectedExecutionException
  * WebView. Open and Share hand Android's chooser a copy in the app's cache
  * through a FileProvider (read-only, for the chosen app only); Save writes to
  * Downloads through MediaStore. Copies are deleted after SharedFiles.MAX_AGE_MS
- * and all at once when the page signs out (MainActivity).
+ * and all at once when the page signs out (MainActivity). A backup of a
+ * server before 0.28 is the one file fetched with the session
+ * (saveLegacyBackup), from this process only.
  */
 class FileActions(private val activity: Activity, private val origin: String) {
     private val worker = Executors.newSingleThreadExecutor()
+    // Backups of older servers: long transfers, kept apart from the page's file actions.
+    private val backups = Executors.newSingleThreadExecutor()
 
     /** Runs one action; `done` gets null when Android took it over, or the text to show. */
     fun run(action: String, url: String, name: String, mime: String, done: (String?) -> Unit) {
@@ -61,8 +66,40 @@ class FileActions(private val activity: Activity, private val origin: String) {
         }
     }
 
+    /**
+     * A backup of a server before 0.28, whose pages pass the address that
+     * needs the session (SharedFiles.isLegacyBackupDownload): fetched here,
+     * in UniHub's own process, with the WebView's cookie, and written to
+     * Downloads. The cookie never goes to Android's download manager or any
+     * other app (F9). False when the address is not that one or there is no
+     * session to send; the saved or failed toast follows.
+     */
+    fun saveLegacyBackup(url: String, name: String): Boolean {
+        if (!ServerAddress.sameOrigin(origin, url) || !SharedFiles.isLegacyBackupDownload(origin, url)) return false
+        val cookie = CookieManager.getInstance().getCookie(url)?.takeIf { it.isNotBlank() } ?: return false
+        val token = session.current()
+        val fileName = WebBridge.safeFileName(name)
+        return try {
+            backups.execute {
+                val error = try {
+                    save(url, fileName, "", cookie = cookie, limit = MAX_BACKUP_BYTES, token = token)
+                    null
+                } catch (problem: Problem) {
+                    problem.message
+                } catch (_: Exception) {
+                    activity.getString(R.string.download_failed)
+                }
+                error?.let { activity.runOnUiThread { Toast.makeText(activity, it, Toast.LENGTH_SHORT).show() } }
+            }
+            true
+        } catch (_: RejectedExecutionException) {
+            false
+        }
+    }
+
     fun close() {
         worker.shutdown()
+        backups.shutdown()
     }
 
     private class Problem(message: String) : Exception(message)
@@ -73,13 +110,16 @@ class FileActions(private val activity: Activity, private val origin: String) {
 
     // The ticket answers once; a failed transfer is tried again with a new
     // ticket from the page.
-    private fun <T> fetch(url: String, name: String, mime: String, use: (Download) -> T): T {
+    // `cookie` only for an older server's backup (saveLegacyBackup), sent
+    // from this process and never after a redirect, which is refused.
+    private fun <T> fetch(url: String, name: String, mime: String, cookie: String? = null, use: (Download) -> T): T {
         val connection = URL(url).openConnection() as HttpURLConnection
         connection.connectTimeout = 15_000
         connection.readTimeout = 60_000
         connection.instanceFollowRedirects = false
         connection.useCaches = false
         connection.setRequestProperty("User-Agent", "UniHubAndroid/${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+        cookie?.let { connection.setRequestProperty("Cookie", it) }
         try {
             val status = connection.responseCode
             if (status != 200) {
@@ -94,14 +134,14 @@ class FileActions(private val activity: Activity, private val origin: String) {
         }
     }
 
-    private fun copy(input: InputStream, output: OutputStream) {
+    private fun copy(input: InputStream, output: OutputStream, limit: Long = MAX_BYTES) {
         val buffer = ByteArray(64 * 1024)
         var total = 0L
         while (true) {
             val read = input.read(buffer)
             if (read < 0) break
             total += read
-            if (total > MAX_BYTES) throw Problem(activity.getString(R.string.files_too_large))
+            if (total > limit) throw Problem(activity.getString(R.string.files_too_large))
             output.write(buffer, 0, read)
         }
     }
@@ -146,9 +186,10 @@ class FileActions(private val activity: Activity, private val origin: String) {
         }
     }
 
-    private fun save(url: String, name: String, mime: String) {
+    // `token`: the session the file belongs to; signed out meanwhile, it is not kept.
+    private fun save(url: String, name: String, mime: String, cookie: String? = null, limit: Long = MAX_BYTES, token: Long? = null) {
         val resolver = activity.contentResolver
-        fetch(url, name, mime) { download ->
+        fetch(url, name, mime, cookie) { download ->
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, name)
                 put(MediaStore.Downloads.MIME_TYPE, download.type)
@@ -156,7 +197,8 @@ class FileActions(private val activity: Activity, private val origin: String) {
             }
             val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("No Downloads entry")
             try {
-                download.body.use { input -> (resolver.openOutputStream(uri) ?: throw IOException("No stream")).use { copy(input, it) } }
+                download.body.use { input -> (resolver.openOutputStream(uri) ?: throw IOException("No stream")).use { copy(input, it, limit) } }
+                if (token != null && !session.isCurrent(token)) throw Problem(activity.getString(R.string.download_failed))
                 resolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
             } catch (error: Exception) {
                 resolver.delete(uri, null, null)
@@ -173,6 +215,8 @@ class FileActions(private val activity: Activity, private val origin: String) {
         private val ACTIONS = setOf("open", "save", "share")
         // Larger than any mail the server accepts; a bound on the cache and on Downloads.
         private const val MAX_BYTES = 1L shl 30
+        // A backup the server's import takes is at most 3900 MiB (BACKUP_UPLOAD_MAX_SIZE).
+        private const val MAX_BACKUP_BYTES = 4L shl 30
 
         fun authority(context: Context) = "${context.packageName}.files"
 

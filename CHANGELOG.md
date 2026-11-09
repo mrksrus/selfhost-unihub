@@ -181,7 +181,8 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   hour. The Android app no longer gives your session to Android's downloader:
   it gets only the ticket or the app update, which needs no sign-in. Install
   the new app when it is offered; older apps keep downloading with the
-  tickets.
+  tickets, and the new app saves a backup of a 0.27 server to Downloads
+  itself.
 - **Merged contacts are in the same bin.** Undoing a merge works as before for
   30 days, also by restoring a merged contact from the bin; after that, the
   merged-away contacts stay for the rest of your retention and come back on

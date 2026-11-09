@@ -2,8 +2,14 @@
 // Android's download manager by a backup-archive ticket, without the session
 // cookie: the download manager is another app. The stack's nginx log
 // (tools/e2e/stack.sh) shows each ticket request and whether a Cookie header
-// came. An address that needs the session, as a page of a server before 0.28
-// passes, is refused by the app and never fetched.
+// came. A page of a server before 0.28 passes the backup's address that
+// needs the session (/api/backup/jobs/<id>/download; the 0.28 server answers
+// it to a session as 0.27 did): the app fetches exactly that one inside its
+// own process and saves it to Downloads, never through the download manager.
+// Any other address needing the session is refused and never fetched.
+// Run against the stack of a 0.27.x checkout (UNIHUB_E2E_INSTANCE pointing at
+// it), the same case is the real pairing of this app with an older server; the
+// ticket part needs a 0.28 server and runs only there.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -25,32 +31,72 @@ const download = (page, url, name) => page.evaluate(([url, name]) => window.UniH
 
 const listDownloads = () => adb('shell', 'ls', '/sdcard/Download/').split('\n').map(line => line.trim()).filter(Boolean);
 
-test('[28-17] a backup downloads in the app through its ticket, without the session cookie; an address needing the session is refused', { timeout: 900_000 }, async () => {
-  const { device, page } = await openApp();
+test('[28-17] a backup downloads in the app through its ticket, without the session cookie; a 0.27 page\'s backup address is saved by the app itself, any other session address is refused', { timeout: 900_000 }, async () => {
+  let { device, page } = await openApp();
+  // The WebView may replace its page target (a reload) while the case runs:
+  // a step that finds it gone takes the current signed-in page and runs again.
+  const onPage = async step => {
+    for (let attempt = 0; ; attempt++) {
+      try { return await step(page); } catch (error) {
+        if (attempt >= 4 || !/has been closed/.test(String(error?.message))) throw error;
+        await device.close().catch(() => {});
+        ({ device, page } = await openApp({ restart: false }));
+      }
+    }
+  };
   const saved = [];
   try {
     // A ready backup whose recovery password was shown, as Settings → Backup leaves it.
-    const created = await api(page, 'POST', '/api/backup/jobs', { sections: 'contacts' });
+    const created = await onPage(current => api(current, 'POST', '/api/backup/jobs', { sections: 'contacts' }));
     assert.equal(created.status, 202, JSON.stringify(created.body));
     const id = created.body.job.id;
     let job = created.body.job;
     for (let attempt = 0; job.status !== 'ready' && attempt < 120; attempt++) {
       await sleep(1000);
-      job = (await api(page, 'GET', `/api/backup/jobs/${id}`)).body.job;
+      job = (await onPage(current => api(current, 'GET', `/api/backup/jobs/${id}`))).body.job;
     }
     assert.equal(job.status, 'ready');
-    assert.equal((await api(page, 'POST', `/api/backup/jobs/${id}/recovery-password/reveal`, {})).status, 200);
+    assert.equal((await onPage(current => api(current, 'POST', `/api/backup/jobs/${id}/recovery-password/reveal`, {}))).status, 200);
 
-    // A page before 0.28 passes the session download; the app refuses it.
     const sessionPath = `/api/backup/jobs/${id}/download`;
+    const otherPath = `/api/backup/jobs/${id}`;
     const before = listDownloads();
     const accessBefore = readFileSync(`${stackState()}/log/nginx-access.log`, 'utf8').length;
-    await download(page, sessionPath, `refused-${id}.unihub`);
+    // Any other address needing the session is refused.
+    await onPage(current => download(current, otherPath, `refused-${id}.zip`));
 
-    const ticket = await api(page, 'POST', '/api/files/tickets', { kind: 'backup-archive', id });
+    // A page before 0.28 passes the session download (use-mail-account-backup,
+    // BackupSettings in 0.27.x): the app saves it itself.
+    const legacyName = `legacy-${id}.zip`;
+    await onPage(current => download(current, sessionPath, legacyName));
+    let legacy = null;
+    for (let attempt = 0; attempt < 120 && !legacy; attempt++) {
+      await answerSlowDialogs();
+      legacy = listDownloads().find(name => !before.includes(name) && !name.startsWith('.pending') && name.startsWith(`legacy-${id}`)) ?? null;
+      if (!legacy) await sleep(1000);
+    }
+    assert.ok(legacy, `the 0.27 page's backup is in Downloads (${listDownloads().join(', ')})`);
+    saved.push(legacy);
+    let legacySha = '';
+    for (let attempt = 0; attempt < 60 && legacySha !== job.file_sha256; attempt++) {
+      legacySha = adb('shell', 'sha256sum', `'/sdcard/Download/${legacy}'`).trim().split(/\s+/)[0];
+      if (legacySha !== job.file_sha256) await sleep(1000);
+    }
+    assert.equal(legacySha, job.file_sha256, 'the app saved the stored archive');
+
+    const server = await onPage(current => current.evaluate(async () => (await (await fetch('/api/version')).json()).server));
+    console.log(`server ${server}`);
+    if (Number(String(server).split('.')[1]) < 28) {
+      const access = readFileSync(`${stackState()}/log/nginx-access.log`, 'utf8').slice(accessBefore).split('\n');
+      assertSessionDownload(access, sessionPath, otherPath);
+      assert.ok(!listDownloads().some(name => name.startsWith('refused-')), 'nothing was saved for the refused address');
+      return;
+    }
+
+    const ticket = await onPage(current => api(current, 'POST', '/api/files/tickets', { kind: 'backup-archive', id }));
     assert.equal(ticket.status, 200, JSON.stringify(ticket.body));
     const prefix = ticketOf(ticket.body.url);
-    await download(page, ticket.body.url, ticket.body.filename);
+    await onPage(current => download(current, ticket.body.url, ticket.body.filename));
 
     // The download manager fetches the ticket alone: no Cookie header, the whole archive.
     let requests = [];
@@ -79,12 +125,26 @@ test('[28-17] a backup downloads in the app through its ticket, without the sess
     assert.equal(sha, job.file_sha256, 'the downloaded archive is the stored one');
     deviceScreenshot(`${evidence}/android-backup-download.png`);
 
-    // The refused address was handled first and never reached the server.
-    const access = readFileSync(`${stackState()}/log/nginx-access.log`, 'utf8').slice(accessBefore);
-    assert.ok(!access.includes(sessionPath), 'the app did not fetch the session download');
+    assertSessionDownload(readFileSync(`${stackState()}/log/nginx-access.log`, 'utf8').slice(accessBefore).split('\n'), sessionPath, otherPath);
     assert.ok(!listDownloads().some(name => name.startsWith('refused-')), 'nothing was saved for it');
   } finally {
     for (const name of saved) adb('shell', 'rm', '-f', `'/sdcard/Download/${name}'`);
     await device.close();
   }
 });
+
+// The session download came from the app's own process (its user agent), not
+// from Android's download manager, which would send the WebView's; the
+// refused address never reached the server.
+function assertSessionDownload(access, sessionPath, otherPath) {
+  const fetched = access.filter(line => line.includes(`"GET ${sessionPath} `));
+  console.log(`session download requests: ${JSON.stringify(fetched)}`);
+  assert.equal(fetched.length, 1, 'the app fetched the session download once');
+  assert.match(fetched[0], /" 200 \d+ /, 'and got the archive');
+  // The app's own requests say only UniHubAndroid/<version> (<code>); the
+  // WebView's agent, which the download manager would send, starts with
+  // Mozilla and names the bridge.
+  assert.match(fetched[0], /"UniHubAndroid\/[^" ]+ \(\d+\)" "[^"]*"$/, 'from its own process');
+  assert.ok(!fetched[0].includes('UniHubBridge'), 'not from the download manager');
+  assert.ok(!access.some(line => line.includes(`"GET ${otherPath} `)), 'the app did not fetch the other session address');
+}

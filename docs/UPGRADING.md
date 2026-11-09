@@ -98,9 +98,9 @@ encrypted. An older UniHub cannot read them; 0.28.0 reads every older backup.
 - **Android app.** Install 0.28.0's app when it is offered: its downloads
   (backups, the app update) no longer give Android's downloader your session.
   The 0.27.2, 0.27.1 and 0.27.0 apps keep downloading backups from a 0.28.0
-  server. The 0.28.0 app connected to a server older than 0.28 cannot download
-  backups (it says "Could not save the file"): update the server, or download
-  them in a browser. The window is 0.28.0, 0.27.2, 0.27.1 and 0.27.0: the
+  server, and the 0.28.0 app keeps downloading backups from a 0.27 server: it
+  saves them to Downloads itself, without the download manager's progress
+  notification; keep the app open until it says the file was saved. The window is 0.28.0, 0.27.2, 0.27.1 and 0.27.0: the
   0.26.0 app leaves it, so update a phone that still has it.
 
 ## 0.27.2 Send later and Save as template

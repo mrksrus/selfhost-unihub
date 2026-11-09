@@ -52,6 +52,29 @@ class SharedFilesTest {
     }
 
     @Test
+    fun onlyAnOlderServersBackupDownloadIsFetchedWithTheSession() {
+        val job = "0b4bda18-337b-4deb-b335-05c620edc41a"
+        assertTrue(SharedFiles.isLegacyBackupDownload(origin, "$origin/api/backup/jobs/$job/download"))
+        assertTrue(SharedFiles.isLegacyBackupDownload(origin, "https://HUB.example.com:443/api/backup/jobs/${job.uppercase()}/download"))
+        // Another server, scheme, port or user.
+        assertFalse(SharedFiles.isLegacyBackupDownload(origin, "https://evil.example.org/api/backup/jobs/$job/download"))
+        assertFalse(SharedFiles.isLegacyBackupDownload(origin, "http://hub.example.com/api/backup/jobs/$job/download"))
+        assertFalse(SharedFiles.isLegacyBackupDownload(origin, "https://hub.example.com:8443/api/backup/jobs/$job/download"))
+        assertFalse(SharedFiles.isLegacyBackupDownload(origin, "https://user@hub.example.com/api/backup/jobs/$job/download"))
+        // Anything else of the server, or an alias of the address.
+        assertFalse(SharedFiles.isLegacyBackupDownload(origin, "$origin/api/backup/jobs/$job/download?x=1"))
+        assertFalse(SharedFiles.isLegacyBackupDownload(origin, "$origin/api/backup/jobs/$job/download#x"))
+        assertFalse(SharedFiles.isLegacyBackupDownload(origin, "$origin/api/backup/jobs/$job/download/"))
+        assertFalse(SharedFiles.isLegacyBackupDownload(origin, "$origin/api/backup/jobs/1/download"))
+        assertFalse(SharedFiles.isLegacyBackupDownload(origin, "$origin/api/backup/jobs/$job/../../../mail/attachments/1"))
+        assertFalse(SharedFiles.isLegacyBackupDownload(origin, "$origin/api/backup/jobs/$job%2Fdownload"))
+        assertFalse(SharedFiles.isLegacyBackupDownload(origin, "$origin/api/backup/restore-jobs/$job/download"))
+        assertFalse(SharedFiles.isLegacyBackupDownload(origin, "$origin/api/mail/attachments/1"))
+        assertFalse(SharedFiles.isLegacyBackupDownload(origin, "$origin/api/files/tickets/$token"))
+        assertFalse(SharedFiles.isLegacyBackupDownload(origin, "not a url"))
+    }
+
+    @Test
     fun theMostSpecificWellFormedTypeIsUsed() {
         assertEquals("application/pdf", SharedFiles.mimeType("application/pdf", "image/png", null))
         assertEquals("image/jpeg", SharedFiles.mimeType("Image/JPEG; name=x.jpg", null, null))

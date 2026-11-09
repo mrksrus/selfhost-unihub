@@ -106,9 +106,11 @@ tickets and the public app update, never with the session cookie (it follows
 redirects by itself, so the server keeps both endpoints free of redirects).
 The 0.27.2, 0.27.1 and 0.27.0 apps still add the cookie to the ticket URL of a
 backup download; the server answers a ticket the same with or without it, so
-they keep working. The 0.28.0 app refuses the backup addresses that need the
-session, which the pages of servers before 0.28 pass: with such a server,
-download backups in a browser.
+they keep working. The pages of servers before 0.28 pass a backup address
+that needs the session (`/api/backup/jobs/<id>/download`): the 0.28.0 app
+fetches exactly that address inside its own process with the WebView's
+cookie and saves it to Downloads, and refuses any other address that needs
+the session; the cookie never goes to the download manager or another app.
 The 0.27.0 app can lose the "Connect to <server>?" question when Android rebuilds its screen (in the first minutes after the phone starts, or after a theme or font change); the link can simply be opened again. The 0.27.1, 0.27.2 and 0.28.0 apps keep it, and `android/scripts/launch-test.sh --candidate` checks that for the candidate only.
 From 0.23.0 the app also reads the handshake `protocol` and `minApp` when
 connecting to a server.

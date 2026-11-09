@@ -34,6 +34,14 @@ object SharedFiles {
     /** Whether `url` is exactly the app update of the server at `origin`. */
     fun isAppUpdate(origin: String, url: String): Boolean = serverPath(origin, url) == APP_UPDATE_PATH
 
+    // A backup's download as a server before 0.28 serves it to its pages
+    // (GET /api/backup/jobs/<job id>/download, with the session). A 0.28 page
+    // asks for a ticket instead.
+    private val LEGACY_BACKUP = Regex("/api/backup/jobs/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/download")
+
+    /** Whether `url` is exactly a backup download of the server at `origin` as 0.27 pages pass it. */
+    fun isLegacyBackupDownload(origin: String, url: String): Boolean = serverPath(origin, url)?.let(LEGACY_BACKUP::matches) == true
+
     /**
      * The raw (still encoded) path of `url` when it is an address of the
      * server at `origin` with nothing that could make it another one: no user
