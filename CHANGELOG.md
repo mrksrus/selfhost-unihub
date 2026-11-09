@@ -8,6 +8,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.28.1
 
+Fixes after 0.28.0. No database upgrade and no configuration change.
+
 ### Fixed
 
 - **Read and star stay as you set them in a Download account.** A message
@@ -16,6 +18,12 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   Download now takes read and star from the server only once, when a message
   is first imported; after that, only your changes in UniHub count. Sync
   accounts still follow the server.
+- **The Add task dialog fits a long email subject.** Making a task from a
+  message with a long subject widened the dialog's form beyond the dialog, so
+  on phones it scrolled sideways and cut off labels and the Cancel and Add
+  task buttons. The subject is now shortened on one line, and the same
+  dialog layout no longer lets a long folder name widen the Mail folders
+  dialog.
 
 ## 0.28.0
 
