@@ -5,6 +5,25 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.28.2 Folder delete across servers
+
+No database upgrade and no configuration change. Going back to 0.28.1 is
+possible.
+
+- **Mail folders.** Deleting a folder at the mail server now names the copy
+  of the folder the person saw on each server (UIDVALIDITY, and MAILBOXID
+  where the server advertises OBJECTID), and UniHub reads each copy's current
+  generation with STATUS before its DELETE. A folder created again under the
+  same name is refused with `409 FOLDER_CHANGED` and nothing is sent; a
+  DELETE answered "does not exist" without the `NONEXISTENT` code is no
+  longer counted as deleted. A browser tab opened before the update gets
+  `400 FOLDER_COPIES_REQUIRED` and is asked to reload; reloading picks up
+  0.28.2's page. A folder UniHub has not read on the server yet (no
+  UIDVALIDITY known) waits for the account's next sync.
+- **Android app.** 0.28.2's app is 0.28.1's app with the new version number;
+  install it when it is offered. The window is 0.28.2, 0.28.1, 0.28.0 and
+  0.27.2: the 0.27.1 app leaves it, so update a phone that still has it.
+
 ## 0.28.1 Fixes after 0.28.0
 
 No database upgrade and no configuration change. Going back to 0.28.0 is
