@@ -12,8 +12,8 @@ const { withTestDatabase, startTestApi } = require('./helpers/test-database.cts'
 // stranger to both). Covers the policies page with its password, activity
 // log and notice revision; the rules people are told about and confirm; the
 // administrator's path for alex; the service checks that depend on a body;
-// the bin's minimum while deleting for good is forbidden (D33, D34); the
-// minimum age of a backup (D36); and the two fixes of D41.
+// the bin's minimum while deleting for good is forbidden (bin_retention, the bin's minimum); the
+// minimum age of a backup (backup.server_retention_days); and asking for the password again.
 test('policies, notices and the administrator\'s path for a person, with an owner, a stranger and an administrator', {
   skip: !process.env.MYSQL_TEST_HOST, timeout: 300000,
 }, async t => {
@@ -141,7 +141,7 @@ test('policies, notices and the administrator\'s path for a person, with an owne
     await setPolicies({ 'bin.delete': 'allowed', 'accounts.remove': 'allowed', 'account.delete': 'allowed' });
   });
 
-  await t.test('D41: deleting one\'s own account asks for the password', async () => {
+  await t.test('deleting one\'s own account asks for the password', async () => {
     const dana = crypto.randomUUID();
     await pool.execute("INSERT INTO users (id, email, password_hash, full_name) VALUES (?, 'dana@example.test', ?, 'Dana')", [dana, passwordHash]);
     const client = await signIn('dana');
@@ -164,7 +164,7 @@ test('policies, notices and the administrator\'s path for a person, with an owne
       remote_uid, remote_uidvalidity, status, state, is_current, dispatched, available_at)
     VALUES (?, ?, ?, ?, 'move', 'trash', 'inbox', 'trash', 'INBOX', 7, 1, 'pending', 'executing', TRUE, TRUE, UTC_TIMESTAMP())`, [unresolved, users.alex, mail.alex, mail.alexEmail]);
 
-  await t.test('D41: clearing mail accounts waits, as purging one does, while a provider change has an unresolved outcome', async () => {
+  await t.test('clearing mail accounts waits, as purging one does, while a provider change has an unresolved outcome', async () => {
     await addUnresolved();
     const refused = await call(alex, 'POST', '/api/settings/clear-mail-accounts', {}, 409);
     assert.equal(refused.code, 'MAIL_OPERATIONS_UNRESOLVED');
@@ -180,7 +180,7 @@ test('policies, notices and the administrator\'s path for a person, with an owne
       smtp_host: 'smtp.mail.example.test', smtp_port: 465 };
     await setPolicies({ 'mail.mode.sync': 'forbidden' });
     forbids(await call(alex, 'POST', '/api/mail/accounts', { ...body, sync_mode: 'sync' }, 403), 'mail.mode.sync');
-    // Switching an existing account to a forbidden mode; the account keeps working otherwise (D39).
+    // Switching an existing account to a forbidden mode; the account keeps working otherwise.
     forbids(await call(alex, 'PUT', `/api/mail/accounts/${mail.alex}`, { sync_mode: 'sync', confirm_address: 'alex@mail.example.test' }, 403), 'mail.mode.sync');
     await setPolicies({ 'mail.mode.sync': 'allowed', 'mail.provider_delete': 'forbidden' });
     forbids(await call(alex, 'POST', '/api/mail/accounts', { ...body, delete_emails_on_server: true }, 403), 'mail.provider_delete');
@@ -269,7 +269,7 @@ test('policies, notices and the administrator\'s path for a person, with an owne
       assert.deepEqual((await audit(action)).map(entry => [entry.actor, entry.target, entry.details.calendar_account]), [[users.admin, users.alex, calendarAccount]], action);
     }
 
-    // A backup alex may not delete; the administrator may, also before the minimum age (D36).
+    // A backup alex may not delete; the administrator may, also before the minimum age.
     await setPolicies({ 'backup.delete': 'allowed', 'backup.server_retention_days': 30 });
     const [young, old] = [crypto.randomUUID(), crypto.randomUUID()];
     await pool.execute(`INSERT INTO data_export_jobs (id, user_id, status, phase, progress, created_at, completed_at)
@@ -317,7 +317,7 @@ test('policies, notices and the administrator\'s path for a person, with an owne
     await setPolicies({ 'accounts.remove': 'allowed', 'accounts.reset': 'allowed', 'bin.delete': 'allowed' });
   });
 
-  await t.test('D33, D34: the bin keeps 30 days by default; while deleting for good is forbidden the purge keeps the administrator\'s minimum', async () => {
+  await t.test('the bin keeps 30 days by default; while deleting for good is forbidden the purge keeps the administrator\'s minimum', async () => {
     const { purgeBin } = require('../dist/src/services/bin') as typeof import('../src/services/bin');
     assert.deepEqual((await call(blair, 'GET', '/api/settings/values')).settings.bin_retention, { value: '30', source: 'default', locked: false });
     await call(alex, 'PUT', '/api/settings/values', { values: { bin_retention: '7' } });

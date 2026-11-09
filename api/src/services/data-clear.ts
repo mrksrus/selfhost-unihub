@@ -21,7 +21,7 @@ import type { PolicyActor } from './settings';
 // and for calendar and mail the accounts it removes) for the person's own
 // requests: early, and again in the transaction that deletes (final-step.ts).
 // Clearing mail refuses, as purging one account does, while a provider
-// change has an unresolved outcome (D41), and, while calendars are connected
+// change has an unresolved outcome, and, while calendars are connected
 // from the mail accounts, as a change to Calendar: with Calendar off or being
 // restored.
 

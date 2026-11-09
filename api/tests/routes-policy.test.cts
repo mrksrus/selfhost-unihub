@@ -168,7 +168,7 @@ const NOT_DESTRUCTIVE: Readonly<Record<string, string>> = {
   // module switch and restore lock checked in the service.
   'DELETE /api/admin/users/:id/mail-accounts/:accountId': 'admin path, as above',
   'DELETE /api/admin/users/:id/calendar-accounts/:accountId': 'admin path, as above',
-  'DELETE /api/admin/users/:id/backups/:jobId': 'admin path, as above; also before backup.server_retention_days (D36)',
+  'DELETE /api/admin/users/:id/backups/:jobId': 'admin path, as above; also before backup.server_retention_days',
   'DELETE /api/admin/users/:id/bin/:itemId': 'admin path, as above',
   'POST /api/admin/users/:id/bin/empty': 'admin path, as above',
   'POST /api/admin/users/:id/clear/:module': 'admin path, as above',

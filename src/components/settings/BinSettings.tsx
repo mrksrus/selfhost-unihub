@@ -11,7 +11,7 @@ import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settin
 import { BinView } from '@/components/bin/BinView';
 
 // An administrator who forbids deleting from the bin for good also sets a
-// minimum (D34): the server resolves it as the setting's floor, and the
+// minimum: the server resolves it as the setting's floor, and the
 // shorter choices grey out with the reason. The server refuses a shorter
 // value anyway.
 

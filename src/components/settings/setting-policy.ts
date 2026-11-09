@@ -24,7 +24,7 @@ export function policyReason<T>(setting: Pick<ResolvedSetting<T>, 'locked' | 'fl
 /** The bin's retention choices from the shortest to the longest (the registry's strictness). */
 export const BIN_RETENTION_ORDER: readonly BinRetention[] = ['7', '30', '90', 'forever'];
 
-/** Why the shorter retention choices are greyed out: the administrator's minimum (D34), in plain words. */
+/** Why the shorter retention choices are greyed out: the administrator's minimum, in plain words. */
 export function retentionFloorReason(floor: BinRetention) {
   return floor === 'forever' ? 'Your administrator keeps deleted items until they are restored.' : `Your administrator keeps deleted items at least ${floor} days.`;
 }

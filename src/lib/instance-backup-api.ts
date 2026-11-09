@@ -7,7 +7,7 @@ export type { InstanceBackupRun, InstanceBackupStatus } from '../../api/src/cont
 
 // The built-in instance backup (D4), administrators only. Destination and
 // key come from the environment and are shown read-only; the schedule (time
-// and how many to keep, D35) is set on the page with the administrator's
+// and how many to keep) is set on the page with the administrator's
 // password. Restore is a command in the image, never a web action.
 
 export const instanceBackupQueryKey = ['admin', 'instance-backup'] as const;
@@ -23,7 +23,7 @@ export const instanceBackupQueryOptions = queryOptions({
   queryFn: ({ signal }) => fetchInstanceBackup(signal),
 });
 
-/** The schedule an administrator sets (D35): "HH:MM" UTC and how many backups to keep (1 to 1000). */
+/** The schedule an administrator sets: "HH:MM" UTC and how many backups to keep (1 to 1000). */
 export interface InstanceBackupSchedule { time_utc: string; keep: number }
 export const INSTANCE_BACKUP_KEEP_MIN = 1;
 export const INSTANCE_BACKUP_KEEP_MAX = 1000;

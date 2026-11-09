@@ -147,7 +147,7 @@ test('deleting a user removes their rows and files under every root, nothing of 
     for (const root of Object.values(ROOTS)) assert.equal(fs.existsSync(path.join(root, a.user)), false, `${root} still has A's directory`);
     assert.deepEqual(await everythingOf(b), intact, 'B keeps every row and file');
 
-    // B deletes their own account, with their password (D41): same removal, and the browser's cookies are cleared.
+    // B deletes their own account, with their password: same removal, and the browser's cookies are cleared.
     await connection.execute<ResultSetHeader>('UPDATE users SET password_hash = ? WHERE id = ?', [await hashPassword('synthetic-lifecycle-password'), b.user]);
     // From a live session of theirs: the deletion's final step asks again that it is (services/caller-proof.ts).
     const token = `synthetic-lifecycle-session-${b.user}`;

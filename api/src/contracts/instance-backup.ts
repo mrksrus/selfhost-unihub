@@ -4,7 +4,7 @@
 // environment only (INSTANCE_BACKUP_DIR, INSTANCE_BACKUP_KEY or _FILE) and
 // are shown read-only: a compromised admin session cannot redirect backups.
 // The time of the daily run and how many are kept are installation settings
-// an administrator changes (D35); INSTANCE_BACKUP_TIME and _KEEP, or 03:30
+// an administrator changes; INSTANCE_BACKUP_TIME and _KEEP, or 03:30
 // and 14, hold until then.
 
 export type InstanceBackupRunStatus = 'running' | 'succeeded' | 'failed';

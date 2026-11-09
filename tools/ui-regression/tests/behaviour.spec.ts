@@ -430,7 +430,7 @@ test.describe('the phone composer leaves the message room with the keyboard open
   }
 });
 
-// D38: the notice of the data rules with every rule in force, on a small
+// The notice of the data rules with every rule in force, on a small
 // phone (360×640). The dialog stays inside the viewport, its rules scroll and
 // the title and OK can be read and tapped; no control of it is cut off.
 const EVERY_RULE = [
@@ -452,7 +452,7 @@ const EVERY_RULE = [
 ];
 const SMALL_PHONE = { viewport: { width: 360, height: 640 }, hasTouch: true, isMobile: true } as const;
 
-test.describe('D38 the full rules notice fits a small phone', () => {
+test.describe('the full rules notice fits a small phone', () => {
   test.use(SMALL_PHONE);
   for (const theme of THEMES) {
     test.describe(theme, () => {

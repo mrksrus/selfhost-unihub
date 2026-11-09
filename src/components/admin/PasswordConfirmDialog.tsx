@@ -18,7 +18,7 @@ export function TargetLine({ target }: { target: string }) {
 /**
  * Confirms an action with the person's own password: an administrator acting
  * on another account or on a server-wide rule, or someone deleting their own
- * account (D41). The field is emptied as the request is sent: the typed
+ * account. The field is emptied as the request is sent: the typed
  * password lives in no state beyond the request itself, and a refusal leaves
  * the dialog open for another try. `target` names the person the action is done for, so an
  * administrator always sees whose data a password unlocks. The activity log

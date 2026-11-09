@@ -154,7 +154,7 @@ const MAIL_COMPOSE_REQUEST_MAX_SIZE = 40 * 1024 * 1024;
 // cannot redirect backups or read the key. Without a destination and a key
 // the instance backup is off and the server runs normally; the server never
 // makes a key up.
-// D35: the daily run at 03:30 UTC, 14 kept. INSTANCE_BACKUP_TIME and _KEEP
+// The instance backup schedule: the daily run at 03:30 UTC, 14 kept. INSTANCE_BACKUP_TIME and _KEEP
 // replace these defaults; an administrator's values on the admin page
 // (instance-backup.ts scheduleSettings) replace both.
 const INSTANCE_BACKUP_DEFAULT_TIME_UTC = '03:30';

@@ -2,7 +2,7 @@ const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const { portableName, portableZipPath, NameRegistry } = require('../dist/src/services/backup-readable') as typeof import('../src/services/backup-readable');
 
-// The readable names inside a backup (D37) must extract on Windows, macOS and
+// The readable names inside a backup (P-35) must extract on Windows, macOS and
 // Linux, and the ZIP writer applies the same rules again: a name that changed
 // the second time would no longer match the path backup.json records.
 

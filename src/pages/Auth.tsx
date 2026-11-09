@@ -29,7 +29,7 @@ const Auth = () => {
   const [twoFactorChallengeToken, setTwoFactorChallengeToken] = useState<string | null>(null);
   const [twoFactorCode, setTwoFactorCode] = useState('');
   const [signupMode, setSignupMode] = useState<SignupMode>('disabled');
-  // The rules that limit a new person on this server (D38), told before they create the account.
+  // The rules that limit a new person on this server, told before they create the account.
   const [dataRules, setDataRules] = useState<string[]>([]);
   // The revision of the rules shown: sent with the sign-up, so the account confirms those and no later ones.
   const [rulesRevision, setRulesRevision] = useState<number | null>(null);

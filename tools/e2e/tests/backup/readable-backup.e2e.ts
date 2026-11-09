@@ -10,7 +10,7 @@ import { createContact } from '../support/contacts.ts';
 import { parse, receive, sendMail } from '../support/mail.ts';
 import { onlyOn } from '../support/ui.ts';
 
-// 28-21 (D37): a backup is an AES-encrypted ZIP that opens outside UniHub
+// 28-21 (P-35): a backup is an AES-encrypted ZIP that opens outside UniHub
 // with its recovery password, holding mail as .eml, contacts as .vcf and
 // calendars as .ics. The archive is downloaded through a ticket and opened
 // here, outside the app, by the test-only WinZip AES reader (written apart

@@ -735,7 +735,7 @@ combination that cannot hold (new accounts in a mode that is not allowed, new
 accounts deleting at the provider while that is forbidden, both mail modes
 forbidden) is `400 POLICY_CONFLICT`, and nothing is saved.
 
-**Telling people (D38).** The rules in force are listed in plain words: every
+**Telling people.** The rules in force are listed in plain words: every
 key not at its default or refusing its action, and the bin's minimum while it
 holds. When that list changes, the rules revision (`system_settings`
 `policy_revision`) goes up and the administrator who saved it has seen it.

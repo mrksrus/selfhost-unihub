@@ -1,4 +1,4 @@
-// The envelope of a user backup (D37, 0.28.0): a standard ZIP that 7-Zip,
+// The envelope of a user backup (P-35, 0.28.0): a standard ZIP that 7-Zip,
 // Keka, Ark, WinRAR and `7z x` open with the recovery password. It holds a
 // plain README.txt and one entry, unihub-backup.zip (the archive itself, an
 // ordinary stored ZIP), encrypted with WinZip AES (AE-2: PBKDF2-HMAC-SHA1

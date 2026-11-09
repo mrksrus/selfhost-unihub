@@ -35,7 +35,7 @@ const DAY = 24 * 60 * 60 * 1000;
 const daysAgo = (days: number) => new Date(Date.now() - days * DAY).toISOString();
 const formatDay = (iso: string) => new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'long' });
 const JOBS = [
-  // Ten days old: a 90-day minimum holds it (D36). Its stored keep_until is the rule of the day it was made and must not decide.
+  // Ten days old: a 90-day minimum holds it (backup.server_retention_days). Its stored keep_until is the rule of the day it was made and must not decide.
   job('new', { created_at: daysAgo(10), started_at: daysAgo(10), completed_at: daysAgo(10), updated_at: daysAgo(10), keep_until: '2099-07-03T10:00:00.000Z', downloaded_at: daysAgo(9) }),
   job('old', { encryption_enabled: false, contents: null, content_type: 'application/zip', created_at: daysAgo(200), completed_at: daysAgo(200) }),
 ];
@@ -119,7 +119,7 @@ describe('Settings → Backup and restore (0.28)', () => {
     // No minimum in force: nothing is "kept at least until", whatever the job stored when it was made.
     expect(within(section).queryByText(/kept at least until/)).not.toBeInTheDocument();
     expect(within(section).getByText('Not encrypted, made before 0.28.')).toBeInTheDocument();
-    // D37: a downloaded, encrypted backup says how to open it outside UniHub; the plain pre-0.28 one does not.
+    // P-35: a downloaded, encrypted backup says how to open it outside UniHub; the plain pre-0.28 one does not.
     const hints = within(section).getAllByTestId('open-outside-hint');
     expect(hints).toHaveLength(1);
     expect(hints[0]).toHaveTextContent(/password-protected ZIP file\. Open it with 7-Zip, Keka or WinRAR/);
@@ -135,7 +135,7 @@ describe('Settings → Backup and restore (0.28)', () => {
     await waitFor(() => expect(downloadTicket).toHaveBeenCalledWith({ url: '/api/files/tickets/t3/download', filename: 'unihub-backup-named.zip' }));
   });
 
-  // D36: the administrator's days are a minimum. Delete greys out on a backup
+  // backup.server_retention_days: the administrator's days are a minimum. Delete greys out on a backup
   // younger than that with the date it opens; an older one deletes as before.
   it('greys Delete out on a backup the administrator still keeps, with the date it can go, and not on an older one', { timeout: 20_000 }, async () => {
     answer(capabilities(), JOBS, [], policiesAnswer({ 'backup.server_retention_days': { value: 90, allowed: true, reason: 'Your backups are kept at least 90 days: until then nobody can delete them.' } }));

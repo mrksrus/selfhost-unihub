@@ -44,7 +44,7 @@ type ModeChange = ReturnType<typeof mailAccountModeChange>;
 // The data-safety policies of a mail account's mode (F13), which depend on
 // the body and so are checked here rather than at the request boundary. An
 // existing account keeps the mode and switch it has whatever the policies
-// say now (D39): only a change to them is refused. An administrator acting
+// say now: only a change to them is refused. An administrator acting
 // for the person (actor.adminId) is not stopped.
 
 type PolicyOf = <K extends PolicyKey>(key: K) => EffectivePolicy<K>;

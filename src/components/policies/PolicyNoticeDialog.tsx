@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { settingsHref } from '@/components/settings/settings-sections';
 
-// The notice of the data rules (D38). The server keeps a revision of the
+// The notice of the data rules. The server keeps a revision of the
 // rules and the revision each person confirmed; while the person's is behind,
 // the app opens this dialog at start. OK records the revision shown. A person
 // who has never confirmed any (created by an administrator, or the first

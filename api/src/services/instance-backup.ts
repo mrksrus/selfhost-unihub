@@ -369,7 +369,7 @@ async function execute(row: RunRow, settings: InstanceBackupConfig & { dir: stri
     await syncDirectory(settings.dir);
     // Succeeded and what retention removes, in one transaction: the run
     // counts together with the removal of the oldest beyond the kept count.
-    // The count kept as the administrator set it now (D35), not at the start.
+    // The count kept as the administrator set it now, not at the start.
     const removing = await recordSuccess(row.id, { name, bytes, sha256, migrationId: manifest.migration_id }, await scheduleSettings());
     log.info(LOG, 'Succeeded', { run: row.id, bytes, files: manifest.files.count, seconds: Math.round((Date.now() - startedAt) / 1000) });
     await removeBackupFiles(settings.dir, removing);
@@ -795,7 +795,7 @@ function nextRun(now: Date, timeUtc: string, lastScheduled: Date | null = null) 
   return next;
 }
 
-// ── The administrator's schedule (D35) ────────────────────────────────
+// ── The administrator's schedule ──────────────────────────────────────
 // The time of the daily run (UTC) and how many backups are kept are
 // installation settings (system_settings) an administrator changes on the
 // page; INSTANCE_BACKUP_TIME and _KEEP, or the defaults 03:30 and 14, hold

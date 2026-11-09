@@ -23,7 +23,7 @@ export interface PolicyValues {
   'backup.restore': Allowance;
   'backup.delete': Allowance;
   /**
-   * The minimum age of a user backup before its owner may delete it (D36):
+   * The minimum age of a user backup before its owner may delete it:
    * a DELETE of a younger one is refused with POLICY_FORBIDS. Nothing is
    * ever deleted automatically; the administrator's path can delete earlier.
    * null sets no minimum.
@@ -53,7 +53,7 @@ export type PolicyKey = keyof PolicyValues;
 
 /**
  * How long the bin keeps deleted items at least while bin.delete is
- * forbidden (D34; default 'forever': the purge then deletes nothing). It
+ * forbidden (the bin's minimum; default 'forever': the purge then deletes nothing). It
  * becomes the floor of the person's bin_retention setting, so the settings
  * answer shows it as that setting's `floor`. Stored as policy.bin.min_retention;
  * not a PolicyKey yet, so it is its own field of the administrator's routes.

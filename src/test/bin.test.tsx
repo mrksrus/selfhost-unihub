@@ -447,7 +447,7 @@ describe('the bin', () => {
     await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not restore', description: expect.stringContaining('Ask your administrator') })));
   });
 
-  // D33 and D34: 30 days by default; an administrator's minimum greys the shorter choices with its reason.
+  // bin_retention and the bin's minimum: 30 days by default; an administrator's minimum greys the shorter choices with its reason.
   it('Settings → Bin greys the choices under the administrator\'s minimum out with the reason', async () => {
     answerGets([]);
     const settings = userSettingsAnswer();

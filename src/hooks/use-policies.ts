@@ -11,7 +11,7 @@ const DEFAULTS = defaultPolicies();
  * anyway, and the control greys out as soon as the answer is here.
  *
  * `rules`, `revision` and `acknowledgedRevision` feed the notice dialog and
- * "Rules on this server" (D38): `noticeDue` is true when an administrator
+ * "Rules on this server": `noticeDue` is true when an administrator
  * changed a user-facing rule since the person last confirmed them, or when
  * they never confirmed any.
  */

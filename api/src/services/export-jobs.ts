@@ -607,7 +607,7 @@ async function startDataExportJob(userId: string, { sections, scope, includeDown
   }
   const jobId = crypto.randomUUID();
   // The server keeps the backup at least until this date when a policy says
-  // so (backup.server_retention_days, D36); nothing removes it then. NULL:
+  // so (backup.server_retention_days); nothing removes it then. NULL:
   // no minimum.
   const retentionDays = (await resolvePolicy(userId, 'backup.server_retention_days')).value;
   await db.execute(

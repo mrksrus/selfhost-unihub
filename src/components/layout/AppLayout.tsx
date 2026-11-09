@@ -70,7 +70,7 @@ const AppLayout = () => {
       </main>
       <GlobalCommandPalette />
       <MailPeek />
-      {/* The data rules' notice (D38) opens over whichever page the app starts on. */}
+      {/* The data rules' notice opens over whichever page the app starts on. */}
       <PolicyNoticeDialog />
       <BottomNav />
     </div>

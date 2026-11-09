@@ -11,7 +11,7 @@ const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts')
 const { readZip, sevenZipBinary, sevenZip } = require('./helpers/winzip-aes-reader.cts');
 const ICAL: FixtureValue = require('ical.js');
 
-// D37 (0.28): a user backup is an AES-encrypted ZIP that other programs open
+// P-35 (0.28): a user backup is an AES-encrypted ZIP that other programs open
 // with the recovery password, holding readable mail, contacts, calendars and
 // recordings. Synthetic data, the real request handler and a disposable
 // database; the archive is opened by a reader written apart from the writer

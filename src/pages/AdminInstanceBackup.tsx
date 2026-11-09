@@ -21,7 +21,7 @@ import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog'
 // with its own key, to a mount the environment names. Destination and key
 // are read-only status from the environment (F10: a compromised admin
 // session cannot redirect backups); the schedule (time in UTC, how many to
-// keep; defaults 03:30 and 14, D35) is set here with the administrator's
+// keep; defaults 03:30 and 14) is set here with the administrator's
 // password. Restore is a command in the image, never a web action.
 
 const formatBytes = (bytes: number) => bytes < 1024 ** 2 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : bytes < 1024 ** 3 ? `${(bytes / 1024 ** 2).toFixed(1)} MB` : `${(bytes / 1024 ** 3).toFixed(2)} GB`;

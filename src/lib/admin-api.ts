@@ -163,7 +163,7 @@ export type { AdminPolicy, AdminPoliciesResponse } from '../../api/src/contracts
 export const adminPoliciesQueryKey = ['admin', 'policies'] as const;
 
 /**
- * The bin's minimum retention while bin.delete is forbidden (D34): 30 or 90
+ * The bin's minimum retention while bin.delete is forbidden: 30 or 90
  * days, or until restored (the default). The server resolves it as the floor
  * of each person's bin_retention setting; it is its own field of the
  * administrator's routes (bin_min_retention). A server without it leaves

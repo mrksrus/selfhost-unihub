@@ -153,7 +153,7 @@ export async function revealRecoveryPasswordOnce(id: string, waitMs = REVEAL_WAI
   }
 }
 
-/** The file name a backup is saved under when the ticket names none: a `.zip` (D37: a password-protected ZIP, as an unencrypted one from before 0.28 was a plain one). */
+/** The file name a backup is saved under when the ticket names none: a `.zip` (P-35: a password-protected ZIP, as an unencrypted one from before 0.28 was a plain one). */
 export const backupFileName = (job: Pick<BackupJob, 'id' | 'encryption_enabled'>, prefix = 'unihub-backup') => `${prefix}-${job.id}.zip`;
 
 /**

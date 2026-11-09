@@ -7,7 +7,7 @@ import { onlyOn } from '../support/ui.ts';
 // 28-06 (agent part): Server settings → Instance backup says Off with what
 // is missing, or runs "Back up now" when the stack's environment sets
 // INSTANCE_BACKUP_DIR and INSTANCE_BACKUP_KEY (stream D adds them to the
-// stack's .env). The schedule (D35) is set on the page with the
+// stack's .env). The schedule is set on the page with the
 // administrator's password whether or not the backup is on.
 
 interface Status { enabled: boolean; missing: string[]; running: boolean; last_run: { id: string; status: string } | null; time_utc: string; keep: number; schedule_defaults?: { time_utc: string; keep: number } }
@@ -39,7 +39,7 @@ test('[28-06] the instance backup page is off with what is missing, or backs up 
   expect(log.entries.some((entry) => entry.action === 'admin.instance_backup_started'), `recorded (${credentials.user('admin').username})`).toBe(true);
 });
 
-test('[28-06 D35] the admin sets the daily time and how many to keep with their password; destination and key stay read-only', { session: 'admin', timeout: 300_000 }, async ({ app, screen, browser }) => {
+test('[28-06] the admin sets the daily time and how many to keep with their password; destination and key stay read-only', { session: 'admin', timeout: 300_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop', 'phone');
   await app.open('/admin/instance-backup');
   const before = ok(await pageApi<Status>(browser, 'GET', '/api/admin/instance-backup'), 'status');

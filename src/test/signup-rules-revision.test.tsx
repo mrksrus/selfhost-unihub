@@ -20,7 +20,7 @@ const RULES = ['Your administrator does not allow deleting items from the bin fo
 beforeEach(() => localStorage.clear());
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
-// D38 at sign-up: the form lists the rules of one signup-mode answer and the
+// The rules notice at sign-up: the form lists the rules of one signup-mode answer and the
 // account confirms exactly that revision, through the real provider and the
 // real request helper; only the network is mocked.
 describe('sign-up and the data rules', () => {

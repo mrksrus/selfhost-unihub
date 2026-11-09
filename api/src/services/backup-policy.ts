@@ -4,7 +4,7 @@ import type { PolicyActor } from './settings';
 import { db } from '../state';
 import { policyForbids, resolvePolicy } from './settings';
 
-// How long a user backup is kept at least (D36, P-35):
+// How long a user backup is kept at least (backup.server_retention_days, P-35):
 // backup.server_retention_days is a minimum, not a deadline. While it is set,
 // a person's DELETE of a finished backup younger than that many days is
 // refused with POLICY_FORBIDS, as is one still being made; nothing is ever

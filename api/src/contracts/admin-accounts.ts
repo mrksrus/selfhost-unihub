@@ -115,7 +115,7 @@ export type AdminCalendarAccountUpdateRequest = AdminReauthentication & Partial<
  * copy deleted (admin.mail_account_reset), refused with 409 while a provider
  * change has an unresolved outcome. No typed address: the password stands
  * for it. DELETE .../backups/:jobId may delete a backup younger than
- * backup.server_retention_days (D36).
+ * backup.server_retention_days.
  */
 export type AdminDeleteRequest = AdminReauthentication;
 

@@ -15,7 +15,7 @@ export function getBackupDownloadAction(job: DownloadableBackupState): BackupDow
 }
 
 /**
- * How to open a backup outside UniHub (D37, P-35; docs/BACKUP_RESTORE.md
+ * How to open a backup outside UniHub (P-35; docs/BACKUP_RESTORE.md
  * "Opening a backup outside UniHub"): the short sentence under the recovery
  * password and under a downloaded backup, and the steps behind "How to open
  * it". Windows Explorer and the macOS Archive Utility cannot open AES ZIP
@@ -31,7 +31,7 @@ export const OPEN_OUTSIDE_STEPS: readonly string[] = [
 ];
 
 /**
- * When a backup may be deleted under the administrator's minimum (D36): its
+ * When a backup may be deleted under the administrator's minimum (backup.server_retention_days): its
  * creation plus the minimum in force now, as the server tests it
  * (api/src/services/backup-policy.ts); null when nothing holds it. The
  * `keep_until` a job stored at creation is not used: it is the minimum of

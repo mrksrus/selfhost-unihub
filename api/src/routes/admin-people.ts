@@ -162,7 +162,7 @@ export = defineRoutes({
     return { jobs };
   }),
 
-  // Also earlier than backup.server_retention_days would let the person (D36).
+  // Also earlier than backup.server_retention_days would let the person.
   'DELETE /api/admin/users/:id/backups/:jobId': change(async (req, adminId) => {
     const userId = req.params.id, jobId = req.params.jobId;
     await assertPerson(userId);

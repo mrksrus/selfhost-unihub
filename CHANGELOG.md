@@ -252,7 +252,7 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   front and puts the account annotation at the end of the control, and its
   options wrap a long name with the dot on the first line.
 - Changed pictures `admin-policies` (wide, dark and light): the Backups
-  rules read as a minimum (D36), "Keep users' backups at least" and
+  rules read as a minimum (`backup.server_retention_days`), "Keep users' backups at least" and
   "Deleting backups", with the bin minimum row; wording only, same layout.
 
 ## 0.27.2

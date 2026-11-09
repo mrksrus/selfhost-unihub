@@ -22,7 +22,7 @@ const timeZones = (() => {
 })();
 
 /**
- * Settings → Profile, "Rules on this server" (D38): the data rules in force
+ * Settings → Profile, "Rules on this server": the data rules in force
  * for this person, always readable, the same words as the notice dialog.
  */
 export function RulesOnThisServer() {

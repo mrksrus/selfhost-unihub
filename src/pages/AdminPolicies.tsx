@@ -17,8 +17,8 @@ import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog'
 // on this server. Each key is one row; the values come from the server, and a
 // change is saved with the administrator's password in one transaction with
 // its activity-log entry. Changing a rule never deletes data. Two rules read
-// as minimums: how long users' backups are kept (D36) and, while deleting
-// from the bin is forbidden, how long the bin keeps items (D34).
+// as minimums: how long users' backups are kept (backup.server_retention_days) and, while deleting
+// from the bin is forbidden, how long the bin keeps items (bin_min_retention).
 
 /** The bin's minimum is not a policy key: it travels as its own field and has this row key here. */
 const BIN_MINIMUM_KEY = 'bin.min_retention';
@@ -108,7 +108,7 @@ const AdminPolicies = () => {
     },
     onSuccess: answer => {
       client.setQueryData(adminPoliciesQueryKey, answer);
-      // The administrator set these rules and has seen them: no notice for them (D38). Then their own greyed controls follow.
+      // The administrator set these rules and has seen them: no notice for them. Then their own greyed controls follow.
       void acknowledgePolicies(answer.revision).catch(() => undefined).finally(() => client.invalidateQueries({ queryKey: policiesQueryKey }));
       setDraft({});
       setConfirming(false);

@@ -5,10 +5,10 @@ import type { SignupMode } from '@/lib/admin-api';
 /**
  * Who may create an account, for the sign-in page; unknown counts as closed.
  * With it the rules that limit a new person on this server, in plain words
- * (D38): a server before 0.28 sends none.
+ * (the rules notice): a server before 0.28 sends none.
  */
 /**
- * The sign-up mode with the data rules a new person is shown (D38) and the
+ * The sign-up mode with the data rules a new person is shown and the
  * revision of those rules: sign-up sends it back, so the account confirms
  * only the rules it was shown. A newer revision opens the notice afterwards.
  */
@@ -22,7 +22,7 @@ export async function fetchPublicSignupMode(): Promise<{ mode: SignupMode; dataR
   };
 }
 
-/** Deletes one's own UniHub account with everything in it; asks for the password again (D41). */
+/** Deletes one's own UniHub account with everything in it; asks for the password again. */
 export async function deleteOwnAccount(currentPassword: string) {
   unwrap(await api.delete('/settings/account', { current_password: currentPassword }));
 }

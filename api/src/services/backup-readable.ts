@@ -1,4 +1,4 @@
-// The readable side of a user archive (D37, 0.28.0). Inside the encrypted
+// The readable side of a user archive (P-35, 0.28.0). Inside the encrypted
 // envelope (backup-envelope.ts), unihub-backup.zip holds:
 //
 //   Mail/<account>/<folder>/<NNNNN> <date> <subject>.eml   the stored raw message

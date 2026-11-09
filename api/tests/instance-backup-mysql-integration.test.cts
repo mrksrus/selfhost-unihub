@@ -317,7 +317,7 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     assert.match(status.restore_command, /instance-restore\.js --file/);
   });
 
-  await t.test('D35: the schedule and the count an administrator sets are picked up without a restart', async () => {
+  await t.test('the schedule and the count an administrator sets are picked up without a restart', async () => {
     const put = (body: Record<string, unknown>, status: number) => admin.request('PUT', '/api/admin/instance-backup/settings', body)
       .then(reply => { assert.equal(reply.status, status, JSON.stringify(reply.body)); return reply.body as FixtureValue; });
     assert.equal((await put({ time_utc: '11:00', keep: 1, current_password: 'wrong-password' }, 403)).code, 'ADMIN_PASSWORD_INCORRECT');

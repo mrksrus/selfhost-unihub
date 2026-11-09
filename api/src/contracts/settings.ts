@@ -102,7 +102,7 @@ export interface ScopedSettingsResponse<T> { id: string; settings: ResolvedSetti
 export interface SettingsUpdateRequest<T> { values: Partial<T> }
 
 /**
- * DELETE /api/settings/account: the person's own password again (D41). 400
+ * DELETE /api/settings/account: the person's own password again. 400
  * PASSWORD_REQUIRED without it, 403 PASSWORD_INCORRECT, 429 after too many
  * wrong ones; 403 POLICY_FORBIDS while account.delete is forbidden.
  */

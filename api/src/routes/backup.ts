@@ -208,7 +208,7 @@ const routes: RouteTable = defineRoutes({
     } catch (error) { return failed(error, 'Failed to cancel backup job', 'Cancel backup job error'); }
   }),
 
-  // backup.server_retention_days is a minimum age before deleting (D36).
+  // backup.server_retention_days is a minimum age before deleting.
   'DELETE /api/backup/jobs/:id': write(async (req, userId) => {
     try {
       await assertBackupDeletable(userId, req.params.id);

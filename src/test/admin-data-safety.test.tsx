@@ -130,7 +130,7 @@ describe('Server settings → Policies', () => {
   });
 });
 
-describe('Server settings → Policies: the bin\'s minimum (D34)', () => {
+describe('Server settings → Policies: the bin\'s minimum', () => {
   it('greys the minimum out until the bin rule forbids deleting, then saves it with the bin rule', { timeout: 20_000 }, async () => {
     const withMinimum = (values: Record<string, unknown> = {}, minimum: '30' | '90' | 'forever' = 'forever') => {
       const answer = adminPolicies() as AdminPoliciesResponse & { bin_min_retention: unknown };
@@ -173,13 +173,13 @@ describe('Server settings → Policies: the bin\'s minimum (D34)', () => {
     const minimum = await screen.findByRole('combobox', { name: 'Deleted items are kept at least' });
     expect(minimum).toBeDisabled();
     expect(screen.getByText(/This server does not offer a minimum yet/)).toBeInTheDocument();
-    // D36 reads as a minimum.
+    // backup.server_retention_days reads as a minimum.
     expect(screen.getByRole('combobox', { name: 'Keep users\' backups at least' })).toHaveTextContent('No minimum (default)');
   });
 });
 
 describe('Server settings → Instance backup', () => {
-  // D35: the schedule is set here with the administrator's password; destination and key stay read-only.
+  // The instance backup schedule is set here with the administrator's password; destination and key stay read-only.
   it('saves the schedule with the administrator\'s password and shows the time in their zone too', { timeout: 20_000 }, async () => {
     vi.mocked(api.get).mockImplementation(async (path: string) => {
       if (path === '/admin/instance-backup') return { data: instanceStatus({ enabled: true, missing: [], destination: '/backups', key_fingerprint: 'k1' }) };
@@ -425,7 +425,7 @@ describe('Admin → Users → a person', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     const confirm = await screen.findByRole('dialog', { name: 'Delete this backup of Alex Example?' });
     expect(within(confirm).getByTestId('confirm-target')).toHaveTextContent('For Alex Example (alex@example.com)');
-    // The administrator's path is not held by the minimum; the row shows no deadline, since the job's stored one may be stale (D36).
+    // The administrator's path is not held by the minimum; the row shows no deadline, since the job's stored one may be stale.
     expect(within(confirm).getByText(/whatever the minimum your rule keeps it for/)).toBeInTheDocument();
     expect(screen.queryByText(/kept at least until/)).not.toBeInTheDocument();
     fireEvent.change(within(confirm).getByLabelText('Your password'), { target: { value: 'admin-pw' } });

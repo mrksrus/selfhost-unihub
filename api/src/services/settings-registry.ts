@@ -59,9 +59,9 @@ export const SETTINGS = {
     // A view rule (mail-snooze.ts): which lists show a message while it is
     // snoozed. 'hide' is the behaviour before 0.25.
     snoozed_messages: { scope: 'user', kind: { type: 'enum', values: ['hide', 'keep'] }, default: 'hide' },
-    // How long the bin keeps deleted items (services/bin.ts, D13, D33).
+    // How long the bin keeps deleted items (services/bin.ts, D13; bin_retention).
     // Keeping longer is stricter, so an administrator's policy is a minimum;
-    // while bin.delete is forbidden, BIN_MIN_RETENTION is one (D34).
+    // while bin.delete is forbidden, BIN_MIN_RETENTION is one.
     bin_retention: { scope: 'user', kind: { type: 'enum', values: ['7', '30', '90', 'forever'] }, default: '30', strictness: ['7', '30', '90', 'forever'] },
   },
   mail_account: {
@@ -125,7 +125,7 @@ export const POLICIES: { readonly [K in PolicyKey]: PolicyEntry<PolicyValues[K]>
   'backup.create': allowance('Your administrator does not allow creating backups.'),
   'backup.restore': allowance('Your administrator does not allow restoring backups.'),
   'backup.delete': allowance('Your administrator does not allow deleting backups.'),
-  // A minimum (D36): the backup routes refuse deleting a younger backup
+  // A minimum: the backup routes refuse deleting a younger backup
   // (services/backup-policy.ts); nothing is deleted automatically.
   'backup.server_retention_days': {
     kind: { type: 'integer', min: 30, max: 365, values: [30, 90, 365], nullable: true }, default: null, strictness: ['null', '30', '90', '365'], refuses: [],
@@ -141,7 +141,7 @@ export const POLICIES: { readonly [K in PolicyKey]: PolicyEntry<PolicyValues[K]>
   'bin.delete': allowance('Your administrator does not allow deleting items from the bin for good.'),
 };
 
-// The bin's minimum retention while bin.delete is forbidden (D34), stored as
+// The bin's minimum retention while bin.delete is forbidden, stored as
 // policy.bin.min_retention. It only ever adds a floor to the person's
 // bin_retention (services/settings.ts), so it refuses nothing itself.
 export const BIN_MIN_RETENTION: PolicyEntry<BinMinimumRetention> = {

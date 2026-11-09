@@ -87,7 +87,7 @@ export interface BackupJob {
   recovery_password_available: boolean;
   recovery_password_revealed: boolean;
   server_unlock_available: boolean;
-  /** Kept at least until then (backup.server_retention_days, D36): nobody deletes it earlier, but nothing removes it at that date; null: no minimum. */
+  /** Kept at least until then (backup.server_retention_days): nobody deletes it earlier, but nothing removes it at that date; null: no minimum. */
   keep_until: string | null;
   /** What it holds; null for a backup made before 0.28. */
   contents: BackupContents | null;

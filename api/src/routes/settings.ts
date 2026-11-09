@@ -115,7 +115,7 @@ export = defineRoutes({
     }
   } },
 
-  // Deleting one's own account asks for the password again (D41): a stolen or
+  // Deleting one's own account asks for the password again: a stolen or
   // unattended session must not remove everything (security/reauthentication.ts).
   'DELETE /api/settings/account': { auth: 'user', module: null, restoreSection: '*', destructive: ['account.delete'], body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
     try {

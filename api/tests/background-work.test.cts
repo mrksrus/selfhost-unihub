@@ -66,7 +66,7 @@ test('background work starts the seventeen timers and stop clears every one of t
   await quietly(() => work.ready);
   assert.deepEqual([...timers.intervals.values()].map(timer => timer.ms).sort((a, b) => a - b),
     [1000, 15000, 15000, 30000, 30000, 30000, 60000, 60000, 60000, 60000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 86400000]);
-  // The hourly cleanup expires uploaded restore archives (D36).
+  // The hourly cleanup expires uploaded restore archives.
   await quietly(async () => { for (const { fn, ms } of timers.intervals.values()) if (ms === 3600000) fn(); await new Promise(resolve => setTimeout(resolve, 10)); });
   assert.ok(calls.includes('restore uploads'));
   // Interrupted syncs are reset before their timers can pick accounts up,

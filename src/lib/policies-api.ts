@@ -57,7 +57,7 @@ export const effectivePoliciesQueryOptions = queryOptions({
   staleTime: 5 * 60 * 1000,
 });
 
-/** Records that the person saw the rules of `revision` (the notice dialog, D38). */
+/** Records that the person saw the rules of `revision` (the notice dialog). */
 export async function acknowledgePolicies(revision: number) {
   return unwrap(await api.post<AcknowledgePoliciesResponse>('/policies/acknowledge', { revision } satisfies AcknowledgePoliciesRequest));
 }

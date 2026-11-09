@@ -356,7 +356,7 @@ function effectivePolicy<K extends PolicyKey>(key: K, levels: readonly PolicyLev
 }
 
 /**
- * The bin's minimum retention in force (D34): while bin.delete is forbidden,
+ * The bin's minimum retention in force: while bin.delete is forbidden,
  * the administrator's minimum (by default forever); otherwise none.
  */
 function binFloor(levels: readonly PolicyLevel[]): BinMinimumRetention | null {
@@ -364,7 +364,7 @@ function binFloor(levels: readonly PolicyLevel[]): BinMinimumRetention | null {
   return resolvePolicyValue(BIN_MIN_RETENTION as PolicyEntry, levels.map(level => level.get(BIN_MIN_KEY))).value as BinMinimumRetention;
 }
 
-/** The bin's minimum retention in force for the person (D34); null while bin.delete is allowed. */
+/** The bin's minimum retention in force for the person; null while bin.delete is allowed. */
 async function binRetentionFloor(_userId: string, executor: SqlExecutor = db, { lock = false }: PolicyRead = {}): Promise<BinMinimumRetention | null> {
   return binFloor(await policyLevels(executor, lock));
 }
@@ -439,7 +439,7 @@ async function assertAllowed(userId: string, keys: PolicyKey | readonly PolicyKe
   }
 }
 
-// --- The rules people are told about (D38) -----------------------------------
+// --- The rules people are told about (the rules notice) ----------------------
 
 /**
  * The rules in force, in plain words: every key an administrator set to

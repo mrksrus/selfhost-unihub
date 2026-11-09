@@ -129,7 +129,7 @@ test('the instance backup is off without a destination and a key, and refuses a 
 
   const off = parse({});
   assert.deepEqual([off.dir, off.key, off.missing, off.errors], [null, null, ['destination', 'key'], []]);
-  // D35's defaults stay one named pair.
+  // The instance backup schedule's defaults stay one named pair.
   assert.deepEqual([off.timeUtc, off.keep], [config.INSTANCE_BACKUP_DEFAULT_TIME_UTC, config.INSTANCE_BACKUP_DEFAULT_KEEP]);
   assert.deepEqual(parse({ INSTANCE_BACKUP_DIR: '/backup/instance' }).missing, ['key']);
 

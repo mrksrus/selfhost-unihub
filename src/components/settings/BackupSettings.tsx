@@ -35,7 +35,7 @@ import { cn } from '@/lib/utils';
 // downloaded mail by choice or policy, never what a provider holds. The
 // archive leaves the server through a download ticket (F9). A policy can
 // forbid creating, restoring or deleting: the control greys out with the
-// server's reason. An administrator's retention is a minimum (D36): Delete
+// server's reason. An administrator's retention is a minimum (backup.server_retention_days): Delete
 // greys out on a backup younger than that, with the date it opens.
 
 /** What each data class means to the person. */
@@ -86,7 +86,7 @@ const RESTORE_STATUS: Record<RestoreJob['status'], string> = {
   running: 'Restoring', cancelling: 'Stopping', cancelled: 'Stopped', completed: 'Restored', failed: 'Failed', expired: 'Expired',
 };
 
-/** How to open a backup outside UniHub (D37): the short sentence, with the steps behind a disclosure. */
+/** How to open a backup outside UniHub (P-35): the short sentence, with the steps behind a disclosure. */
 function OpenOutsideHint({ className }: { className?: string }) {
   return (
     <details className={cn('text-xs text-muted-foreground', className)} data-testid="open-outside-hint">
@@ -236,7 +236,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
   const cancel = useSessionMutation({ mutationFn: (job: BackupJob) => backupApi.cancel(job.id), onSuccess: refreshJobs, onError: failed('Could not stop the backup') });
   const remove = useSessionMutation({ mutationFn: (job: BackupJob) => backupApi.delete(job.id), onSuccess: () => { refreshJobs(); toast({ title: 'Backup deleted' }); },
     onError: (error: Error) => {
-      // The server decides (D36): a refusal under a rule this page did not know yet shows the server's words and reloads rules and backups.
+      // The server decides: a refusal under a rule this page did not know yet shows the server's words and reloads rules and backups.
       if (error instanceof ApiError && error.code === 'POLICY_FORBIDS') { void queryClient.invalidateQueries({ queryKey: policiesQueryKey }); refreshJobs(); }
       failed('Could not delete the backup')(error);
     } });
@@ -331,7 +331,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
     chosen.includes('calendar') ? 'events and tasks of calendar servers' : null,
     ...(capabilities?.exclusions ?? []).map(entry => entry.replace(/\.$/, '').replace(/^./, c => c.toLowerCase())),
   ].filter((entry): entry is string => !!entry);
-  // D36: the administrator's days are a minimum, never an expiry.
+  // backup.server_retention_days: the administrator's days are a minimum, never an expiry.
   const minimumDays = retentionPolicy.value;
   const retentionText = minimumDays ? `Your administrator keeps each backup at least ${minimumDays} days; after that you can delete it. Nothing is deleted on its own.` : 'The server keeps them until you delete them.';
   const busy = create.isPending || upload.isPending || unlock.isPending;

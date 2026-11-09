@@ -19,7 +19,7 @@ const rules = (revision: number, acknowledged: number, list = RULES) => ({ data:
 beforeEach(() => { stubBrowserApis(); state.auth = { user: { id: 'user-ada', email: 'ada@example.com', role: 'user' }, isOffline: false }; });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
-// D38: the notice of the data rules. The server keeps the revision each
+// The notice of the data rules. The server keeps the revision each
 // person confirmed; the dialog opens while theirs is behind, lists the rules
 // in force, and OK records the revision shown, so it opens once per change.
 describe('the data rules notice', () => {

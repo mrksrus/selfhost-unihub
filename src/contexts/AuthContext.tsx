@@ -158,7 +158,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       email,
       password,
       full_name: fullName,
-      // The rules the form listed (D38): the account confirms that revision and no later one.
+      // The rules the form listed: the account confirms that revision and no later one.
       ...(rulesRevision !== null ? { rules_revision: rulesRevision } : {}),
     });
 

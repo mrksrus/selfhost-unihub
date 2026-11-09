@@ -664,7 +664,7 @@
     },
     {
       "date": "2026-11-07T20:34:38.143Z",
-      "reason": "admin-policies-wide: the Backups rules read as a minimum (D36, maintainer 2026-11-07): 'Deleting backups' description and 'Keep users' backups at least' row; content within the accepted design (P-27), E2 stream",
+      "reason": "admin-policies-wide: the Backups rules read as a minimum (backup.server_retention_days, maintainer 2026-11-07): 'Deleting backups' description and 'Keep users' backups at least' row; content within the accepted design (P-27), E2 stream",
       "source": {
         "commit": "e010a03c63669f434bcfac8749bdddf8b1f1ecdf",
         "branch": "wip/0.28.0-e2",

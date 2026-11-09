@@ -12,7 +12,7 @@ import { recordAuditAfter } from '../services/audit';
 import { log } from '../log';
 
 // The instance backup's admin page (contracts/instance-backup.ts): its state,
-// "Back up now" and the schedule (D35). The destination and the key are
+// "Back up now" and the schedule. The destination and the key are
 // read-only here; the files are on the destination mount and are never
 // downloaded through the API.
 export = defineRoutes({

@@ -42,7 +42,7 @@ describe('policy greying', () => {
     expect(screen.getByText('Contacts')).toBeInTheDocument();
   });
 
-  // D41: deleting one's own account asks for the password again and sends it with the request.
+  // Deleting one's own account asks for the password again and sends it with the request.
   it('deleting your own account asks for your password and sends it', async () => {
     vi.mocked(api.get).mockResolvedValue(policiesAnswer());
     vi.mocked(api.delete).mockResolvedValue({ data: { deleted: true } });
@@ -61,7 +61,7 @@ describe('policy greying', () => {
     vi.unstubAllGlobals();
   });
 
-  // D41: the three refusals C2 answers with, each in plain words; the dialog stays for another try and nothing is deleted.
+  // The three refusals of an account deletion, each in plain words; the dialog stays for another try and nothing is deleted.
   it('a refused account deletion names the missing, wrong or too often tried password, and deletes nothing', { timeout: 20_000 }, async () => {
     vi.mocked(api.get).mockResolvedValue(policiesAnswer());
     const assign = vi.fn();

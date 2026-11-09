@@ -206,7 +206,7 @@ try {
   assert(typeof recoveryPassword === 'string' && recoveryPassword.length > 16, 'Recovery password must be available exactly once');
   await primary.request('POST', `/api/backup/jobs/${backupId}/recovery-password/reveal`, {}, { expected: 410 });
   const archive = await primary.request('GET', `/api/backup/jobs/${backupId}/download`, undefined, { binary: true });
-  // 0.28 backups are AES-encrypted ZIP files (D37); older .unihub-backup containers still import.
+  // 0.28 backups are AES-encrypted ZIP files (P-35); older .unihub-backup containers still import.
   assert.match(archive.response.headers.get('content-type')!, /application\/zip/);
   assert.equal(archive.bytes.length, readyBackup.file_size);
   assert.equal(crypto.createHash('sha256').update(archive.bytes).digest('hex'), readyBackup.file_sha256);

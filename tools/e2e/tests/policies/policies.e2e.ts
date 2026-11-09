@@ -9,8 +9,8 @@ import { createProviderMailbox } from '../support/mail.ts';
 // their password, alex sees the greyed control with its reason and the
 // server refuses the action, blair cannot change rules, and the admin acts
 // for alex through Users with an activity-log entry. The 2026-11-07
-// decisions: the bin's minimum (D34), backups kept a minimum age (D36),
-// the notices of the rules (D38) and the password on self-deletion (D41).
+// decisions: the bin's minimum, backups kept a minimum age (backup.server_retention_days),
+// the notices of the rules and the password on self-deletion.
 
 // The handle fills the dialogs; API bodies made from Node need the value itself (synthetic).
 const password = credentials.user('admin').password;
@@ -20,7 +20,7 @@ const PEOPLE = ['admin', 'alex', 'blair'] as const;
 
 interface Effective { policies: Record<string, { allowed: boolean; reason: string | null; value: unknown }>; revision: number; acknowledged_revision: number; rules: string[] }
 
-// A changed rule leaves the notice due for everyone (D38), and its dialog
+// A changed rule leaves the notice due for everyone, and its dialog
 // covers the page: each person confirms it here, except where a test is
 // about that notice. Without a revision, the current one is confirmed where
 // it is still due.
@@ -53,7 +53,7 @@ test('[28-11 28-13] a rule set by the admin greys alex\'s control with its reaso
     await dialog.getByLabel('Your password', { exact: true }).fill(password);
     await dialog.getByRole('button', 'Save changes', { exact: true }).tap();
     await expect(screen.getByText('Policies saved', { exact: true })).toBeVisible();
-    // The admin set the rules: no notice nags them about their own change (D38).
+    // The admin set the rules: no notice nags them about their own change.
     await expect.poll(async () => {
       const rules = ok(await pageApi<Effective>(browser, 'GET', '/api/policies/effective'), 'admin rules');
       return rules.acknowledged_revision === rules.revision;
@@ -97,7 +97,7 @@ test('[28-11] alex sees Empty bin and Delete for good greyed out with the reason
   await expect(screen.getByText(REASON, { exact: true })).toHaveCount(0);
 });
 
-test('[28-11 D34] the admin\'s minimum greys alex\'s shorter retention choices with the reason, and the server refuses a shorter value', { session: 'alex', timeout: 240_000 }, async ({ app, screen, browser }) => {
+test('[28-11] the admin\'s minimum greys alex\'s shorter retention choices with the reason, and the server refuses a shorter value', { session: 'alex', timeout: 240_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop', 'phone');
   await setPolicy({ 'bin.delete': 'forbidden' }, { binMinimum: '90' });
   try {
@@ -121,7 +121,7 @@ test('[28-11 D34] the admin\'s minimum greys alex\'s shorter retention choices w
   }
 });
 
-test('[28-11 D36] a backup younger than the admin\'s minimum cannot be deleted by alex: Delete is greyed with the date, the server refuses', { session: 'alex', timeout: 300_000 }, async ({ app, screen, browser }) => {
+test('[28-11] a backup younger than the admin\'s minimum cannot be deleted by alex: Delete is greyed with the date, the server refuses', { session: 'alex', timeout: 300_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop', 'phone');
   interface Job { id: string; status: string; scope: string; requested_sections: string[] }
   await app.open('/settings?section=backup');
@@ -196,7 +196,7 @@ test('[28-12] the admin adds a mail account for alex with their password; alex h
   for (const action of ['admin.mail_account_added', 'admin.mail_account_reset']) expect(log.entries.some((entry) => entry.action === action), action).toBe(true);
 });
 
-test('[28-14 D38] a changed rule opens the notice for alex once; OK records it; Settings › Profile keeps the rules', { session: 'alex', timeout: 300_000 }, async ({ app, screen, browser }) => {
+test('[28-14] a changed rule opens the notice for alex once; OK records it; Settings › Profile keeps the rules', { session: 'alex', timeout: 300_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop', 'phone');
   await setPolicy({ 'bin.delete': 'forbidden' }, { unseen: ['alex'] });
   try {
@@ -221,7 +221,7 @@ test('[28-14 D38] a changed rule opens the notice for alex once; OK records it; 
   }
 });
 
-test('[28-14 D38] the sign-up form lists the rules that limit a new person', { session: 'admin', timeout: 240_000 }, async ({ app, screen, browser }) => {
+test('[28-14] the sign-up form lists the rules that limit a new person', { session: 'admin', timeout: 240_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop', 'phone');
   const admin = await signIn('admin');
   const before = ok(await admin<{ signup_mode: string }>('GET', '/api/admin/settings/signup-mode'), 'signup mode').signup_mode;
@@ -242,7 +242,7 @@ test('[28-14 D38] the sign-up form lists the rules that limit a new person', { s
   }
 });
 
-test('[28-15 D41] deleting your own account asks for your password, and a wrong one deletes nothing', { session: 'alex', timeout: 240_000 }, async ({ app, screen, browser }) => {
+test('[28-15] deleting your own account asks for your password, and a wrong one deletes nothing', { session: 'alex', timeout: 240_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop', 'phone');
   // A rule changed by an earlier run must not leave its notice over this page.
   await acknowledge(['alex']);

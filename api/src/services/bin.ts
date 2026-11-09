@@ -122,7 +122,7 @@ function retentionDays(retention: BinRetention, reason: BinReason) {
 
 /**
  * The purge's question to the data-safety policies before it deletes a
- * person's items (D34): while deleting from the bin for good is forbidden,
+ * person's items (the bin's minimum): while deleting from the bin for good is forbidden,
  * the administrator's minimum retention ('never' for forever). It is also
  * the floor of the person's resolved bin_retention (services/settings.ts);
  * asked again here, in the purge's own transaction, so a purge never goes
@@ -224,7 +224,7 @@ function parseModule(value: unknown): BinModule | null {
 /**
  * When the purge may take an item under the retention in force now: never
  * before its stored time, and no sooner than the retention (with the
- * administrator's minimum, D34) allows; null when nothing will take it.
+ * administrator's minimum) allows; null when nothing will take it.
  * The stored time is only moved when the person changes their retention.
  */
 function shownPurgeAfter(row: Pick<BinRow, 'purge_after' | 'deleted_at' | 'reason'>, retention: BinRetention) {

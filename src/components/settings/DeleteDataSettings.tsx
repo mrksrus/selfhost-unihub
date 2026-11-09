@@ -50,11 +50,11 @@ const TARGETS: Target[] = [
     refresh: client => client.invalidateQueries({ queryKey: recordingsQueryKeys.all }) },
 ];
 
-// Deleting the account asks for the password again (D41), as every action
+// Deleting the account asks for the password again, as every action
 // on an account through the admin path does.
 const ACCOUNT_CONSEQUENCE = 'Your account and all of its UniHub data are deleted permanently: mail copies, contacts, calendars, tasks, recordings and backups kept on this server. This cannot be undone.';
 
-/** What a refused account deletion says (D41): the password missing, wrong, or asked too often; anything else in the server's words. Nothing was deleted in any case. */
+/** What a refused account deletion says: the password missing, wrong, or asked too often; anything else in the server's words. Nothing was deleted in any case. */
 function accountDeleteFailure(error: Error): { title: string; description: string } {
   const code = error instanceof ApiError ? error.code : undefined;
   const status = error instanceof ApiError ? error.status : undefined;

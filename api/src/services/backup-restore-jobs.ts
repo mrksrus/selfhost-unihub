@@ -70,7 +70,7 @@ const RECORDINGS_ROOT = '/app/uploads/recordings';
 const UPLOAD_RETENTION_DAYS = 7;
 const ACTIVE_RESTORE_STATUSES = new Set(['queued', 'running', 'cancelling']);
 // An uploaded archive past its UPLOAD_RETENTION_DAYS is not unlocked or
-// started any more, also before the hourly sweep removes it (D36): part of
+// started any more, also before the hourly sweep removes it: part of
 // the same state change as the transition it guards. MariaDB reads
 // UTC_TIMESTAMP() once, when a statement starts, so the transition first
 // takes the job's row (lockJobRow) and only then runs the statement that
@@ -874,7 +874,7 @@ async function resumePendingRestoreJobs() {
  * that holds only while the job is still idle with that archive, so a restore
  * started meanwhile keeps its file; then the file and the archive's key go.
  * Uploads live outside what the instance backup copies, so no removal gate
- * is needed. Backups the user made are not touched (D36).
+ * is needed. Backups the user made are not touched.
  */
 async function cleanupExpiredRestoreArchives() {
   const busy = [...BUSY_RESTORE_STATUSES];

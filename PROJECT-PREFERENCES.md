@@ -723,7 +723,7 @@ Evidence: `.github/workflows/docker-image.yml` (`api-tests` and `e2e` jobs),
 
 #### P-35 Backups are always encrypted and still readable outside UniHub
 
-Accepted, 2026-11-07 (maintainer, D37 and D36). Built in 0.28.0.
+Accepted, 2026-11-07 (maintainer). Built in 0.28.0.
 
 Nobody, administrators included, downloads an unencrypted backup. A backup
 must still belong to its owner outside UniHub: it opens with standard tools

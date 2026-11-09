@@ -8,7 +8,7 @@ import { asCaller } from '../services/caller-proof';
 import { acknowledgePolicies, getAdminPolicies, getEffectivePolicies, updateAdminPolicies } from '../services/settings';
 
 // The data-safety policies (F13 on F1, contracts/policies.ts): what applies to
-// the signed-in person, their confirmation of the rules (D38), and the
+// the signed-in person, their confirmation of the rules (the rules notice), and the
 // administrator's page. The services decide; these routes only carry it, and
 // a refusal they throw is answered by the request boundary.
 export = defineRoutes({
