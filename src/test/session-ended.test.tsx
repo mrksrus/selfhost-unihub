@@ -41,8 +41,11 @@ describe('a session that ended under a change', () => {
     const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider });
     await waitFor(() => expect(result.current.user?.id).toBe('A'));
     act(() => window.dispatchEvent(new Event('unihub:session-expired')));
-    await waitFor(() => expect(result.current.user).toBeNull());
-    expect(result.current.loading).toBe(false);
+    // The user is cleared before the session is read again; wait for that read to settle.
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+      expect(result.current.user).toBeNull();
+    });
     expect(get).toHaveBeenCalledTimes(2);
   });
 });
