@@ -15,6 +15,7 @@ export const cancelMailAccountSync = syncControl.cancelMailAccountSync;
 export const stopMailAccountWork = syncControl.stopMailAccountWork;
 export const stopOwnedMailAccountWork = syncControl.stopOwnedMailAccountWork;
 export const releaseOwnedMailAccountStop = syncControl.releaseOwnedMailAccountStop;
+export const endOwnedMailAccountStop = syncControl.endOwnedMailAccountStop;
 export const schedulePeriodicMailWork = syncControl.schedulePeriodicMailWork;
 export const MAIL_DISCOVERY_INTERVAL_SECONDS = syncControl.MAIL_DISCOVERY_INTERVAL_SECONDS;
 export const yieldMailReadWork = syncControl.yieldMailReadWork;

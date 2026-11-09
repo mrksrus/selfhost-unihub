@@ -44,11 +44,12 @@ function checkCancelled(signal?: AbortSignal) {
 // queued their turn; with background sync off only a job holding one runs.
 // No entry is consumed by being read or by a pause. Each one leaves
 // - when its job's run is completed (onFinished below), a turn used;
-// - when a stop fences its job for good: a disconnect or module stop at once,
-//   a change's own stop when the change went through (mail-sync-control.ts);
-// - or with its job's row: a change that went through drops the account's
-//   turns whose job ended or is gone (dropEndedForegroundJobs).
-// A refused change's stop hands each turn back to the exact job it fenced.
+// - when a disconnect or module stop ends the account's turns at once;
+// - when a change's own stop ends (mail-sync-control.ts): refused, it hands
+//   each turn back to the exact job it fenced; gone through (also a
+//   disconnect, a purge, a deletion that keeps its pause as the fence, and a
+//   reconnect), it drops its jobs' turns and those of the account's jobs that
+//   can no longer run (dropEndedForegroundJobs).
 const foregroundJobs = new Map<string, string>();
 function giveForegroundTurns(accountId: string, jobIds: readonly string[]) {
   for (const id of jobIds) if (typeof id === 'string' && id) foregroundJobs.set(id, accountId);
@@ -56,13 +57,14 @@ function giveForegroundTurns(accountId: string, jobIds: readonly string[]) {
 function foregroundJobsOf(accountId: string) {
   return [...foregroundJobs].filter(([, account]) => account === accountId).map(([id]) => id);
 }
-// Turns of the account whose job is no longer queued, running or paused (a
-// reconnect retired it, the account was deleted): no executor can use them.
+// Turns of the account whose job is neither queued nor running: retired,
+// deleted with its account, or paused, which only a refused change's own
+// stop requeues, and that one gives the turns of its jobs back itself.
 async function dropEndedForegroundJobs(accountId: string) {
   const ids = foregroundJobsOf(accountId);
   if (!ids.length) return;
   const [live] = await db.execute<RowDataPacket[]>(`SELECT id FROM mail_engine_jobs WHERE id IN (${ids.map(() => '?').join(',')})
-    AND state IN ('queued','running','paused')`, ids);
+    AND state IN ('queued','running')`, ids);
   const alive = new Set(live.map(row => row.id as string));
   for (const id of ids) if (!alive.has(id)) foregroundJobs.delete(id);
 }

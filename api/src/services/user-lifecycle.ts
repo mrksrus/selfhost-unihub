@@ -52,6 +52,8 @@ async function deleteUserNow(userId: string, { actor, actorId = null, req = null
     for (const pause of pauses) await mail.releaseOwnedMailAccountStop(pause);
     throw error;
   }
+  // The person's accounts and jobs are gone, and with them their turns.
+  for (const pause of pauses) await mail.endOwnedMailAccountStop(pause);
   if (!removed.deleted) throw notFound('USER_NOT_FOUND', 'User not found');
 
   // The rows are gone; while an instance backup copies files, they go after it.

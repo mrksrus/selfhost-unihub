@@ -48,6 +48,7 @@ function fixture(t: import('node:test').TestContext, settings: FixtureValue = {}
   require.cache[servicePath] = { id: servicePath, filename: servicePath, loaded: true, exports: {
     stopOwnedMailAccountWork: async (id: FixtureValue, reason: string) => { cancellations.push(id); return { userId: 'owner', accountId: id, reason, prior: null }; },
     releaseOwnedMailAccountStop: async (pause: FixtureValue) => { if (pause) cancellations.push(`released ${pause.accountId}`); },
+    endOwnedMailAccountStop: async () => {},
     deleteStoredAttachmentFiles: async () => ({ deletedFiles: 0, failedFiles: 0 }),
   } } as NodeJS.Module;
   require.cache[modulesPath] = { id: modulesPath, filename: modulesPath, loaded: true, exports: {

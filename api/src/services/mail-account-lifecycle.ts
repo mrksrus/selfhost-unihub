@@ -133,7 +133,8 @@ async function withOwnedStop<T>(accountId: string, reason: string, work: (commit
   const pause = await mail().stopOwnedMailAccountWork(accountId, reason);
   let done = false;
   try { return await work(() => { done = true; }); }
-  finally { if (!done) await mail().releaseOwnedMailAccountStop(pause); }
+  // Gone through, its pause stays as the account's fence; its turns end.
+  finally { if (done) await mail().endOwnedMailAccountStop(pause); else await mail().releaseOwnedMailAccountStop(pause); }
 }
 
 async function removeUnreferencedRaw(userId: string, storagePaths: readonly (string | null)[], executor: SqlExecutor = db) {

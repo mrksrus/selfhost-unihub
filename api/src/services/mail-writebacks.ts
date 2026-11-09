@@ -98,6 +98,24 @@ async function claimReceipt(input: Parameters<typeof repository.recordReceipt>[0
   }
 }
 // Caller holds email row locks and a transaction. Never delete an accepted intent.
+// An accepted intent's active job (its outcome check once recovery made it
+// one), or a new one of the kind the due scan would queue for it.
+async function intentJob(cx: SqlExecutor, userId: string, op: OperationRow) {
+  const [[active]] = await cx.execute<RowDataPacket[]>(`SELECT kind FROM mail_engine_jobs WHERE user_id=? AND mail_account_id=? AND operation_id=?
+    AND kind IN ('operation','reconcile') AND state IN ('queued','running','paused')
+    ORDER BY CASE state WHEN 'queued' THEN 0 WHEN 'running' THEN 1 ELSE 2 END, created_at LIMIT 1`, [userId, op.mail_account_id, op.id]);
+  return admitIntentJob(cx, userId, op, active?.kind ?? (op.state === 'reconciling' && op.action === 'move' ? 'reconcile' : 'operation'));
+}
+// The job a person's request admits for an accepted intent (enqueueJob
+// returns an active one of the kind as it is).
+async function admitIntentJob(cx: SqlExecutor, userId: string, op: Pick<OperationRow, 'id' | 'mail_account_id'>, kind: 'operation' | 'reconcile') {
+  const job = await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: op.id, kind, priority: 0, foreground: true }, cx);
+  // Paused by background sync being off, not by a pause of the account: due
+  // now, as the due scan would make it once background sync is on.
+  if (job.state === 'paused') await cx.execute(`UPDATE mail_engine_jobs j LEFT JOIN mail_engine_accounts a ON a.mail_account_id=j.mail_account_id
+    SET j.state='queued', j.due_at=UTC_TIMESTAMP() WHERE j.id=? AND j.user_id=? AND j.state='paused' AND a.paused_reason IS NULL`, [job.id, userId]);
+  return job;
+}
 async function queueChanges(cx: SqlExecutor, userId: string, emails: EmailRow[], changes: Record<string, unknown>, options: MutationOptions = {}) {
   const accounts = new Set<string>(), operationIds = options.operationIds || [], revisions = options.revisions || [];
   const { local, damaged } = await unverifiable(cx, userId, emails);
@@ -128,7 +146,13 @@ async function queueChanges(cx: SqlExecutor, userId: string, emails: EmailRow[],
       const old = oldRows[0];
       if (old && Number(old.is_current) && ACTIVE.includes(old.state)
         && old.target_value === target) {
-        operationIds.push(old.id); revisions.push(Number(old.intent_revision)); accounts.add(email.mail_account_id); continue;
+        // The same change asked again is a fresh request too (a receipt
+        // replay never gets here): the intent's own job, as it is or queued
+        // again, gets the person's turn, also when a background retry holds it.
+        const job = await intentJob(cx, userId, old);
+        operationIds.push(old.id); revisions.push(Number(old.intent_revision)); accounts.add(email.mail_account_id);
+        options.jobIds?.set(email.mail_account_id, [...options.jobIds.get(email.mail_account_id) || [], job.id]);
+        continue;
       }
       const revision = Number(old?.intent_revision || 0) + 1;
       if (old && !Number.isSafeInteger(revision)) throw fail('Mail intent revision exhausted');
@@ -353,15 +377,14 @@ async function retryWriteback(userId: string, id: string) {
   if (op.action === 'move' && Number(op.dispatched)) {
     await db.execute(`UPDATE mail_writebacks SET state='reconciling',status='pending',available_at=UTC_TIMESTAMP()
       WHERE id=? AND user_id=? AND state IN (${sqlList(MOVE_RECHECK)})`, [id, userId]);
-    const job = await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: id,
-      kind: 'reconcile', priority: 0, foreground: true });
+    const job = await admitIntentJob(db, userId, op, 'reconcile');
     runOperationsSoon(op.mail_account_id, { foregroundJobIds: [job.id] });
     publishMailOperation(userId, { accountId: op.mail_account_id, operationIds: [id], state: 'reconciling' });
     // No provider mutation. The bounded outcome checker takes this ID.
     return { message: 'Move outcome check queued', retry_action: 'check_outcome' };
   }
   if (!await requeue(userId, op)) throw fail('This change cannot be safely retried; check provider outcome.');
-  const job = await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: id, kind: 'operation', priority: 0, foreground: true });
+  const job = await admitIntentJob(db, userId, op, 'operation');
   runOperationsSoon(op.mail_account_id, { foregroundJobIds: [job.id] });
   publishMailOperation(userId, { accountId: op.mail_account_id, operationIds: [id], state: 'queued' });
   return { message: 'Retry queued', retry_action: 'retry' };
