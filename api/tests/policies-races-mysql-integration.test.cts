@@ -2494,7 +2494,7 @@ test('a destructive step follows the rules in force when it acts, with an owner,
       const op = reply.operation_ids[0];
       const [[job]] = await pool.query<RowDataPacket[]>('SELECT id FROM mail_engine_jobs WHERE operation_id = ?', [op]);
       admitted.push(job.id);
-      return { op, job: job.id as string };
+      return { op, job: job.id as string, email };
     };
     // The account's next due job, run and recorded as the scheduler would.
     const runNext = async (mail: string, kinds: string[]) => {
@@ -2691,6 +2691,46 @@ test('a destructive step follows the rules in force when it acts, with an owner,
         }
       }
     } finally { stubs.restore(); Object.assign(scheduler, saved); }
+  });
+
+  for (const ordering of ['lease recovery', 'refused stop'] as const) await fromDefaults(`r14: asking again while ${ordering === 'lease recovery' ? 'lease recovery' : 'a refused stop'} makes the change an outcome check keeps one job for it`, async () => {
+    const fx = await foregroundCase(`repeat-kind-${ordering.replace(/ /g, '-')}-r14@example.test`);
+    const writebacks = require('../dist/src/services/mail-writebacks') as FixtureValue;
+    const jobs = require('../dist/src/services/mail-durable-jobs') as FixtureValue;
+    const svc = mailServiceOf();
+    const active = async (op: string) => (await pool.query<RowDataPacket[]>(
+      "SELECT id, kind FROM mail_engine_jobs WHERE operation_id = ? AND state IN ('queued','running','paused') ORDER BY kind", [op]))[0];
+    try {
+      {
+        const { mail } = await fx.account(ordering.replace(/ /g, '-'));
+        const read = await fx.change(mail, { read: 1 });
+        const claimed = await fx.runtime.claimDueJob({ workerId: `r14-${ordering.replace(/ /g, '-')}`, accountId: mail, kinds: ['operation'] });
+        assert.equal(claimed.id, read.job);
+        let during: () => Promise<unknown>;
+        if (ordering === 'lease recovery') {
+          // The worker is gone; recovery makes its job an outcome check.
+          await fx.runtime.expireWorkerLeases(claimed.lease_owner);
+          during = () => fx.runtime.recoverExpiredJobs();
+        } else {
+          // Sent, then stopped by a change that is refused: requeued as an outcome check.
+          await pool.execute("UPDATE mail_writebacks SET state = 'executing', dispatched = TRUE WHERE id = ?", [read.op]);
+          const pause = await svc.stopOwnedMailAccountWork(mail, 'Synthetic refused settings r14');
+          assert.deepEqual(pause.foregroundJobs, [read.job]);
+          during = () => svc.releaseOwnedMailAccountStop(pause);
+        }
+        // The person asks again; the change of kind lands after the request's
+        // first read and before it locks the intent.
+        // (Started outside the request, so it is not part of its transaction.)
+        let go!: () => void;
+        const gate = new Promise<void>(resolve => { go = resolve; });
+        const task = (async () => { await gate; await during(); })();
+        const reply = await writebacks.mutateMessages(users.alex, [read.email], { read: 1 }, async () => { go(); await task; });
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(reply.operation_ids, [read.op], `${ordering}: the same intent`);
+        assert.deepEqual((await active(read.op)).map(job => [job.id, job.kind]), [[read.job, 'reconcile']], `${ordering}: one job, the outcome check`);
+        assert.deepEqual(jobs.foregroundJobsOf(mail), [read.job], `${ordering}: only that job has the turn`);
+      }
+    } finally { await fx.cleanup(); }
   });
 
   await fromDefaults('r11: a restore start that waited is refused once restoring is forbidden, and a queued restore a later rule forbids applies nothing', async () => {

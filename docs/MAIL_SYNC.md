@@ -447,7 +447,9 @@ it finishes as `paused` without connecting and is requeued once background sync
 is on again, and its refresh is a background sync. The user-action turn belongs
 to the job the action queued, by job id; asking again for a change that is
 still waiting gives that change's own job the turn (queued again if background
-sync had paused it), never a new intent or another job. Stopping an account
+sync had paused it), never a new intent or another job. An accepted intent has
+one active job at a time, the operation or the outcome check recovery made of
+it, whichever kind a caller asks for. Stopping an account
 (disconnect, settings, module off) fences its generation, aborts its running
 jobs including an operation (hard-closing that transport) and evicts its parked
 session.

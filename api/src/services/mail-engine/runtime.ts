@@ -34,11 +34,14 @@ async function enqueueJob({ userId, accountId, mailboxId = null, operationId = n
     }
     // A manual request after a scan began must survive its captured UIDNEXT
     // and cursor decision. Keep at most one queued successor, never mutate a
-    // running lease. Paused/queued jobs may be promoted in place.
+    // running lease. Paused/queued jobs may be promoted in place. An accepted
+    // intent has one active job, an operation or the outcome check recovery
+    // made of it, whichever kind the caller last saw.
+    const kinds = operationId && MUTATION_KINDS.includes(kind) ? MUTATION_KINDS : [kind];
     const [existing] = await cx.execute<(RowDataPacket & EngineJob)[]>(`SELECT * FROM mail_engine_jobs WHERE user_id = ? AND mail_account_id = ?
-      AND kind = ? AND mailbox_id <=> ? AND operation_id <=> ? AND state IN ('queued','running','paused')
+      AND kind IN (${kinds.map(() => '?').join(',')}) AND mailbox_id <=> ? AND operation_id <=> ? AND state IN ('queued','running','paused')
       ORDER BY CASE state WHEN 'queued' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, created_at
-      LIMIT 1 FOR UPDATE`, [userId, accountId, kind, mailboxId, operationId]);
+      LIMIT 1 FOR UPDATE`, [userId, accountId, ...kinds, mailboxId, operationId]);
     if (existing.length && !(existing[0].state === 'running' &&
       (kind === 'recent' || (manualRefresh && MANUAL_REFRESH_KINDS.includes(kind))))) {
       if (manualRefresh && !Number(existing[0].manual_refresh)) {
