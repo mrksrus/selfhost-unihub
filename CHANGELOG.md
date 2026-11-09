@@ -35,6 +35,8 @@ back up first (see [Upgrading](docs/UPGRADING.md#0280-data-safety)).
   event whose dates have their own changes or details waits in the bin until
   a calendar can take it whole. Deleting one date of a repeating server event
   is not kept in the bin.
+  Settings → Delete data deletes what a page shows; what is in that page's
+  bin stays until the bin is emptied, and its confirmation says so.
 - **Choose how long the bin keeps items:** 7, 30 or 90 days or until you
   delete them (30 to start with). Changing it applies to what is already in
   the bin. While an administrator does not allow deleting from the bin for

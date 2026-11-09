@@ -45,10 +45,10 @@ const sentenceCase = (word: string) => word.charAt(0).toUpperCase() + word.slice
 const formatWhen = (iso: string) => new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
 const formatBytes = (bytes: number) => bytes < 1024 ** 2 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 ** 2).toFixed(1)} MB`;
 const CLEAR_TARGETS: { module: AdminClearModule; label: string; consequence: string }[] = [
-  { module: 'contacts', label: 'Contacts', consequence: 'Every contact of this person is deleted.' },
-  { module: 'calendar', label: 'Calendar and ToDo', consequence: 'Every event and task of this person is deleted.' },
+  { module: 'contacts', label: 'Contacts', consequence: 'Every contact in their list is deleted. Contacts in their bin stay until the bin is emptied, here under Bin.' },
+  { module: 'calendar', label: 'Calendar and ToDo', consequence: 'Every event and task of this person is deleted, with their calendars and calendar accounts. Events and tasks in their bin stay until the bin is emptied, here under Bin.' },
   { module: 'mail-accounts', label: 'Mail accounts', consequence: 'Every mail account of this person and its mail in UniHub is deleted. Mail at the providers is not touched.' },
-  { module: 'recordings', label: 'Recordings', consequence: 'Every recording of this person is deleted.' },
+  { module: 'recordings', label: 'Recordings', consequence: 'Every recording in their library is deleted. Recordings in their bin stay until the bin is emptied, here under Bin.' },
 ];
 
 type Confirm = { userId: string; generation: number; title: string; description: string; action: string; destructive?: boolean; run: (password: string, generation: number) => void };
