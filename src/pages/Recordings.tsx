@@ -76,16 +76,15 @@ const Recordings = () => {
   const categoryFilter: 'all' | RecordingCategory = recordingCategories.includes(categoryParam as RecordingCategory) ? categoryParam as RecordingCategory : 'all';
   const tagFilter = params.get('tag') || '';
   const binView = params.get('view') === 'bin';
-  const setBinView = (open: boolean) => {
+  // One navigation per choice. Each call starts from this render's params, so
+  // two calls in one handler would let the second bring the first's change back
+  // (leaving the bin and choosing a category are one change).
+  const show = (changes: Partial<Record<'view' | 'category' | 'tag', string | null>>) => {
     const next = new URLSearchParams(params);
-    if (open) next.set('view', 'bin'); else next.delete('view');
+    for (const [key, value] of Object.entries(changes)) { if (value) next.set(key, value); else next.delete(key); }
     setParams(next, { replace: true });
   };
-  const setFilter = (key: 'category' | 'tag', value: string | null) => {
-    const next = new URLSearchParams(params);
-    if (value) next.set(key, value); else next.delete(key);
-    setParams(next, { replace: true });
-  };
+  const setFilter = (key: 'category' | 'tag', value: string | null) => show({ view: null, [key]: value });
 
   const capture = useAudioCapture({
     userId,
@@ -329,9 +328,9 @@ const Recordings = () => {
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       <PanelHeader title="Recordings" action={<Button size="sm" onClick={() => void capture.start()} disabled={busy || !!pendingAudio}><Mic aria-hidden="true" />Record</Button>} />
       <PanelGroup>
-        <PanelItem icon={Layers} active={!binView && categoryFilter === 'all'} onSelect={() => { setBinView(false); setFilter('category', null); }}>All recordings</PanelItem>
+        <PanelItem icon={Layers} active={!binView && categoryFilter === 'all'} onSelect={() => setFilter('category', null)}>All recordings</PanelItem>
         {recordingCategories.filter(item => item !== 'none').map(item => (
-          <PanelItem key={item} icon={FileAudio} active={!binView && categoryFilter === item} onSelect={() => { setBinView(false); setFilter('category', item); }}>{recordingCategoryLabels[item]}</PanelItem>
+          <PanelItem key={item} icon={FileAudio} active={!binView && categoryFilter === item} onSelect={() => setFilter('category', item)}>{recordingCategoryLabels[item]}</PanelItem>
         ))}
       </PanelGroup>
       {allTags.length > 0 && (
@@ -343,7 +342,7 @@ const Recordings = () => {
       )}
       <PanelGroup className="border-t border-border pt-3">
         <PanelItem icon={Upload} onSelect={() => fileInputRef.current?.click()}>Import audio file</PanelItem>
-        <PanelItem icon={Trash2} active={binView} onSelect={() => setBinView(true)}>Bin</PanelItem>
+        <PanelItem icon={Trash2} active={binView} onSelect={() => show({ view: 'bin' })}>Bin</PanelItem>
       </PanelGroup>
     </div>
   );

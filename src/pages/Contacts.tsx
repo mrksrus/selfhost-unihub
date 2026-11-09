@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { Download, Plus, Search, Upload, Users, X } from 'lucide-react';
 import { contactsQueryOptions, contactName, duplicatesQueryOptions, mergesQueryOptions, type Contact, type DuplicateGroup } from '@/lib/contacts-api';
@@ -55,7 +55,8 @@ const Contacts = () => {
   // The panel counts for the two server-side views; their bodies read the same queries.
   const duplicatesQuery = useQuery({ ...duplicatesQueryOptions('low'), enabled: !!contactsQuery.data });
   const mergesQuery = useQuery({ ...mergesQueryOptions, enabled: !!contactsQuery.data });
-  const binQuery = useQuery({ ...binQueryOptions('contacts'), enabled: !!contactsQuery.data });
+  // The first page's count; with older pages the panel shows the newest page's count (the bin view says there is more).
+  const binQuery = useInfiniteQuery({ ...binQueryOptions('contacts'), enabled: !!contactsQuery.data });
   const { data: emailLinkBehavior } = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('email_link_behavior') });
   const allContacts = useMemo(() => contactsQuery.data ?? [], [contactsQuery.data]);
   const contacts = useMemo(() => filterContacts(allContacts, LIST_VIEWS.includes(view) ? view : 'all', debouncedSearch), [allContacts, view, debouncedSearch]);
@@ -64,7 +65,7 @@ const Contacts = () => {
     ...Object.fromEntries(LIST_VIEWS.map(id => [id, allContacts.filter(contact => inContactView(contact, id)).length])),
     duplicates: duplicatesQuery.data?.groups.length ?? 0,
     merged: mergesQuery.data?.filter(merge => !merge.undone_at).length ?? 0,
-    bin: binQuery.data?.items.length ?? 0,
+    bin: binQuery.data?.pages[0]?.items.length ?? 0,
   }) as Record<ContactView, number>, [allContacts, duplicatesQuery.data, mergesQuery.data, binQuery.data]);
 
   const updateParams = (change: (next: URLSearchParams) => void, replace = false) => {

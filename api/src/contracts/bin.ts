@@ -31,10 +31,18 @@ export interface BinItem {
   restoring?: true;
 }
 
-/** GET /api/bin?module= */
+/**
+ * GET /api/bin?module=&before= (and GET /api/admin/users/:id/bin, the same).
+ * Newest first, a page at a time: up to 2000 items, in whole groups (a
+ * page's first group is always whole, also a larger one), so the members of
+ * a group are always on the same page. `before` is the next_cursor of the
+ * page before; an invalid one answers 400 BIN_INVALID.
+ */
 export interface BinListResponse {
   items: BinItem[];
   retention: BinRetention;
+  /** Older items remain: pass it as `before` for the next page; null on the last page. */
+  next_cursor: string | null;
 }
 
 /**

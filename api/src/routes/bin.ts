@@ -24,7 +24,7 @@ export = defineRoutes({
   'GET /api/bin': { auth: 'user', module: null, handler: async (req: Request, userId: string) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host}`);
-      const answer: BinListResponse = await listBin(userId, url.searchParams.get('module'));
+      const answer: BinListResponse = await listBin(userId, url.searchParams.get('module'), url.searchParams.get('before'));
       return { ...answer };
     } catch (error) { return failed(error, 'Failed to list the bin'); }
   } },

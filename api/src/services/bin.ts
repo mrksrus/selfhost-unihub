@@ -64,6 +64,7 @@ interface BinKind {
 }
 
 const PAYLOAD_VERSION = 1;
+// A page of the list holds up to this many items, in whole groups.
 const LIST_MAX = 2000;
 // A restore takes up to 500 items or groups; the ids of a group's members
 // count once, so a list with all its events can be sent whole (up to 5000 ids).
@@ -234,18 +235,69 @@ function shownPurgeAfter(row: Pick<BinRow, 'purge_after' | 'deleted_at' | 'reaso
   return new Date(Math.max(new Date(iso(row.purge_after)).getTime(), earliest)).toISOString();
 }
 
-/** GET /api/bin?module=: the open items of the person's enabled modules, newest first. */
-async function listBin(userId: string, moduleInput?: unknown): Promise<BinListResponse> {
+// The list pages by units: a group (items deleted together, restored
+// together) or an item of its own, so a page never splits a group. A unit
+// sorts by its newest item's deletion, then by its key; `before` is the
+// position of the last unit of the page before, nothing else: the queries
+// read only the asking person's items, so a cursor of another person's list,
+// or one made up, finds nothing that is not that person's own.
+const UNIT = "IF(group_id IS NULL, CONCAT('i', id), CONCAT('g', group_id))";
+interface Position { at: string; unit: string }
+const CURSOR_PATTERN = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+const UNIT_PATTERN = /^[gi][0-9a-f-]{36}$/i;
+const cursorOf = ({ at, unit }: Position) => Buffer.from(JSON.stringify([at, unit])).toString('base64url');
+function parseCursor(value: unknown): Position | null {
+  if (value === undefined || value === null || value === '') return null;
+  const invalid = () => badRequest('BIN_INVALID', 'This link to older bin items is not valid. Load the bin again from the newest items.');
+  if (typeof value !== 'string' || value.length > 200 || !/^[A-Za-z0-9_-]+$/.test(value)) throw invalid();
+  let parsed: unknown;
+  try { parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')); } catch { throw invalid(); }
+  if (!Array.isArray(parsed) || parsed.length !== 2) throw invalid();
+  const [at, unit] = parsed;
+  if (typeof at !== 'string' || !CURSOR_PATTERN.test(at) || !Number.isFinite(Date.parse(`${at.replace(' ', 'T')}Z`))
+    || typeof unit !== 'string' || !UNIT_PATTERN.test(unit)) throw invalid();
+  // Only the form this file writes: a changed character is refused, not read leniently.
+  if (cursorOf({ at, unit }) !== value) throw invalid();
+  return { at, unit };
+}
+
+/**
+ * GET /api/bin?module=&before=: the open items of the person's enabled
+ * modules, newest first, a page of whole groups at a time (up to LIST_MAX
+ * items; a page's first group always whole, also a larger one).
+ * next_cursor, when older items remain, is the `before` of the next page.
+ */
+async function listBin(userId: string, moduleInput?: unknown, beforeInput?: unknown): Promise<BinListResponse> {
   const module = parseModule(moduleInput);
+  const before = parseCursor(beforeInput);
   const enabled = [];
   for (const id of module ? [module] : MODULES) if (await isModuleEnabled(userId, id)) enabled.push(id);
   const retention = await binRetention(userId);
-  if (!enabled.length) return { items: [], retention };
-  const [rows] = await db.execute<(BinRow & { provider: string | null; origin: string | null })[]>(
-    `SELECT id, module, item_type, title, reason, group_id, deleted_at, purge_after,
+  if (!enabled.length) return { items: [], retention, next_cursor: null };
+  const open = `user_id = ? AND restored_at IS NULL AND module IN (${placeholders(enabled)})`;
+  const [units] = await db.execute<(RowDataPacket & { unit: string; at: string; size: number })[]>(
+    `SELECT unit, at, size FROM (
+       SELECT ${UNIT} AS unit, DATE_FORMAT(MAX(deleted_at), '%Y-%m-%d %H:%i:%s') AS at, MAX(deleted_at) AS newest, COUNT(*) AS size
+       FROM bin_items WHERE ${open} GROUP BY unit) units
+     ${before ? 'WHERE newest < ? OR (newest = ? AND unit > ?)' : ''}
+     ORDER BY newest DESC, unit LIMIT ${LIST_MAX + 1}`, [userId, ...enabled, ...(before ? [before.at, before.at, before.unit] : [])]);
+  const page: typeof units = [];
+  let size = 0;
+  for (const unit of units) {
+    if (page.length && size + Number(unit.size) > LIST_MAX) break;
+    page.push(unit); size += Number(unit.size);
+  }
+  const last = page.at(-1);
+  const next_cursor = last && page.length < units.length ? cursorOf({ at: last.at, unit: last.unit }) : null;
+  if (!page.length) return { items: [], retention, next_cursor: null };
+  const order = new Map(page.map((unit, index) => [unit.unit, index]));
+  const [found] = await db.execute<(BinRow & { unit: string; provider: string | null; origin: string | null })[]>(
+    `SELECT id, module, item_type, title, reason, group_id, deleted_at, purge_after, ${UNIT} AS unit,
        JSON_VALUE(payload, '$.provider') AS provider, JSON_VALUE(payload, '$.origin') AS origin
-     FROM bin_items WHERE user_id = ? AND restored_at IS NULL AND module IN (${placeholders(enabled)})
-     ORDER BY deleted_at DESC, id LIMIT ${LIST_MAX}`, [userId, ...enabled]);
+     FROM bin_items WHERE ${open} AND ${UNIT} IN (${placeholders(page)})
+     ORDER BY deleted_at DESC, id`, [userId, ...enabled, ...page.map(unit => unit.unit)]);
+  // A unit's items together, in the units' order.
+  const rows = [...found].sort((a, b) => order.get(a.unit)! - order.get(b.unit)!);
   const { restoringBinItems } = require('./calendar-move') as typeof import('./calendar-move');
   const pending = await restoringBinItems(db, userId);
   const items: BinItem[] = rows.map(row => ({
@@ -254,7 +306,7 @@ async function listBin(userId: string, moduleInput?: unknown): Promise<BinListRe
     provider: row.provider === 'caldav' ? 'caldav' : 'local', origin: row.origin || null,
     ...(pending.has(row.id) ? { restoring: true as const } : {}),
   }));
-  return { items, retention };
+  return { items, retention, next_cursor };
 }
 
 // --- Restoring ------------------------------------------------------------

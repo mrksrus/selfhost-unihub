@@ -1,4 +1,4 @@
-import { queryOptions, type QueryClient } from '@tanstack/react-query';
+import { infiniteQueryOptions, type QueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { unwrap } from '@/lib/api-error';
 import type { BinDeleteResponse, BinEmptyRequest, BinItem, BinListResponse, BinModule, BinRestoreRequest, BinRestoreResponse, BinRetention } from '../../api/src/contracts/bin';
@@ -46,9 +46,14 @@ const required = <T>(value: T | undefined, what: string): T => {
 };
 
 export const binApi = {
-  list: async (module?: BinModule, signal?: AbortSignal): Promise<BinListResponse> => {
-    const answer = required(unwrap(await api.get<BinListResponse>(`/bin${module ? `?module=${module}` : ''}`, { signal })), 'bin');
-    return { items: answer.items ?? [], retention: answer.retention ?? DEFAULT_BIN_RETENTION };
+  /** One page, newest first; `before` is the next_cursor of the page before (whole groups only, so a group never spans pages). */
+  list: async (module?: BinModule, before?: string | null, signal?: AbortSignal): Promise<BinListResponse> => {
+    const params = new URLSearchParams();
+    if (module) params.set('module', module);
+    if (before) params.set('before', before);
+    const query = params.toString();
+    const answer = required(unwrap(await api.get<BinListResponse>(`/bin${query ? `?${query}` : ''}`, { signal })), 'bin');
+    return { items: answer.items ?? [], retention: answer.retention ?? DEFAULT_BIN_RETENTION, next_cursor: answer.next_cursor ?? null };
   },
   /**
    * Restores items; a group (a merge, a calendar with its events) is restored
@@ -86,9 +91,12 @@ export function restoreRefusal(code: string | undefined, fallback: string) {
   }
 }
 
-export const binQueryOptions = (module?: BinModule) => queryOptions({
+/** The bin a page at a time: the first page, then older pages as the person asks for them (next_cursor → before). */
+export const binQueryOptions = (module?: BinModule) => infiniteQueryOptions({
   queryKey: binQueryKeys.list(module),
-  queryFn: ({ signal }) => binApi.list(module, signal),
+  queryFn: ({ pageParam, signal }) => binApi.list(module, pageParam, signal),
+  initialPageParam: null as string | null,
+  getNextPageParam: page => page.next_cursor,
 });
 
 export function invalidateBinQueries(client: QueryClient) {

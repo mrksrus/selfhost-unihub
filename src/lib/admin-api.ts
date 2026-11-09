@@ -262,9 +262,9 @@ export async function deleteAdminUserBackup(userId: string, jobId: string, curre
   return deleted(unwrap(await api.delete<AdminDeleteResponse>(userPath(userId, `/backups/${encodeURIComponent(jobId)}`), { current_password: currentPassword })));
 }
 /** The person's bin as they see it (GET /api/admin/users/:id/bin). */
-export async function fetchAdminUserBin(userId: string, signal?: AbortSignal): Promise<BinListResponse> {
-  const answer = unwrap(await api.get<BinListResponse>(userPath(userId, '/bin'), { signal }));
-  return { items: answer?.items ?? [], retention: answer?.retention ?? '30' };
+export async function fetchAdminUserBin(userId: string, before?: string | null, signal?: AbortSignal): Promise<BinListResponse> {
+  const answer = unwrap(await api.get<BinListResponse>(userPath(userId, `/bin${before ? `?before=${encodeURIComponent(before)}` : ''}`), { signal }));
+  return { items: answer?.items ?? [], retention: answer?.retention ?? '30', next_cursor: answer?.next_cursor ?? null };
 }
 /** Deletes one item of the person's bin for good. */
 export async function deleteAdminUserBinItem(userId: string, itemId: string, currentPassword: string) {

@@ -1,11 +1,13 @@
 import { useContext, useEffect, useId, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { CalendarDays, CalendarRange, CheckCircle2, CloudOff, Loader2, Mic, MoreHorizontal, Trash2, UserRound } from 'lucide-react';
 import { AuthContext } from '@/contexts/auth-context';
 import { usePolicy } from '@/hooks/use-policies';
+import { useToast } from '@/hooks/use-toast';
+import { hasCode } from '@/lib/api-error';
 import { useBinActions, type DestinationAsk } from '@/hooks/use-bin-actions';
-import { BIN_MODULES, binQueryOptions, groupBinItems, retentionSentence, type BinItem, type BinModule } from '@/lib/bin-api';
+import { BIN_MODULES, binQueryKeys, binQueryOptions, groupBinItems, retentionSentence, type BinItem, type BinModule } from '@/lib/bin-api';
 import { calendarApi, calendarQueryKeys, type CalendarCalendar } from '@/lib/calendar-api';
 import { listRefusal } from '@/lib/tasks';
 import { ListChooser } from '@/components/todo/ListChooser';
@@ -117,11 +119,21 @@ function DestinationDialog({ ask, titles, pending, onClose, onChoose, returnFocu
  * Restore and, under the bin.delete policy, Delete for good and Empty bin.
  * A group (a merge, a calendar with its events) is one row and comes back
  * as a unit. Binned items are not in the offline copy, so the view needs a
- * connection.
+ * connection. The server answers a page at a time (whole groups, newest
+ * first); "Show older items" at the end of the list appends the next page.
  */
 export function BinView({ module, showSettingsLink = true }: { module?: BinModule; showSettingsLink?: boolean }) {
   const isOffline = !!useContext(AuthContext)?.isOffline;
-  const query = useQuery({ ...binQueryOptions(module), enabled: !isOffline });
+  const client = useQueryClient();
+  const { toast } = useToast();
+  const query = useInfiniteQuery({ ...binQueryOptions(module), enabled: !isOffline });
+  // A cursor the server no longer accepts (400 BIN_INVALID): the bin is read again from the newest items, with the server's word.
+  const invalidCursor = hasCode(query.error, 'BIN_INVALID') ? query.error : null;
+  useEffect(() => {
+    if (!invalidCursor) return;
+    toast({ title: 'Could not load older items', description: invalidCursor.message, variant: 'destructive' });
+    void client.resetQueries({ queryKey: binQueryKeys.list(module), exact: true });
+  }, [invalidCursor, client, module, toast]);
   const [ask, setAsk] = useState<DestinationAsk | null>(null);
   const actions = useBinActions(module, { onDestinationAsked: setAsk });
   const deletePolicy = usePolicy('bin.delete');
@@ -142,15 +154,17 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
   };
   // An ask names only items still in the bin: one restored or deleted elsewhere since (a refetch
   // dropped it) is left out, and an ask with nothing left closes.
-  const items = query.data?.items;
+  const items = query.data?.pages.flatMap(page => page.items);
   const liveAsk = ask && items ? { ...ask, ids: ask.ids.filter(id => items.some(item => item.id === id)) } : ask;
   const askEmpty = !!liveAsk && liveAsk.ids.length === 0;
   useEffect(() => { if (askEmpty) setAsk(null); }, [askEmpty]);
 
   if (isOffline) return <EmptyState icon={CloudOff} title="The bin needs a connection" description="Deleted items are kept on the server, not in the offline copy." />;
   if (query.isLoading) return <LoadingState label="Loading the bin…" />;
-  if (query.error) return <ErrorState title="Could not load the bin" error={query.error} onRetry={() => void query.refetch()} retrying={query.isFetching} />;
-  const { items: binItems, retention } = query.data!;
+  // An older page that failed leaves the loaded pages in place (its row says so below).
+  if (query.error && !query.isFetchNextPageError) return <ErrorState title="Could not load the bin" error={query.error} onRetry={() => void query.refetch()} retrying={query.isFetching} />;
+  const binItems = items ?? [];
+  const retention = query.data!.pages[0].retention;
   const groups = groupBinItems(binItems);
   const shownAsk = liveAsk && liveAsk.ids.length > 0 ? liveAsk : null;
   const askedTitles = shownAsk ? shownAsk.ids.map(id => { const item = binItems.find(entry => entry.id === id); return item?.title || `an ${KINDS[item?.item_type ?? 'event']}`; }) : [];
@@ -158,7 +172,8 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
 
   const confirmEmpty = () => setConfirm({
     title: module ? `Empty the ${moduleLabel(module).toLowerCase()} bin?` : 'Empty the bin?',
-    description: `${plural(binItems.length, 'item')} ${binItems.length === 1 ? 'is' : 'are'} deleted for good. Nothing can be restored afterwards.`,
+    description: query.hasNextPage ? 'Everything in it, also the older items not shown yet, is deleted for good. Nothing can be restored afterwards.'
+      : `${plural(binItems.length, 'item')} ${binItems.length === 1 ? 'is' : 'are'} deleted for good. Nothing can be restored afterwards.`,
     action: 'Delete for good', run: () => actions.empty.mutate(module),
   });
   const confirmDelete = (group: BinItem[]) => setConfirm({
@@ -218,6 +233,19 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
             );
           })}
         </ul>
+      )}
+      {query.isFetchNextPageError && !invalidCursor && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-2 py-3 text-sm">
+          <span className="text-destructive">Could not load older items. {query.error?.message}</span>
+          <Button variant="outline" size="sm" onClick={() => void query.fetchNextPage()} disabled={query.isFetchingNextPage}>Try again</Button>
+        </div>
+      )}
+      {query.hasNextPage && !query.isFetchNextPageError && (
+        <div className="flex justify-center border-t border-border px-2 py-3">
+          <Button variant="outline" size="sm" onClick={() => void query.fetchNextPage()} disabled={query.isFetchingNextPage}>
+            {query.isFetchingNextPage && <Loader2 aria-hidden="true" className="animate-spin" />}Show older items
+          </Button>
+        </div>
       )}
 
       <DestinationDialog ask={shownAsk} titles={askedTitles} pending={actions.restore.isPending} onClose={() => setAsk(null)} returnFocus={returnFocus}

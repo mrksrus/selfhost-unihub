@@ -342,7 +342,7 @@ boundary checks it before the handler runs.
 | POST, PUT, DELETE | `/api/admin/users/:id/calendar-accounts[/:accountId]` | Add, change, remove a person's calendar account (`users.manage`) |
 | DELETE | `/api/admin/users/:id/backups/:jobId` | Delete a person's backup (`users.manage`) |
 | POST, DELETE | `/api/admin/users/:id/bin/empty`, `/api/admin/users/:id/bin/:itemId` | Empty a person's bin (optionally one module) or delete one item for good (`users.manage`) |
-| POST | `/api/admin/users/:id/clear/:module` | Settings > Delete data for a person: `contacts`, `calendar`, `mail-accounts` or `recordings` (`users.manage`) |
+| POST | `/api/admin/users/:id/clear/:module` | Settings > Delete data for a person: `contacts`, `calendar`, `mail-accounts` or `recordings` (`users.manage`); their bin is not touched (`/bin/empty` is) |
 
 The instance backup's destination and key come only from the environment (or
 `*_FILE`). Its schedule is an installation setting the admin changes on the
@@ -772,10 +772,10 @@ These routes are for the current user and require CSRF:
 | Method | Path | Purpose |
 | --- | --- | --- |
 | DELETE | `/api/settings/account` | Delete current user and associated uploaded files; needs `{ "current_password": "..." }` (`account.delete`) |
-| POST | `/api/settings/clear-contacts` | Delete all contacts (`data.clear`) |
-| POST | `/api/settings/clear-calendar` | Delete calendar/to-do data and recreate default local calendar (`data.clear`, `accounts.remove`) |
+| POST | `/api/settings/clear-contacts` | Delete all contacts in the list; contacts in the bin stay until it is emptied (`data.clear`) |
+| POST | `/api/settings/clear-calendar` | Delete calendar/to-do data and recreate default local calendar; events and tasks in the bin stay until it is emptied (`data.clear`, `accounts.remove`) |
 | POST | `/api/settings/clear-mail-accounts` | Delete all mail accounts and attachment files (`data.clear`, `accounts.remove`, `accounts.reset`); `409 MAIL_OPERATIONS_UNRESOLVED` while a provider change has an unresolved outcome; with calendars connected from mail, also Calendar's module switch and restore lock |
-| POST | `/api/settings/clear-recordings` | Delete all recordings and files (`data.clear`) |
+| POST | `/api/settings/clear-recordings` | Delete all recordings in the library and their files; recordings in the bin, and their files, stay until it is emptied (`data.clear`) |
 | GET | `/api/settings/mail-sender-candidates` | Suggest sender/domain rule candidates from local mail |
 
 The four clears are `services/data-clear.ts`, shared with the administrator's

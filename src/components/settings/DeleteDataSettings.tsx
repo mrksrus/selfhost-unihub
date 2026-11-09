@@ -36,17 +36,17 @@ interface Target {
 
 const TARGETS: Target[] = [
   { id: 'contacts', module: 'contacts', label: 'Contacts', description: '', confirm: 'Delete all contacts?',
-    consequence: 'Every contact is deleted. This cannot be undone.', path: '/settings/clear-contacts', done: 'All contacts deleted',
+    consequence: 'Every contact in your list is deleted. Contacts in the bin stay there until you empty the bin (Settings › Bin). This cannot be undone.', path: '/settings/clear-contacts', done: 'All contacts deleted',
     refresh: invalidateContactQueries },
   { id: 'calendar', module: 'calendar', label: 'Calendar and ToDo', description: '', confirm: 'Delete all events and tasks?',
-    consequence: 'Every calendar event and task is deleted. This cannot be undone.', path: '/settings/clear-calendar', done: 'All events and tasks deleted',
+    consequence: 'Every calendar event and task is deleted, with your calendars and calendar accounts. Events and tasks in the bin stay there until you empty the bin (Settings › Bin). This cannot be undone.', path: '/settings/clear-calendar', done: 'All events and tasks deleted',
     refresh: invalidateCalendarQueries },
   { id: 'mail', module: 'mail', label: 'Mail accounts', description: 'Mail on your mail servers is not touched.', confirm: 'Delete all mail accounts?',
     consequence: 'Every mail account and its mail in UniHub is deleted. Mail on your mail servers is not touched. This cannot be undone.',
     path: '/settings/clear-mail-accounts', done: 'All mail accounts deleted',
     refresh: client => Promise.all([invalidateMailQueries(client), client.invalidateQueries({ queryKey: senderCandidatesQueryKey })]) },
   { id: 'recordings', module: 'recordings', label: 'Recordings', description: '', confirm: 'Delete all recordings?',
-    consequence: 'Every recording and its audio file is deleted. This cannot be undone.', path: '/settings/clear-recordings', done: 'All recordings deleted',
+    consequence: 'Every recording in your library and its audio file is deleted. Recordings in the bin stay there until you empty the bin (Settings › Bin). This cannot be undone.', path: '/settings/clear-recordings', done: 'All recordings deleted',
     refresh: client => client.invalidateQueries({ queryKey: recordingsQueryKeys.all }) },
 ];
 
