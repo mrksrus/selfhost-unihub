@@ -1,15 +1,16 @@
 import { test } from '@e2e-dev/web';
-import { expect } from 'e2e';
+import { expect, credentials } from 'e2e';
+import type { Screen } from 'e2e';
 import { people, runId } from '../support/env.ts';
 import { collectionUrl, listObjects } from '../support/caldav.ts';
-import { ok, pageApi, setSettings } from '../support/api.ts';
+import { ok, pageApi, setSettings, signIn } from '../support/api.ts';
 import { createContact, listContacts } from '../support/contacts.ts';
-import { onlyOn } from '../support/ui.ts';
+import { isNarrow, onlyOn } from '../support/ui.ts';
 
 // 0.28 bin (B, E; P-31): deletes go to the bin with Undo, the bin restores
 // and deletes for good, the retention is the person's choice, and a synced
 // event restored from the bin is created on the calendar server again, once.
-// Blair's data only.
+// Blair's data only; the administrator's group delete acts on blair's bin.
 
 interface BinItem { id: string; module: string; item_type: string; title: string; provider: string; group_id: string | null }
 const binItems = async (browser: unknown, module?: string) =>
@@ -95,4 +96,78 @@ test('[28-16] a synced event deleted in UniHub is gone at the calendar server an
   await expect.poll(atServer, { timeout: 90_000 }).toHaveLength(1);
   const { events } = ok(await pageApi<{ events: { title: string }[] }>(browser, 'GET', '/api/calendar/events?start=2026-09-01T00:00:00.000Z&end=2026-09-02T00:00:00.000Z'), 'events');
   expect(events.filter((entry) => entry.title === title), 'once in UniHub').toHaveLength(1);
+});
+
+/** The page's panel: the column on desktop; on a phone the sheet that the header's scope chip opens. */
+async function openPanel(screen: Screen, browser: unknown, label: string, scope: string) {
+  if (!(await isNarrow(browser))) return screen.getByRole('complementary', label);
+  await screen.getByRole('button', scope, { exact: true }).tap();
+  return screen.getByRole('dialog', label);
+}
+const query = async (browser: unknown) => new URL(await (browser as { url: () => Promise<string> | string }).url()).searchParams;
+
+test('[28-20] All recordings and a category lead out of the Recordings bin', { session: 'blair', timeout: 240_000 }, async ({ app, screen, browser }) => {
+  await onlyOn(browser, 'desktop', 'phone');
+  await app.open('/recordings?view=bin');
+  const search = screen.getByRole('searchbox', 'Search recordings');
+  await expect(search, 'the bin: no search').toBeDisabled();
+
+  await (await openPanel(screen, browser, 'Recording lists', 'Bin')).getByRole('button', 'All recordings', { exact: true }).tap();
+  await expect(search).toBeEnabled();
+  expect((await query(browser)).get('view'), 'the bin is left').toBeNull();
+
+  await (await openPanel(screen, browser, 'Recording lists', 'All recordings')).getByRole('button', 'Bin', { exact: true }).tap();
+  await expect(search).toBeDisabled();
+  await (await openPanel(screen, browser, 'Recording lists', 'Bin')).getByRole('button', 'Music', { exact: true }).tap();
+  await expect(search).toBeEnabled();
+  const params = await query(browser);
+  expect(params.get('view'), 'the bin is left').toBeNull();
+  expect(params.get('category'), 'the category is chosen').toBe('music');
+});
+
+test('[28-20] New event from the Calendar bin opens the dialog over the bin', { session: 'blair', timeout: 240_000 }, async ({ app, screen, browser }) => {
+  await onlyOn(browser, 'desktop', 'phone');
+  await app.open('/calendar?view=bin');
+  await expect(screen.getByRole('button', 'Back to the calendar')).toBeVisible();
+  await (await openPanel(screen, browser, 'Calendars', 'Bin')).getByRole('button', 'New event', { exact: true }).tap();
+  const dialog = screen.getByRole('dialog', 'New event');
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', 'Cancel', { exact: true }).tap();
+  await expect(dialog).toBeHidden();
+  expect((await query(browser)).get('view'), 'still the bin').toBe('bin');
+});
+
+test('[28-20] the administrator deletes a grouped item of blair\'s bin for good: the calendar and all its events go', { session: 'admin', timeout: 300_000 }, async ({ app, screen, browser }) => {
+  await onlyOn(browser, 'desktop', 'phone');
+  const blair = await signIn('blair');
+  const { accounts } = ok(await blair<{ accounts: { id: string; provider: string }[] }>('GET', '/api/calendar/accounts'), 'blair accounts');
+  const local = accounts.find((account) => account.provider === 'local')
+    ?? ok(await blair<{ account: { id: string } }>('POST', '/api/calendar/accounts', { provider: 'local', display_name: 'Local calendars' }), 'local account').account;
+  const run = runId();
+  const name = `Garden ${run}`;
+  const { calendar } = ok(await blair<{ calendar: { id: string } }>('POST', '/api/calendar/calendars', { account_id: local.id, name }), 'calendar');
+  for (const title of ['Seed swap', 'Pruning']) {
+    ok(await blair('POST', '/api/calendar/events', { title: `${title} ${run}`, calendar_id: calendar.id, start_time: '2026-09-03T10:00:00.000Z', end_time: '2026-09-03T11:00:00.000Z' }), title);
+  }
+  ok(await blair('DELETE', `/api/calendar/calendars/${calendar.id}`), 'delete the calendar');
+  const binned = ok(await blair<{ items: BinItem[] }>('GET', '/api/bin?module=calendar'), 'blair bin').items.filter((item) => item.title === name || item.title.endsWith(run));
+  expect(binned, 'the calendar and its events wait as one group').toHaveLength(3);
+  const groupId = binned[0].group_id;
+  expect(binned.every((item) => item.group_id === groupId), 'one group').toBe(true);
+
+  const admin = await signIn('admin');
+  const { users } = ok(await admin<{ users: { id: string; email: string }[] }>('GET', '/api/admin/users'), 'users');
+  const blairId = users.find((user) => user.email === people.blair.email)!.id;
+  await app.open(`/admin/users/${blairId}`);
+  await screen.getByRole('button', `Delete ${name} for good`).tap();
+  const confirm = screen.getByRole('dialog', `Delete ${name} for good?`);
+  await expect(confirm).toContainText(`3 items of ${people.blair.name} are deleted for good`);
+  await expect(confirm.getByTestId('confirm-target')).toContainText(people.blair.email);
+  await confirm.getByLabel('Your password', { exact: true }).fill(credentials.user('admin').password);
+  await confirm.getByRole('button', 'Delete for good', { exact: true }).tap();
+  await expect(screen.getByText('3 items deleted for good', { exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(confirm).toBeHidden();
+  await expect(screen.getByRole('button', `Delete ${name} for good`)).toBeHidden();
+  const left = ok(await blair<{ items: BinItem[] }>('GET', '/api/bin?module=calendar'), 'blair bin after').items.filter((item) => item.group_id === groupId);
+  expect(left, 'nothing of the group remains').toHaveLength(0);
 });

@@ -459,6 +459,39 @@ describe('Admin → Users → a person', () => {
     await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/admin/users/user-alex/bin/bin-1', { current_password: 'admin-pw' }));
   });
 
+  // A group (a calendar with its events, a merge) is one row; deleting it for good must reach every member, not only the one that names it.
+  it('deletes a grouped item for good member by member, with the password confirmed once', { timeout: 20_000 }, async () => {
+    mountSignedIn(<AdminUserDetail />, { user: ADMIN, path: '/admin/users/user-alex', routePath: '/admin/users/:id' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Garden club for good' }, { timeout: 10_000 }));
+    const confirm = await screen.findByRole('dialog', { name: 'Delete Garden club for good?' });
+    expect(confirm).toHaveTextContent('2 items of Alex Example are deleted for good');
+    fireEvent.change(within(confirm).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Delete for good' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: '2 items deleted for good' })));
+    // The calendar leads its group; its event follows, each through the one-item route with the same password.
+    expect(vi.mocked(api.delete).mock.calls.map(call => call[0])).toEqual(['/admin/users/user-alex/bin/bin-3', '/admin/users/user-alex/bin/bin-2']);
+    expect(vi.mocked(api.delete).mock.calls.every(call => (call[1] as { current_password: string }).current_password === 'admin-pw')).toBe(true);
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete Garden club for good?' })).not.toBeInTheDocument());
+  });
+
+  it('a member refused after another was deleted: the notice counts both, shows the server\'s sentence, and the bin is read again', { timeout: 20_000 }, async () => {
+    vi.mocked(api.delete).mockResolvedValueOnce({ data: { deleted: 1 } }).mockResolvedValueOnce({ status: 409, error: 'A restore of this person is running.', code: 'RESTORE_IN_PROGRESS' } as never);
+    mountSignedIn(<AdminUserDetail />, { user: ADMIN, path: '/admin/users/user-alex', routePath: '/admin/users/:id' });
+    const binReads = () => vi.mocked(api.get).mock.calls.filter(([path]) => path === '/admin/users/user-alex/bin').length;
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Garden club for good' }, { timeout: 10_000 }));
+    const before = binReads();
+    const confirm = await screen.findByRole('dialog', { name: 'Delete Garden club for good?' });
+    fireEvent.change(within(confirm).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Delete for good' }));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({
+      title: '1 of 2 items deleted for good', description: '1 item remains in the bin. A restore of this person is running.', variant: 'destructive',
+    })));
+    expect(api.delete).toHaveBeenCalledTimes(2);
+    // The confirmation promised the whole group; what remains is read again and shown as the smaller group.
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete Garden club for good?' })).not.toBeInTheDocument());
+    await waitFor(() => expect(binReads()).toBeGreaterThan(before));
+  });
+
   it('a mail server that cannot be verified asks the administrator to trust it, then sends the fingerprints with their password again', { timeout: 20_000 }, async () => {
     const trust = { blocked: false, requiresConfirmation: true, requiresInsecureTls: true, warnings: ['The certificate is self-signed.'],
       assessments: { imap: { host: 'imap.example.com', port: 993, knownProvider: false, allowlisted: false, blocked: false }, smtp: { host: 'smtp.example.com', port: 587, knownProvider: false, allowlisted: false, blocked: false } },

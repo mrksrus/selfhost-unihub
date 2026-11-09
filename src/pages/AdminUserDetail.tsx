@@ -154,10 +154,27 @@ const AdminUserDetail = () => {
     onSuccess: (deleted, { userId, generation }) => done(deleted === 0 ? 'The bin was already empty' : `${deleted} ${deleted === 1 ? 'item' : 'items'} deleted for good`, generation, () => refreshBin(userId)),
     onError: failed('Could not empty the bin'),
   });
+  // A bin group (a calendar with its events, a merge) is deleted member by
+  // member through the one-item route, with the one confirmed password. The
+  // count says how far it got when a member is refused, so the notice can say
+  // what was deleted and what remains; one group delete runs at a time.
+  const groupDeleted = useRef(0);
   const removeBinItem = useSecretMutation({
-    mutationFn: ({ userId, itemId, password }: For<{ itemId: string }>) => deleteAdminUserBinItem(userId, itemId, password),
-    onSuccess: (_deleted, { userId, generation }) => done('Deleted for good', generation, () => refreshBin(userId)),
-    onError: failed('Could not delete the item'),
+    mutationFn: async ({ userId, itemIds, password }: For<{ itemIds: string[] }>) => {
+      groupDeleted.current = 0;
+      for (const itemId of itemIds) { await deleteAdminUserBinItem(userId, itemId, password); groupDeleted.current += 1; }
+      return itemIds.length;
+    },
+    onSuccess: (count, { userId, generation }) => done(count > 1 ? `${count} items deleted for good` : 'Deleted for good', generation, () => refreshBin(userId)),
+    onError: (error: Error, { userId, itemIds, generation }) => {
+      const deleted = groupDeleted.current;
+      if (deleted === 0) { failed('Could not delete the item')(error); return; }
+      // Part of the group is gone: the row is read again (what remains is one smaller group), the confirmation is over.
+      refreshBin(userId);
+      closeConfirm(generation);
+      const remaining = itemIds.length - deleted;
+      toast({ title: `${deleted} of ${itemIds.length} items deleted for good`, description: `${remaining} ${remaining === 1 ? 'item remains' : 'items remain'} in the bin. ${error.message}`, variant: 'destructive', duration: 10000 });
+    },
   });
   const clear = useSecretMutation({
     mutationFn: ({ userId, module, password }: For<{ module: AdminClearModule }>) => clearAdminUserModule(userId, module, password),
@@ -267,7 +284,7 @@ const AdminUserDetail = () => {
                     description={[`Deleted ${formatWhen(lead.deleted_at)}`, lead.purge_after ? `gone for good ${formatWhen(lead.purge_after)}` : 'kept until restored or deleted', group.length > 1 ? `with ${group.length - 1} ${group.length === 2 ? 'item' : 'items'}` : null].filter(Boolean).join(' · ')}>
                     <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" aria-label={`Delete ${title} for good`} onClick={() => openConfirm({
                       userId: id, title: `Delete ${title} for good?`, description: group.length > 1 ? `${group.length} items of ${name} are deleted for good and cannot be restored.` : `It is deleted from the bin of ${name} for good and cannot be restored.`, action: 'Delete for good', destructive: true,
-                      run: (password, generation) => removeBinItem.mutate({ userId: id, generation, itemId: lead.id, password }) })}>Delete for good</Button>
+                      run: (password, generation) => removeBinItem.mutate({ userId: id, generation, itemIds: group.map(item => item.id), password }) })}>Delete for good</Button>
                   </SettingsRow>
                 );
               })}

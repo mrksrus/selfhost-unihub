@@ -104,47 +104,48 @@ const CalendarPage = () => {
       binOpen={binOpen} onOpenBin={() => setBinOpen(true)} />
   );
 
-  if (binOpen) {
-    return (
-      <PageShell panel={panel} panelLabel="Calendars" panelId="calendar">
-        <PageHeader title="Calendar" scope="Bin" back={
-          <Button variant="ghost" size="icon" aria-label="Back to the calendar" onClick={() => setBinOpen(false)}><ChevronLeft aria-hidden="true" /></Button>
-        } />
-        <PageBody width="reading"><BinView module="calendar" /></PageBody>
-      </PageShell>
-    );
-  }
+  // The bin shows in place of the grid, under its own header. The panel and its
+  // dialogs (a new event, a new account or calendar, a calendar's settings)
+  // belong to both views, so they stay mounted here whichever is shown.
+  const header = binOpen ? (
+    <PageHeader title="Calendar" scope="Bin" back={
+      <Button variant="ghost" size="icon" aria-label="Back to the calendar" onClick={() => setBinOpen(false)}><ChevronLeft aria-hidden="true" /></Button>
+    } />
+  ) : (
+    <PageHeader title={title} scope={scope} actions={<>
+      <div className="hidden items-center gap-1 md:flex">
+        <ModeSwitch value={view.viewMode} onChange={view.setViewMode} className="mr-2" />
+        {periodNav}
+      </div>
+      <NarrowOnly><Button size="icon" aria-label="New event" onClick={() => newEvent()}><Plus aria-hidden="true" /></Button></NarrowOnly>
+    </>}>
+      {/* Phones get the view switch and period buttons on their own row. */}
+      <div className="flex items-center gap-1 px-4 pb-2 md:hidden">
+        <ModeSwitch value={view.viewMode} onChange={view.setViewMode} className="mr-auto" />
+        {periodNav}
+      </div>
+    </PageHeader>
+  );
 
   return (
     <PageShell panel={panel} panelLabel="Calendars" panelId="calendar">
-      <PageHeader title={title} scope={scope} actions={<>
-        <div className="hidden items-center gap-1 md:flex">
-          <ModeSwitch value={view.viewMode} onChange={view.setViewMode} className="mr-2" />
-          {periodNav}
-        </div>
-        <NarrowOnly><Button size="icon" aria-label="New event" onClick={() => newEvent()}><Plus aria-hidden="true" /></Button></NarrowOnly>
-      </>}>
-        {/* Phones get the view switch and period buttons on their own row. */}
-        <div className="flex items-center gap-1 px-4 pb-2 md:hidden">
-          <ModeSwitch value={view.viewMode} onChange={view.setViewMode} className="mr-auto" />
-          {periodNav}
-        </div>
-      </PageHeader>
-
-      <PageBody width="full" className="md:py-5">
-        {eventsQuery.error && <ErrorState className="mb-4" title="Could not load events" error={eventsQuery.error}
-          onRetry={() => void eventsQuery.refetch()} retrying={eventsQuery.isFetching} />}
-        {eventsQuery.isLoading ? <LoadingState label="Loading calendar…" /> : view.viewMode === 'day' ? (
-          <div className="mx-auto max-w-3xl">
-            <CalendarGrid view={view} events={events} timezone={timezone} onOpen={event => setDialog({ kind: 'edit', event })} onNew={newEvent} />
-          </div>
-        ) : (
-          <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_18rem]">
-            <CalendarGrid view={view} events={events} timezone={timezone} onOpen={event => setDialog({ kind: 'edit', event })} onNew={newEvent} />
-            <SelectedDay date={view.selectedDate} events={events} timezone={timezone} onOpen={event => setDialog({ kind: 'edit', event })} onNew={newEvent} />
-          </div>
-        )}
-      </PageBody>
+      {header}
+      {binOpen ? <PageBody width="reading"><BinView module="calendar" /></PageBody> : (
+        <PageBody width="full" className="md:py-5">
+          {eventsQuery.error && <ErrorState className="mb-4" title="Could not load events" error={eventsQuery.error}
+            onRetry={() => void eventsQuery.refetch()} retrying={eventsQuery.isFetching} />}
+          {eventsQuery.isLoading ? <LoadingState label="Loading calendar…" /> : view.viewMode === 'day' ? (
+            <div className="mx-auto max-w-3xl">
+              <CalendarGrid view={view} events={events} timezone={timezone} onOpen={event => setDialog({ kind: 'edit', event })} onNew={newEvent} />
+            </div>
+          ) : (
+            <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_18rem]">
+              <CalendarGrid view={view} events={events} timezone={timezone} onOpen={event => setDialog({ kind: 'edit', event })} onNew={newEvent} />
+              <SelectedDay date={view.selectedDate} events={events} timezone={timezone} onOpen={event => setDialog({ kind: 'edit', event })} onNew={newEvent} />
+            </div>
+          )}
+        </PageBody>
+      )}
       {/* The dialog waits for calendars and accounts: whether an event is read-only
           or on a server (and so asks about repeating events) depends on them. */}
       <EventDialog target={calendarsReady ? dialog : null} onClose={() => setDialog(null)} calendars={data.calendars} accounts={data.accounts} actions={actions} timezone={timezone} />

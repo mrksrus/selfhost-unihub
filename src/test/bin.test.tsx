@@ -1,12 +1,13 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactElement } from 'react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { BinView } from '@/components/bin/BinView';
 import BinSettings from '@/components/settings/BinSettings';
 import Contacts from '@/pages/Contacts';
 import Recordings from '@/pages/Recordings';
+import CalendarPage from '@/pages/CalendarPage';
 import { SessionQueryProvider } from '@/components/SessionQueryProvider';
 import { AuthContext, type AuthContextType } from '@/contexts/auth-context';
 import type { BinItem } from '@/lib/bin-api';
@@ -480,5 +481,49 @@ describe('the bin', () => {
     fireEvent.click(await screen.findByRole('option', { name: '90 days' }));
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/settings/values', { values: { bin_retention: '90' } }));
     expect(screen.getByText('The bin is empty')).toBeInTheDocument();
+  });
+});
+
+// The bin is shown in place of a page's list (?view=bin); the page's panel stays
+// in charge of where the page goes and what its actions open.
+function CurrentRoute() { const location = useLocation(); return <output aria-label="Current route">{location.pathname}{location.search}</output>; }
+
+describe('the bin inside a page', () => {
+  it('Recordings: All recordings or a category leaves the bin in one step', { timeout: 20_000 }, async () => {
+    answerGets([item('bin-rec', { module: 'recordings', item_type: 'recording', title: 'Standup notes' })]);
+    const gets = vi.mocked(api.get).getMockImplementation()!;
+    vi.mocked(api.get).mockImplementation(async (path: string, ...rest: unknown[]) => path.startsWith('/recordings') ? { data: { recordings: [] } } : (gets as (p: string, ...r: unknown[]) => Promise<unknown>)(path, ...rest) as never);
+    mountSignedIn(<><Recordings /><CurrentRoute /></>, { path: '/recordings?view=bin' });
+    expect(await screen.findByRole('list', { name: 'Deleted items' })).toBeInTheDocument();
+    expect(screen.getByRole('searchbox', { name: 'Search recordings' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'All recordings' }));
+    await waitFor(() => expect(screen.getByLabelText('Current route')).toHaveTextContent(/^\/recordings$/));
+    expect(screen.queryByRole('list', { name: 'Deleted items' })).not.toBeInTheDocument();
+    expect(screen.getByRole('searchbox', { name: 'Search recordings' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Bin' }));
+    expect(await screen.findByRole('list', { name: 'Deleted items' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Music' }));
+    await waitFor(() => expect(screen.getByLabelText('Current route')).toHaveTextContent(/^\/recordings\?category=music$/));
+    expect(screen.queryByRole('list', { name: 'Deleted items' })).not.toBeInTheDocument();
+  });
+
+  it('Calendar: New event and Add calendar account open their dialogs over the bin', { timeout: 20_000 }, async () => {
+    answerGets([ITEMS[3]]);
+    mountSignedIn(<><CalendarPage /><CurrentRoute /></>, { path: '/calendar?view=bin' });
+    expect(await screen.findByRole('list', { name: 'Deleted items' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'New event' }));
+    const dialog = await screen.findByRole('dialog', { name: 'New event' });
+    // Still the bin: the dialog does not wait for "Back to the calendar".
+    expect(screen.getByRole('status', { name: 'Current route', hidden: true })).toHaveTextContent('/calendar?view=bin');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New event' })).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Back to the calendar' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add calendar account' }));
+    expect(await screen.findByRole('dialog', { name: 'Add calendar account' })).toBeInTheDocument();
+    // The bin is still underneath (the open dialog hides the page from assistive technology).
+    expect(screen.getByRole('list', { name: 'Deleted items', hidden: true })).toBeInTheDocument();
   });
 });
