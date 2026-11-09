@@ -8,7 +8,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.28.1
 
-Fixes after 0.28.0. No database upgrade and no configuration change.
+Fixes after 0.28.0. No database upgrade and no configuration change (see
+[Upgrading](docs/UPGRADING.md#0281-fixes-after-0280)).
 
 ### Fixed
 

@@ -5,6 +5,32 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.28.1 Fixes after 0.28.0
+
+No database upgrade and no configuration change. Going back to 0.28.0 is
+possible.
+
+- **Mail.** A Download account keeps read and star as set in UniHub; another
+  mail app's later changes on the server no longer switch them back. Settings
+  > Delete data > Mail accounts now also deletes each message's original file
+  from the uploads. Files that an earlier clear left behind stay where they
+  are: no row names them any more, and Settings > Server settings > Storage
+  counts them under the person's raw mail.
+- **Administrators.** The last active administrator can no longer be deleted
+  (also not by themselves in Settings), demoted or deactivated, also when two
+  administrators act at the same moment. Resetting a person's password,
+  changing a role, deactivating and deleting a person are refused when the
+  administrator was signed out, lost the role or changed their password while
+  the change waited (`401 SESSION_ENDED`, `403 ADMIN_REQUIRED`,
+  `403 PASSWORD_CHANGED`); those routes now answer such refusals with their
+  status instead of a 500.
+- **Files.** Uploaded backup archives and restores use the folders under
+  `BACKUP_ARCHIVES_ROOT`, and restored recordings `RECORDINGS_ROOT`, when
+  those are set. Unset (the image's default), every path is as before.
+- **Android app.** 0.28.1's app is 0.28.0's app with the new version number;
+  install it when it is offered. The window is 0.28.1, 0.28.0, 0.27.2 and
+  0.27.1: the 0.27.0 app leaves it, so update a phone that still has it.
+
 ## 0.28.0 Data safety
 
 **Make a database backup first.** One automatic database upgrade runs at the
