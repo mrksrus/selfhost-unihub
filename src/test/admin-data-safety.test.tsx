@@ -115,8 +115,17 @@ describe('Server settings → Policies', () => {
     expect(state.toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Policies saved' }));
   });
 
-  it('the administrator\'s password leaves the mutation cache once the save is answered', { timeout: 20_000 }, async () => {
+  it('the administrator\'s password never enters the mutation cache, also while the save is pending', { timeout: 20_000 }, async () => {
     const client = testClient();
+    // The save waits until the test answers it.
+    const answered = vi.mocked(api.put).getMockImplementation()!;
+    let answer!: () => void;
+    const reached = new Promise<void>(signal => {
+      vi.mocked(api.put).mockImplementationOnce((path: string, body: unknown) => {
+        signal();
+        return new Promise(done => { answer = () => done(answered(path, body)); });
+      });
+    });
     mountSignedIn(<AdminPolicies />, { user: ADMIN, client });
     fireEvent.click(await screen.findByRole('combobox', { name: 'Creating backups' }));
     fireEvent.click(await screen.findByRole('option', { name: 'Not allowed' }));
@@ -124,9 +133,14 @@ describe('Server settings → Policies', () => {
     const dialog = await screen.findByRole('dialog');
     fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    await reached;
+    expect(api.put).toHaveBeenCalledWith('/admin/policies', expect.objectContaining({ current_password: 'admin-pw' }));
+    const cached = () => client.getMutationCache().getAll().map(mutation => JSON.stringify([mutation.state.variables ?? null, mutation.state.context ?? null])).join(' ');
+    expect(client.getMutationCache().getAll().some(mutation => mutation.state.status === 'pending')).toBe(true);
+    expect(cached()).not.toContain('admin-pw');
+    act(() => answer());
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    const variables = () => client.getMutationCache().getAll().map(mutation => JSON.stringify(mutation.state.variables ?? null));
-    await waitFor(() => expect(variables().join(' ')).not.toContain('admin-pw'));
+    await waitFor(() => expect(cached()).not.toContain('admin-pw'));
   });
 });
 
