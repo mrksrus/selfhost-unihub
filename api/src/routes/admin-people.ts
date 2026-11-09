@@ -177,7 +177,7 @@ export = defineRoutes({
   'GET /api/admin/users/:id/bin': read(async req => {
     await assertPerson(req.params.id);
     const url = new URL(req.url, 'http://localhost');
-    const response: BinListResponse = await listBin(req.params.id, url.searchParams.get('module') ?? undefined);
+    const response: BinListResponse = await listBin(req.params.id, url.searchParams.get('module') ?? undefined, url.searchParams.get('before') ?? undefined);
     return { ...response };
   }),
 
