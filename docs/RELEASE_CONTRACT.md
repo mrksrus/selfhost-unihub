@@ -152,11 +152,15 @@ rows. Do not describe a green CI run as full release acceptance.
 `--local` runs use the built API from `api/dist`, MariaDB from the tarball that
 `scripts/local-db.sh` uses (`UNIHUB_DB_HOME`) and `bwrap` to give each
 installation its own `/app/uploads`. Without `bwrap`,
-`UNIHUB_LOCAL_WITHOUT_SANDBOX=1` points every storage root that can be
-configured into the installation's own directory; a user backup's import keeps
-fixed paths under `/app/uploads`, which would then be this machine's own, so
-only the instance backup drill accepts it; the other checks, and every check
-when `CI` is set, refuse it. They create and delete their own
+`UNIHUB_LOCAL_WITHOUT_SANDBOX=1` points every storage root into the
+installation's own directory (since 0.28.1 a user backup's uploads and
+restore staging follow them too) and resolves the providers' name in the API
+process only, where the sandbox gives each installation its own `/etc/hosts`.
+The API still names `/app/uploads` itself in two places: the instance
+backup's list of data folders, and the expiry of uploads that 0.28.0 kept in
+its fixed restore folder. Only the instance backup drill has been shown to
+hold up that way, so only it accepts the setting; the other checks, and
+every check when `CI` is set, refuse it. They create and delete their own
 databases and directories and never touch `unihub_dev` or a live server.
 
 ## The test providers

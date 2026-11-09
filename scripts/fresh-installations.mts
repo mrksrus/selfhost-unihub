@@ -9,11 +9,12 @@
 //   namespace whose /app/uploads is its own directory. No Docker needed.
 //   Without bubblewrap, UNIHUB_LOCAL_WITHOUT_SANDBOX=1 runs the API directly
 //   with every storage root that can be configured in the installation's own
-//   directory, and resolves PEER_HOST to this machine in the API process. Part
-//   of the API keeps fixed paths under /app/uploads (a user backup's import
-//   and restore staging), which would then be this machine's own: so only a
-//   check that declares it never uses them may run that way
-//   (installationFactory's allowWithoutSandbox: instance-backup-drill.mts),
+//   directory, and resolves PEER_HOST to this machine in the API process only
+//   (the sandbox gives each its own /etc/hosts). The API still names
+//   /app/uploads itself (the instance backup's data folders, and the expiry
+//   of uploads 0.28.0 kept in its fixed restore folder), which would then be
+//   this machine's own: so only a check proven to hold up that way may run
+//   so (installationFactory's allowWithoutSandbox: instance-backup-drill.mts),
 //   and never in CI.
 //
 // Neither kind ever touches a database, volume or directory it did not create.
@@ -325,7 +326,7 @@ export function localSandboxMode({ bwrap, env, allowWithoutSandbox }: { bwrap: b
   if (bwrap) return 'sandbox';
   const need = 'Local installations need bubblewrap (bwrap) for a private /app/uploads.';
   if (env.UNIHUB_LOCAL_WITHOUT_SANDBOX !== '1') throw new Error(`${need} (UNIHUB_LOCAL_WITHOUT_SANDBOX=1 runs the instance backup drill without it; see scripts/fresh-installations.mts.)`);
-  if (!allowWithoutSandbox) throw new Error(`${need} This check uses the API's fixed paths under /app/uploads, so UNIHUB_LOCAL_WITHOUT_SANDBOX does not apply to it.`);
+  if (!allowWithoutSandbox) throw new Error(`${need} This check is proven only with its own /app/uploads and /etc/hosts, so UNIHUB_LOCAL_WITHOUT_SANDBOX does not apply to it.`);
   if (env.CI !== undefined) throw new Error(`${need} UNIHUB_LOCAL_WITHOUT_SANDBOX is refused in CI (CI is set), which runs the checks with --image.`);
   return 'unsandboxed';
 }
