@@ -17,7 +17,7 @@ Each mail account runs in one of two modes. They are deliberately different; cho
 
 ## Download
 
-Download imports mail and never writes to the server: filing and read/star changes stay local. Local copies are kept even after the server deletes them. Optional server deletion removes the server copy after a verified local archive exists. Download ignores retention windows. Nothing in this release changes Download behaviour.
+Download imports mail and never writes to the server: filing and read/star changes stay local. A message takes read and star from the server once, when it is first imported; later changes on the server (by another mail client) do not reach UniHub's copy, so what you set in UniHub stays. Local copies are kept even after the server deletes them. Optional server deletion removes the server copy after a verified local archive exists. Download ignores retention windows.
 
 ## Sync
 
@@ -44,7 +44,7 @@ If All Mail is hidden from IMAP (Gmail setting *Labels → All Mail → Show in 
 Removing local mail needs a per-account confirmation (`sync_policy_confirmed_at`):
 
 - **Accounts that were already in Sync mode before 0.13.0 are unconfirmed.** UniHub keeps importing, following flags and moves, merging nothing and removing nothing. Mail the server no longer has stays visible only in **All mail** until you confirm. The account shows how many local messages confirmation would remove; confirm with the account address (below). Then removal runs in the background.
-- **Switching Download → Sync** asks you to type the account's email address. Before saving, UniHub shows how many local messages would be removed: not on the server (known from earlier syncs, and messages UniHub itself deleted on the server), outside the chosen windows, redundant Gmail copies, and local copies of messages also downloaded from the server. Messages deleted on the server since the last sync are not known yet and are removed once Sync sees they are gone. You can first export a backup of this account's mail. The typed address confirms the policy for this account.
+- **Switching Download → Sync** asks you to type the account's email address. Before saving, UniHub shows how many local messages would be removed: not on the server (known from earlier syncs, and messages UniHub itself deleted on the server), outside the chosen windows, redundant Gmail copies, and local copies of messages also downloaded from the server. Messages deleted on the server since the last sync are not known yet and are removed once Sync sees they are gone. You can first export a backup of this account's mail. The typed address confirms the policy for this account. From then on read and star follow the server, so a read or star you set only in UniHub while the account used Download is replaced by the server's at the next sync.
 - **New accounts created in Sync mode** are confirmed at creation; they have no local-only mail.
 - **Switching Sync → Download** deletes nothing. UniHub stops sending changes to the server and drops the confirmation; a later switch back asks again. Changes not yet sent are applied to UniHub's copy; changes already sent stay under review until the account syncs again.
 - **A restore** never brings back a confirmed policy, so restored local copies are not removed until you confirm again.

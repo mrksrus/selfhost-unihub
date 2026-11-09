@@ -6,6 +6,17 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.28.1
+
+### Fixed
+
+- **Read and star stay as you set them in a Download account.** A message
+  you marked read, unread, starred or unstarred in UniHub could switch back
+  at a later sync when another mail app had changed it on the server.
+  Download now takes read and star from the server only once, when a message
+  is first imported; after that, only your changes in UniHub count. Sync
+  accounts still follow the server.
+
 ## 0.28.0
 
 Data safety: encrypted backups that hold only your own data and open outside

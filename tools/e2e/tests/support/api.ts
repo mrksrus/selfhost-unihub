@@ -86,12 +86,13 @@ export async function mailAccounts(browser: unknown): Promise<MailAccount[]> {
   return ok(await pageApi<{ accounts: MailAccount[] }>(browser, 'GET', '/api/mail/accounts'), 'list mail accounts').accounts;
 }
 
-/** Connects a provider mailbox as a Sync-mode account of the signed-in person, as the seed does. */
-export async function addMailAccount(browser: unknown, address: string, displayName = address): Promise<MailAccount> {
+/** Connects a provider mailbox as an account of the signed-in person: in Sync mode, as the seed does, or in Download mode. */
+export async function addMailAccount(browser: unknown, address: string, displayName = address,
+  { syncMode = 'sync' }: { syncMode?: 'sync' | 'download' } = {}): Promise<MailAccount> {
   ok(await pageApi(browser, 'POST', '/api/mail/accounts', {
     email_address: address, display_name: displayName, provider: 'custom', username: address, encrypted_password: stack.providerPassword,
     imap_host: stack.providerHost, imap_port: stack.imapsPort, smtp_host: stack.providerHost, smtp_port: stack.smtpsPort,
-    sync_mode: 'sync', sync_fetch_limit: 'all', try_calendar_sync: false,
+    sync_mode: syncMode, sync_fetch_limit: 'all', try_calendar_sync: false,
   }), `add mail account ${address}`);
   return mailAccount(browser, address);
 }
