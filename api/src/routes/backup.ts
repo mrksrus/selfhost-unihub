@@ -17,6 +17,7 @@ import {
   backupArchiveFile,
   markBackupDownloaded,
   serializeJob,
+  BACKUP_IMPORTS_ROOT,
 } from '../services/export-jobs';
 import {
   createUploadedRestoreJob,
@@ -53,7 +54,7 @@ interface Input extends BackupCreateRequest {
   credentialsMode?: string;
 }
 
-const BACKUP_UPLOAD_ROOT = path.resolve('/app/uploads/backups/imports');
+const BACKUP_UPLOAD_ROOT = path.resolve(BACKUP_IMPORTS_ROOT);
 const SECTION_LABELS: Readonly<Record<string, string>> = { settings: 'Settings', contacts: 'Contacts', calendar: 'Calendar/ToDo', mail: 'Mail', recordings: 'Recordings' };
 
 function getRestoreOptions(req: Request, body: Input = {}) {

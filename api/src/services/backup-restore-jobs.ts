@@ -27,6 +27,8 @@ import { UNLOCK_FAILED, checkEnvelopePassword, envelopeDataKey, openBackupEnvelo
 import { controlPool } from './side-pools';
 import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
 import { attachmentsRoot, rawRoot } from './mail-storage';
+import { BACKUP_RESTORES_ROOT } from './export-jobs';
+import { RECORDINGS_ROOT } from './recordings';
 import { isAnyDraftSendRunning } from './mail-drafts';
 import { withPersonLock } from './person-lock';
 import {
@@ -63,10 +65,9 @@ interface RestoreJob extends RowDataPacket {
   completed_at: Date | string | null;
   expires_at: Date | string | null;
 }
-const RESTORE_ROOT = '/app/uploads/backups/restores';
+const RESTORE_ROOT = BACKUP_RESTORES_ROOT;
 const ATTACHMENTS_ROOT = attachmentsRoot();
 const MAIL_RAW_STORAGE_ROOT = rawRoot();
-const RECORDINGS_ROOT = '/app/uploads/recordings';
 const UPLOAD_RETENTION_DAYS = 7;
 const ACTIVE_RESTORE_STATUSES = new Set(['queued', 'running', 'cancelling']);
 // An uploaded archive past its UPLOAD_RETENTION_DAYS is not unlocked or

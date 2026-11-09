@@ -25,12 +25,13 @@ import { isModuleEnabled } from './services/module-settings';
 import { getActiveRestoreSections } from './services/restore-locks';
 import { assertAllowed } from './services/settings';
 import { buildContentDisposition } from './http/content-disposition';
+import { BACKUP_IMPORTS_ROOT } from './services/export-jobs';
 
 // Every route is a spec (http/route.ts); the boundary reads policy from it and
 // nothing else. Bodies are untrusted at dispatch; each route keeps its validation.
 const routeTable = routes as RouteTable;
 
-const BACKUP_UPLOAD_ROOT = '/app/uploads/backups/imports';
+const BACKUP_UPLOAD_ROOT = BACKUP_IMPORTS_ROOT;
 // Compiled once from the route table: every key with a :param segment becomes a
 // segment matcher, so adding a route needs no change here.
 const matchRoute = compileRouteMatcher(Object.keys(routeTable));

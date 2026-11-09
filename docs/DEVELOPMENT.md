@@ -159,7 +159,8 @@ admin and backup code path reads the roots through
 `api/src/services/mail-storage.ts`, so an override applies to writing,
 downloading, deleting and measuring files alike. `RECORDINGS_ROOT` and
 `BACKUP_ARCHIVES_ROOT` do the same for `/app/uploads/recordings` and
-`/app/uploads/backups` (the generated backup archives), and
+`/app/uploads/backups` (the generated backup archives, and in its `imports`
+and `restores` folders the uploaded archives and those a restore keeps), and
 `CONTACT_PHOTOS_ROOT` for `/app/uploads/contact-photos` (converted contact
 photos, one directory per person); user deletion removes files under all of
 these roots. `UPLOAD_SPOOL_ROOT` (default `/app/uploads/spool`) holds raw

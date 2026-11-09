@@ -75,6 +75,9 @@ interface ExportRow extends RowDataPacket {
 }
 
 const BACKUPS_ROOT = process.env.BACKUP_ARCHIVES_ROOT || '/app/uploads/backups';
+// Uploaded archives as they arrive, and those kept for a restore (backup-restore-jobs.ts), beside the per-person folders.
+const BACKUP_IMPORTS_ROOT = path.join(BACKUPS_ROOT, 'imports');
+const BACKUP_RESTORES_ROOT = path.join(BACKUPS_ROOT, 'restores');
 const activeExportJobs = new Set();
 const { SECTION_POLICIES, normalizeBackupRequest } = require('./backup-catalog') as typeof import('./backup-catalog');
 const EXPORT_SECTIONS = new Set(Object.keys(SECTION_POLICIES));
@@ -854,6 +857,8 @@ async function cancelDataExportJob(userId: string, jobId: string | null) {
 
 export {
   BACKUPS_ROOT,
+  BACKUP_IMPORTS_ROOT,
+  BACKUP_RESTORES_ROOT,
   EXPORT_SECTIONS,
   normalizeSections,
   parseRequestedSections,

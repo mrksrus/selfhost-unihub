@@ -50,12 +50,16 @@ test('[B-21] a cold start of UniHub in Dark on a light phone starts dark, withou
   if (sdk < 33) { t.skip('the splash theme can be chosen from Android 13'); return; }
   const night = adb('shell', 'cmd', 'uimode', 'night').trim();
   adb('shell', 'cmd', 'uimode', 'night', 'no');
+  // The page's connection, closed before the cold start, or in finally when a check before it fails.
+  let device = null;
   try {
     // UniHub's default theme is Dark; the page reports it to the app, which keeps it for the next starts.
-    const { device, page } = await openApp();
-    assert.equal(await page.evaluate(() => document.documentElement.classList.contains('dark')), true, 'UniHub is in Dark');
+    const opened = await openApp();
+    device = opened.device;
+    assert.equal(await opened.page.evaluate(() => document.documentElement.classList.contains('dark')), true, 'UniHub is in Dark');
     await sleep(2000);
     await device.close();
+    device = null;
     adb('shell', 'am', 'force-stop', PACKAGE);
     const offset = offsetOf(0.5, 0.2);
     await sleep(1500);
@@ -73,6 +77,7 @@ test('[B-21] a cold start of UniHub in Dark on a light phone starts dark, withou
     assert.equal(samples.length, 8, `eight samples with UniHub in front within 60 s; skipped: ${skipped.join(' ')}`);
     assert.deepEqual(samples.filter(value => value > 128), [], 'no light frame while UniHub (Dark) starts');
   } finally {
+    await device?.close().catch(() => {});
     adb('shell', 'cmd', 'uimode', 'night', /yes/.test(night) ? 'yes' : 'no');
   }
 });
