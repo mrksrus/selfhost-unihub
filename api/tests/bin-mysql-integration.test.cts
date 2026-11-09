@@ -478,6 +478,74 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     assert.equal((await call(alex, 'POST', '/api/bin/empty', { module: 'mail' }, 400)).code, 'BIN_INVALID');
   });
 
+  await t.test('past 2000 items the list pages in whole groups, newest first: older items are reached, a cursor leaks nothing, empty takes all', async () => {
+    const people: Record<string, string> = {};
+    for (const [name, role] of [['pager', 'user'], ['pager-admin', 'admin']] as const) {
+      people[name] = crypto.randomUUID();
+      await pool.execute('INSERT INTO users (id, email, password_hash, full_name, role) VALUES (?, ?, ?, ?, ?)', [people[name], `${name}@example.test`, passwordHash, name, role]);
+    }
+    const alexOld = crypto.randomUUID();
+    try {
+      const pager = await signIn('pager'), admin = await signIn('pager-admin');
+      // 1998 single contacts, newest first one second apart; then a group of
+      // three (a merge) that would cross the 2000 boundary; then the oldest one.
+      const start = Date.parse('2026-06-01T12:00:00Z');
+      const rows: [string, string | null, string, string][] = [];
+      for (let i = 0; i < 1998; i++) rows.push([crypto.randomUUID(), null, `Single ${i}`, at(start - i * 1000)]);
+      const group = crypto.randomUUID();
+      for (let i = 0; i < 3; i++) rows.push([crypto.randomUUID(), group, `Merged ${i}`, at(start - (1998 + i) * 1000)]);
+      const oldest = crypto.randomUUID();
+      rows.push([oldest, null, 'The oldest', at(start - 5000 * 1000)]);
+      const insert = (userId: string, batch: typeof rows) => pool.execute(
+        `INSERT INTO bin_items (id, user_id, module, item_type, item_id, title, reason, group_id, payload, deleted_at, purge_after) VALUES
+         ${batch.map(() => "(?, ?, 'contacts', 'contact', ?, ?, ?, ?, '{}', ?, NULL)").join(', ')}`,
+        batch.flatMap(([id, groupId, title, deleted]) => [id, userId, crypto.randomUUID(), title, groupId ? 'merged' : 'deleted', groupId, deleted]));
+      for (let i = 0; i < rows.length; i += 500) await insert(people.pager, rows.slice(i, i + 500));
+      // Alex's own item, older than all of them.
+      await insert(users.alex, [[alexOld, null, 'Alex old item', at(start - 9000 * 1000)]]);
+
+      const first = await call(pager, 'GET', '/api/bin');
+      assert.equal(first.items.length, 1998, 'the first page stops before the group that would cross 2000');
+      assert.equal(first.items[0].title, 'Single 0', 'newest first');
+      assert.ok(!first.items.some((item: FixtureValue) => item.id === oldest || item.group_id === group));
+      assert.equal(typeof first.next_cursor, 'string', 'older items remain');
+      const second = await call(pager, 'GET', `/api/bin?before=${encodeURIComponent(first.next_cursor)}`);
+      assert.deepEqual(second.items.map((item: FixtureValue) => item.title), ['Merged 0', 'Merged 1', 'Merged 2', 'The oldest'], 'the group whole, then the oldest');
+      assert.equal(second.next_cursor, null, 'the last page');
+      const seen = [...first.items, ...second.items].map((item: FixtureValue) => item.id);
+      assert.equal(new Set(seen).size, rows.length, 'every item once');
+      assert.deepEqual((await call(pager, 'GET', `/api/bin?module=contacts&before=${encodeURIComponent(first.next_cursor)}`)).items.length, 4, 'with the module filter too');
+
+      // Another person's cursor is a position in their own list only.
+      const foreign = await call(alex, 'GET', `/api/bin?before=${encodeURIComponent(first.next_cursor)}`);
+      assert.ok(foreign.items.length >= 1 && foreign.items.every((item: FixtureValue) => !seen.includes(item.id)), 'nothing of the pager');
+      assert.ok(foreign.items.some((item: FixtureValue) => item.id === alexOld));
+      // A made-up or changed cursor: 400 with a plain reason, nothing listed.
+      const forged = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+      for (const before of ['not a cursor', `${first.next_cursor}x`, forged(["2026-06-01 12:00:00' OR 1=1 -- ", `i${oldest}`]),
+        forged(['2026-06-01 12:00:00', `x${oldest}`]), forged({ at: '2026-06-01 12:00:00' }), forged(['2026-13-45 99:99:99', `i${oldest}`])]) {
+        const refused = await call(pager, 'GET', `/api/bin?before=${encodeURIComponent(before)}`, undefined, 400);
+        assert.equal(refused.code, 'BIN_INVALID', before);
+        assert.match(refused.error, /not valid/);
+      }
+
+      // The administrator's view of the person: the same pages.
+      const adminFirst = await call(admin, 'GET', `/api/admin/users/${people.pager}/bin`);
+      assert.deepEqual([adminFirst.items.length, adminFirst.next_cursor], [1998, first.next_cursor]);
+      const adminSecond = await call(admin, 'GET', `/api/admin/users/${people.pager}/bin?before=${encodeURIComponent(adminFirst.next_cursor)}`);
+      assert.deepEqual(adminSecond.items.map((item: FixtureValue) => item.id), second.items.map((item: FixtureValue) => item.id));
+      assert.equal((await call(admin, 'GET', `/api/admin/users/${people.pager}/bin?before=x`, undefined, 400)).code, 'BIN_INVALID');
+
+      // Emptying takes every item, not one page.
+      assert.deepEqual(await call(pager, 'POST', '/api/bin/empty', {}), { deleted: rows.length });
+      assert.equal(await count('SELECT COUNT(*) AS n FROM bin_items WHERE user_id = ?', [people.pager]), 0);
+      assert.equal(await count('SELECT COUNT(*) AS n FROM bin_items WHERE id = ?', [alexOld]), 1, 'another person\'s item stays');
+    } finally {
+      await pool.execute('DELETE FROM bin_items WHERE id = ?', [alexOld]);
+      await pool.execute(`DELETE FROM users WHERE id IN (${Object.values(people).map(() => '?').join(', ')})`, Object.values(people));
+    }
+  });
+
   await t.test('the purge: two people, the module switch, a restore lock, the retention as the policies resolve it', async () => {
     const later = new Date(Date.now() + 31 * 86400000);
     const mine = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Hale' } })).contact;

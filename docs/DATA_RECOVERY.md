@@ -355,6 +355,12 @@ writes nothing more (`409 RESTORE_IN_PROGRESS`).
   person's recordings `bin/` folder. Each kind restores its own rows with
   only known columns, for the person restoring, under the old ids and
   identities unless they are taken; nothing in a payload is trusted.
+- The list (`GET /api/bin`, and the administrator's
+  `GET /api/admin/users/:id/bin`) is newest first, a page at a time: up to
+  2000 items in whole groups, so items deleted together are always on the
+  same page. `next_cursor` is the `before` of the next page, null on the
+  last; it holds only a position, and every page reads only that person's
+  items. Emptying the bin takes every item, whatever was listed.
 - Archives from data schema 7 carry the bin with its module's section
   (`bin_items`; a recording's file as `recording_bin`, see
   [Backup format](BACKUP_FORMAT.md)). The import writes them with `restoreBinItems(connection, { userId,
