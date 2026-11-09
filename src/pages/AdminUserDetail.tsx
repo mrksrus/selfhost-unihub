@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSecretMutation } from '@/hooks/use-secret-mutation';
+import { useSessionScope } from '@/lib/session-scope';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ChevronLeft, Loader2, LockKeyhole, MoreHorizontal, Plus } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
@@ -76,6 +77,7 @@ const AdminUserDetail = () => {
   const { toast } = useToast();
   const navigate = useNavigate();
   const client = useQueryClient();
+  const scope = useSessionScope();
   const admin = user?.role === 'admin';
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [mailDialog, setMailDialog] = useState<AccountDialog<AdminMailAccount>>(CLOSED);
@@ -174,7 +176,15 @@ const AdminUserDetail = () => {
   const removeBinItem = useSecretMutation({
     mutationFn: async ({ userId, itemIds, password }: For<{ itemIds: string[] }>) => {
       groupDeleted.current = 0;
-      for (const itemId of itemIds) { await deleteAdminUserBinItem(userId, itemId, password); groupDeleted.current += 1; }
+      for (const itemId of itemIds) {
+        // Every member is sent in the session the administrator confirmed in. The hook's callbacks
+        // stop when that session ends (a sign-out, another account); a running mutationFn does not,
+        // so it checks after each answer, before the next request, and sends nothing under a later
+        // session. What went before stays deleted; the next session's bin shows what remains.
+        if (scope.ended) throw new Error('The session ended before every item was deleted.');
+        await deleteAdminUserBinItem(userId, itemId, password);
+        groupDeleted.current += 1;
+      }
       return itemIds.length;
     },
     onSuccess: (count, { userId, generation }) => done(count > 1 ? `${count} items deleted for good` : 'Deleted for good', generation, () => refreshBin(userId)),
@@ -305,12 +315,13 @@ const AdminUserDetail = () => {
               })}
               {binQuery.isFetchNextPageError && !invalidCursor && (
                 <SettingsRow label={<span role="alert" className="text-destructive">Could not load older items</span>} description={binQuery.error?.message}>
-                  <Button variant="outline" size="sm" onClick={() => void binQuery.fetchNextPage()} disabled={binQuery.isFetchingNextPage}>Try again</Button>
+                  <Button variant="outline" size="sm" onClick={() => void binQuery.fetchNextPage({ cancelRefetch: false })} disabled={binQuery.isFetching}>Try again</Button>
                 </SettingsRow>
               )}
               {olderItems && !binQuery.isFetchNextPageError && (
                 <SettingsRow label="Older items" description="The bin holds more than is shown.">
-                  <Button variant="outline" size="sm" onClick={() => void binQuery.fetchNextPage()} disabled={binQuery.isFetchingNextPage}>
+                  {/* Waits while the bin is being read again after a change: a next page must not cancel that refresh and extend the stale pages. */}
+                  <Button variant="outline" size="sm" onClick={() => void binQuery.fetchNextPage({ cancelRefetch: false })} disabled={binQuery.isFetching}>
                     {binQuery.isFetchingNextPage && <Loader2 aria-hidden="true" className="animate-spin" />}Show older items
                   </Button>
                 </SettingsRow>

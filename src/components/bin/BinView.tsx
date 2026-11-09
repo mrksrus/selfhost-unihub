@@ -237,12 +237,14 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
       {query.isFetchNextPageError && !invalidCursor && (
         <div role="alert" className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-2 py-3 text-sm">
           <span className="text-destructive">Could not load older items. {query.error?.message}</span>
-          <Button variant="outline" size="sm" onClick={() => void query.fetchNextPage()} disabled={query.isFetchingNextPage}>Try again</Button>
+          <Button variant="outline" size="sm" onClick={() => void query.fetchNextPage({ cancelRefetch: false })} disabled={query.isFetching}>Try again</Button>
         </div>
       )}
+      {/* Waits while the bin is being read again after a change (a restore, Undo, a delete): a next
+          page must not cancel that refresh and extend the stale pages. */}
       {query.hasNextPage && !query.isFetchNextPageError && (
         <div className="flex justify-center border-t border-border px-2 py-3">
-          <Button variant="outline" size="sm" onClick={() => void query.fetchNextPage()} disabled={query.isFetchingNextPage}>
+          <Button variant="outline" size="sm" onClick={() => void query.fetchNextPage({ cancelRefetch: false })} disabled={query.isFetching}>
             {query.isFetchingNextPage && <Loader2 aria-hidden="true" className="animate-spin" />}Show older items
           </Button>
         </div>

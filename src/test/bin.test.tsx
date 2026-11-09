@@ -565,6 +565,34 @@ describe('the bin in pages', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/bin/restore', { ids: ['bin-merge-a'] }));
   });
 
+  it('Show older items waits while the bin is read again after a restore (the same read Undo starts), so the refresh is not lost', { timeout: 20_000 }, async () => {
+    answerPages(PAGES);
+    const paged = vi.mocked(api.get).getMockImplementation()!;
+    let firstPageSeen = 0;
+    let refetched!: () => void;
+    vi.mocked(api.get).mockImplementation(async (path: string, ...rest: unknown[]) => {
+      if (!path.startsWith('/bin') || path.includes('before=')) return (paged as (p: string, ...r: unknown[]) => Promise<unknown>)(path, ...rest) as never;
+      firstPageSeen += 1;
+      if (firstPageSeen === 1) return (paged as (p: string, ...r: unknown[]) => Promise<unknown>)(path, ...rest) as never;
+      // The read after the restore: held until the test lets it answer, without Alan.
+      return new Promise(resolve => { refetched = () => resolve({ data: { items: [ITEMS[3]], retention: '30', next_cursor: 'cursor-1' } }); }) as never;
+    });
+    mountSignedIn(<BinView />);
+    const list = await screen.findByRole('list', { name: 'Deleted items' });
+    fireEvent.click(within(list).getByRole('button', { name: 'Restore Alan Turing' }));
+    await waitFor(() => expect(firstPageSeen).toBe(2));
+    const older = screen.getByRole('button', { name: 'Show older items' });
+    expect(older).toBeDisabled();
+    fireEvent.click(older);
+    await act(async () => refetched());
+    await waitFor(() => expect(within(list).queryByText('Alan Turing')).not.toBeInTheDocument());
+    expect(api.get).not.toHaveBeenCalledWith(expect.stringContaining('before='), expect.anything());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Show older items' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Show older items' }));
+    await waitFor(() => expect(within(list).getAllByRole('listitem')).toHaveLength(2));
+    expect(within(list).getByText('Jane Doe')).toBeInTheDocument();
+  });
+
   it('a cursor the server no longer accepts reloads the bin from the newest items and says so in the server\'s words', { timeout: 20_000 }, async () => {
     answerPages(PAGES, { before: 'cursor-1', answer: INVALID });
     mountSignedIn(<BinView />);
