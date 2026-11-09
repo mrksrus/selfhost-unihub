@@ -358,7 +358,7 @@ writes nothing more (`409 RESTORE_IN_PROGRESS`).
 - The list (`GET /api/bin`, and the administrator's
   `GET /api/admin/users/:id/bin`) is newest first, a page at a time: up to
   2000 items in whole groups, so items deleted together are always on the
-  same page. `next_cursor` is the `before` of the next page, null on the
+  same page (a single group larger than that is a page of its own). `next_cursor` is the `before` of the next page, null on the
   last; it holds only a position, and every page reads only that person's
   items. Emptying the bin takes every item, whatever was listed.
 - Archives from data schema 7 carry the bin with its module's section
