@@ -136,6 +136,18 @@ asserts that header and the absence of inline scripts in the built image, and
 | D-08 | Wide | Users → a person → Accounts, backups and bin: add and remove a mail account, delete a backup, empty the bin, delete a module's data. | Every change asks for the administrator's password and names the person; adding uses the person's own fields and checks; a rule that forbids the person does not grey anything here; the activity log records each action. | Source (`admin-data-safety.test.tsx`), e2e (`tools/e2e/tests/policies/policies.e2e.ts`) |
 | D-09 | Wide, Phone | As a person whose rules changed since they last confirmed them: sign in; close the notice; open the app again; confirm with OK; open Settings → Profile. Sign up as a new person on a server with rules. | The rules notice opens at start, "Your administrator changed the data rules" (for a person who never confirmed any, "Rules on this server"), and lists the rules in force in the server's words; OK has the focus, so Enter confirms; the rules scroll inside the dialog on a small phone with title and OK in place, and Tab reaches the list so PageDown and the arrows scroll it with a visible focus ring; OK records the revision shown and the notice does not come back for it; closing without OK records nothing, keeps it closed for this session and shows it again at the next start; Settings → Profile lists the same rules; the sign-up form lists them and the new account starts with that revision confirmed. | Source (`policy-notice.test.tsx`, `signup-rules-revision.test.tsx`), Browser (`behaviour.spec.ts`, the full rules notice on a 360×640 phone), e2e (`tools/e2e/tests/policies/policies.e2e.ts`) |
 
+### App lock (D29)
+
+| ID | Where | Steps | Checks | Mark |
+| --- | --- | --- | --- | --- |
+| L-01 | Wide, Phone | Settings → App lock: choose Whole app, set a PIN twice; choose Chosen modules and tick Mail; change Ask again; turn the lock off. | Turning on asks for the method once (Set a UniHub PIN; in the app, the phone's prompt) and saves only after it; the section says it applies to this device; choices under the administrator's requirement are checked and greyed with the server's reason, Off and Chosen are greyed when the whole app is required, longer times than the maximum are greyed with the reason; "Also when the phone is locked" is greyed on the web with its reason; Screenshots shows only while forbidden, read-only; Contacts says synced contacts stay on the phone; turning off, dropping a module or a longer time asks for the unlock first and saves nothing when it is closed. | Source (`app-lock-settings.test.tsx`), Browser (pictures `settings-app-lock-*`), e2e (`tools/e2e/tests/app-lock/pin-lock.e2e.ts`) |
+| L-02 | Phone, Wide | With the whole app locked, reload; type a wrong PIN; the right one; open "Forgot PIN? Sign out". | The lock screen replaces the shell (no navigation, no page in the DOM): the mark in the accent, "UniHub is locked", the account's name small, the PIN field focused above the keyboard, Unlock; a wrong PIN is announced in the live region, from the seventh the tries left, after the fifth a countdown; the tenth signs out; "Forgot PIN? Sign out" says what goes (offline copy, PIN) and what stays (unsent recordings) before it signs out; uploads keep running meanwhile. | Source (`app-lock-gate.test.tsx`), Browser (pictures `lock-app-phone-*`), e2e (`pin-lock.e2e.ts`) |
+| L-03 | Wide | With Mail locked, open Mail, Calendar, Today, ToDo's email peek, Ctrl/Cmd K, Settings → Mail. | Mail shows "Mail is locked" inside its page under its own header while the navigation works; Calendar opens; Today's Unread mail, the peek and Settings → Mail show the same locked row with Unlock and fetch nothing; the search leaves Mail's results and "New email" out and shows "Mail is locked: unlock to search it"; the rail and bottom bar show no unread count for Mail; one unlock opens every locked module until the next relock, and the target route (a notification's) shows after it. | Source (`app-lock-gate.test.tsx`), Browser (pictures `lock-module-wide-*`), e2e (`module-lock.e2e.ts`) |
+| L-04 | Phone, Wide | As a person whose administrator requires the lock, start UniHub; after the rules notice, set it up; sign out instead. | The rules notice comes first; then "Your administrator requires the app lock" with the server's reason and what is required in one sentence; Turn on the app lock runs the same set-up as Settings and the locked parts open after it; Sign out is the other way out; an older Android app says to update for the fingerprint and offers the PIN meanwhile; a refused save shows the server's words. | Source (`app-lock-required.test.tsx`), Browser (pictures `lock-required-phone-*`), e2e (`required-by-admin.e2e.ts`) |
+| L-05 | Wide | Server settings → Policies: App lock required (Chosen modules: Mail, Contacts), Longest time in the background, Screenshots; save with the password. | The group follows the other rules: a select per row with the default marked, the module boxes under Chosen modules, the server's effect under a changed row, only the changed keys sent with the password. | Source (`admin-data-safety.test.tsx`), Browser (pictures `admin-policies-app-lock-wide-*`) |
+| L-06 | Wide, Phone | Settings → Security → Devices; sign out another device. | Every device with a live session is a row: an icon by kind, "UniHub app 0.29.0 on Android" or "Firefox on Linux", This device, last used and signed in since, its app lock and notifications; Sign out (confirmed) ends that device at once and never shows for this one. | Source (`devices-settings.test.tsx`), Browser (pictures `devices-wide-*`), e2e (`devices.e2e.ts`) |
+| L-07 | Device | With Mail locked and the device in the background, receive mail. | The notification names nothing of the message (sender and subject are left out) until the device is unlocked; a calendar reminder still shows its content. | Open (`tools/e2e/tests/app-lock/notification-privacy.e2e.ts` once the delivery record is readable; Android rows in the tracker) |
+
 ### Contacts and settings (P-10, P-18)
 
 | ID | Where | Steps | Checks | Mark |
@@ -160,9 +172,13 @@ the merge review (Wide and Phone; P-29, D29), and since 0.27.0 a ToDo row
 picked up by its handle and the new-task dialog with its list chooser open
 (Wide and Phone) and Settings → Pages and modules (Wide; P-29, D29, D31),
 and since 0.28.0 Settings → Backup and restore (Wide), the Bin (Wide and
-Phone) and Server settings → Policies (Wide; P-29, D29), each in Dark Default
-and Light Default. Forty-two pictures in total; add a screen only when a
-decision depends on it.
+Phone) and Server settings → Policies (Wide; P-29, D29), and since 0.29.0
+Settings → App lock (Wide and Phone), the whole-app lock screen (Phone), a
+module's lock screen (Wide), the required-by-your-administrator prompt
+(Phone), the Policies page at its App lock group (Wide) and Settings →
+Security with Devices (Wide; P-29, D29), each in Dark Default and Light
+Default. Fifty-six pictures in total; add a screen only when a decision
+depends on it.
 
 **Approval policy.**
 

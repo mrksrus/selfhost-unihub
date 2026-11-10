@@ -344,6 +344,22 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
   });
 
   // A long template must not push the dialog's buttons off the screen.
+  test('Settings, App lock', async ({ page, open, settle }) => {
+    await open('/settings?section=app-lock');
+    await expect(page.getByRole('radio', { name: 'Off' })).toBeVisible();
+    await page.getByRole('radio', { name: 'Chosen modules' }).tap();
+    await expect(page.getByRole('list', { name: 'Locked modules' })).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page), []);
+  });
+
+  test('Settings, Security with Devices', async ({ page, open, settle }) => {
+    await open('/settings?section=security');
+    await expect(page.getByText('UniHub app 0.29.0 on Android')).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page), []);
+  });
+
   test('a long template keeps Save on screen', async ({ page, open, settle }) => {
     await open('/settings?section=mail');
     await page.getByRole('button', { name: 'New template' }).click();

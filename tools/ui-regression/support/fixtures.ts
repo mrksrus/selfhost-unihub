@@ -240,10 +240,18 @@ const POLICY_DEFAULTS: Record<string, unknown> = {
   'mail.mode.download': 'allowed', 'mail.mode.sync': 'allowed', 'mail.mode.new_accounts': 'user_choice', 'mail.provider_delete': 'user_choice',
   'backup.download_mail': 'user_choice', 'backup.create': 'allowed', 'backup.restore': 'allowed', 'backup.delete': 'allowed', 'backup.server_retention_days': null,
   'accounts.add': 'allowed', 'accounts.remove': 'allowed', 'accounts.reset': 'allowed', 'accounts.admin_manage': 'available', 'account.delete': 'allowed', 'data.clear': 'allowed', 'bin.delete': 'allowed',
+  'app_lock.required': [], 'app_lock.max_background': 'none', 'app_lock.screenshots': 'allowed',
 };
 const POLICY_VALUES: Record<string, unknown[]> = {
   'mail.mode.new_accounts': ['user_choice', 'download', 'download_delete', 'sync'], 'mail.provider_delete': ['user_choice', 'forbidden', 'required'],
   'backup.download_mail': ['user_choice', 'always'], 'backup.server_retention_days': [null, 30, 90, 365], 'accounts.admin_manage': ['available'],
+  'app_lock.required': [[]], 'app_lock.max_background': ['none', '900', '300', '60', '0'],
+};
+/** The server's effects of the app lock rules (settings-registry.ts POLICY_EFFECTS), shown under a changed row. */
+const APP_LOCK_EFFECTS: Record<string, string> = {
+  'app_lock.required': 'People are asked to turn the app lock on at their next start; until then their devices cannot open the locked parts.',
+  'app_lock.max_background': 'Devices set to lock later are asked to shorten the time.',
+  'app_lock.screenshots': 'Applies in the Android app; browsers cannot block screenshots.',
 };
 /** One rule set for the pictures: deleting from the bin for good is not allowed. */
 const POLICY_SET: Record<string, { value: unknown; reason: string }> = {
@@ -258,7 +266,7 @@ const POLICIES_EFFECTIVE = {
 const POLICIES_ADMIN = {
   policies: Object.fromEntries(Object.keys(POLICY_DEFAULTS).map(key => [key, {
     value: key in POLICY_SET ? POLICY_SET[key].value : POLICY_DEFAULTS[key], source: key in POLICY_SET ? 'policy' : 'default', default: POLICY_DEFAULTS[key],
-    values: POLICY_VALUES[key] ?? ['allowed', 'forbidden'], effect: key === 'mail.mode.sync' ? 'Existing Sync accounts keep working.' : key === 'bin.delete' ? 'Items stay in the bin until restored.' : null,
+    values: POLICY_VALUES[key] ?? ['allowed', 'forbidden'], effect: key === 'mail.mode.sync' ? 'Existing Sync accounts keep working.' : key === 'bin.delete' ? 'Items stay in the bin until restored.' : APP_LOCK_EFFECTS[key] ?? null,
   }])),
   bin_min_retention: { value: 'forever', source: 'default', default: 'forever', values: ['30', '90', 'forever'], applies: true, effect: 'Applies while deleting from the bin for good is not allowed; people may keep items longer.' },
   revision: 2,
@@ -309,6 +317,47 @@ const INSTANCE_BACKUP = {
     { id: 'ib-1', trigger: 'schedule', actor_email: null, status: 'succeeded', file_name: 'unihub-instance-20260615T0330Z-0.28.0.uhib', size_bytes: 1_310_000_000, app_version: '0.28.0', error: null, started_at: at('06-15T03:30:00.000Z'), finished_at: at('06-15T03:41:00.000Z') },
     { id: 'ib-0', trigger: 'manual', actor_email: 'ada@example.com', status: 'failed', file_name: null, size_bytes: null, app_version: '0.28.0', error: 'Not enough free space at the destination.', started_at: at('06-14T14:02:00.000Z'), finished_at: at('06-14T14:02:30.000Z') },
   ],
+};
+
+// ── 0.29 app lock: this person's devices and this device's lock settings ──
+// The default device locks nothing, so every other picture is unchanged; the
+// app lock pictures answer /devices/current with a lock through page.route.
+const WEB_UA = 'Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0';
+export const DEVICES = [
+  { id: 'dev-laptop', current: true, kind: 'web', app_version: null, user_agent: WEB_UA, created_at: at('05-02T09:00:00.000Z'), last_seen_at: at('06-15T09:29:00.000Z'),
+    lock: { scope: ['mail', 'contacts'], method: 'pin' }, notifications: true },
+  { id: 'dev-phone', current: false, kind: 'android', app_version: '0.29.0', user_agent: 'Mozilla/5.0 (Linux; Android 16; Pixel 8a; wv) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Mobile Safari/537.36 UniHubAndroid/0.29.0 (29000)',
+    created_at: at('05-20T18:00:00.000Z'), last_seen_at: at('06-15T07:10:00.000Z'), lock: { scope: ['app'], method: 'biometric' }, notifications: true },
+  { id: 'dev-tablet', current: false, kind: 'pwa', app_version: null, user_agent: 'Mozilla/5.0 (Linux; Android 15; Pixel Tablet) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36',
+    created_at: at('06-01T12:00:00.000Z'), last_seen_at: at('06-12T20:40:00.000Z'), lock: null, notifications: false },
+];
+const DEVICE_SETTINGS_OFF = {
+  app_lock_scope: { value: [], source: 'default', locked: false },
+  app_lock_relock_after: { value: '60', source: 'default', locked: false },
+  app_lock_on_device_lock: { value: true, source: 'default', locked: false },
+};
+export const CURRENT_DEVICE = {
+  device: { ...DEVICES[0], lock: null }, settings: DEVICE_SETTINGS_OFF,
+  compliance: { meets: true, required: [], max_background: null, reason: null }, policy: { screenshots: 'allowed' },
+};
+/** The same device with Mail and Contacts locked under a rule that requires them and allows 5 minutes at most. */
+export const CURRENT_DEVICE_LOCKED = {
+  device: DEVICES[0],
+  settings: {
+    app_lock_scope: { value: ['mail', 'contacts'], source: 'user', locked: false, floor: ['mail', 'contacts'] },
+    app_lock_relock_after: { value: '60', source: 'user', locked: false, floor: '300' },
+    app_lock_on_device_lock: { value: true, source: 'default', locked: false },
+  },
+  compliance: { meets: true, required: ['mail', 'contacts'], max_background: '300', reason: 'Your administrator requires the app lock for Mail and Contacts.' },
+  policy: { screenshots: 'allowed' },
+};
+/** The administrator's answer with the app lock rules set, for the Policies picture. */
+export const POLICIES_ADMIN_APP_LOCK = {
+  ...POLICIES_ADMIN,
+  policies: { ...POLICIES_ADMIN.policies,
+    'app_lock.required': { ...POLICIES_ADMIN.policies['app_lock.required'], value: ['mail', 'contacts'], source: 'policy' },
+    'app_lock.max_background': { ...POLICIES_ADMIN.policies['app_lock.max_background'], value: '300', source: 'policy' },
+  },
 };
 
 export interface ApiReply { status?: number; body: unknown }
@@ -409,6 +458,13 @@ function defaultRoutes(emails: typeof EMAILS, admin = false): Route[] {
     ['GET', /^\/backup\/jobs$/, () => ok({ jobs: BACKUP_JOBS })],
     ['GET', /^\/backup\/restore-jobs$/, () => ok({ jobs: [] })],
     ['GET', /^\/admin\/policies$/, () => ok(POLICIES_ADMIN)],
+    // 0.29 app lock: the device routes. The reports are accepted and change nothing here.
+    ['GET', /^\/devices$/, () => ok({ devices: DEVICES })],
+    ['GET', /^\/devices\/current$/, () => ok(CURRENT_DEVICE)],
+    ['POST', /^\/devices\/current\/key$/, () => ok({})],
+    ['PUT', /^\/devices\/current\/lock$/, () => ok({})],
+    ['POST', /^\/devices\/current\/lock-state$/, () => ok({})],
+    ['GET', /^\/settings\/values\/device$/, () => ok({ device_id: DEVICES[0].id, settings: CURRENT_DEVICE.settings })],
     ['GET', /^\/admin\/instance-backup$/, () => ok(INSTANCE_BACKUP)],
     ['GET', /^\/contacts$/, url => {
       const offset = Number(url.searchParams.get('offset') || 0);

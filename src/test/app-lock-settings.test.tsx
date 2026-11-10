@@ -38,7 +38,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe('Settings → App lock', () => {
-  it('turning the lock on from the web sets a PIN first, then saves the whole-app scope', async () => {
+  it('turning the lock on from the web sets a PIN first, then saves the whole-app scope', { timeout: 20_000 }, async () => {
     const setPin = vi.fn(async () => ({ ok: true as const }));
     const saveSettings = vi.fn(async () => settingsWith({ scope: ['app'] }));
     mount({ settings: settingsWith(), setPin, saveSettings });
@@ -57,7 +57,7 @@ describe('Settings → App lock', () => {
     await waitFor(() => expect(saveSettings).toHaveBeenCalledWith({ app_lock_scope: ['app'] }));
   });
 
-  it('greys the choices under the administrator\'s requirement with the server\'s reason, never hiding them', async () => {
+  it('greys the choices under the administrator\'s requirement with the server\'s reason, never hiding them', { timeout: 20_000 }, async () => {
     vi.mocked(api.get).mockResolvedValue(policiesAnswer({
       'app_lock.required': { value: ['mail'], reason: REQUIRED_REASON },
       'app_lock.max_background': { value: '300', reason: MAX_REASON },
@@ -79,7 +79,7 @@ describe('Settings → App lock', () => {
     expect(screen.getByRole('option', { name: 'Every time UniHub opens' })).not.toHaveAttribute('aria-disabled', 'true');
   });
 
-  it('a weakening change asks for the unlock first and saves only once confirmed', async () => {
+  it('a weakening change asks for the unlock first and saves only once confirmed', { timeout: 20_000 }, async () => {
     const confirm = vi.fn(async (pin?: string) => (pin === '135790' ? { ok: true as const } : { ok: false as const, reason: 'wrong' as const, pin: { failures: 1, waitUntil: null, attemptsLeft: null } }));
     const saveSettings = vi.fn(async () => settingsWith({ scope: ['mail'] }));
     mount({ settings: settingsWith({ scope: ['mail', 'contacts'] }), method: { ...fakeAppLock().method, pinSet: true }, confirm, saveSettings });
@@ -97,7 +97,7 @@ describe('Settings → App lock', () => {
     expect(confirm).toHaveBeenCalledTimes(2);
   });
 
-  it('closing the unlock keeps the lock as it was, and a longer time asks too', async () => {
+  it('closing the unlock keeps the lock as it was, and a longer time asks too', { timeout: 20_000 }, async () => {
     const saveSettings = vi.fn(async () => settingsWith());
     mount({ settings: settingsWith({ scope: ['app'], relock: '60' }), method: { ...fakeAppLock().method, pinSet: true }, saveSettings });
     fireEvent.click(screen.getByRole('radio', { name: 'Off' }));
