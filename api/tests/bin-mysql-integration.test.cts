@@ -1324,13 +1324,17 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
         [object.id, users.alex, accountId, work, `${WORK}${object.id}.ics`, sha(`${WORK}${object.id}.ics`), object.uid, eventIcs(`${object.uid} `, 'Bulk padded', clock)]);
     }
     context.after(() => pool.execute(`DELETE FROM calendar_remote_objects WHERE id IN (${bulk.map(() => '?').join(', ')})`, bulk.map(object => object.id)));
-    // The upgrade: step 25 again, as an installation of 0.27 runs it.
+    // The upgrade: step 25 again, as an installation of 0.27 runs it. The
+    // history keeps its order, so the later steps are taken out with it; the
+    // steps after 25 then run again as they do on the way to this release.
     const calendarReads = hooks.watch(/FROM calendar_remote_objects WHERE calendar_id = \?/);
-    await pool.execute('DELETE FROM schema_migrations WHERE id = 25');
+    await pool.execute('DELETE FROM schema_migrations WHERE id >= 25');
+    await runMigrations(pool, MIGRATIONS.filter(step => step.id <= 25), BASELINE);
+    const stepReads = calendarReads.count;
     await runMigrations(pool, MIGRATIONS, BASELINE);
     // Two calendars have changes (Work and the feed): each one's UIDs are read
     // once (a page and the empty one after it), not once for every change.
-    assert.ok(calendarReads.count <= 4, `calendar-wide reads: ${calendarReads.count}`);
+    assert.ok(stepReads <= 4, `calendar-wide reads: ${stepReads}`);
     assert.equal(await count(`SELECT COUNT(*) AS n FROM calendar_remote_objects WHERE id IN (${bulk.map(() => '?').join(', ')}) AND RIGHT(uid, 1) = ' '`, bulk.map(object => object.id)), bulk.length);
     await feedSync();
     const feedAfter = await rowsTitled('Feed padded');
