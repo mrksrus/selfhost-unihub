@@ -164,12 +164,12 @@ test('with one minute, a return within it does not ask and one after 70 s does; 
     await device.close();
   }
 
-  // Force-stopped: a new process covers the page before it loads.
+  // Force-stopped: a new process covers the page before it loads. `am start
+  // -W` returns once the activity has drawn its first frame, so the cover is
+  // up at that moment or the first frame showed the page: one look, no wait.
   adb('shell', 'am', 'force-stop', PACKAGE);
-  adb('shell', 'am', 'start', '-W', '-n', `${PACKAGE}/.MainActivity`);
-  let covered = false;
-  for (let tries = 0; tries < 20 && !covered; tries++) { covered = lockCoverShown(); if (!covered) await sleep(500); }
-  assert.equal(covered, true, 'covered on a cold start, before the page loads');
+  const launch = adb('shell', 'am', 'start', '-W', '-n', `${PACKAGE}/.MainActivity`);
+  assert.equal(lockCoverShown(), true, `covered at the first frame of a cold start (${/TotalTime: \d+/.exec(launch)?.[0] ?? 'launch time unknown'})`);
   ({ device, page } = await openApp({ restart: false }));
   try {
     const cold = await state(page);

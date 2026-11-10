@@ -44,12 +44,14 @@ test('[29-05] mail that arrives while the device is in the background with Mail 
     const subject = `Locked mail ${runId()}`;
     await sendMail({ from: `Sam Sender <${outside.sam}>`, to: [people.alex.mailbox], subject, text: `Body of ${subject}.` });
     // The event the server stores for this person keeps its own rendering: a locked device never changes it for the others.
-    const query = () => dbRead<{ payload: string }>(
+    const query = () => dbRead<{ payload: unknown }>(
       "SELECT payload FROM notification_events WHERE user_id = ? AND kind LIKE 'mail%' AND payload LIKE ? ORDER BY created_at DESC LIMIT 1", [me.id, `%${subject}%`],
     );
     await expect.poll(async () => (await query()).length, { timeout: 180_000 }).toBe(1);
     const events = await query();
-    expect(events[0].payload, 'the shared event keeps the subject').toContain(subject);
+    // The driver may hand the JSON column back parsed.
+    const payload = typeof events[0].payload === 'string' ? events[0].payload : JSON.stringify(events[0].payload);
+    expect(payload, 'the shared event keeps the subject').toContain(subject);
     // While the device counts as locked, its open_until is in the past (at most relock_after after the background report).
     await expect.poll(async () => {
       const row = (await dbRead<{ open_until: Date | null }>('SELECT open_until FROM devices WHERE id = ?', [device.id]))[0];

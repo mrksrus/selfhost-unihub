@@ -49,8 +49,9 @@ test('[29-03] Mail locked, Calendar open: the page, Today, the search and Settin
     await expect(screen.getByRole('heading', 'Mail is locked')).toHaveCount(0);
     // Settings → Mail itself, which the lock stood in for.
     await expect(screen.getByRole('heading', 'Writing', { exact: true })).toBeVisible();
-    // The one unlock opened Mail's page too.
-    await app.open('/mail');
+    // The one unlock opened Mail's page too, in this tab: a new load asks
+    // again, since this lock asks every time UniHub opens.
+    await screen.getByRole('navigation', 'Main').first().getByRole('link', /^Mail\b/).tap();
     await expect(screen.getByRole('heading', 'Mail is locked')).toHaveCount(0);
     await expect(screen.getByRole('navigation', 'Mail folders').or(screen.getByRole('button', 'All accounts')).first()).toBeVisible();
   } finally {
