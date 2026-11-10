@@ -143,6 +143,8 @@ test('CSRF: sign-in and sign-up need no token, exactly the service-worker routes
 // policies-mysql-integration.
 const NOT_DESTRUCTIVE: Readonly<Record<string, string>> = {
   'DELETE /api/auth/sessions/:id': 'signs a device out; no data',
+  // A policy that forbade it would keep a lost phone signed in.
+  'DELETE /api/devices/:id': 'signs a device out; its lock settings are installation state, no user data',
   'DELETE /api/notifications/subscription': 'a device\'s push channel',
   'DELETE /api/calendar/events/:id/move': 'cancels a task\'s pending move between lists',
   'DELETE /api/calendar/events/:id/subtasks/:subtaskId': 'editing a task',

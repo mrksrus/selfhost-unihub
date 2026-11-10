@@ -4,11 +4,12 @@ import type { ApiError } from '../types';
 
 import crypto from 'node:crypto';
 import { db } from '../state';
-import { badRequest, unauthorized } from '../http/errors';
+import { badRequest } from '../http/errors';
 import { verifyToken } from '../auth';
 import { createServerEvents } from './server-events';
 import { hash, normalizeKeys } from './notification-rules';
-import { liveSessionId, sessionKey } from './sessions';
+import { sessionKey } from './sessions';
+import { currentDevice } from './devices';
 
 // Notifications for the Android app (android/), with this server as the app's
 // push server: no Google, Apple or other push service is involved.
@@ -42,11 +43,6 @@ const devices = createServerEvents({ heartbeatMs: 45 * 1000, retryMs: 30 * 1000,
 const latest = new Map<string, () => void>();
 
 const endpointFor = (deviceId: string) => `${ENDPOINT_PREFIX}${deviceId}`;
-async function sessionId(userId: string, sessionToken: string | null) {
-  const id = await liveSessionId(userId, sessionToken);
-  if (!id) throw unauthorized('SESSION_EXPIRED', 'Session expired');
-  return id;
-}
 
 // A device of this user, registered by the session making the request.
 async function ownDevice(userId: string, sessionToken: string | null, deviceId: unknown) {
@@ -57,25 +53,29 @@ async function ownDevice(userId: string, sessionToken: string | null, deviceId: 
 }
 
 /**
- * Registers this phone for the signed-in session. `replaces` names the
- * device the app registered before (another key pair, an earlier session);
- * it is removed so it does not collect deliveries no one acknowledges.
+ * Registers this phone for the signed-in session and its device (F5). The
+ * app installation is one device with one registration: `replaces` names the
+ * registration the app made before (another key pair, an earlier session),
+ * and any other registration of the same device goes too, so none collects
+ * deliveries no one acknowledges. The wire name `device` stays the
+ * registration's id for the apps in the field.
  */
 async function registerDevice(userId: string, sessionToken: string | null, input: { keys?: unknown; replaces?: unknown } | null | undefined) {
   const keys = normalizeKeys((input?.keys || null) as Parameters<typeof normalizeKeys>[0]);
   // A key that is not a point on P-256 could never be encrypted for.
   try { const ecdh = crypto.createECDH('prime256v1'); ecdh.generateKeys(); ecdh.computeSecret(Buffer.from(keys.p256dh, 'base64url')); }
   catch { throw badRequest('PUSH_SUBSCRIPTION_KEYS_INVALID', 'Invalid push subscription key'); }
-  const session = await sessionId(userId, sessionToken);
+  const { sessionId: session, deviceId: owner } = await currentDevice(userId, sessionToken);
   if (typeof input?.replaces === 'string' && UUID.test(input.replaces)) {
     await db.execute("DELETE FROM push_subscriptions WHERE id = ? AND user_id = ? AND transport = 'android'", [input.replaces, userId]);
   }
+  await db.execute("DELETE FROM push_subscriptions WHERE device_id = ? AND user_id = ? AND transport = 'android'", [owner, userId]);
   const [count] = await db.execute<RowDataPacket[]>('SELECT COUNT(*) AS total FROM push_subscriptions WHERE user_id = ?', [userId]);
   if (Number(count[0]?.total) >= MAX_DEVICES) throw badRequest('NOTIFICATION_DEVICE_LIMIT', 'Maximum notification devices reached');
   const id = crypto.randomUUID();
   const endpoint = endpointFor(id);
-  await db.execute(`INSERT INTO push_subscriptions (id, user_id, session_id, endpoint, endpoint_hash, p256dh, auth, transport)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'android')`, [id, userId, session, endpoint, hash(endpoint), keys.p256dh, keys.auth]);
+  await db.execute(`INSERT INTO push_subscriptions (id, user_id, session_id, device_id, endpoint, endpoint_hash, p256dh, auth, transport)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'android')`, [id, userId, session, owner, endpoint, hash(endpoint), keys.p256dh, keys.auth]);
   // As for a new browser: the reminder scan includes calendar entries from before.
   await db.execute('UPDATE notification_config SET reminder_revision = reminder_revision + 1 WHERE id = 1');
   return { device: id, endpoint };

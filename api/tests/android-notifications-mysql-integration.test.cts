@@ -120,8 +120,10 @@ test('Android notification devices: registration, encrypted stream delivery, ack
     } };
     const delivery = async (eventId: string) => (await pool.query<RowDataPacket[]>('SELECT status, delivered_at, available_at FROM notification_deliveries WHERE event_id = ?', [eventId]))[0][0];
 
-    const owner = session(), other = session();
-    for (const [request, name] of [[owner, 'owner'], [other, 'other']] as const) { await request('POST', '/auth/signin', { email: `${name}@example.test`, password }); await request('GET', '/auth/me'); }
+    // The app installation is one device with one registration (F5): a second
+    // phone of the same person is another sign-in.
+    const owner = session(), other = session(), otherTablet = session(), ownerTablet = session();
+    for (const [request, name] of [[owner, 'owner'], [other, 'other'], [otherTablet, 'other'], [ownerTablet, 'owner']] as const) { await request('POST', '/auth/signin', { email: `${name}@example.test`, password }); await request('GET', '/auth/me'); }
     assert.ok((await owner('GET', '/version')).features.includes('android-notifications'));
 
     // Registration validates the keys and binds the device to this session.
@@ -205,9 +207,9 @@ test('Android notification devices: registration, encrypted stream delivery, ack
 
     // A stored key that cannot be encrypted for (not one registration accepts)
     // removes that device and holds up no one else in the same pass.
-    const broken = await other('POST', '/notifications/android/devices', { keys: deviceKeys().keys });
+    const broken = await otherTablet('POST', '/notifications/android/devices', { keys: deviceKeys().keys });
     await pool.execute('UPDATE push_subscriptions SET p256dh = ? WHERE id = ?', [offCurve.toString('base64url'), broken.device]);
-    const brokenStream = await other.stream(broken.device);
+    const brokenStream = await otherTablet.stream(broken.device);
     assert.equal(brokenStream.status, 200);
     await notifications.enqueueEvent({ userId: ids.other, dedupeKey: 'test:broken-key', kind: 'test', title: 'Broken key', url: '/settings', expiresAt: new Date(Date.now() + 3600000) });
     const alongside = await newMail('Alongside a broken device');
@@ -251,8 +253,9 @@ test('Android notification devices: registration, encrypted stream delivery, ack
     assert.ok(await replacement.next('end'), 'the stream of a removed device ends at the next heartbeat');
     assert.equal(await replacement.next('notification', 200), null);
     // Another user's device is never removed as "replaced".
-    await owner('POST', '/notifications/android/devices', { keys: deviceKeys().keys, replaces: otherPhone.device });
+    await ownerTablet('POST', '/notifications/android/devices', { keys: deviceKeys().keys, replaces: otherPhone.device });
     assert.equal((await other('GET', `/notifications/status?endpoint=${encodeURIComponent(otherPhone.endpoint)}`)).subscribed, true);
+    await ownerTablet('POST', '/auth/signout', {});
 
     // Signing out removes the device with its session and ends its stream at
     // once, not at the next heartbeat.

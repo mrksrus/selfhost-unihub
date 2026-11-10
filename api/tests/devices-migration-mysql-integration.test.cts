@@ -33,10 +33,18 @@ test('upgrade 26 gives every session a device and every push channel its device,
     app: 'Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36 UniHubAndroid/0.28.2 (28002) UniHubBridge/2',
     oldApp: 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/130.0 Mobile Safari/537.36 UniHubAndroid/0.24.3 (24003)',
   };
+  // A session as 0.28 signed in: the row its createSession wrote, and the
+  // cookie its sign-in set. (A sign-in of 0.29 binds a device, which needs step 26.)
+  const { generateToken, getSessionExpiry } = require('../dist/src/auth') as typeof import('../src/auth');
+  const { sessionKey } = require('../dist/src/services/sessions') as typeof import('../src/services/sessions');
   async function signIn(name: string, agent: string) {
-    const client = api.client();
-    const reply = await client.request('POST', '/api/auth/signin', { email: `${name}@example.test`, password }, { 'user-agent': agent });
-    assert.equal(reply.status, 200, String(reply.body.error));
+    assert.ok(await require('bcryptjs').compare(password, passwordHash));
+    const token = generateToken(users[name]);
+    await pool.execute('INSERT INTO sessions (user_id, token, expires_at, ip_address, user_agent) VALUES (?, ?, ?, ?, ?)',
+      [users[name], sessionKey(token), getSessionExpiry(), '192.0.2.10', agent]);
+    const cookie = `auth-token=${token}`;
+    const own = api.client();
+    const client = { request: (method: string, route: string, body?: unknown, headers: Record<string, string> = {}) => own.request(method, route, body, { ...headers, cookie }) };
     return { client, agent };
   }
   const people = {

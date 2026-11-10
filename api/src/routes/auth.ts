@@ -38,16 +38,33 @@ import {
 } from '../services/two-factor';
 import { realtime } from '../services/realtime';
 import { createSession, endOtherSessions, endSession, endSessionById, endUserSessions, listSessions, lockOwnSession } from '../services/sessions';
+import { bindDevice, deviceClaim } from '../services/devices';
+import type { DeviceClaim } from '../services/devices';
+import { withTransaction } from '../services/transactions';
 import { recordAudit, recordAuditAfter } from '../services/audit';
+import { defineRoutes } from '../http/route';
 
 // The address (through the trusted-proxy rules) and the browser of a new sign-in.
-function sessionDevice(req: Request) {
+function sessionOrigin(req: Request) {
   let ipAddress: string | null = null;
   try { ipAddress = getClientIP(req as Parameters<typeof getClientIP>[0]) || null; } catch { /* unknown */ }
   const agent = req.headers?.['user-agent'];
   return { ipAddress, userAgent: typeof agent === 'string' ? agent : null };
 }
-import { defineRoutes } from '../http/route';
+
+// A new session on the device the sign-in names (F5): the device and the
+// session commit together, in the caller's transaction or in one of their own.
+async function openSession(userId: string, device: DeviceClaim, req: Request, connection: SqlExecutor = db) {
+  const token = generateToken(userId);
+  const expiresAt = getSessionExpiry();
+  const origin = sessionOrigin(req);
+  const open = async (cx: SqlExecutor) => {
+    const deviceId = await bindDevice(userId, device, origin.userAgent, cx);
+    await createSession({ userId, token, expiresAt, deviceId, ...origin }, cx);
+  };
+  if (connection === db) await withTransaction(open); else await open(connection);
+  return token;
+}
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface Input {
@@ -61,6 +78,7 @@ interface Input {
   current_password?: string;
   new_password?: string;
   timezone?: unknown;
+  device?: unknown;
 }
 interface UserRow extends RowDataPacket {
   id: string;
@@ -76,11 +94,9 @@ interface UserRow extends RowDataPacket {
   two_factor_recovery_codes?: unknown;
 }
 
-async function createSessionResponse(user: Pick<UserRow, 'id' | 'email' | 'full_name' | 'avatar_url' | 'role' | 'timezone' | 'two_factor_enabled'>, req: Request, res: ServerResponse, connection: SqlExecutor = db, afterCommit: (() => void)[] | null = null) {
-  const token = generateToken(user.id);
+async function createSessionResponse(user: Pick<UserRow, 'id' | 'email' | 'full_name' | 'avatar_url' | 'role' | 'timezone' | 'two_factor_enabled'>, device: DeviceClaim, req: Request, res: ServerResponse, connection: SqlExecutor = db, afterCommit: (() => void)[] | null = null) {
+  const token = await openSession(user.id, device, req, connection);
   const csrfToken = generateCsrfToken();
-  const expiresAt = getSessionExpiry();
-  await createSession({ userId: user.id, token, expiresAt, ...sessionDevice(req) }, connection);
   const signin = { action: 'auth.signin', actorId: user.id, targetUserId: user.id, req } as const;
   if (connection === db) await recordAuditAfter(signin); else await recordAudit(signin, connection);
 
@@ -150,6 +166,7 @@ export = defineRoutes({
     if (String(password).length < MIN_PASSWORD_LENGTH) {
       return { error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters`, status: 400 };
     }
+    const device = deviceClaim(body?.device);
 
     try {
       // Check if user exists
@@ -181,12 +198,8 @@ export = defineRoutes({
         };
       }
 
-      const token = generateToken(newUserId);
+      const token = await openSession(newUserId, device, req);
       const csrfToken = generateCsrfToken();
-
-      // Create session
-      const expiresAt = getSessionExpiry();
-      await createSession({ userId: newUserId, token, expiresAt, ...sessionDevice(req) });
 
       const result = { csrfToken, user: { id: newUserId, email, full_name, role: 'user', timezone: null, two_factor_enabled: false } };
       setAuthCookie(res, token);
@@ -207,6 +220,7 @@ export = defineRoutes({
     if (!validCredentials(email, password)) {
       return { error: 'Email and password are required', status: 400 };
     }
+    const device = deviceClaim(body?.device);
 
     try {
       // Add retry logic for database queries
@@ -262,7 +276,7 @@ export = defineRoutes({
       retries = 3;
       while (retries > 0) {
         try {
-          const result = await createSessionResponse(user, req, res);
+          const result = await createSessionResponse(user, device, req, res);
           return result;
         } catch (dbError) {
           retries--;
@@ -289,6 +303,7 @@ export = defineRoutes({
     if (!/^[a-f0-9]{64}$/.test(challengeToken) || !code || code.length > 32) {
       return { error: 'Challenge token and authentication code are required', status: 400 };
     }
+    const device = deviceClaim(body?.device);
 
     let connection;
     try {
@@ -309,7 +324,7 @@ export = defineRoutes({
 
       await deleteTwoFactorLoginChallenge(challengeToken, connection);
       const afterCommit: (() => void)[] = [];
-      const result = await createSessionResponse(challengeUser, req, res, connection, afterCommit);
+      const result = await createSessionResponse(challengeUser, device, req, res, connection, afterCommit);
       await connection.commit();
       afterCommit.forEach(apply => apply());
       return {

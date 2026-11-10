@@ -22,7 +22,8 @@
 //     database stopped (a snapshot, kept until the end for diagnosis).
 //  3. The candidate starts on the same database, storage, keys and settings:
 //     every upgrade step runs, the data inventory check passes, the session
-//     from before the upgrade still works, and everything the person saw reads
+//     from before the upgrade still works on a device of its own with its push
+//     channel (0.29), and everything the person saw reads
 //     the same. Writes work: a contact, an event, a task with a subtask, a
 //     recording, and a message sent through the Sync account that arrives at
 //     the provider. A new full backup restores into a second person.
@@ -228,6 +229,10 @@ try {
     await owner.json('POST', `/api/calendar/events/${team.id}/subtasks`, { title: 'Send the minutes' }, { expected: [200, 201] });
     return { ids };
   });
+  // A push channel of the signed-in session (the Android app's registration,
+  // since 0.22.1): from 0.29 the session and its channel belong to a device.
+  const channel = atLeast('0.22.1') ? await step('Register a push channel for the session', () => owner.json<{ device: string; endpoint: string }>('POST', '/api/notifications/android/devices',
+    { keys: { p256dh: crypto.createECDH('prime256v1').generateKeys().toString('base64url'), auth: crypto.randomBytes(16).toString('base64url') } })) : null;
   const before = await coreView(owner, installation, admin.email);
   assertSeededMail(before.emails, allSeeds, from);
   const beforeSteps = JSON.parse(installation.exec(helper('upgrade-inspect.cts'))) as { latestApplied: number; latestKnown: number };
@@ -244,7 +249,16 @@ try {
   assert.equal(afterSteps.latestApplied, afterSteps.latestKnown, `Every upgrade step ran: ${JSON.stringify(afterSteps.applied)}`);
   assert.equal(afterSteps.inventory, 'passed', 'The data inventory check passes on the upgraded database');
   evidence.migrations = { before: beforeSteps.latestApplied, after: afterSteps.latestApplied, latest: afterSteps.latestKnown, inventory: afterSteps.inventory };
-  await step('The session from before the upgrade still works', () => owner.json('GET', '/api/auth/me'));
+  await step('The session from before the upgrade still works, on a device of its own, with its push channel', async () => {
+    await owner.json('GET', '/api/auth/me');
+    const { devices } = await owner.json<{ devices: Row[] }>('GET', '/api/devices');
+    const current = devices.find(device => device.current);
+    assert.ok(current, `The session has a device: ${JSON.stringify(devices)}`);
+    if (!channel) return;
+    assert.equal(current.notifications, true, 'The device has the session\'s push channel');
+    const status = await owner.json<{ subscribed: boolean }>('GET', `/api/notifications/status?endpoint=${encodeURIComponent(channel.endpoint)}`);
+    assert.equal(status.subscribed, true, 'The push channel from before the upgrade still works');
+  });
   await step('Everything reads the same after the upgrade', async () => {
     const after = await coreView(owner, installation, admin.email);
     assertSeededMail(after.emails, allSeeds, 'After the upgrade');
