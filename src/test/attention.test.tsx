@@ -6,6 +6,8 @@ import { useAttentionItems } from '@/hooks/use-attention';
 import { AttentionList } from '@/components/layout/AttentionList';
 import { api } from '@/lib/api';
 import type { ModulePreference } from '@/lib/modules';
+import { AppLockContext, NO_APP_LOCK, type AppLockValue } from '@/hooks/use-app-lock';
+import { fakeAppLock } from './helpers/app-lock';
 
 vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'owner' }, isOffline: false }) }));
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn() } }));
@@ -18,10 +20,10 @@ function Tray() {
   return <AttentionList items={useAttentionItems()} />;
 }
 
-function mount(enabled: Partial<Record<ModulePreference['id'], boolean>> = {}) {
+function mount(enabled: Partial<Record<ModulePreference['id'], boolean>> = {}, lock: AppLockValue = NO_APP_LOCK) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(['modules'], modules(enabled));
-  return render(<QueryClientProvider client={client}><MemoryRouter><Tray /></MemoryRouter></QueryClientProvider>);
+  return render(<QueryClientProvider client={client}><AppLockContext.Provider value={lock}><MemoryRouter><Tray /></MemoryRouter></AppLockContext.Provider></QueryClientProvider>);
 }
 
 const responses: Record<string, unknown> = {
@@ -58,5 +60,13 @@ describe('attention tray', () => {
     expect(await screen.findByText('Nothing needs your attention.')).toBeInTheDocument();
     const paths = vi.mocked(api.get).mock.calls.map(([path]) => path);
     expect(paths.filter(path => path.startsWith('/mail') || path.startsWith('/calendar'))).toEqual([]);
+  });
+
+  it('asks nothing of a module locked on this device, and still of the others', async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => ({ data: responses[path.split('?')[0]] }));
+    mount({}, fakeAppLock({ status: 'locked', scope: ['mail'] }));
+    expect(await screen.findByText('Calendar sync failed for Work calendar')).toBeInTheDocument();
+    const paths = vi.mocked(api.get).mock.calls.map(([path]) => path);
+    expect(paths.filter(path => path.startsWith('/mail'))).toEqual([]);
   });
 });

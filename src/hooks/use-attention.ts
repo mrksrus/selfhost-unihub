@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/useAuth';
 import { useModules } from '@/hooks/use-modules';
 import { useAppUpdate } from '@/hooks/use-app-update';
+import { useAppLock } from '@/hooks/use-app-lock';
 import { fetchMailAccounts } from '@/hooks/use-mail-queries';
 import { fetchMailWritebacks, groupWritebacks } from '@/hooks/use-mail-writebacks';
 import { fetchMailSyncStatus, MAIL_SYNC_JOBS_KEY } from '@/hooks/use-mail-sync-jobs';
@@ -39,9 +40,11 @@ export function useAttentionItems(): AttentionItem[] {
   const { isEnabled } = useModules();
   const update = useAppUpdate();
   const appUpdate = useAndroidAppUpdate();
+  const lock = useAppLock();
   const online = !!user && !isOffline && !isOfflineMode();
-  const mailOn = online && isEnabled('mail');
-  const calendarOn = online && isEnabled('calendar');
+  // A module locked on this device is not asked: its addresses and errors wait behind the lock.
+  const mailOn = online && isEnabled('mail') && !lock.locked('mail');
+  const calendarOn = online && isEnabled('calendar') && !lock.locked('calendar');
 
   const accounts = useQuery({ queryKey: mailQueryKeys.accounts, queryFn: fetchMailAccounts, enabled: mailOn, ...OBSERVE }).data ?? [];
   const writebacks = useQuery({ queryKey: mailQueryKeys.writebacks, queryFn: fetchMailWritebacks, enabled: mailOn, ...OBSERVE }).data ?? [];
