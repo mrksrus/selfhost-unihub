@@ -24,6 +24,8 @@ type DeliveryTarget = WebPushTarget | AndroidTarget;
 interface DeliveryMessage {
   eventId: string;
   kind: string;
+  /** The kind's module (null for account notices): the device's own lock check reads it, as the server's did. */
+  module: string | null;
   payload: Record<string, unknown> & { dedupeKey?: unknown };
   expiresAt: unknown;
 }
@@ -86,9 +88,11 @@ const webPushTransport: NotificationTransport<WebPushTarget> = {
   },
 };
 
-// The payload of a delivery as both transports send it.
+// The payload of a delivery as both transports send it. It always names the
+// kind's module, so the service worker and the Android app hide the content
+// of a module their own lock state says is locked.
 function messageBody(message: DeliveryMessage) {
-  return JSON.stringify({ ...message.payload, notificationId: message.eventId });
+  return JSON.stringify({ ...message.payload, module: message.module, notificationId: message.eventId });
 }
 
 const androidTransport: NotificationTransport<AndroidTarget> = {

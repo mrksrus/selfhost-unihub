@@ -35,6 +35,13 @@ function loadService(db: FixtureValue, sender: FixtureValue = {}, transports: Fi
   }
   return load(require.resolve('../dist/src/services/notifications'));
 }
+// The dispatcher's reads of a delivery's device and of the policies: a device
+// without an app lock and no policies, which sends what 0.28 sent.
+function unlockedDevice(sql: string, values: FixtureValue) {
+  if (sql.includes('FROM devices d')) return [[{ id: values[0], user_id: 'u1', kind: 'web', lock_applied: null, open_until: null }]];
+  if (sql.includes('FROM setting_policies')) return [[]];
+  return null;
+}
 function validSubscription(endpoint = 'https://fcm.googleapis.com/fcm/send/example') {
   const publicKey = Buffer.alloc(65, 1); publicKey[0] = 4;
   return { endpoint, keys: { p256dh: publicKey.toString('base64url'), auth: Buffer.alloc(16, 2).toString('base64url') } };
@@ -118,6 +125,7 @@ test('delivery retry preserves pending state, and edited/deleted reminder is can
   const connection = { async execute(sql: string, values: FixtureValue) {
     if (sql.includes('FROM notification_deliveries d')) return [[row]];
     if (sql.startsWith('SELECT e.*') || sql.includes('FROM backup_restore_jobs')) return [[]];
+    const read = unlockedDevice(sql, values); if (read) return read;
     writes.push({ sql, values }); return [{}];
   } };
   const service: FixtureValue = loadService({ async execute(sql: string) {
@@ -135,6 +143,7 @@ test('temporary sender failure schedules retry without falsely acknowledging del
   const row = { event_id: 'n1', subscription_id: 's1', attempts: 1, user_id: 'u1', kind: 'test', payload: { dedupeKey: 'test-1' }, expires_at: new Date(now.getTime() + 60000), endpoint: validSubscription().endpoint, ...validSubscription().keys };
   const connection = { async execute(sql: string, values: FixtureValue) {
     if (sql.includes('FROM notification_deliveries d')) return [[row]];
+    const read = unlockedDevice(sql, values); if (read) return read;
     writes.push({ sql, values }); return [{}];
   } };
   const service: FixtureValue = loadService({ async execute() { return [[{ public_key: 'public', encrypted_private_key: 'encrypted:private', subject: 'mailto:admin@example.com' }]]; } }, {
@@ -163,6 +172,7 @@ test('the dispatcher routes each due delivery to the transport of its target kin
   const writes: FixtureValue[] = [];
   const connection = { async execute(sql: string, values: FixtureValue) {
     if (sql.includes('FROM notification_deliveries d')) return [[row('sent', 0), row('gone', 1), row('later', 2), row('dead', 3)]];
+    const read = unlockedDevice(sql, values); if (read) return read;
     writes.push({ sql, values }); return [{}];
   } };
   const service: FixtureValue = loadService({}, {}, transports);
@@ -290,7 +300,7 @@ test('a pause during source revalidation preserves the delivery before reserving
     if (sql.startsWith('SELECT public_key')) return [[{ public_key: 'public', encrypted_private_key: 'encrypted:secret', subject: 'mailto:test@example.com' }]];
     if (sql.includes('FROM user_settings')) return [[{ setting_value: JSON.stringify({ mail: { background: !paused } }) }]];
     if (sql.includes('FROM emails')) { paused = true; return [[{ folder: 'inbox', is_read: 0, is_draft: 0 }]]; }
-    if (sql.includes('FROM setting_policies')) return [[]];
+    const read = unlockedDevice(sql, values); if (read) return read;
     writes.push({ sql, values }); return [{}];
   } };
   const service: FixtureValue = loadService(connection, { sendNotification: async () => { sends++; } });
@@ -324,6 +334,7 @@ test('devices whose session is about to end get one warning, cancelled once the 
   const delivery = { async execute(sql: string, values: FixtureValue) {
     if (sql.includes('FROM notification_deliveries d')) return [[row]];
     if (sql.startsWith('SELECT id FROM sessions')) return [[]];
+    const read = unlockedDevice(sql, values); if (read) return read;
     writes.push({ sql, values }); return [{}];
   } };
   const sender: FixtureValue = loadService({ async execute() { return [[{ public_key: 'public', encrypted_private_key: 'encrypted:private', subject: 'mailto:admin@example.com' }]]; } }, { async sendNotification() { sends++; } });

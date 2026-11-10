@@ -1,15 +1,17 @@
 import type { PoolConnection, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import type { SettingValuesByScope } from '../contracts/settings';
+import type { AppLockRequiredDetails } from '../contracts/devices';
+import type { DeviceLockState } from './devices';
 
 import crypto from 'crypto';
 import { db } from '../state';
-import { currentDevice } from './devices';
+import { appLockShortfall, currentDevice, deviceLockFor, lockCovers } from './devices';
 import { ApiError, badRequest } from '../http/errors';
 import { isModuleBackgroundEnabled } from './module-settings';
 import { getActiveRestoreSectionsByUser } from './restore-locks';
 import { blockedBackgroundModulesByUser } from './access-policy';
-import { defaultSettingValues, settingValues } from './settings';
+import { appLockRequirementFor, defaultSettingValues, settingValues } from './settings';
 import { mailFolderRoles } from './mail-folders';
 import { NOTIFICATION_TRANSPORTS, getVapidKeys } from './notification-transports';
 import type { DeliveryTarget, NotificationTransport } from './notification-transports';
@@ -45,6 +47,7 @@ interface EventRow { kind: string; source_id: string | null; user_id: string }
 interface DueDelivery extends EventRow {
   event_id: string;
   subscription_id: string;
+  device_id: string;
   attempts: number | string;
   payload: unknown;
   expires_at: unknown;
@@ -134,6 +137,12 @@ async function deviceStatus(userId: string, endpoint: unknown) {
 // - Filters and rendering run again before each delivery (currentPayload), so
 //   a message filed to Junk or read, a calendar switched off, or a stricter
 //   level chosen after the notification was queued is honoured.
+// - Each device is then sent the least of that level and its own lock
+//   (contentHidden): a device whose app lock covers the kind's module and
+//   that does not count as unlocked now, or one short of the lock the
+//   person's policies require, gets the kind's 'none' text. This is decided
+//   at every send, from the device's state then; only the person's text is
+//   stored, never one device's.
 // A kind declares its module, its source, its filters and level, its
 // renderings per level and its expiry; a new kind is one entry. Kinds without
 // private content (test, session, recording) keep their fixed text and only
@@ -155,6 +164,8 @@ interface SourceKind<S> {
 interface FixedKind {
   module: 'recordings' | 'mail' | null;
   current?(row: EventRow, payload: NotificationPayload, connection: SqlExecutor): Promise<boolean>;
+  /** The text while the device hides content; without one the fixed text carries nothing private and stays. */
+  none?: Rendering;
 }
 type KindSpec = SourceKind<unknown> | FixedKind;
 const defineSourceKind = <S>(kind: SourceKind<S>) => kind as unknown as SourceKind<unknown>;
@@ -279,6 +290,7 @@ const KINDS: Readonly<Record<string, KindSpec>> = Object.freeze({
       const [uploads] = await connection.execute<RowDataPacket[]>('SELECT bytes_received FROM recording_uploads WHERE id = ? AND user_id = ?', [row.source_id, row.user_id]);
       return !!uploads[0] && Number(uploads[0].bytes_received) === Number(payload.bytesReceived);
     },
+    none: { title: 'Recording not uploaded yet', body: 'Open UniHub on the device that recorded it to finish.' },
   },
   // A scheduled send that did not go out (mail-scheduled-send.ts). No message
   // content: the person opens Drafts to see which one.
@@ -314,14 +326,42 @@ async function prepare(kind: SourceKind<unknown>, userId: string, sourceId: stri
   const render = Object.prototype.hasOwnProperty.call(kind.render, level) ? kind.render[level] : kind.render.none;
   return { source, rendering: clip(render(source, payload)) };
 }
+/** The device a delivery goes to, as the privacy stage reads it: its lock state (undefined without a record) and what the person's policies require. */
+interface DeliveryDevice {
+  lock: DeviceLockState | undefined;
+  requirement: Pick<AppLockRequiredDetails, 'required' | 'max_background'>;
+}
+// Whether the device is sent a kind's 'none' text: its lock covers the kind's
+// module and it does not count as unlocked at `now`, or the policies require a
+// lock for that module and the device falls short, as the request boundary
+// then refuses the module's routes. A kind without a module is covered by the
+// whole-app lock only. A delivery whose device has no record fails closed.
+function contentHidden(module: KindSpec['module'] | undefined, device: DeliveryDevice, now: number) {
+  if (!device.lock) return true;
+  const area = module ?? 'app';
+  const applied = device.lock.lock_applied;
+  const open = !!device.lock.open_until && device.lock.open_until.getTime() > now;
+  if (lockCovers(applied, area) && !open) return true;
+  const required = device.requirement.required.includes('app') || device.requirement.required.includes(area);
+  return required && appLockShortfall(applied, device.requirement);
+}
 // The payload a queued notification is delivered with now, or null when it
-// no longer applies. A source kind is filtered and rendered again.
-async function currentPayload(row: EventRow, payload: NotificationPayload, connection: SqlExecutor): Promise<NotificationPayload | null> {
+// no longer applies. A source kind is filtered and rendered again. `stored`
+// is the person's text; `sent` is what the device shows, the kind's 'none'
+// text when its lock hides content (without a device, the person's text).
+async function currentPayload(row: EventRow, payload: NotificationPayload, connection: SqlExecutor, device: DeliveryDevice | null = null, now = Date.now()):
+  Promise<{ stored: NotificationPayload; sent: NotificationPayload } | null> {
   const kind = kindOf(row.kind);
-  if (!kind) return payload;
-  if (!isSourceKind(kind)) return !kind.current || await kind.current(row, payload, connection) ? payload : null;
+  const hidden = !!device && contentHidden(kind?.module, device, now);
+  if (!kind) return { stored: payload, sent: hidden ? { ...payload, title: 'UniHub', body: '' } : payload };
+  if (!isSourceKind(kind)) {
+    if (kind.current && !await kind.current(row, payload, connection)) return null;
+    return { stored: payload, sent: hidden && kind.none ? { ...payload, ...kind.none } : payload };
+  }
   const prepared = await prepare(kind, row.user_id, row.source_id, payload, connection);
-  return prepared && { ...payload, ...prepared.rendering };
+  if (!prepared) return null;
+  const stored = { ...payload, ...prepared.rendering };
+  return { stored, sent: hidden ? { ...stored, ...clip(kind.render.none(prepared.source, payload)) } : stored };
 }
 // The user's devices that can still be reached: subscriptions of live sessions.
 async function subscribedDevices(userId: string, connection: SqlExecutor, endpointHash: string | null = null) {
@@ -496,7 +536,7 @@ async function selectDueDeliveries(connection: SqlExecutor, now: Date, activeRes
   // offline phone's deliveries wait unselected (connecting makes them due), so
   // they never fill the batch ahead of other devices.
   const live = (require('./android-push') as typeof import('./android-push')).connectedDevices();
-  const [rows] = await connection.execute<(RowDataPacket & DueDelivery)[]>(`SELECT d.*, e.user_id, e.kind, e.source_id, e.payload, e.expires_at, p.endpoint, p.p256dh, p.auth, p.transport
+  const [rows] = await connection.execute<(RowDataPacket & DueDelivery)[]>(`SELECT d.*, e.user_id, e.kind, e.source_id, e.payload, e.expires_at, p.endpoint, p.p256dh, p.auth, p.transport, p.device_id
     FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id
     JOIN push_subscriptions p ON p.id = d.subscription_id JOIN sessions s ON s.id = p.session_id AND s.user_id = p.user_id JOIN users u ON u.id = p.user_id
     WHERE d.status = 'pending' AND d.available_at <= ? AND e.expires_at > ? AND s.expires_at > UTC_TIMESTAMP() AND u.is_active = TRUE
@@ -535,27 +575,37 @@ async function deliverPending(connection: SqlExecutor, now: Date, activeRestores
 async function deliverBatch(connection: SqlExecutor, now: Date, rows: DueDelivery[]) {
   for (const kind of new Set(rows.map(row => deliveryTarget(row).kind))) await NOTIFICATION_TRANSPORTS[kind].ready();
   let delivered = 0;
+  // The policies are read once per person and batch; each device's lock state at its own send.
+  const requirements = new Map<string, Promise<AppLockRequiredDetails>>();
+  const requirementOf = (userId: string) => {
+    if (!requirements.has(userId)) requirements.set(userId, appLockRequirementFor(userId, connection));
+    return requirements.get(userId)!;
+  };
   for (const row of rows) {
     const moduleId = kindOf(row.kind)?.module;
     if (moduleId && !await isModuleBackgroundEnabled(row.user_id, moduleId, connection)) continue;
     const queued = jsonValue(row.payload);
-    // Filtered and rendered again: settings may have changed since it was queued.
-    const payload = await currentPayload(row, queued, connection);
+    // Filtered and rendered again: settings, and the device's lock, may have changed since it was queued.
+    const device = { lock: (await deviceLockFor([row.device_id], connection)).get(row.device_id), requirement: await requirementOf(row.user_id) };
+    const current = await currentPayload(row, queued, connection, device);
     // Recheck after source reads, before changing queued work or starting network IO.
     // A restore may have started since the snapshot the rows were selected with.
     if (moduleId && (!await isModuleBackgroundEnabled(row.user_id, moduleId, connection) || (await getActiveRestoreSectionsByUser(connection, row.user_id)).get(row.user_id)?.has(moduleId))) continue;
-    if (!payload) {
+    if (!current) {
       await connection.execute("UPDATE notification_deliveries SET status = 'cancelled' WHERE event_id = ? AND subscription_id = ? AND status = 'pending'", [row.event_id, row.subscription_id]);
       continue;
     }
-    // The stored copy never keeps more than the device is sent.
-    if (payload.title !== queued.title || payload.body !== queued.body) {
-      await connection.execute('UPDATE notification_events SET payload = ? WHERE id = ? AND user_id = ?', [JSON.stringify(payload), row.event_id, row.user_id]);
+    // The stored copy never keeps more than the person's level shows, and never
+    // one device's text: a locked device's generic text would otherwise reach
+    // the person's other devices, and an unlocked one could be sent stale text.
+    const { stored, sent } = current;
+    if (stored.title !== queued.title || stored.body !== queued.body) {
+      await connection.execute('UPDATE notification_events SET payload = ? WHERE id = ? AND user_id = ?', [JSON.stringify(stored), row.event_id, row.user_id]);
     }
     const attempts = Number(row.attempts) + 1;
     await connection.execute('UPDATE notification_deliveries SET attempts = ?, available_at = ? WHERE event_id = ? AND subscription_id = ?', [attempts, new Date(Date.now() + 60000), row.event_id, row.subscription_id]);
     const target = deliveryTarget(row);
-    const outcome = await transportFor(target).send(target, { eventId: row.event_id, kind: row.kind, payload, expiresAt: row.expires_at }, attempts);
+    const outcome = await transportFor(target).send(target, { eventId: row.event_id, kind: row.kind, module: moduleId ?? null, payload: sent, expiresAt: row.expires_at }, attempts);
     if (outcome.sent) {
       await connection.execute("UPDATE notification_deliveries SET status = 'sent', delivered_at = UTC_TIMESTAMP(), last_error = NULL WHERE event_id = ? AND subscription_id = ?", [row.event_id, row.subscription_id]);
       delivered++;
