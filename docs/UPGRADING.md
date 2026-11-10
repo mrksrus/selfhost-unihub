@@ -5,6 +5,30 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.28.3 Any user, any port
+
+No database upgrade and no configuration change. Going back to 0.28.2 is
+possible.
+
+- **Existing installations** start exactly as before: as root with the
+  Compose file's capabilities, Nginx on port 80, the API as uid 10001.
+- **Another user.** Starting the container as a user of your choice
+  (`user: "568:568"` in Compose, `docker run --user`) is now supported:
+  everything in it runs as that user, and the `cap_add` list can go. The
+  container can then no longer change ownership itself, so `/app/uploads`,
+  an instance backup folder and secret files must already be usable by that
+  user. To switch an existing installation, stop it, give the uploads volume
+  to the new user (`chown -R`), then start it with `user:`.
+- **Another port.** `UNIHUB_HTTP_PORT` sets Nginx's port inside the container
+  (80 unless set); map the published port to it. A user other than root is
+  not allowed to open port 80 everywhere, so set it together with `user:`.
+- **`TRUST_PROXY_HEADERS`** is `true` in the image itself. The Compose file
+  already set it; a deployment that left it out now tells visitors apart by
+  address for the sign-in limits.
+- **Android app.** 0.28.3's app is 0.28.2's app with the new version number;
+  install it when it is offered. The window is 0.28.3, 0.28.2, 0.28.1 and
+  0.28.0: the 0.27.2 app leaves it, so update a phone that still has it.
+
 ## 0.28.2 Folder delete across servers
 
 No database upgrade and no configuration change. Going back to 0.28.1 is
@@ -796,8 +820,9 @@ No database migration is required.
   container logs a warning and uploads, recordings, backups and mail archives
   fail with permission errors.
 - **Running with `--user`.** If you start the container as a non-root user
-  yourself, the supervisor starts the API as that user and skips the handover;
-  Nginx then needs its own adjustments and this is not a supported setup.
+  yourself, the supervisor starts the API as that user and skips the handover.
+  Nginx runs as that user too since [0.28.3](#0283-any-user-any-port); before
+  that this was not a supported setup.
 
 ## 0.10.13 durable mail engine (0.11 preview)
 

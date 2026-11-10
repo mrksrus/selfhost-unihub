@@ -90,25 +90,23 @@ needs a current WebView; phones update theirs through the Play Store.
 
 ## Current window
 
-As recorded in `android/support-window.json` for 0.28.2. The CI table is the
+As recorded in `android/support-window.json` for 0.28.3. The CI table is the
 evidence; this table is what it is checked against.
 
 | App | Android 10 | Android 16 | Android 17 |
 | --- | --- | --- | --- |
+| 0.28.3 | starts and connects | starts and connects | starts and connects |
 | 0.28.2 | starts and connects | starts and connects | starts and connects |
 | 0.28.1 | starts and connects | starts and connects | starts and connects |
 | 0.28.0 | starts and connects | starts and connects | starts and connects |
-| 0.27.2 | starts and connects | starts and connects | starts and connects |
 
 All four apps put contacts on the phone and sync them both ways.
-From the 0.28.0 app (0.28.1 and 0.28.2 too), Android's download manager starts only from download
+In all four apps Android's download manager starts only from download
 tickets and the public app update, never with the session cookie (it follows
 redirects by itself, so the server keeps both endpoints free of redirects).
-The 0.27.2 app still adds the cookie to the ticket URL of a
-backup download; the server answers a ticket the same with or without it, so
-it keeps working. The pages of servers before 0.28 pass a backup address
-that needs the session (`/api/backup/jobs/<id>/download`): the 0.28.0, 0.28.1 and 0.28.2 apps
-fetch exactly that address inside its own process with the WebView's
+The pages of servers before 0.28 pass a backup address
+that needs the session (`/api/backup/jobs/<id>/download`): each app
+fetches exactly that address inside its own process with the WebView's
 cookie and saves it to Downloads, and refuses any other address that needs
 the session; the cookie never goes to the download manager or another app.
 All four apps keep the "Connect to <server>?" question when Android rebuilds their screen (the 0.27.0 app could lose it), and `android/scripts/launch-test.sh --candidate` checks that for the candidate only.

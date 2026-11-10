@@ -6,6 +6,30 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.28.3
+
+For installers: the image starts in two more ways. No database upgrade and
+nothing changes for an existing installation (see
+[Upgrading](docs/UPGRADING.md#0283-any-user-any-port)).
+
+### Added
+
+- **The image runs as any user.** Started with `docker run --user` (`user:`
+  in Compose, the user and group of a TrueNAS app), the whole container,
+  Nginx included, runs as that user and needs no Linux capability. The
+  uploads storage must be writable by that user. Started as before, as root,
+  nothing changes.
+- **`UNIHUB_HTTP_PORT`** sets the port Nginx listens on inside the container
+  (80 unless set). The image's health check follows it.
+
+### Changed
+
+- **Visitor addresses need no setting.** The image now sets
+  `TRUST_PROXY_HEADERS=true` itself, as the Compose file always did. Every
+  request reaches the API through the image's own Nginx; started without the
+  setting, all visitors shared one address for the sign-in limits. A
+  deployment that sets it to `false` keeps its value.
+
 ## 0.28.2
 
 A fix after 0.28.1. No database upgrade and no configuration change (see
