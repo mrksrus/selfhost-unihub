@@ -516,6 +516,44 @@ formatted version and its plain-text version (Settings → Mail → Signatures
 derives the text from the formatted editor). Mail templates are rows of their
 own under `/api/mail/templates` (`api/src/routes/mail-essentials.ts`).
 
+### Device scope
+
+From 0.29.0 the app lock's settings belong to a device record (see
+[Devices](#devices)), stored in `device_settings` and read with `GET` and
+`PUT /api/settings/values/device` for the device of the request:
+`app_lock_scope` (empty, `["app"]` or a list of modules; `app` stands alone),
+`app_lock_relock_after` (`0`, `60`, `300`, `900` seconds) and
+`app_lock_on_device_lock`. The policies `app_lock.required` and
+`app_lock.max_background` are their floors: lists resolve as a union, so a
+device locks at least what is required. The UniHub PIN itself never reaches
+the server.
+
+### Devices
+
+Each browser profile, installed web app and Android app installation is a
+row in `devices`, and every session and push channel belongs to one
+(`sessions.device_id`, `push_subscriptions.device_id`; nullable in 0.29, so
+older pages keep working). Sign-in, sign-up and two-factor sign-in take an
+optional `device: {key, kind}`; the key is 32 random bytes the page keeps,
+stored only as a hash and matched per person, and a session from before 0.29
+binds with `POST /api/devices/current/key`. `services/devices.ts` owns the
+table (a lint fence keeps its SQL there).
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/devices` | The person's devices with a live session, the current one first |
+| GET | `/api/devices/current` | This device, its app lock settings, whether it meets the required lock, and the screenshot policy |
+| PUT | `/api/devices/current/lock` | What the device locks now and what it can do (`applied`, `capabilities`) |
+| POST | `/api/devices/current/lock-state` | `open`, `background` or `locked`, for notification content |
+| DELETE | `/api/devices/:id` | Sign another device out: its sessions and push channels go with it |
+
+Removing a device needs no policy key: it deletes no data, only a sign-in.
+The activity log records it as `device.removed`. A device without a session
+that was last used more than 30 days ago is removed by the hourly cleanup.
+Devices are never in a personal backup and an instance restore deletes them.
+Settings → Security → Devices shows the list in place of the signed-in
+sessions; `GET /api/auth/sessions` stays for pages from before 0.29.
+
 ### On this device
 
 The Settings page also holds choices that stay in the browser or on the
@@ -546,6 +584,9 @@ services read the rules when they act.
 | `data.clear` | `allowed`, `forbidden`; also forbidden while `bin.delete` is | Settings > Delete data |
 | `bin.delete` | `allowed`, `forbidden` | deleting from the bin for good and emptying it; the automatic purge then keeps items for the bin's minimum |
 | `accounts.admin_manage` | `available` | nothing: the administrator's path is always there |
+| `app_lock.required` | nothing, `app`, or a list of modules (`mail`, `contacts`, `calendar`, `recordings`) | using the listed parts on a device that does not lock them ([App lock](APP_LOCK.md#required-by-the-administrator)); a floor of the device setting `app_lock_scope` |
+| `app_lock.max_background` | `none`, `900`, `300`, `60`, `0` (seconds) | a longer **Ask again** (`app_lock_relock_after`) while a lock is required |
+| `app_lock.screenshots` | `allowed`, `forbidden` | screenshots in the Android app (a secure window) |
 
 A route names the policies of its action on its spec and the request boundary
 refuses before anything happens. A rule that depends on the body is checked

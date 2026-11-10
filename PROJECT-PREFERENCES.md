@@ -236,6 +236,13 @@ A device setting says "Saved on this device" in Settings; an account setting
 says it follows the account. When storage is unavailable, the default applies
 and nothing breaks.
 
+Since 0.29.0 (the accepted 0.29.0 plan, 2026-11-10) a third kind exists: the
+app lock's settings are per device but kept with the device's record on the
+server, because the server enforces what an administrator requires and
+decides notification content per device. They do not follow the account to
+other devices. The UniHub PIN itself stays in the browser and never reaches
+the server.
+
 Evidence: `src/lib/theme.ts`, `src/lib/accent.ts`, `src/hooks/use-persisted-flag.ts`,
 `src/hooks/use-resizable-width.ts`, `src/lib/email-tasks.ts` (`email-task-list`),
 `src/components/settings/AppearanceSettings.tsx` (the two descriptions),
@@ -761,6 +768,18 @@ Open proposals do not override accepted decisions.
   id) is cut to the column length so the message is still stored, instead of
   the import refusing the message. Proposed by the
   implementing agent; the maintainer has not confirmed it.
+
+- **S-07 The app lock and its honest limits (to pin when 0.29.0 ships).**
+  The app lock runs on the device and stops someone holding an unlocked
+  device; the server takes the device's report of its lock without
+  attestation, and the documentation says so ([App lock](docs/APP_LOCK.md#limits)).
+  In a browser and the installed web app the lock is a UniHub PIN of 6 to 12
+  digits kept only in that browser, with growing waits and a sign-out at the
+  tenth wrong PIN; the Android app uses the phone's own unlock. A rule the
+  server needs (a required lock, notification content) is enforced on the
+  server; only the unlock itself is the device's. Proposed by the integrating
+  agent from the accepted 0.29.0 plan; to become an accepted entry when
+  0.29.0 is released.
 
 ### Open verification gaps
 

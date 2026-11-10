@@ -5,6 +5,45 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.29.0 App lock
+
+**Make a database backup first.** One automatic database upgrade runs at the
+first start: **step 26** adds the `devices` and `device_settings` tables and a
+`device_id` on sessions and push subscriptions, and gives every existing
+session a device of its own, so **nobody is signed out** and every
+notification channel keeps working. Where one session had registered two push
+channels of the same kind (a replaced browser subscription that was kept),
+only the one used last stays; that browser or app registers again at its next
+start. The step is quick (one row per session) and runs again safely if the
+first start is stopped part-way.
+
+Going back to 0.28.x means restoring that backup: 0.28.x does not know step 26
+and refuses to start ("Database upgrade history is unknown or out of order").
+The backup format does not change: personal backups are data schema 7 as in
+0.28, and devices are never in them. An instance restore deletes the devices
+together with the sessions, so everyone signs in again as before.
+
+- **Nothing is locked until someone turns it on.** The app lock is off on
+  every device, and the three policies (Server settings → Policies → App
+  lock) start as "not required", "no limit" and "screenshots allowed".
+- **A required lock refuses clients that do not lock.** Once an administrator
+  requires the lock, every device that does not report it gets `403
+  APP_LOCK_REQUIRED` for the locked parts until it is set up, administrators'
+  own devices included. A script or other API client using a session cookie
+  is such a device: give it its own account, or leave the requirement off,
+  until groups arrive. The exempt routes are listed in
+  [App lock](APP_LOCK.md#required-by-the-administrator).
+- **Pages from before 0.29.** A tab opened before the update has no device
+  key; its session keeps the device step 26 gave it, and the new page joins
+  it after a reload. Settings → Security now lists devices
+  (`GET /api/devices`); `GET /api/auth/sessions` stays for older pages.
+- **No new configuration.** No environment variable, port, container or
+  volume is added. The web PIN never reaches the server.
+- **Android app.** Install 0.29.0's app when it is offered for the
+  fingerprint and face unlock; the 0.28.x apps keep working and use a UniHub
+  PIN for the lock. The window is 0.29.0, 0.28.2, 0.28.1 and 0.28.0: the
+  0.27.2 app leaves it, so update a phone that still has it.
+
 ## 0.28.2 Folder delete across servers
 
 No database upgrade and no configuration change. Going back to 0.28.1 is

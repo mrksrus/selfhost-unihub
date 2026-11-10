@@ -191,6 +191,8 @@ treatment.
 | `csrf` | `'token'` (default: cookie/header pair), `'background-header'` (the service worker's `X-Background-Sync: 1` also passes) or `'none'` (sign-in and sign-up, which issue the token). The bearer-without-cookie rule is global. |
 | `response` | `'json'` (default) or `'stream'`: the handler writes and owns the response and returns nothing; a refusal before that is an ordinary JSON error. `GET /api/events` and `GET /api/notifications/android/stream`. |
 | `destructive` | F13: the data-safety policies (the `policy` entries of `settings-registry.ts`) of what the route removes or resets, each for every request or only when named query parameters have given values (`destructivePolicies()` resolves them for a request). Removing a mail account names `accounts.remove`, plus `accounts.reset` with `purge=true`; a calendar account `accounts.remove`; Settings → Delete data `data.clear` (clearing calendar or mail also `accounts.remove`, mail also `accounts.reset`); deleting one's own account `account.delete`; deleting backups `backup.delete`; deleting a mail folder at the provider as well (`server=1` or `true`, the values the route reads, from one constant) `mail.provider_delete`; deleting contacts, a contact's photo, events, tasks, a local calendar or a recording for good `bin.delete`. Only on `POST`/`PUT`/`DELETE` of `'user'` routes: an administrator acts on a person's data through the admin path, which a person's policy never stops. |
+| `appLock` | 0.29.0: `'exempt'` keeps a signed-in route open to a device that falls short of the app lock the person's policies require; `'background-sync'` does so only for requests with `X-Background-Sync: 1` (the Android app's contacts sync). Every other signed-in route is refused with 403 `APP_LOCK_REQUIRED` while the device is short: a module's route while its module or the whole app is required, a route of no module while anything is. The exempt routes are pinned with their reasons in `routes-policy.test.cts` ([App lock](APP_LOCK.md#required-by-the-administrator)). |
+| `appLockModules` | 0.29.0: further modules whose data the route shows or changes, locked like its own (`GET`/`PUT /api/mail/accounts/:id/calendar` count as Calendar). |
 | `requires` | F13: the policies of the other actions a policy can forbid, declared the same way: adding a mail or calendar account (`accounts.add`), creating a backup (`backup.create`), importing or restoring one (`backup.restore`). A rule that depends on the body (a mail mode, the provider-delete switch of a new or changed mail account, turning a linked calendar on or off) cannot be declared on the spec; it comes with its service check in 0.28 C2, and nothing enforces it before. |
 
 `routes/index.ts` merges the files with `mergeRouteTables()` (a duplicate key
@@ -232,8 +234,12 @@ Every request passes through `handleRequest`, in this order:
    (`DISABLED_BACKUP_ROUTES`, 503), then the restore gate (`spec.restoreSection`,
    409), then the data-safety policies the route declares (`destructive` and
    `requires`, resolved by `services/settings.ts`; 403 `POLICY_FORBIDS` with
-   `details: { policy, reason }` and the plain reason as `error`). A disabled
-   module or a forbidding policy therefore answers before a body is looked at.
+   `details: { policy, reason }` and the plain reason as `error`), then the
+   app lock gate (`spec.appLock`, `spec.appLockModules`; 403
+   `APP_LOCK_REQUIRED` with `details: { required, max_background, reason }`,
+   administrators included). A disabled module, a forbidding policy or a
+   device short of the required lock therefore answers before a body is
+   looked at.
 7. Enforce `spec.body.limit` (413) and parse: chunked JSON with a UTF-8
    decoder (malformed JSON is 400), a backup upload spooled to a file, or no
    body for `kind: 'none'`.

@@ -22,10 +22,20 @@
   ],
   "releases": [
     {
+      "version": "0.29.0",
+      "apk": {
+        "versionCode": 29000,
+        "sha256": null,
+        "signing": "release"
+      },
+      "shell": "supported",
+      "note": "From this app the bridge is level 3 (appLock). The earlier apps in the window have no native app lock: the page offers them the UniHub PIN, and their contacts sync (which sends X-Background-Sync: 1, like every app's own requests) reads any 403 other than MODULE_DISABLED as a refused change and skips the contact. So the server must keep the contacts routes open to the background sync while a device falls short of a required app lock, and the page must keep the PIN for apps below bridge level 3."
+    },
+    {
       "version": "0.28.2",
       "apk": {
         "versionCode": 28002,
-        "sha256": null,
+        "sha256": "124fe7871dbb177f02fcd454444da0a055111a923b0f852d3130dba7869029f3",
         "signing": "release"
       },
       "shell": "supported"
@@ -48,15 +58,6 @@
       },
       "shell": "supported",
       "note": "From this app the download manager starts only from download tickets and the public app update (/downloads/unihub.apk), without the session cookie; it follows redirects by itself, so neither endpoint may redirect. The earlier apps in the window add the cookie to the same ticket URLs. So the server must answer a ticket the same with or without a Cookie header, whether the cookie's session is live or has ended, and keep the app update public."
-    },
-    {
-      "version": "0.27.2",
-      "apk": {
-        "versionCode": 27002,
-        "sha256": "b1704ca3e48d65d0e21a28054ff1a5530000b876cd4f51a4300a7044256b95aa",
-        "signing": "release"
-      },
-      "shell": "supported"
     }
   ],
   "handshake": {

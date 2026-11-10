@@ -6,6 +6,77 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.29.0
+
+App lock: fingerprint and face. UniHub can ask for a fingerprint, a face or a
+PIN before it shows what you lock, and an administrator can require it. The
+first start after the upgrade runs database upgrade 26, which gives every
+signed-in device a record of its own; nobody is signed out (see
+[Upgrading](docs/UPGRADING.md#0290-app-lock)). The lock runs on the device:
+read [App lock](docs/APP_LOCK.md#limits) for what it does not protect.
+
+### Added
+
+- **App lock.** Settings → App lock locks the whole app or chosen modules
+  on this device. The Android app unlocks with a fingerprint or face, or the
+  phone's PIN, pattern or password; a browser and the installed web app use a
+  UniHub PIN of 6 to 12 digits kept in that browser. **Ask again** every time
+  UniHub opens, or after 1, 5 or 15 minutes in the background; in the app
+  also as soon as the phone locks. Turning the lock on asks for the unlock
+  once, and weakening it asks first.
+- **What a lock covers asks first everywhere.** A locked module's page, its
+  sections on Today, its rows in the search, its counts in the navigation and
+  the Settings sections that reach it show a lock instead; one unlock opens
+  them all.
+- **While locked, notifications carry no content** on that device ("New
+  Email", "Event reminder"), and tapping one asks for the unlock before its
+  page opens. Other devices keep their own detail.
+- **The Android app hides itself.** Its recent-apps picture shows only the
+  UniHub mark while the lock is on, and an administrator can block
+  screenshots in the app.
+- **Wrong PINs.** Five wrong UniHub PINs cost nothing; after that each try
+  waits longer, the lock screen counts down the tries left, and the tenth signs
+  the device out. **Forgot PIN? Sign out** does the same at any time.
+  Signing out removes the PIN and the offline copy from the device;
+  recordings not uploaded yet stay.
+- **Administrators can require the lock.** Server settings → Policies → App
+  lock requires the lock for the whole app or chosen modules, sets the
+  longest time in the background, and can block screenshots in the Android
+  app. Everyone confirms the changed rules first; a device that does not lock
+  enough then shows **Your administrator requires the app lock** with **Turn
+  on the app lock**. The server refuses what the device asks for meanwhile,
+  administrators' own devices included. The Android app's contacts sync keeps
+  working, and signing out, the password and two-factor settings stay open.
+- **Devices.** Settings → Security → Devices lists each browser and app
+  where you are signed in, with its last use, its lock and whether it gets
+  notifications, and signs another one out. The activity log records it.
+
+### Changed
+
+- **Signed-in devices became Devices.** The list shows each device with a
+  live sign-in once, and a browser that signs in again joins its earlier
+  device instead of adding a row.
+- **One push channel per device.** A browser or app that had registered a
+  second channel keeps the one used last; it registers again at its next
+  start.
+
+### Android app
+
+- Bridge level 3: the app lock with Android's BiometricPrompt, and on Android
+  10 the phone's credential screen. The 0.28.x apps get the UniHub PIN and a
+  hint to update. See [Android](docs/ANDROID.md#app-lock).
+
+### Pinned interface pictures
+
+- New pictures, dark and light: `settings-app-lock` (wide and phone),
+  `lock-app` (phone: the whole-app lock screen), `lock-module` (wide: a
+  module's lock screen), `lock-required` (phone: the administrator's prompt),
+  `admin-policies-app-lock` (wide: the Policies page at its App lock group)
+  and `devices` (wide: Settings → Security with Devices).
+- Changed pictures, dark and light, wide: `settings-appearance`,
+  `settings-pages`, `settings-backup`, `bin` and `admin-policies`; the
+  Settings panel in them lists App lock.
+
 ## 0.28.2
 
 A fix after 0.28.1. No database upgrade and no configuration change (see

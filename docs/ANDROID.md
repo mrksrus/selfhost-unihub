@@ -65,10 +65,11 @@ email) a `UniHubAndroid` object that takes JSON messages:
 | `changeServer` | Forgets the server and shows the connect screen. |
 | `theme` | Colours the status and navigation bars like the page (UniHub's own light/dark setting, not the phone's). |
 | `notifications` (`action`: `status`, `enable`, `disable`, `background`; with an `id`) | Settings → Notifications: reads or changes this phone's notifications and answers with the same `id`, `ok`, an `error` or the `state` (`enabled`, `endpoint`, `permission`, `background`, `connected`). From 0.22.1; the page sends it only to apps with version code 22001 or later. |
+| `appLock` (`action`: `method`, `authenticate`, `configure`, `state`, `release`, `lock`; with an `id`) | The [app lock](#app-lock): `method` answers how the phone can unlock (`biometric`, `device_credential` or `pin` when it has no screen lock) and what the app can do; `authenticate` asks the phone's own lock and answers `ok`, `cancelled`, `lockout`, `unavailable` or `pin`; `configure` takes the page's lock settings and the screenshot policy, sent at every start; `state` answers whether a return is due and whether the cover is up; `release` takes the cover down once the page shows its lock screen or (`unlocked: true`) what it unlocked; `lock` locks at once. The app also tells the page `{type: "appLock", event: "locked" \| "unlocked"}` without an id. From bridge level 3 (0.29.0). |
 
 The bridge level says which messages the app understands: apps up to 0.24
-send none and count as level 1 (everything above except `fileAction`), 0.25.0
-is level 2. The page offers a feature only to apps whose level has it, so a
+send none and count as level 1 (everything above except `fileAction` and
+`appLock`), 0.25.0 is level 2 and 0.29.0 level 3. The page offers a feature only to apps whose level has it, so a
 development build needs no version number of its own.
 
 Links to other sites, `mailto:` and `tel:` open in the matching phone app. File
@@ -315,6 +316,48 @@ connection to it, and no Google, Apple or other push service sees anything.
   gets them only after turning them on.
 - **Another server.** Notifications belong to a server: connecting the app
   to another server stops them, and connecting back resumes them.
+
+## App lock
+
+From 0.29.0 the app locks with the phone's own unlock ([App lock](APP_LOCK.md)
+has the user's view and the limits). The page decides what is locked and draws
+the lock screen; the app keeps the time while the page cannot run, covers the
+page until it has shown its lock screen, and asks the phone.
+
+- **Unlocking.** On Android 11 and newer the app uses BiometricPrompt with a
+  fingerprint or face (`BIOMETRIC_WEAK`) or the phone's PIN, pattern or
+  password (`DEVICE_CREDENTIAL`). On Android 10 it uses the phone's credential
+  screen (KeyguardManager), because Android 10's BiometricPrompt cancels as soon
+  as "Use PIN" is tapped. A phone without a screen lock answers `pin`, and the
+  page asks for a UniHub PIN instead. The app declares `USE_BIOMETRIC`.
+- **Time away** is measured on the monotonic clock from the moment the
+  activity stops or the screen turns off. Rotating the phone is no time away,
+  and neither are the screens the app opens itself: the file picker,
+  permission questions, battery and notification settings, the share and open
+  sheet, the installer and the unlock prompt (each counts for the one stop that
+  follows it, ends when the screen turns off and expires after 15 minutes). A
+  new process starts locked. The page's settings are kept per server, so a
+  cold start covers the page before it loads.
+- **The cover** is the page's background with the UniHub mark over the
+  WebView. It goes up every time the app pauses with the lock on, so the
+  recent-apps picture shows nothing, and at a cold start or a due return
+  until the page releases it. Its own **Unlock** button appears after three
+  seconds, for a page that failed to load. The app's contacts and
+  notification questions wait until it is down, and a tapped notification's
+  page loads behind it. From Android 13 the recents screenshot is also turned
+  off while the lock is on.
+- **Screenshots.** The window is secure (`FLAG_SECURE`) while the
+  administrator forbids screenshots, also with the lock off.
+- **Notifications.** While the lock covers a notification's module, the app
+  shows only the kind's generic text, whatever the server sent; it takes the
+  module from the payload, or from the kind for servers before 0.29.
+- **Contacts sync** keeps working while the device falls short of a required
+  lock: its requests carry `X-Background-Sync: 1`, as every request of the
+  app's own does, and the contacts routes stay open to them. Should an
+  `APP_LOCK_REQUIRED` answer come anyway, the 0.29.0 app postpones the sync,
+  as for `MODULE_DISABLED`, instead of skipping a contact.
+- **Apps before 0.29** have no native lock: the page offers them the UniHub PIN
+  and says that an update unlocks with the fingerprint.
 
 ## Version handshake
 
