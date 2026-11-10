@@ -4,8 +4,8 @@ import type { SettingValuesByScope } from '../contracts/settings';
 
 import crypto from 'crypto';
 import { db } from '../state';
-import { liveSessionId } from './sessions';
-import { ApiError, badRequest, unauthorized } from '../http/errors';
+import { currentDevice } from './devices';
+import { ApiError, badRequest } from '../http/errors';
 import { isModuleBackgroundEnabled } from './module-settings';
 import { getActiveRestoreSectionsByUser } from './restore-locks';
 import { blockedBackgroundModulesByUser } from './access-policy';
@@ -60,21 +60,25 @@ const RECORDING_STALL_MS = 10 * 60 * 1000;
 let running = false;
 const jsonValue = (value: unknown): NotificationPayload => (typeof value === 'string' ? JSON.parse(value) : value) as NotificationPayload;
 
+// A browser's channel belongs to the session subscribing and to its device
+// (F5): one Web Push channel per device, so a new endpoint of the same
+// browser (the push service rotated it) replaces the old one, and a channel
+// subscribed again from another session or device moves to it.
 async function subscribe(userId: string, sessionToken: string | null, input: unknown) {
   const subscription = normalizeSubscription(input as Parameters<typeof normalizeSubscription>[0]);
-  const sessionId = await liveSessionId(userId, sessionToken);
-  if (!sessionId) throw unauthorized('SESSION_EXPIRED', 'Session expired');
-  const [count] = await db.execute<RowDataPacket[]>('SELECT COUNT(*) AS total FROM push_subscriptions WHERE user_id = ?', [userId]);
+  const { sessionId, deviceId } = await currentDevice(userId, sessionToken);
   const endpointHash = hash(subscription.endpoint);
   const [existing] = await db.execute<RowDataPacket[]>('SELECT id, user_id FROM push_subscriptions WHERE endpoint_hash = ?', [endpointHash]);
-  if (!existing.length && Number(count[0]?.total) >= 20) throw badRequest('NOTIFICATION_DEVICE_LIMIT', 'Maximum notification devices reached');
   // Never transfer another account's endpoint without explicit unsubscribe by its authenticated owner.
   if (existing.length && existing[0].user_id !== userId) throw badRequest('NOTIFICATION_DEVICE_FOREIGN', 'This device subscription belongs to another account. Disable and enable notifications again.');
-  await db.execute(`INSERT IGNORE INTO push_subscriptions (id, user_id, session_id, endpoint, endpoint_hash, p256dh, auth)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  [existing[0]?.id || crypto.randomUUID(), userId, sessionId, subscription.endpoint, endpointHash, subscription.keys.p256dh, subscription.keys.auth]);
-  await db.execute('UPDATE push_subscriptions SET session_id = ?, p256dh = ?, auth = ?, updated_at = UTC_TIMESTAMP() WHERE user_id = ? AND endpoint_hash = ?',
-    [sessionId, subscription.keys.p256dh, subscription.keys.auth, userId, endpointHash]);
+  await db.execute("DELETE FROM push_subscriptions WHERE user_id = ? AND device_id = ? AND transport = 'webpush' AND endpoint_hash <> ?", [userId, deviceId, endpointHash]);
+  const [count] = await db.execute<RowDataPacket[]>('SELECT COUNT(*) AS total FROM push_subscriptions WHERE user_id = ?', [userId]);
+  if (!existing.length && Number(count[0]?.total) >= 20) throw badRequest('NOTIFICATION_DEVICE_LIMIT', 'Maximum notification devices reached');
+  await db.execute(`INSERT IGNORE INTO push_subscriptions (id, user_id, session_id, device_id, endpoint, endpoint_hash, p256dh, auth)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  [existing[0]?.id || crypto.randomUUID(), userId, sessionId, deviceId, subscription.endpoint, endpointHash, subscription.keys.p256dh, subscription.keys.auth]);
+  await db.execute('UPDATE push_subscriptions SET session_id = ?, device_id = ?, p256dh = ?, auth = ?, updated_at = UTC_TIMESTAMP() WHERE user_id = ? AND endpoint_hash = ?',
+    [sessionId, deviceId, subscription.keys.p256dh, subscription.keys.auth, userId, endpointHash]);
   const [owners] = await db.execute<RowDataPacket[]>('SELECT user_id FROM push_subscriptions WHERE endpoint_hash = ?', [endpointHash]);
   if (owners[0]?.user_id !== userId) throw badRequest('NOTIFICATION_DEVICE_FOREIGN', 'This device subscription belongs to another account. Disable and enable notifications again.');
   // Marking this scan dirty includes old calendar entries for a newly subscribed device.
