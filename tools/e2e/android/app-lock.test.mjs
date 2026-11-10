@@ -12,7 +12,7 @@ import {
   touch, touchFinger, unlockKeyguard, unlockPromptShown, waitForUnlockPrompt,
 } from '../support/android.mjs';
 
-// The screens' words (docs/UI_ACCEPTANCE.md L-01 to L-07, plan §3).
+// The screens' words (docs/UI_ACCEPTANCE.md L-01 to L-07).
 const LABELS = {
   section: 'App lock',
   wholeApp: 'Whole app',
@@ -20,7 +20,7 @@ const LABELS = {
   askAgain: 'Ask again',
   everyTime: 'Every time UniHub opens',
   oneMinute: 'After 1 minute in the background',
-  fifteenMinutes: 'After 15 minutes',
+  fifteenMinutes: 'After 15 minutes in the background',
   onDeviceLock: 'Also when the phone is locked',
   locked: 'UniHub is locked',
   unlock: 'Unlock',
@@ -47,7 +47,7 @@ async function leaveAndReturn(awayMs) {
   await sleep(2500);
 }
 
-/** The lock screen asks by itself once it shows (plan §3.2); a finger opens UniHub. */
+/** The lock screen asks by itself once it shows; a finger opens UniHub. */
 async function unlockWithFinger(page) {
   await lockScreen(page).waitFor();
   if (!unlockPromptShown()) await touch(page, page.getByRole('button', { name: LABELS.unlock }));

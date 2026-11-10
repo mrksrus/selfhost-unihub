@@ -20,7 +20,7 @@ interface AppLockRequiredPromptProps {
  * was on here and its PIN is gone after a new sign-in. The administrator's
  * reason is the server's, in its words; the requirement is told in one
  * sentence. "Turn on the app lock" runs the same set-up as Settings → App
- * lock. The data rules notice (D38) opens over this prompt first.
+ * lock. The data rules notice opens over this prompt first.
  */
 export function AppLockRequiredPrompt({ area, variant }: AppLockRequiredPromptProps) {
   const lock = useAppLock();

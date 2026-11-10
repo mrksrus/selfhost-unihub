@@ -5,7 +5,7 @@ import { pageApi, signIn } from '../support/api.ts';
 import { onlyOn } from '../support/ui.ts';
 import { acknowledge, chooseRelock, hidePage, OTHER_PIN, PIN, pinRecords, resetLock, showPage, turnOn, unlockWith } from './app-lock-helpers.ts';
 
-// 0.29 app lock on the web (D7, rows 29-01 and 29-02): a UniHub PIN kept in
+// 0.29 app lock on the web (rows 29-01 and 29-02): a UniHub PIN kept in
 // this browser locks the whole app; "Every time UniHub opens" asks at every
 // start and after every hide; a longer time waits that long; wrong PINs are
 // counted; "Forgot PIN? Sign out" ends the server session and removes the PIN.

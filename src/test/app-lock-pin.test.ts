@@ -3,7 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { deleteLockRecords } from '@/lib/app-lock/db';
 import { checkPin, PIN_ITERATIONS, pinSupport, readPin, savePin, setPinIterationsForTests, waitAfter } from '@/lib/app-lock/pin';
 
-// The UniHub PIN lives in this browser only (D7): these tests are its whole
+// The UniHub PIN lives in this browser only: these tests are its whole
 // security story, so they use the real WebCrypto and IndexedDB code paths.
 // Fewer PBKDF2 rounds keep them fast; the record's own count is the one checked.
 beforeAll(() => setPinIterationsForTests(1000));

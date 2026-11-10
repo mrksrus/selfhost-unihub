@@ -140,7 +140,7 @@ for (const theme of THEMES) {
         });
       });
 
-      // 0.29 (P-29, D29): the app lock and the devices.
+      // 0.29 (P-29): the app lock and the devices.
       test(`settings app lock (wide, ${theme})`, async ({ page, open, settle }) => {
         await seedPin(page);
         await lockedDevice(page);

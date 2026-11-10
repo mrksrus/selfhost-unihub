@@ -65,7 +65,7 @@ const AppLayout = () => {
   if (lock.status === 'checking') return <StartingScreen />;
 
   // The whole-app lock: nothing of the shell is in the DOM behind the lock
-  // screen. The data rules notice opens over the set-up prompt first (D38).
+  // screen. The data rules notice opens over the set-up prompt first.
   if (lock.locked('app')) {
     return (
       <div className="h-dvh overflow-hidden bg-background">

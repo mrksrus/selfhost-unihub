@@ -760,7 +760,7 @@
     },
     {
       "date": "2026-11-10T11:22:58.930Z",
-      "reason": "0.29.0 app lock screens (P-29, D29): Settings → App lock (Wide, Phone), the whole-app lock screen (Phone), a module's lock screen (Wide), the required-by-your-administrator prompt (Phone), the Policies page at its App lock group (Wide) and Settings → Security with Devices (Wide), new screens designed by the frontend agent within UI_ACCEPTANCE for the integrator's approval",
+      "reason": "0.29.0 app lock screens (P-29): Settings → App lock (Wide, Phone), the whole-app lock screen (Phone), a module's lock screen (Wide), the required-by-your-administrator prompt (Phone), the Policies page at its App lock group (Wide) and Settings → Security with Devices (Wide), new screens designed by the frontend agent within UI_ACCEPTANCE for the integrator's approval",
       "source": {
         "commit": "43c1fd4bcc6eed34fde47a95df8222801619ca5e",
         "branch": "stream/0.29-e",

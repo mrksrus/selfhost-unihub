@@ -2,10 +2,9 @@ import { cn } from '@/lib/utils';
 
 /**
  * The UniHub mark in the account's accent: the rail's glyph, larger. The
- * Android app's native lock cover draws the same (the page background and
- * this mark centred, 56 dp, corner radius 16 dp, the accent colour, "U" in
- * Inter semibold at 24 sp in the accent's foreground), so handing over to the
- * page is seamless.
+ * Android app's native lock cover shows the page background with the launcher
+ * mark instead (the app does not know the account's accent before the page
+ * loads), so the mark changes when the page takes over from the cover.
  */
 export function UniHubMark({ className }: { className?: string }) {
   return (

@@ -136,7 +136,7 @@ asserts that header and the absence of inline scripts in the built image, and
 | D-08 | Wide | Users → a person → Accounts, backups and bin: add and remove a mail account, delete a backup, empty the bin, delete a module's data. | Every change asks for the administrator's password and names the person; adding uses the person's own fields and checks; a rule that forbids the person does not grey anything here; the activity log records each action. | Source (`admin-data-safety.test.tsx`), e2e (`tools/e2e/tests/policies/policies.e2e.ts`) |
 | D-09 | Wide, Phone | As a person whose rules changed since they last confirmed them: sign in; close the notice; open the app again; confirm with OK; open Settings → Profile. Sign up as a new person on a server with rules. | The rules notice opens at start, "Your administrator changed the data rules" (for a person who never confirmed any, "Rules on this server"), and lists the rules in force in the server's words; OK has the focus, so Enter confirms; the rules scroll inside the dialog on a small phone with title and OK in place, and Tab reaches the list so PageDown and the arrows scroll it with a visible focus ring; OK records the revision shown and the notice does not come back for it; closing without OK records nothing, keeps it closed for this session and shows it again at the next start; Settings → Profile lists the same rules; the sign-up form lists them and the new account starts with that revision confirmed. | Source (`policy-notice.test.tsx`, `signup-rules-revision.test.tsx`), Browser (`behaviour.spec.ts`, the full rules notice on a 360×640 phone), e2e (`tools/e2e/tests/policies/policies.e2e.ts`) |
 
-### App lock (D29)
+### App lock
 
 | ID | Where | Steps | Checks | Mark |
 | --- | --- | --- | --- | --- |
@@ -176,7 +176,7 @@ Phone) and Server settings → Policies (Wide; P-29, D29), and since 0.29.0
 Settings → App lock (Wide and Phone), the whole-app lock screen (Phone), a
 module's lock screen (Wide), the required-by-your-administrator prompt
 (Phone), the Policies page at its App lock group (Wide) and Settings →
-Security with Devices (Wide; P-29, D29), each in Dark Default and Light
+Security with Devices (Wide; P-29), each in Dark Default and Light
 Default. Fifty-six pictures in total; add a screen only when a decision
 depends on it.
 

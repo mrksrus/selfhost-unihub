@@ -2,8 +2,8 @@
 // - a required lock shows the "required" prompt, and turning it on opens Mail
 // - blocked screenshots make the app's window secure
 // - an app below bridge level 3 gets the page's PIN and the update hint, and
-//   the phone's UniHub contacts stay while the device falls short (R4)
-// Every policy change is acknowledged for all three people first (the D38
+//   the phone's UniHub contacts stay while the device falls short
+// Every policy change is acknowledged for all three people first (the rules
 // notice is due for everyone).
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -87,7 +87,7 @@ test('blocked screenshots make the app\'s window secure, also without a lock; al
   }
 });
 
-test('an app without the native lock gets the page\'s PIN and the update hint; its phone contacts stay (R4)', { timeout: 1_200_000 }, async t => {
+test('an app without the native lock gets the page\'s PIN and the update hint; its phone contacts stay', { timeout: 1_200_000 }, async t => {
   if (!previousApk) { t.skip('UNIHUB_E2E_PREVIOUS_APK names no earlier app'); return; }
   adb('shell', `run-as ${PACKAGE} rm -f shared_prefs/app_lock.xml`);
   adb('install', '-r', '-d', previousApk);

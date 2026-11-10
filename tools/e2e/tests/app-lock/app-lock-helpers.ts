@@ -23,7 +23,7 @@ type App = { open: (path?: string) => Promise<unknown> };
 interface Effective { policies: Record<string, { allowed: boolean; reason: string | null; value: unknown }>; revision: number; acknowledged_revision: number; rules: string[] }
 interface DeviceSettings { settings: { app_lock_scope: { value: string[]; floor?: string[] }; app_lock_relock_after: { value: string; floor?: string } } }
 
-/** A changed rule leaves the notice due for everyone (D38): each person confirms it, except the one a test is about. */
+/** A changed rule leaves the notice due for everyone: each person confirms it, except the one a test is about. */
 export async function acknowledge(names: readonly Person[] = PEOPLE, revision?: number) {
   for (const name of names) {
     const api = await signIn(name);

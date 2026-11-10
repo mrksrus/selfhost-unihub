@@ -1,4 +1,4 @@
-// The UniHub PIN (D7): kept in this browser only, as a PBKDF2 hash. The
+// The UniHub PIN: kept in this browser only, as a PBKDF2 hash. The
 // server never sees it and counts no attempts; it only learns that this
 // device locks with a PIN. A modified page could skip it, and the docs say so.
 //
