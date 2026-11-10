@@ -62,7 +62,7 @@ the values below entered as environment variables instead of a `.env` file. The
 app image already contains the application: no build, Node.js installation or
 Dockerfile editing is required.
 
-For TrueNAS Apps UI deployment, read [TrueNAS preparation](TRUENAS_INSTALLER.md)
+For a TrueNAS app, read [UniHub as a TrueNAS app](TRUENAS_INSTALLER.md)
 instead of assuming these shell steps create a catalog app.
 
 ## 3. Enter the startup values in .env
@@ -107,7 +107,7 @@ container variable with `_FILE` appended names the file, for example
 `MARIADB_ROOT_PASSWORD_FILE` the same way. `docker-compose.yml` shows the
 `secrets:` form, which keeps the values out of `docker inspect` and the
 environment. A file holds the value alone; one trailing line break is ignored.
-It must be readable by uid 10001, which runs the API (`chown 10001` and
+It must be readable by uid 10001, which runs the API unless you set `user:` (`chown 10001` and
 `chmod 400` on the host). Keep secret files outside `/app/uploads`: a secret
 file inside the stored files stops the start, since backups copy them. When a variable and its file are both set and differ,
 or the file is missing, empty or unreadable, UniHub does not start and its log
@@ -202,7 +202,7 @@ them.
 **The instance backup** copies the database and every stored file, encrypted
 with its own key, to a destination you mount, daily and on "Back up now" in
 Settings > Server settings > Instance backup. Give it a disk or share of its
-own that nothing else writes to, writable by uid 10001, and set
+own that nothing else writes to, writable by uid 10001 (or your `user:`), and set
 `UNIHUB_INSTANCE_BACKUP_DIR` to where it is mounted in the container, together
 with `UNIHUB_INSTANCE_BACKUP_KEY` (or its file):
 
@@ -223,6 +223,17 @@ everything else works. How it runs and how to restore it:
 The MariaDB settings (character set, memory and log sizes, connection limit) are
 command-line options of the `unihub-db` service in `docker-compose.yml`. There is
 no separate configuration file to keep.
+
+**Another user or port.** The Compose file starts the container as root: the
+API then runs as uid 10001, Nginx keeps a root master process, and the
+`cap_add` list is what that needs. To run everything as one unprivileged user
+instead, give the `unihub` service `user: "<uid>:<gid>"` and remove `cap_add`.
+The container then cannot change ownership itself: `/app/uploads`, an
+instance backup folder and secret files must already be usable by that user.
+`UNIHUB_HTTP_PORT` sets the port Nginx listens on inside the container (80
+unless set). A user other than root is not allowed to open port 80
+everywhere, so set a port above 1023 together with `user:` and map the
+published port to it, for example `"3000:8080"`.
 
 Use writable storage suitable for each container's actual user/permissions. Do
 not mount a new empty dataset over existing data during an upgrade. Keep the same

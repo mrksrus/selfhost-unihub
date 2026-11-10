@@ -96,18 +96,18 @@ evidence; this table is what it is checked against.
 | App | Android 10 | Android 16 | Android 17 |
 | --- | --- | --- | --- |
 | 0.29.0 | starts and connects | starts and connects | starts and connects |
+| 0.28.3 | starts and connects | starts and connects | starts and connects |
 | 0.28.2 | starts and connects | starts and connects | starts and connects |
 | 0.28.1 | starts and connects | starts and connects | starts and connects |
-| 0.28.0 | starts and connects | starts and connects | starts and connects |
 
 All four apps put contacts on the phone and sync them both ways.
-All four apps start Android's download manager only from download
+In all four apps Android's download manager starts only from download
 tickets and the public app update, never with the session cookie (it follows
 redirects by itself, so the server keeps both endpoints free of redirects).
 The pages of servers before 0.28 pass a backup address
-that needs the session (`/api/backup/jobs/<id>/download`): the apps
-fetch exactly that address inside their own process with the WebView's
-cookie and save it to Downloads, and refuse any other address that needs
+that needs the session (`/api/backup/jobs/<id>/download`): each app
+fetches exactly that address inside its own process with the WebView's
+cookie and saves it to Downloads, and refuses any other address that needs
 the session; the cookie never goes to the download manager or another app.
 The 0.29.0 app speaks bridge level 3 and locks with the phone's own unlock
 ([App lock](APP_LOCK.md)). The 0.28.x apps have no native lock: the page

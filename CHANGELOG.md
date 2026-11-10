@@ -77,6 +77,31 @@ read [App lock](docs/APP_LOCK.md#limits) for what it does not protect.
   `settings-pages`, `settings-backup`, `bin` and `admin-policies`; the
   Settings panel in them lists App lock.
 
+## 0.28.3
+
+For installers: the image starts in two more ways. No database upgrade and
+nothing changes for an existing installation (see
+[Upgrading](docs/UPGRADING.md#0283-any-user-any-port)).
+
+### Added
+
+- **The image runs as any user.** Started with `docker run --user` (`user:`
+  in Compose, the user and group of a TrueNAS app), the whole container,
+  Nginx included, runs as that user and needs no Linux capability. The
+  uploads storage must be writable by that user. Started as before, as root,
+  nothing changes.
+- **`UNIHUB_HTTP_PORT`** sets the port Nginx listens on inside the container
+  (80 unless set). The image's health check follows it.
+
+### Changed
+
+- **`TRUST_PROXY_HEADERS=true` is set in the image**, as the Compose file
+  always set it. Every request reaches the API through the image's own
+  Nginx; started without the setting, all visitors counted as one address
+  for the sign-in limits. Behind your own HTTPS proxy, `TRUSTED_PROXY_CIDRS`
+  still has to name that proxy. A deployment that sets
+  `TRUST_PROXY_HEADERS` to `false` keeps its value.
+
 ## 0.28.2
 
 A fix after 0.28.1. No database upgrade and no configuration change (see

@@ -30,12 +30,44 @@ if [ "$(id -u)" = 0 ] && [ -n "${UNIHUB_API_UID:-}" ] && [ -d /app/uploads ]; th
   fi
 fi
 
+# Nginx listens on UNIHUB_HTTP_PORT (80 unless set). Started as root on port 80
+# it uses the image's configuration as it is. Otherwise it runs from a copy
+# with that port; when the container runs as another user (docker run --user,
+# no capabilities needed) the copy also keeps Nginx's pid file, logs and
+# temporary files in its own folder, which that user can write.
+UNIHUB_HTTP_PORT="${UNIHUB_HTTP_PORT:-80}"
+case "$UNIHUB_HTTP_PORT" in
+  ''|*[!0-9]*|0*|??????*) UNIHUB_HTTP_PORT=0 ;;
+  4000) echo "UNIHUB_HTTP_PORT cannot be 4000: the API listens on that port inside the container." >&2; exit 1 ;;
+esac
+if [ "$UNIHUB_HTTP_PORT" -lt 1 ] || [ "$UNIHUB_HTTP_PORT" -gt 65535 ]; then
+  echo "UNIHUB_HTTP_PORT must be a port number from 1 to 65535 without leading zeros." >&2
+  exit 1
+fi
+if [ "$(id -u)" != 0 ] || [ "$UNIHUB_HTTP_PORT" != 80 ]; then
+  nginx_dir=/tmp/unihub-nginx
+  rm -rf "$nginx_dir" && mkdir -p "$nginx_dir/conf.d" || exit 1
+  sed "s|listen 80;|listen $UNIHUB_HTTP_PORT;|" /etc/nginx/conf.d/default.conf > "$nginx_dir/conf.d/default.conf" || exit 1
+  moved="s|/etc/nginx/conf.d/|$nginx_dir/conf.d/|"
+  if [ "$(id -u)" != 0 ]; then
+    moved="$moved;s|/var/run/nginx.pid|$nginx_dir/nginx.pid|;s|/var/log/nginx/|$nginx_dir/|g"
+    for kind in client_body proxy fastcgi uwsgi scgi; do
+      echo "${kind}_temp_path $nginx_dir/$kind;"
+    done > "$nginx_dir/conf.d/temp-paths.conf"
+    # No account in the image has this user's ID, so it has no home folder.
+    export HOME=/tmp
+    [ -w /app/uploads ] || echo "WARNING: /app/uploads is not writable by uid $(id -u), which runs UniHub. Uploads, recordings, backups and mail archives will fail." >&2
+  fi
+  sed "$moved" /etc/nginx/nginx.conf > "$nginx_dir/nginx.conf" || exit 1
+  export UNIHUB_NGINX_CONF="$nginx_dir/nginx.conf"
+fi
+
 # Use the API's driver/configuration for an authenticated check. The helper caps
 # elapsed wait time; the API retains its own bounded retry if readiness expires.
 # It reads the secrets as the API does (api/src/config.ts readSecret): a
 # MYSQL_PASSWORD_FILE or DATABASE_URL_FILE (a Docker secret) before the
-# variable. This check runs as root; the API reads the same files as
-# UNIHUB_API_UID, so a secret file must be readable by that user too.
+# variable. Started as root, this check runs as root while the API reads the
+# same files as UNIHUB_API_UID, so a secret file must be readable by that user too.
 node /app/api/src/database-readiness.js || true
 
 # The supervisor exits if either service dies, allowing the existing Docker
