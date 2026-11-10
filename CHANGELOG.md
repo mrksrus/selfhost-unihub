@@ -22,8 +22,10 @@ A fix after 0.28.1. No database upgrade and no configuration change (see
   UniHub checks each copy just before deleting it; an incomplete or
   malformed answer from the server deletes nothing. A folder another app
   replaced under the same name and UIDVALIDITY (only its MAILBOXID differs)
-  is treated as a new folder at the next sync, so deleting it later keeps
-  the old folder's mail. A folder that changed is
+  is treated as a new folder at the next sync, also when the server gives
+  its messages the numbers the old folder's had used: they are read as new
+  mail, and deleting the new folder later keeps the old folder's mail. A
+  folder that changed is
   left alone and the dialog asks you to look again; nothing is deleted on any
   server.
 - **"Does not exist" is no longer taken as deleted.** When a server answered

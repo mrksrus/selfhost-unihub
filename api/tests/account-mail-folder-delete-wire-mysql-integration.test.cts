@@ -17,7 +17,8 @@ const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts')
 // deleted, absence counts only with the NONEXISTENT code, wildcard names are
 // literal, and only the owner's own accounts are reached.
 
-interface Box { uidvalidity: number; mailboxId?: string }
+// uids: the messages a sync can read in it (EXAMINE and UID FETCH).
+interface Box { uidvalidity: number; mailboxId?: string; uids?: number[] }
 // deleteReply: a tagged answer, or 'DROP' to close the connection without one.
 // statusItems: the STATUS item list a server sends instead of the right one.
 interface Login { boxes: Map<string, Box>; objectId: boolean; deleteReply?: (name: string) => string | null; list?: string; statusItems?: (name: string) => string | null }
@@ -40,7 +41,7 @@ async function folderServer() {
     socket.on('close', () => sockets.delete(socket));
     socket.on('error', () => {});
     socket.write('* OK synthetic IMAP folder server\r\n');
-    let input = '', chain = Promise.resolve(), login = '', state: Login | undefined;
+    let input = '', chain = Promise.resolve(), login = '', state: Login | undefined, selected: Box | undefined;
     const send = (value: string) => { if (!socket.destroyed) socket.write(value); };
     socket.on('data', chunk => {
       input += chunk.toString('latin1');
@@ -77,6 +78,25 @@ async function folderServer() {
             if (!box) { send(`${tag} NO [NONEXISTENT] Mailbox doesn't exist\r\n`); return; }
             const mailboxId = /MAILBOXID/.test(rest) && box.mailboxId ? ` MAILBOXID (${box.mailboxId})` : '';
             send(`* STATUS ${quoted(name)} (${state.statusItems?.(name) ?? `UIDVALIDITY ${box.uidvalidity}${mailboxId}`})\r\n`); ok(); return;
+          }
+          if (cmd.startsWith('EXAMINE ')) {
+            const [name] = mailbox(cmd.slice(8));
+            const box = state.boxes.get(name);
+            if (!box) { send(`${tag} NO [NONEXISTENT] Mailbox doesn't exist\r\n`); return; }
+            selected = box;
+            const uids = box.uids ?? [];
+            send(`* FLAGS (\\Seen)\r\n* ${uids.length} EXISTS\r\n* OK [UIDVALIDITY ${box.uidvalidity}] valid\r\n* OK [UIDNEXT ${Math.max(0, ...uids) + 1}] next\r\n`
+              + (state.objectId && box.mailboxId ? `* OK [MAILBOXID (${box.mailboxId})] id\r\n` : ''));
+            ok('[READ-ONLY] examined'); return;
+          }
+          // ImapFlow also asks for EMAILID when the server has OBJECTID.
+          const fetch = /^UID FETCH (\d+):(\d+) \(UID FLAGS INTERNALDATE( EMAILID)?\)$/.exec(cmd);
+          if (fetch && selected) {
+            const [low, high] = [Number(fetch[1]), Number(fetch[2])];
+            (selected.uids ?? []).forEach((uid, index) => {
+              if (uid >= low && uid <= high) send(`* ${index + 1} FETCH (UID ${uid} FLAGS () INTERNALDATE "01-Nov-2026 09:00:00 +0000"${fetch[3] ? ` EMAILID (M${uid})` : ''})\r\n`);
+            });
+            ok(); return;
           }
           if (cmd.startsWith('DELETE ')) {
             const [name] = mailbox(cmd.slice(7));
@@ -423,6 +443,46 @@ test('deleting a mail folder at the provider deletes only the copy shown, of the
     assert.equal(await mailExists(kept.mail), 1);
     assert.ok(!imap.login('owner-download@example.test').boxes.has('Kept'));
   });
+
+  // The provider gives the new folder's messages UIDs the old one had used. A
+  // UID of the new folder never stands for an old message: the sync reads it as
+  // new mail, whether the old copy was still there or already gone, and deleting
+  // the new folder keeps the old folder's Download mail.
+  const { scanMailboxSlice } = runtime('services/mail-engine/sync');
+  const { closeImapConnection } = runtime('services/mail-imap-guard');
+  async function scan(address: string, accountId: string, slug: string, name: string) {
+    const connection = guardImapConnection(await connectImap({ imap: { host: '127.0.0.1', port: imap.port, user: address, password: 'fixture',
+      tls: false, keepalive: false, connTimeout: 2000, authTimeout: 2000, socketTimeout: 3000 } }), { timeoutMs: 5000 });
+    try {
+      return await scanMailboxSlice({ db: pool, connection, account: { id: accountId, user_id: users.owner, sync_mode: 'download' },
+        folder: { folderName: name, dbFolderName: slug }, stream: 'recent' });
+    } finally { closeImapConnection(connection); }
+  }
+  for (const [label, uid, before] of [['present', 5, 'present'], ['absent', 5, 'absent'], ['present, another UID', 6, 'present']] as const) {
+    await t.test(`a new MAILBOXID under the same UIDVALIDITY, the old copy ${label}: a sync reads its UID ${uid} as new mail, and deleting it keeps the old`, async () => {
+      const address = `owner-reuse-${uid}-${before}@example.test`, slug = `reuse-${uid}-${before}`, name = `Reused-${uid}-${before}`;
+      imap.account(address, { INBOX: { uidvalidity: 1 }, [name]: { uidvalidity: 91, mailboxId: 'F-reused-new', uids: [uid] } }, true);
+      const download = await account(users.owner, address, { mode: 'download' });
+      const old = await folder(users.owner, slug, name, [[download, 91, 'F-reused-old']]);
+      if (before === 'absent') await pool.execute("UPDATE mail_remote_occurrences SET presence = 'absent', absent_at = UTC_TIMESTAMP() WHERE email_id = ?", [old.mail[0]]);
+
+      const scanned = await scan(address, download, slug, name);
+      assert.equal(scanned.inserted, 1, 'the new folder\'s message is read as a message of its own');
+      const [bound] = await pool.query<RowDataPacket[]>(`SELECT o.email_id, o.presence FROM mail_remote_occurrences o JOIN mail_remote_mailboxes m ON m.id = o.mailbox_id
+        WHERE m.mail_account_id = ? AND BINARY m.remote_name = BINARY ? AND o.uid = ?`, [download, name, uid]);
+      assert.equal(bound.length, 1);
+      assert.notEqual(bound[0].email_id, old.mail[0], 'the old message is not bound to the new folder\'s UID');
+      assert.equal(bound[0].presence, 'present');
+      const [[kept]] = await pool.query<RowDataPacket[]>('SELECT presence FROM mail_remote_occurrences WHERE email_id = ?', [old.mail[0]]);
+      assert.equal(kept.presence, before === 'present' ? 'quarantined' : 'absent', 'the old copy keeps what UniHub knew of it');
+
+      const deleted = await remove(owner, slug, await shown(owner, slug));
+      assert.equal(deleted.deletedMessages, 1, 'only the new folder\'s message goes with it');
+      assert.equal(await mailExists(old.mail), 1, 'the old folder\'s Download mail is kept');
+      assert.equal(await mailExists([bound[0].email_id]), 0);
+      assert.ok(!imap.login(address).boxes.has(name));
+    });
+  }
 
   await t.test('a DELETE whose answer never comes is reported as unknown, not as refused', async () => {
     imap.account('owner-lost-a@example.test', { INBOX: { uidvalidity: 1 }, Pending: { uidvalidity: 5 } });

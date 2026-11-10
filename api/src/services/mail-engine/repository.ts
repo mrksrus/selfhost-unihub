@@ -46,11 +46,25 @@ async function ensureMailbox({ userId, accountId, folderName, epoch = null, meta
   }
   if (mailbox.user_id !== userId) throw fail('MAILBOX_OWNER_CONFLICT', 'Mailbox owner mismatch');
   // Another MAILBOXID (OBJECTID) under the same name is another mailbox, also
-  // with an unchanged UIDVALIDITY: the predecessor's occurrences, cursors and
-  // accepted changes are separated from it as for a new UIDVALIDITY, before
-  // the new id is stored, so nothing of the old mailbox counts as the new one's.
+  // with an unchanged UIDVALIDITY, which may then give out the same UIDs again.
+  // A new UIDVALIDITY separates occurrences by the key's UIDVALIDITY; here the
+  // other part of that key does it: the predecessor's occurrences, present or
+  // not, move to a mailbox row of their own (kept, quarantined, under a name
+  // no server can send), so no UID of the new mailbox ever binds to them. The
+  // live row keeps its id for the name; its cursors and accepted changes are
+  // reset as for a new UIDVALIDITY before the new id is stored.
   const replacedId = epoch !== null && metadata.allowEpochChange !== false && !!metadata.providerMailboxId && !!mailbox.provider_mailbox_id
     && metadata.providerMailboxId !== mailbox.provider_mailbox_id;
+  if (replacedId && mailbox.uidvalidity !== null) {
+    const predecessor = randomUUID();
+    await cx.execute(`INSERT INTO mail_remote_mailboxes (id,user_id,mail_account_id,remote_name,uidvalidity,delimiter,special_use,provider_mailbox_id,state)
+      VALUES (?,?,?,?,?,?,NULL,?,'quarantined')`,
+    [predecessor, userId, accountId, `${name.slice(0, 200)}\0replaced ${predecessor}`, mailbox.uidvalidity, mailbox.delimiter ?? null, mailbox.provider_mailbox_id]);
+    // quarantine_reason is set first: MariaDB assigns left to right, so it still sees the old presence.
+    await cx.execute(`UPDATE mail_remote_occurrences SET mailbox_id = ?,
+        quarantine_reason = IF(presence = 'present', 'epoch_changed', quarantine_reason), presence = IF(presence = 'present', 'quarantined', presence)
+      WHERE mailbox_id = ? AND user_id = ? AND mail_account_id = ?`, [predecessor, mailbox.id, userId, accountId]);
+  }
   if (epoch !== null && mailbox.uidvalidity !== null && (Number(mailbox.uidvalidity) !== epoch || replacedId)) {
     if (metadata.allowEpochChange === false) return mailbox; // legacy backfill cannot establish live epoch
     await cx.execute("UPDATE mail_remote_occurrences SET presence = 'quarantined', quarantine_reason = 'epoch_changed' WHERE mailbox_id = ? AND presence = 'present'", [mailbox.id]);
