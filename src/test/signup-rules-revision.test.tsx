@@ -40,7 +40,7 @@ describe('sign-up and the data rules', () => {
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'new@example.com' } });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'a-long-enough-password' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create account' }));
-    await waitFor(() => expect(post).toHaveBeenCalledWith('/auth/signup', { email: 'new@example.com', password: 'a-long-enough-password', full_name: 'New Person', rules_revision: 7 }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/auth/signup', { email: 'new@example.com', password: 'a-long-enough-password', full_name: 'New Person', rules_revision: 7, device: { key: expect.stringMatching(/^[\w-]{43}$/), kind: 'web' } }));
   });
 
   it('sends no revision when the answer named none', { timeout: 20_000 }, async () => {
@@ -58,6 +58,6 @@ describe('sign-up and the data rules', () => {
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'new@example.com' } });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'a-long-enough-password' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create account' }));
-    await waitFor(() => expect(post).toHaveBeenCalledWith('/auth/signup', { email: 'new@example.com', password: 'a-long-enough-password', full_name: 'New Person' }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/auth/signup', { email: 'new@example.com', password: 'a-long-enough-password', full_name: 'New Person', device: { key: expect.stringMatching(/^[\w-]{43}$/), kind: 'web' } }));
   });
 });

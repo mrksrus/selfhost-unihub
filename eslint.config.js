@@ -74,6 +74,23 @@ export default tseslint.config(
     files: DEVICES_OWNERS,
     rules: { "no-restricted-syntax": ["error", SETTINGS_FENCE] },
   },
+  // The device boundary (F8): only src/lib/platform.ts knows whether the page
+  // runs in a browser or in the Android app, and how to reach the app.
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: ["src/lib/platform.ts", "src/test/**"],
+    rules: {
+      "no-restricted-syntax": ["error", ...[
+        "MemberExpression[property.name='userAgent'][object.name='navigator']",
+        "MemberExpression[property.name='userAgent'][object.property.name='navigator']",
+        "Identifier[name='UniHubAndroid']",
+        "Literal[value=/UniHubAndroid/]",
+        "Literal[regex.pattern=/UniHubAndroid/]",
+        "TemplateElement[value.raw=/UniHubAndroid/]",
+        "CallExpression[callee.name='appBridgeLevel']",
+      ].map(selector => ({ selector, message: "Ask src/lib/platform.ts: it alone reads the user agent and talks to the Android app." }))],
+    },
+  },
   // Layering (docs/ARCHITECTURE.md, Layering). Existing exceptions are listed
   // in eslint.boundaries.js and only shrink.
   {

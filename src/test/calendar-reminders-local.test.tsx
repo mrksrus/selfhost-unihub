@@ -7,6 +7,8 @@ import { DEFAULT_CALENDAR_SETTINGS, defaultsResolved, type UserSettingValues } f
 import { showNotification } from '@/utils/service-worker';
 import { useCalendarNotifications } from '@/hooks/use-calendar-notifications';
 import { userSettingsAnswer } from './settings-fixtures';
+import { AppLockContext, type AppLockValue } from '@/hooks/use-app-lock';
+import { fakeAppLock } from './helpers/app-lock';
 
 // The in-page reminder fallback (an offline page that is still open) must
 // show no more than the server's reminders would: the person's reminder
@@ -27,9 +29,9 @@ const event = (id: string, calendar_id: string, title: string, todo = false): Ca
 const events = [event('e-1', 'cal-on', 'Dentist at 10'), event('e-2', 'cal-off', 'Private appointment'), event('e-3', 'cal-on', 'Buy milk', true)];
 
 function Host() { useCalendarNotifications(); return null; }
-function mount() {
+function mount(lock: AppLockValue = fakeAppLock()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={client}><Host /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><AppLockContext.Provider value={lock}><Host /></AppLockContext.Provider></QueryClientProvider>);
 }
 
 beforeEach(() => {
@@ -61,5 +63,18 @@ describe('local calendar reminders', () => {
     for (const [title, options] of vi.mocked(showNotification).mock.calls) {
       expect(`${title} ${options?.body ?? ''}`).not.toMatch(/Dentist|milk|Private/);
     }
+  });
+
+  it('while the app lock covers Calendar, shows only that a reminder is due and names the module for the service worker', async () => {
+    mount(fakeAppLock({ status: 'locked', scope: ['calendar'] }));
+    await waitFor(() => expect(showNotification).toHaveBeenCalledTimes(2));
+    expect(showNotification).toHaveBeenCalledWith('Event reminder', expect.objectContaining({ body: '', data: expect.objectContaining({ eventId: 'e-1', module: 'calendar' }) }));
+    expect(showNotification).toHaveBeenCalledWith('ToDo reminder', expect.objectContaining({ body: '' }));
+  });
+
+  it('a lock on another module leaves reminders as they are', async () => {
+    mount(fakeAppLock({ status: 'locked', scope: ['mail'] }));
+    await waitFor(() => expect(showNotification).toHaveBeenCalledTimes(2));
+    expect(showNotification).toHaveBeenCalledWith('Dentist at 10', expect.objectContaining({ data: expect.objectContaining({ module: 'calendar' }) }));
   });
 });

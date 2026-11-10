@@ -1,12 +1,13 @@
 import { isOnline } from '@/lib/platform';
 import { onAppEvent } from '@/lib/app-events';
 import { useModules } from '@/hooks/use-modules';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/useAuth';
 import { calendarApi, calendarQueryKeys } from '@/lib/calendar-api';
 import { calendarSettingsQueryOptions, selectUserSetting, userSettingsQueryOptions } from '@/lib/settings-api';
 import { pushEnabledForUser, showNotification } from '@/utils/service-worker';
+import { useAppLock } from '@/hooks/use-app-lock';
 
 export const useCalendarNotifications = () => {
   const { user } = useAuth();
@@ -25,6 +26,11 @@ export const useCalendarNotifications = () => {
   // otherwise show the event before the person's level arrived.
   const { data: detail } = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('reminder_notification_detail'), enabled: !!user && active });
   const { data: calendarSettings } = useQuery({ ...calendarSettingsQueryOptions, enabled: !!user && active });
+  // While the app lock covers Calendar here, a reminder names nothing, as
+  // the server's does; the service worker checks the device's lock again.
+  const calendarLocked = useAppLock().locked('calendar');
+  const lockedRef = useRef(calendarLocked);
+  useEffect(() => { lockedRef.current = calendarLocked; }, [calendarLocked]);
   useEffect(() => {
     if (!user?.id || !active) return;
     const refresh = (detail: unknown) => {
@@ -51,11 +57,11 @@ export const useCalendarNotifications = () => {
         timers.push(window.setTimeout(() => {
           if (isOnline()
  || !pushEnabledForUser(user.id)) return;
-          const { title, body } = detail === 'none'
+          const { title, body } = detail === 'none' || lockedRef.current
             ? { title: event.is_todo_only ? 'ToDo reminder' : 'Event reminder', body: '' }
             : { title: event.title, body: minutes === 0 ? 'Event is starting now' : `Event starts in ${minutes} minutes` };
           void showNotification(title, { body, data: {
-            userId: user.id, dedupeKey: `reminder:${event.id}:${new Date(start).toISOString()}:${minutes}`, eventId: event.id, url: event.is_todo_only ? '/todo' : '/calendar',
+            userId: user.id, module: 'calendar', dedupeKey: `reminder:${event.id}:${new Date(start).toISOString()}:${minutes}`, eventId: event.id, url: event.is_todo_only ? '/todo' : '/calendar',
           } });
         }, Math.max(0, due - now)));
       }

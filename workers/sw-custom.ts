@@ -1,6 +1,6 @@
 // The browser supports renotify; the WebWorker declarations omit this option.
 interface NotificationOptions { renotify?: boolean }
-interface Payload { version?: unknown; userId?: unknown; dedupeKey?: unknown; title?: unknown; body?: unknown; url?: unknown; eventId?: unknown; emailId?: unknown; tag?: unknown; kind?: unknown }
+interface Payload { version?: unknown; userId?: unknown; dedupeKey?: unknown; title?: unknown; body?: unknown; url?: unknown; eventId?: unknown; emailId?: unknown; tag?: unknown; kind?: unknown; module?: unknown }
 interface WorkerMessage { type?: string; userId?: unknown; payload?: Payload | null }
 interface NotificationWorkerEvents { activate: ExtendableEvent; push: PushEvent; message: ExtendableMessageEvent & { data: WorkerMessage }; sync: ExtendableEvent & { tag: string }; periodicsync: ExtendableEvent; notificationclick: NotificationEvent }
 interface NotificationWorkerScope extends Pick<ServiceWorkerGlobalScope, 'registration' | 'location' | 'clients'> { unihubWithBoundUser: <T>(userId: string, task: (bound: boolean) => Promise<T>) => Promise<T>; addEventListener<K extends keyof NotificationWorkerEvents>(type: K, listener: (event: NotificationWorkerEvents[K]) => void): void }
@@ -69,15 +69,73 @@ async function markDelivered(key: string) {
     tx.onerror = () => reject(tx.error);
   });
 }
+// The app lock (0.29): while this person's lock covers a notification's
+// module and no tab of theirs counts as open, the notice shows no content,
+// whatever the server rendered. The page writes the timeline in IndexedDB
+// `unihub-lock-v1` (src/lib/app-lock/timeline.ts); `lockIsOpen` and
+// `lockCovers` here are copies of its `isOpen` and `covers`, keep them equal.
+const LOCK_DB = 'unihub-lock-v1';
+const LOCK_VISIBLE_GRACE_MS = 30_000;
+type LockArea = 'app' | 'mail' | 'contacts' | 'calendar' | 'recordings';
+interface LockTimeline { v?: unknown; scope?: unknown; relockAfterMs?: unknown; lastActiveAt?: unknown; hiddenAt?: unknown; lockedAt?: unknown }
+// Servers before 0.29 send no module; the kind names it.
+const KIND_MODULES: Record<string, LockArea> = { mail: 'mail', snooze: 'mail', 'scheduled-send': 'mail', calendar: 'calendar', todo: 'calendar', reminder: 'calendar', recording: 'recordings' };
+function readLockTimeline(userId: string) {
+  return new Promise<LockTimeline | undefined>(resolve => {
+    if (typeof indexedDB === 'undefined') { resolve(undefined); return; }
+    const request = indexedDB.open(LOCK_DB, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains('pins')) db.createObjectStore('pins', { keyPath: 'userId' });
+      if (!db.objectStoreNames.contains('timeline')) db.createObjectStore('timeline', { keyPath: 'userId' });
+    };
+    // Storage that cannot be read holds no lock either.
+    request.onerror = () => resolve(undefined);
+    request.onsuccess = () => {
+      const db = request.result;
+      try {
+        const get = db.transaction('timeline').objectStore('timeline').get(userId);
+        get.onsuccess = () => { db.close(); resolve(get.result as LockTimeline | undefined); };
+        get.onerror = () => { db.close(); resolve(undefined); };
+      } catch { db.close(); resolve(undefined); }
+    };
+  });
+}
+const lockTime = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null;
+function lockCovers(scope: LockArea[], area: LockArea | null) {
+  return scope.includes('app') || (area !== null && area !== 'app' && scope.includes(area));
+}
+function lockIsOpen(timeline: LockTimeline, now: number) {
+  const relockAfterMs = lockTime(timeline.relockAfterMs) ?? 0;
+  const lastActiveAt = lockTime(timeline.lastActiveAt);
+  const hiddenAt = lockTime(timeline.hiddenAt);
+  const lockedAt = lockTime(timeline.lockedAt);
+  if (lastActiveAt === null) return false;
+  if (lockedAt !== null && lockedAt >= lastActiveAt) return false;
+  if (hiddenAt !== null && hiddenAt >= lastActiveAt) return now - hiddenAt < relockAfterMs;
+  return now - lastActiveAt < relockAfterMs + LOCK_VISIBLE_GRACE_MS;
+}
+async function lockedFor(userId: string, payload: Payload) {
+  const timeline = await readLockTimeline(userId);
+  if (!timeline || timeline.v !== 1 || !Array.isArray(timeline.scope) || !timeline.scope.length) return false;
+  const area = typeof payload.module === 'string' ? payload.module as LockArea
+    : typeof payload.kind === 'string' && Object.prototype.hasOwnProperty.call(KIND_MODULES, payload.kind) ? KIND_MODULES[payload.kind] : null;
+  return lockCovers(timeline.scope as LockArea[], area) && !lockIsOpen(timeline, Date.now());
+}
+const LOCKED_TITLE = 'UniHub';
+const LOCKED_BODY = 'You have a new notification. Unlock UniHub to see it.';
+
 function enqueueDelivery<T>(task: () => Promise<T>): Promise<T> {
   const next = deliveryQueue.then(task);
   deliveryQueue = next.catch(() => {});
   return next;
 }
 // Recording uploads (recording-uploads-sw.js) name a recording in a notice
-// only while its account is the one bound here. The check and the notice run
-// in this queue, so a sign-out or account switch cannot land between them.
-notificationScope.unihubWithBoundUser = <T>(userId: string, task: (bound: boolean) => Promise<T>) => enqueueDelivery(async () => task(await readStore('meta', 'userId') === userId));
+// only while its account is the one bound here and its app lock does not
+// cover Recordings now. The check and the notice run in this queue, so a
+// sign-out or account switch cannot land between them.
+notificationScope.unihubWithBoundUser = <T>(userId: string, task: (bound: boolean) => Promise<T>) => enqueueDelivery(async () =>
+  task(await readStore('meta', 'userId') === userId && !await lockedFor(userId, { module: 'recordings' })));
 function safeTargetUrl(input: unknown) {
   try {
     const url = new URL(typeof input === 'string' ? input : '/dashboard', notificationScope.location.origin);
@@ -115,8 +173,9 @@ async function deliverNotification(payload: Payload | null | undefined) {
   if (activeUser !== payload.userId) return false;
   const key = `${activeUser}:${payload.dedupeKey}`;
   if (await readStore('delivered', key)) return false;
-  await notificationScope.registration.showNotification(String(payload.title || 'UniHub').slice(0, 120), {
-    body: String(payload.body || '').slice(0, 400),
+  const locked = await lockedFor(activeUser, payload);
+  await notificationScope.registration.showNotification(locked ? LOCKED_TITLE : String(payload.title || 'UniHub').slice(0, 120), {
+    body: locked ? LOCKED_BODY : String(payload.body || '').slice(0, 400),
     icon: '/icons/icon-192x192.png', badge: '/icons/icon-72x72.png',
     // A payload tag groups notices that replace each other, such as reminders
     // about one recording upload.
