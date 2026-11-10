@@ -22,14 +22,17 @@ export function adb(...args) {
 export function dumpScreen() {
   for (let attempt = 1; ; attempt++) {
     try {
-      adb('shell', 'uiautomator', 'dump', '/data/local/tmp/unihub-ui.xml');
-      break;
+      try {
+        adb('shell', 'uiautomator', 'dump', '/data/local/tmp/unihub-ui.xml');
+      } catch (error) {
+        if (!/dumped to/.test(String(error.stdout ?? ''))) throw error;
+      }
+      // The dump can also report success and leave no file.
+      return adb('shell', 'cat', '/data/local/tmp/unihub-ui.xml');
     } catch (error) {
-      if (/dumped to/.test(String(error.stdout ?? ''))) break;
       if (attempt >= 3) throw error;
     }
   }
-  return adb('shell', 'cat', '/data/local/tmp/unihub-ui.xml');
 }
 
 /** Android's on-screen nodes: text, description and centre. */
@@ -329,12 +332,23 @@ export async function touchFinger(id = 1) {
  */
 export async function enrollFingerprint({ pin = DEVICE_PIN, finger = 1, timeoutMs = 180_000 } = {}) {
   if (enrolledFingerprints() > 0) return;
-  adb('shell', 'am', 'start', '-a', 'android.settings.FINGERPRINT_ENROLL');
   const tap = node => adb('shell', 'input', 'tap', `${node.x}`, `${node.y}`);
   const until = Date.now() + timeoutMs;
+  // A Settings screen left by an earlier attempt would be brought back and
+  // end at once (cancelled): Settings starts fresh, and again when it stops
+  // moving for a minute.
+  let started = 0, changed = 0, last = '';
   while (Date.now() < until) {
+    if (Date.now() - changed > 60_000 && Date.now() - started > 60_000) {
+      adb('shell', 'am', 'force-stop', 'com.android.settings');
+      adb('shell', 'am', 'start', '-a', 'android.settings.FINGERPRINT_ENROLL');
+      started = changed = Date.now();
+    }
     await sleep(1000);
-    const nodes = screenNodes();
+    let nodes;
+    try { nodes = screenNodes(); } catch { continue; }
+    const seen = nodes.map(n => n.text).join('|');
+    if (seen !== last) { last = seen; changed = Date.now(); }
     const text = nodes.map(n => n.text).join('\n');
     if (/isn't responding|keeps stopping/.test(text)) { await answerSlowDialogs(); continue; }
     if (/fingerprint added/i.test(text)) {
@@ -354,7 +368,8 @@ export async function enrollFingerprint({ pin = DEVICE_PIN, finger = 1, timeoutM
     if (/touch the sensor|lift, then touch/i.test(text)) await touchFinger(finger);
   }
   for (let i = 0; i < 10 && enrolledFingerprints() === 0; i++) await sleep(1000);
-  if (enrolledFingerprints() === 0) throw new Error('fingerprint enrolment did not finish');
+  adb('shell', 'am', 'force-stop', 'com.android.settings');
+  if (enrolledFingerprints() === 0) throw new Error(`fingerprint enrolment did not finish; last screen: ${last.slice(0, 300)}`);
 }
 
 /** The app's unlock prompt (BiometricPrompt, or Settings' credential screen on Android 10) is on screen. */
