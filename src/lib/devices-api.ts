@@ -9,23 +9,14 @@ import { isStandaloneDisplay } from '@/lib/install-prompt';
 import { androidApp, describeUserAgent } from '@/lib/platform';
 import { DEFAULT_DEVICE_SETTINGS, defaultsResolved } from '@/lib/settings-defaults';
 import type {
-  AppLockCompliance, DeviceBinding, DeviceKind, DeviceLockReport, DeviceLockStateRequest, DeviceSummary, DevicesResponse,
+  CurrentDeviceResponse, DeviceBinding, DeviceKind, DeviceKeyRequest, DeviceLockReport, DeviceLockStateRequest, DeviceSummary, DevicesResponse,
 } from '../../api/src/contracts/devices';
-import type { Allowance } from '../../api/src/contracts/policies';
 import type { DeviceSettingsResponse, DeviceSettingValues, ResolvedSettings } from '../../api/src/contracts/settings';
 
 export type {
-  AppLockApplied, AppLockArea, AppLockCompliance, AppLockRequiredDetails, DeviceCapabilities, DeviceKind, DeviceSummary, LockMethod, RelockAfter,
+  AppLockApplied, AppLockArea, AppLockCompliance, AppLockRequiredDetails, CurrentDeviceResponse, DeviceCapabilities, DeviceKind, DeviceSummary, LockMethod, RelockAfter,
 } from '../../api/src/contracts/devices';
 export type DeviceSettings = ResolvedSettings<DeviceSettingValues>;
-
-/** GET /api/devices/current: this device, its settings, whether it meets the required lock, and the screenshot policy. */
-export interface CurrentDeviceResponse {
-  device: DeviceSummary;
-  settings: DeviceSettings;
-  compliance: AppLockCompliance;
-  policy: { screenshots: Allowance };
-}
 
 // ── The device key ───────────────────────────────────────────────
 // 32 random bytes, made once per browser profile and origin. Not a
@@ -65,7 +56,7 @@ export function deviceBinding(): DeviceBinding | undefined {
 export async function adoptDeviceKey() {
   const key = deviceKey();
   if (!key) return;
-  unwrap(await api.post('/devices/current/key', { key }));
+  unwrap(await api.post('/devices/current/key', { key } satisfies DeviceKeyRequest));
 }
 
 // ── Devices ──────────────────────────────────────────────────────

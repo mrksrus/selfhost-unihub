@@ -144,6 +144,8 @@ const ACTIONS: Record<string, string> = {
   'admin.bin_item_deleted': 'Deleted an item from the bin for good',
   'admin.data_cleared': 'Deleted data',
   'admin.instance_backup_started': 'Started an instance backup',
+  // 0.29: devices.
+  'device.removed': 'Signed out another device',
 };
 
 /** What happened, in words; the person acting and the account it concerns are shown beside it. */
