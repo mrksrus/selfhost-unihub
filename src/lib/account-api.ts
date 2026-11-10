@@ -1,5 +1,6 @@
 import { api } from '@/lib/api';
 import { unwrap } from '@/lib/api-error';
+import { describeUserAgent } from '@/lib/platform';
 
 /** A signed-in device of this account (GET /api/auth/sessions). */
 export interface AccountSession {
@@ -22,23 +23,8 @@ export async function signOutSession(id: string) {
   unwrap(await api.delete(`/auth/sessions/${encodeURIComponent(id)}`));
 }
 
-const BROWSERS: [RegExp, string][] = [
-  [/UniHubAndroid\//, 'UniHub app'], [/Edg\//, 'Edge'], [/OPR\//, 'Opera'], [/Firefox\//, 'Firefox'],
-  [/Chrome\//, 'Chrome'], [/Safari\//, 'Safari'],
-];
-const SYSTEMS: [RegExp, string][] = [
-  [/UniHubAndroid\/|Android/, 'Android'], [/iPhone/, 'iPhone'], [/iPad/, 'iPad'], [/Windows/, 'Windows'], [/Mac OS X|Macintosh/, 'macOS'],
-  [/CrOS/, 'ChromeOS'], [/Linux/, 'Linux'],
-];
-
-/** "Firefox on Linux" from a browser's user agent, enough to recognize a device. */
-export function describeDevice(userAgent: string | null | undefined) {
-  if (!userAgent) return 'Unknown device';
-  const browser = BROWSERS.find(([pattern]) => pattern.test(userAgent))?.[1];
-  const system = SYSTEMS.find(([pattern]) => pattern.test(userAgent))?.[1];
-  if (browser && system) return `${browser} on ${system}`;
-  return browser || system || 'Unknown device';
-}
+/** "Firefox on Linux" from a browser's user agent (lib/platform.ts reads user agents). */
+export const describeDevice = describeUserAgent;
 
 /** "today", "yesterday", "3 days ago" or a date, for when a device was last used. */
 export function lastActiveLabel(iso: string, now = new Date()) {

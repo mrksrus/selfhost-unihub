@@ -1,6 +1,7 @@
 import { isOfflineMode, readOfflineResponse, setOfflineMode } from '@/lib/offline';
 import { emitAppEvent } from '@/lib/app-events';
 import { isOnline } from '@/lib/platform';
+import { APP_LOCK_REQUIRED, appLockRequiredDetails } from '@/lib/api-error';
 
 // API client for UniHub backend
 
@@ -74,6 +75,13 @@ function getUnexpectedResponseMessage(response: Response, contentType: string, e
     return getHttpErrorMessage(response.status, response.statusText, endpoint);
   }
   return `${getHttpErrorMessage(response.status, response.statusText)} The response was not JSON (${received}).`;
+}
+
+// 403 APP_LOCK_REQUIRED: the administrator requires an app lock this device
+// does not report. Whichever request met it, the app lock provider shows the
+// set-up prompt instead of a page error (contexts/AppLockProvider.tsx).
+function noticeAppLockRequired(status: number, body: Record<string, unknown>) {
+  if (status === 403 && body.code === APP_LOCK_REQUIRED) emitAppEvent('unihub:app-lock-required', appLockRequiredDetails(body.details));
 }
 
 // Headers are a plain object so the client can merge the CSRF token into them.
@@ -194,6 +202,7 @@ class ApiClient {
           emitAppEvent('unihub:session-expired');
         }
         const errorData = data && typeof data === 'object' ? data as Record<string, unknown> : {};
+        noticeAppLockRequired(response.status, errorData);
         return {
           ...errorData,
           status: response.status,
@@ -246,10 +255,12 @@ class ApiClient {
     if (!response.ok) {
       const contentType = response.headers.get('content-type') || '';
       let message = `Request failed (${response.status})`;
+      let refusal: Record<string, unknown> = {};
 
       try {
         if (contentType.includes('application/json')) {
           const data = await response.json();
+          if (data && typeof data === 'object') refusal = data;
           message = data.error || message;
         } else {
           const text = await response.text();
@@ -259,6 +270,7 @@ class ApiClient {
         // Keep fallback message
       }
 
+      if (response.status === 403 && contentType.includes('application/json')) noticeAppLockRequired(response.status, refusal);
       const err = new Error(message) as Error & { status?: number };
       err.status = response.status;
       throw err;
@@ -322,6 +334,7 @@ class ApiClient {
       }
       const data = await response.json();
       if (!response.ok) {
+        if (data && typeof data === 'object') noticeAppLockRequired(response.status, data);
         return {
           ...data,
           status: response.status,
@@ -336,7 +349,7 @@ class ApiClient {
     }
   }
 
-  async post<T>(endpoint: string, body?: unknown, options: Pick<ApiRequestInit, 'headers' | 'signal'> = {}): Promise<ApiResponse<T>> {
+  async post<T>(endpoint: string, body?: unknown, options: Pick<ApiRequestInit, 'headers' | 'signal' | 'keepalive'> = {}): Promise<ApiResponse<T>> {
     return this.request<T>(endpoint, {
       ...options,
       method: 'POST',

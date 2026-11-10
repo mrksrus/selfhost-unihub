@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
+import { AppLockRequired, unwrap } from '@/lib/api-error';
+import { onAppEvent } from '@/lib/app-events';
 
 describe('api client security', () => {
   beforeEach(() => {
@@ -119,4 +121,30 @@ describe('api client security', () => {
     await expect(api.get('/contacts', { signal: controller.signal })).rejects.toBe(cancelled);
   });
 
+
+  it('a request refused for a missing app lock tells the lock provider and throws AppLockRequired, with known values only', async () => {
+    const refusal = { error: 'Your administrator requires the app lock for Mail.', code: 'APP_LOCK_REQUIRED',
+      details: { required: ['mail', 'chat'], max_background: '300', reason: 'Your administrator requires the app lock for Mail.' } };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403, statusText: 'Forbidden', headers: { get: () => 'application/json' }, json: async () => refusal }) as unknown as typeof fetch);
+    const heard: unknown[] = [];
+    const stop = onAppEvent('unihub:app-lock-required', details => heard.push(details));
+    const response = await api.get('/mail/accounts');
+    stop();
+    const expected = { required: ['mail'], max_background: '300', reason: 'Your administrator requires the app lock for Mail.' };
+    expect(heard).toEqual([expected]);
+    let thrown: unknown;
+    try { unwrap(response); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(AppLockRequired);
+    expect(thrown).toMatchObject({ status: 403, code: 'APP_LOCK_REQUIRED', requirement: expected });
+  });
+
+  it('another 403 is no app lock prompt', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403, statusText: 'Forbidden', headers: { get: () => 'application/json' }, json: async () => ({ error: 'Mail is turned off.', code: 'MODULE_DISABLED' }) }) as unknown as typeof fetch);
+    const heard: unknown[] = [];
+    const stop = onAppEvent('unihub:app-lock-required', details => heard.push(details));
+    const response = await api.get('/mail/accounts');
+    stop();
+    expect(heard).toEqual([]);
+    expect(() => unwrap(response)).toThrow('Mail is turned off.');
+  });
 });

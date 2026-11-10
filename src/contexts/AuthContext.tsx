@@ -4,6 +4,9 @@ import { api } from '@/lib/api';
 import { resetBackgroundNotificationState, revokeDevicePushSubscription } from '@/utils/service-worker';
 import { AuthContext, type User } from '@/contexts/auth-context';
 import { onAppEvent } from '@/lib/app-events';
+import { clearAppLockData, noteSignIn } from '@/lib/app-lock/session';
+import { deviceBinding, reportLockState } from '@/lib/devices-api';
+import { deviceLock } from '@/lib/platform';
 
 const AUTH_CHANGE_KEY = 'unihub:auth-change';
 // A busy server (a saturated database) can take far longer than this; the
@@ -57,6 +60,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const saved = await loadOfflineSession();
         if (version !== authVersion.current) return;
         if (saved && saved.user.id !== response.data.user.id) await clearOfflineData();
+        // Another person's app lock records (the PIN, the timeline) go with
+        // their session; this person's are keyed apart, so nothing waits for it.
+        void clearAppLockData(response.data.user.id);
         if (version !== authVersion.current) return;
         setOfflineAccount(response.data.user.id);
         api.setCsrfToken(response.data.csrfToken ?? null);
@@ -64,7 +70,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setSession({ authenticated: true });
       } else if (response.status === 401 || response.status === 403 || (!response.error && !response.data?.user)) {
         answered = true;
-        try { await clearOfflineData(); } finally { void resetBackgroundNotificationState(); }
+        try { await clearOfflineData(); } finally {
+          void clearAppLockData();
+          void resetBackgroundNotificationState();
+        }
       } else if (response.error && response.status === undefined) {
         const saved = await loadOfflineSession();
         if (saved && version === authVersion.current) {
@@ -139,7 +148,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const saved = await loadOfflineSession();
     if (version !== authVersion.current) return;
     if (saved && saved.user.id !== nextUser.id) await clearOfflineData();
+    void clearAppLockData(nextUser.id);
     if (version !== authVersion.current) return;
+    // A sign-in with the password opens the app lock and may set up a new PIN.
+    noteSignIn(nextUser.id);
     // The server just answered; an earlier outage must not outlive this session.
     setServerUnavailable(false);
     setOfflineAccount(nextUser.id);
@@ -158,6 +170,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       email,
       password,
       full_name: fullName,
+      device: deviceBinding(),
       // The rules the form listed: the account confirms that revision and no later one.
       ...(rulesRevision !== null ? { rules_revision: rulesRevision } : {}),
     });
@@ -185,6 +198,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const response = await api.post<{ csrfToken?: string; user?: User; requires2fa?: boolean; challengeToken?: string }>('/auth/signin', {
       email,
       password,
+      // This browser's device record (lib/devices-api.ts); pages before 0.29 sent none.
+      device: deviceBinding(),
     });
 
     if (version !== authVersion.current) return { error: new Error('The session changed. Please sign in again.') };
@@ -214,6 +229,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }>('/auth/2fa/login', {
       challenge_token: challengeToken,
       code,
+      device: deviceBinding(),
     });
 
     if (version !== authVersion.current) return { error: new Error('The session changed. Please sign in again.') };
@@ -243,10 +259,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setLoading(false);
     setServerUnavailable(false);
     try {
+      // The device stops counting as unlocked before its session ends, so no
+      // notification shows content on it meanwhile.
+      try { await deviceLock().lock(); } catch { /* A browser has no lock of its own to tell. */ }
+      try { await reportLockState('locked'); } catch { /* A device without a lock, or offline. */ }
       try { await revokeDevicePushSubscription(); } catch { /* Still complete local logout. */ }
       await api.post('/auth/signout');
     } finally {
       try { await clearOfflineData(); } finally {
+        // The PIN and the lock timeline of this browser; unsent recordings stay.
+        await clearAppLockData();
         clearLocalSession();
         void resetBackgroundNotificationState();
         broadcastAuthChange();

@@ -5,6 +5,8 @@
  * branch on the server's `code`, and a server failure carries the request id
  * the server logged it under.
  */
+import type { AppLockArea, AppLockRequiredDetails, RelockAfter } from '../../api/src/contracts/devices';
+
 type FailedResponse = { error?: string; status?: number; [key: string]: unknown };
 
 export class ApiError extends Error {
@@ -23,9 +25,40 @@ export class ApiError extends Error {
   }
 }
 
-/** The data of a successful response; a failed one throws ApiError. */
+/**
+ * 403 APP_LOCK_REQUIRED: the administrator requires an app lock this device
+ * does not report, and the request was refused before it did anything. The
+ * API client also tells the app lock provider, which shows the set-up prompt;
+ * a view shows no error of its own for it.
+ */
+export const APP_LOCK_REQUIRED = 'APP_LOCK_REQUIRED';
+
+export class AppLockRequired extends ApiError {
+  readonly requirement: AppLockRequiredDetails;
+  constructor(response: FailedResponse) {
+    super(response);
+    this.name = 'AppLockRequired';
+    this.requirement = appLockRequiredDetails(response.details);
+  }
+}
+
+const AREAS: readonly AppLockArea[] = ['app', 'mail', 'contacts', 'calendar', 'recordings'];
+const RELOCK: readonly RelockAfter[] = ['0', '60', '300', '900'];
+
+/** The refusal's details, keeping only known values (an unknown area is left out, a missing reason is null). */
+export function appLockRequiredDetails(details: unknown): AppLockRequiredDetails {
+  const value = details && typeof details === 'object' ? details as Record<string, unknown> : {};
+  const required = Array.isArray(value.required) ? AREAS.filter(area => (value.required as unknown[]).includes(area)) : [];
+  return {
+    required: required.includes('app') ? ['app'] : required,
+    max_background: RELOCK.includes(value.max_background as RelockAfter) ? value.max_background as RelockAfter : null,
+    reason: typeof value.reason === 'string' && value.reason ? value.reason : null,
+  };
+}
+
+/** The data of a successful response; a failed one throws ApiError (AppLockRequired for 403 APP_LOCK_REQUIRED). */
 export function unwrap<T>(response: FailedResponse & { data?: T }): T | undefined {
-  if (response.error) throw new ApiError(response);
+  if (response.error) throw response.status === 403 && response.code === APP_LOCK_REQUIRED ? new AppLockRequired(response) : new ApiError(response);
   return response.data;
 }
 

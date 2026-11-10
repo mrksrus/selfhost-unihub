@@ -140,7 +140,7 @@ export async function showNotification(title: string, options: NotificationOptio
   const data = options.data || {};
   if (!data.userId || !data.dedupeKey) return false;
   return sendNotificationWorkerMessage({ type: 'DELIVER_LOCAL_NOTIFICATION', payload: {
-    version: 1, userId: data.userId, dedupeKey: data.dedupeKey, kind: data.kind || 'reminder', title, body: options.body, url: data.url, eventId: data.eventId,
+    version: 1, userId: data.userId, dedupeKey: data.dedupeKey, kind: data.kind || 'reminder', module: data.module, title, body: options.body, url: data.url, eventId: data.eventId,
   } });
 }
 // Compatibility for installed clients; background delivery now uses server push.
