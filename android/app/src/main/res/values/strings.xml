@@ -71,4 +71,17 @@
     <string name="notifications_blocked">Allow notifications for UniHub in Android\'s settings, then turn them on again.</string>
     <string name="notifications_superseded">Try again.</string>
     <string name="notifications_unknown">This app does not know that request.</string>
+    <!-- The app lock (AppLock). The prompt title is what the e2e tests wait for. -->
+    <string name="app_lock_prompt_title">Unlock UniHub</string>
+    <string name="app_lock_cover">UniHub is locked</string>
+    <string name="app_lock_unlock">Unlock</string>
+    <string name="app_lock_pin_in_page">This phone has no screen lock. Unlock with your UniHub PIN in the page.</string>
+    <string name="app_lock_gone">The page changed. Try again.</string>
+    <string name="app_lock_invalid">The app does not understand this app lock request. Update the app.</string>
+    <!-- What a notification of a locked module shows: the server's generic texts (render.none). -->
+    <string name="notification_locked_mail">New Email</string>
+    <string name="notification_locked_snooze">Snoozed email is back</string>
+    <string name="notification_locked_calendar">New Calendar Event</string>
+    <string name="notification_locked_todo">New ToDo</string>
+    <string name="notification_locked_reminder">Reminder</string>
 </resources>

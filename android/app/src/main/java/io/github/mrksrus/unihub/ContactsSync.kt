@@ -54,6 +54,10 @@ object ContactsSync {
     const val ACCOUNT_TYPE = "io.github.mrksrus.unihub"
     private const val AUTHORITY = ContactsContract.AUTHORITY
     private const val TAG = "UniHubContacts"
+    // Refusals that say nothing about the contact: the sync stops and runs again
+    // later instead of skipping it. APP_LOCK_REQUIRED (0.29) cannot come from
+    // the contacts routes, which the lock gate exempts; it is here in case.
+    private val POSTPONING = setOf("MODULE_DISABLED", "RESTORE_IN_PROGRESS", "APP_LOCK_REQUIRED")
     private const val KEY_ORIGIN = "origin"
     // Whose UniHub contacts are on the phone now (none after a sign-out).
     private const val KEY_USER = "user"
@@ -500,7 +504,7 @@ object ContactsSync {
                 401 -> throw IOException("HTTP 401")
                 in 400..499 -> {
                     val code = answer.json()?.optString("code")
-                    if (code == "MODULE_DISABLED" || code == "RESTORE_IN_PROGRESS") throw IOException(code)
+                    if (code in POSTPONING) throw IOException(code)
                     // A picture UniHub cannot read stays on the phone; it is offered again when it changes.
                     Log.w(TAG, "UniHub refused a contact photo: HTTP ${answer.status} ${code.orEmpty()}")
                     null
@@ -518,7 +522,7 @@ object ContactsSync {
                 401 -> throw IOException("HTTP 401")
                 in 400..499 -> {
                     val code = response.json()?.optString("code")
-                    if (code == "MODULE_DISABLED" || code == "RESTORE_IN_PROGRESS") throw IOException(code)
+                    if (code in POSTPONING) throw IOException(code)
                     if (code == "VERSION_CONFLICT") Log.i(TAG, "A contact changed in UniHub during the sync; it is merged at the next one")
                     else Log.w(TAG, "UniHub refused a contact change: HTTP ${response.status}")
                     null

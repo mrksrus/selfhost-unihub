@@ -35,6 +35,8 @@ class WebBridge(
     private val onTheme: (dark: Boolean, background: Int) -> Unit,
     // Settings → Notifications (AppNotifications). The answer is the reply's JSON.
     private val onNotifications: (action: String, answer: (JSONObject) -> Unit) -> Unit,
+    // The app lock (AppLock): the message's JSON; the answer is the reply's JSON.
+    private val onAppLock: (data: JSONObject, answer: (JSONObject) -> Unit) -> Unit,
 ) {
     fun attach(webView: WebView): Boolean {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return false
@@ -58,6 +60,19 @@ class WebBridge(
     }
 
     private val fileActions = FileActions(activity, origin)
+
+    // The page that last asked about the app lock, which hears when the app
+    // locks or unlocks by itself (a return that was due, the cover's Unlock).
+    private var appLockPage: JavaScriptReplyProxy? = null
+
+    /** Tells the page an app lock event: `{type: "appLock", event: "locked" | "unlocked"}`, without an id. */
+    fun appLockEvent(event: String) {
+        try {
+            appLockPage?.postMessage(JSONObject().put("type", "appLock").put("event", event).toString())
+        } catch (_: Exception) {
+            // The page is gone; the next one asks for the state itself.
+        }
+    }
 
     private fun handle(view: WebView, message: WebMessageCompat, reply: JavaScriptReplyProxy) {
         val data = try {
@@ -88,6 +103,18 @@ class WebBridge(
             "openExternal" -> openExternal(activity, data.optString("url"))
             "changeServer" -> onChangeServer()
             "theme" -> parseColor(data.optString("background"))?.let { onTheme(data.optBoolean("dark", true), it) }
+            "appLock" -> data.optString("id").takeIf { validId(it) }?.let { id ->
+                appLockPage = reply
+                onAppLock(data) { answer ->
+                    activity.runOnUiThread {
+                        try {
+                            reply.postMessage(answer.put("id", id).toString())
+                        } catch (_: Exception) {
+                            // The page is gone.
+                        }
+                    }
+                }
+            }
             "notifications" -> data.optString("id").takeIf { validId(it) }?.let { id ->
                 onNotifications(data.optString("action")) { answer ->
                     activity.runOnUiThread {
