@@ -88,7 +88,8 @@ export default function AppLockSettings() {
   const change = (patch: Partial<DeviceSettingValues>) => {
     const nextScope = patch.app_lock_scope ?? scope;
     const nextRelock = patch.app_lock_relock_after ?? relockSetting.value;
-    const weakens = scope.length > 0 && (weakensScope(scope, nextScope) || !relockAllowed(nextRelock, relockSetting.value));
+    const deviceLockOff = deviceLockSetting.value && patch.app_lock_on_device_lock === false;
+    const weakens = scope.length > 0 && (weakensScope(scope, nextScope) || !relockAllowed(nextRelock, relockSetting.value) || deviceLockOff);
     if (weakens) weaken(patch); else void save(patch);
   };
 
