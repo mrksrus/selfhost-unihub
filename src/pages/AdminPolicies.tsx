@@ -145,7 +145,7 @@ function AppLockRequiredControl({ id, value, onChange, disabled }: { id: string;
       {shown === 'modules' && (
         <ul aria-label="Required modules" className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
           {LOCKABLE_MODULES.map(moduleId => (
-            <li key={moduleId} className="flex items-center gap-3 py-1.5 touch:py-2">
+            <li key={moduleId} className="flex items-center gap-3 py-1.5 touch:py-3">
               <Checkbox id={`${id}-${moduleId}`} checked={value.includes(moduleId)} disabled={disabled} onCheckedChange={checked => toggle(moduleId, checked === true)} />
               <label htmlFor={`${id}-${moduleId}`} className="text-sm">{AREA_LABELS[moduleId as keyof typeof AREA_LABELS]}</label>
             </li>

@@ -351,6 +351,15 @@ export const CURRENT_DEVICE_LOCKED = {
   compliance: { meets: true, required: ['mail', 'contacts'], max_background: '300', reason: 'Your administrator requires the app lock for Mail and Contacts.' },
   policy: { screenshots: 'allowed' },
 };
+/** The person's rules with the app lock required (the reasons are the server's, settings-registry.ts), for the app lock pictures. */
+export const POLICIES_EFFECTIVE_APP_LOCK = {
+  ...POLICIES_EFFECTIVE,
+  policies: { ...POLICIES_EFFECTIVE.policies,
+    'app_lock.required': { value: ['mail', 'contacts'], source: 'policy', allowed: false, reason: CURRENT_DEVICE_LOCKED.compliance.reason },
+    'app_lock.max_background': { value: '300', source: 'policy', allowed: false, reason: 'Your administrator allows at most 5 minutes in the background before UniHub locks again.' },
+  },
+  rules: [...POLICIES_EFFECTIVE.rules, CURRENT_DEVICE_LOCKED.compliance.reason, 'Your administrator allows at most 5 minutes in the background before UniHub locks again.'],
+};
 /** The administrator's answer with the app lock rules set, for the Policies picture. */
 export const POLICIES_ADMIN_APP_LOCK = {
   ...POLICIES_ADMIN,
@@ -413,6 +422,7 @@ function defaultRoutes(emails: typeof EMAILS, admin = false): Route[] {
     ['GET', /^\/mail\/templates$/, () => ok({ templates: [{ id: 'tpl-weekly', name: 'Weekly report', subject: 'Weekly report',
       body_html: '<p>Numbers attached.</p>', body_text: 'Numbers attached.', updated_at: at('06-14T08:00:00.000Z') }] })],
     ['GET', /^\/version$/, () => ok({ app: 'unihub', server: '0.21.4', android: null })],
+    ['GET', /^\/auth\/2fa\/status$/, () => ok({ enabled: false, recoveryCodesRemaining: 0, secretReadable: true })],
     ['GET', /^\/mail\/accounts$/, () => ok({ accounts: MAIL_ACCOUNTS.map(account => ({ ...account,
       unread_count: emails.filter(row => row.mail_account_id === account.id && !row.is_read).length })) })],
     ['GET', /^\/mail\/folders$/, () => ok({ folders: FOLDERS.map(folder => ({ connected_account_ids: [], legacy_count: 0, mail_account_id: null, special_use: null, ...folder,

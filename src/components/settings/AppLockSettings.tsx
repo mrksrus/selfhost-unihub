@@ -125,7 +125,7 @@ export default function AppLockSettings() {
                 {lockable.map(moduleId => {
                   const required = requiredScope.includes(moduleId);
                   return (
-                    <li key={moduleId} className="flex items-start gap-3 py-1.5 touch:py-2">
+                    <li key={moduleId} className="flex items-start gap-3 py-1.5 touch:py-3">
                       <Checkbox id={`${id}-${moduleId}`} className="mt-0.5" checked={scope.includes(moduleId)} disabled={busy || required}
                         onCheckedChange={checked => toggleModule(moduleId, checked === true)} />
                       <label htmlFor={`${id}-${moduleId}`} className="min-w-0 text-sm">

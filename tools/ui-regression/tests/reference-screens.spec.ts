@@ -12,7 +12,7 @@
 // Security with Devices (Wide), each in Dark Default and Light Default.
 // Fifty-six pictures; see docs/UI_BASELINES.md.
 import { expect, expectBaseline, test, THEMES, VIEWPORTS, type Page } from '../support/test.ts';
-import { CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, USER } from '../support/fixtures.ts';
+import { CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_EFFECTIVE_APP_LOCK, USER } from '../support/fixtures.ts';
 
 // The app lock's state is this browser's (a PIN record in IndexedDB
 // `unihub-lock-v1`, as src/lib/app-lock/pin.ts keeps it) plus the server's
@@ -36,9 +36,13 @@ async function seedPin(page: Page) {
 }
 /** This device locks Mail and Contacts under the administrator's rule; `scope` overrides what it locks, `meets` whether it has a method. */
 async function lockedDevice(page: Page, { scope = CURRENT_DEVICE_LOCKED.settings.app_lock_scope.value, meets = true }: { scope?: string[]; meets?: boolean } = {}) {
-  const body = { ...CURRENT_DEVICE_LOCKED, settings: { ...CURRENT_DEVICE_LOCKED.settings, app_lock_scope: { ...CURRENT_DEVICE_LOCKED.settings.app_lock_scope, value: scope } }, compliance: { ...CURRENT_DEVICE_LOCKED.compliance, meets } };
+  // A device short of the requirement reports no lock yet (otherwise its PIN would count as lost, not missing).
+  const body = { ...CURRENT_DEVICE_LOCKED, device: { ...CURRENT_DEVICE_LOCKED.device, lock: meets ? CURRENT_DEVICE_LOCKED.device.lock : null },
+    settings: { ...CURRENT_DEVICE_LOCKED.settings, app_lock_scope: { ...CURRENT_DEVICE_LOCKED.settings.app_lock_scope, value: scope } }, compliance: { ...CURRENT_DEVICE_LOCKED.compliance, meets } };
   await page.route('**/api/devices/current', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) }));
   await page.route('**/api/settings/values/device', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ device_id: body.device.id, settings: body.settings }) }));
+  // The rules that put the floors there, with the server's reasons beside the greyed choices.
+  await page.route('**/api/policies/effective', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(POLICIES_EFFECTIVE_APP_LOCK) }));
 }
 
 // A row picked up with the keyboard (P-29, D29/D31): Space on the ≡ handle
@@ -130,7 +134,7 @@ for (const theme of THEMES) {
           await page.route('**/api/admin/policies', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(POLICIES_ADMIN_APP_LOCK) }));
           await open('/admin/policies');
           await expect(page.getByRole('combobox', { name: 'App lock required' })).toHaveText('Chosen modules');
-          await page.getByRole('heading', { name: 'App lock' }).scrollIntoViewIfNeeded();
+          await page.getByRole('combobox', { name: 'Screenshots in the Android app' }).scrollIntoViewIfNeeded();
           await settle();
           await expectBaseline(page, `admin-policies-app-lock-wide-${theme}.png`);
         });

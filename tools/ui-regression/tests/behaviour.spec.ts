@@ -347,7 +347,8 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
   test('Settings, App lock', async ({ page, open, settle }) => {
     await open('/settings?section=app-lock');
     await expect(page.getByRole('radio', { name: 'Off' })).toBeVisible();
-    await page.getByRole('radio', { name: 'Chosen modules' }).tap();
+    // The row is the tap target; its input is drawn by the row (RadioRow).
+    await page.getByText('Chosen modules', { exact: true }).tap();
     await expect(page.getByRole('list', { name: 'Locked modules' })).toBeVisible();
     await settle();
     expectOnlyKnown(await touchViolations(page), []);
