@@ -1,5 +1,9 @@
 import { onAppEvent } from '@/lib/app-events';
-import { useModules } from '@/hooks/use-modules';
+import { useModules, moduleForPath } from '@/hooks/use-modules';
+import { useAppLock } from '@/hooks/use-app-lock';
+import { Lock } from 'lucide-react';
+import { UnlockDialog } from '@/components/app-lock/UnlockDialog';
+import { areaLabel, LOCKABLE_MODULES } from '@/components/app-lock/area-names';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -42,9 +46,14 @@ function getResultIcon(type: SearchResult['type']) {
 }
 
 const GlobalCommandPalette = () => {
-  const { pages, canNavigate, canAccess } = useModules();
+  const { pages, modules, canNavigate, canAccess } = useModules();
+  const lock = useAppLock();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
+  const [unlocking, setUnlocking] = useState(false);
+  // A locked module's items are neither started nor listed; one row per locked module offers the unlock.
+  const openHere = (href: string) => { const id = moduleForPath(href); return canAccess(href) && (!id || !lock.locked(id)); };
+  const lockedModules = LOCKABLE_MODULES.filter(id => canAccess(`/${id}`) && lock.locked(id));
   const [query, setQuery] = useState('');
   const debouncedQuery = useDebouncedValue(query, 200);
 
@@ -81,13 +90,14 @@ const GlobalCommandPalette = () => {
     const needle = query.trim().toLowerCase();
     const matches = (label: string) => !needle || label.toLowerCase().includes(needle);
     return {
-      create: createActions.filter(action => canAccess(action.href) && matches(action.label)),
+      create: createActions.filter(action => openHere(action.href) && matches(action.label)),
       pages: [
         ...navigationPages(pages, canNavigate).map(page => ({ id: page.id, label: page.name, href: page.href, icon: page.icon })),
         { id: 'settings', label: 'Settings', href: '/settings', icon: Settings },
       ].filter(page => matches(page.label)),
     };
-  }, [query, pages, canNavigate, canAccess]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, pages, canNavigate, canAccess, lock.status, lock.scope]);
 
   const runCommand = (href: string) => {
     setOpen(false);
@@ -96,6 +106,7 @@ const GlobalCommandPalette = () => {
   };
 
   return (
+    <>
     <CommandDialog open={open} onOpenChange={setOpen}>
       <CommandInput
         placeholder="Search or go to…"
@@ -124,11 +135,22 @@ const GlobalCommandPalette = () => {
             ))}
           </CommandGroup>
         )}
-        {searchResults.length > 0 && (
+        {lockedModules.length > 0 && debouncedQuery.trim().length >= 2 && (
+          <CommandGroup heading="Locked">
+            {/* forceMount: the row stays whatever is typed; the search filter must not hide the way to unlock. */}
+            {lockedModules.map(id => (
+              <CommandItem key={`locked-${id}`} forceMount value={`${areaLabel(id, modules)} is locked: unlock to search it`} onSelect={() => { setOpen(false); setUnlocking(true); }}>
+                <Lock className="mr-2 h-4 w-4" />
+                <span>{areaLabel(id, modules)} is locked: unlock to search it</span>
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
+        {searchResults.some(result => openHere(result.href)) && (
           <>
             <CommandSeparator />
             <CommandGroup heading="Results">
-              {searchResults.filter(result => canAccess(result.href)).map((result) => {
+              {searchResults.filter(result => openHere(result.href)).map((result) => {
                 const Icon = getResultIcon(result.type);
                 return (
                   <CommandItem
@@ -148,7 +170,9 @@ const GlobalCommandPalette = () => {
           </>
         )}
       </CommandList>
-    </CommandDialog>
+      </CommandDialog>
+      <UnlockDialog open={unlocking} onOpenChange={setUnlocking} onSuccess={() => setOpen(true)} />
+    </>
   );
 };
 

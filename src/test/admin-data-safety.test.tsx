@@ -23,6 +23,7 @@ vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), 
 const VALUES: Record<string, unknown[]> = {
   'mail.mode.new_accounts': ['user_choice', 'download', 'download_delete', 'sync'], 'mail.provider_delete': ['user_choice', 'forbidden', 'required'],
   'backup.download_mail': ['user_choice', 'always'], 'backup.server_retention_days': [null, 30, 90, 365], 'accounts.admin_manage': ['available'],
+  'app_lock.required': [[]], 'app_lock.max_background': ['none', '900', '300', '60', '0'],
 };
 const adminPolicies = (): AdminPoliciesResponse => ({
   revision: 3,
@@ -71,6 +72,32 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe('Server settings → Policies', () => {
+  it('the App lock group: chosen modules and a longest time save only their keys, with the password', { timeout: 40_000 }, async () => {
+    mountSignedIn(<AdminPolicies />, { user: ADMIN });
+    const required = await screen.findByRole('combobox', { name: 'App lock required' });
+    expect(required).toHaveTextContent('Not required (default)');
+    fireEvent.click(required);
+    fireEvent.click(await screen.findByRole('option', { name: 'Chosen modules' }));
+    const list = await screen.findByRole('list', { name: 'Required modules' });
+    fireEvent.click(within(list).getByRole('checkbox', { name: 'Mail' }));
+    fireEvent.click(within(list).getByRole('checkbox', { name: 'Contacts' }));
+    const bar = await screen.findByRole('region', { name: 'Unsaved changes' });
+    expect(bar).toHaveTextContent('1 rule changed');
+    fireEvent.click(screen.getByRole('combobox', { name: 'Longest time in the background' }));
+    fireEvent.click(await screen.findByRole('option', { name: '5 minutes' }));
+    expect(bar).toHaveTextContent('2 rules changed');
+    // Back to nothing required takes the row out of the changes again.
+    fireEvent.click(within(list).getByRole('checkbox', { name: 'Mail' }));
+    fireEvent.click(within(list).getByRole('checkbox', { name: 'Contacts' }));
+    expect(bar).toHaveTextContent('1 rule changed');
+    fireEvent.click(within(list).getByRole('checkbox', { name: 'Mail' }));
+    fireEvent.click(within(bar).getByRole('button', { name: 'Save changes…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Save the changed rules?' });
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-own-password' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/policies', { values: { 'app_lock.required': ['mail'], 'app_lock.max_background': '300' }, current_password: 'admin-own-password' }));
+  });
+
   it('stages changes and saves only the changed keys with the administrator\'s password', { timeout: 20_000 }, async () => {
     mountSignedIn(<AdminPolicies />, { user: ADMIN });
     const create = await screen.findByRole('combobox', { name: 'Creating backups' });

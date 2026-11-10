@@ -3,6 +3,9 @@ import { ServerOff } from 'lucide-react';
 import OfflineBanner from '@/components/offline/OfflineBanner';
 import { Outlet, Navigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/useAuth';
+import { useAppLock } from '@/hooks/use-app-lock';
+import { LockScreen } from '@/components/app-lock/LockScreen';
+import { AppLockRequiredPrompt } from '@/components/app-lock/AppLockRequiredPrompt';
 import { useBackgroundNotificationChecks } from '@/hooks/use-background-notification-checks';
 import { useCalendarNotifications } from '@/hooks/use-calendar-notifications';
 import { useMailNotifications } from '@/hooks/use-mail-notifications';
@@ -40,6 +43,9 @@ function ServerUnavailable({ onRetry, retrying }: { onRetry: () => Promise<void>
 // Each page renders its own header and panel through PageShell.
 const AppLayout = () => {
   const { user, loading, serverUnavailable, retrySession } = useAuth();
+  const lock = useAppLock();
+  // These stay mounted while the app is locked: an upload must not stop, and
+  // notifications keep being checked (the lock hides their content elsewhere).
   useBackgroundNotificationChecks();
   useCalendarNotifications();
   useMailNotifications();
@@ -53,6 +59,20 @@ const AppLayout = () => {
 
   if (!user) {
     return <Navigate to="/auth" replace />;
+  }
+
+  // Until this device's lock state is known, no private view and no lock screen either.
+  if (lock.status === 'checking') return <StartingScreen />;
+
+  // The whole-app lock: nothing of the shell is in the DOM behind the lock
+  // screen. The data rules notice opens over the set-up prompt first (D38).
+  if (lock.locked('app')) {
+    return (
+      <div className="h-dvh overflow-hidden bg-background">
+        <PreferenceAccent />
+        {lock.status === 'setup' ? <><AppLockRequiredPrompt area="app" variant="page" /><PolicyNoticeDialog /></> : <LockScreen area="app" variant="page" />}
+      </div>
+    );
   }
 
   return (

@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ErrorState } from '@/components/ui/page-states';
 import { TotpQrCode } from '@/components/settings/TotpQrCode';
-import { SignedInDevices } from '@/components/settings/SignedInDevices';
+import { Devices } from '@/components/settings/Devices';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 
 
@@ -194,7 +194,7 @@ export default function SecuritySettings() {
         )}
       </SettingsSection>
 
-      <SignedInDevices />
+      <Devices />
 
       <PasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} />
 

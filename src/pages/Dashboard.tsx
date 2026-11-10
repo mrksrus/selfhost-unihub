@@ -1,4 +1,6 @@
 import { useModules } from '@/hooks/use-modules';
+import { useAppLock } from '@/hooks/use-app-lock';
+import { LockedNotice } from '@/components/app-lock/LockedNotice';
 import { mailQueryKeys } from '@/lib/mail-api';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -60,6 +62,9 @@ const Note = ({ children }: { children: ReactNode }) => <p className="border-b b
 const Dashboard = () => {
   const { user } = useAuth();
   const { canNavigate, isEnabled } = useModules();
+  const lock = useAppLock();
+  const mailLocked = lock.locked('mail');
+  const calendarLocked = lock.locked('calendar');
   const timezone = user?.timezone ?? null;
   const actions = useTaskActions();
   const now = new Date();
@@ -72,25 +77,25 @@ const Dashboard = () => {
 
   const todayFilters = { includeTodos: false, includeDone: false, visibleOnly: true, rangeStart: todayStart.toISOString(), rangeEnd: todayEnd.toISOString() };
   const todayEventsQuery = useQuery({
-    enabled: isEnabled('calendar') && showCalendar,
+    enabled: isEnabled('calendar') && showCalendar && !calendarLocked,
     queryKey: calendarQueryKeys.list(todayFilters),
     queryFn: ({ signal }) => calendarApi.fetchEvents(todayFilters, signal),
   });
   const weekFilters = { includeTodos: false, includeDone: false, visibleOnly: true, rangeStart: todayEnd.toISOString(), rangeEnd: weekEnd.toISOString() };
   const weekQuery = useQuery({
-    enabled: isEnabled('calendar') && showCalendar,
+    enabled: isEnabled('calendar') && showCalendar && !calendarLocked,
     queryKey: calendarQueryKeys.list(weekFilters),
     queryFn: ({ signal }) => calendarApi.fetchEvents(weekFilters, signal),
   });
   const taskFilters = { includeTodos: true, includeDone: false, respectAutoTodo: true };
   const taskEventsQuery = useQuery({
-    enabled: isEnabled('calendar') && showTasks,
+    enabled: isEnabled('calendar') && showTasks && !calendarLocked,
     queryKey: calendarQueryKeys.list(taskFilters),
     queryFn: ({ signal }) => calendarApi.fetchEvents(taskFilters, signal),
   });
   const unreadEmailsQuery = useQuery({
     queryKey: mailQueryKeys.dashboardUnread,
-    enabled: isEnabled('mail') && showMail,
+    enabled: isEnabled('mail') && showMail && !mailLocked,
     queryFn: async ({ signal }) => {
       const response = await api.get<{ emails: EmailSummary[]; pagination?: { total: number } }>('/mail/emails?limit=5&offset=0&is_read=false&include_count=true', { signal });
       if (response.error) throw new Error(response.error);
@@ -141,7 +146,8 @@ const Dashboard = () => {
             {showCalendar && (
               <div>
                 <Section title="Schedule" link={{ to: '/calendar', label: 'Calendar' }}>
-                  {todayEventsQuery.isLoading ? <LoadingState compact label="Loading today's events…" />
+                  {calendarLocked ? <LockedNotice area="calendar" description="Unlock to see today's events here." />
+                    : todayEventsQuery.isLoading ? <LoadingState compact label="Loading today's events…" />
                     : todayEventsQuery.error ? <ErrorState title="Could not load today's events" error={todayEventsQuery.error} onRetry={() => void todayEventsQuery.refetch()} retrying={todayEventsQuery.isFetching} />
                     : <>
                       {todayEvents.length === 0 && <Note>Nothing scheduled today.</Note>}
@@ -164,7 +170,8 @@ const Dashboard = () => {
             <div>
               {showTasks && (
                 <Section title="Tasks" link={{ to: '/todo', label: 'All tasks' }}>
-                  {taskEventsQuery.isLoading ? <LoadingState compact label="Loading tasks…" />
+                  {calendarLocked ? <LockedNotice area="calendar" description="Unlock to see open tasks here." />
+                    : taskEventsQuery.isLoading ? <LoadingState compact label="Loading tasks…" />
                     : taskEventsQuery.error ? <ErrorState title="Could not load tasks" error={taskEventsQuery.error} onRetry={() => void taskEventsQuery.refetch()} retrying={taskEventsQuery.isFetching} />
                     : shownTasks.length === 0 ? <p className="py-2.5 text-sm text-muted-foreground">No open tasks.</p>
                     : <ul>
@@ -192,7 +199,8 @@ const Dashboard = () => {
               )}
               {showMail && (
                 <Section title="Unread mail" link={{ to: '/mail', label: 'Inbox' }}>
-                  {unreadEmailsQuery.isLoading ? <LoadingState compact label="Loading unread mail…" />
+                  {mailLocked ? <LockedNotice area="mail" description="Unlock to see unread mail here." />
+                    : unreadEmailsQuery.isLoading ? <LoadingState compact label="Loading unread mail…" />
                     : unreadEmailsQuery.error ? <ErrorState title="Could not load unread mail" error={unreadEmailsQuery.error} onRetry={() => void unreadEmailsQuery.refetch()} retrying={unreadEmailsQuery.isFetching} />
                     : !unread?.emails.length ? <p className="py-2.5 text-sm text-muted-foreground">Inbox is caught up.</p>
                     : <ul>

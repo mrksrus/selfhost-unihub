@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/useAuth';
 import { useModules } from '@/hooks/use-modules';
 import { useAttentionItems } from '@/hooks/use-attention';
 import { useNavigationCounts } from '@/hooks/use-navigation-counts';
+import { useAppLock } from '@/hooks/use-app-lock';
 import { navigationPages } from '@/lib/navigation';
 import { emitAppEvent } from '@/lib/app-events';
 import { cn } from '@/lib/utils';
@@ -55,6 +56,9 @@ export default function NavRail() {
   const location = useLocation();
   const attention = useAttentionItems();
   const counts = useNavigationCounts();
+  const lock = useAppLock();
+  // A locked module gives nothing away, not even a count.
+  const countOf = (pageId: string) => { const module = pages.find(page => page.id === pageId)?.module; return module && lock.locked(module) ? undefined : counts[pageId as keyof typeof counts]; };
   const [trayOpen, setTrayOpen] = useState(false);
   const initials = user?.full_name?.split(' ').map(part => part[0]).join('').slice(0, 2).toUpperCase() || user?.email?.[0]?.toUpperCase() || '?';
 
@@ -64,7 +68,7 @@ export default function NavRail() {
       <div className="flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-y-auto">
         {navigationPages(pages, canNavigate).map(page => (
           <RailLink key={page.id} to={page.href} icon={page.icon} label={page.name}
-            active={location.pathname.startsWith(page.href)} count={counts[page.id]} />
+            active={location.pathname.startsWith(page.href)} count={countOf(page.id)} />
         ))}
       </div>
       <div className="flex flex-col items-center gap-0.5 pt-2">

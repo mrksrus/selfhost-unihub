@@ -5,7 +5,10 @@ import { useAuth } from '@/contexts/useAuth';
 import { useToast } from '@/hooks/use-toast';
 import { adminPoliciesQueryKey, fetchAdminPolicies, saveAdminPolicies, type AdminPolicy, type BinMinimum } from '@/lib/admin-api';
 import { acknowledgePolicies, policiesQueryKey, type PolicyKey, type PolicyValues } from '@/lib/policies-api';
+import type { AppLockArea } from '@/lib/devices-api';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { AREA_LABELS, LOCKABLE_MODULES } from '@/components/app-lock/area-names';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ErrorState, LoadingState } from '@/components/ui/page-states';
 import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
@@ -16,7 +19,9 @@ import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog'
 // Server settings → Policies (F13 on F1): the data-safety rules for everyone
 // on this server. Each key is one row; the values come from the server, and a
 // change is saved with the administrator's password in one transaction with
-// its activity-log entry. Changing a rule never deletes data. Two rules read
+// its activity-log entry. Changing a rule never deletes data. The App lock
+// rules (0.29) require a lock of every device: a device without it cannot
+// open the locked parts until it has one. Two rules read
 // as minimums: how long users' backups are kept (backup.server_retention_days) and, while deleting
 // from the bin is forbidden, how long the bin keeps items (bin_min_retention).
 
@@ -62,6 +67,15 @@ const GROUPS: { title: string; description?: string; rows: Row[] }[] = [
       { key: 'data.clear', label: 'Settings › Delete data', description: 'Deleting every contact, event, mail account or recording at once. Never allowed while the bin rule forbids deleting.' },
     ],
   },
+  {
+    title: 'App lock',
+    description: 'Every device of every person, administrators included. The lock is a fingerprint, face or phone PIN in the Android app and a PIN kept in the browser on the web.',
+    rows: [
+      { key: 'app_lock.required', label: 'App lock required', description: 'What every device must lock before it can open it.' },
+      { key: 'app_lock.max_background', label: 'Longest time in the background', description: 'How long UniHub may stay unlocked while people use something else.' },
+      { key: 'app_lock.screenshots', label: 'Screenshots in the Android app', description: 'Also screen recording and the picture in the recent apps.' },
+    ],
+  },
 ];
 
 const VALUE_LABELS: Record<string, string> = {
@@ -69,26 +83,76 @@ const VALUE_LABELS: Record<string, string> = {
   sync: 'Sync', required: 'Required for new accounts', always: 'Always', available: 'Available',
   '30': '30 days', '90': '90 days', forever: 'Until restored',
 };
+/** Labels a value has only under one key. */
+const VALUE_LABELS_BY_KEY: Partial<Record<RowKey, Record<string, string>>> = {
+  'app_lock.max_background': { none: 'No limit', '900': '15 minutes', '300': '5 minutes', '60': '1 minute', '0': 'Every time it opens' },
+  'app_lock.screenshots': { allowed: 'Allowed', forbidden: 'Blocked' },
+};
 const NONE = 'none';
 const valueKey = (value: unknown) => value === null ? NONE : String(value);
-const valueLabel = (value: unknown) => value === null ? 'No minimum' : typeof value === 'number' ? `${value} days` : VALUE_LABELS[String(value)] ?? String(value);
+const valueLabel = (value: unknown, key?: RowKey) => value === null ? 'No minimum' : typeof value === 'number' ? `${value} days`
+  : (key && VALUE_LABELS_BY_KEY[key]?.[String(value)]) ?? VALUE_LABELS[String(value)] ?? String(value);
+/** Equal values, lists included (the app lock's required areas are a list). */
+const sameValue = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 /** The minimum retention row of a server without the field: shown, greyed, with the reason. */
 const BIN_MINIMUM_FALLBACK: AdminPolicy<never> = { value: 'forever' as never, source: 'default', default: 'forever' as never, values: ['30', '90', 'forever'] as never[], effect: null };
 const BIN_MINIMUM_MISSING = 'This server does not offer a minimum yet: items stay in the bin until they are restored.';
 
 /** The select for one policy, with the default marked and the effect of the chosen value under it. */
-function PolicySelect({ id, policy, value, onChange, disabled }: { id: string; policy: AdminPolicy; value: unknown; onChange: (next: unknown) => void; disabled?: boolean }) {
+function PolicySelect({ id, rowKey, policy, value, onChange, disabled }: { id: string; rowKey?: RowKey; policy: AdminPolicy; value: unknown; onChange: (next: unknown) => void; disabled?: boolean }) {
   const byKey = new Map(policy.values.map(entry => [valueKey(entry), entry]));
   return (
     <Select value={valueKey(value)} onValueChange={key => onChange(byKey.get(key) ?? null)} disabled={disabled}>
       <SelectTrigger id={id} className="w-full sm:w-72"><SelectValue /></SelectTrigger>
       <SelectContent>
         {policy.values.map(entry => (
-          <SelectItem key={valueKey(entry)} value={valueKey(entry)}>{valueLabel(entry)}{entry === policy.default ? ' (default)' : ''}</SelectItem>
+          <SelectItem key={valueKey(entry)} value={valueKey(entry)}>{valueLabel(entry, rowKey)}{sameValue(entry, policy.default) ? ' (default)' : ''}</SelectItem>
         ))}
       </SelectContent>
     </Select>
+  );
+}
+
+type RequiredChoice = 'none' | 'app' | 'modules';
+const requiredChoiceOf = (value: readonly AppLockArea[]): RequiredChoice => value.includes('app') ? 'app' : value.length ? 'modules' : 'none';
+
+/**
+ * The required app lock: nothing, the whole app, or chosen modules with their
+ * boxes under the select. The value is the list the server keeps ([] for
+ * nothing, ['app'] for the whole app, otherwise module ids).
+ */
+function AppLockRequiredControl({ id, value, onChange, disabled }: { id: string; value: readonly AppLockArea[]; onChange: (next: AppLockArea[]) => void; disabled?: boolean }) {
+  const [choice, setChoice] = useState<RequiredChoice | null>(null);
+  const shown = choice ?? requiredChoiceOf(value);
+  const choose = (next: RequiredChoice) => {
+    setChoice(next === 'modules' ? next : null);
+    if (next === 'none') onChange([]);
+    else if (next === 'app') onChange(['app']);
+    else if (value.includes('app')) onChange([]);
+  };
+  const toggle = (moduleId: AppLockArea, checked: boolean) => onChange(LOCKABLE_MODULES.filter(area => (area === moduleId ? checked : value.includes(area))));
+  return (
+    <div className="w-full space-y-2">
+      <Select value={shown} onValueChange={key => choose(key as RequiredChoice)} disabled={disabled}>
+        <SelectTrigger id={id} className="w-full sm:w-72"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="none">Not required (default)</SelectItem>
+          <SelectItem value="app">Whole app</SelectItem>
+          <SelectItem value="modules">Chosen modules</SelectItem>
+        </SelectContent>
+      </Select>
+      {shown === 'modules' && (
+        <ul aria-label="Required modules" className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
+          {LOCKABLE_MODULES.map(moduleId => (
+            <li key={moduleId} className="flex items-center gap-3 py-1.5 touch:py-2">
+              <Checkbox id={`${id}-${moduleId}`} checked={value.includes(moduleId)} disabled={disabled} onCheckedChange={checked => toggle(moduleId, checked === true)} />
+              <label htmlFor={`${id}-${moduleId}`} className="text-sm">{AREA_LABELS[moduleId as keyof typeof AREA_LABELS]}</label>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -127,7 +191,7 @@ const AdminPolicies = () => {
   const current = (key: RowKey): unknown => (key in draft ? draft[key] : policyOf(key)?.value);
   const change = (key: RowKey, value: unknown) => setDraft(previous => {
     const next = { ...previous };
-    if (value === policyOf(key)?.value) delete next[key]; else next[key] = value;
+    if (sameValue(value, policyOf(key)?.value)) delete next[key]; else next[key] = value;
     return next;
   });
   const labelOf = (key: RowKey) => GROUPS.flatMap(group => group.rows).find(row => row.key === key)?.label ?? key;
@@ -162,8 +226,11 @@ const AdminPolicies = () => {
               const lock = lockOf(row);
               return (
                 <SettingsRow key={row.key} label={<>{row.label}{pending && <span className="font-normal text-accent"> · changed</span>}</>} htmlFor={id} lock={lock}
-                  description={[row.description, policy.effect && value !== policy.default ? policy.effect : null].filter(Boolean).join(' ') || undefined}>
-                  <PolicySelect id={id} policy={policy} value={value} onChange={next => change(row.key, next)} disabled={!!lock} />
+                  stack={row.key === 'app_lock.required'}
+                  description={[row.description, policy.effect && !sameValue(value, policy.default) ? policy.effect : null].filter(Boolean).join(' ') || undefined}>
+                  {row.key === 'app_lock.required'
+                    ? <AppLockRequiredControl id={id} value={Array.isArray(value) ? value as AppLockArea[] : []} onChange={next => change(row.key, next)} disabled={!!lock} />
+                    : <PolicySelect id={id} rowKey={row.key} policy={policy} value={value} onChange={next => change(row.key, next)} disabled={!!lock} />}
                 </SettingsRow>
               );
             })}

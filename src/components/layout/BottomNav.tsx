@@ -5,6 +5,7 @@ import { MoreHorizontal } from 'lucide-react';
 import { BOTTOM_NAV_PAGES, navigationPages, pageLink } from '@/lib/navigation';
 import { useAttentionItems } from '@/hooks/use-attention';
 import { useNavigationCounts } from '@/hooks/use-navigation-counts';
+import { useAppLock } from '@/hooks/use-app-lock';
 
 const MORE_PATHS = ['/more', '/settings', '/admin'];
 
@@ -14,6 +15,9 @@ const BottomNav = () => {
   const location = useLocation();
   const attention = useAttentionItems();
   const counts = useNavigationCounts();
+  const lock = useAppLock();
+  // A locked module gives nothing away, not even a count.
+  const countOf = (pageId: string) => { const module = pages.find(page => page.id === pageId)?.module; return module && lock.locked(module) ? 0 : counts[pageId as keyof typeof counts] ?? 0; };
   // The first pages in the user's order; the rest are listed on More, which
   // is also marked for hidden pages opened by link and for Settings.
   const shown = navigationPages(pages, canNavigate).slice(0, BOTTOM_NAV_PAGES);
@@ -31,7 +35,7 @@ const BottomNav = () => {
           item.href === '/more'
             ? moreHrefs.some((path) => location.pathname.startsWith(path))
             : location.pathname.startsWith(item.href);
-        const count = item.id === 'more' ? 0 : counts[item.id] ?? 0;
+        const count = item.id === 'more' ? 0 : countOf(item.id);
         const dot = item.id === 'more' && attention.length > 0;
         return (
           <NavLink

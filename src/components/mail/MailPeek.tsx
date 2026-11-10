@@ -10,6 +10,8 @@ import { closeMailPeek, dockMailPeek, expandMailPeek, guardMailPeek, useMailPeek
 import { cn } from '@/lib/utils';
 import { useAuth, useUserTimezone } from '@/contexts/useAuth';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { useAppLock } from '@/hooks/use-app-lock';
+import { LockedNotice } from '@/components/app-lock/LockedNotice';
 import { useMailCompose } from '@/hooks/use-mail-compose';
 import { Button } from '@/components/ui/button';
 import { ErrorState, LoadingState } from '@/components/ui/page-states';
@@ -38,7 +40,10 @@ function MailPeekPanel({ emailId, docked }: { emailId: string; docked: boolean }
   const phone = useIsMobile();
   const navigate = useNavigate();
   const timezone = useUserTimezone();
+  // While Mail is locked the peek shows the lock, and asks the server for nothing.
+  const mailLocked = useAppLock().locked('mail');
   const query = useQuery({
+    enabled: !mailLocked,
     queryKey: mailQueryKeys.detail(emailId),
     queryFn: async ({ signal }) => {
       const response = await api.get<{ email: Email }>(`/mail/emails/${encodeURIComponent(emailId)}`, { signal });
@@ -144,7 +149,8 @@ function MailPeekPanel({ emailId, docked }: { emailId: string; docked: boolean }
             </div>
             {/* On a phone the reply takes the sheet; closing the reply shows the message again. */}
             <div className={cn('min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6', phone && writing && 'hidden')}>
-              {query.isPending ? <LoadingState label="Loading email…" compact />
+              {mailLocked ? <LockedNotice area="mail" centered description="Unlock to read the email here." />
+                : query.isPending ? <LoadingState label="Loading email…" compact />
                 : query.error ? <ErrorState title="Could not load the email" error={query.error} onRetry={() => void query.refetch()} retrying={query.isFetching} />
                   : email && <MailMessageView email={email} timezone={timezone} compact />}
             </div>
