@@ -58,10 +58,9 @@ The `latest` tag follows successful main-branch and release builds; use a versio
 tag when you want explicit control of upgrades. The supplied
 [Compose file](docker-compose.yml) currently uses `latest`.
 
-**TrueNAS:** a [draft Community catalog installer](https://github.com/truenas/apps/pull/5847)
-is under review; it is not yet an approved catalog app. The supplied
-Compose file needs no extra files, but its `${...}` environment substitutions must
-still be filled in by the tool that runs it. See [TrueNAS installation preparation](docs/TRUENAS_INSTALLER.md).
+**TrueNAS:** a [Community catalog app](https://github.com/truenas/apps/pull/5975)
+is under review; it is not yet in the catalog. See
+[UniHub as a TrueNAS app](docs/TRUENAS_INSTALLER.md).
 
 ## Keep your data recoverable
 
@@ -86,7 +85,7 @@ undo database changes. Read [Backup and restore (ALPHA)](docs/BACKUP_RESTORE.md)
 | I want to… | Read this |
 | --- | --- |
 | Install and understand every required setting | [Installation and configuration](docs/INSTALLATION.md) |
-| Prepare a TrueNAS catalog installer | [Proposed installer fields and remaining work](docs/TRUENAS_INSTALLER.md) |
+| Run UniHub as a TrueNAS app | [UniHub as a TrueNAS app](docs/TRUENAS_INSTALLER.md) |
 | Update without replacing my data | [Upgrade guide](docs/UPGRADING.md) |
 | Back up or restore my account | [Backup and restore (ALPHA)](docs/BACKUP_RESTORE.md) |
 | Choose Download or Sync | [Mail modes](docs/MAIL_MODES.md) |

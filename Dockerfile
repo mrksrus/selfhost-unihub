@@ -98,12 +98,16 @@ COPY --from=android-app /out/ /app/downloads/
 
 # Production mode belongs to the image, not to whoever starts it: the API marks
 # its cookies Secure only under NODE_ENV=production (api/src/config.ts), and an
-# installer that cannot pass environment variables must not lose that.
-ENV NODE_ENV=production
+# installer that cannot pass environment variables must not lose that. The
+# same goes for the image's own Nginx: every request reaches the API through
+# it, so the API reads the visitor's address from the header it sets
+# (TRUSTED_PROXY_CIDRS, loopback unless set, names who may set it).
+ENV NODE_ENV=production TRUST_PROXY_HEADERS=true
 
-# The Node API runs as this unprivileged user (fixed IDs so bind mounts can be
-# prepared on the host). The supervisor and Nginx master stay root; Nginx drops
-# its workers to the nginx user as before.
+# Started as root, the Node API runs as this unprivileged user (fixed IDs so
+# bind mounts can be prepared on the host), the supervisor and Nginx master
+# stay root and Nginx drops its workers to the nginx user. Started as another
+# user (docker run --user), everything runs as that user (docker/start.sh).
 ENV UNIHUB_API_UID=10001 UNIHUB_API_GID=10001
 RUN addgroup -S -g 10001 unihub \
     && adduser -S -D -H -h /nonexistent -s /sbin/nologin -u 10001 -G unihub unihub
@@ -119,6 +123,6 @@ EXPOSE 80
 
 # Allow the 300s MariaDB readiness window plus API startup before reporting failures.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=360s --retries=3 \
-  CMD wget -q -O /dev/null http://localhost/health || exit 1
+  CMD wget -q -O /dev/null "http://localhost:${UNIHUB_HTTP_PORT:-80}/health" || exit 1
 
 CMD ["/app/start.sh"]

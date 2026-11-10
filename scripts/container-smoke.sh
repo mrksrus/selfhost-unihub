@@ -34,7 +34,8 @@ cleanup() {
   trap - EXIT
   echo 'Container startup and smoke logs:'
   docker logs --tail 100 "$container_name" 2>&1 || true
-  docker rm -f "$container_name" "${container_name}-nginx" >/dev/null 2>&1 || true
+  docker logs --tail 60 "${container_name}-variant" 2>&1 || true
+  docker rm -f "$container_name" "${container_name}-nginx" "${container_name}-variant" >/dev/null 2>&1 || true
   docker volume rm "$volume_name" >/dev/null 2>&1 || true
   exit "$status"
 }
@@ -247,4 +248,63 @@ for (const path of ['/api/version', '/api/auth/me', '/health']) {
 console.log('With the API down, API requests answer 502 with a JSON error and the page still loads');
 NODE
 docker rm -f "${container_name}-nginx" >/dev/null
-echo 'Container smoke passed: startup, non-root API and uploads handover, health, security headers, Android app download, authentication, isolation, malformed requests, audio, contact photo and encrypted backup round-trips, graceful stop, essential-service recovery, and API-down answers.'
+# The other ways to start the image (docker/start.sh): as root on another port,
+# and as a user the image has no account for, without any capability. The
+# first container has exited, so its database, uploads and ports are free.
+start_variant() { # <port> <docker run options>...
+  local port=$1 attempt; shift
+  docker rm -f "${container_name}-variant" >/dev/null 2>&1 || true
+  docker run -d --name "${container_name}-variant" --network host \
+    --init --cap-drop ALL --security-opt no-new-privileges "$@" \
+    --mount "type=volume,source=$volume_name,target=/app/uploads" -e "UNIHUB_HTTP_PORT=$port" \
+    -e "MYSQL_HOST=$MYSQL_TEST_HOST" -e "MYSQL_PORT=$MYSQL_TEST_PORT" \
+    -e "MYSQL_DATABASE=$MYSQL_TEST_DATABASE" -e "MYSQL_USER=$MYSQL_TEST_USER" -e "MYSQL_PASSWORD=$MYSQL_TEST_PASSWORD" \
+    -e BOOTSTRAP_ADMIN_EMAIL -e BOOTSTRAP_ADMIN_PASSWORD -e ENCRYPTION_KEY -e BACKUP_MASTER_KEY -e JWT_SECRET "$image" >/dev/null
+  for ((attempt=0; attempt<90; attempt++)); do
+    curl --silent --fail --max-time 2 "http://localhost:$port/health" >/dev/null && break
+    [[ "$(docker inspect --format '{{.State.Running}}' "${container_name}-variant")" == true ]] || { echo "The container for port $port exited before becoming healthy." >&2; exit 1; }
+    sleep 2
+  done
+  (( attempt < 90 )) || { echo "The container for port $port did not become healthy within 180 seconds." >&2; exit 1; }
+  # The image's own health check follows the port, and sign-in works through Nginx.
+  docker exec "${container_name}-variant" sh -c "$(docker inspect --format '{{index .Config.Healthcheck.Test 1}}' "${container_name}-variant")"
+  [[ "$(curl --silent --output /dev/null --write-out '%{http_code}' "http://localhost:$port/")" == 200 ]] || { echo "The page did not load on port $port." >&2; exit 1; }
+  curl --silent --fail --output /dev/null -H 'Content-Type: application/json' \
+    --data "{\"email\":\"$BOOTSTRAP_ADMIN_EMAIL\",\"password\":\"$BOOTSTRAP_ADMIN_PASSWORD\"}" "http://localhost:$port/api/auth/signin" \
+    || { echo "Sign-in failed on port $port." >&2; exit 1; }
+}
+stop_variant() {
+  docker stop -t 30 "${container_name}-variant" >/dev/null
+  [[ "$(docker inspect --format '{{.State.ExitCode}}' "${container_name}-variant")" == 0 ]] || { echo 'The container did not exit cleanly on docker stop.' >&2; exit 1; }
+}
+# A port above 1023 needs no NET_BIND_SERVICE.
+start_variant 8081 --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID
+stop_variant
+docker run --rm --network none --entrypoint chown \
+  --mount "type=volume,source=$volume_name,target=/app/uploads" "$image" -R -h 568:568 /app/uploads
+start_variant 8568 --user 568:568
+docker exec "${container_name}-variant" node -e '
+const fs=require("node:fs");let count=0;
+for(const pid of fs.readdirSync("/proc").filter(name=>/^\d+$/.test(name))){
+  let status;try{status=fs.readFileSync(`/proc/${pid}/status`,"utf8")}catch{continue}
+  const field=name=>(new RegExp(`^${name}:[ \\t]*(.*)$`,"m").exec(status)||[])[1]?.trim().split(/\s+/)||[];
+  if(![...field("Uid"),...field("Gid")].every(id=>id==="568"))throw new Error(`Process ${pid} (${field("Name")}) does not run as 568:568`);
+  if(BigInt("0x"+field("CapEff")[0])!==0n||BigInt("0x"+field("CapPrm")[0])!==0n)throw new Error(`Process ${pid} (${field("Name")}) holds capabilities`);
+  count++;
+}
+if(count<5)throw new Error(`Expected the supervisor, the API and Nginx, found ${count} processes`);
+fs.writeFileSync("/app/uploads/.smoke-write","");fs.rmSync("/app/uploads/.smoke-write");
+console.log(`As --user 568:568: ${count} processes, none as root or with capabilities; uploads writable`);'
+# A request body too large for Nginx's memory buffer goes to its temporary
+# files, which that user must be able to write (Nginx notes each such file in
+# its error log, at the warn level the image sets).
+head -c 300000 /dev/zero | tr '\0' a | curl --silent --output /dev/null \
+  -H 'Content-Type: application/json' --data-binary @- http://localhost:8568/api/auth/signin || true
+variant_log="$(docker logs "${container_name}-variant" 2>&1; docker exec "${container_name}-variant" cat /tmp/unihub-nginx/error.log)"
+[[ "$variant_log" == *'buffered to a temporary file /tmp/unihub-nginx/client_body/'* ]] || { echo 'As --user 568:568, Nginx did not keep a large request body in its own folder.' >&2; exit 1; }
+if [[ "$variant_log" == *'Permission denied'* || "$variant_log" == *'[emerg]'* || "$variant_log" == *'[alert]'* ]]; then
+  echo 'Started as --user 568:568, the container logged a permission or Nginx startup error.' >&2
+  exit 1
+fi
+stop_variant
+echo 'Container smoke passed: startup, non-root API and uploads handover, health, security headers, Android app download, authentication, isolation, malformed requests, audio, contact photo and encrypted backup round-trips, graceful stop, essential-service recovery, API-down answers, and starts on another port and as another user.'

@@ -59,6 +59,14 @@ test('the API runs as the configured user while nginx keeps the supervisor ident
   h.signals.emit('SIGTERM'); await delay(10);
 });
 
+test('nginx is checked and started with the configuration start.sh wrote', async () => {
+  const h = harness({ supervisor: { nginxArgs: ['-c', '/tmp/unihub-nginx/nginx.conf', '-e', 'stderr'] } }); await delay(15);
+  const [, check, nginx] = h.children;
+  assert.deepEqual(check.args, ['-t', '-c', '/tmp/unihub-nginx/nginx.conf', '-e', 'stderr']);
+  assert.deepEqual(nginx.args, ['-g', 'daemon off;', '-c', '/tmp/unihub-nginx/nginx.conf', '-e', 'stderr']);
+  h.signals.emit('SIGTERM'); await delay(10);
+});
+
 test('API identity is dropped only from root and refuses root or malformed IDs', () => {
   const env = { UNIHUB_API_UID: '10001', UNIHUB_API_GID: '10001' };
   assert.deepEqual(apiIdentity(env, () => 0), { uid: 10001, gid: 10001 });

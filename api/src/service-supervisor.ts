@@ -12,10 +12,11 @@ interface SupervisorOptions {
   exit?: (code: number) => void;
   signals?: Pick<EventEmitter, 'on' | 'removeListener'>;
   apiUser?: ApiIdentity | null;
+  nginxArgs?: string[];
 }
 
-// The image sets UNIHUB_API_UID/GID. When the supervisor runs as root (it must,
-// for Nginx to bind port 80), the API process drops to that user through
+// The image sets UNIHUB_API_UID/GID. When the supervisor runs as root (the
+// reference Compose file), the API process drops to that user through
 // drop-privileges.js, which needs SETGID/SETUID but no new privileges.
 function apiIdentity(env = process.env, getuid = process.getuid) {
   if (env.UNIHUB_API_UID === undefined && env.UNIHUB_API_GID === undefined) return null;
@@ -28,7 +29,7 @@ function apiIdentity(env = process.env, getuid = process.getuid) {
   return { uid, gid };
 }
 
-function superviseServices({ spawnChild = spawn, delayMs = 2000, graceMs = 10000, exit = code => process.exit(code), signals = process, apiUser = null }: SupervisorOptions = {}) {
+function superviseServices({ spawnChild = spawn, delayMs = 2000, graceMs = 10000, exit = code => process.exit(code), signals = process, apiUser = null, nginxArgs = [] }: SupervisorOptions = {}) {
   const children = new Set<OwnedChild>();
   let stopping = false;
   let exitCode = 1;
@@ -85,10 +86,10 @@ function superviseServices({ spawnChild = spawn, delayMs = 2000, graceMs = 10000
   { env: { ...process.env, HOME: '/tmp' }, stdio: ['inherit', 'inherit', 'inherit', 'ipc'] }).ownerChannel = true;
   else launch(process.execPath, ['/app/api/server.js']);
   startTimer = setTimeout(() => {
-    launch('nginx', ['-t'], code => {
+    launch('nginx', ['-t', ...nginxArgs], code => {
       if (code !== 0) return stop(1);
       console.log('✓ Starting Nginx...');
-      launch('nginx', ['-g', 'daemon off;']);
+      launch('nginx', ['-g', 'daemon off;', ...nginxArgs]);
       console.log('✓ All services started. Container is ready.');
     });
   }, delayMs);
@@ -97,7 +98,11 @@ function superviseServices({ spawnChild = spawn, delayMs = 2000, graceMs = 10000
 
 if (require.main === module) {
   const seconds = Number(process.env.UNIHUB_API_START_DELAY_SECONDS ?? 2);
+  // docker/start.sh names the configuration it wrote for another port or user;
+  // until Nginx has read it, errors go to the container log, not to a default
+  // file that user may not write.
+  const conf = process.env.UNIHUB_NGINX_CONF;
   superviseServices({ delayMs: Number.isSafeInteger(seconds) && seconds >= 0 && seconds <= 300 ? seconds * 1000 : 2000,
-    apiUser: apiIdentity() });
+    apiUser: apiIdentity(), nginxArgs: conf ? ['-c', conf, '-e', 'stderr'] : [] });
 }
 export { superviseServices, apiIdentity };
