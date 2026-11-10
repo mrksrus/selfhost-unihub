@@ -37,9 +37,13 @@ fi
 # temporary files in its own folder, which that user can write.
 UNIHUB_HTTP_PORT="${UNIHUB_HTTP_PORT:-80}"
 case "$UNIHUB_HTTP_PORT" in
-  ''|*[!0-9]*) echo "UNIHUB_HTTP_PORT must be a port number, not '$UNIHUB_HTTP_PORT'." >&2; exit 1 ;;
+  ''|*[!0-9]*|0*|??????*) UNIHUB_HTTP_PORT=0 ;;
   4000) echo "UNIHUB_HTTP_PORT cannot be 4000: the API listens on that port inside the container." >&2; exit 1 ;;
 esac
+if [ "$UNIHUB_HTTP_PORT" -lt 1 ] || [ "$UNIHUB_HTTP_PORT" -gt 65535 ]; then
+  echo "UNIHUB_HTTP_PORT must be a port number from 1 to 65535 without leading zeros." >&2
+  exit 1
+fi
 if [ "$(id -u)" != 0 ] || [ "$UNIHUB_HTTP_PORT" != 80 ]; then
   nginx_dir=/tmp/unihub-nginx
   rm -rf "$nginx_dir" && mkdir -p "$nginx_dir/conf.d" || exit 1
