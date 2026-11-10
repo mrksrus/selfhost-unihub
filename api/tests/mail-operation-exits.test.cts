@@ -102,7 +102,8 @@ test('mailbox epoch reset parks undispatched intents in attention and checks dis
     return [{ affectedRows: 1 }];
   } };
   await repository.ensureMailbox({ userId: 'owner', accountId: 'account', folderName: 'INBOX', epoch: 10 }, cx as FixtureValue);
-  const updates = calls.filter(call => call.sql.startsWith('UPDATE mail_writebacks'));
+  // The changes addressed in this mailbox; a COPYUID into it is the wire test's (account-mail-folder-delete-wire).
+  const updates = calls.filter(call => call.sql.startsWith('UPDATE mail_writebacks') && !call.sql.includes('destination_reset'));
   assert.equal(updates.length, 2);
   assert.match(updates[0].sql, /state = 'reconciling'[\s\S]*WHERE dispatched = TRUE AND user_id = \? AND mail_account_id = \?/);
   assert.match(updates[1].sql, /state = 'needs_attention', status = 'conflict'[\s\S]*WHERE dispatched = FALSE AND user_id = \?/);
@@ -128,7 +129,8 @@ test('a replaced MAILBOXID with the same UIDVALIDITY resets the mailbox like a n
   const storeId = order.findIndex(sql => sql.includes('provider_mailbox_id = COALESCE'));
   assert.ok(quarantine >= 0 && storeId > quarantine, 'old copies set apart before the new id is stored');
   assert.ok(order.some(sql => sql.startsWith('DELETE FROM mail_engine_cursors')));
-  const updates = calls.filter(call => call.sql.startsWith('UPDATE mail_writebacks'));
+  // The changes addressed in this mailbox; a COPYUID into it is the wire test's (account-mail-folder-delete-wire).
+  const updates = calls.filter(call => call.sql.startsWith('UPDATE mail_writebacks') && !call.sql.includes('destination_reset'));
   assert.equal(updates.length, 2);
   for (const update of updates) assert.deepEqual(update.args, ['owner', 'account', 'Kept', 'Kept', true, 9]);
   // The same id again, or an id where none was stored, resets nothing.

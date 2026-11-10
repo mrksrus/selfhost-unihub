@@ -24,7 +24,9 @@ A fix after 0.28.1. No database upgrade and no configuration change (see
   replaced under the same name and UIDVALIDITY (only its MAILBOXID differs)
   is treated as a new folder at the next sync, also when the server gives
   its messages the numbers the old folder's had used: they are read as new
-  mail, and deleting the new folder later keeps the old folder's mail. A
+  mail (also where an unfinished move into the old folder had been told one
+  of those numbers), and deleting the new folder later keeps the old
+  folder's mail. A
   folder that changed is
   left alone and the dialog asks you to look again; nothing is deleted on any
   server.

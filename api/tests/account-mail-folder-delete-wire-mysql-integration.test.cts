@@ -484,6 +484,89 @@ test('deleting a mail folder at the provider deletes only the copy shown, of the
     });
   }
 
+  // A MOVE into Destination that UniHub could not settle keeps the server's
+  // COPYUID (UIDVALIDITY 91, UID 5). Destination is then replaced; the new one
+  // gives out UID 5 again. That COPYUID describes the old folder: neither a
+  // sync nor the recovered MOVE check may bind the new UID 5 to the moved
+  // message or count the MOVE as done. A new UIDVALIDITY was already safe (the
+  // COPYUID names its UIDVALIDITY); the reset now takes such a COPYUID out of
+  // use for both.
+  const engine = runtime('services/mail-engine/runtime');
+  const { runRecoveredReconcileJob } = runtime('services/mail-durable-jobs');
+  async function incomingMove(label: string, { occupied, state }: { occupied: boolean; state: 'needs_attention' | 'reconciling' }) {
+    const address = `owner-incoming-${label}@example.test`;
+    const login = imap.account(address, { INBOX: { uidvalidity: 1 }, Source: { uidvalidity: 90, mailboxId: 'F-source' },
+      Destination: { uidvalidity: 91, mailboxId: 'F-dest-old', uids: [5] } }, true);
+    const accountId = await account(users.owner, address);
+    const source = await folder(users.owner, `incoming-source-${label}`, 'Source', [[accountId, 90, 'F-source']]);
+    const destination = occupied ? await folder(users.owner, `incoming-destination-${label}`, 'Destination', [[accountId, 91, 'F-dest-old']])
+      : await folder(users.owner, `incoming-destination-${label}`, 'Destination', []);
+    if (!occupied) {
+      await pool.execute<ResultSetHeader>('INSERT INTO mail_folder_remote_boxes (folder_id,mail_account_id,remote_name) VALUES (?,?,?)', [destination.id, accountId, 'Destination']);
+      await repository.ensureMailbox({ userId: users.owner, accountId, folderName: 'Destination', epoch: 91, metadata: { providerMailboxId: 'F-dest-old' } }, pool);
+    } else {
+      // The old Destination's UID 5 is a message with another copy, so the MOVE could not adopt it.
+      const other = await repository.ensureMailbox({ userId: users.owner, accountId, folderName: 'Other', epoch: 92 }, pool);
+      await repository.upsertOccurrence({ userId: users.owner, accountId, mailboxId: other.id, epoch: 92, uid: 8, emailId: destination.mail[0] }, pool);
+    }
+    const [[from]] = await pool.query<RowDataPacket[]>('SELECT id FROM mail_remote_occurrences WHERE email_id = ?', [source.mail[0]]);
+    await pool.execute('UPDATE mail_remote_occurrences SET presence = \'absent\', absent_at = UTC_TIMESTAMP() WHERE id = ?', [from.id]);
+    await pool.execute("UPDATE emails SET subject = 'The moved message', body_text = 'Moved message body.', import_complete = TRUE, content_state = 'complete' WHERE id = ?", [source.mail[0]]);
+    const operation = crypto.randomUUID(), mapping = { uidvalidity: 91, sourceUids: [5], destinationUids: [5] };
+    await pool.execute(`INSERT INTO mail_writebacks (id,user_id,mail_account_id,email_id,action,target_value,base_value,target_folder,remote_folder,remote_uid,remote_uidvalidity,
+        source_occurrence_id,status,state,is_current,dispatched,intent_revision,evidence_json)
+      VALUES (?,?,?,?,'move','Destination','Source',?,'Source',5,90,?,?,?,TRUE,TRUE,1,?)`,
+    [operation, users.owner, accountId, source.mail[0], `incoming-destination-${label}`, from.id, state === 'reconciling' ? 'pending' : 'conflict', state,
+      JSON.stringify({ kind: 'move_outcome', completion: 'ok', mappingStatus: 'valid', mapping })]);
+    return { address, login, accountId, source, destination, operation };
+  }
+  // What UID 5 of the live Destination is bound to, and the MOVE's state.
+  async function incomingOutcome(move: Awaited<ReturnType<typeof incomingMove>>) {
+    const [[bound]] = await pool.query<RowDataPacket[]>(`SELECT o.email_id, e.import_complete FROM mail_remote_occurrences o
+      JOIN mail_remote_mailboxes m ON m.id = o.mailbox_id JOIN emails e ON e.id = o.email_id
+      WHERE m.mail_account_id = ? AND BINARY m.remote_name = 'Destination' AND o.uid = 5`, [move.accountId]);
+    const [[operation]] = await pool.query<RowDataPacket[]>('SELECT state, status, evidence_json FROM mail_writebacks WHERE id = ?', [move.operation]);
+    const evidence = typeof operation.evidence_json === 'string' ? JSON.parse(operation.evidence_json) : operation.evidence_json;
+    return { bound, operation, evidence };
+  }
+  for (const [label, replacement] of [['mailboxid', { uidvalidity: 91, mailboxId: 'F-dest-new' }], ['uidvalidity', { uidvalidity: 92, mailboxId: 'F-dest-old' }]] as const) {
+    await t.test(`a sync of a Destination replaced with another ${label === 'mailboxid' ? 'MAILBOXID' : 'UIDVALIDITY'} does not bind a saved COPYUID to its reused UID`, async () => {
+      const move = await incomingMove(`scan-${label}`, { occupied: true, state: 'needs_attention' });
+      move.login.boxes.set('Destination', { ...replacement, uids: [5] });
+      const connection = guardImapConnection(await connectImap({ imap: { host: '127.0.0.1', port: imap.port, user: move.address, password: 'fixture',
+        tls: false, keepalive: false, connTimeout: 2000, authTimeout: 2000, socketTimeout: 3000 } }), { timeoutMs: 5000 });
+      try {
+        const scanned = await scanMailboxSlice({ db: pool, connection, account: { id: move.accountId, user_id: users.owner, sync_mode: 'sync' },
+          folder: { folderName: 'Destination', dbFolderName: `incoming-destination-scan-${label}` }, stream: 'recent' });
+        assert.equal(scanned.inserted, 1, 'the new folder\'s UID 5 is read as a new message');
+      } finally { closeImapConnection(connection); }
+      const { bound, operation, evidence } = await incomingOutcome(move);
+      assert.notEqual(bound.email_id, move.source.mail[0], 'the moved message is not bound to the new folder\'s UID 5');
+      assert.equal(Number(bound.import_complete), 0, 'the new message is downloaded, not shown with the moved message\'s content');
+      assert.deepEqual([operation.state, operation.status], ['needs_attention', 'conflict'], 'the MOVE is not proven by an unrelated message');
+      assert.deepEqual(evidence.mapping, { uidvalidity: 91, sourceUids: [5], destinationUids: [5] }, 'the COPYUID is kept as evidence');
+      assert.equal(await mailExists([move.source.mail[0], move.destination.mail[0]]), 2);
+    });
+  }
+  await t.test('the recovered MOVE check does not settle a saved COPYUID in a Destination replaced since', async () => {
+    const move = await incomingMove('recovered', { occupied: false, state: 'reconciling' });
+    move.login.boxes.set('Destination', { uidvalidity: 91, mailboxId: 'F-dest-new', uids: [5] });
+    const queued = await engine.enqueueJob({ userId: users.owner, accountId: move.accountId, operationId: move.operation, kind: 'reconcile', priority: 0 }, pool);
+    const job = await engine.claimDueJob({ workerId: 'incoming-recovered', kinds: ['reconcile'] }, pool);
+    assert.equal(job.id, queued.id);
+    const connection = guardImapConnection(await connectImap({ imap: { host: '127.0.0.1', port: imap.port, user: move.address, password: 'fixture',
+      tls: false, keepalive: false, connTimeout: 2000, authTimeout: 2000, socketTimeout: 3000 } }), { timeoutMs: 5000 });
+    try {
+      assert.equal((await runRecoveredReconcileJob({ job, account: { id: move.accountId, user_id: users.owner, sync_mode: 'sync' }, connection,
+        signal: new AbortController().signal, report() {} })).success, true);
+    } finally { closeImapConnection(connection); }
+    const { bound, operation, evidence } = await incomingOutcome(move);
+    assert.equal(bound, undefined, 'the moved message is not bound to the new folder\'s UID 5');
+    assert.deepEqual([operation.state, operation.status], ['needs_attention', 'conflict'], 'the MOVE is not proven by an unrelated message');
+    assert.deepEqual(evidence.mapping, { uidvalidity: 91, sourceUids: [5], destinationUids: [5] }, 'the COPYUID is kept as evidence');
+    await engine.completeJob({ jobId: job.id, accountId: move.accountId, workerId: 'incoming-recovered', generation: Number(job.worker_generation) }, pool);
+  });
+
   await t.test('a DELETE whose answer never comes is reported as unknown, not as refused', async () => {
     imap.account('owner-lost-a@example.test', { INBOX: { uidvalidity: 1 }, Pending: { uidvalidity: 5 } });
     imap.account('owner-lost-b@example.test', { INBOX: { uidvalidity: 1 }, Pending: { uidvalidity: 6 } });

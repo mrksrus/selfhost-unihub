@@ -415,8 +415,13 @@ async function reconcileMoveOutcome(op: OperationRow, connection: ProtocolConnec
     const result = await transaction(async cx => {
       // The operation and its source are fenced again by settleMoveEvidence.
       await runtime.assertFence({ accountId: latest.mail_account_id, workerId: workerId!, generation, jobId }, cx);
+      // With its MAILBOXID, a destination replaced since the MOVE is reset here
+      // first, which takes the recorded COPYUID out of use (repository.ts).
       const mailbox = await ensureMailbox({ userId: latest.user_id, accountId: latest.mail_account_id,
-        folderName: latest.target_value, epoch: box.uidvalidity }, cx);
+        folderName: latest.target_value, epoch: box.uidvalidity, metadata: { providerMailboxId: box.mailboxId } }, cx);
+      const [[still]] = await cx.execute<RowDataPacket[]>(`SELECT JSON_VALUE(evidence_json, '$.mappingStatus') AS mapping_status
+        FROM mail_writebacks WHERE id=? AND user_id=? AND mail_account_id=? FOR UPDATE`, [latest.id, latest.user_id, latest.mail_account_id]);
+      if (still?.mapping_status !== 'valid') return { settled: false, reason: 'destination_reset' };
       const [[existing]] = await cx.execute<RowDataPacket[]>(`SELECT id FROM mail_remote_occurrences WHERE mailbox_id=? AND uidvalidity=? AND uid=? FOR UPDATE`,
         [mailbox.id, box.uidvalidity, mappedUid]);
       if (!existing) await upsertOccurrence({ userId: latest.user_id, accountId: latest.mail_account_id,

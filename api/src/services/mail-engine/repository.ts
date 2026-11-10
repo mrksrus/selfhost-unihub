@@ -6,7 +6,8 @@ import { randomUUID } from 'node:crypto';
 import { db } from '../../state';
 import * as transactions from '../transactions';
 import { assertUid32, assertDecimal64 } from './repository-identity';
-import { OPERATION_REASONS, sqlStates } from './operation-states';
+import { OPERATION_REASONS, UNPROVEN, sqlStates } from './operation-states';
+import { sqlList } from './job-kinds';
 
 interface ReceiptInput { userId: string; clientKey: string; requestHash: string; response: unknown }
 const STREAMS = new Set(['recent', 'history', 'flags', 'presence', 'bodies']);
@@ -83,6 +84,17 @@ async function ensureMailbox({ userId, accountId, folderName, epoch = null, meta
     await cx.execute(`UPDATE mail_writebacks SET state = 'needs_attention', status = 'conflict',
       error = '${OPERATION_REASONS.mailbox_reset}', evidence_json = JSON_OBJECT('reason','epoch_changed')
       WHERE dispatched = FALSE AND ${stale}`, [userId, accountId, name, name, replacedId, epoch]);
+    // A MOVE into this mailbox whose COPYUID names a UID of the old generation:
+    // that UID may now be another message, so the mapping no longer associates
+    // or settles anything (sync.ts mappedMoveFor, operations.ts reconcileMoveOutcome
+    // accept only 'valid'). It is kept as evidence; the outcome stays unproven.
+    await cx.execute(`UPDATE mail_writebacks SET evidence_json = JSON_SET(evidence_json, '$.mappingStatus', 'destination_reset',
+        '$.destinationReset', JSON_OBJECT('uidvalidity', ?, 'mailboxId', ?))
+      WHERE user_id = ? AND mail_account_id = ? AND action = 'move' AND dispatched = TRUE
+        AND (BINARY target_value = BINARY ? OR (? = 'INBOX' AND target_value REGEXP '^[iI][nN][bB][oO][xX]$'))
+        AND state IN (${sqlList(UNPROVEN)}) AND JSON_VALUE(evidence_json, '$.mappingStatus') = 'valid'
+        AND CAST(JSON_VALUE(evidence_json, '$.mapping.uidvalidity') AS UNSIGNED) = ?`,
+    [String(mailbox.uidvalidity), mailbox.provider_mailbox_id ?? null, userId, accountId, name, name, mailbox.uidvalidity]);
     await cx.execute(`UPDATE mail_remote_mailboxes SET uidvalidity = ?, state = 'active', epoch_revision = epoch_revision + 1 WHERE id = ?`, [epoch, mailbox.id]);
   } else if (epoch !== null && mailbox.uidvalidity === null) {
     await cx.execute("UPDATE mail_remote_mailboxes SET uidvalidity = ?, state = 'active', epoch_revision = epoch_revision + 1 WHERE id = ?", [epoch, mailbox.id]);
