@@ -267,14 +267,16 @@ test('Notification privacy per device: app lock, open window, policies, other pe
     await pool.execute(`UPDATE notification_deliveries d JOIN push_subscriptions p ON p.id = d.subscription_id
       SET d.available_at = UTC_TIMESTAMP() - INTERVAL (CASE p.endpoint WHEN ? THEN 30 WHEN ? THEN 10 ELSE 20 END) SECOND WHERE d.event_id = ?`,
     [endpoints.laptop, endpoints.tablet, raced]);
+    // The administrator's save comes from another request: a connection of its own.
+    const admin = await mysql.createConnection({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306), database: process.env.MYSQL_TEST_DATABASE, user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD, timezone: 'Z' });
     const plainSend = webPush.sendNotification;
     webPush.sendNotification = async (subscription: FixtureValue, body: string) => {
       if (subscription.endpoint === endpoints.laptop) {
-        await pool.execute("INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked) VALUES ('installation', '', 'policy.app_lock.required', '[\"mail\"]', FALSE)");
+        await admin.execute("INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked) VALUES ('installation', '', 'policy.app_lock.required', '[\"mail\"]', FALSE)");
       }
       return plainSend(subscription, body);
     };
-    try { await pass(); } finally { webPush.sendNotification = plainSend; }
+    try { await pass(); } finally { webPush.sendNotification = plainSend; await admin.end(); }
     await onPhone(raced); await ack(raced);
     browsers = onBrowsers(raced);
     assert.deepEqual([text(browsers.laptop), text(browsers.tablet)], [full('Quarterly figures'), hidden], 'the policy saved during the laptop\'s send applies to the tablet\'s');
