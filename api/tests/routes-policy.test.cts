@@ -166,7 +166,7 @@ const APP_LOCK_EXEMPT: Readonly<Record<string, string>> = {
   'POST /api/policies/acknowledge': 'confirming the rules notice, which comes before the prompt',
   'GET /api/modules': 'which pages the shell shows',
   'GET /api/events': 'live hints carry ids and counts only (F7); a device needs them to hear of a policy change or a sign-out',
-  'GET /api/notifications/config': 'push set-up; a short device gets notifications without content (B2)',
+  'GET /api/notifications/config': 'push set-up; a device short of the lock gets notifications without their content',
   'GET /api/notifications/status': 'as above',
   'POST /api/notifications/subscription': 'as above',
   'DELETE /api/notifications/subscription': 'as above',
