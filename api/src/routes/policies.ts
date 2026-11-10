@@ -12,13 +12,13 @@ import { acknowledgePolicies, getAdminPolicies, getEffectivePolicies, updateAdmi
 // administrator's page. The services decide; these routes only carry it, and
 // a refusal they throw is answered by the request boundary.
 export = defineRoutes({
-  'GET /api/policies/effective': { auth: 'user', module: null, handler: async (_req: RouteRequest, userId: string) => {
+  'GET /api/policies/effective': { auth: 'user', module: null, appLock: 'exempt', handler: async (_req: RouteRequest, userId: string) => {
     const effective: EffectivePoliciesResponse = await getEffectivePolicies(userId);
     return { ...effective };
   } },
 
   // Installation data, outside any person's recovery sections.
-  'POST /api/policies/acknowledge': { auth: 'user', module: null, restoreSection: null, body: { limit: 1024 }, handler: async (_req: RouteRequest, userId: string, body: unknown) => {
+  'POST /api/policies/acknowledge': { auth: 'user', module: null, appLock: 'exempt', restoreSection: null, body: { limit: 1024 }, handler: async (_req: RouteRequest, userId: string, body: unknown) => {
     return { ...await acknowledgePolicies(userId, body) };
   } },
 

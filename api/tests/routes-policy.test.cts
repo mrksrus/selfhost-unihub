@@ -19,21 +19,24 @@ const { POLICIES } = require('../dist/src/services/settings') as typeof import('
 const csrf = 'c'.repeat(64);
 const samplePath = (pattern: string) => pattern.replace(/:(\w+)/g, (_, name) => `sample-${name}`);
 
-function boundary(t: import('node:test').TestContext, { userId, role = 'user' }: { userId: string | null; role?: string }) {
+// `answer` may answer further queries (the gates before the app lock's); anything else is refused.
+function boundary(t: import('node:test').TestContext, { userId, role = 'user', answer }: { userId: string | null; role?: string; answer?: (sql: string) => unknown[] | undefined }) {
   const queries: string[] = [];
   const previous = getDb();
   t.after(() => setDb(previous));
   setDb({ async execute(sql: string) {
     queries.push(sql);
     if (sql.startsWith('SELECT role FROM users WHERE id = ?')) return [[{ role }]];
+    const rows = answer?.(sql);
+    if (rows) return [rows];
     throw new Error(`Unexpected query in policy test: ${sql}`);
   } } as FixtureValue);
   t.mock.method(auth, 'verifyToken', async () => userId);
-  async function run(key: string) {
+  async function run(key: string, extraHeaders: Record<string, string> = {}) {
     const [method, pattern] = key.split(' ');
     const req = new PassThrough();
     Object.assign(req, { method, url: samplePath(pattern), headers: {
-      host: 'localhost', 'content-type': 'application/json', cookie: `csrf-token=${csrf}`, 'x-csrf-token': csrf,
+      host: 'localhost', 'content-type': 'application/json', cookie: `csrf-token=${csrf}`, 'x-csrf-token': csrf, ...extraHeaders,
     } });
     const res: FixtureValue = new EventEmitter(); const headers = new Map();
     res.setHeader = (name: string, value: FixtureValue) => headers.set(name.toLowerCase(), value);
@@ -129,6 +132,120 @@ test('CSRF: sign-in and sign-up need no token, exactly the service-worker routes
   const header = Object.keys(routes).filter(key => routes[key].csrf === 'background-header').sort();
   assert.deepEqual(header, ['DELETE /api/recordings/uploads/:id', 'POST /api/mail/sync/background', 'POST /api/recordings/uploads/:id/chunk',
     'POST /api/recordings/uploads/:id/complete', 'POST /api/recordings/uploads/start']);
+});
+
+// The app lock (0.29): the routes a device short of a required lock keeps,
+// each with its reason. Everything else is refused with APP_LOCK_REQUIRED
+// while the whole app is required, a module's routes while that module is,
+// and the routes of no module while anything is.
+const APP_LOCK_EXEMPT: Readonly<Record<string, string>> = {
+  'GET /api/auth/me': 'who is signed in; the page needs it to show the prompt',
+  'POST /api/auth/signout': 'signing out never needs the lock',
+  'GET /api/auth/sessions': 'the sign-ins of pages from before 0.29',
+  'DELETE /api/auth/sessions/:id': 'signing a lost device out, from pages from before 0.29',
+  'PUT /api/auth/password': 'a password change protects the account; it shows no data',
+  'PUT /api/auth/profile': 'name and email of the account, as auth/me shows them',
+  'GET /api/auth/2fa/status': 'two-factor sign-in protects the account',
+  'POST /api/auth/2fa/setup/start': 'as above',
+  'POST /api/auth/2fa/setup/confirm': 'as above',
+  'POST /api/auth/2fa/disable': 'as above',
+  'POST /api/auth/2fa/recovery-codes/regenerate': 'as above',
+  'GET /api/devices': 'the person\'s devices, where the lock is set up and a lost one is found',
+  'DELETE /api/devices/:id': 'signing a lost device out must stay possible from any device',
+  'GET /api/devices/current': 'what this device must lock, and whether it does',
+  'POST /api/devices/current/key': 'names this device',
+  'PUT /api/devices/current/lock': 'reports the lock: how a device starts to comply',
+  'POST /api/devices/current/lock-state': 'reports open, background or locked',
+  'GET /api/settings/values': 'the person\'s settings; they show no module data',
+  'PUT /api/settings/values': 'as above',
+  'GET /api/settings/values/device': 'this device\'s app lock settings',
+  'PUT /api/settings/values/device': 'turning the lock on',
+  'GET /api/settings/preferences': 'theme and pages, which the shell needs to show the prompt',
+  'PUT /api/settings/preferences': 'as above',
+  'GET /api/policies/effective': 'the rules, with the reason the lock is required',
+  'POST /api/policies/acknowledge': 'confirming the rules notice, which comes before the prompt',
+  'GET /api/modules': 'which pages the shell shows',
+  'GET /api/events': 'live hints carry ids and counts only (F7); a device needs them to hear of a policy change or a sign-out',
+  'GET /api/notifications/config': 'push set-up; a device short of the lock gets notifications without their content',
+  'GET /api/notifications/status': 'as above',
+  'POST /api/notifications/subscription': 'as above',
+  'DELETE /api/notifications/subscription': 'as above',
+  'POST /api/notifications/unsubscribe': 'as above',
+  'POST /api/notifications/test': 'a test notification shows no data',
+  'POST /api/notifications/android/devices': 'the Android app\'s push channel',
+  'POST /api/notifications/android/ack': 'as above',
+  'GET /api/notifications/android/stream': 'as above',
+  'POST /api/recordings/uploads/start': 'a recording that exists only on the device must reach the server',
+  'POST /api/recordings/uploads/:id/chunk': 'as above',
+  'POST /api/recordings/uploads/:id/complete': 'as above',
+  'DELETE /api/recordings/uploads/:id': 'cancels an unfinished upload',
+};
+// Open only to the Android app's own contacts sync (X-Background-Sync: 1):
+// the apps in the support window read a 403 other than MODULE_DISABLED as a
+// refused change and skip the contact. The page never sends the header here.
+const APP_LOCK_BACKGROUND_SYNC = [
+  'DELETE /api/contacts/:id', 'DELETE /api/contacts/:id/photo', 'GET /api/contacts', 'GET /api/contacts/:id/photo', 'POST /api/contacts',
+  'PUT /api/contacts/:id', 'PUT /api/contacts/:id/photo',
+];
+
+test('the app lock: the exempt routes are pinned with their reasons, and so are the contacts-sync routes', () => {
+  assert.deepEqual(Object.keys(routes).filter(key => routes[key].appLock === 'exempt').sort(), Object.keys(APP_LOCK_EXEMPT).sort());
+  assert.deepEqual(Object.keys(routes).filter(key => routes[key].appLock === 'background-sync').sort(), APP_LOCK_BACKGROUND_SYNC);
+  const handler = async () => ({});
+  assert.throws(() => defineRoutes({ 'GET /api/things': { auth: 'user', appLock: 'open', handler } } as FixtureValue), /unknown appLock open/);
+  assert.throws(() => defineRoutes({ 'GET /api/things': { auth: 'public', appLock: 'exempt', handler } } as FixtureValue), /only a signed-in route declares appLock/);
+});
+
+// The gates before the app lock's, answered for a person with every module on and no restore running.
+const openGates = (required: string[]) => (sql: string) => {
+  if (sql.startsWith('SELECT setting_value FROM user_settings')) return [];
+  if (sql.includes('FROM backup_restore_jobs')) return [];
+  if (sql.startsWith('SELECT setting_key, setting_value, locked FROM setting_policies')) {
+    return [{ setting_key: 'policy.app_lock.required', setting_value: JSON.stringify(required), locked: 0 }];
+  }
+  return undefined;
+};
+
+test('with the whole app required, every signed-in route that is not exempt refuses a device without the lock before its handler', async (t) => {
+  const { run, queries } = boundary(t, { userId: 'alex', role: 'admin', answer: openGates(['app']) });
+  const keys = Object.keys(routes).filter(key => routes[key].auth !== 'public' && routes[key].appLock !== 'exempt');
+  assert.ok(keys.length > 100, `${keys.length} locked routes`);
+  for (const key of keys) {
+    const result = await run(key);
+    assert.deepEqual([result.status, result.body.code, result.body.error], [403, 'APP_LOCK_REQUIRED', 'Your administrator requires the app lock for the whole app.'], key);
+    assert.deepEqual(result.body.details, { required: ['app'], max_background: null, reason: 'Your administrator requires the app lock for the whole app.' }, key);
+  }
+  assert.ok(queries.every(sql => /^SELECT (role FROM users|setting_value FROM user_settings|requested_sections|setting_key, setting_value, locked FROM setting_policies)/.test(sql.trim())), 'no handler ran');
+});
+
+test('with Mail required, a device without the lock loses the Mail routes and the routes of no module, and keeps the other modules', async (t) => {
+  const { run } = boundary(t, { userId: 'alex', role: 'admin', answer: openGates(['mail']) });
+  const locked = (key: string) => routes[key].auth !== 'public' && routes[key].appLock !== 'exempt' && (routes[key].module === 'mail' || !routes[key].module);
+  for (const key of Object.keys(routes).filter(locked)) {
+    const result = await run(key);
+    assert.deepEqual([result.status, result.body.code, result.body.error], [403, 'APP_LOCK_REQUIRED', 'Your administrator requires the app lock for Mail.'], key);
+  }
+});
+
+test('a route that shows another module\'s data is locked with that module: a mail account\'s calendar with Calendar required', async (t) => {
+  const { run } = boundary(t, { userId: 'alex', answer: openGates(['calendar']) });
+  const declared = Object.keys(routes).filter(key => routes[key].appLockModules).sort();
+  assert.deepEqual(declared, ['GET /api/mail/accounts/:id/calendar', 'PUT /api/mail/accounts/:id/calendar']);
+  for (const key of declared) {
+    assert.deepEqual(routes[key].appLockModules, ['calendar']);
+    assert.equal((await run(key)).body.code, 'APP_LOCK_REQUIRED', key);
+  }
+  const handler = async () => ({});
+  assert.throws(() => assertRouteTable(defineRoutes({ 'GET /api/mail/x': { auth: 'user', module: 'mail', appLockModules: ['notes'], handler } }), { moduleIds: MODULE_CATALOG.map(module => module.id) }),
+    /unknown module notes/);
+});
+
+test('the contacts-sync routes are open to the Android app\'s own sync only', async (t) => {
+  const { run } = boundary(t, { userId: 'alex', answer: openGates(['contacts']) });
+  assert.equal((await run('GET /api/contacts')).body.code, 'APP_LOCK_REQUIRED');
+  const native = await run('GET /api/contacts', { 'x-background-sync': '1' });
+  assert.notEqual(native.body?.code, 'APP_LOCK_REQUIRED');
+  assert.equal((await run('GET /api/contacts/:id', { 'x-background-sync': '1' })).body.code, 'APP_LOCK_REQUIRED', 'only the routes the sync uses');
 });
 
 // F13: every route that removes or resets data names the data-safety

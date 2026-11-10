@@ -41,7 +41,7 @@ const readRoute = { auth: 'user' as const, module: 'contacts' };
 const contactRoute = { ...readRoute, restoreSection: 'contacts' };
 
 export = defineRoutes({
-  'GET /api/contacts': { ...readRoute, handler: async (req: Request, userId: string) => {
+  'GET /api/contacts': { ...readRoute, appLock: 'background-sync', handler: async (req: Request, userId: string) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host}`);
       const limitNum = Number.parseInt(url.searchParams.get('limit') || '2000', 10);
@@ -61,14 +61,14 @@ export = defineRoutes({
     try { return { contact: await getContact(userId, req.params.id) }; } catch (error) { return failed(error, 'Failed to get contact'); }
   } },
 
-  'POST /api/contacts': { ...contactRoute, body: { limit: CONTACT_BODY_LIMIT }, handler: async (_req: Request, userId: string, body: unknown) => {
+  'POST /api/contacts': { ...contactRoute, appLock: 'background-sync', body: { limit: CONTACT_BODY_LIMIT }, handler: async (_req: Request, userId: string, body: unknown) => {
     try {
       const answer: ContactResponse = { contact: await createContact(userId, body) };
       return { ...answer };
     } catch (error) { return failed(error, 'Failed to create contact'); }
   } },
 
-  'PUT /api/contacts/:id': { ...contactRoute, body: { limit: CONTACT_BODY_LIMIT }, handler: async (req: Request, userId: string, body: unknown) => {
+  'PUT /api/contacts/:id': { ...contactRoute, appLock: 'background-sync', body: { limit: CONTACT_BODY_LIMIT }, handler: async (req: Request, userId: string, body: unknown) => {
     try {
       const answer: ContactResponse = { contact: await updateContact(userId, req.params.id, body, req.headers['if-match']) };
       return { ...answer };
@@ -77,7 +77,7 @@ export = defineRoutes({
 
   // Deleting moves contacts to the bin (P-31, D13), several as one group;
   // deleting them for good is the bin's (bin.delete, F13).
-  'DELETE /api/contacts/:id': { ...contactRoute, handler: async (req: Request, userId: string) => {
+  'DELETE /api/contacts/:id': { ...contactRoute, appLock: 'background-sync', handler: async (req: Request, userId: string) => {
     try {
       const { binItemIds } = await moveContactsToBin(userId, [req.params.id]);
       return { message: 'Contact moved to the bin', bin_item_ids: binItemIds };

@@ -72,6 +72,24 @@ const BACKGROUND_HEADER_CSRF_KEYS: ReadonlySet<string> = new Set([
   'DELETE /api/recordings/uploads/:id',
 ]);
 
+// The app lock gate leaves these open to a device short of a required lock
+// (http/route.ts appLock): the recording upload routes the service worker
+// calls, because refusing them could strand a recording that exists only on
+// the device. They write the person's own recording and show nothing else.
+const APP_LOCK_EXEMPT_KEYS: ReadonlySet<string> = new Set([
+  'POST /api/recordings/uploads/start',
+  'POST /api/recordings/uploads/:id/chunk',
+  'POST /api/recordings/uploads/:id/complete',
+  'DELETE /api/recordings/uploads/:id',
+]);
+
+// Routes that show or change another module's data than their prefix names
+// (http/route.ts appLockModules): a mail account's linked calendar.
+const APP_LOCK_MODULES_BY_ROUTE: Readonly<Record<string, readonly string[]>> = {
+  'GET /api/mail/accounts/:id/calendar': ['calendar'],
+  'PUT /api/mail/accounts/:id/calendar': ['calendar'],
+};
+
 // F13: the data-safety policies of these routes (http/route.ts).
 // - DELETE /api/mail/accounts/:id disconnects an account, or with purge=true
 //   deletes the disconnected account with UniHub's copy of its mail
@@ -108,6 +126,8 @@ function legacyRouteSpec(key: string, handler: LegacyHandler): RouteSpec {
     restoreSection: restoreSectionFor(method, pathname),
     body: { limit: bodyLimitFor(key), kind: 'json' as const },
     ...(BACKGROUND_HEADER_CSRF_KEYS.has(key) ? { csrf: 'background-header' as const } : {}),
+    ...(APP_LOCK_EXEMPT_KEYS.has(key) ? { appLock: 'exempt' as const } : {}),
+    ...(APP_LOCK_MODULES_BY_ROUTE[key] ? { appLockModules: APP_LOCK_MODULES_BY_ROUTE[key] } : {}),
     ...POLICIES_BY_ROUTE[key],
   };
   // A legacy handler accepts a nullable user id, so it serves either auth level.
@@ -119,5 +139,5 @@ function legacyRoutes(table: LegacyRouteTable): RouteTable {
   return defineRoutes(Object.fromEntries(Object.entries(table).map(([key, handler]) => [key, legacyRouteSpec(key, handler)])));
 }
 
-export { legacyRoutes, legacyRouteSpec, PUBLIC_ROUTE_KEYS, BODY_LIMIT_BY_ROUTE, RESTORE_SECTION_BY_PATH_PREFIX, BACKGROUND_HEADER_CSRF_KEYS, POLICIES_BY_ROUTE, bodyLimitFor };
+export { legacyRoutes, legacyRouteSpec, PUBLIC_ROUTE_KEYS, BODY_LIMIT_BY_ROUTE, RESTORE_SECTION_BY_PATH_PREFIX, BACKGROUND_HEADER_CSRF_KEYS, APP_LOCK_EXEMPT_KEYS, APP_LOCK_MODULES_BY_ROUTE, POLICIES_BY_ROUTE, bodyLimitFor };
 export type { LegacyHandler, LegacyRouteTable };

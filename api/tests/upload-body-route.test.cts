@@ -20,13 +20,15 @@ async function uploadServer(t: import('node:test').TestContext, { route, moduleE
   const spool = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'unihub-spool-'));
   const previousRoot = process.env.UPLOAD_SPOOL_ROOT;
   process.env.UPLOAD_SPOOL_ROOT = path.join(spool, 'root');
-  const paths = ['../dist/src/request-handler', '../dist/src/auth', '../dist/src/routes', '../dist/src/services/module-settings', '../dist/src/services/restore-locks'].map(name => require.resolve(name));
+  const paths = ['../dist/src/request-handler', '../dist/src/auth', '../dist/src/routes', '../dist/src/services/module-settings', '../dist/src/services/restore-locks', '../dist/src/services/devices'].map(name => require.resolve(name));
   const previous = paths.map(name => require.cache[name]);
   const stub = (name: string, exports: FixtureValue) => { require.cache[name] = { id: name, filename: name, loaded: true, exports } as NodeJS.Module; };
   delete require.cache[paths[0]];
   stub(paths[1], { verifyToken: async () => 'u1', validateCsrfToken: () => true, refreshSessionCookies: () => {} });
   stub(paths[3], { isModuleEnabled: async () => moduleEnabled });
   stub(paths[4], { getActiveRestoreSections: async () => new Set(restoring) });
+  // No app lock is required (app-lock-policy-mysql-integration walks the gate).
+  stub(paths[5], { ...require(paths[5]), appLockRefusal: async () => null });
   const { defineRoutes } = require('../dist/src/http/route') as typeof import('../src/http/route');
   stub(paths[2], defineRoutes({
     'PUT /api/contacts/:id/photo': { auth: 'user', module: 'contacts', restoreSection: 'contacts', body: { kind: 'upload', limit: LIMIT }, handler: route as FixtureValue },

@@ -58,7 +58,12 @@ export interface StagedAttachment {
 
 // authCredential records which credential verifyToken accepted; the CSRF check
 // reads it rather than parsing the headers again.
-export interface AuthRequest extends IncomingMessage { sessionRenewed?: string; authCredential?: AuthCredentialSource }
+export interface AuthRequest extends IncomingMessage {
+  sessionRenewed?: string;
+  authCredential?: AuthCredentialSource;
+  // The device of the accepted session (F5), null for a session without one; set by verifyToken for the app lock gate.
+  sessionDeviceId?: string | null;
+}
 export type AuthCredentialSource = 'cookie' | 'bearer';
 
 export interface BackupFile {

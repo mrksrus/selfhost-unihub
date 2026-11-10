@@ -193,7 +193,8 @@ function refreshSessionCookies(req: AuthRequest, res: ServerResponse) {
 // JWT verification + session check. The session row is the authority on
 // expiry; the JWT signature still has to match. With `renew`, a session last
 // renewed more than a day ago is extended and req.sessionRenewed is set.
-// On success req.authCredential names the credential that was accepted.
+// On success req.authCredential names the credential that was accepted and
+// req.sessionDeviceId the session's device.
 async function verifyToken(req: AuthRequest, { renew = false } = {}) {
   const credential = getAuthCredential(req);
   if (!credential) return null;
@@ -233,6 +234,7 @@ async function verifyToken(req: AuthRequest, { renew = false } = {}) {
         }
 
         req.authCredential = credential.source;
+        req.sessionDeviceId = session.device_id ? String(session.device_id) : null;
         return session.user_id || decoded.userId || decoded.sub;
       } catch (dbError) {
         retries--;

@@ -24,6 +24,7 @@ import type { AppLockRequiredDetails } from '../contracts/devices';
 import { db } from '../state';
 import { ApiError, badRequest, forbidden, notFound } from '../http/errors';
 import { SETTINGS, POLICIES, BIN_MIN_RETENTION, POLICY_EFFECTS } from './settings-registry';
+import { MODULE_CATALOG } from './module-catalog';
 import type { Entry, Kind, PolicyEntry, ReferenceTarget, Union, Value } from './settings-registry';
 
 // The one owner of settings and policies (F1). Every option is one entry of
@@ -648,6 +649,10 @@ function checkPolicyCombination(levels: readonly PolicyLevel[]) {
   if ((forced === 'download' || forced === 'download_delete') && value('mail.mode.download') === 'forbidden') throw policyConflict('New accounts cannot use Download mode while Download mode is not allowed.');
   if (forced === 'sync' && value('mail.mode.sync') === 'forbidden') throw policyConflict('New accounts cannot use Sync mode while Sync mode is not allowed.');
   if (forced === 'download_delete' && value('mail.provider_delete') === 'forbidden') throw policyConflict('New accounts cannot delete at the provider while deleting there is not allowed.');
+  // The app lock covers the whole app or modules of the catalog; the lock
+  // gate refuses a module's routes by its id, so an area no module has would lock nothing.
+  const unknown = value('app_lock.required').filter(area => area !== 'app' && !MODULE_CATALOG.some(module => module.id === area));
+  if (unknown.length) throw policyConflict(`The app lock cannot be required for ${unknown.join(', ')}: there is no such module.`);
 }
 
 interface PolicyUpdate { key: StoredPolicyKey; value: Value }

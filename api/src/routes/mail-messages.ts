@@ -8,6 +8,7 @@ import { db } from '../state';
 import { attachmentFileForUser } from '../services/mail-attachments';
 import { tasksForEmail } from '../services/email-tasks';
 import { isModuleEnabled } from '../services/module-settings';
+import { appLockRefusal } from '../services/devices';
 import { toBooleanFlag } from '../services/mail';
 import { pendingFlagSql, EFFECTIVE_READ_SQL, EFFECTIVE_STAR_SQL, extractMailRouteId, routeError } from './mail-route-helpers';
 
@@ -118,8 +119,10 @@ export = {
       }));
 
       // Note: Inline attachments are already embedded in body_html via URL replacement
-      // The tasks made from this email are Calendar data: none while that module is off.
-      parsedEmail.tasks = await isModuleEnabled(userId, 'calendar') ? await tasksForEmail(userId, id) : [];
+      // The tasks made from this email are Calendar data: none while that
+      // module is off, or locked for this device (the app lock gate).
+      parsedEmail.tasks = await isModuleEnabled(userId, 'calendar') && !await appLockRefusal(userId, req.sessionDeviceId ?? null, ['calendar'])
+        ? await tasksForEmail(userId, id) : [];
 
       return { email: parsedEmail };
     } catch (error) {

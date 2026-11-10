@@ -341,7 +341,7 @@ export = defineRoutes({
     }
   } },
 
-  'GET /api/auth/2fa/status': { auth: 'user', module: null, handler: async (req: Request, userId: string) => {
+  'GET /api/auth/2fa/status': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string) => {
     try {
       const status = await getTwoFactorStatus(userId);
       if (!status) return { error: 'User not found', status: 404 };
@@ -352,7 +352,7 @@ export = defineRoutes({
     }
   } },
 
-  'POST /api/auth/2fa/setup/start': { auth: 'user', module: null, handler: async (req: Request, userId: string) => {
+  'POST /api/auth/2fa/setup/start': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string) => {
     try {
       const [users] = await db.execute<UserRow[]>('SELECT email, two_factor_enabled FROM users WHERE id = ?', [userId]);
       if (users.length === 0) return { error: 'User not found', status: 404 };
@@ -371,7 +371,7 @@ export = defineRoutes({
     }
   } },
 
-  'POST /api/auth/2fa/setup/confirm': { auth: 'user', module: null, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+  'POST /api/auth/2fa/setup/confirm': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
     // Each accepted request hashes ten recovery codes, which takes seconds of CPU.
     const limited = checkLoginBudget(res, 'secondFactor', userId);
     if (limited) return limited;
@@ -430,7 +430,7 @@ export = defineRoutes({
     }
   } },
 
-  'POST /api/auth/2fa/disable': { auth: 'user', module: null, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+  'POST /api/auth/2fa/disable': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
     const limited = checkLoginBudget(res, 'secondFactor', userId);
     if (limited) return limited;
     const { current_password, code } = body || {};
@@ -459,7 +459,7 @@ export = defineRoutes({
     }
   } },
 
-  'POST /api/auth/2fa/recovery-codes/regenerate': { auth: 'user', module: null, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+  'POST /api/auth/2fa/recovery-codes/regenerate': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
     const limited = checkLoginBudget(res, 'secondFactor', userId);
     if (limited) return limited;
     const code = String(body?.code || '').trim();
@@ -493,11 +493,11 @@ export = defineRoutes({
 
   // The signed-in devices of this account (Settings > Security), and signing
   // one of them out. The current device signs out with POST /api/auth/signout.
-  'GET /api/auth/sessions': { auth: 'user', module: null, handler: async (req: Request, userId: string) => {
+  'GET /api/auth/sessions': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string) => {
     return { sessions: await listSessions(userId, getAuthTokenFromRequest(req), SESSION_DAYS) };
   } },
 
-  'DELETE /api/auth/sessions/:id': { auth: 'user', module: null, handler: async (req: Request, userId: string) => {
+  'DELETE /api/auth/sessions/:id': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string) => {
     const sessionId = req.params.id;
     if (!/^[0-9a-f-]{36}$/i.test(sessionId || '')) return { error: 'Session not found', code: 'SESSION_NOT_FOUND', status: 404 };
     const current = getAuthTokenFromRequest(req);
@@ -511,7 +511,7 @@ export = defineRoutes({
     return { signedOut: true };
   } },
 
-  'POST /api/auth/signout': { auth: 'user', module: null, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+  'POST /api/auth/signout': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
     try {
       const token = getAuthTokenFromRequest(req);
@@ -527,7 +527,7 @@ export = defineRoutes({
     }
   } },
 
-  'GET /api/auth/me': { auth: 'user', module: null, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+  'GET /api/auth/me': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
     try {
       const [users] = await db.execute<UserRow[]>(
@@ -559,7 +559,7 @@ export = defineRoutes({
     }
   } },
 
-  'PUT /api/auth/password': { auth: 'user', module: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+  'PUT /api/auth/password': { auth: 'user', module: null, appLock: 'exempt', body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
     const { current_password, new_password } = body;
     if (!current_password || !new_password) {
@@ -598,7 +598,7 @@ export = defineRoutes({
     }
   } },
 
-  'PUT /api/auth/profile': { auth: 'user', module: null, restoreSection: 'settings', handler: async (req: Request, userId: string, body: Input) => {
+  'PUT /api/auth/profile': { auth: 'user', module: null, appLock: 'exempt', restoreSection: 'settings', handler: async (req: Request, userId: string, body: Input) => {
 
     const { full_name, timezone } = body;
     if (full_name === undefined || full_name === null) {

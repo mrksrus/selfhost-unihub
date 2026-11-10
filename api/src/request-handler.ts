@@ -1,6 +1,6 @@
 import type { OutgoingHttpHeaders, ServerResponse } from 'node:http';
 import type { RouteRequest } from './types';
-import type { RouteTable, UploadBody } from './http/route';
+import type { RouteSpec, RouteTable, UploadBody } from './http/route';
 
 import { BACKUP_DISABLED_MESSAGE, DISABLED_BACKUP_ROUTES } from './services/backup-availability';
 import crypto from 'crypto';
@@ -24,6 +24,7 @@ import { DEFAULT_BODY_LIMIT, routePolicies } from './http/route';
 import { isModuleEnabled } from './services/module-settings';
 import { getActiveRestoreSections } from './services/restore-locks';
 import { assertAllowed } from './services/settings';
+import { appLockRefusal } from './services/devices';
 import { buildContentDisposition } from './http/content-disposition';
 import { BACKUP_IMPORTS_ROOT } from './services/export-jobs';
 
@@ -35,6 +36,12 @@ const BACKUP_UPLOAD_ROOT = BACKUP_IMPORTS_ROOT;
 // Compiled once from the route table: every key with a :param segment becomes a
 // segment matcher, so adding a route needs no change here.
 const matchRoute = compileRouteMatcher(Object.keys(routeTable));
+
+// 'background-sync' routes are open to the Android app's own contacts sync
+// only, which sends the header on every request (http/route.ts).
+function appLockExempt(spec: RouteSpec, req: RouteRequest) {
+  return spec.appLock === 'exempt' || (spec.appLock === 'background-sync' && req.headers['x-background-sync'] === '1');
+}
 
 // If-None-Match compares weakly (RFC 9110): W/"x" matches "x", and * matches any.
 function etagMatches(header: string | undefined, etag: string) {
@@ -175,6 +182,26 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
     // body is read and before any side effect.
     const policies = routePolicies(spec, url.searchParams);
     if (userId && policies.length) await assertAllowed(userId, policies);
+
+    // The app lock (0.29): a device short of the lock the person's policies
+    // require is refused the locked parts with 403 APP_LOCK_REQUIRED and the
+    // administrator's reason, before the body is read and before any side
+    // effect, administrators included on their own devices. Exempt routes
+    // (http/route.ts appLock) stay open; with no requirement nothing changes.
+    if (userId && spec.auth !== 'public' && !appLockExempt(spec, req)) {
+      const modules = [spec.module, ...spec.appLockModules ?? []].filter((module): module is string => !!module);
+      const refusal = await appLockRefusal(userId, req.sessionDeviceId ?? null, modules);
+      if (refusal) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: refusal.reason ?? 'Your administrator requires the app lock on this device.',
+          code: 'APP_LOCK_REQUIRED',
+          status: 403,
+          details: refusal,
+        }));
+        return;
+      }
+    }
 
     const maxBodySize = spec.body?.limit ?? DEFAULT_BODY_LIMIT;
     if (isRequestBodyTooLarge(req, maxBodySize)) {
