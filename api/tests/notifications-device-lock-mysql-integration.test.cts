@@ -252,6 +252,34 @@ test('Notification privacy per device: app lock, open window, policies, other pe
     browsers = onBrowsers(notice);
     assert.deepEqual([browsers.laptop.title, browsers.laptop.module], ['UniHub notifications are working', null]);
 
+    // The policy is read again for every send: one an administrator saves
+    // while an earlier send of the same pass waits on its push service applies
+    // to the sends after it. The laptop's send comes first and the policy is
+    // saved during it; the tablet, without a lock, is then sent no content.
+    await tablet('POST', '/devices/current/lock-state', { state: 'open' });
+    await laptop('POST', '/devices/current/lock-state', { state: 'open' });
+    const raceAccount = crypto.randomUUID(), raceEmail = crypto.randomUUID();
+    await pool.execute<ResultSetHeader>("INSERT INTO mail_accounts (id, user_id, email_address, provider) VALUES (?, ?, ?, 'imap')", [raceAccount, ids.alex, `${raceAccount.slice(0, 8)}@example.test`]);
+    await pool.execute<ResultSetHeader>("INSERT INTO emails (id, user_id, mail_account_id, subject, from_name, from_address, to_addresses, folder, is_read) VALUES (?, ?, ?, 'Quarterly figures', 'Robin Example', 'robin@example.test', '[]', 'inbox', FALSE)",
+      [raceEmail, ids.alex, raceAccount]);
+    const raced = await notifications.enqueueMailNotification({ userId: ids.alex, emailId: raceEmail }) as string;
+    assert.ok(raced);
+    await pool.execute(`UPDATE notification_deliveries d JOIN push_subscriptions p ON p.id = d.subscription_id
+      SET d.available_at = UTC_TIMESTAMP() - INTERVAL (CASE p.endpoint WHEN ? THEN 30 WHEN ? THEN 10 ELSE 20 END) SECOND WHERE d.event_id = ?`,
+    [endpoints.laptop, endpoints.tablet, raced]);
+    const plainSend = webPush.sendNotification;
+    webPush.sendNotification = async (subscription: FixtureValue, body: string) => {
+      if (subscription.endpoint === endpoints.laptop) {
+        await pool.execute("INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked) VALUES ('installation', '', 'policy.app_lock.required', '[\"mail\"]', FALSE)");
+      }
+      return plainSend(subscription, body);
+    };
+    try { await pass(); } finally { webPush.sendNotification = plainSend; }
+    await onPhone(raced); await ack(raced);
+    browsers = onBrowsers(raced);
+    assert.deepEqual([text(browsers.laptop), text(browsers.tablet)], [full('Quarterly figures'), hidden], 'the policy saved during the laptop\'s send applies to the tablet\'s');
+    await pool.execute("DELETE FROM setting_policies WHERE setting_key = 'policy.app_lock.required'");
+
     // A policy requires a Mail lock. The tablet has none: even open, it gets
     // no mail content, but other modules' content still. The laptop's open
     // whole-app lock meets the policy, so it gets the content.

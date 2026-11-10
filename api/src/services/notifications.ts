@@ -575,18 +575,14 @@ async function deliverPending(connection: SqlExecutor, now: Date, activeRestores
 async function deliverBatch(connection: SqlExecutor, now: Date, rows: DueDelivery[]) {
   for (const kind of new Set(rows.map(row => deliveryTarget(row).kind))) await NOTIFICATION_TRANSPORTS[kind].ready();
   let delivered = 0;
-  // The policies are read once per person and batch; each device's lock state at its own send.
-  const requirements = new Map<string, Promise<AppLockRequiredDetails>>();
-  const requirementOf = (userId: string) => {
-    if (!requirements.has(userId)) requirements.set(userId, appLockRequirementFor(userId, connection));
-    return requirements.get(userId)!;
-  };
   for (const row of rows) {
     const moduleId = kindOf(row.kind)?.module;
     if (moduleId && !await isModuleBackgroundEnabled(row.user_id, moduleId, connection)) continue;
     const queued = jsonValue(row.payload);
-    // Filtered and rendered again: settings, and the device's lock, may have changed since it was queued.
-    const device = { lock: (await deviceLockFor([row.device_id], connection)).get(row.device_id), requirement: await requirementOf(row.user_id) };
+    // Filtered and rendered again: settings, the device's lock and the
+    // policies may have changed since it was queued, also while an earlier
+    // send of this batch waited on its transport, so all are read per send.
+    const device = { lock: (await deviceLockFor([row.device_id], connection)).get(row.device_id), requirement: await appLockRequirementFor(row.user_id, connection) };
     const current = await currentPayload(row, queued, connection, device);
     // Recheck after source reads, before changing queued work or starting network IO.
     // A restore may have started since the snapshot the rows were selected with.

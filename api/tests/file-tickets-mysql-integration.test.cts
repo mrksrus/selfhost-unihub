@@ -156,6 +156,25 @@ test('file tickets: one use without a cookie, owner-bound, refused when expired,
     assert.equal((await fetchTicket(beforeRestore.url)).status, 409);
     await pool.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restoreId]);
 
+    // A Mail lock the administrator requires after the ticket was issued:
+    // this session's device locks nothing, so the ticket is refused at use,
+    // as its routes are (0.29 app lock), and a ticket of a device that
+    // reports the lock still works.
+    const beforeLock = await owner('POST', '/files/tickets', forAttachment);
+    await pool.execute(`INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked)
+      VALUES ('installation', '', 'policy.app_lock.required', '["mail"]', 0)`);
+    const locked = await fetchTicket(beforeLock.url);
+    assert.equal(locked.status, 403);
+    assert.equal(JSON.parse(locked.body.toString()).code, 'APP_LOCK_REQUIRED');
+    await owner('PUT', '/devices/current/lock', {
+      applied: { scope: ['mail'], relock_after: '60', on_device_lock: false, method: 'pin' },
+      capabilities: { lock: 'pin', secure_window: false, recents_hidden: false, device_lock_signal: false },
+    });
+    const withLock = await owner('POST', '/files/tickets', forAttachment);
+    assert.equal((await fetchTicket(withLock.url)).status, 200);
+    await pool.execute("DELETE FROM setting_policies WHERE setting_key = 'policy.app_lock.required'");
+    await owner('PUT', '/devices/current/lock', { applied: null, capabilities: { lock: 'pin', secure_window: false, recents_hidden: false, device_lock_signal: false } });
+
     // The file gone from disk: nothing to send.
     const missing = await owner('POST', '/files/tickets', forAttachment);
     await fs.rename(stored, `${stored}.moved`);

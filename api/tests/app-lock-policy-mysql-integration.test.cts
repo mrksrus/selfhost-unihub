@@ -140,6 +140,12 @@ test('app lock policy: the admin sets it, the gate refuses a device short of it 
     await refused(laptop, 'GET', '/settings/values/mail-accounts', mailOnly);
     for (const route of ['/bin', '/stats', '/search?q=Robin', '/offline/snapshot', '/backup/jobs']) await refused(laptop, 'GET', route, mailOnly);
     await refused(laptop, 'POST', '/files/tickets', mailOnly, { kind: 'backup-archive', id: crypto.randomUUID() });
+    // A task made from an email, or linked to one, copies the email's header:
+    // a Calendar route, but Mail's lock applies. A task without an email is Calendar's alone.
+    await refused(laptop, 'POST', '/calendar/events', mailOnly, { title: 'Call Power Co', is_todo_only: true, source_email_id: email });
+    const plain = (await laptop('POST', '/calendar/events', { title: 'Call Power Co', is_todo_only: true })).event;
+    await refused(laptop, 'PUT', `/calendar/events/${plain.id}`, mailOnly, { source_email_id: email });
+    assert.deepEqual(await rows('SELECT source_email_id, source_email_json FROM calendar_events WHERE id = ?', [plain.id]), [{ source_email_id: null, source_email_json: null }]);
     for (const route of ['/contacts', `/contacts/${contact.id}`, '/calendar/calendars', '/recordings']) await laptop('GET', route);
     // The exempt routes: who is signed in, the rules, this device and its settings, sign-out of others.
     for (const route of ['/auth/me', '/auth/sessions', '/modules', '/settings/values', '/settings/preferences', '/settings/values/device', '/devices', '/notifications/config']) await laptop('GET', route);

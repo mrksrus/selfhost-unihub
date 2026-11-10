@@ -479,7 +479,7 @@ export = {
       const { title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only, source_email_id } = body;
       // A task made from an email keeps the email's header with it.
       if (source_email_id) {
-        const refusal = await sourceEmailLinkRefusal(userId);
+        const refusal = await sourceEmailLinkRefusal(userId, req.sessionDeviceId ?? null);
         if (refusal) return refusal;
       }
       const sourceEmail = source_email_id ? await snapshotSourceEmail(userId, source_email_id) : null;
@@ -700,7 +700,7 @@ export = {
         if (!body.source_email_id) {
           updates.push('source_email_id = NULL', 'source_email_json = NULL');
         } else {
-          const refusal = await sourceEmailLinkRefusal(userId);
+          const refusal = await sourceEmailLinkRefusal(userId, req.sessionDeviceId ?? null);
           if (refusal) return refusal;
           const sourceEmail = await snapshotSourceEmail(userId, body.source_email_id);
           if (!sourceEmail) return { error: 'Email not found', status: 404 };

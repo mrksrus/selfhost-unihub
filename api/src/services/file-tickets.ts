@@ -11,6 +11,7 @@ import { backupArchiveFile, markBackupDownloaded } from './export-jobs';
 import { isModuleEnabled } from './module-settings';
 import { getActiveRestoreSections } from './restore-locks';
 import { liveSessionId } from './sessions';
+import { appLockRefusal } from './devices';
 
 // Download tickets (F9). Whatever fetches a file outside the page (the Android
 // app's Open with, Save and Share, and its backup downloads) gets a ticket for
@@ -121,7 +122,7 @@ async function createFileTicket(userId: string, sessionToken: string | null, bod
   };
 }
 
-interface TicketRow extends RowDataPacket { id: string; user_id: string; kind: string; resource_id: string; fresh: number; granted: number; live: number | null; is_active: number }
+interface TicketRow extends RowDataPacket { id: string; user_id: string; kind: string; resource_id: string; fresh: number; granted: number; live: number | null; device_id: string | null; is_active: number }
 
 // Opens the grant at the first use, or confirms one that is open.
 async function useGrant(ticket: TicketRow, hash: string, executor: SqlExecutor) {
@@ -147,7 +148,7 @@ async function redeemFileTicket(token: string, executor: SqlExecutor = db): Prom
   if (!TOKEN_PATTERN.test(token)) throw gone();
   const hash = tokenHash(token);
   const [rows] = await executor.execute<TicketRow[]>(`SELECT t.id, t.user_id, t.kind, t.resource_id, t.expires_at > UTC_TIMESTAMP() AS fresh,
-      t.redeemed_at IS NOT NULL AS granted, s.expires_at > UTC_TIMESTAMP() AS live, u.is_active
+      t.redeemed_at IS NOT NULL AS granted, s.expires_at > UTC_TIMESTAMP() AS live, s.device_id, u.is_active
     FROM file_tickets t INNER JOIN users u ON u.id = t.user_id
     LEFT JOIN sessions s ON s.id = t.session_id AND s.user_id = t.user_id
     WHERE t.token_hash = ?`, [hash]);
@@ -164,6 +165,12 @@ async function redeemFileTicket(token: string, executor: SqlExecutor = db): Prom
   if (!Number(ticket.fresh) || !Number(ticket.live) || !Number(ticket.is_active)) throw gone();
   if (!policy) throw gone();
   await assertAvailable(ticket.user_id, policy);
+  // The app lock the person's policies require now, for the device of the
+  // session that asked for the ticket, as the request boundary checks it: a
+  // requirement set after the ticket was issued, or between two requests of a
+  // grant, refuses it.
+  const refusal = await appLockRefusal(ticket.user_id, ticket.device_id, policy.module ? [policy.module] : []);
+  if (refusal) throw forbidden('APP_LOCK_REQUIRED', refusal.reason ?? 'Your administrator requires the app lock on this device.', refusal);
   const file = await policy.file(ticket.user_id, ticket.resource_id);
   if (!file) throw notFound('FILE_NOT_FOUND', 'File not found');
   if (policy.sent) await policy.sent(ticket.user_id, ticket.resource_id);

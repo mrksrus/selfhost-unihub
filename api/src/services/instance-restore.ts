@@ -84,11 +84,14 @@ const inside = (child: string, parent: string) => {
 };
 
 async function clearInstallationState(connection: Connection, run: { id: string; fileName: string; size: number; sha256: string }) {
+  // A backup of 0.28 (upgrade step 25) has no devices yet; the next start's
+  // upgrade adds the table, empty.
+  const [devicesTable] = await connection.query<RowDataPacket[]>("SHOW TABLES LIKE 'devices'");
   const statements: [string, ExecuteValues[]][] = [
     ['DELETE FROM sessions', []],
     // Devices with their settings (F5): every browser and app signs in again
     // and becomes a device of the restored installation.
-    ['DELETE FROM devices', []],
+    ...(devicesTable.length ? [['DELETE FROM devices', []] as [string, ExecuteValues[]]] : []),
     ['DELETE FROM file_tickets', []],
     ['DELETE FROM two_factor_challenges', []],
     ['UPDATE mail_engine_accounts SET lease_owner = NULL, lease_until = NULL', []],
