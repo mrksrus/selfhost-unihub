@@ -30,13 +30,16 @@ function harness(t: import('node:test').TestContext) {
   const { sessionKey } = require('../dist/src/services/sessions') as typeof import('../src/services/sessions');
   const sessions = new Set([sessionKey(token)]);
   const user = { id: 'u1', email: 'one@example.test', full_name: 'One', avatar_url: null, role: 'user', timezone: null, two_factor_enabled: 0, is_active: 1, password_hash: passwordHash };
-  setDb({ async execute(sql: string, values: FixtureValue) {
+  const database = { async execute(sql: string, values: FixtureValue) {
     if (sql.includes('FROM sessions s')) return [sessions.has(values[0]) ? [{ user_id: 'u1', expires_at: new Date(Date.now() + 3600000), is_active: 1 }] : []];
     if (sql.startsWith('INSERT INTO sessions')) { sessions.add(values[1]); return [{ affectedRows: 1 }]; }
     if (sql.startsWith('DELETE FROM sessions WHERE token')) { sessions.delete(values[0]); return [{ affectedRows: 1 }]; }
     if (sql.includes('FROM users WHERE')) return [[user]];
     return [{ affectedRows: 0 }];
-  } } as FixtureValue);
+  } };
+  // A sign-in binds its device and creates its session in one transaction.
+  const transaction = { ...database, beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release: () => {} };
+  setDb({ ...database, getConnection: async () => transaction } as FixtureValue);
   const { handleRequest } = require(paths[0]) as typeof import('../src/request-handler');
   async function run(method: string, url: string, headers: Record<string, string>, body: FixtureValue = {}) {
     const req = new PassThrough(); Object.assign(req, { method, url, headers: { host: 'localhost', ...headers } });

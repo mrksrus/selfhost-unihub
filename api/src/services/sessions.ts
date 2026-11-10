@@ -14,20 +14,24 @@ function sessionKey(token: SessionToken) {
   return crypto.createHash('sha256').update(String(token)).digest('hex');
 }
 
-interface SessionRow extends RowDataPacket { id: string; user_id: string; expires_at: Date | string; is_active: StoredFlag }
+interface SessionRow extends RowDataPacket { id: string; user_id: string; device_id: string | null; expires_at: Date | string; is_active: StoredFlag }
 
-interface NewSession { userId: string; token: SessionToken; expiresAt: Date; ipAddress?: string | null; userAgent?: string | null }
+// deviceId: the device the sign-in bound (services/devices.ts bindDevice) on
+// the same executor. Every session has a device (F5): without one named, the
+// session gets a device of its own, without a key.
+interface NewSession { userId: string; token: SessionToken; expiresAt: Date; deviceId?: string; ipAddress?: string | null; userAgent?: string | null }
 
 // The address and browser are shown to the user in Settings > Security so they
 // can recognize a device and sign it out.
-async function createSession({ userId, token, expiresAt, ipAddress = null, userAgent = null }: NewSession, executor: SqlExecutor = db) {
-  await executor.execute('INSERT INTO sessions (user_id, token, expires_at, ip_address, user_agent) VALUES (?, ?, ?, ?, ?)',
-    [userId, sessionKey(token), expiresAt, ipAddress?.slice(0, 45) || null, userAgent?.slice(0, 512) || null]);
+async function createSession({ userId, token, expiresAt, deviceId, ipAddress = null, userAgent = null }: NewSession, executor: SqlExecutor = db) {
+  const device = deviceId ?? await (require('./devices') as typeof import('./devices')).bindDevice(userId, { keyHash: null, kind: 'web' }, userAgent, executor);
+  await executor.execute('INSERT INTO sessions (user_id, token, expires_at, device_id, ip_address, user_agent) VALUES (?, ?, ?, ?, ?, ?)',
+    [userId, sessionKey(token), expiresAt, device, ipAddress?.slice(0, 45) || null, userAgent?.slice(0, 512) || null]);
 }
 
-/** The session of this token with its user's active flag, expired or not; null when unknown. */
+/** The session of this token with its device and its user's active flag, expired or not; null when unknown. */
 async function findSession(token: SessionToken, executor: SqlExecutor = db) {
-  const [rows] = await executor.execute<SessionRow[]>(`SELECT s.id, s.user_id, s.expires_at, u.is_active
+  const [rows] = await executor.execute<SessionRow[]>(`SELECT s.id, s.user_id, s.device_id, s.expires_at, u.is_active
     FROM sessions s INNER JOIN users u ON u.id = s.user_id WHERE s.token = ? LIMIT 1`, [sessionKey(token)]);
   return rows[0] ?? null;
 }
@@ -42,6 +46,14 @@ async function liveSessionId(userId: string, token: SessionToken | null, executo
   const [rows] = await executor.execute<RowDataPacket[]>('SELECT id FROM sessions WHERE token = ? AND user_id = ? AND expires_at > UTC_TIMESTAMP()',
     [sessionKey(token), userId]);
   return rows.length ? String(rows[0].id) : null;
+}
+
+/** This user's live session for the token with its device (null only for a session no 0.29 writer made), or null. */
+async function liveSession(userId: string, token: SessionToken | null, executor: SqlExecutor = db): Promise<{ id: string; device_id: string | null } | null> {
+  if (!token) return null;
+  const [rows] = await executor.execute<RowDataPacket[]>('SELECT id, device_id FROM sessions WHERE token = ? AND user_id = ? AND expires_at > UTC_TIMESTAMP()',
+    [sessionKey(token), userId]);
+  return rows.length ? { id: String(rows[0].id), device_id: rows[0].device_id === null ? null : String(rows[0].device_id) } : null;
 }
 
 /** Whether this user's session for the token is live, read with a shared lock held by the caller's transaction. */
@@ -111,6 +123,7 @@ export {
   findSession,
   renewSession,
   liveSessionId,
+  liveSession,
   lockOwnSession,
   lockLiveSession,
   endSession,

@@ -16,9 +16,11 @@ import {
 import { deleteUser } from '../services/user-lifecycle';
 import { getScopedSettings, getSettings, getUserPreferences, setUserPreferences, updateSettings } from '../services/settings';
 import { changeUserSettings } from '../services/bin';
+import { currentDevice } from '../services/devices';
 import type {
   CalendarSettingsResponse,
   CalendarSettingValues,
+  DeviceSettingsResponse,
   MailAccountSettingsResponse,
   MailAccountSettingValues,
   ScopedSettingsResponse,
@@ -93,6 +95,29 @@ export = defineRoutes({
     } catch (error) {
       if (!(error as ApiError).status) console.error('Update calendar settings error:', error);
       return clientError(error, 'Failed to save calendar settings');
+    }
+  } },
+
+  // The device scope (0.29, F5): the settings of the device the request comes
+  // from, never another's. Installation state, never restored, so no restore
+  // locks them; a device without the app lock its policies require reaches
+  // them to set the lock up.
+  'GET /api/settings/values/device': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string) => {
+    try {
+      const { deviceId } = await currentDevice(userId, getAuthTokenFromRequest(req));
+      return { device_id: deviceId, settings: await getSettings('device', userId, deviceId) } satisfies DeviceSettingsResponse;
+    } catch (error) {
+      if (!(error as ApiError).status) console.error('Get device settings error:', error);
+      return clientError(error, 'Failed to load the settings of this device');
+    }
+  } },
+  'PUT /api/settings/values/device': { auth: 'user', module: null, restoreSection: null, appLock: 'exempt', handler: async (req: Request, userId: string, body: Input) => {
+    try {
+      const { deviceId } = await currentDevice(userId, getAuthTokenFromRequest(req));
+      return { device_id: deviceId, settings: await updateSettings('device', userId, deviceId, body) } satisfies DeviceSettingsResponse;
+    } catch (error) {
+      if (!(error as ApiError).status) console.error('Update device settings error:', error);
+      return clientError(error, 'Failed to save the settings of this device');
     }
   } },
 

@@ -1,6 +1,7 @@
 import systemRoutes = require('./system');
 import modulesRoutes = require('./modules');
 import authRoutes = require('./auth');
+import devicesRoutes = require('./devices');
 import contactsRoutes = require('./contacts');
 import contactsTransferRoutes = require('./contacts-transfer');
 import contactsPhotosRoutes = require('./contacts-photos');
@@ -35,6 +36,7 @@ const routes = mergeRouteTables(
   systemRoutes,
   modulesRoutes,
   authRoutes,
+  devicesRoutes,
   contactsRoutes,
   contactsTransferRoutes,
   contactsPhotosRoutes,

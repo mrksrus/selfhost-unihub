@@ -7,6 +7,9 @@
 // or a push endpoint. Devices are installation state: never in a personal
 // backup, never restored.
 
+import type { DeviceSettingValues, ResolvedSettings } from './settings';
+import type { Allowance } from './policies';
+
 /** How UniHub runs on the device. `android` is taken from the app's user agent only. */
 export type DeviceKind = 'web' | 'pwa' | 'android';
 
@@ -96,3 +99,24 @@ export interface AppLockCompliance {
  * device does not report. The page shows the set-up prompt.
  */
 export type AppLockRequiredDetails = Omit<AppLockCompliance, 'meets'>;
+
+/** The answer of POST /api/devices/current/key: the device the session now belongs to; `merged` when it joined another device of this browser. */
+export interface DeviceKeyResponse { device_id: string; merged: boolean }
+
+/**
+ * GET /api/devices/current, and the answer of PUT /api/devices/current/lock:
+ * the device the request came from, its app lock settings, whether it meets
+ * what the person's policies require, and the window policies it applies.
+ */
+export interface CurrentDeviceResponse {
+  device: DeviceSummary;
+  settings: ResolvedSettings<DeviceSettingValues>;
+  compliance: AppLockCompliance;
+  policy: { screenshots: Allowance };
+}
+
+/** The answer of POST /api/devices/current/lock-state: until when the device now counts as unlocked. */
+export interface DeviceLockStateResponse { open_until: string }
+
+/** The answer of DELETE /api/devices/:id: the device is signed out and gone. */
+export interface DeviceRemovedResponse { removed: true }

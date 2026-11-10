@@ -223,6 +223,15 @@ async function verifyToken(req: AuthRequest, { renew = false } = {}) {
           }
         }
 
+        // A request through the boundary is a use of the session's device (F5).
+        if (renew && session.device_id) {
+          try {
+            await (require('./services/devices') as typeof import('./services/devices')).touchDevice(String(session.device_id));
+          } catch (touchError) {
+            log.error('AUTH', 'Recording the device\'s last use failed', undefined, { code: (touchError as NodeJS.ErrnoException).code || (touchError as Error).name });
+          }
+        }
+
         req.authCredential = credential.source;
         return session.user_id || decoded.userId || decoded.sub;
       } catch (dbError) {

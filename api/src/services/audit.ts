@@ -24,6 +24,8 @@ const AUDIT_ACTIONS = [
   'admin.calendar_account_added', 'admin.calendar_account_changed', 'admin.calendar_account_removed',
   'admin.backup_deleted', 'admin.bin_emptied', 'admin.bin_item_deleted', 'admin.data_cleared',
   'mail.account_disconnected', 'mail.account_purged',
+  // A person signed one of their devices out for good (F5).
+  'device.removed',
 ] as const;
 type AuditAction = typeof AUDIT_ACTIONS[number];
 type AuditDetails = Record<string, string | number | boolean | null>;
