@@ -209,11 +209,16 @@ test('[27-02] a Today task dropped in Later goes back to its place in Today', { 
   const prefix = `Section ${run}`;
   const pattern = new RegExp(`${prefix} (Today|Later) \\d`);
   const at = minutes => new Date(Date.now() + minutes * 60_000).toISOString();
+  // The last tasks of today and the first of tomorrow, so the two sections
+  // meet at them whatever else is due today: the dev seed's tasks and events
+  // of the day (08:00 to 19:30 UTC) stay in Today until they end, and would
+  // otherwise sit between Today 1 and Later after midnight UTC.
+  const endOfDay = minutesLeftToday(timeZone);
   const tasks = await createTasks(page, [
-    { title: `${prefix} Today 1`, is_todo_only: false, start_time: at(10), end_time: at(130) },
-    { title: `${prefix} Today 2`, is_todo_only: false, start_time: at(11), end_time: at(131) },
-    { title: `${prefix} Later 1`, is_todo_only: false, start_time: at(3 * 1440), end_time: at(3 * 1440 + 30) },
-    { title: `${prefix} Later 2`, is_todo_only: false, start_time: at(3 * 1440 + 60), end_time: at(3 * 1440 + 90) },
+    { title: `${prefix} Today 1`, is_todo_only: false, start_time: at(endOfDay - 20), end_time: at(endOfDay - 10) },
+    { title: `${prefix} Today 2`, is_todo_only: false, start_time: at(endOfDay - 19), end_time: at(endOfDay - 9) },
+    { title: `${prefix} Later 1`, is_todo_only: false, start_time: at(endOfDay + 5), end_time: at(endOfDay + 35) },
+    { title: `${prefix} Later 2`, is_todo_only: false, start_time: at(endOfDay + 65), end_time: at(endOfDay + 95) },
   ]);
   try {
     await withEvidence('section', async () => {
@@ -223,7 +228,11 @@ test('[27-02] a Today task dropped in Later goes back to its place in Today', { 
       assert.deepEqual(await shownOrder(page, 'Later', pattern), later);
       const storedBefore = await storedOrder(page, tasks);
 
-      // Hold Today 1's handle and drag it down onto Later 1, inside Later.
+      // Nothing else between them: Today ends with this run's tasks and Later starts with them.
+      assert.deepEqual((await section(page, 'Today').getByRole('listitem').allTextContents()).slice(-2).map(text => text.match(pattern)?.[0]), today);
+      assert.deepEqual((await section(page, 'Later').getByRole('listitem').allTextContents()).slice(0, 2).map(text => text.match(pattern)?.[0]), later);
+
+      // Hold Today 1's handle and drag it down onto Later 1, inside Later (both on screen: screenPoint fails otherwise).
       await centre(section(page, 'Later').getByRole('heading', { name: 'Later' }));
       const from = await screenPoint(page, handle(page, `${prefix} Today 1`));
       const into = await screenPoint(page, row(page, 'Later', `${prefix} Later 1`));

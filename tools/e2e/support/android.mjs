@@ -227,6 +227,10 @@ export async function touch(page, locator) {
  * Where a page element's centre (moved by `dy` page pixels) is on the screen,
  * in screen pixels for `adb shell input`, once the element stays put (the
  * page may still be moving: the on-screen keyboard opening, a scroll ending).
+ * Fails when that point is outside the visible WebView, or when something
+ * else (a header, a bar, another row) is on top of it there: a finger put
+ * there would touch something else, and the test would fail later for a
+ * reason it does not name.
  */
 export async function screenPoint(page, locator, { dy = 0 } = {}) {
   let box = await locator.boundingBox();
@@ -237,12 +241,25 @@ export async function screenPoint(page, locator, { dy = 0 } = {}) {
     box = next;
   }
   if (!box) throw new Error('the element is not on screen');
-  const ratio = await page.evaluate(() => window.devicePixelRatio);
+  const at = { x: box.x + box.width / 2, y: box.y + box.height / 2 + dy };
+  const seen = await locator.evaluate((element, point) => {
+    const hit = document.elementFromPoint(point.x, point.y);
+    return { inside: point.x >= 0 && point.y >= 0 && point.x < window.innerWidth && point.y < window.innerHeight,
+      own: !!hit && (hit === element || element.contains(hit)),
+      other: hit ? `${hit.tagName.toLowerCase()} "${(hit.textContent ?? '').trim().slice(0, 40)}"` : 'nothing',
+      ratio: window.devicePixelRatio };
+  }, at);
+  const where = `page point (${Math.round(at.x)}, ${Math.round(at.y)})`;
+  if (!seen.inside) throw new Error(`the element's ${where} is outside the visible page; bring it into view first`);
+  if (!seen.own) throw new Error(`the element's ${where} is covered by ${seen.other}; a touch there would not reach it`);
   const xml = dumpScreen();
   const node = [...xml.matchAll(/<node [^>]*>/g)].map(match => match[0]).find(tag => tag.includes('class="android.webkit.WebView"'));
-  const web = node && /bounds="\[(\d+),(\d+)\]/.exec(node);
+  const web = node && /bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(node);
   if (!web) throw new Error('the WebView is not on screen');
-  return { x: Math.round(+web[1] + (box.x + box.width / 2) * ratio), y: Math.round(+web[2] + (box.y + box.height / 2 + dy) * ratio), ratio };
+  const point = { x: Math.round(+web[1] + at.x * seen.ratio), y: Math.round(+web[2] + at.y * seen.ratio), ratio: seen.ratio };
+  if (point.x < +web[1] || point.x >= +web[3] || point.y < +web[2] || point.y >= +web[4])
+    throw new Error(`the element's screen point (${point.x}, ${point.y}) is outside the WebView [${web[1]},${web[2]}][${web[3]},${web[4]}]`);
+  return point;
 }
 
 /** This instance's state folder (tools/e2e/stack.sh). */
