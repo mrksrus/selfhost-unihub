@@ -3,7 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { MoreHorizontal } from 'lucide-react';
 import { BOTTOM_NAV_PAGES, navigationPages, pageLink } from '@/lib/navigation';
-import { useAttentionItems } from '@/hooks/use-attention';
+import { useVisibleAttention } from '@/components/layout/visible-attention';
 import { useNavigationCounts } from '@/hooks/use-navigation-counts';
 import { useAppLock } from '@/hooks/use-app-lock';
 
@@ -13,7 +13,7 @@ const MORE_PATHS = ['/more', '/settings', '/admin'];
 const BottomNav = () => {
   const { pages, canNavigate } = useModules();
   const location = useLocation();
-  const attention = useAttentionItems();
+  const attention = useVisibleAttention();
   const counts = useNavigationCounts();
   const lock = useAppLock();
   // A locked module gives nothing away, not even a count.

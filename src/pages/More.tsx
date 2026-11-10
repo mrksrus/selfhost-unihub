@@ -2,10 +2,10 @@ import { Link } from 'react-router-dom';
 import { ChevronRight, HardDriveDownload, LogOut, Server, Settings, ShieldCheck, Users } from 'lucide-react';
 import { useModules } from '@/hooks/use-modules';
 import { useAuth } from '@/contexts/useAuth';
-import { useAttentionItems } from '@/hooks/use-attention';
 import { BOTTOM_NAV_PAGES, navigationPages } from '@/lib/navigation';
 import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { AttentionList } from '@/components/layout/AttentionList';
+import { useVisibleAttention } from '@/components/layout/visible-attention';
 
 const rowClass = 'flex items-center gap-3 px-1 py-3.5 text-[15px] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
@@ -13,7 +13,7 @@ const rowClass = 'flex items-center gap-3 px-1 py-3.5 text-[15px] hover:text-for
 const More = () => {
   const { pages, canNavigate } = useModules();
   const { user, signOut } = useAuth();
-  const attention = useAttentionItems();
+  const attention = useVisibleAttention();
   const links = [
     // Pages that do not fit in the mobile bar, in the user's order.
     ...navigationPages(pages, canNavigate).slice(BOTTOM_NAV_PAGES).map(page => ({ title: page.name, href: page.href, icon: page.icon })),
