@@ -127,6 +127,8 @@ object AppUpdate {
     private fun open(context: Context, file: File): Boolean = try {
         // FilesProvider refuses copies older than SharedFiles.MAX_AGE_MS; this one is offered now.
         file.setLastModified(System.currentTimeMillis())
+        // The installer is no time away for the app lock.
+        AppLock.handOff()
         context.startActivity(installer(context, file))
         true
     } catch (error: Exception) {

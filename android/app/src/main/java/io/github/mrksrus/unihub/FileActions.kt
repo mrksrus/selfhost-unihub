@@ -179,6 +179,8 @@ class FileActions(private val activity: Activity, private val origin: String) {
         activity.runOnUiThread {
             if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
             try {
+                // Android's sheet and the app chosen there are no time away (AppLock).
+                AppLock.handOff()
                 activity.startActivity(Intent.createChooser(target, title))
             } catch (_: Exception) {
                 Toast.makeText(activity, R.string.files_no_app, Toast.LENGTH_SHORT).show()

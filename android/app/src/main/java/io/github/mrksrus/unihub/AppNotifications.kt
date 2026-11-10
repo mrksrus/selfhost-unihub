@@ -315,9 +315,14 @@ object AppNotifications {
             .setData(Uri.parse("unihub-notification://$eventId"))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         val pending = PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val channel = channelFor(payload.optString("kind"))
-        val title = payload.optString("title").take(120).ifEmpty { "UniHub" }
-        val text = payload.optString("body").take(400)
+        val kind = payload.optString("kind")
+        val channel = channelFor(kind)
+        // The app lock covers this notification's module and the app is
+        // locked, or would lock if opened now: only the kind's generic text,
+        // whatever the server sent (it may not know the phone locked yet).
+        val locked = AppLock.hides(context, origin, AppLock.moduleOf(payload))
+        val title = if (locked) lockedTitle(context, kind) else payload.optString("title").take(120).ifEmpty { "UniHub" }
+        val text = if (locked) "" else payload.optString("body").take(400)
         // Private: a lock screen set to hide sensitive content shows this
         // instead. Android ignores an app's own lock screen setting for its
         // channels (they keep "no override"), so the phone's setting decides.
@@ -345,6 +350,15 @@ object AppNotifications {
             // Notifications are not allowed (Android 13+ permission withdrawn): nothing to show.
         }
         return true
+    }
+
+    private fun lockedTitle(context: Context, kind: String) = when (kind) {
+        "mail" -> context.getString(R.string.notification_locked_mail)
+        "snooze" -> context.getString(R.string.notification_locked_snooze)
+        "calendar" -> context.getString(R.string.notification_locked_calendar)
+        "todo" -> context.getString(R.string.notification_locked_todo)
+        "reminder" -> context.getString(R.string.notification_locked_reminder)
+        else -> context.getString(R.string.notification_hidden)
     }
 
     // Only paths on the server, as the service worker allows (workers/sw-custom.ts).

@@ -22,14 +22,17 @@ export function adb(...args) {
 export function dumpScreen() {
   for (let attempt = 1; ; attempt++) {
     try {
-      adb('shell', 'uiautomator', 'dump', '/data/local/tmp/unihub-ui.xml');
-      break;
+      try {
+        adb('shell', 'uiautomator', 'dump', '/data/local/tmp/unihub-ui.xml');
+      } catch (error) {
+        if (!/dumped to/.test(String(error.stdout ?? ''))) throw error;
+      }
+      // The dump can also report success and leave no file.
+      return adb('shell', 'cat', '/data/local/tmp/unihub-ui.xml');
     } catch (error) {
-      if (/dumped to/.test(String(error.stdout ?? ''))) break;
       if (attempt >= 3) throw error;
     }
   }
-  return adb('shell', 'cat', '/data/local/tmp/unihub-ui.xml');
 }
 
 /** Android's on-screen nodes: text, description and centre. */
@@ -39,7 +42,7 @@ export function screenNodes() {
     const attrs = Object.fromEntries([...match[0].matchAll(/([\w-]+)="([^"]*)"/g)].map(m => [m[1], m[2]]));
     const box = /\[(\d+),(\d+)\]\[(\d+),(\d+)\]/.exec(attrs.bounds ?? '');
     return { text: attrs.text ?? '', desc: attrs['content-desc'] ?? '', id: attrs['resource-id'] ?? '', pkg: attrs.package ?? '',
-      x: box ? (+box[1] + +box[3]) / 2 : 0, y: box ? (+box[2] + +box[4]) / 2 : 0 };
+      password: attrs.password === 'true', x: box ? (+box[1] + +box[3]) / 2 : 0, y: box ? (+box[2] + +box[4]) / 2 : 0 };
   });
 }
 
@@ -281,3 +284,239 @@ export function ticketLog() {
 }
 
 export const ticketOf = url => new URL(url, 'http://ticket.invalid').pathname.split('/').pop().slice(0, 8);
+
+// ── The phone's own lock, for the app lock (0.29.0) ──────────────────
+// The CI emulator (API 36 google_apis) has a virtual fingerprint sensor driven
+// by `adb emu finger`; it has no face unlock. The 0.29 CI spike measured these
+// steps: the PIN in about a second, enrolment in three touches and about 50 s,
+// an unlock about 2 s after a touch. More than one or two wrong fingers in a
+// row can lock the whole phone ("Device was locked, too many authentication
+// attempts"), so tests use at most one at a time.
+
+export const DEVICE_PIN = '1111';
+
+/** Sets the emulator's screen-lock PIN and keeps the screen on, so the keyguard only appears when a test asks for it. */
+export function setDevicePin(pin = DEVICE_PIN) {
+  let out = '';
+  try { out = adb('shell', 'locksettings', 'set-pin', pin); } catch (error) { out = String(error.stdout ?? ''); }
+  // A PIN left by an earlier attempt of the file: replace it with itself.
+  if (!/Pin set/.test(out)) out = adb('shell', 'locksettings', 'set-pin', '--old', pin, pin);
+  if (!/Pin set/.test(out)) throw new Error(`locksettings set-pin: ${out.trim()}`);
+  adb('shell', 'svc', 'power', 'stayon', 'true');
+  adb('shell', 'settings', 'put', 'system', 'screen_off_timeout', '2147483647');
+}
+
+/** Removes the PIN again, so later files run without a screen lock. On Android 16 this also deletes the enrolled fingerprints. */
+export function clearDevicePin(pin = DEVICE_PIN) {
+  try { adb('shell', 'locksettings', 'clear', '--old', pin); } catch { /* no PIN set */ }
+}
+
+/** How many fingerprints are enrolled (dumpsys fingerprint's "count"). */
+export function enrolledFingerprints() {
+  const counts = [...adb('shell', 'dumpsys', 'fingerprint').matchAll(/"count"\s*:\s*(\d+)/g)].map(match => Number(match[1]));
+  return counts.length ? Math.max(...counts) : 0;
+}
+
+/** One touch of the virtual sensor: finger 1 is the enrolled one, any other id a stranger's. */
+export async function touchFinger(id = 1) {
+  adb('emu', 'finger', 'touch', `${id}`);
+  await sleep(800);
+  adb('emu', 'finger', 'remove');
+  await sleep(500);
+}
+
+/**
+ * Enrols finger 1 through Settings as a person would: the PIN, the
+ * introduction (More, I agree / Next), then touches until "Fingerprint added".
+ * Needs setDevicePin first. Does nothing when a finger is already enrolled.
+ */
+export async function enrollFingerprint({ pin = DEVICE_PIN, finger = 1, timeoutMs = 180_000 } = {}) {
+  if (enrolledFingerprints() > 0) return;
+  const tap = node => adb('shell', 'input', 'tap', `${node.x}`, `${node.y}`);
+  const until = Date.now() + timeoutMs;
+  // A Settings screen left by an earlier attempt would be brought back and
+  // end at once (cancelled): Settings starts fresh, and again when it stops
+  // moving for a minute.
+  let started = 0, changed = 0, last = '';
+  while (Date.now() < until) {
+    if (Date.now() - changed > 60_000 && Date.now() - started > 60_000) {
+      adb('shell', 'am', 'force-stop', 'com.android.settings');
+      adb('shell', 'am', 'start', '-a', 'android.settings.FINGERPRINT_ENROLL');
+      started = changed = Date.now();
+    }
+    await sleep(1000);
+    let nodes;
+    try { nodes = screenNodes(); } catch { continue; }
+    const seen = nodes.map(n => n.text).join('|');
+    if (seen !== last) { last = seen; changed = Date.now(); }
+    const text = nodes.map(n => n.text).join('\n');
+    if (/isn't responding|keeps stopping/.test(text)) { await answerSlowDialogs(); continue; }
+    if (/fingerprint added/i.test(text)) {
+      const done = nodes.find(n => /^done$/i.test(n.text));
+      if (done) tap(done);
+      break;
+    }
+    if (nodes.some(n => n.password) && /PIN/.test(text)) {
+      adb('shell', 'input', 'text', pin);
+      adb('shell', 'input', 'keyevent', '66');
+      await sleep(1500);
+      continue;
+    }
+    // Settings writes its buttons in capitals: MORE, I AGREE, NEXT.
+    const button = [/^i agree$/i, /^next$/i, /^more$/i].map(re => nodes.find(n => re.test(n.text))).find(Boolean);
+    if (button) { tap(button); continue; }
+    if (/touch the sensor|lift, then touch/i.test(text)) await touchFinger(finger);
+  }
+  for (let i = 0; i < 10 && enrolledFingerprints() === 0; i++) await sleep(1000);
+  adb('shell', 'am', 'force-stop', 'com.android.settings');
+  if (enrolledFingerprints() === 0) throw new Error(`fingerprint enrolment did not finish; last screen: ${last.slice(0, 300)}`);
+}
+
+/** The app's unlock prompt (BiometricPrompt, or Settings' credential screen on Android 10) is on screen. */
+export function unlockPromptShown(title = 'Unlock UniHub') {
+  return screenNodes().some(n => n.text === title);
+}
+
+/** Waits for the app's unlock prompt. */
+export async function waitForUnlockPrompt(title = 'Unlock UniHub', timeoutMs = 30_000) {
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until) {
+    if (unlockPromptShown(title)) return;
+    await sleep(500);
+  }
+  throw new Error(`no unlock prompt "${title}" within ${timeoutMs} ms`);
+}
+
+/** Answers a shown unlock prompt with the phone's PIN through its "Use PIN" button. */
+export async function answerPromptWithPin(pin = DEVICE_PIN) {
+  if (!screenNodes().some(n => n.password)) await tapNative(/^Use PIN$/i, { timeoutMs: 10_000 });
+  const until = Date.now() + 15_000;
+  while (!screenNodes().some(n => n.password)) {
+    if (Date.now() > until) throw new Error('the PIN field did not appear');
+    await sleep(500);
+  }
+  await sleep(1000);
+  adb('shell', 'input', 'text', pin);
+  adb('shell', 'input', 'keyevent', '66');
+}
+
+/** Whether the app's native cover (AppLock) is over the page. */
+export function lockCoverShown() {
+  return screenNodes().some(n => n.desc === 'UniHub is locked' && n.pkg === PACKAGE);
+}
+
+/** Whether Android's lock screen has the focus. A pulled-down shade looks the same on Android 16; tests do not open it. */
+export function keyguardShowing() {
+  return /mCurrentFocus=.*\b(NotificationShade|StatusBar)\b/.test(adb('shell', 'dumpsys', 'window'));
+}
+
+/** Turns the screen off; with a PIN set, the keyguard is up when it comes back on. */
+export async function sleepScreen() {
+  adb('shell', 'svc', 'power', 'stayon', 'false');
+  adb('shell', 'input', 'keyevent', 'KEYCODE_SLEEP');
+  await sleep(3000);
+}
+
+/** Wakes the screen and unlocks the keyguard with the PIN, or with a finger when `finger` is given. */
+export async function unlockKeyguard({ pin = DEVICE_PIN, finger } = {}) {
+  adb('shell', 'input', 'keyevent', 'KEYCODE_WAKEUP');
+  await sleep(2000);
+  if (finger) {
+    await touchFinger(finger);
+  } else {
+    adb('shell', 'wm', 'dismiss-keyguard');
+    await sleep(1500);
+    const [, w, h] = /(\d+)x(\d+)\s*$/.exec(adb('shell', 'wm', 'size').trim()).map(Number);
+    adb('shell', 'input', 'swipe', `${w / 2}`, `${Math.round(h * 0.85)}`, `${w / 2}`, `${Math.round(h * 0.25)}`, '250');
+    await sleep(1500);
+    adb('shell', 'input', 'text', pin);
+    adb('shell', 'input', 'keyevent', '66');
+  }
+  await sleep(3000);
+  adb('shell', 'svc', 'power', 'stayon', 'true');
+  if (keyguardShowing()) throw new Error('the keyguard is still showing');
+}
+
+/**
+ * The share of the screen's middle band in a colour (`[r, g, b]`, each
+ * within 40), or `empty` when Android refuses the capture: Android 10
+ * gives no picture while a secure window is shown, Android 16 a black one.
+ */
+export function screenShare(colour) {
+  const raw = execFileSync(`${SDK}/platform-tools/adb`, ['-s', serial, 'exec-out', 'screencap'], { maxBuffer: 64 << 20 });
+  if (raw.length < 16) return { empty: true, share: 0, black: 0 };
+  const width = raw.readUInt32LE(0), height = raw.readUInt32LE(4);
+  const header = raw.length - width * height * 4;
+  let matching = 0, black = 0, total = 0;
+  for (let y = Math.floor(height * 0.3); y < Math.floor(height * 0.7); y += 4) {
+    for (let x = 0; x < width; x += 4) {
+      const i = header + (y * width + x) * 4;
+      if (colour.every((value, c) => Math.abs(raw[i + c] - value) <= 40)) matching++;
+      if (raw[i] < 16 && raw[i + 1] < 16 && raw[i + 2] < 16) black++;
+      total++;
+    }
+  }
+  return { empty: false, share: matching / total, black: black / total };
+}
+
+/** Whether the app's window carries FLAG_SECURE (dumpsys window). */
+export function windowIsSecure(pkg = PACKAGE) {
+  const block = adb('shell', 'dumpsys', 'window', 'windows').split(/\n(?=\s*Window #)/).find(part => part.includes(`${pkg}/`));
+  return !!block && /\bfl=[^\n]*\bSECURE\b/.test(block);
+}
+
+/**
+ * Sends a bridge message straight from the test, as src/lib/platform.ts does
+ * (`type` with an `id`), and resolves with the app's reply. The page keeps the
+ * app's unsolicited app lock events in `window.__appLockEvents`.
+ */
+export async function bridgeMessage(page, type, action, fields = {}, { timeoutMs = 60_000 } = {}) {
+  return page.evaluate(({ type, action, fields, timeoutMs }) => new Promise((resolve, reject) => {
+    const bridge = window.UniHubAndroid;
+    if (!bridge) { reject(new Error('no UniHubAndroid bridge in this WebView')); return; }
+    if (!window.__bridgeListening) {
+      window.__bridgeListening = true;
+      window.__appLockEvents = [];
+      window.__bridgeReplies = new Map();
+      bridge.addEventListener('message', event => {
+        let reply;
+        try { reply = JSON.parse(event.data); } catch { return; }
+        if (reply?.type === 'appLock' && reply.event) window.__appLockEvents.push(reply.event);
+        else if (reply?.id) window.__bridgeReplies.get(reply.id)?.(reply);
+      });
+    }
+    const id = crypto.randomUUID();
+    const timer = setTimeout(() => { window.__bridgeReplies.delete(id); reject(new Error(`no reply to ${type} ${action}`)); }, timeoutMs);
+    window.__bridgeReplies.set(id, reply => { clearTimeout(timer); window.__bridgeReplies.delete(id); resolve(reply); });
+    bridge.postMessage(JSON.stringify({ type, id, action, ...fields }));
+  }), { type, action, fields, timeoutMs });
+}
+
+/** The page's `appLock` bridge message (bridge level 3). */
+export const appLockMessage = (page, action, fields = {}, options = {}) => bridgeMessage(page, 'appLock', action, fields, options);
+
+/** The app's shown notifications as Android lists them, unredacted: title and text per notification. */
+export function shownNotifications(pkg = PACKAGE) {
+  return adb('shell', 'dumpsys', 'notification', '--noredact').split(/\n\s*NotificationRecord\(/).slice(1)
+    .filter(record => record.includes(`pkg=${pkg}`))
+    .map(record => ({
+      title: /android\.title=\S+ \((.*)\)$/m.exec(record)?.[1] ?? '',
+      text: /android\.text=\S+ \((.*)\)$/m.exec(record)?.[1] ?? '',
+    }));
+}
+
+/** A session of a seeded person against the stack's API, from the test itself. */
+export async function stackSession(email = 'admin@example.com', password = 'local-dev-admin-password') {
+  const base = process.env.UNIHUB_E2E_URL ?? `http://127.0.0.1:${8087 + Number(process.env.UNIHUB_E2E_INSTANCE ?? '1')}`;
+  const response = await fetch(`${base}/api/auth/signin`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+  const body = await response.json();
+  if (!response.ok) throw new Error(`sign-in as ${email}: ${response.status}`);
+  const cookie = response.headers.getSetCookie().map(c => c.split(';')[0]).join('; ');
+  return async (method, path, data) => {
+    const res = await fetch(`${base}${path}`, { method, headers: { Cookie: cookie, 'X-CSRF-Token': body.csrfToken,
+      ...(data !== undefined ? { 'Content-Type': 'application/json' } : {}) }, body: data === undefined ? undefined : JSON.stringify(data) });
+    const text = await res.text();
+    let json; try { json = JSON.parse(text); } catch { json = text; }
+    return { status: res.status, data: json };
+  };
+}

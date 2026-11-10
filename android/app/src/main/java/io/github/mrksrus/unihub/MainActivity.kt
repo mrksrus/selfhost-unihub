@@ -19,10 +19,12 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.KeyEvent
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
+import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
@@ -37,6 +39,7 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONObject
@@ -78,12 +81,22 @@ class MainActivity : Activity() {
     // The server a connect link asks about, until the question is answered.
     private var connectQuestion: AlertDialog? = null
     private var connectAsked: String? = null
+    // The app lock (AppLock): the phone's own unlock, and the opaque cover over
+    // the page while it is locked (LOCK, lifted by the page or an unlock) or
+    // while the app is paused with the lock on (PAUSE, for the recent-apps
+    // picture; lifted when the app is shown again and nothing is due).
+    private val unlock = BiometricAuth(this)
+    private var cover: View? = null
+    private var coverReason = COVER_PAUSE
+    private val coverButton = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         drawEdgeToEdge()
         FileActions.pruneLater(this)
         val saved = ServerAddress.saved(this)
+        AppLock.attach(this, saved)
+        applyLockWindow()
         if (saved != null) PageTheme.saved(this)?.let { (dark, background) -> applyTheme(dark, background) }
         val opened = notificationPath(intent, saved)?.takeIf { savedInstanceState == null }
         if (saved != null) showWeb(saved, savedInstanceState, opened) else showConnect()
@@ -97,6 +110,8 @@ class MainActivity : Activity() {
         connectRequest(intent)?.takeIf { it != origin }?.let(::confirmConnect)
         if (intent.action == ACTION_SHOW_CONTACTS) contactsFromSettings(intent)
         val server = origin
+        // A tapped notification of a locked app opens behind the cover; the page asks first.
+        lockCheck()
         notificationPath(intent, server)?.let { path -> if (server != null) webView?.loadUrl(server + path) }
     }
 
@@ -143,6 +158,8 @@ class MainActivity : Activity() {
 
     private fun showConnect(prefill: String? = null) {
         destroyWeb()
+        AppLock.attach(this, null)
+        applyLockWindow()
         applyTheme(PageTheme.deviceIsDark(this), getColor(R.color.background))
         setContentView(R.layout.activity_connect)
         applyInsets(findViewById(R.id.connect_root))
@@ -243,6 +260,10 @@ class MainActivity : Activity() {
         applyInsets(frame)
         root = frame
         webView = web
+        AppLock.attach(this, server)
+        applyLockWindow()
+        // A cold start (a new process) or another server with the lock on: the page loads behind the cover.
+        if (AppLock.locked) showCover(COVER_LOCK)
 
         web.settings.apply {
             javaScriptEnabled = true
@@ -265,7 +286,8 @@ class MainActivity : Activity() {
             if (PageTheme.splashChanges(this, dark)) startInPageTheme(dark)
             PageTheme.save(this, dark, background)
             applyTheme(dark, background)
-        }, onNotifications = { action, answer -> notifications(server, action, answer) })
+        }, onNotifications = { action, answer -> notifications(server, action, answer) },
+            onAppLock = { data, answer -> appLock(server, data, answer) })
         pageBridge.attach(web)
         bridge = pageBridge
 
@@ -289,7 +311,11 @@ class MainActivity : Activity() {
             override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
                 ContactsSync.pageShown(this@MainActivity, url)
                 // Signed out (here, elsewhere or expired): the files handed to other apps go.
-                if (isSignInPage(url)) endFileSession()
+                // The sign-in page shows nothing of the account, so no cover is needed.
+                if (isSignInPage(url)) {
+                    endFileSession()
+                    hideCover()
+                }
                 offerContacts(server)
                 offerNotifications(server)
                 resumeNotifications()
@@ -313,6 +339,7 @@ class MainActivity : Activity() {
             override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
                 filePick.cancel()
                 return try {
+                    AppLock.handOff()
                     startActivityForResult(params.createIntent(), REQUEST_FILE)
                     filePick.open(callback::onReceiveValue)
                     true
@@ -332,6 +359,7 @@ class MainActivity : Activity() {
                 } else {
                     pendingPermission?.deny()
                     pendingPermission = request
+                    AppLock.handOff()
                     requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MICROPHONE)
                 }
             }
@@ -355,6 +383,7 @@ class MainActivity : Activity() {
             ContactsSync.pageShown(this, null)
         }
         webView = null
+        hideCover(offer = false)
         bridge?.close()
         bridge = null
         errorView = null
@@ -384,7 +413,7 @@ class MainActivity : Activity() {
     // at most every few seconds; one skipped for that runs later, so signing
     // in right after a check still brings the question.
     private fun offerContacts(server: String) {
-        if (questionOpen || ContactsSync.account(this) != null || ContactsSync.offered(this, server)) return
+        if (questionOpen || cover != null || ContactsSync.account(this) != null || ContactsSync.offered(this, server)) return
         if (contactsChecking) {
             contactsOfferPending = true
             return
@@ -466,6 +495,7 @@ class MainActivity : Activity() {
                     showContacts(server)
                 } else {
                     contactsServer = server
+                    AppLock.handOff()
                     requestPermissions(ContactsSync.PERMISSIONS, REQUEST_CONTACTS)
                 }
             }
@@ -520,7 +550,7 @@ class MainActivity : Activity() {
     // off at any time; this also works where the page cannot reach the app
     // (an old WebView without its message bridge).
     private fun offerNotifications(server: String) {
-        if (questionOpen || notificationsChecking || AppNotifications.offered(this, server)) return
+        if (questionOpen || cover != null || notificationsChecking || AppNotifications.offered(this, server)) return
         if (AppSession.cookie(server)?.contains("auth-token=") != true) return
         val now = SystemClock.elapsedRealtime()
         if (notificationsCheckedAt != 0L && now - notificationsCheckedAt < CONTACTS_CHECK_INTERVAL_MS) return
@@ -532,7 +562,7 @@ class MainActivity : Activity() {
             runOnUiThread {
                 notificationsChecking = false
                 if (isFinishing || isDestroyed || generation != screenGeneration || ServerAddress.saved(this) != server) return@runOnUiThread
-                if (ready && !questionOpen && !AppNotifications.offered(this, server)) askNotifications(server)
+                if (ready && !questionOpen && cover == null && !AppNotifications.offered(this, server)) askNotifications(server)
             }
         }.start()
     }
@@ -587,6 +617,7 @@ class MainActivity : Activity() {
             notificationsAnswer = reply
             notificationsServer = server
             AppNotifications.markAsked(this)
+            AppLock.handOff()
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
         } else {
             enableNotifications(server, reply)
@@ -626,6 +657,7 @@ class MainActivity : Activity() {
         }
         backgroundAnswer?.invoke()
         backgroundAnswer = then
+        AppLock.handOff()
         try {
             @Suppress("DEPRECATION")
             startActivityForResult(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")), REQUEST_BACKGROUND)
@@ -637,6 +669,7 @@ class MainActivity : Activity() {
     }
 
     private fun openNotificationSettings() {
+        AppLock.handOff()
         try {
             startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
         } catch (_: Exception) { }
@@ -721,10 +754,135 @@ class MainActivity : Activity() {
     private fun isSignInPage(url: String?) =
         url != null && Uri.parse(url).path.let { it == "/auth" || it?.startsWith("/auth/") == true }
 
+    // ── The app lock (AppLock, BiometricAuth) ──────────────────────────
+
+    // Whether the time away made the lock due; the page then shows its lock
+    // screen behind the cover and hears that the app locked.
+    private fun lockCheck() {
+        if (!AppLock.returned() || origin == null) return
+        showCover(COVER_LOCK)
+        bridge?.appLockEvent("locked")
+    }
+
+    private fun applyLockWindow() {
+        if (AppLock.blockScreenshots) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) setRecentsScreenshotEnabled(!AppLock.on)
+    }
+
+    // The page's background and the UniHub mark, like the page's lock screen,
+    // so handing over to it does not flicker. Its Unlock button appears only
+    // when the page has not taken over after a moment (it failed to load).
+    private fun showCover(reason: Int) {
+        val frame = root ?: return
+        if (cover != null) {
+            if (reason == COVER_LOCK) coverReason = COVER_LOCK
+            return
+        }
+        coverReason = reason
+        val background = PageTheme.saved(this)?.second ?: getColor(R.color.background)
+        val view = FrameLayout(this).apply {
+            setBackgroundColor(background)
+            isClickable = true
+            isFocusable = true
+            contentDescription = getString(R.string.app_lock_cover)
+        }
+        val size = (resources.displayMetrics.density * 144).toInt()
+        view.addView(ImageView(this).apply {
+            setImageResource(R.mipmap.ic_launcher_foreground)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, FrameLayout.LayoutParams(size, size, Gravity.CENTER))
+        val button = Button(this).apply {
+            setText(R.string.app_lock_unlock)
+            visibility = View.INVISIBLE
+            setOnClickListener { unlockFromCover() }
+        }
+        val margin = (resources.displayMetrics.density * 48).toInt()
+        view.addView(button, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM).apply { bottomMargin = margin })
+        frame.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        cover = view
+        coverButton.removeCallbacksAndMessages(null)
+        coverButton.postDelayed({ if (cover === view) button.visibility = View.VISIBLE }, COVER_BUTTON_DELAY_MS)
+    }
+
+    private fun hideCover(offer: Boolean = true) {
+        val view = cover ?: return
+        cover = null
+        coverButton.removeCallbacksAndMessages(null)
+        (view.parent as? ViewGroup)?.removeView(view)
+        // The questions that waited for the cover.
+        if (offer && !questionOpen) origin?.let { offerContacts(it); offerNotifications(it) }
+    }
+
+    private fun unlockFromCover() {
+        authenticate(null) { result ->
+            when {
+                result == "ok" -> bridge?.appLockEvent("unlocked")
+                // No screen lock on the phone and no page to ask for its PIN:
+                // the error screen behind the cover shows nothing of the account.
+                result == "pin" && errorView != null -> hideCover()
+                result == "pin" -> toast(R.string.app_lock_pin_in_page)
+            }
+        }
+    }
+
+    private fun authenticate(reason: String?, done: (String) -> Unit) {
+        // Android 10's credential screen stops the activity; it is no time away.
+        AppLock.handOff()
+        unlock.authenticate(getString(R.string.app_lock_prompt_title), reason) { result ->
+            AppLock.handOffEnded()
+            if (result == "ok") {
+                AppLock.unlocked()
+                hideCover()
+            }
+            done(result)
+        }
+    }
+
+    /** The page's `appLock` message (WebBridge): method, authenticate, configure, state, release, lock. */
+    private fun appLock(server: String, data: JSONObject, reply: (JSONObject) -> Unit) {
+        val ok = { JSONObject().put("ok", true) }
+        runOnUiThread {
+            if (isFinishing || isDestroyed || origin != server) {
+                reply(answer(error = getString(R.string.app_lock_gone)))
+                return@runOnUiThread
+            }
+            when (data.optString("action")) {
+                "method" -> reply(unlock.method().put("ok", true))
+                "authenticate" -> authenticate(data.optString("reason").trim().take(200).ifEmpty { null }) { result ->
+                    reply(ok().put("result", result))
+                }
+                "configure" -> {
+                    if (!AppLock.configure(this, server, data)) {
+                        reply(answer(error = getString(R.string.app_lock_invalid)))
+                        return@runOnUiThread
+                    }
+                    applyLockWindow()
+                    if (!AppLock.on) hideCover()
+                    reply(ok().put("capabilities", BiometricAuth.capabilities()))
+                }
+                "state" -> reply(AppLock.state(ok()).put("covered", cover != null))
+                // The page shows nothing locked: its own lock screen, or what it unlocked (`unlocked`, also with its own PIN).
+                "release" -> {
+                    if (data.optBoolean("unlocked", false)) AppLock.unlocked()
+                    hideCover()
+                    reply(ok())
+                }
+                "lock" -> {
+                    AppLock.lockNow()
+                    reply(ok())
+                }
+                else -> reply(answer(error = getString(R.string.app_lock_invalid)))
+            }
+        }
+    }
+
     // ── Results, back, lifecycle ───────────────────────────────────────
 
     @Deprecated("Activity result API needs AndroidX; the framework call is enough here.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (unlock.onActivityResult(requestCode, resultCode)) return
         if (requestCode == REQUEST_FILE) {
             // Nothing is copied for a pick whose session ended while the picker was open.
             val pick = filePick.finish() ?: return
@@ -838,8 +996,15 @@ class MainActivity : Activity() {
 
     // Leaving the app is when contacts were most likely edited, or the
     // person signed out: the phone's copy follows.
+    override fun onStart() {
+        super.onStart()
+        lockCheck()
+    }
+
     override fun onResume() {
         super.onResume()
+        lockCheck()
+        if (cover != null && coverReason == COVER_PAUSE) hideCover()
         AppUpdate.inFront = true
         AppUpdate.offerReady(this)
         webView?.onResume()
@@ -851,6 +1016,10 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        // The recent-apps picture is taken about now. From Android 13 the
+        // window also asks for none (applyLockWindow); before that the cover
+        // is the best the app can do.
+        if (AppLock.on && origin != null && cover == null) showCover(COVER_PAUSE)
         AppUpdate.inFront = false
         // Pauses the page's media, animations and plugins while it is not shown;
         // notifications come from NotificationService, not from the page.
@@ -859,7 +1028,14 @@ class MainActivity : Activity() {
         ContactsSync.requestSync(this)
     }
 
+    override fun onStop() {
+        super.onStop()
+        AppLock.stopped(isChangingConfigurations)
+    }
+
     override fun onDestroy() {
+        unlock.close()
+        coverButton.removeCallbacksAndMessages(null)
         // Its window goes with the activity; a recreated one asks again (onSaveInstanceState).
         connectQuestion?.dismiss()
         destroyWeb()
@@ -885,7 +1061,12 @@ class MainActivity : Activity() {
         private const val STATE_CONNECT_ASKED = "connectAsked"
         // What the page may ask of WebBridge, announced in the user agent:
         // 1 up to 0.24 (files from the page, downloads, theme, notifications),
-        // 2 from 0.25 (fileAction: open with, save, share with a download ticket).
-        const val BRIDGE_LEVEL = 2
+        // 2 from 0.25 (fileAction: open with, save, share with a download ticket),
+        // 3 from 0.29 (appLock: the app lock with the phone's own unlock).
+        const val BRIDGE_LEVEL = 3
+        private const val COVER_LOCK = 1
+        private const val COVER_PAUSE = 2
+        // The cover's own Unlock button, for a page that does not take over (it failed to load).
+        private const val COVER_BUTTON_DELAY_MS = 3_000L
     }
 }
