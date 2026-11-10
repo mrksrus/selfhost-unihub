@@ -24,6 +24,9 @@ import BinSettings from '@/components/settings/BinSettings';
 
 const BackupSettings = lazy(() => import('@/components/settings/BackupSettings'));
 
+// The Bin lists deleted items of these modules (Mail keeps its Trash folders).
+const BIN_MODULES = ['calendar', 'contacts', 'recordings'] as const;
+
 // This device first, then what is announced per account and calendar.
 function NotificationsSection() {
   return <><NotificationSettings /><NotificationChoices /></>;
@@ -55,15 +58,19 @@ const Settings = () => {
   const entry = SETTINGS_SECTIONS.find(entry => entry.id === section);
   const label = entry?.label;
   // A section of a locked module asks for the unlock in place; Backup and
-  // restore and Delete data reach every module, so they ask while any lock is on.
+  // restore and Delete data reach every module, so they ask while any lock is
+  // on, and the Bin while a module it holds items of is locked.
   const reachesEverything = section === 'backup' || section === 'delete';
   const lockedArea = entry?.module && lock.locked(entry.module) ? entry.module
-    : reachesEverything && (lock.status === 'locked' || lock.status === 'setup') ? 'app' : null;
+    : reachesEverything && (lock.status === 'locked' || lock.status === 'setup') ? 'app'
+      : section === 'bin' && BIN_MODULES.some(moduleId => lock.locked(moduleId)) ? 'app' : null;
 
   // Backup jobs keep polling while the page is open, so the section stays
-  // mounted (hidden) once visited instead of restarting on every visit.
+  // mounted (hidden) once visited instead of restarting on every visit. A
+  // relock hides it and pauses the polling until the unlock.
   const [backupVisited, setBackupVisited] = useState(section === 'backup' && !lockedArea);
   useEffect(() => { if (section === 'backup' && !lockedArea) setBackupVisited(true); }, [section, lockedArea]);
+  const backupShown = section === 'backup' && !lockedArea;
 
   const View = section === 'backup' || lockedArea ? null : SECTION_VIEWS[section];
 
@@ -77,9 +84,9 @@ const Settings = () => {
               description={lockedArea === 'app' ? `${label} reaches what the app lock protects.` : undefined} />)}
         {View && <View />}
         {backupVisited && (
-          <div hidden={section !== 'backup'}>
+          <div hidden={!backupShown}>
             <Suspense fallback={<LoadingState compact label="Loading backup settings…" />}>
-              <BackupSettings active={section === 'backup'} />
+              <BackupSettings active={backupShown} />
             </Suspense>
           </div>
         )}
