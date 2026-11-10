@@ -40,7 +40,9 @@ function MailPeekPanel({ emailId, docked }: { emailId: string; docked: boolean }
   const phone = useIsMobile();
   const navigate = useNavigate();
   const timezone = useUserTimezone();
-  // While Mail is locked the peek shows the lock, and asks the server for nothing.
+  // While Mail is locked the peek shows the lock and asks the server for
+  // nothing; what it loaded before a relock stays in the cache but is not
+  // shown or acted on until the unlock.
   const mailLocked = useAppLock().locked('mail');
   const query = useQuery({
     enabled: !mailLocked,
@@ -51,8 +53,9 @@ function MailPeekPanel({ emailId, docked }: { emailId: string; docked: boolean }
       return response.data.email;
     },
   });
-  const email = query.data;
-  const accountId = email?.mail_account_id ?? null;
+  const email = mailLocked ? undefined : query.data;
+  // The reply editor keeps its account across a relock, so a reply in progress comes back after the unlock.
+  const accountId = query.data?.mail_account_id ?? null;
   // The peek has its own reply editor; it never changes which account the Mail page shows.
   const compose = useMailCompose({ activeMailAccountId: accountId, selectedAccount: accountId, isMobile: false });
   const writing = compose.isReplying;
@@ -99,13 +102,14 @@ function MailPeekPanel({ emailId, docked }: { emailId: string; docked: boolean }
   });
 
   const setAside = () => dockMailPeek();
-  const close = () => { if (!leave(closeMailPeek)) closeMailPeek(); };
+  // Under the lock a reply in progress cannot be saved or discarded, so the peek is set aside instead of closed.
+  const close = () => { if (mailLocked && writing) return; if (!leave(closeMailPeek)) closeMailPeek(); };
   const mailPath = emailPath({ email_id: emailId });
   const openInMail = (event: MouseEvent) => {
     if (leave(() => { navigate(mailPath); closeMailPeek(); })) event.preventDefault();
     else closeMailPeek();
   };
-  const subject = email?.subject || '(No subject)';
+  const subject = mailLocked ? 'Email' : email?.subject || '(No subject)';
 
   return (
     <>
@@ -130,31 +134,33 @@ function MailPeekPanel({ emailId, docked }: { emailId: string; docked: boolean }
                   {phone ? <ChevronDown aria-hidden="true" /> : <Minimize2 aria-hidden="true" />}
                 </Button>
                 <span className="min-w-0 flex-1 truncate text-sm font-medium">Email</span>
-                <Button variant="ghost" size="sm" disabled={!email} onClick={() => email && compose.startResponse(email, 'reply')}>
-                  <Reply aria-hidden="true" /><span className="sr-only sm:not-sr-only">Reply</span>
-                </Button>
-                <Button variant="ghost" size="sm" disabled={!email} onClick={() => email && compose.startResponse(email, 'replyAll')}>
-                  <ReplyAll aria-hidden="true" /><span className="sr-only sm:not-sr-only">Reply all</span>
-                </Button>
-                <Button variant="ghost" size="sm" disabled={!email} onClick={() => email && compose.startResponse(email, 'forward')}>
-                  <Forward aria-hidden="true" /><span className="sr-only sm:not-sr-only">Forward</span>
-                </Button>
-                <Button asChild variant="ghost" size="sm">
-                  <Link to={mailPath} onClick={openInMail} title="Open in Mail">
-                    <ExternalLink aria-hidden="true" /><span className="sr-only sm:not-sr-only">Open in Mail</span>
-                  </Link>
-                </Button>
-                <Button variant="ghost" size="icon" aria-label="Close" onClick={close}><X aria-hidden="true" /></Button>
+                {!mailLocked && <>
+                  <Button variant="ghost" size="sm" disabled={!email} onClick={() => email && compose.startResponse(email, 'reply')}>
+                    <Reply aria-hidden="true" /><span className="sr-only sm:not-sr-only">Reply</span>
+                  </Button>
+                  <Button variant="ghost" size="sm" disabled={!email} onClick={() => email && compose.startResponse(email, 'replyAll')}>
+                    <ReplyAll aria-hidden="true" /><span className="sr-only sm:not-sr-only">Reply all</span>
+                  </Button>
+                  <Button variant="ghost" size="sm" disabled={!email} onClick={() => email && compose.startResponse(email, 'forward')}>
+                    <Forward aria-hidden="true" /><span className="sr-only sm:not-sr-only">Forward</span>
+                  </Button>
+                  <Button asChild variant="ghost" size="sm">
+                    <Link to={mailPath} onClick={openInMail} title="Open in Mail">
+                      <ExternalLink aria-hidden="true" /><span className="sr-only sm:not-sr-only">Open in Mail</span>
+                    </Link>
+                  </Button>
+                </>}
+                {!(mailLocked && writing) && <Button variant="ghost" size="icon" aria-label="Close" onClick={close}><X aria-hidden="true" /></Button>}
               </div>
             </div>
             {/* On a phone the reply takes the sheet; closing the reply shows the message again. */}
-            <div className={cn('min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6', phone && writing && 'hidden')}>
+            <div className={cn('min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6', phone && writing && !mailLocked && 'hidden')}>
               {mailLocked ? <LockedNotice area="mail" centered description="Unlock to read the email here." />
                 : query.isPending ? <LoadingState label="Loading email…" compact />
                 : query.error ? <ErrorState title="Could not load the email" error={query.error} onRetry={() => void query.refetch()} retrying={query.isFetching} />
                   : email && <MailMessageView email={email} timezone={timezone} compact />}
             </div>
-            {writing && <MailInlineCompose compose={compose} fill={phone} />}
+            {writing && !mailLocked && <MailInlineCompose compose={compose} fill={phone} />}
           </DialogPrimitive.Content>
         </DialogPrimitive.Portal>
       </DialogPrimitive.Root>
@@ -170,10 +176,10 @@ function MailPeekPanel({ emailId, docked }: { emailId: string; docked: boolean }
             <ChevronUp aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
             <span className="sr-only">Bring back</span>
           </button>
-          <Button variant="ghost" size="icon-sm" className="shrink-0" aria-label="Close" onClick={close}><X aria-hidden="true" className="h-4 w-4" /></Button>
+          {!(mailLocked && writing) && <Button variant="ghost" size="icon-sm" className="shrink-0" aria-label="Close" onClick={close}><X aria-hidden="true" className="h-4 w-4" /></Button>}
         </div>
       )}
-      <MailComposeDialogs compose={compose} />
+      {!mailLocked && <MailComposeDialogs compose={compose} />}
     </>
   );
 }

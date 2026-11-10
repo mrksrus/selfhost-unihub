@@ -3,7 +3,6 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { Bell, LogOut, Search, Settings } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { useModules } from '@/hooks/use-modules';
-import { useAttentionItems } from '@/hooks/use-attention';
 import { useNavigationCounts } from '@/hooks/use-navigation-counts';
 import { useAppLock } from '@/hooks/use-app-lock';
 import { navigationPages } from '@/lib/navigation';
@@ -12,6 +11,7 @@ import { cn } from '@/lib/utils';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { AttentionList } from '@/components/layout/AttentionList';
+import { useVisibleAttention } from '@/components/layout/visible-attention';
 
 type IconType = ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' | 'false' }>;
 
@@ -54,7 +54,7 @@ export default function NavRail() {
   const { pages, canNavigate } = useModules();
   const { user, signOut } = useAuth();
   const location = useLocation();
-  const attention = useAttentionItems();
+  const attention = useVisibleAttention();
   const counts = useNavigationCounts();
   const lock = useAppLock();
   // A locked module gives nothing away, not even a count.

@@ -17,8 +17,8 @@ const REQUIRED_REASON = 'Your administrator requires the app lock for Mail.';
 const MAX_REASON = 'Your administrator allows at most 5 minutes in the background before UniHub locks again.';
 
 /** This device's settings as the server resolves them, with a floor where the policies set one. */
-function settingsWith({ scope = [], relock = '60', scopeFloor, relockFloor }: { scope?: AppLockArea[]; relock?: RelockAfter; scopeFloor?: AppLockArea[]; relockFloor?: RelockAfter } = {}): DeviceSettings {
-  const settings = defaultsResolved({ ...DEFAULT_DEVICE_SETTINGS, app_lock_scope: scope, app_lock_relock_after: relock });
+function settingsWith({ scope = [], relock = '60', deviceLock = true, scopeFloor, relockFloor }: { scope?: AppLockArea[]; relock?: RelockAfter; deviceLock?: boolean; scopeFloor?: AppLockArea[]; relockFloor?: RelockAfter } = {}): DeviceSettings {
+  const settings = defaultsResolved({ ...DEFAULT_DEVICE_SETTINGS, app_lock_scope: scope, app_lock_relock_after: relock, app_lock_on_device_lock: deviceLock });
   if (scopeFloor) settings.app_lock_scope = { ...settings.app_lock_scope, source: 'policy', floor: scopeFloor };
   if (relockFloor) settings.app_lock_relock_after = { ...settings.app_lock_relock_after, source: 'policy', floor: relockFloor };
   return settings;
@@ -124,6 +124,23 @@ describe('Settings → App lock', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Change PIN' }));
     await waitFor(() => expect(setPin).toHaveBeenCalledWith('24681012', '135790'));
     await waitFor(() => expect(state.toast).toHaveBeenCalledWith({ title: 'PIN changed' }));
+  });
+
+  it('turning "Also when the phone is locked" off asks for the unlock first; turning it on saves at once', { timeout: 20_000 }, async () => {
+    const phone = { method: 'biometric' as const, biometric: 'available' as const, deviceSecure: true, pinSet: false, pinUnavailable: null, appUpdateForBiometrics: false };
+    const signal = { deviceLockSignal: true, deviceLockReason: null, secureWindow: true };
+    const saveSettings = vi.fn(async () => settingsWith({ scope: ['app'], deviceLock: false }));
+    mount({ settings: settingsWith({ scope: ['app'], deviceLock: true }), method: phone, capabilities: signal, saveSettings });
+    fireEvent.click(screen.getByRole('switch', { name: 'Also when the phone is locked' }));
+    expect(await screen.findByRole('dialog', { name: 'Confirm it is you' })).toBeInTheDocument();
+    expect(saveSettings).not.toHaveBeenCalled();
+    cleanup();
+
+    const saveOn = vi.fn(async () => settingsWith({ scope: ['app'], deviceLock: true }));
+    mount({ settings: settingsWith({ scope: ['app'], deviceLock: false }), method: phone, capabilities: signal, saveSettings: saveOn });
+    fireEvent.click(screen.getByRole('switch', { name: 'Also when the phone is locked' }));
+    await waitFor(() => expect(saveOn).toHaveBeenCalledWith({ app_lock_on_device_lock: true }));
+    expect(screen.queryByRole('dialog', { name: 'Confirm it is you' })).not.toBeInTheDocument();
   });
 
   it('in the Android app the method row follows the phone, and the device-lock switch works there only', () => {

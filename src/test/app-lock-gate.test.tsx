@@ -13,7 +13,7 @@ import ModuleGuard from '@/components/modules/ModuleGuard';
 import { fakeAppLock } from './helpers/app-lock';
 import { policiesAnswer, stubBrowserApis } from './helpers/data-safety';
 
-const state = vi.hoisted(() => ({ toast: vi.fn() }));
+const state = vi.hoisted(() => ({ toast: vi.fn(), attention: [] as { id: string; title: string; detail?: string; href?: string; onAction?: () => void; actionLabel: string }[] }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }), clearToasts: vi.fn() }));
 vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'user-ada', email: 'ada@example.com', full_name: 'Ada Example', timezone: 'UTC' }, loading: false, serverUnavailable: false, isOffline: false, retrySession: vi.fn(), signOut: vi.fn() }), useUserTimezone: () => 'UTC' }));
 const PAGES = [
@@ -28,7 +28,7 @@ vi.mock('@/hooks/use-modules', async () => {
   return { moduleForPath, useModules: () => ({ isPending: false, error: null, isEnabled: () => true, canAccess: () => true, canNavigate: () => true, pages: PAGES, modules: MODULES }) };
 });
 vi.mock('@/hooks/use-navigation-counts', () => ({ useNavigationCounts: () => ({ mail: 3 }) }));
-vi.mock('@/hooks/use-attention', () => ({ useAttentionItems: () => [] }));
+vi.mock('@/hooks/use-attention', () => ({ useAttentionItems: () => state.attention }));
 vi.mock('@/hooks/use-background-notification-checks', () => ({ useBackgroundNotificationChecks: vi.fn() }));
 vi.mock('@/hooks/use-calendar-notifications', () => ({ useCalendarNotifications: vi.fn() }));
 vi.mock('@/hooks/use-mail-notifications', () => ({ useMailNotifications: vi.fn() }));
@@ -71,7 +71,7 @@ beforeEach(() => {
     return { data: {} };
   });
 });
-afterEach(() => { cleanup(); closeMailPeek(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); closeMailPeek(); state.attention = []; vi.clearAllMocks(); });
 
 describe('the whole-app lock', () => {
   it('replaces the shell with the lock screen, keeps the background hooks mounted, and shows nothing while checking', () => {
@@ -155,6 +155,49 @@ describe('a module lock', () => {
     await waitFor(() => expect(unlock).toHaveBeenCalledWith('123456'));
     relock(fakeAppLock({ status: 'unlocked', scope: ['mail'] }));
     expect(await screen.findByText('Pay 84.20 EUR')).toBeInTheDocument();
+  });
+
+  it('a relock covers what the peek had loaded: no text, no actions, no subject on the set-aside bar', async () => {
+    const { relock } = mount(fakeAppLock({ status: 'unlocked', scope: ['mail'] }), '/calendar');
+    act(() => openMailPeek('e1'));
+    const peek = await screen.findByRole('dialog', { name: 'Email' });
+    expect(await within(peek).findByText('Pay 84.20 EUR')).toBeInTheDocument();
+    expect(within(peek).getByRole('button', { name: 'Reply' })).toBeEnabled();
+    fireEvent.click(within(peek).getByRole('button', { name: 'Set aside' }));
+    const bar = await screen.findByRole('region', { name: 'Email set aside' });
+    expect(within(bar).getByText('Invoice for March')).toBeInTheDocument();
+
+    relock(fakeAppLock({ status: 'locked', scope: ['mail'] }));
+    const covered = screen.getByRole('region', { name: 'Email set aside' });
+    expect(within(covered).queryByText('Invoice for March')).not.toBeInTheDocument();
+    fireEvent.click(within(covered).getByRole('button', { name: /Bring back/ }));
+    const locked = await screen.findByRole('dialog', { name: 'Email' });
+    expect(within(locked).getByText('Mail is locked')).toBeInTheDocument();
+    expect(within(locked).queryByText('Pay 84.20 EUR')).not.toBeInTheDocument();
+    expect(within(locked).queryByText('Invoice for March')).not.toBeInTheDocument();
+    for (const name of ['Reply', 'Reply all', 'Forward']) expect(within(locked).queryByRole('button', { name })).not.toBeInTheDocument();
+    expect(within(locked).queryByRole('link', { name: /Open in Mail/ })).not.toBeInTheDocument();
+
+    relock(fakeAppLock({ status: 'unlocked', scope: ['mail'] }));
+    expect(await screen.findByText('Pay 84.20 EUR')).toBeInTheDocument();
+  });
+
+  it('the attention tray leaves out what belongs to a locked module', async () => {
+    state.attention = [
+      { id: 'mail-sync:a2', title: 'Mail sync failed for second@example.test', detail: 'Login refused', href: '/mail?review=sync', actionLabel: 'Open sync details' },
+      { id: 'app-update', title: 'UniHub was updated', onAction: () => {}, actionLabel: 'Reload' },
+    ];
+    const { relock } = mount(fakeAppLock({ status: 'locked', scope: ['mail'] }), '/calendar');
+    const [rail, bar] = screen.getAllByRole('navigation', { name: 'Main' });
+    expect(within(bar).getByRole('link', { name: 'More, 1 item needs attention' })).toBeInTheDocument();
+    fireEvent.click(within(rail).getByRole('button', { name: 'Attention, 1 item' }));
+    const tray = await screen.findByRole('dialog');
+    expect(within(tray).getByText('UniHub was updated')).toBeInTheDocument();
+    expect(within(tray).queryByText(/second@example.test/)).not.toBeInTheDocument();
+    expect(within(tray).queryByText('Login refused')).not.toBeInTheDocument();
+
+    relock(fakeAppLock({ status: 'unlocked', scope: ['mail'] }));
+    expect(await within(rail).findByRole('button', { name: 'Attention, 2 items' })).toBeInTheDocument();
   });
 
   it('the search leaves the locked module out and offers its unlock in one row', async () => {
