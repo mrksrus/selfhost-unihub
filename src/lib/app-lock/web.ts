@@ -5,7 +5,7 @@
 // Each tab keeps its own timer: it notes when it went to the background and,
 // on its return, how long it was away. Whether that is long enough to lock is
 // the provider's decision (timeline.ts), the same rule for every tab.
-import type { DeviceLock, DeviceLockConfig } from '@/lib/platform';
+import type { DeviceLock, DeviceLockConfig, DeviceLockEvent } from '@/lib/platform';
 import { pinSupport } from '@/lib/app-lock/pin';
 
 /**
@@ -31,7 +31,7 @@ export function subscribeVisibility(listener: (event: 'hidden' | 'visible') => v
 }
 
 export function createWebDeviceLock(): DeviceLock {
-  const listeners = new Set<(event: 'hidden' | 'visible') => void>();
+  const listeners = new Set<(event: DeviceLockEvent) => void>();
   let config: DeviceLockConfig | null = null;
   let hiddenAt: number | null = typeof document !== 'undefined' && document.visibilityState === 'hidden' ? Date.now() : null;
   let lastHiddenForMs: number | null = null;
@@ -55,7 +55,7 @@ export function createWebDeviceLock(): DeviceLock {
     async authenticate() { return 'pin'; },
     async configure(next) {
       config = next;
-      if (!next?.scope.length) document.documentElement.classList.remove(HIDDEN_CLASS);
+      if (!next.scope.length) document.documentElement.classList.remove(HIDDEN_CLASS);
     },
     async state() {
       const state = {
@@ -69,6 +69,7 @@ export function createWebDeviceLock(): DeviceLock {
       return state;
     },
     async release() { document.documentElement.classList.remove(HIDDEN_CLASS); },
+    async lock() {},
     subscribe(listener) {
       listeners.add(listener);
       return () => { listeners.delete(listener); };

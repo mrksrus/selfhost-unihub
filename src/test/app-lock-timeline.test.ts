@@ -10,6 +10,7 @@ import { noteSignIn } from '@/lib/app-lock/session';
 import { readTimeline, writeTimelineConfig } from '@/lib/app-lock/timeline';
 import { createWebDeviceLock } from '@/lib/app-lock/web';
 import type { CurrentDeviceResponse } from '@/lib/devices-api';
+import type { DeviceLockConfig, DeviceLockEvent } from '@/lib/platform';
 import { DEFAULT_DEVICE_SETTINGS, defaultsResolved } from '@/lib/settings-defaults';
 
 // The web lock's timing and reports, with the real PIN, IndexedDB records
@@ -389,5 +390,100 @@ describe('account and session safety', () => {
     expect(blair.status).toBe('off');
     expect(await blair.controller.unlock(PIN)).toEqual({ ok: true });
     expect(await readPin('blair')).toBeUndefined();
+  });
+});
+
+describe('in the Android app (bridge level 3)', () => {
+  /** The app's lock as the page sees it through lib/platform.ts. */
+  function nativeLock({ method = 'biometric', deviceSecure = true, due = true } = {}) {
+    let listener: ((event: DeviceLockEvent) => void) | undefined;
+    const lock = {
+      due,
+      method: vi.fn(async () => ({ method: method as 'biometric' | 'pin', biometric: 'available' as const, deviceSecure })),
+      authenticate: vi.fn(async () => 'ok' as const),
+      configure: vi.fn(async (_config: DeviceLockConfig) => {}),
+      state: vi.fn(async () => ({ due: lock.due, hiddenForMs: null, deviceLockedSinceHidden: false, freshProcess: true, authenticatedAt: null })),
+      release: vi.fn(async (_unlocked: boolean) => {}),
+      lock: vi.fn(async () => {}),
+      subscribe: (next: (event: DeviceLockEvent) => void) => { listener = next; return () => { listener = undefined; }; },
+      capabilities: { secureWindow: true, hideRecents: false, deviceLockSignal: true },
+      tell: (event: DeviceLockEvent) => listener?.(event),
+    };
+    return lock;
+  }
+  function appTab(fake: FakeServer, lock: ReturnType<typeof nativeLock>, offline = false) {
+    const controller = new AppLockController({ userId: 'alex', server: fake, lock, offline: () => offline, signOut: vi.fn(async () => {}), onCompliant: vi.fn() });
+    controllers.push(controller);
+    return { controller, started: controller.start(), get status() { return controller.getSnapshot().status; } };
+  }
+
+  it('follows the app’s verdict at a cold start, and tells it when the page shows its lock screen or opened', async () => {
+    const fake = server({ app_lock_scope: ['app'] });
+    fake.state.lock = { scope: ['app'], relock_after: '60', on_device_lock: true, method: 'biometric' };
+    const lock = nativeLock({ due: true });
+    const page = appTab(fake, lock);
+    await page.started;
+    expect(page.status).toBe('locked');
+    await page.controller.release();
+    expect(lock.release).toHaveBeenLastCalledWith(false);
+    expect(await page.controller.unlock()).toEqual({ ok: true });
+    expect(lock.authenticate).toHaveBeenCalledWith('Unlock UniHub');
+    await page.controller.release();
+    expect(lock.release).toHaveBeenLastCalledWith(true);
+    expect(fake.reportDeviceLock).toHaveBeenLastCalledWith(expect.objectContaining({
+      applied: { scope: ['app'], relock_after: '60', on_device_lock: true, method: 'biometric' },
+      capabilities: { lock: 'biometric', secure_window: true, recents_hidden: false, device_lock_signal: true },
+    }));
+  });
+
+  it('takes the app’s own locked and unlocked news; a relock tells the app at once', async () => {
+    const fake = server({ app_lock_scope: ['mail'] });
+    const lock = nativeLock({ due: false });
+    const page = appTab(fake, lock);
+    await page.started;
+    expect(page.status).toBe('unlocked');
+    lock.tell('locked');
+    await until(() => page.status === 'locked', 'the app’s lock');
+    expect(lock.lock).toHaveBeenCalled();
+    lock.tell('unlocked');
+    await until(() => page.status === 'unlocked', 'the app’s unlock');
+    page.controller.lockNow();
+    await until(() => page.status === 'locked', 'lock now');
+    expect(lock.lock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a phone without a screen lock unlocks with the UniHub PIN, says so on release, and ignores a native "unlocked"', async () => {
+    const fake = server({ app_lock_scope: ['app'] });
+    await savePin('alex', PIN);
+    await writeTimelineConfig('alex', { scope: ['app'], relockAfterMs: 60_000, onDeviceLock: true, method: 'pin' });
+    const lock = nativeLock({ method: 'pin', deviceSecure: false, due: true });
+    const page = appTab(fake, lock);
+    await page.started;
+    expect(page.status).toBe('locked');
+    lock.tell('unlocked');
+    await settle();
+    expect(page.status).toBe('locked');
+    expect(await page.controller.unlock()).toEqual({ ok: false, reason: 'pin-needed' });
+    expect(lock.authenticate).not.toHaveBeenCalled();
+    expect(await page.controller.unlock(PIN)).toEqual({ ok: true });
+    await page.controller.release();
+    expect(lock.release).toHaveBeenLastCalledWith(true);
+  });
+
+  it('forbidden screenshots reach the app with the lock off, and also at an offline start', async () => {
+    const fake = server();
+    const forbidden = fake.fetchCurrentDevice.getMockImplementation()!;
+    fake.fetchCurrentDevice.mockImplementation(async () => ({ ...(await forbidden()), policy: { screenshots: 'forbidden' } }));
+    const lock = nativeLock({ due: false });
+    const online = appTab(fake, lock);
+    await online.started;
+    expect(online.status).toBe('off');
+    expect(online.controller.getSnapshot().screenshotsForbidden).toBe(true);
+    expect(lock.configure).toHaveBeenLastCalledWith(expect.objectContaining({ scope: [], blockScreenshots: true }));
+    online.controller.stop();
+    const later = nativeLock({ due: false });
+    const offline = appTab(fake, later, true);
+    await offline.started;
+    expect(later.configure).toHaveBeenCalledWith(expect.objectContaining({ blockScreenshots: true }));
   });
 });

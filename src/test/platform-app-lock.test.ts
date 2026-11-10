@@ -14,16 +14,18 @@ function userAgent(value: string) {
 /** The app's bridge: answers each question with `answer(message)`, as WebBridge.kt does. */
 function bridge(answer: (message: Record<string, unknown>) => Record<string, unknown>) {
   const sent: Record<string, unknown>[] = [];
-  let listener: ((event: { data: string }) => void) | undefined;
+  const listeners = new Set<(event: { data: string }) => void>();
+  const tell = (data: unknown) => listeners.forEach(listener => listener({ data: JSON.stringify(data) }));
   window.UniHubAndroid = {
     postMessage(raw: string) {
       const message = JSON.parse(raw);
       sent.push(message);
-      queueMicrotask(() => listener?.({ data: JSON.stringify({ id: message.id, ok: true, ...answer(message) }) }));
+      queueMicrotask(() => tell({ id: message.id, ok: true, ...answer(message) }));
     },
-    addEventListener(_type, callback) { listener = callback; },
+    addEventListener(_type, callback) { listeners.add(callback); },
+    removeEventListener(_type, callback) { listeners.delete(callback); },
   };
-  return sent;
+  return Object.assign(sent, { tell });
 }
 
 afterEach(() => {
@@ -36,7 +38,7 @@ describe('the app lock at the device boundary', () => {
   it('in an app with bridge level 3, every action is an appLock message the app answers', async () => {
     userAgent(app(3));
     const sent = bridge(message => {
-      if (message.action === 'method') return { method: 'biometric', biometric: 'available', deviceSecure: true };
+      if (message.action === 'method') return { method: 'biometric', biometric: 'available', deviceSecure: true, capabilities: { secureWindow: true, hideRecents: false, deviceLockSignal: true } };
       if (message.action === 'authenticate') return { result: 'ok' };
       if (message.action === 'state') return { due: true, hiddenForMs: 400_000, deviceLockedSinceHidden: true, freshProcess: false, authenticatedAt: null };
       return {};
@@ -46,13 +48,37 @@ describe('the app lock at the device boundary', () => {
     expect(await lock.authenticate('Unlock UniHub')).toBe('ok');
     await lock.configure({ userId: 'alex', scope: ['mail'], relockAfterMs: 60_000, onDeviceLock: true, blockScreenshots: true });
     expect(await lock.state()).toEqual({ due: true, hiddenForMs: 400_000, deviceLockedSinceHidden: true, freshProcess: false, authenticatedAt: null });
-    await lock.release();
-    expect(sent.map(({ type, action }) => `${type}:${action}`)).toEqual(['appLock:method', 'appLock:authenticate', 'appLock:configure', 'appLock:state', 'appLock:release']);
+    await lock.release(true);
+    await lock.release(false);
+    await lock.lock();
+    // The lock off with screenshots forbidden: FLAG_SECURE stays.
+    await lock.configure({ userId: 'alex', scope: [], relockAfterMs: 60_000, onDeviceLock: true, blockScreenshots: true });
+    expect(sent.map(({ type, action }) => `${type}:${action}`)).toEqual([
+      'appLock:method', 'appLock:authenticate', 'appLock:configure', 'appLock:state', 'appLock:release', 'appLock:release', 'appLock:lock', 'appLock:configure',
+    ]);
     expect(sent[1]).toMatchObject({ reason: 'Unlock UniHub' });
     expect(sent[2]).toMatchObject({ userId: 'alex', on: true, scope: ['mail'], relockAfterMs: 60_000, onDeviceLock: true, blockScreenshots: true });
-    expect(new Set(sent.map(message => message.id)).size).toBe(5);
-    expect(lock.capabilities).toEqual({ secureWindow: true, hideRecents: true, deviceLockSignal: true });
+    expect([sent[4].unlocked, sent[5].unlocked]).toEqual([true, false]);
+    expect(sent[7]).toMatchObject({ on: false, scope: [], blockScreenshots: true });
+    expect(new Set(sent.map(message => message.id)).size).toBe(8);
+    // As the app answered: no hidden recents picture below Android 13.
+    expect(lock.capabilities).toEqual({ secureWindow: true, hideRecents: false, deviceLockSignal: true });
     expect(appLacksNativeLock()).toBe(false);
+  });
+
+  it('passes on the app’s own locked and unlocked news, and nothing else', async () => {
+    userAgent(app(3));
+    const sent = bridge(() => ({}));
+    const heard: string[] = [];
+    const stop = deviceLock().subscribe(event => heard.push(event));
+    sent.tell({ type: 'appLock', event: 'locked' });
+    sent.tell({ type: 'appLock', event: 'unlocked' });
+    sent.tell({ type: 'appLock', id: 'a-reply', event: 'unlocked' });
+    sent.tell({ type: 'notifications', event: 'unlocked' });
+    sent.tell({ type: 'appLock', event: 'open-everything' });
+    stop();
+    sent.tell({ type: 'appLock', event: 'unlocked' });
+    expect(heard).toEqual(['locked', 'unlocked']);
   });
 
   it('an unexpected or missing answer never reads as unlocked', async () => {
@@ -81,7 +107,7 @@ describe('the app lock at the device boundary', () => {
       expect(await lock.authenticate('Unlock UniHub')).toBe('pin');
       expect((await lock.state()).due).toBeNull();
       expect(lock.capabilities).toEqual({ secureWindow: false, hideRecents: false, deviceLockSignal: false });
-      expect(sent).toEqual([]);
+      expect(sent).toHaveLength(0);
       expect(appLacksNativeLock()).toBe(older);
     }
   });
@@ -100,7 +126,7 @@ describe('the app lock at the device boundary', () => {
     await lock.configure({ userId: 'alex', scope: ['mail'], relockAfterMs: 60_000, onDeviceLock: false, blockScreenshots: false });
     window.dispatchEvent(new Event('pagehide'));
     expect(document.documentElement).toHaveClass('app-lock-hidden');
-    await lock.release();
+    await lock.release(false);
     expect(document.documentElement).not.toHaveClass('app-lock-hidden');
   });
 

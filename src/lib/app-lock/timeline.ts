@@ -25,6 +25,8 @@ export interface TimelineRecord {
   onDeviceLock: boolean;
   /** The method that applied the lock here; null while none did. "The lock was on here" for a lost PIN. */
   method: LockMethod | null;
+  /** The administrator forbids screenshots (the Android app's FLAG_SECURE), as last heard; kept for an offline start. */
+  blockScreenshots?: boolean;
   lastActiveAt: number | null;
   hiddenAt: number | null;
   lockedAt: number | null;
@@ -73,7 +75,7 @@ function note(userId: string, change: (record: TimelineRecord) => TimelineRecord
 }
 
 /** What the lock covers now and how it applies, after the server's settings or a change here. */
-export function writeTimelineConfig(userId: string, config: Pick<TimelineRecord, 'scope' | 'relockAfterMs' | 'onDeviceLock' | 'method'>) {
+export function writeTimelineConfig(userId: string, config: Pick<TimelineRecord, 'scope' | 'relockAfterMs' | 'onDeviceLock' | 'method' | 'blockScreenshots'>) {
   return updateRecord<TimelineRecord>('timeline', userId, record => ({ ...(record?.v === 1 ? record : empty(userId)), ...config, scope: normalScope(config.scope) }));
 }
 

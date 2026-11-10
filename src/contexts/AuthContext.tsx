@@ -6,6 +6,7 @@ import { AuthContext, type User } from '@/contexts/auth-context';
 import { onAppEvent } from '@/lib/app-events';
 import { clearAppLockData, noteSignIn } from '@/lib/app-lock/session';
 import { deviceBinding, reportLockState } from '@/lib/devices-api';
+import { deviceLock } from '@/lib/platform';
 
 const AUTH_CHANGE_KEY = 'unihub:auth-change';
 // A busy server (a saturated database) can take far longer than this; the
@@ -260,6 +261,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       // The device stops counting as unlocked before its session ends, so no
       // notification shows content on it meanwhile.
+      try { await deviceLock().lock(); } catch { /* A browser has no lock of its own to tell. */ }
       try { await reportLockState('locked'); } catch { /* A device without a lock, or offline. */ }
       try { await revokeDevicePushSubscription(); } catch { /* Still complete local logout. */ }
       await api.post('/auth/signout');

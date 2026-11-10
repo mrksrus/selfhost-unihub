@@ -22,7 +22,7 @@ import type { AppLockRequiredDetails } from '../../../api/src/contracts/devices'
 import * as devices from '@/lib/devices-api';
 import type { CurrentDeviceResponse } from '@/lib/devices-api';
 import { isOfflineMode } from '@/lib/offline';
-import { appLacksNativeLock, deviceLock, type DeviceLock, type DeviceLockMethod, type DeviceLockState } from '@/lib/platform';
+import { appLacksNativeLock, deviceLock, type DeviceLock, type DeviceLockEvent, type DeviceLockMethod, type DeviceLockState } from '@/lib/platform';
 import { DEFAULT_DEVICE_SETTINGS, defaultsResolved, settingValues } from '@/lib/settings-defaults';
 import { checkPin, deletePin, PIN_PATTERN, pinState, pinSupport, readPin, savePin, type PinCheck } from '@/lib/app-lock/pin';
 import { recentSignIn, signedInInThisPage } from '@/lib/app-lock/session';
@@ -198,6 +198,8 @@ export class AppLockController {
     if (timeline?.v === 1) {
       this.config = { scope: normalScope(timeline.scope), relockAfterMs: timeline.relockAfterMs, onDeviceLock: timeline.onDeviceLock };
       this.appliedMethod = timeline.method;
+      // Until the server answers (or offline), the last known screenshot policy holds.
+      this.screenshotsForbidden = timeline.blockScreenshots === true;
     }
     this.unlocked = signedInInThisPage(this.userId) || this.openAtStart(timeline, state, !!pin);
     // With this browser's records the answer is known now, also offline. A
@@ -224,10 +226,15 @@ export class AppLockController {
     this.listeners.clear();
   }
 
-  /** The page shows the outcome of the last check: the app lifts its cover. */
+  /**
+   * The page shows the outcome of the last check: the app lifts its cover,
+   * and learns whether the page is open now (an unlock with the UniHub PIN is
+   * one the app cannot see itself).
+   */
   release() {
     if (this.ended || !this.ready) return Promise.resolve();
-    return this.lock.release().catch(() => {});
+    const status = this.status();
+    return this.lock.release(status === 'unlocked' || status === 'off').catch(() => {});
   }
 
   private settle() {
@@ -345,6 +352,7 @@ export class AppLockController {
     if (this.ended) return;
     await writeTimelineConfig(this.userId, {
       ...this.config,
+      blockScreenshots: this.screenshotsForbidden,
       // A lock waiting for its method keeps the one it had, so a lost PIN stays lost.
       method: this.scope.length ? (this.hasMethod ? this.methodName : this.appliedMethod) : null,
     }).catch(() => {});
@@ -369,8 +377,9 @@ export class AppLockController {
 
   // ── Lifecycle ──────────────────────────────────────────────────
 
-  private async onVisibility(event: 'hidden' | 'visible') {
+  private async onVisibility(event: DeviceLockEvent) {
     if (this.ended) return;
+    if (event === 'locked' || event === 'unlocked') { await this.onNativeEvent(event); return; }
     if (event === 'hidden') {
       this.visible = false;
       this.stopHeartbeat();
@@ -393,6 +402,20 @@ export class AppLockController {
     if (this.now() - this.refreshedAt > REFRESH_AFTER_MS && !this.offline()) void this.refresh().then(() => this.apply());
   }
 
+  // The app's own lock: a return that was due locked it, or its cover's
+  // button unlocked with the phone's prompt (only where that is the method).
+  private async onNativeEvent(event: 'locked' | 'unlocked') {
+    if (!this.scope.length || !this.hasMethod) return;
+    if (event === 'locked' && this.unlocked) await this.closeTab();
+    else if (event === 'unlocked' && !this.unlocked && this.nativeUnlock) {
+      this.unlocked = true;
+      await this.opened();
+    } else return;
+    if (this.ended) return;
+    this.checks++;
+    this.emit();
+  }
+
   private async opened() {
     this.reportState('open');
     this.startHeartbeat();
@@ -403,6 +426,7 @@ export class AppLockController {
     this.unlocked = false;
     this.stopHeartbeat();
     this.reportState('locked');
+    void this.lock.lock().catch(() => {});
     this.emit();
     await noteLocked(this.userId, this.now()).catch(() => {});
   }

@@ -27,6 +27,7 @@ export const ANDROID_PACKAGE = 'io.github.mrksrus.unihub';
 interface AndroidBridge {
   postMessage(message: string): void;
   addEventListener?(type: 'message', listener: (event: { data: string }) => void): void;
+  removeEventListener?(type: 'message', listener: (event: { data: string }) => void): void;
 }
 declare global { interface Window { UniHubAndroid?: AndroidBridge } }
 
@@ -294,18 +295,41 @@ export interface DeviceLockState {
   authenticatedAt: number | null;
 }
 
+/**
+ * What the device tells the page without being asked: UniHub went to the
+ * background or came back, and, in the app, its own lock locked (a return
+ * that was due) or its cover unlocked with the native prompt.
+ */
+export type DeviceLockEvent = 'hidden' | 'visible' | 'locked' | 'unlocked';
+
+export interface DeviceLockCapabilities { secureWindow: boolean; hideRecents: boolean; deviceLockSignal: boolean }
+
 export interface DeviceLock {
+  /** Also refreshes `capabilities` from the app's answer. */
   method(): Promise<DeviceLockMethod>;
   /** The native prompt; resolves 'pin' where the page asks for its UniHub PIN instead (the web, apps without a screen lock). */
   authenticate(reason: string): Promise<DeviceLockAuthentication>;
-  /** The app caches the configuration and sets FLAG_SECURE and the hidden recents picture; the web keeps it for its own timing. */
-  configure(config: DeviceLockConfig | null): Promise<void>;
+  /**
+   * The app caches the configuration and sets FLAG_SECURE and the hidden
+   * recents picture; the web keeps it for its own timing. Sent at every start
+   * after sign-in, also with the lock off: FLAG_SECURE follows
+   * `blockScreenshots` on its own.
+   */
+  configure(config: DeviceLockConfig): Promise<void>;
   state(): Promise<DeviceLockState>;
-  /** The page shows nothing locked (its lock screen or an open view): the app lifts its cover. */
-  release(): Promise<void>;
-  /** Calls `listener` when UniHub goes to the background or comes back. Returns the unsubscribe function. */
-  subscribe(listener: (event: 'hidden' | 'visible') => void): () => void;
-  capabilities: { secureWindow: boolean; hideRecents: boolean; deviceLockSignal: boolean };
+  /**
+   * The page shows the outcome of a check: its lock screen (`unlocked`
+   * false) or an open view after an unlock (true). The app lifts its cover,
+   * and with `unlocked` it stops counting as locked (a UniHub PIN unlock the
+   * app could not see itself).
+   */
+  release(unlocked: boolean): Promise<void>;
+  /** Locks now ("Lock now", a relock, sign-out): the app hides notification text at once. */
+  lock(): Promise<void>;
+  /** Calls `listener` for each DeviceLockEvent. Returns the unsubscribe function. */
+  subscribe(listener: (event: DeviceLockEvent) => void): () => void;
+  /** What the device can do; in the app, as it last answered (`hideRecents` needs Android 13). */
+  capabilities: DeviceLockCapabilities;
 }
 
 let webLock: DeviceLock | null = null;
@@ -335,9 +359,20 @@ const APP_LOCK_TIMEOUT_MS = 10_000;
 function createNativeDeviceLock(bridge: AndroidBridge): DeviceLock {
   const ask = (action: string, fields: Record<string, unknown> = {}, timeoutMs = APP_LOCK_TIMEOUT_MS) =>
     askApp(bridge, { type: 'appLock', id: crypto.randomUUID(), action, ...fields }, { timeoutMs, failure: 'The app did not answer. Try again.' });
+  // Until the app answers: what every app with bridge level 3 can do; the
+  // recents picture can be hidden from Android 13 only.
+  const capabilities: DeviceLockCapabilities = { secureWindow: true, hideRecents: false, deviceLockSignal: true };
+  const readCapabilities = (value: unknown) => {
+    if (!value || typeof value !== 'object') return;
+    const reported = value as Partial<Record<keyof DeviceLockCapabilities, unknown>>;
+    for (const key of ['secureWindow', 'hideRecents', 'deviceLockSignal'] as const) {
+      if (typeof reported[key] === 'boolean') capabilities[key] = reported[key];
+    }
+  };
   return {
     async method() {
       const reply = await ask('method');
+      readCapabilities(reply.capabilities);
       return {
         method: reply.method === 'biometric' || reply.method === 'device_credential' ? reply.method : 'pin',
         biometric: reply.biometric === 'available' || reply.biometric === 'not_enrolled' ? reply.biometric : 'none',
@@ -350,7 +385,8 @@ function createNativeDeviceLock(bridge: AndroidBridge): DeviceLock {
       return result === 'ok' || result === 'cancelled' || result === 'lockout' || result === 'pin' ? result : 'unavailable';
     },
     async configure(config) {
-      await ask('configure', config ? { ...config, on: config.scope.length > 0 } : { on: false, scope: [], relockAfterMs: 0, onDeviceLock: false, blockScreenshots: false });
+      const reply = await ask('configure', { ...config, on: config.scope.length > 0 });
+      readCapabilities(reply.capabilities);
     },
     async state() {
       const reply = await ask('state');
@@ -362,9 +398,27 @@ function createNativeDeviceLock(bridge: AndroidBridge): DeviceLock {
         authenticatedAt: typeof reply.authenticatedAt === 'number' ? reply.authenticatedAt : null,
       };
     },
-    async release() { await ask('release'); },
-    subscribe: listener => subscribeVisibility(listener),
-    capabilities: { secureWindow: true, hideRecents: true, deviceLockSignal: true },
+    async release(unlocked) { await ask('release', { unlocked }); },
+    async lock() { await ask('lock'); },
+    subscribe(listener) {
+      const stopVisibility = subscribeVisibility(listener);
+      let subscribed = true;
+      // The app's own news: an appLock message without an id.
+      const onMessage = (event: { data: string }) => {
+        if (!subscribed) return;
+        try {
+          const message = JSON.parse(event.data) as { type?: unknown; id?: unknown; event?: unknown };
+          if (message?.type === 'appLock' && message.id === undefined && (message.event === 'locked' || message.event === 'unlocked')) listener(message.event);
+        } catch { /* Not a message for the lock. */ }
+      };
+      bridge.addEventListener?.('message', onMessage);
+      return () => {
+        subscribed = false;
+        stopVisibility();
+        bridge.removeEventListener?.('message', onMessage);
+      };
+    },
+    capabilities,
   };
 }
 
