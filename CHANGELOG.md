@@ -19,7 +19,11 @@ A fix after 0.28.1. No database upgrade and no configuration change (see
   another mail app had created again under the same name in the meantime. The
   folder list now tells UniHub which copy of the folder you saw on each
   server (its UIDVALIDITY, and its MAILBOXID where the server has one), and
-  UniHub checks each copy just before deleting it. A folder that changed is
+  UniHub checks each copy just before deleting it; an incomplete or
+  malformed answer from the server deletes nothing. A folder another app
+  replaced under the same name and UIDVALIDITY (only its MAILBOXID differs)
+  is treated as a new folder at the next sync, so deleting it later keeps
+  the old folder's mail. A folder that changed is
   left alone and the dialog asks you to look again; nothing is deleted on any
   server.
 - **"Does not exist" is no longer taken as deleted.** When a server answered
@@ -32,7 +36,8 @@ A fix after 0.28.1. No database upgrade and no configuration change (see
 - **The dialog shows what happened on each server.** A folder on several
   mail accounts that was deleted on some servers only showed a short notice.
   The dialog now lists each account with its result: deleted, changed since
-  you saw it, not deleted by the server, or not tried yet.
+  you saw it, not deleted by the server, unknown (the server did not answer),
+  or not tried yet.
 - A page opened before the update asks you to reload UniHub before it
   deletes a folder at the mail server.
 

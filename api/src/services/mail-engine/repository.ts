@@ -45,23 +45,30 @@ async function ensureMailbox({ userId, accountId, folderName, epoch = null, meta
     return rows[0];
   }
   if (mailbox.user_id !== userId) throw fail('MAILBOX_OWNER_CONFLICT', 'Mailbox owner mismatch');
-  if (epoch !== null && mailbox.uidvalidity !== null && Number(mailbox.uidvalidity) !== epoch) {
+  // Another MAILBOXID (OBJECTID) under the same name is another mailbox, also
+  // with an unchanged UIDVALIDITY: the predecessor's occurrences, cursors and
+  // accepted changes are separated from it as for a new UIDVALIDITY, before
+  // the new id is stored, so nothing of the old mailbox counts as the new one's.
+  const replacedId = epoch !== null && metadata.allowEpochChange !== false && !!metadata.providerMailboxId && !!mailbox.provider_mailbox_id
+    && metadata.providerMailboxId !== mailbox.provider_mailbox_id;
+  if (epoch !== null && mailbox.uidvalidity !== null && (Number(mailbox.uidvalidity) !== epoch || replacedId)) {
     if (metadata.allowEpochChange === false) return mailbox; // legacy backfill cannot establish live epoch
     await cx.execute("UPDATE mail_remote_occurrences SET presence = 'quarantined', quarantine_reason = 'epoch_changed' WHERE mailbox_id = ? AND presence = 'present'", [mailbox.id]);
     await cx.execute('DELETE FROM mail_engine_cursors WHERE mailbox_id = ?', [mailbox.id]);
     // Old addresses may have been reused; never dispatch accepted work on them.
     // Only a dispatched effect needs a provider outcome check. Undispatched
     // intents are kept but need a user retry (rebased after sync) or discard.
+    // A replaced id makes every address in the old mailbox stale, whatever its UIDVALIDITY.
     const stale = `user_id = ? AND mail_account_id = ? AND (BINARY remote_folder = BINARY ?
-        OR (? = 'INBOX' AND remote_folder REGEXP '^[iI][nN][bB][oO][xX]$')) AND remote_uidvalidity <> ?
+        OR (? = 'INBOX' AND remote_folder REGEXP '^[iI][nN][bB][oO][xX]$')) AND (? OR remote_uidvalidity <> ?)
         AND state IN (${sqlStates('queued', 'executing', 'verifying', 'retry_wait')})`;
     // Keep recorded COPYUID/UID mapping evidence; the outcome check needs it.
     await cx.execute(`UPDATE mail_writebacks SET state = 'reconciling', status = 'pending',
       evidence_json = JSON_SET(COALESCE(evidence_json, JSON_OBJECT()), '$.reason', 'epoch_changed')
-      WHERE dispatched = TRUE AND ${stale}`, [userId, accountId, name, name, epoch]);
+      WHERE dispatched = TRUE AND ${stale}`, [userId, accountId, name, name, replacedId, epoch]);
     await cx.execute(`UPDATE mail_writebacks SET state = 'needs_attention', status = 'conflict',
       error = '${OPERATION_REASONS.mailbox_reset}', evidence_json = JSON_OBJECT('reason','epoch_changed')
-      WHERE dispatched = FALSE AND ${stale}`, [userId, accountId, name, name, epoch]);
+      WHERE dispatched = FALSE AND ${stale}`, [userId, accountId, name, name, replacedId, epoch]);
     await cx.execute(`UPDATE mail_remote_mailboxes SET uidvalidity = ?, state = 'active', epoch_revision = epoch_revision + 1 WHERE id = ?`, [epoch, mailbox.id]);
   } else if (epoch !== null && mailbox.uidvalidity === null) {
     await cx.execute("UPDATE mail_remote_mailboxes SET uidvalidity = ?, state = 'active', epoch_revision = epoch_revision + 1 WHERE id = ?", [epoch, mailbox.id]);

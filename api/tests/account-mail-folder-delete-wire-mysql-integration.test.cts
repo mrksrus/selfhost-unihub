@@ -18,7 +18,9 @@ const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts')
 // literal, and only the owner's own accounts are reached.
 
 interface Box { uidvalidity: number; mailboxId?: string }
-interface Login { boxes: Map<string, Box>; objectId: boolean; deleteReply?: (name: string) => string | null; list?: string }
+// deleteReply: a tagged answer, or 'DROP' to close the connection without one.
+// statusItems: the STATUS item list a server sends instead of the right one.
+interface Login { boxes: Map<string, Box>; objectId: boolean; deleteReply?: (name: string) => string | null; list?: string; statusItems?: (name: string) => string | null }
 
 // One IMAP server for every test account, keyed by login. It records every
 // command per login; a command it does not expect fails the test.
@@ -74,11 +76,12 @@ async function folderServer() {
             const box = state.boxes.get(name);
             if (!box) { send(`${tag} NO [NONEXISTENT] Mailbox doesn't exist\r\n`); return; }
             const mailboxId = /MAILBOXID/.test(rest) && box.mailboxId ? ` MAILBOXID (${box.mailboxId})` : '';
-            send(`* STATUS ${quoted(name)} (UIDVALIDITY ${box.uidvalidity}${mailboxId})\r\n`); ok(); return;
+            send(`* STATUS ${quoted(name)} (${state.statusItems?.(name) ?? `UIDVALIDITY ${box.uidvalidity}${mailboxId}`})\r\n`); ok(); return;
           }
           if (cmd.startsWith('DELETE ')) {
             const [name] = mailbox(cmd.slice(7));
             const reply = state.deleteReply?.(name);
+            if (reply === 'DROP') { state.boxes.delete(name); socket.destroy(); return; }
             if (reply) { send(`${tag} ${reply}\r\n`); return; }
             if (!state.boxes.delete(name)) { send(`${tag} NO [NONEXISTENT] Mailbox doesn't exist\r\n`); return; }
             ok(); return;
@@ -187,10 +190,10 @@ test('deleting a mail folder at the provider deletes only the copy shown, of the
   const stranger = await signIn('stranger');
 
   const repository = runtime('services/mail-engine/repository');
-  async function account(userId: string, address: string, { active = true } = {}) {
+  async function account(userId: string, address: string, { active = true, mode = 'sync' } = {}) {
     const id = crypto.randomUUID();
     await pool.execute<ResultSetHeader>(`INSERT INTO mail_accounts (id,user_id,email_address,provider,sync_mode,is_active,disconnected_at)
-      VALUES (?,?,?,'custom','sync',?,?)`, [id, userId, address, active, active ? null : '2026-11-01 00:00:00']);
+      VALUES (?,?,?,'custom',?,?,?)`, [id, userId, address, mode, active, active ? null : '2026-11-01 00:00:00']);
     return id;
   }
   // A folder UniHub knows on each account, at the generation its last read saw, with one message whose only copy is there.
@@ -353,6 +356,95 @@ test('deleting a mail folder at the provider deletes only the copy shown, of the
     await remove(owner, 'shared', left);
     assert.equal(await folderExists(shared.id), 0);
     assert.equal(await mailExists(shared.mail), 0);
+  });
+
+  // A provider's identity UniHub learns after the list was read, or never stored, is no consent.
+  await t.test('a list read before UniHub learned the MAILBOXID, or a MAILBOXID UniHub never read, deletes nothing', async () => {
+    imap.account('owner-ids@example.test', { INBOX: { uidvalidity: 1 }, Ledger: { uidvalidity: 90, mailboxId: 'F-ledger-new' }, Unread: { uidvalidity: 92, mailboxId: 'F-unread' } }, true);
+    const ids = await account(users.owner, 'owner-ids@example.test');
+    const ledger = await folder(users.owner, 'ledger', 'Ledger', [[ids, 90]]);
+    const before = await shown(owner, 'ledger');
+    assert.deepEqual(before, [{ account_id: ids, remote_name: 'Ledger', uidvalidity: '90', mailbox_id: null }]);
+    // A sync reads the folder now and stores its MAILBOXID: the open dialog's list is not that snapshot.
+    await repository.withTransaction((cx: FixtureValue) => repository.ensureMailbox({ userId: users.owner, accountId: ids, folderName: 'Ledger', epoch: 90,
+      metadata: { providerMailboxId: 'F-ledger-new' } }, cx), pool);
+    reached.length = 0;
+    assert.equal((await remove(owner, 'ledger', before, 409)).code, 'FOLDER_CHANGED');
+    assert.deepEqual(reached, [], 'refused before any server is reached');
+    assert.ok(imap.login('owner-ids@example.test').boxes.has('Ledger'));
+    // Shown again, with its id, it is deleted.
+    await remove(owner, 'ledger', await shown(owner, 'ledger'));
+    assert.equal(await folderExists(ledger.id), 0);
+    // The server has an id UniHub never stored for this folder: refused until a sync has read it.
+    const unread = await folder(users.owner, 'unread', 'Unread', [[ids, 92]]);
+    imap.commands.length = 0;
+    const refused = await remove(owner, 'unread', await shown(owner, 'unread'), 409);
+    assert.equal(refused.code, 'FOLDER_CHANGED');
+    assert.match(refused.error, /not read this folder's identity/);
+    assert.ok(!imap.sent('owner-ids@example.test').some(command => command.startsWith('DELETE')), 'no DELETE');
+    assert.equal(await folderExists(unread.id), 1);
+  });
+
+  await t.test('a STATUS without the MAILBOXID asked for, or with UIDVALIDITY twice, deletes nothing', async () => {
+    imap.account('owner-status@example.test', { INBOX: { uidvalidity: 1 }, Audit: { uidvalidity: 77, mailboxId: 'F-audit-new' } }, true);
+    imap.account('owner-twice@example.test', { INBOX: { uidvalidity: 1 }, Audit: { uidvalidity: 78 } });
+    const withIds = await account(users.owner, 'owner-status@example.test'), plain = await account(users.owner, 'owner-twice@example.test');
+    const audit = await folder(users.owner, 'audit', 'Audit', [[withIds, 77, 'F-audit-old']]);
+    const twice = await folder(users.owner, 'audit-twice', 'Audit', [[plain, 77]]);
+    // The server holds a replacement (F-audit-new) but leaves MAILBOXID out of its answer.
+    imap.login('owner-status@example.test').statusItems = () => 'UIDVALIDITY 77';
+    const missing = await remove(owner, 'audit', await shown(owner, 'audit'), 502);
+    assert.equal(missing.code, 'MAIL_SERVER_ERROR');
+    assert.ok(imap.login('owner-status@example.test').boxes.has('Audit'), 'the replacement stays');
+    assert.equal(await folderExists(audit.id), 1);
+    assert.equal(await mailExists(audit.mail), 1);
+    // The server holds 78 and answers both 78 and the 77 the person saw.
+    imap.login('owner-twice@example.test').statusItems = () => 'UIDVALIDITY 78 UIDVALIDITY 77';
+    assert.equal((await remove(owner, 'audit-twice', await shown(owner, 'audit-twice'), 502)).code, 'MAIL_SERVER_ERROR');
+    assert.ok(imap.login('owner-twice@example.test').boxes.has('Audit'));
+    assert.equal(await mailExists(twice.mail), 1);
+    for (const login of ['owner-status@example.test', 'owner-twice@example.test'])
+      assert.ok(!imap.sent(login).some(command => command.startsWith('DELETE')), `no DELETE to ${login}`);
+  });
+
+  await t.test('a sync that reads a new MAILBOXID under the same UIDVALIDITY keeps the old folder\'s Download mail when the new one is deleted', async () => {
+    imap.account('owner-download@example.test', { INBOX: { uidvalidity: 1 }, Kept: { uidvalidity: 91, mailboxId: 'F-kept-new' } }, true);
+    const download = await account(users.owner, 'owner-download@example.test', { mode: 'download' });
+    const kept = await folder(users.owner, 'kept', 'Kept', [[download, 91, 'F-kept-old']]);
+    // Another program replaced Kept; the provider kept UIDVALIDITY 91, only MAILBOXID tells. A sync reads it.
+    await repository.withTransaction((cx: FixtureValue) => repository.ensureMailbox({ userId: users.owner, accountId: download, folderName: 'Kept', epoch: 91,
+      metadata: { providerMailboxId: 'F-kept-new' } }, cx), pool);
+    const [[occurrence]] = await pool.query<RowDataPacket[]>('SELECT presence FROM mail_remote_occurrences WHERE email_id = ?', [kept.mail[0]]);
+    assert.equal(occurrence.presence, 'quarantined', 'the old folder\'s copy no longer counts as the new folder\'s');
+    const copies = await shown(owner, 'kept');
+    assert.equal(copies[0].mailbox_id, 'F-kept-new');
+    const deleted = await remove(owner, 'kept', copies);
+    assert.equal(deleted.deletedMessages, 0, 'the old folder\'s message is not deleted with the new folder');
+    assert.equal(await mailExists(kept.mail), 1);
+    assert.ok(!imap.login('owner-download@example.test').boxes.has('Kept'));
+  });
+
+  await t.test('a DELETE whose answer never comes is reported as unknown, not as refused', async () => {
+    imap.account('owner-lost-a@example.test', { INBOX: { uidvalidity: 1 }, Pending: { uidvalidity: 5 } });
+    imap.account('owner-lost-b@example.test', { INBOX: { uidvalidity: 1 }, Pending: { uidvalidity: 6 } });
+    const lostA = await account(users.owner, 'owner-lost-a@example.test'), lostB = await account(users.owner, 'owner-lost-b@example.test');
+    const [first, second] = [lostA, lostB].sort();
+    const address = (id: string) => id === lostA ? 'owner-lost-a@example.test' : 'owner-lost-b@example.test';
+    const pending = await folder(users.owner, 'pending', 'Pending', [[lostA, 5], [lostB, 6]]);
+    // The second server takes the DELETE and closes the connection before it answers.
+    imap.login(address(second)).deleteReply = () => 'DROP';
+    const partly = await remove(owner, 'pending', await shown(owner, 'pending'), 409);
+    assert.equal(partly.code, 'FOLDER_PARTLY_DELETED');
+    assert.deepEqual(partly.details.copies, [{ account_id: first, email_address: address(first), outcome: 'deleted' },
+      { account_id: second, email_address: address(second), outcome: 'unknown' }]);
+    assert.match(partly.error, /did not answer whether it deleted the folder/);
+    assert.deepEqual(await linked(pending.id), [second], 'the unanswered copy is not settled');
+    // A single copy whose DELETE goes unanswered: nothing confirmed, the answer still says so.
+    imap.login(address(second)).deleteReply = () => 'DROP';
+    imap.login(address(second)).boxes.set('Pending', { uidvalidity: second === lostA ? 5 : 6 });
+    const alone = await remove(owner, 'pending', await shown(owner, 'pending'), 502);
+    assert.deepEqual(alone.details?.copies, [{ account_id: second, email_address: address(second), outcome: 'unknown' }]);
+    assert.equal(await folderExists(pending.id), 1);
   });
 
   await t.test('only the owner\'s own, connected accounts are reached; a request without copies is refused', async () => {

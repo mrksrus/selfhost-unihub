@@ -639,8 +639,9 @@ succeeded stops the rest, the deleted copies are settled locally at once
 and this attempt sends nothing again, and the answer is `409
 FOLDER_PARTLY_DELETED` with `details.deleted_on`, `details.remaining_on`
 (addresses), `details.settled` and `details.copies` (each account's
-outcome: `deleted`, `changed`, `failed` or `not_tried`), which the folders
-dialog lists. UniHub sends no DELETE again by itself and keeps no record
+outcome: `deleted`, `changed`, `failed`, `unknown` for a DELETE whose answer
+never came, or `not_tried`), which the folders dialog lists; a `502` whose
+DELETE went unanswered carries `details.copies` too. UniHub sends no DELETE again by itself and keeps no record
 across attempts: deleting the folder again starts from the folder list,
 and a copy already deleted answers `NONEXISTENT` to its STATUS. A server's
 refusal, or a DELETE without an answer, with nothing deleted is `502

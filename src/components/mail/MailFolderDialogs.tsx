@@ -101,8 +101,8 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
     onError: (error: Error, { folder }) => {
       // Whatever the answer, the folders are read again: a part may have gone, or the server holds something else now.
       void invalidateMailQueries(queryClient);
-      // Deleted on some servers only (409): which ones, and what the others need.
-      if (hasCode(error, 'FOLDER_PARTLY_DELETED') && Array.isArray((error.details as FolderPartlyDeletedDetails | undefined)?.copies)) {
+      // Deleted on some servers only (409), or a server that never answered its DELETE (502): each server's result.
+      if ((hasCode(error, 'FOLDER_PARTLY_DELETED') || hasCode(error, 'MAIL_SERVER_ERROR')) && Array.isArray((error.details as FolderPartlyDeletedDetails | undefined)?.copies)) {
         setPartlyDeleted({ name: folder.display_name, details: error.details as FolderPartlyDeletedDetails });
         return;
       }
@@ -256,12 +256,16 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
           <AlertDialogTitle>
             {partlyDeleted?.details.copies.every(copy => copy.outcome === 'deleted')
               ? `${partlyDeleted.name} was deleted on the mail server`
-              : `${partlyDeleted?.name || 'The folder'} was deleted on some servers only`}
+              : partlyDeleted?.details.copies.some(copy => copy.outcome === 'deleted')
+                ? `${partlyDeleted.name} was deleted on some servers only`
+                : `${partlyDeleted?.name || 'The folder'} may not have been deleted`}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            {partlyDeleted?.details.settled === false
-              ? 'UniHub could not update its own copy yet. Delete the folder again to finish.'
-              : 'It stays in UniHub for the servers that still have it.'}
+            {partlyDeleted?.details.copies.some(copy => copy.outcome === 'unknown')
+              ? 'A server did not answer. Refresh the folders to see what is still there.'
+              : partlyDeleted?.details.settled === false
+                ? 'UniHub could not update its own copy yet. Delete the folder again to finish.'
+                : 'It stays in UniHub for the servers that still have it.'}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <ul className="divide-y divide-border rounded-md border border-border text-sm" aria-label="Result on each mail server">
@@ -285,5 +289,6 @@ const COPY_OUTCOME: Record<FolderPartlyDeletedDetails['copies'][number]['outcome
   deleted: 'Deleted',
   changed: 'Not deleted: the folder changed on this server since it was shown. Check it, then delete it again.',
   failed: 'Not deleted: the server did not delete it. Try again later.',
+  unknown: 'Unknown: the server did not answer. Refresh the folders to see whether it is still there.',
   not_tried: 'Not deleted: stopped after an earlier server failed. Delete the folder again.',
 };

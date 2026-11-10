@@ -262,28 +262,24 @@ function nonexistent(error: unknown) {
  * now: its UIDVALIDITY, and its MAILBOXID where the server advertises
  * OBJECTID. STATUS neither selects the mailbox nor matches wildcards in its
  * name. null only for the NONEXISTENT response code (RFC 5530); any other
- * NO or BAD, a lost connection, or a reply without one well-formed STATUS
- * for this name throws, so absence is never inferred from wording or from a
- * listing.
+ * NO or BAD, a lost connection, or a reply that is not exactly one STATUS
+ * for this name with each requested item exactly once and well formed (a
+ * MAILBOXID too, when OBJECTID is advertised) throws, so neither absence nor
+ * identity is ever inferred from wording, a listing or a partial answer.
  */
 async function mailboxGeneration(connection: ProtocolConnection, folder: string) {
   folderName(folder);
   const encoded = imapTools.encodePath(connection, imapTools.normalizePath(connection, folder));
-  const items = [{ type: 'ATOM', value: 'UIDVALIDITY' }, ...(advertised(connection, 'OBJECTID') ? [{ type: 'ATOM', value: 'MAILBOXID' }] : [])];
-  const replies: { uidvalidity: unknown; mailboxId: unknown }[] = [];
+  const withId = advertised(connection, 'OBJECTID');
+  const items = [{ type: 'ATOM', value: 'UIDVALIDITY' }, ...(withId ? [{ type: 'ATOM', value: 'MAILBOXID' }] : [])];
+  const replies: unknown[][] = [];
   const text = (value: unknown) => Buffer.isBuffer(value) ? value.toString('latin1') : typeof value === 'string' ? value : null;
   const onStatus = async (untagged: ParsedResponse) => {
     const [name, list] = ((untagged as { attributes?: unknown[] }).attributes || []) as [{ value?: unknown } | undefined, unknown];
     const named = text(name?.value);
     // Another mailbox's STATUS (unsolicited) is not this one's answer.
     if (named === null || !(named === encoded || encoded === 'INBOX' && named.toUpperCase() === 'INBOX')) return;
-    const reply: { uidvalidity: unknown; mailboxId: unknown } = { uidvalidity: null, mailboxId: null };
-    if (Array.isArray(list)) for (let index = 0; index + 1 < list.length; index += 2) {
-      const key = String((list[index] as { value?: unknown })?.value ?? '').toUpperCase(), value = list[index + 1] as { value?: unknown } | { value?: unknown }[];
-      if (key === 'UIDVALIDITY') reply.uidvalidity = (value as { value?: unknown })?.value;
-      if (key === 'MAILBOXID') reply.mailboxId = Array.isArray(value) ? value[0]?.value : value?.value;
-    }
-    replies.push(reply);
+    replies.push(Array.isArray(list) ? list : []);
   };
   try {
     await runGuardedImap(connection, () => execTagged(connection, 'STATUS', [{ type: 'STRING', value: encoded }, items], { untagged: { STATUS: onStatus } }));
@@ -291,11 +287,26 @@ async function mailboxGeneration(connection: ProtocolConnection, folder: string)
     if (nonexistent(error)) return null;
     throw error;
   }
-  if (replies.length !== 1) throw Object.assign(new Error('STATUS answered without exactly one reply for the mailbox'), { code: 'MAIL_IMAP_MALFORMED' });
-  let uidvalidity: number;
-  try { uidvalidity = uint32(replies[0].uidvalidity, 'UIDVALIDITY'); } catch {
-    throw Object.assign(new Error('STATUS answered without a valid UIDVALIDITY'), { code: 'MAIL_IMAP_MALFORMED' });
+  const malformed = (why: string) => Object.assign(new Error(`STATUS answered ${why}`), { code: 'MAIL_IMAP_MALFORMED' });
+  if (replies.length !== 1) throw malformed('without exactly one reply for the mailbox');
+  const list = replies[0];
+  if (list.length % 2) throw malformed('with an item without its value');
+  const fields = new Map<string, unknown>();
+  for (let index = 0; index < list.length; index += 2) {
+    const key = String((list[index] as { value?: unknown })?.value ?? '').toUpperCase();
+    if (fields.has(key)) throw malformed(`with ${key} more than once`);
+    fields.set(key, list[index + 1]);
   }
-  return { uidvalidity: String(uidvalidity), mailboxId: objectId(replies[0].mailboxId) };
+  let uidvalidity: number;
+  try { uidvalidity = uint32((fields.get('UIDVALIDITY') as { value?: unknown } | undefined)?.value, 'UIDVALIDITY'); } catch {
+    throw malformed('without a valid UIDVALIDITY');
+  }
+  if (!withId) return { uidvalidity: String(uidvalidity), mailboxId: null };
+  // RFC 8474: MAILBOXID (<objectid>); a bare value is accepted, as ImapFlow's SELECT does.
+  const raw = fields.get('MAILBOXID');
+  const value = Array.isArray(raw) ? (raw.length === 1 ? (raw[0] as { value?: unknown })?.value : undefined) : (raw as { value?: unknown } | undefined)?.value;
+  const mailboxId = objectId(value);
+  if (!mailboxId) throw malformed('without a valid MAILBOXID although the server has OBJECTID');
+  return { uidvalidity: String(uidvalidity), mailboxId };
 }
 export { selectMailbox, fetchMetadataWindow, fetchRawMessage, setFlag, nativeMove, mailboxGeneration, nonexistent };

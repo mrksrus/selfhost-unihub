@@ -106,7 +106,38 @@ test('mailbox epoch reset parks undispatched intents in attention and checks dis
   assert.equal(updates.length, 2);
   assert.match(updates[0].sql, /state = 'reconciling'[\s\S]*WHERE dispatched = TRUE AND user_id = \? AND mail_account_id = \?/);
   assert.match(updates[1].sql, /state = 'needs_attention', status = 'conflict'[\s\S]*WHERE dispatched = FALSE AND user_id = \?/);
-  for (const update of updates) assert.deepEqual(update.args, ['owner', 'account', 'INBOX', 'INBOX', 10]);
+  // [owner, account, folder, folder, every UIDVALIDITY (only for a replaced MAILBOXID), the new UIDVALIDITY]
+  for (const update of updates) assert.deepEqual(update.args, ['owner', 'account', 'INBOX', 'INBOX', false, 10]);
+});
+
+// Another MAILBOXID under an unchanged UIDVALIDITY is another mailbox: its old
+// copies are set apart and every accepted change addressed there is stopped,
+// whatever its UIDVALIDITY, before the new id is stored.
+test('a replaced MAILBOXID with the same UIDVALIDITY resets the mailbox like a new UIDVALIDITY', async () => {
+  const calls: FixtureValue[] = [];
+  const mailbox = { id: 'box', user_id: 'owner', mail_account_id: 'account', remote_name: 'Kept', uidvalidity: 9, state: 'active', provider_mailbox_id: 'F-old' };
+  const cx = { execute: async (sql: string, args: FixtureValue) => {
+    calls.push({ sql, args });
+    if (sql.includes('FROM mail_accounts')) return [[{ id: 'account' }]];
+    if (sql.includes('FROM mail_remote_mailboxes')) return [[mailbox]];
+    return [{ affectedRows: 1 }];
+  } };
+  await repository.ensureMailbox({ userId: 'owner', accountId: 'account', folderName: 'Kept', epoch: 9, metadata: { providerMailboxId: 'F-new' } }, cx as FixtureValue);
+  const order = calls.map(call => call.sql);
+  const quarantine = order.findIndex(sql => sql.includes("SET presence = 'quarantined'"));
+  const storeId = order.findIndex(sql => sql.includes('provider_mailbox_id = COALESCE'));
+  assert.ok(quarantine >= 0 && storeId > quarantine, 'old copies set apart before the new id is stored');
+  assert.ok(order.some(sql => sql.startsWith('DELETE FROM mail_engine_cursors')));
+  const updates = calls.filter(call => call.sql.startsWith('UPDATE mail_writebacks'));
+  assert.equal(updates.length, 2);
+  for (const update of updates) assert.deepEqual(update.args, ['owner', 'account', 'Kept', 'Kept', true, 9]);
+  // The same id again, or an id where none was stored, resets nothing.
+  for (const stored of ['F-new', null]) {
+    calls.length = 0;
+    Object.assign(mailbox, { provider_mailbox_id: stored });
+    await repository.ensureMailbox({ userId: 'owner', accountId: 'account', folderName: 'Kept', epoch: 9, metadata: { providerMailboxId: 'F-new' } }, cx as FixtureValue);
+    assert.ok(!calls.some(call => call.sql.includes("SET presence = 'quarantined'")), `nothing reset with stored id ${stored}`);
+  }
 });
 
 test('retry/cancel flags match what the endpoints accept for every stuck state', async t => {

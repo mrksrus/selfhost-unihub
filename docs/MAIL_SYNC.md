@@ -126,10 +126,15 @@ has another generation. A request without copies answers `400
 FOLDER_COPIES_REQUIRED`; copies that differ from what UniHub knows (another
 generation, an account added or gone) answer `409 FOLDER_CHANGED` before any
 connection, and a copy UniHub has not read yet (no UIDVALIDITY) waits for a
-sync. Then the account's read jobs stop, and under the final check STATUS reads
-every copy's current generation (STATUS takes the name literally, never as a
-pattern); one that differs answers `409 FOLDER_CHANGED` and nothing is sent to
-any server. Each copy is read again right before its own IMAP DELETE. A copy
+sync. Copies match only with the same UIDVALIDITY and the same MAILBOXID, a
+missing one included: an id UniHub stored after the list was read makes the
+list out of date. Then the account's read jobs stop, and under the final check
+STATUS reads every copy's current generation (STATUS takes the name literally,
+never as a pattern); one that differs answers `409 FOLDER_CHANGED` and nothing
+is sent to any server, as does a MAILBOXID the server reports where UniHub has
+none stored yet (sync first). A STATUS answer that is not exactly one reply
+with exactly one well-formed UIDVALIDITY, and MAILBOXID when the server
+advertises OBJECTID, is `502 MAIL_SERVER_ERROR` with nothing deleted. Each copy is read again right before its own IMAP DELETE. A copy
 counts as deleted only on the server's word: DELETE answered OK, or the
 `NONEXISTENT` response code to its STATUS (no DELETE is sent) or its DELETE. A
 "does not exist" reply without the code is no proof: nothing is settled, and
@@ -143,7 +148,9 @@ local rows change, in one transaction, and only for a mailbox row that still
 has the deleted generation: a folder created again and read by a sync in
 between stays, linked to the folder. Nothing is kept between attempts: a
 retry starts from the listing, and a copy already deleted answers
-`NONEXISTENT` to its STATUS. The mailbox is retired as above. An item filed there is removed only when its last
+`NONEXISTENT` to its STATUS. A DELETE sent without an answer (the connection
+lost) is reported as `unknown`, not as refused, and is not settled; the next
+listing or attempt finds out. The mailbox is retired as above. An item filed there is removed only when its last
 present copy was in that mailbox; one still present in another active mailbox
 (a Gmail label, All Mail) is filed there and re-pointed to that copy. Drafts,
 items without a copy there, Legacy or cross-filed items and items with an

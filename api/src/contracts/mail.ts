@@ -48,11 +48,13 @@ export interface FolderServerCopy { account_id: string; remote_name: string; uid
  */
 export interface FolderDeleteRequest { copies: FolderServerCopy[] }
 /**
- * What happened to each copy, in the details of 409 FOLDER_PARTLY_DELETED:
- * deleted (or already gone), changed since it was shown (refresh and try
- * again), failed at the server, or not tried after an earlier one failed.
+ * What happened to each copy, in the details of 409 FOLDER_PARTLY_DELETED
+ * (and of a 502 whose DELETE went unanswered): deleted (or already gone),
+ * changed since it was shown (refresh and try again), refused by the server,
+ * unknown (a DELETE was sent but its answer never came), or not tried after
+ * an earlier one failed.
  */
-export interface FolderCopyOutcome { account_id: string; email_address: string; outcome: 'deleted' | 'changed' | 'failed' | 'not_tried' }
+export interface FolderCopyOutcome { account_id: string; email_address: string; outcome: 'deleted' | 'changed' | 'failed' | 'unknown' | 'not_tried' }
 export interface FolderPartlyDeletedDetails {
   deleted_on: string[];
   remaining_on: string[];

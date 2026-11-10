@@ -77,7 +77,7 @@ In the mail view a change looks done as soon as you make it: a read, star, move 
 
 Discovery, flags, presence sweeps, body acquisition and the Sync policy job run in bounded durable jobs. Recent mail does not require a complete historical mailbox scan first. Complete windows checkpoint; failed or partial windows never establish absence. Cancellation of **sync** stops read-only work, not previously accepted provider changes. Interactive work can yield a slow read-only job, preserving its committed progress.
 
-UIDVALIDITY changes invalidate old addresses; an old UID is never sufficient authority for a new provider mutation, and occurrences of a reset mailbox are quarantined rather than treated as deleted (such items are kept). Explicit Legacy/local filing (mail filed in another account) is never removed by the Sync policy. Raw provider bytes and content-completion status are separate from metadata discovery; legacy normalized raw files keep their provenance.
+UIDVALIDITY changes invalidate old addresses; an old UID is never sufficient authority for a new provider mutation, and occurrences of a reset mailbox are quarantined rather than treated as deleted (such items are kept). A new MAILBOXID (OBJECTID) under the same name and UIDVALIDITY counts as such a reset too: the folder was replaced, so its predecessor's occurrences, cursors and pending changes are set apart before the new id is stored. Explicit Legacy/local filing (mail filed in another account) is never removed by the Sync policy. Raw provider bytes and content-completion status are separate from metadata discovery; legacy normalized raw files keep their provenance.
 
 ## Disconnect and purge
 

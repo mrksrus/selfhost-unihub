@@ -109,6 +109,31 @@ describe('deleting a mail folder', () => {
     expect(within(result).getByText('Not deleted: the server did not delete it. Try again later.')).toBeInTheDocument();
   });
 
+  // A DELETE sent without an answer (502 with each copy's result): the outcome is unknown, not "not deleted".
+  it('a server that never answered its DELETE is shown as unknown, not as refused', async () => {
+    vi.mocked(api.delete).mockResolvedValue({ status: 502, error: 'The mail server (alex@example.org) did not answer whether it deleted the folder. Refresh the folders to see whether it is still there.',
+      code: 'MAIL_SERVER_ERROR', details: { deleted_on: ['alex@example.test'], remaining_on: ['alex@example.org'], settled: true, copies: [
+        { account_id: 'acc-1', email_address: 'alex@example.test', outcome: 'deleted' },
+        { account_id: 'acc-2', email_address: 'alex@example.org', outcome: 'unknown' }] } });
+    show();
+    await deleteOnServer('Shared');
+    const result = await screen.findByRole('alertdialog', { name: 'Shared was deleted on some servers only' });
+    expect(within(result).getByText('A server did not answer. Refresh the folders to see what is still there.')).toBeInTheDocument();
+    expect(within(result).getByText('Unknown: the server did not answer. Refresh the folders to see whether it is still there.')).toBeInTheDocument();
+    expect(within(result).queryByText(/^Not deleted/)).not.toBeInTheDocument();
+    expect(state.toast).not.toHaveBeenCalled();
+  });
+
+  it('a single copy whose DELETE went unanswered says it may not have been deleted', async () => {
+    vi.mocked(api.delete).mockResolvedValue({ status: 502, error: 'The mail server (alex@example.test) did not answer whether it deleted the folder.',
+      code: 'MAIL_SERVER_ERROR', details: { deleted_on: [], remaining_on: ['alex@example.test'], settled: false, copies: [
+        { account_id: 'acc-1', email_address: 'alex@example.test', outcome: 'unknown' }] } });
+    show();
+    await deleteOnServer('Projects');
+    await screen.findByRole('alertdialog', { name: 'Projects may not have been deleted' });
+    expect(state.toast).not.toHaveBeenCalled();
+  });
+
   // The final check refused (a rule, Mail off, a restore, the account changed): nothing was deleted; the server's sentence, and the folders read again.
   it('a refusal at the final check shows the server\'s sentence and reads the folders again', async () => {
     vi.mocked(api.delete).mockResolvedValue({ status: 403, error: 'Your administrator does not allow deleting folders at the provider.', code: 'POLICY_FORBIDS' });
