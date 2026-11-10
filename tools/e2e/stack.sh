@@ -204,7 +204,7 @@ image_database() {
     docker run -d --name "$DB_CONTAINER" --network host --init --security-opt no-new-privileges \
       --mount type=volume,source=unihub-e2e-mariadb,target=/var/lib/mysql \
       -e MARIADB_DATABASE=unihub_dev -e MARIADB_USER=unihub -e "MARIADB_PASSWORD=$APP_PW" -e "MARIADB_ROOT_PASSWORD=$ROOT_PW" \
-      mariadb:11.8 --port="$DB_PORT" --bind-address=127.0.0.1 --default-time-zone=+00:00 \
+      mariadb:13.0 --port="$DB_PORT" --bind-address=127.0.0.1 --default-time-zone=+00:00 \
       --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --max-connections=100 \
       --innodb-buffer-pool-size=192M --innodb-log-file-size=96M --innodb-log-buffer-size=16M \
       --innodb-flush-log-at-trx-commit=2 --innodb-snapshot-isolation=OFF --skip-name-resolve --local-infile=0 >/dev/null

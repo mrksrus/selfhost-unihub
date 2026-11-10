@@ -155,7 +155,7 @@ jobs:
     services:
       mariadb:
         # Same image as docker-compose.yml.
-        image: mariadb:11.8
+        image: mariadb:13.0
         env:
           MARIADB_ROOT_PASSWORD: test-root-password
           MARIADB_DATABASE: unihub_test
@@ -494,7 +494,7 @@ jobs:
       BACKUP_MASTER_KEY: ci-test-backup-master-key
     services:
       mariadb:
-        image: mariadb:11.8
+        image: mariadb:13.0
         env:
           MARIADB_ROOT_PASSWORD: test-root-password
           MARIADB_DATABASE: unihub_test
@@ -772,7 +772,7 @@ jobs:
       MYSQL_TEST_PASSWORD: test-db-password
     services:
       mariadb:
-        image: mariadb:11.8
+        image: mariadb:13.0
         env:
           MARIADB_ROOT_PASSWORD: test-root-password
           MARIADB_DATABASE: unihub_test
