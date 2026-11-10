@@ -59,6 +59,11 @@ test('contact photos: upload, formats, refusals, ETag, replace, delete, owner sc
   const upload = (client: Client, id: string, bytes: Buffer, type: string, status = 200) => call(client, 'PUT', `/api/contacts/${id}/photo`, bytes, status, { 'content-type': type });
   const userDir = (name: string) => path.join(process.env.CONTACT_PHOTOS_ROOT!, users[name]);
   const files = (name: string) => { try { return fs.readdirSync(userDir(name)).sort(); } catch { return []; } };
+  // The boundary removes a spooled upload after the response is sent (request-handler.ts), so wait for it.
+  const spoolEmpty = async (what: string) => {
+    for (let tries = 0; tries < 100 && fs.readdirSync(process.env.UPLOAD_SPOOL_ROOT!).length; tries++) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.deepEqual(fs.readdirSync(process.env.UPLOAD_SPOOL_ROOT!), [], what);
+  };
   const stored = async (id: string) => (await pool.execute<RowDataPacket[]>('SELECT sha256, thumb_sha256, width, height, bytes, source FROM contact_photos WHERE contact_id = ?', [id]))[0][0];
 
   // ── A phone JPEG (EXIF orientation and GPS) becomes the contact photo ──
@@ -71,7 +76,7 @@ test('contact photos: upload, formats, refusals, ETag, replace, delete, owner sc
   assert.deepEqual([firstRow.sha256, firstRow.source], [first.photo.etag, 'upload']);
   assert.deepEqual(files('owner'), [`${firstRow.sha256}.jpg`, `${firstRow.thumb_sha256}.jpg`].sort(), 'only the converted files are kept, never the original');
   for (const name of files('owner')) assert.equal(fs.statSync(path.join(userDir('owner'), name)).mode & 0o777, 0o600);
-  assert.deepEqual(fs.readdirSync(process.env.UPLOAD_SPOOL_ROOT!), [], 'the spooled upload is gone');
+  await spoolEmpty('the spooled upload is gone');
   const listed = (await call(owner, 'GET', '/api/contacts')).body.contacts as FixtureValue[];
   assert.deepEqual(listed.find(contact => contact.id === ann.id).photo, first.photo, 'the list carries the photo identity');
 
@@ -153,7 +158,7 @@ test('contact photos: upload, formats, refusals, ETag, replace, delete, owner sc
   assert.equal((await upload(owner, ann.id, png, 'image/png', 409)).body.code, 'RESTORE_IN_PROGRESS');
   assert.equal((await call(owner, 'DELETE', `/api/contacts/${ann.id}/photo`, undefined, 409)).body.code, 'RESTORE_IN_PROGRESS');
   await call(owner, 'GET', `/api/contacts/${ann.id}/photo`);
-  assert.deepEqual(fs.readdirSync(process.env.UPLOAD_SPOOL_ROOT!), []);
+  await spoolEmpty('no upload is left by a refused one');
   assert.equal((await stored(ann.id)).sha256, first.photo.etag);
 
   // ── The sweep skips a user under restore, then removes only unreferenced old files ──
