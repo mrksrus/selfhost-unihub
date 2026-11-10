@@ -47,7 +47,8 @@ test('[29-03] Mail locked, Calendar open: the page, Today, the search and Settin
     await screen.getByLabel('PIN', { exact: true }).fill(PIN);
     await screen.getByRole('button', 'Unlock', { exact: true }).tap();
     await expect(screen.getByRole('heading', 'Mail is locked')).toHaveCount(0);
-    await expect(screen.getByRole('heading', 'Mail accounts').or(screen.getByText('Mail accounts', { exact: true }).first())).toBeVisible();
+    // Settings → Mail itself, which the lock stood in for.
+    await expect(screen.getByRole('heading', 'Writing', { exact: true })).toBeVisible();
     // The one unlock opened Mail's page too.
     await app.open('/mail');
     await expect(screen.getByRole('heading', 'Mail is locked')).toHaveCount(0);
