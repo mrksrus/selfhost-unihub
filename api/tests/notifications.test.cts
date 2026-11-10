@@ -191,6 +191,50 @@ test('the dispatcher routes each due delivery to the transport of its target kin
   assert.deepEqual(settled.map(call => [...call.values]), [['pending', outcomes.later.nextAttempt, 'Push service 503', 'later', 'sub-later'], ['failed', now, 'Push service 403', 'dead', 'sub-dead']]);
 });
 
+test('each device is sent the content its own app lock allows, and every payload names its module', async () => {
+  const now = new Date();
+  const lock = (scope: string[]) => JSON.stringify({ scope, relock_after: '60', on_device_lock: true, method: 'pin' });
+  const past = new Date(now.getTime() - 60000), future = new Date(now.getTime() + 600000);
+  const devices: Record<string, FixtureValue> = {
+    locked: { lock_applied: lock(['recordings']), open_until: past },
+    unlocked: { lock_applied: lock(['recordings']), open_until: future },
+    'mail-only': { lock_applied: lock(['mail']), open_until: null },
+    'whole-app': { lock_applied: lock(['app']), open_until: null },
+    'no-lock': { lock_applied: null, open_until: null },
+  };
+  const payload = { dedupeKey: 'recording-upload:r1:10', title: 'Recording not uploaded yet', body: '"Board meeting" stopped at 10%.', bytesReceived: 10 };
+  const row = (kind: string, device: string) => ({ event_id: `${kind}-${device}`, subscription_id: `sub-${device}`, device_id: device, attempts: 0, user_id: 'u1', kind, source_id: 'r1',
+    payload: kind === 'test' ? { dedupeKey: 'test-1', title: 'UniHub notifications are working', body: 'Sent to this device.' } : payload, expires_at: new Date(now.getTime() + 60000), endpoint: `https://push.example/${device}`, p256dh: 'key', auth: 'auth' });
+  const rows = [...Object.keys(devices), 'removed'].map(device => row('recording', device)).concat(row('test', 'whole-app'));
+  const sends: FixtureValue[] = []; const writes: FixtureValue[] = [];
+  const transports = { NOTIFICATION_TRANSPORTS: { webpush: {
+    async ready() {}, async send(target: FixtureValue, message: FixtureValue) { sends.push({ device: target.id.slice(4), kind: message.kind, module: message.module, title: message.payload.title, body: message.payload.body }); return { sent: true }; },
+    async discardTarget() {},
+  } } };
+  const connection = { async execute(sql: string, values: FixtureValue) {
+    if (sql.includes('FROM notification_deliveries d')) return [rows];
+    if (sql.includes('FROM devices d')) return [values.filter((id: string) => devices[id]).map((id: string) => ({ id, user_id: 'u1', kind: 'web', ...devices[id] }))];
+    if (sql.includes('FROM recording_uploads')) return [[{ bytes_received: 10 }]];
+    if (sql.includes('FROM setting_policies') || sql.includes('FROM user_settings') || sql.includes('FROM backup_restore_jobs')) return [[]];
+    writes.push({ sql, values }); return [{}];
+  } };
+  const service: FixtureValue = loadService({}, {}, transports);
+  assert.equal(await service.testInternals.deliverPending(connection, now), rows.length);
+  const hidden = ['Recording not uploaded yet', 'Open UniHub on the device that recorded it to finish.'];
+  assert.deepEqual(JSON.parse(JSON.stringify(sends)), [
+    { device: 'locked', kind: 'recording', module: 'recordings', title: hidden[0], body: hidden[1] },
+    { device: 'unlocked', kind: 'recording', module: 'recordings', title: payload.title, body: payload.body },
+    { device: 'mail-only', kind: 'recording', module: 'recordings', title: payload.title, body: payload.body },
+    { device: 'whole-app', kind: 'recording', module: 'recordings', title: hidden[0], body: hidden[1] },
+    { device: 'no-lock', kind: 'recording', module: 'recordings', title: payload.title, body: payload.body },
+    // A channel whose device has no record fails closed.
+    { device: 'removed', kind: 'recording', module: 'recordings', title: hidden[0], body: hidden[1] },
+    // An account notice has no module and no private text: the whole-app lock leaves its fixed text.
+    { device: 'whole-app', kind: 'test', module: null, title: 'UniHub notifications are working', body: 'Sent to this device.' },
+  ]);
+  assert.equal(writes.some(call => call.sql.startsWith('UPDATE notification_events')), false, 'no device text is written to the shared payload');
+});
+
 test('the web push transport classifies expired, temporary and permanent push service failures', async () => {
   const service: FixtureValue = loadService({ async execute() { return [[{ public_key: 'public', encrypted_private_key: 'encrypted:private', subject: 'mailto:admin@example.com' }]]; } }, {
     async sendNotification(subscription: FixtureValue) { const status = Number(new URL(subscription.endpoint).pathname.slice(1)); if (!status) return { statusCode: 201 }; throw Object.assign(new Error('Push failed'), { statusCode: status }); },
