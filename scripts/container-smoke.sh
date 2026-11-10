@@ -277,6 +277,11 @@ stop_variant() {
   docker stop -t 30 "${container_name}-variant" >/dev/null
   [[ "$(docker inspect --format '{{.State.ExitCode}}' "${container_name}-variant")" == 0 ]] || { echo 'The container did not exit cleanly on docker stop.' >&2; exit 1; }
 }
+# The API's own port is refused before anything starts.
+if docker run --rm --network none -e UNIHUB_HTTP_PORT=4000 "$image" >/dev/null 2>&1; then
+  echo 'UNIHUB_HTTP_PORT=4000 must stop the start.' >&2
+  exit 1
+fi
 # A port above 1023 needs no NET_BIND_SERVICE.
 start_variant 8081 --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID
 stop_variant

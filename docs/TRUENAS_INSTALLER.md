@@ -27,15 +27,15 @@ domain or Internet access is not required; private DNS works. See
 
 | Field | What it sets |
 | --- | --- |
-| Admin Email, Admin Password | `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD`: the first administrator, created once on an empty database. Changing them later does not change an existing account. |
-| Database Password, Database Root Password | The MariaDB container's `unihub` and `root` passwords. Changing them later does not change the passwords inside an existing database. |
+| Initial Admin Email, Initial Admin Password | `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD`: the first administrator, created once on an empty database. Changing them later does not change an existing account. |
+| Database Password, Root Database Password | The MariaDB container's `unihub` and `root` passwords. Changing them later does not change the passwords inside an existing database. |
 | JWT Secret | `JWT_SECRET`, which signs the login sessions. Changing it signs everyone out. |
 | Encryption Key | `ENCRYPTION_KEY`, which encrypts saved mail and calendar passwords and authenticator keys. Losing it makes them unreadable; keep a copy outside the NAS. |
 | Origins | `ALLOWED_ORIGINS`: every address people open UniHub at, exactly as in the browser (`https://hub.example.com`, with the port when it is not 443, no path). The app's Web UI button opens the first one. |
 | User ID, Group ID | The user everything in the UniHub container runs as and that owns the uploads. |
-| Web port | `UNIHUB_HTTP_PORT` and the published port. It serves plain HTTP for your reverse proxy. |
-| Uploads storage | `/app/uploads`: mail originals, attachments, recordings and account backups. |
-| Database storage | MariaDB's data. |
+| WebUI Port | `UNIHUB_HTTP_PORT` and the published port. It serves plain HTTP for your reverse proxy. |
+| Uploads Storage | `/app/uploads`: mail originals, attachments, recordings and account backups. |
+| Database Storage | MariaDB's data. |
 
 Everything else is an **Additional Environment Variable**, described in the
 [installation guide](INSTALLATION.md):

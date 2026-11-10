@@ -94,6 +94,9 @@ case "$1" in
 esac
 `, { mode: 0o755 });
   await fs.writeFile(path.join(directory, 'nginx'), '#!/bin/sh\n[ "$1" = -t ] || echo NGINX_LAUNCHED\n', { mode: 0o755 });
+  // As root, the image's default: started as another user, start.sh reads the
+  // image's Nginx files, which scripts/container-smoke.sh covers in the image.
+  await fs.writeFile(path.join(directory, 'id'), '#!/bin/sh\necho 0\n', { mode: 0o755 });
   const child: FixtureValue = spawn('sh', [path.join(__dirname, '../../docker/start.sh')], {
     env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, UNIHUB_API_START_DELAY_SECONDS: '0' },
     detached: true, stdio: ['pipe', 'pipe', 'pipe'],

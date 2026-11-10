@@ -24,11 +24,12 @@ nothing changes for an existing installation (see
 
 ### Changed
 
-- **Visitor addresses need no setting.** The image now sets
-  `TRUST_PROXY_HEADERS=true` itself, as the Compose file always did. Every
-  request reaches the API through the image's own Nginx; started without the
-  setting, all visitors shared one address for the sign-in limits. A
-  deployment that sets it to `false` keeps its value.
+- **`TRUST_PROXY_HEADERS=true` is set in the image**, as the Compose file
+  always set it. Every request reaches the API through the image's own
+  Nginx; started without the setting, all visitors counted as one address
+  for the sign-in limits. Behind your own HTTPS proxy, `TRUSTED_PROXY_CIDRS`
+  still has to name that proxy. A deployment that sets
+  `TRUST_PROXY_HEADERS` to `false` keeps its value.
 
 ## 0.28.2
 

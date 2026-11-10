@@ -38,6 +38,7 @@ fi
 UNIHUB_HTTP_PORT="${UNIHUB_HTTP_PORT:-80}"
 case "$UNIHUB_HTTP_PORT" in
   ''|*[!0-9]*) echo "UNIHUB_HTTP_PORT must be a port number, not '$UNIHUB_HTTP_PORT'." >&2; exit 1 ;;
+  4000) echo "UNIHUB_HTTP_PORT cannot be 4000: the API listens on that port inside the container." >&2; exit 1 ;;
 esac
 if [ "$(id -u)" != 0 ] || [ "$UNIHUB_HTTP_PORT" != 80 ]; then
   nginx_dir=/tmp/unihub-nginx

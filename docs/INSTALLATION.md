@@ -107,7 +107,7 @@ container variable with `_FILE` appended names the file, for example
 `MARIADB_ROOT_PASSWORD_FILE` the same way. `docker-compose.yml` shows the
 `secrets:` form, which keeps the values out of `docker inspect` and the
 environment. A file holds the value alone; one trailing line break is ignored.
-It must be readable by uid 10001, which runs the API (`chown 10001` and
+It must be readable by uid 10001, which runs the API unless you set `user:` (`chown 10001` and
 `chmod 400` on the host). Keep secret files outside `/app/uploads`: a secret
 file inside the stored files stops the start, since backups copy them. When a variable and its file are both set and differ,
 or the file is missing, empty or unreadable, UniHub does not start and its log
@@ -202,7 +202,7 @@ them.
 **The instance backup** copies the database and every stored file, encrypted
 with its own key, to a destination you mount, daily and on "Back up now" in
 Settings > Server settings > Instance backup. Give it a disk or share of its
-own that nothing else writes to, writable by uid 10001, and set
+own that nothing else writes to, writable by uid 10001 (or your `user:`), and set
 `UNIHUB_INSTANCE_BACKUP_DIR` to where it is mounted in the container, together
 with `UNIHUB_INSTANCE_BACKUP_KEY` (or its file):
 

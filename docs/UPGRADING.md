@@ -18,10 +18,15 @@ possible.
   container can then no longer change ownership itself, so `/app/uploads`,
   an instance backup folder and secret files must already be usable by that
   user. To switch an existing installation, stop it, give the uploads volume
-  to the new user (`chown -R`), then start it with `user:`.
+  to the new user (`chown -R`), then start it with `user:`. Before starting
+  it as root again or going back to 0.28.2, remove `user:` and give the
+  uploads back (`chown -R 10001:10001`): the marker of the 0.11.1 handover
+  is still there, so the container does not do it.
 - **Another port.** `UNIHUB_HTTP_PORT` sets Nginx's port inside the container
   (80 unless set); map the published port to it. A user other than root is
   not allowed to open port 80 everywhere, so set it together with `user:`.
+  The Compose file's health check follows the port; a copy from before
+  0.28.3 asks port 80 and needs that line from the new file.
 - **`TRUST_PROXY_HEADERS`** is `true` in the image itself. The Compose file
   already set it; a deployment that left it out now tells visitors apart by
   address for the sign-in limits.
