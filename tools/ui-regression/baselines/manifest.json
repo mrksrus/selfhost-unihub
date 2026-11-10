@@ -22,13 +22,21 @@
     "deviceScaleFactor": 1
   },
   "baselines": {
+    "admin-policies-app-lock-wide-dark.png": {
+      "sha256": "cadd418786588ff22777c5ee67c4d7ebddaa4d590ab4cb9ce0f4d2bc701934b4",
+      "bytes": 152780
+    },
+    "admin-policies-app-lock-wide-light.png": {
+      "sha256": "2b0f696a60d784bb9158726a75786b952235b02df85fb418bd2b2c74aa9f49f9",
+      "bytes": 155998
+    },
     "admin-policies-wide-dark.png": {
-      "sha256": "23863f3d6489457b7ba1db41c81df82960f70f05bf2d65686674cb16ffb82146",
-      "bytes": 139926
+      "sha256": "8eb11265d88c6758e3b3d005245ebdd0416e82e9a67174951ef835ad190b2aac",
+      "bytes": 141343
     },
     "admin-policies-wide-light.png": {
-      "sha256": "cccf51052c5fb3638233ca1afddf31f8cdd280ff9d0c849a694eb898d320ed72",
-      "bytes": 143516
+      "sha256": "892a19c2d1de30d1fe54f8cec6006fa7c0b812167f043f8ca0f28e4bbf6b33fc",
+      "bytes": 145006
     },
     "bin-phone-dark.png": {
       "sha256": "368ab0af0cef3b0f14868e91ee743795b4f19657eb06561b0aa30f87fc8140d1",
@@ -39,12 +47,12 @@
       "bytes": 72994
     },
     "bin-wide-dark.png": {
-      "sha256": "8d0c4759d69ecee330d5ac3e66a77dc01e6cdb159c409bf5df4ff7be42191c42",
-      "bytes": 131587
+      "sha256": "09289ffdff7bccbc7bb3b3a6955be8f52e99819b9943b5eab8fbeb1633ea7bec",
+      "bytes": 133066
     },
     "bin-wide-light.png": {
-      "sha256": "5db2cd9067f69535aa9f72e8a3656fc3c149400cddc60b54a4778ea98c825189",
-      "bytes": 133061
+      "sha256": "613b4f75fbab9f38a8d1e664701fc010ece795b60dac7192dc85f035cdf94ebb",
+      "bytes": 134418
     },
     "composer-phone-dark.png": {
       "sha256": "434bd2f9e2529bdc972654ac3716f26958c6e8747598c4d3ec637b89972a902d",
@@ -85,6 +93,38 @@
     "contact-editor-wide-light.png": {
       "sha256": "49f1d6713104d2063aadae197e3e4f08ead80c197f51152638cc477fe3a20e8a",
       "bytes": 122698
+    },
+    "devices-wide-dark.png": {
+      "sha256": "e92be69cf12b9f0240f3e3fb4c61a6a458ff1b4382077126db23fe1288f3aa96",
+      "bytes": 114379
+    },
+    "devices-wide-light.png": {
+      "sha256": "a2ba1fd9e8974a1c9b4d869c8c2d1dadf9a3909b1839f813aec6737ea9d6b058",
+      "bytes": 115917
+    },
+    "lock-app-phone-dark.png": {
+      "sha256": "939dfc129f35d298d59c82d2651f7eb13ae124ab149662be05556be789bf890d",
+      "bytes": 13309
+    },
+    "lock-app-phone-light.png": {
+      "sha256": "e520f4c16ad8d4ff10e64124131d358ba23222b147d5cbeb6ce6cfeee11f644d",
+      "bytes": 13616
+    },
+    "lock-module-wide-dark.png": {
+      "sha256": "83a901bde2a3f943eddbd96fdaad7c6730fa783c043a4a57f4d4480f57178bef",
+      "bytes": 32532
+    },
+    "lock-module-wide-light.png": {
+      "sha256": "7c337bff5c3ba48b705114c54c3e6175b8b6807334c1b2072365a8c5cb88139b",
+      "bytes": 32536
+    },
+    "lock-required-phone-dark.png": {
+      "sha256": "714f2a74f6c30051bb151a242ad34f0ea68c1bb43d899d2f28a3149db99a9de2",
+      "bytes": 33710
+    },
+    "lock-required-phone-light.png": {
+      "sha256": "f864b3a75e7d58f1648b1593a99cd23f7871f9c74b1a38d6d2440b07f303233b",
+      "bytes": 35981
     },
     "mail-reader-wide-dark.png": {
       "sha256": "1f24aa99d3b156f46fb8ad11480d4b3f98cd1b3166db3340ae7d2b671f7e4de4",
@@ -134,29 +174,45 @@
       "sha256": "6e9a87d9bdb1f55b76d07c9ee08518de9d64bd6899493b48a61a61a8a9be0a12",
       "bytes": 50768
     },
+    "settings-app-lock-phone-dark.png": {
+      "sha256": "bb4541e80707badd4bb3b434512d21718006a99a8e78a84d2de284130cec89ca",
+      "bytes": 58264
+    },
+    "settings-app-lock-phone-light.png": {
+      "sha256": "5e2063b4429dbd054f5c2c19285a02533809bc8468c3431d42d69b6d85af2591",
+      "bytes": 60803
+    },
+    "settings-app-lock-wide-dark.png": {
+      "sha256": "f8989fb80b796176f841c46a95203af8c598aef6578bb81c90f65038df689012",
+      "bytes": 128370
+    },
+    "settings-app-lock-wide-light.png": {
+      "sha256": "e286f00fb49a06510db7de14ec50006eb40b9387e35356f1669e562ec8cef852",
+      "bytes": 130633
+    },
     "settings-appearance-wide-dark.png": {
-      "sha256": "c70759f51ae3d2e3bf8d4111a5b3cdc2a4c3b192adf769f0487ef38cfc9e6e2e",
-      "bytes": 111216
+      "sha256": "18f9ac9facc8bfe9a5a6630f3c205605a56985500bea4e71771f3a29c22802fb",
+      "bytes": 112882
     },
     "settings-appearance-wide-light.png": {
-      "sha256": "c3eb59292d1e1a804dfb4ee19a485bd036eb2609c3837901c485960098e7e516",
-      "bytes": 104051
+      "sha256": "4807e0dea6f1801567ce3c316e629dfb2b06e61377b2bb2a21bdadbc95e36905",
+      "bytes": 105699
     },
     "settings-backup-wide-dark.png": {
-      "sha256": "95d8c603eb3f6b64ffd706ab49d65db540d489968137a536081b96a1fb203d6e",
-      "bytes": 152262
+      "sha256": "b3aaca946560471ad88098ceb2842caba4630d564a72c9458437cbfdb0506f90",
+      "bytes": 153612
     },
     "settings-backup-wide-light.png": {
-      "sha256": "878ac3d86f456ba16a1ca0362b2ffa87c1d50819fb7fbd4b0756510c0ca89afb",
-      "bytes": 157946
+      "sha256": "f77768ef03d97b233744729127867373458b36b8454e01006ab978155e99e779",
+      "bytes": 159243
     },
     "settings-pages-wide-dark.png": {
-      "sha256": "448b8620c4cf897165f0353947b62115d56f01e8392cd9ed7879df4dc8382511",
-      "bytes": 117482
+      "sha256": "037a9e0fa8fc03f7875540db3e7cda27f2ce7f7108c9412e6024219096acdbac",
+      "bytes": 119052
     },
     "settings-pages-wide-light.png": {
-      "sha256": "a51fce7801e6a4a0a0a740e66096985452351705d9a6f5878a1e3da1747a6f1a",
-      "bytes": 121389
+      "sha256": "51ec64444e0fa658c8f8aeff62799ce6ddf639af77aeb9eff00767e3228174a3",
+      "bytes": 122827
     },
     "todo-drag-phone-dark.png": {
       "sha256": "cd9aa4c9edec5346bcb78c6293cc60dfd33ffc7e58414d6f795d1df032fa8698",
@@ -699,6 +755,69 @@
       "changed": [
         "admin-policies-wide-dark.png",
         "admin-policies-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-10T11:22:58.930Z",
+      "reason": "0.29.0 app lock screens (P-29, D29): Settings → App lock (Wide, Phone), the whole-app lock screen (Phone), a module's lock screen (Wide), the required-by-your-administrator prompt (Phone), the Policies page at its App lock group (Wide) and Settings → Security with Devices (Wide), new screens designed by the frontend agent within UI_ACCEPTANCE for the integrator's approval",
+      "source": {
+        "commit": "43c1fd4bcc6eed34fde47a95df8222801619ca5e",
+        "branch": "stream/0.29-e",
+        "dirty": true,
+        "digest": "33dd4529b067ebc0cc0f027f2f75b8d6f8e4425316aeda4089fd9f02ea102e08"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [
+        "admin-policies-app-lock-wide-dark.png",
+        "admin-policies-app-lock-wide-light.png",
+        "devices-wide-dark.png",
+        "devices-wide-light.png",
+        "lock-app-phone-dark.png",
+        "lock-app-phone-light.png",
+        "lock-module-wide-dark.png",
+        "lock-module-wide-light.png",
+        "lock-required-phone-dark.png",
+        "lock-required-phone-light.png",
+        "settings-app-lock-phone-dark.png",
+        "settings-app-lock-phone-light.png",
+        "settings-app-lock-wide-dark.png",
+        "settings-app-lock-wide-light.png"
+      ],
+      "changed": [
+        "admin-policies-wide-dark.png",
+        "admin-policies-wide-light.png",
+        "bin-wide-dark.png",
+        "bin-wide-light.png",
+        "settings-appearance-wide-dark.png",
+        "settings-appearance-wide-light.png",
+        "settings-backup-wide-dark.png",
+        "settings-backup-wide-light.png",
+        "settings-pages-wide-dark.png",
+        "settings-pages-wide-light.png"
       ],
       "removed": []
     }

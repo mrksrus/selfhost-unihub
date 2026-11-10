@@ -276,6 +276,13 @@
 }
 
 @layer utilities {
+  /* The app lock (src/lib/app-lock/web.ts) marks the root while the tab is in the
+     background with a lock on: the frame a browser shows on return, and the task
+     switcher's picture, show nothing readable (best effort). */
+  html.app-lock-hidden #root {
+    filter: blur(14px);
+  }
+
   /* Mobile bottom nav clearance: bar height + safe area */
   .pb-mobile-nav {
     padding-bottom: calc(4.5rem + env(safe-area-inset-bottom, 0px));

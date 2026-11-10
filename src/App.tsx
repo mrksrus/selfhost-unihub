@@ -8,6 +8,7 @@ import { SessionQueryProvider } from "@/components/SessionQueryProvider";
 import { useAuth } from "@/contexts/useAuth";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { AppLockProvider } from "@/contexts/AppLockProvider";
 import AppLayout from "@/components/layout/AppLayout";
 import InstallPrompt from "@/components/pwa/InstallPrompt";
 import { StartingScreen } from "@/components/ui/page-states";
@@ -34,6 +35,8 @@ const AuthenticatedApp = () => {
   const { user, session, isOffline } = useAuth();
   return (
     <SessionQueryProvider key={user?.id ?? "signed-out"} liveUpdates={!!user && !!session && !isOffline} privateSession={!!user}>
+      {/* Keyed by the account through SessionQueryProvider: the lock state never crosses sessions. */}
+      <AppLockProvider>
       <TooltipProvider>
         <Toaster />
         <BrowserRouter>
@@ -65,6 +68,7 @@ const AuthenticatedApp = () => {
           <InstallPrompt />
         </BrowserRouter>
       </TooltipProvider>
+      </AppLockProvider>
     </SessionQueryProvider>
   );
 };
