@@ -65,7 +65,8 @@ test('[29-05] with Mail locked, a new mail shows only "New Email"; the tap asks 
 
     // Settings → App lock: Mail only, every time UniHub opens.
     await page.goto(new URL('/settings?section=app-lock', page.url()).href);
-    await touch(page, page.getByRole('radio', { name: 'Chosen modules' }));
+    // The row is the tap target; its input is drawn by the row (RadioRow).
+    await touch(page, page.getByText('Chosen modules', { exact: true }));
     await touch(page, page.getByRole('checkbox', { name: 'Mail' }));
     await waitForUnlockPrompt();
     await touchFinger(1);

@@ -23,6 +23,14 @@ let sessions;
 
 /** Sets installation policies as the administrator, then confirms the rules notice for all three people. */
 async function setPolicies(values) {
+  // The administrator's own device is held to the lock they require, the
+  // policies route included: this session reports a whole-app lock, as a page
+  // does once its lock is set up, so it can turn the rules off again.
+  const reported = await sessions[0]('PUT', '/api/devices/current/lock', {
+    applied: { scope: ['app'], relock_after: '0', on_device_lock: false, method: 'pin' },
+    capabilities: { lock: 'pin', secure_window: false, recents_hidden: false, device_lock_signal: false },
+  });
+  assert.equal(reported.status, 200, JSON.stringify(reported.data));
   const saved = await sessions[0]('PUT', '/api/admin/policies', { values, current_password: PASSWORD });
   assert.equal(saved.status, 200, JSON.stringify(saved.data));
   for (const api of sessions) {

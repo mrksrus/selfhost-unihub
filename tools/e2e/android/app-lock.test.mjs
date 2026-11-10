@@ -66,7 +66,8 @@ async function turnOnWholeApp(page, { askAgain = LABELS.everyTime, onDeviceLock 
   await openSettings(page);
   const whole = page.getByRole('radio', { name: LABELS.wholeApp });
   if (!await whole.isChecked()) {
-    await touch(page, whole);
+    // The row is the tap target; its input is drawn by the row (RadioRow).
+    await touch(page, page.getByRole('radiogroup', { name: 'Lock' }).getByText(LABELS.wholeApp, { exact: true }));
     await waitForUnlockPrompt();
     await touchFinger(1);
     for (let i = 0; i < 30 && !await whole.isChecked(); i++) await sleep(1000);
@@ -86,7 +87,7 @@ async function turnOff(page) {
   await openSettings(page);
   const off = page.getByRole('radio', { name: LABELS.off });
   if (await off.isChecked()) return;
-  await touch(page, off);
+  await touch(page, page.getByRole('radiogroup', { name: 'Lock' }).getByText(LABELS.off, { exact: true }));
   await waitForUnlockPrompt();
   await touchFinger(1);
 }

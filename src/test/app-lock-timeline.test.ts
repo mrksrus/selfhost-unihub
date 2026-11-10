@@ -81,13 +81,13 @@ function tab(fake: FakeServer, { userId = 'alex', offline = false, signOut = vi.
 const states = (fake: FakeServer) => fake.reportLockState.mock.calls.map(([state]) => state);
 
 /** A person who turned the whole-app lock on with a PIN in this browser earlier. */
-async function lockedBefore(fake: FakeServer, { scope = ['app'] as DeviceSettingValues['app_lock_scope'], relock = '60' as DeviceSettingValues['app_lock_relock_after'], lastActiveAgoMs = 10 * 60_000 } = {}) {
+async function lockedBefore(fake: FakeServer, { scope = ['app'] as DeviceSettingValues['app_lock_scope'], relock = '60' as DeviceSettingValues['app_lock_relock_after'], lastActiveAgoMs = 10 * 60_000, visible = false } = {}) {
   fake.state.values = { ...fake.state.values, app_lock_scope: scope, app_lock_relock_after: relock };
   fake.state.lock = { scope, relock_after: relock, on_device_lock: false, method: 'pin' };
   await savePin('alex', PIN);
   await writeTimelineConfig('alex', { scope, relockAfterMs: Number(relock) * 1000, onDeviceLock: true, method: 'pin' });
   const { updateRecord } = await import('@/lib/app-lock/db');
-  await updateRecord<{ userId: string; lastActiveAt: number | null; hiddenAt: number | null }>('timeline', 'alex', record => record && { ...record, lastActiveAt: Date.now() - lastActiveAgoMs, hiddenAt: Date.now() - lastActiveAgoMs });
+  await updateRecord<{ userId: string; lastActiveAt: number | null; hiddenAt: number | null }>('timeline', 'alex', record => record && { ...record, lastActiveAt: Date.now() - lastActiveAgoMs, hiddenAt: visible ? null : Date.now() - lastActiveAgoMs });
 }
 
 describe('turning the web lock on', () => {
@@ -247,6 +247,23 @@ describe('when the web lock asks', () => {
     one.controller.lockNow();
     await until(() => one.status === 'locked', 'lock now');
     expect(states(fake)).toEqual(['open', 'locked']);
+  });
+
+  it('"Every time UniHub opens" asks in a new tab while another tab is unlocked and visible', async () => {
+    const fake = server();
+    // Another tab noted its heartbeat a moment ago and is still on screen.
+    await lockedBefore(fake, { relock: '0', lastActiveAgoMs: 1000, visible: true });
+    const page = tab(fake);
+    await page.started;
+    expect(page.statuses.filter(status => status !== 'checking')[0]).toBe('locked');
+  });
+
+  it('offline, a start within the relock time still asks before the saved copy opens', async () => {
+    const fake = server();
+    await lockedBefore(fake, { relock: '900', lastActiveAgoMs: 1000, visible: true });
+    const page = tab(fake, { offline: true });
+    await page.started;
+    expect(page.statuses.filter(status => status !== 'checking')[0]).toBe('locked');
   });
 
   it('offline, a cold start asks from this browser’s records before the saved copy opens, without the server', async () => {

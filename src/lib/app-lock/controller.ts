@@ -247,6 +247,10 @@ export class AppLockController {
     // The app decides by its own monotonic clock, and knows a fresh start.
     if (state && state.due !== null) return !state.due;
     if (!timeline) return !pinKept;
+    // "Every time UniHub opens" and a start offline ask at every load: another
+    // tab's recent use is no unlock of this one (the timeline's grace is for
+    // notifications and reloads within the relock time).
+    if (timeline.scope.length && (timeline.relockAfterMs === 0 || this.offline())) return false;
     return isOpen(timeline, this.now());
   }
 

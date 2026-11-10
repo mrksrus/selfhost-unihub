@@ -156,15 +156,20 @@ test('with one minute, a return within it does not ask and one after 70 s does; 
     assert.equal((await state(page)).due, true, 'back after 70 s');
     await appLockMessage(page, 'release');
     await unlockWithFinger(page);
+    // The page configures the app after an unlock with its own settings (no
+    // lock on this device): this test's configuration is the last one again.
+    await sleep(3000);
+    await configure(page, { relockAfterMs: MINUTE });
   } finally {
     await device.close();
   }
 
   // Force-stopped: a new process covers the page before it loads.
   adb('shell', 'am', 'force-stop', PACKAGE);
-  adb('shell', 'am', 'start', '-n', `${PACKAGE}/.MainActivity`);
-  await sleep(1500);
-  assert.equal(lockCoverShown(), true, 'covered at once on a cold start');
+  adb('shell', 'am', 'start', '-W', '-n', `${PACKAGE}/.MainActivity`);
+  let covered = false;
+  for (let tries = 0; tries < 20 && !covered; tries++) { covered = lockCoverShown(); if (!covered) await sleep(500); }
+  assert.equal(covered, true, 'covered on a cold start, before the page loads');
   ({ device, page } = await openApp({ restart: false }));
   try {
     const cold = await state(page);

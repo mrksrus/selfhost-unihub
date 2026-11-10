@@ -99,7 +99,9 @@ any such answer.
   that module too: a mail account's linked calendar is Calendar's. An email's
   details leave out the tasks made from it while Calendar is locked.
 - Administrators are held to the policy on their own devices like everyone
-  else; their way out is changing the policy, which asks for their password.
+  else, the Policies page included: to change or lift a requirement, they
+  turn on the lock on their device first (the set-up stays open), then save
+  the policy with their password.
 - **Open without the lock** are the routes a device needs to comply and to
   stay safe: who is signed in, signing out, the password, the profile and
   two-factor sign-in; the device list and signing a lost device out; this

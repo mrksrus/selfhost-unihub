@@ -35,6 +35,13 @@ export async function acknowledge(names: readonly Person[] = PEOPLE, revision?: 
 /** Sets rules as the admin; everyone has seen them afterwards unless `unseen` names who has not. */
 export async function setPolicy(values: Record<string, unknown>, { unseen = [] as readonly Person[] } = {}) {
   const admin = await signIn('admin');
+  // The administrator's own device is held to the lock they require, the
+  // policies page included: this client reports a whole-app lock, as a page
+  // does once its lock is set up, so it can change the rules back.
+  ok(await admin('PUT', '/api/devices/current/lock', {
+    applied: { scope: ['app'], relock_after: '0', on_device_lock: false, method: 'pin' },
+    capabilities: { lock: 'pin', secure_window: false, recents_hidden: false, device_lock_signal: false },
+  }), 'the admin client reports a lock');
   const saved = ok(await admin<{ revision: number }>('PUT', '/api/admin/policies', { values, current_password: signInPassword }), 'set policy');
   await acknowledge(PEOPLE.filter((name) => !unseen.includes(name)), saved.revision);
 }

@@ -68,23 +68,33 @@ test('"Forgot PIN? Sign out" ends the server session and removes the PIN and the
   await onlyOn(browser, 'desktop', 'phone');
   await acknowledge(['alex']);
   // A session of its own, so signing it out leaves the shared one for the other tests.
-  const own = await signIn('alex', { fresh: true, userAgent: 'UniHub e2e forgot-pin browser' });
-  await browser.setCookies(own.cookie.split('; ').map((pair) => {
+  const userAgent = 'UniHub e2e forgot-pin browser';
+  const useSession = (session: { cookie: string }) => browser.setCookies(session.cookie.split('; ').map((pair) => {
     const at = pair.indexOf('=');
     return { name: pair.slice(0, at), value: pair.slice(at + 1), url: stack.url };
   }));
+  const own = await signIn('alex', { fresh: true, userAgent });
+  await useSession(own);
   await app.open('/settings?section=app-lock');
   await resetLock(browser);
-  await turnOn(app, screen, browser, 'app');
-  await chooseRelock(screen, 'Every time UniHub opens');
-  await browser.reload();
-  await expect(screen.getByRole('heading', 'UniHub is locked')).toBeVisible();
-  await screen.getByRole('button', 'Forgot PIN? Sign out').tap();
-  const dialog = screen.getByRole('alertdialog', 'Sign out of this device?');
-  await expect(dialog).toContainText('Recordings not uploaded yet stay here.');
-  await dialog.getByRole('button', 'Sign out', { exact: true }).tap();
-  await expect(browser).toHaveURL(/\/auth/);
-  expect((await own('GET', '/api/auth/me')).status, 'the server session ended').toBe(401);
-  expect(await pinRecords(browser), 'no PIN is kept').toBe(0);
-  expect((await pageApi(browser, 'GET', '/api/auth/me')).status, 'the page is signed out').toBe(401);
+  try {
+    await turnOn(app, screen, browser, 'app');
+    await chooseRelock(screen, 'Every time UniHub opens');
+    await browser.reload();
+    await expect(screen.getByRole('heading', 'UniHub is locked')).toBeVisible();
+    await screen.getByRole('button', 'Forgot PIN? Sign out').tap();
+    const dialog = screen.getByRole('alertdialog', 'Sign out of this device?');
+    await expect(dialog).toContainText('Recordings not uploaded yet stay here.');
+    await dialog.getByRole('button', 'Sign out', { exact: true }).tap();
+    await expect(browser).toHaveURL(/\/auth/);
+    expect((await own('GET', '/api/auth/me')).status, 'the server session ended').toBe(401);
+    expect(await pinRecords(browser), 'no PIN is kept').toBe(0);
+    expect((await pageApi(browser, 'GET', '/api/auth/me')).status, 'the page is signed out').toBe(401);
+  } finally {
+    // The device keeps its lock after the sign-out, and every later session of
+    // this browser joins it: a new session turns it off for the tests after this.
+    await useSession(await signIn('alex', { fresh: true, userAgent }));
+    await app.open('/settings?section=app-lock');
+    await resetLock(browser);
+  }
 });

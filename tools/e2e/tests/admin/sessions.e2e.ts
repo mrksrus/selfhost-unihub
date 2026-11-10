@@ -6,10 +6,10 @@ import { onlyOn } from '../support/ui.ts';
 // A second device, recognisable in the list as "Firefox on Linux".
 const firefox = 'Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0';
 
-// 0-19 / 23-11: Settings → Security lists the signed-in devices; signing out another
-// device there ends that device's session at once (its next request is refused), while
-// this device stays signed in.
-test('[0-19 23-11] signing out another device from Signed-in devices ends its session', { session: 'blair', tags: ['smoke'] }, async ({ app, screen, browser }) => {
+// 0-19 / 23-11: Settings → Security lists the signed-in devices (Devices since 0.29);
+// signing out another device there, after its confirmation, ends that device's session
+// at once (its next request is refused), while this device stays signed in.
+test('[0-19 23-11] signing out another device from Devices ends its session', { session: 'blair', tags: ['smoke'] }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop', 'android-app');
   // Earlier runs that stopped half-way may have left such a device; this one is the only one.
   const own = await signIn('blair');
@@ -19,13 +19,14 @@ test('[0-19 23-11] signing out another device from Signed-in devices ends its se
   expect((await other('GET', '/api/auth/me')).status).toBe(200);
 
   await app.open('/settings?section=security');
-  await expect(screen.getByText('Signed-in devices', { exact: true })).toBeVisible();
+  await expect(screen.getByRole('heading', 'Devices', { exact: true })).toBeVisible();
   await screen.getByRole('button', 'Sign out Firefox on Linux').tap();
+  await screen.getByRole('alertdialog', /^Sign out Firefox on Linux\?/).getByRole('button', 'Sign out', { exact: true }).tap();
   await expect(screen.getByText('Device signed out', { exact: true }).first()).toBeVisible();
   await expect(screen.getByRole('button', 'Sign out Firefox on Linux')).toHaveCount(0);
 
   expect((await other('GET', '/api/auth/me')).status, 'the signed-out device is refused').toBe(401);
   await app.open('/settings?section=security');
-  await expect(screen.getByText('Signed-in devices', { exact: true })).toBeVisible();
+  await expect(screen.getByRole('heading', 'Devices', { exact: true })).toBeVisible();
   expect(new URL(await browser.url()).pathname, 'this device is still signed in').not.toBe('/auth');
 });
