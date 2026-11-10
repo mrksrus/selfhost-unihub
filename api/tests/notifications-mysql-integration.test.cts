@@ -35,7 +35,7 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   await connection.execute(`CREATE TEMPORARY TABLE sessions (id CHAR(36) PRIMARY KEY, user_id CHAR(36), token VARCHAR(512), expires_at DATETIME, user_agent TEXT, device_id CHAR(36)) ${options}`);
   // A subscription joins its session's device (services/devices.ts, step 26).
   await connection.execute(`CREATE TEMPORARY TABLE devices (id CHAR(36) PRIMARY KEY, user_id CHAR(36), key_hash CHAR(64), kind VARCHAR(16), app_version VARCHAR(32),
-    bridge_level SMALLINT, user_agent VARCHAR(512), created_at DATETIME, last_seen_at DATETIME, UNIQUE KEY (user_id, key_hash)) ${options}`);
+    bridge_level SMALLINT, user_agent VARCHAR(512), lock_applied JSON, open_until DATETIME, created_at DATETIME, last_seen_at DATETIME, UNIQUE KEY (user_id, key_hash)) ${options}`);
   await connection.execute(`CREATE TEMPORARY TABLE user_settings (user_id CHAR(36) NOT NULL,
     setting_key VARCHAR(100) NOT NULL, setting_value JSON, PRIMARY KEY (user_id, setting_key)) ${options}`);
   await connection.execute(`CREATE TEMPORARY TABLE calendar_calendars (id CHAR(36) PRIMARY KEY, is_visible BOOLEAN) ${options}`);
