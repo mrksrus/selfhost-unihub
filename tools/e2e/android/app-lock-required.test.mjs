@@ -44,7 +44,7 @@ after(async () => {
   clearDevicePin();
 });
 
-test('a required whole-app lock asks to turn it on; with the finger, Mail opens', { timeout: 900_000 }, async () => {
+test('[29-08] a required whole-app lock asks to turn it on; with the finger, Mail opens', { timeout: 900_000 }, async () => {
   await setPolicies({ ...OFF, 'app_lock.required': ['app'] });
   const { device, page } = await openApp();
   try {
@@ -64,7 +64,7 @@ test('a required whole-app lock asks to turn it on; with the finger, Mail opens'
   }
 });
 
-test('blocked screenshots make the app\'s window secure, also without a lock; allowed again, it is not', { timeout: 600_000 }, async () => {
+test('[29-12] blocked screenshots make the app\'s window secure, also without a lock; allowed again, it is not', { timeout: 600_000 }, async () => {
   await setPolicies({ ...OFF, 'app_lock.screenshots': 'forbidden' });
   let { device, page } = await openApp();
   try {

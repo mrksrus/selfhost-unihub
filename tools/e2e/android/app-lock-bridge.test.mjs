@@ -223,7 +223,7 @@ test('the file picker is no time away; the screen turning off locks only when as
   }
 });
 
-test('blocked screenshots make the window secure, also with the lock off; the recent-apps picture shows no page', { timeout: 900_000 }, async () => {
+test('[29-06] blocked screenshots make the window secure, also with the lock off; the recent-apps picture shows no page', { timeout: 900_000 }, async () => {
   const { device, page } = await openUnlocked();
   // A full red layer over the page, so a screen capture shows at once whether the page was in it.
   const red = () => page.evaluate(() => {

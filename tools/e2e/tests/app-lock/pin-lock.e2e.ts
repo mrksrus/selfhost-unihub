@@ -5,7 +5,7 @@ import { pageApi, signIn } from '../support/api.ts';
 import { onlyOn } from '../support/ui.ts';
 import { acknowledge, chooseRelock, hidePage, OTHER_PIN, PIN, pinRecords, resetLock, showPage, turnOn, unlockWith } from './app-lock-helpers.ts';
 
-// 0.29 app lock on the web (rows 29-01 and 29-02): a UniHub PIN kept in
+// 0.29 app lock on the web (rows 29-01 and 29-04): a UniHub PIN kept in
 // this browser locks the whole app; "Every time UniHub opens" asks at every
 // start and after every hide; a longer time waits that long; wrong PINs are
 // counted; "Forgot PIN? Sign out" ends the server session and removes the PIN.
@@ -41,7 +41,7 @@ test('[29-01] a PIN for the whole app: the next start asks, wrong PINs say so, t
   }
 });
 
-test('[29-01] fifteen minutes in the background: back after two does not ask, after sixteen it does', { session: 'alex', timeout: 300_000 }, async ({ app, screen, browser }) => {
+test('[29-04] fifteen minutes in the background: back after two does not ask, after sixteen it does', { session: 'alex', timeout: 300_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop');
   await acknowledge(['alex']);
   await app.open('/settings?section=app-lock');
@@ -64,7 +64,7 @@ test('[29-01] fifteen minutes in the background: back after two does not ask, af
   }
 });
 
-test('[29-02] "Forgot PIN? Sign out" ends the server session and removes the PIN and the offline copy', { session: 'alex', timeout: 300_000 }, async ({ app, screen, browser }) => {
+test('"Forgot PIN? Sign out" ends the server session and removes the PIN and the offline copy', { session: 'alex', timeout: 300_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop', 'phone');
   await acknowledge(['alex']);
   // A session of its own, so signing it out leaves the shared one for the other tests.

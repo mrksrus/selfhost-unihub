@@ -4,13 +4,13 @@ import { ok, pageApi, signIn } from '../support/api.ts';
 import { onlyOn } from '../support/ui.ts';
 import { acknowledge } from './app-lock-helpers.ts';
 
-// 0.29 devices (F5, row 29-04): another signed-in browser of alex appears
+// 0.29 devices (F5): another signed-in browser of alex appears
 // under Settings → Security → Devices; Sign out ends its session at once;
 // blair sees only their own devices.
 
 interface Device { id: string; current: boolean; user_agent: string | null }
 
-test('[29-04] a second browser of alex is listed, can be signed out, and is never blair\'s', { session: 'alex', timeout: 240_000 }, async ({ app, screen, browser }) => {
+test('a second browser of alex is listed, can be signed out, and is never blair\'s', { session: 'alex', timeout: 240_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop', 'phone');
   await acknowledge(['alex']);
   const second = await signIn('alex', { fresh: true, userAgent: 'Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0 e2e-second' });

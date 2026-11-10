@@ -98,7 +98,7 @@ async function openOpen() {
   return opened;
 }
 
-test('the whole-app lock asks every time UniHub opens; an unknown finger does not open it, finger 1 and the phone\'s PIN do', { timeout: 900_000 }, async () => {
+test('[29-01] the whole-app lock asks every time UniHub opens; an unknown finger does not open it, finger 1 and the phone\'s PIN do', { timeout: 900_000 }, async () => {
   const { device, page } = await openOpen();
   try {
     await turnOnWholeApp(page, { askAgain: LABELS.everyTime });
@@ -121,7 +121,7 @@ test('the whole-app lock asks every time UniHub opens; an unknown finger does no
   }
 });
 
-test('with one minute, back within 30 s is open and after 70 s locked; a cold start asks', { timeout: 900_000 }, async () => {
+test('[29-04] with one minute, back within 30 s is open and after 70 s locked; a cold start asks', { timeout: 900_000 }, async () => {
   let { device, page } = await openOpen();
   try {
     await turnOnWholeApp(page, { askAgain: LABELS.oneMinute });
@@ -141,7 +141,7 @@ test('with one minute, back within 30 s is open and after 70 s locked; a cold st
   }
 });
 
-test('"Also when the phone is locked" asks after the phone locked; the file picker does not', { timeout: 900_000 }, async () => {
+test('[29-04] "Also when the phone is locked" asks after the phone locked; the file picker does not', { timeout: 900_000 }, async () => {
   const { device, page } = await openOpen();
   try {
     await turnOnWholeApp(page, { askAgain: LABELS.fifteenMinutes, onDeviceLock: true });

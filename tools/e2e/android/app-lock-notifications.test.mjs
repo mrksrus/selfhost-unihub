@@ -56,7 +56,7 @@ after(() => {
   clearDevicePin();
 });
 
-test('with Mail locked, a new mail shows only "New Email"; the tap asks first, then opens it; other notifications keep their text', { timeout: 1_200_000 }, async () => {
+test('[29-05] with Mail locked, a new mail shows only "New Email"; the tap asks first, then opens it; other notifications keep their text', { timeout: 1_200_000 }, async () => {
   const api = await stackSession();
   const { device, page } = await openApp();
   try {
