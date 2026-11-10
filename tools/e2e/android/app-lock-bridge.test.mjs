@@ -9,8 +9,8 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  PACKAGE, adb, answerPromptWithPin, appLockMessage, clearDevicePin, dismissFirstRunOffers, enrollFingerprint, lockCoverShown, openApp, screenShare,
-  setDevicePin, sleep, sleepScreen, touch, touchFinger, unlockKeyguard, unlockPromptShown, waitForUnlockPrompt, windowIsSecure,
+  PACKAGE, adb, answerPromptWithPin, appLockMessage, bridgeMessage, clearDevicePin, dismissFirstRunOffers, enrollFingerprint, lockCoverShown, openApp, screenShare,
+  setDevicePin, shownNotifications, sleep, sleepScreen, stackSession, touch, touchFinger, unlockKeyguard, unlockPromptShown, waitForUnlockPrompt, windowIsSecure,
 } from '../support/android.mjs';
 
 const sdk = Number(adb('shell', 'getprop', 'ro.build.version.sdk').trim());
@@ -40,7 +40,7 @@ async function leaveAndReturn(awayMs) {
 async function state(page) {
   const reply = await appLockMessage(page, 'state');
   assert.equal(reply.ok, true, JSON.stringify(reply));
-  return reply.state;
+  return reply;
 }
 
 /** Starts `authenticate` and returns its pending reply. */
@@ -64,7 +64,7 @@ async function unlockWithFinger(page) {
  */
 async function openUnlocked() {
   const opened = await openApp();
-  if ((await state(opened.page)).locked) {
+  if ((await state(opened.page)).due) {
     await appLockMessage(opened.page, 'release');
     await unlockWithFinger(opened.page);
     // The app's own questions waited for the cover.
@@ -89,13 +89,13 @@ test('the app reports the phone\'s unlock, and with "every time" a return locks 
 
     // Turning the lock on does not lock: the person has just confirmed it.
     await configure(page, { relockAfterMs: 0 });
-    assert.equal((await state(page)).locked, false);
+    assert.equal((await state(page)).due, false);
     assert.equal(lockCoverShown(), false);
 
     await leaveAndReturn(2000);
     assert.equal(lockCoverShown(), true, 'the cover hides the page');
     const locked = await state(page);
-    assert.equal(locked.locked, true);
+    assert.equal(locked.due, true);
     assert.equal(locked.covered, true);
     assert.ok(locked.hiddenForMs >= 1500, JSON.stringify(locked));
     assert.deepEqual(await page.evaluate(() => window.__appLockEvents), ['locked'], 'the page hears that the app locked');
@@ -103,7 +103,7 @@ test('the app reports the phone\'s unlock, and with "every time" a return locks 
     // The page shows its lock screen, then asks for the unlock.
     await appLockMessage(page, 'release');
     assert.equal(lockCoverShown(), false);
-    assert.equal((await state(page)).locked, true, 'released for the lock screen, still locked');
+    assert.equal((await state(page)).due, true, 'released for the lock screen, still locked');
 
     // A finger the phone does not know: the prompt stays, nothing unlocks.
     const pending = authenticate(page);
@@ -111,17 +111,17 @@ test('the app reports the phone\'s unlock, and with "every time" a return locks 
     await touchFinger(2);
     await sleep(3000);
     assert.equal(unlockPromptShown(), true, 'the prompt stays after an unknown finger');
-    assert.equal((await state(page)).locked, true);
+    assert.equal((await state(page)).due, true);
     await touchFinger(1);
     assert.equal((await pending).result, 'ok');
     const open = await state(page);
-    assert.equal(open.locked, false);
+    assert.equal(open.due, false);
     assert.equal(open.freshProcess, false);
     assert.ok(Math.abs(open.authenticatedAt - Date.now()) < 60_000, `authenticatedAt is the phone's wall clock: ${open.authenticatedAt}`);
 
     // The phone's PIN through "Use PIN".
     await leaveAndReturn(1000);
-    assert.equal((await state(page)).locked, true);
+    assert.equal((await state(page)).due, true);
     await appLockMessage(page, 'release');
     const byPin = authenticate(page);
     await waitForUnlockPrompt();
@@ -135,7 +135,7 @@ test('the app reports the phone\'s unlock, and with "every time" a return locks 
     await waitForUnlockPrompt();
     adb('shell', 'input', 'keyevent', 'KEYCODE_BACK');
     assert.equal((await cancelled).result, 'cancelled');
-    assert.equal((await state(page)).locked, true);
+    assert.equal((await state(page)).due, true);
     await unlockWithFinger(page);
   } finally {
     await device.close();
@@ -148,11 +148,11 @@ test('with one minute, a return within it does not ask and one after 70 s does; 
     await configure(page, { relockAfterMs: MINUTE });
     await leaveAndReturn(10_000);
     assert.equal(lockCoverShown(), false);
-    assert.equal((await state(page)).locked, false, 'back after 10 s');
+    assert.equal((await state(page)).due, false, 'back after 10 s');
     // The app measures with the monotonic clock, so this needs real waiting.
     await leaveAndReturn(70_000);
     assert.equal(lockCoverShown(), true);
-    assert.equal((await state(page)).locked, true, 'back after 70 s');
+    assert.equal((await state(page)).due, true, 'back after 70 s');
     await appLockMessage(page, 'release');
     await unlockWithFinger(page);
   } finally {
@@ -167,7 +167,7 @@ test('with one minute, a return within it does not ask and one after 70 s does; 
   ({ device, page } = await openApp({ restart: false }));
   try {
     const cold = await state(page);
-    assert.equal(cold.locked, true);
+    assert.equal(cold.due, true);
     assert.equal(cold.freshProcess, true);
     await appLockMessage(page, 'release');
     await unlockWithFinger(page);
@@ -197,7 +197,7 @@ test('the file picker is no time away; the screen turning off locks only when as
     adb('shell', 'input', 'keyevent', 'KEYCODE_BACK');
     await sleep(2500);
     assert.equal(lockCoverShown(), false, 'back from the picker, with "every time"');
-    assert.equal((await state(page)).locked, false);
+    assert.equal((await state(page)).due, false);
     await page.evaluate(() => document.getElementById('app-lock-picker')?.remove());
 
     // The phone locked and unlocked within 15 minutes: asks only with onDeviceLock.
@@ -206,14 +206,14 @@ test('the file picker is no time away; the screen turning off locks only when as
     await unlockKeyguard();
     await sleep(2000);
     const without = await state(page);
-    assert.equal(without.locked, false, JSON.stringify(without));
+    assert.equal(without.due, false, JSON.stringify(without));
     assert.equal(without.deviceLockedSinceHidden, true);
 
     await configure(page, { relockAfterMs: 15 * MINUTE, onDeviceLock: true });
     await sleepScreen();
     await unlockKeyguard({ finger: 1 });
     await sleep(2000);
-    assert.equal((await state(page)).locked, true, 'asked after the phone was locked');
+    assert.equal((await state(page)).due, true, 'asked after the phone was locked');
     assert.equal(lockCoverShown(), true);
     await appLockMessage(page, 'release');
     await unlockWithFinger(page);
@@ -262,13 +262,60 @@ test('blocked screenshots make the window secure, also with the lock off; the re
       assert.ok(shown.share > 0.05, `without the lock the recent-apps card shows the page: ${JSON.stringify(shown)}`);
       assert.equal(hidden.share, 0, `with the lock it does not: ${JSON.stringify(hidden)}`);
       await leaveAndReturn(500);
-      if ((await state(page)).locked) {
+      if ((await state(page)).due) {
         await appLockMessage(page, 'release');
         await unlockWithFinger(page);
       }
     }
   } finally {
     await page.evaluate(() => document.getElementById('app-lock-red')?.remove()).catch(() => {});
+    await device.close();
+  }
+});
+
+test('a notification of a locked app shows only its generic text; unlocked, its text', { timeout: 900_000 }, async () => {
+  // Notifications on without Android's questions: allowed, and allowed in the background.
+  if (sdk >= 33) adb('shell', 'pm', 'grant', PACKAGE, 'android.permission.POST_NOTIFICATIONS');
+  adb('shell', 'cmd', 'deviceidle', 'whitelist', `+${PACKAGE}`);
+  const api = await stackSession();
+  const { device, page } = await openUnlocked();
+  /** Asks the server for its test notification ("UniHub notifications are working", no module) and waits for it on the phone. */
+  async function testNotification(endpoint, arrived) {
+    const sent = await api('POST', '/api/notifications/test', { endpoint });
+    assert.equal(sent.status, 200, JSON.stringify(sent.data));
+    for (let i = 0; i < 60; i++) {
+      // Not the connection's own ongoing notification.
+      const shown = shownNotifications().filter(n => n.title !== '' && !/^Connected to/.test(n.title));
+      if (shown.some(arrived)) return shown;
+      await sleep(2000);
+    }
+    throw new Error(`no such notification arrived: ${JSON.stringify(shownNotifications())}`);
+  }
+  try {
+    const enabled = await bridgeMessage(page, 'notifications', 'enable', {}, { timeoutMs: 120_000 });
+    assert.equal(enabled.ok, true, JSON.stringify(enabled));
+    const endpoint = enabled.state.endpoint;
+
+    // The whole app locked, the app in the background: what any notification may show.
+    await configure(page, { scope: ['app'], relockAfterMs: 0 });
+    adb('shell', 'input', 'keyevent', 'KEYCODE_HOME');
+    await sleep(2000);
+    const locked = await testNotification(endpoint, () => true);
+    assert.deepEqual(locked.map(n => n.title), ['New notification'], JSON.stringify(locked));
+    assert.equal(locked.some(n => /working|through the server/.test(`${n.title} ${n.text}`)), false, 'no content while locked');
+
+    // Unlocked and the lock off: the notification says what it is. The server sends one test per 30 s.
+    await leaveAndReturn(500);
+    if ((await state(page)).due) {
+      await appLockMessage(page, 'release');
+      await unlockWithFinger(page);
+    }
+    await configure(page, { scope: [] });
+    await sleep(31_000);
+    const open = await testNotification(endpoint, n => n.title === 'UniHub notifications are working');
+    assert.ok(open.some(n => n.text === 'This notification was sent through the server to this device.'), JSON.stringify(open));
+  } finally {
+    await bridgeMessage(page, 'notifications', 'disable').catch(() => {});
     await device.close();
   }
 });

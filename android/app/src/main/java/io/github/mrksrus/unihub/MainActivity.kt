@@ -862,7 +862,7 @@ class MainActivity : Activity() {
                     if (!AppLock.on) hideCover()
                     reply(ok().put("capabilities", BiometricAuth.capabilities()))
                 }
-                "state" -> reply(ok().put("state", AppLock.state().put("covered", cover != null)))
+                "state" -> reply(AppLock.state(ok()).put("covered", cover != null))
                 // The page shows nothing locked: its own lock screen, or what it unlocked (`unlocked`, also with its own PIN).
                 "release" -> {
                     if (data.optBoolean("unlocked", false)) AppLock.unlocked()

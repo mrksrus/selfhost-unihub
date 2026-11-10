@@ -141,13 +141,18 @@ object AppLock {
     @Synchronized
     fun lockNow() = clock.lockNow()
 
-    /** The page's `state` answer. Times are the phone's wall clock, for the page; the app measures with the monotonic one. */
+    /**
+     * The page's `state` answer. `due`: the lock is due and no unlock came
+     * since (a new process, a return that was due, the page's `lock`). Times
+     * are the phone's wall clock, for the page; the app measures with the
+     * monotonic one.
+     */
     @Synchronized
-    fun state(): JSONObject {
+    fun state(into: JSONObject): JSONObject {
         val now = now()
         val wall = System.currentTimeMillis()
-        return JSONObject()
-            .put("locked", clock.locked)
+        return into
+            .put("due", clock.locked)
             .put("freshProcess", clock.freshProcess)
             .put("hiddenForMs", clock.lastAwayMs ?: JSONObject.NULL)
             .put("deviceLockedSinceHidden", clock.lastScreenOff)

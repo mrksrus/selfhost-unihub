@@ -451,28 +451,57 @@ export function windowIsSecure(pkg = PACKAGE) {
 }
 
 /**
- * Sends the page's `appLock` bridge message straight from the test (as
- * src/lib/platform.ts does) and resolves with the app's reply. The page keeps
- * the app's unsolicited events in `window.__appLockEvents`.
+ * Sends a bridge message straight from the test, as src/lib/platform.ts does
+ * (`type` with an `id`), and resolves with the app's reply. The page keeps the
+ * app's unsolicited app lock events in `window.__appLockEvents`.
  */
-export async function appLockMessage(page, action, fields = {}, { timeoutMs = 60_000 } = {}) {
-  return page.evaluate(({ action, fields, timeoutMs }) => new Promise((resolve, reject) => {
+export async function bridgeMessage(page, type, action, fields = {}, { timeoutMs = 60_000 } = {}) {
+  return page.evaluate(({ type, action, fields, timeoutMs }) => new Promise((resolve, reject) => {
     const bridge = window.UniHubAndroid;
     if (!bridge) { reject(new Error('no UniHubAndroid bridge in this WebView')); return; }
-    if (!window.__appLockListening) {
-      window.__appLockListening = true;
+    if (!window.__bridgeListening) {
+      window.__bridgeListening = true;
       window.__appLockEvents = [];
-      window.__appLockReplies = new Map();
+      window.__bridgeReplies = new Map();
       bridge.addEventListener('message', event => {
         let reply;
         try { reply = JSON.parse(event.data); } catch { return; }
         if (reply?.type === 'appLock' && reply.event) window.__appLockEvents.push(reply.event);
-        else if (reply?.id) window.__appLockReplies.get(reply.id)?.(reply);
+        else if (reply?.id) window.__bridgeReplies.get(reply.id)?.(reply);
       });
     }
     const id = crypto.randomUUID();
-    const timer = setTimeout(() => { window.__appLockReplies.delete(id); reject(new Error(`no reply to appLock ${action}`)); }, timeoutMs);
-    window.__appLockReplies.set(id, reply => { clearTimeout(timer); window.__appLockReplies.delete(id); resolve(reply); });
-    bridge.postMessage(JSON.stringify({ type: 'appLock', id, action, ...fields }));
-  }), { action, fields, timeoutMs });
+    const timer = setTimeout(() => { window.__bridgeReplies.delete(id); reject(new Error(`no reply to ${type} ${action}`)); }, timeoutMs);
+    window.__bridgeReplies.set(id, reply => { clearTimeout(timer); window.__bridgeReplies.delete(id); resolve(reply); });
+    bridge.postMessage(JSON.stringify({ type, id, action, ...fields }));
+  }), { type, action, fields, timeoutMs });
+}
+
+/** The page's `appLock` bridge message (bridge level 3). */
+export const appLockMessage = (page, action, fields = {}, options = {}) => bridgeMessage(page, 'appLock', action, fields, options);
+
+/** The app's shown notifications as Android lists them, unredacted: title and text per notification. */
+export function shownNotifications(pkg = PACKAGE) {
+  return adb('shell', 'dumpsys', 'notification', '--noredact').split(/\n\s*NotificationRecord\(/).slice(1)
+    .filter(record => record.includes(`pkg=${pkg}`))
+    .map(record => ({
+      title: /android\.title=\S+ \((.*)\)$/m.exec(record)?.[1] ?? '',
+      text: /android\.text=\S+ \((.*)\)$/m.exec(record)?.[1] ?? '',
+    }));
+}
+
+/** A session of a seeded person against the stack's API, from the test itself. */
+export async function stackSession(email = 'admin@example.com', password = 'local-dev-admin-password') {
+  const base = process.env.UNIHUB_E2E_URL ?? `http://127.0.0.1:${8087 + Number(process.env.UNIHUB_E2E_INSTANCE ?? '1')}`;
+  const response = await fetch(`${base}/api/auth/signin`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+  const body = await response.json();
+  if (!response.ok) throw new Error(`sign-in as ${email}: ${response.status}`);
+  const cookie = response.headers.getSetCookie().map(c => c.split(';')[0]).join('; ');
+  return async (method, path, data) => {
+    const res = await fetch(`${base}${path}`, { method, headers: { Cookie: cookie, 'X-CSRF-Token': body.csrfToken,
+      ...(data !== undefined ? { 'Content-Type': 'application/json' } : {}) }, body: data === undefined ? undefined : JSON.stringify(data) });
+    const text = await res.text();
+    let json; try { json = JSON.parse(text); } catch { json = text; }
+    return { status: res.status, data: json };
+  };
 }
