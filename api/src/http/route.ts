@@ -15,7 +15,7 @@ type RouteAuth = 'public' | 'user' | 'admin';
 type RouteBodyKind = 'json' | 'backup-upload' | 'upload' | 'none';
 type RouteCsrf = 'token' | 'background-header' | 'none';
 type RouteResponseMode = 'json' | 'stream';
-type RouteAppLock = 'exempt';
+type RouteAppLock = 'exempt' | 'background-sync';
 
 // The body a route with kind 'upload' receives: the raw request body, spooled
 // by the boundary to a private file under the uploads root and bounded by the
@@ -71,12 +71,21 @@ interface RoutePolicy {
   requires?: readonly PolicyDeclaration[];
   // The app lock (0.29, F5): a device that does not report the lock the
   // person's policies require is refused the locked parts (403
-  // APP_LOCK_REQUIRED): a route of a required module, and while the whole
-  // app is required every route. 'exempt' keeps the route open to such a
-  // device: what it needs to set the lock up, sign out, keep notifications
-  // without content and finish work that exists only on the device. Signed-in
-  // routes only; the route policy test pins the list.
+  // APP_LOCK_REQUIRED): a route of a required module, a route of no module
+  // while anything is required (it can show several modules' data), and
+  // while the whole app is required every route. 'exempt' keeps the route
+  // open to such a device: what it needs to set the lock up, sign out, keep
+  // notifications without content and finish work that exists only on the
+  // device. 'background-sync' keeps it open only to a request with the
+  // X-Background-Sync header: the Android app's own contacts sync, whose
+  // older versions read any 403 but MODULE_DISABLED as a refused change;
+  // the page never sends it there. Signed-in routes only; the route policy
+  // test pins both lists.
   appLock?: RouteAppLock;
+  // Further modules whose data the route shows or changes besides its own
+  // (a mail account's linked calendar under /api/mail/): the app lock gate
+  // refuses it while any of them is required, as it does for its module.
+  appLockModules?: readonly string[];
 }
 // Method signatures so a handler declared with a narrower request or body
 // type (`body: Input`) is accepted; the body stays untrusted at dispatch.
@@ -102,6 +111,7 @@ const AUTH_VALUES = new Set<string>(['public', 'user', 'admin']);
 const BODY_KINDS = new Set<string>(['json', 'backup-upload', 'upload', 'none']);
 const CSRF_VALUES = new Set<string>(['token', 'background-header', 'none']);
 const RESPONSE_MODES = new Set<string>(['json', 'stream']);
+const APP_LOCK_VALUES = new Set<string>(['exempt', 'background-sync']);
 const POLICY_FIELDS = ['destructive', 'requires'] as const;
 const isQueryValue = (value: unknown) => typeof value === 'string'
   || (Array.isArray(value) && value.length > 0 && value.every(item => typeof item === 'string'));
@@ -135,8 +145,12 @@ function defineRoutes<T extends RouteTable>(table: T): T {
     }
     if (spec.csrf !== undefined && !CSRF_VALUES.has(spec.csrf)) invalid(key, `unknown csrf ${String(spec.csrf)}`);
     if (spec.response !== undefined && !RESPONSE_MODES.has(spec.response)) invalid(key, `unknown response ${String(spec.response)}`);
-    if (spec.appLock !== undefined && spec.appLock !== 'exempt') invalid(key, `unknown appLock ${String(spec.appLock)}`);
+    if (spec.appLock !== undefined && !APP_LOCK_VALUES.has(spec.appLock)) invalid(key, `unknown appLock ${String(spec.appLock)}`);
     if (spec.appLock !== undefined && spec.auth === 'public') invalid(key, 'only a signed-in route declares appLock');
+    if (spec.appLockModules !== undefined) {
+      if (!Array.isArray(spec.appLockModules) || !spec.appLockModules.length || !spec.appLockModules.every(module => typeof module === 'string' && module)) invalid(key, 'appLockModules lists module ids');
+      if (spec.auth === 'public') invalid(key, 'only a signed-in route declares appLockModules');
+    }
     for (const field of POLICY_FIELDS) {
       const declarations = spec[field];
       if (declarations === undefined) continue;
@@ -200,6 +214,7 @@ function assertRouteTable(table: RouteTable, { moduleIds, sections = [], restore
     if (MUTATING_METHODS.has(method) && spec.restoreSection === undefined && !restoreExemptPrefixes.some(prefix => path.startsWith(prefix))) {
       invalid(key, 'a mutating route must declare restoreSection (a section, "*" or null)');
     }
+    for (const module of spec.appLockModules ?? []) if (!moduleIds.includes(module)) invalid(key, `unknown module ${module} in appLockModules`);
     if (policyKeys) {
       for (const entry of [...spec.destructive ?? [], ...spec.requires ?? []]) {
         const policy = typeof entry === 'string' ? entry : entry.policy;

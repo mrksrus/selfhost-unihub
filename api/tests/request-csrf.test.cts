@@ -35,6 +35,8 @@ function harness(t: import('node:test').TestContext) {
     if (sql.startsWith('INSERT INTO sessions')) { sessions.add(values[1]); return [{ affectedRows: 1 }]; }
     if (sql.startsWith('DELETE FROM sessions WHERE token')) { sessions.delete(values[0]); return [{ affectedRows: 1 }]; }
     if (sql.includes('FROM users WHERE')) return [[user]];
+    // No policies, so no app lock is required.
+    if (sql.includes('FROM setting_policies')) return [[]];
     return [{ affectedRows: 0 }];
   } };
   // A sign-in binds its device and creates its session in one transaction.

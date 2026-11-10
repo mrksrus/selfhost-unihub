@@ -57,7 +57,7 @@ function eventUpdateHarness(t: import('node:test').TestContext, execute: (sql: s
   // The item's lock (calendar-move-state.ts) is always free here, and the
   // module and restore checks made again under it find the defaults.
   const answer = (sql: string, params: FixtureValue) => /^SELECT (GET|RELEASE|IS_USED)_LOCK\(/.test(sql) ? Promise.resolve([[{ acquired: 1, session: 7, holder: 7 }]])
-    : /FROM (user_settings|backup_restore_jobs)\b/.test(sql) ? Promise.resolve([[]]) : execute(sql, params);
+    : /FROM (user_settings|backup_restore_jobs|setting_policies)\b/.test(sql) ? Promise.resolve([[]]) : execute(sql, params);
   const connection = { execute: answer, async beginTransaction() {}, async commit() {}, async rollback() {}, release() {} };
   setDb({ execute: answer, getConnection: async () => connection } as FixtureValue);
   const { handleRequest } = require(paths[0]) as typeof import('../src/request-handler');

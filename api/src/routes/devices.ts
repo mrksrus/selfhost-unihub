@@ -13,7 +13,7 @@ type Request = RouteRequest & { url: string; params: Record<string, string> };
 // the current device stay open to a device without the app lock its person's
 // policies require: they are how it reports and sets the lock up.
 export = defineRoutes({
-  'GET /api/devices': { auth: 'user', module: null, handler: async (req: Request, userId: string) => {
+  'GET /api/devices': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string) => {
     return { devices: await listDevices(userId, getAuthTokenFromRequest(req)) } satisfies DevicesResponse;
   } },
   'GET /api/devices/current': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string) => {
@@ -30,7 +30,7 @@ export = defineRoutes({
   } },
   // Signs one of the person's other devices out; the current one signs out
   // with POST /api/auth/signout.
-  'DELETE /api/devices/:id': { auth: 'user', module: null, restoreSection: null, handler: async (req: Request, userId: string) => {
+  'DELETE /api/devices/:id': { auth: 'user', module: null, appLock: 'exempt', restoreSection: null, handler: async (req: Request, userId: string) => {
     return { ...await removeDevice(userId, getAuthTokenFromRequest(req), req.params.id, req) } satisfies DeviceRemovedResponse;
   } },
 });

@@ -32,7 +32,7 @@ const readRoute = { auth: 'user' as const, module: 'contacts' };
 const writeRoute = { ...readRoute, restoreSection: 'contacts' };
 
 export = defineRoutes({
-  'GET /api/contacts/:id/photo': { ...readRoute, handler: async (req: Request, userId: string) => {
+  'GET /api/contacts/:id/photo': { ...readRoute, appLock: 'background-sync', handler: async (req: Request, userId: string) => {
     try {
       const size = new URL(req.url, 'http://unihub.invalid').searchParams.get('size') || 'full';
       if (size !== 'full' && size !== 'thumb') return { error: 'size must be full or thumb', status: 400, code: 'INVALID_INPUT' };
@@ -46,7 +46,7 @@ export = defineRoutes({
     } catch (error) { return failed(error, 'Failed to load contact photo'); }
   } },
 
-  'PUT /api/contacts/:id/photo': { ...writeRoute, body: { kind: 'upload', limit: CONTACT_PHOTO_MAX_BYTES }, handler: async (req: Request, userId: string, body: unknown) => {
+  'PUT /api/contacts/:id/photo': { ...writeRoute, appLock: 'background-sync', body: { kind: 'upload', limit: CONTACT_PHOTO_MAX_BYTES }, handler: async (req: Request, userId: string, body: unknown) => {
     try {
       // The Android app's sync says ?source=android; anything else is an upload.
       const source = new URL(req.url, 'http://unihub.invalid').searchParams.get('source') === 'android' ? 'android' : 'upload';
@@ -56,7 +56,7 @@ export = defineRoutes({
     } catch (error) { return failed(error, 'Failed to save contact photo'); }
   } },
 
-  'DELETE /api/contacts/:id/photo': { ...writeRoute, destructive: ['bin.delete'], handler: async (req: Request, userId: string) => {
+  'DELETE /api/contacts/:id/photo': { ...writeRoute, appLock: 'background-sync', destructive: ['bin.delete'], handler: async (req: Request, userId: string) => {
     try {
       await removeContactPhoto(userId, req.params.id);
       const answer: ContactResponse = { contact: await getContact(userId, req.params.id) };
