@@ -132,9 +132,12 @@ pattern); one that differs answers `409 FOLDER_CHANGED` and nothing is sent to
 any server. Each copy is read again right before its own IMAP DELETE. A copy
 counts as deleted only on the server's word: DELETE answered OK, or the
 `NONEXISTENT` response code to its STATUS (no DELETE is sent) or its DELETE. A
-"does not exist" reply without the code is no proof: nothing is settled, the
-answer is `409 FOLDER_CHANGED` ("refresh the folders and try again"), and a
-complete folder listing retires the mailbox once the server stops listing it.
+"does not exist" reply without the code is no proof: nothing is settled, and
+the answer is `409 FOLDER_CHANGED` telling the person to sync the account,
+refresh the folders and try again. This is deliberate for servers that never
+send the code: such a folder is not settled by a delete from UniHub; the next
+complete folder listing retires its mailbox once the server stops listing it,
+and its mail leaves the folder views then (nothing is deleted).
 A login or connection failure, or a refusal, changes nothing. Only then do
 local rows change, in one transaction, and only for a mailbox row that still
 has the deleted generation: a folder created again and read by a sync in

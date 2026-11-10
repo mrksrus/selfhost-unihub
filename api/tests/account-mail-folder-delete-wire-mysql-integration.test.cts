@@ -270,7 +270,7 @@ test('deleting a mail folder at the provider deletes only the copy shown, of the
     imap.commands.length = 0;
     const refused = await remove(owner, 'notes', await shown(owner, 'notes'), 409);
     assert.equal(refused.code, 'FOLDER_CHANGED');
-    assert.match(refused.error, /Refresh the folders and try again/);
+    assert.match(refused.error, /does not exist, but without confirming it.*Sync the account, then refresh the folders and try again/);
     assert.deepEqual(imap.sent('owner-mail@example.test'), ['STATUS Notes (UIDVALIDITY)', 'STATUS Notes (UIDVALIDITY)', 'DELETE Notes'], 'no LIST taken as proof');
     assert.equal(await folderExists(notes.id), 1);
     assert.equal(await mailExists(notes.mail), 1);

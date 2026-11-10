@@ -266,7 +266,11 @@ async function deleteNow({ userId, slug, server = false, copies }: DeleteRequest
     // NONEXISTENT code is no proof the copy went: refresh and try again.
     const failed = (box: RemoteBox, error: unknown, doing: string) => {
       log.warn('MAIL', `The mail server did not ${doing} a folder`, undefined, error);
-      if (missingWording(error)) { outcomes.set(box, 'changed'); return changed([addressOf(box)]); }
+      if (missingWording(error)) {
+        outcomes.set(box, 'changed');
+        return conflict('FOLDER_CHANGED', `The mail server (${addressOf(box)}) answered that this folder does not exist, but without confirming it, so nothing was deleted there. `
+          + 'Sync the account, then refresh the folders and try again. If the folder is gone at the provider, its mail leaves the folder at that sync.', { changed_on: [addressOf(box)] });
+      }
       outcomes.set(box, 'failed');
       return serverFailure(`Could not ${doing} the folder on the mail server (${addressOf(box)}).`);
     };
