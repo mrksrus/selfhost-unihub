@@ -121,6 +121,26 @@ function appLockShortfall(applied: AppLockApplied | null, requirement: Pick<AppL
   return requirement.max_background !== null && Number(applied.relock_after) > Number(requirement.max_background);
 }
 
+/**
+ * The request boundary's app lock gate: what the person's policies require
+ * when the session's device falls short of it for a route of `modules`, or
+ * null when the route may go on. A module's route is locked while one of its
+ * modules or the whole app is required; a route of no module (search, the
+ * offline copy, backups, the bin, the start page's counts, the admin pages)
+ * can show several modules' data, so it is locked while anything is. A
+ * session without a device, or with one that is not the person's, reports
+ * no lock. One policy read, and a device read only while something is required.
+ */
+async function appLockRefusal(userId: string, deviceId: string | null, modules: readonly string[]): Promise<AppLockRequiredDetails | null> {
+  const requirement = await appLockRequirementFor(userId);
+  const { required } = requirement;
+  if (!required.length) return null;
+  if (modules.length && !required.includes('app') && !modules.some(module => required.includes(module as AppLockArea))) return null;
+  const device = deviceId ? (await deviceLockFor([deviceId])).get(deviceId) : undefined;
+  const applied = device && device.user_id === String(userId) ? device.lock_applied : null;
+  return appLockShortfall(applied, requirement) ? requirement : null;
+}
+
 // A DATETIME as the API answers it; the pool reads DATETIME as UTC.
 function utcIso(value: unknown): string {
   const date = value instanceof Date ? value : new Date(`${String(value).replace(' ', 'T')}Z`);
@@ -433,7 +453,7 @@ async function pruneIdleDevices(executor: SqlExecutor = db): Promise<number> {
 }
 
 export {
-  deviceFromUserAgent, parseLockApplied, deviceForSession, deviceLockFor, lockCovers, appLockShortfall,
+  deviceFromUserAgent, parseLockApplied, deviceForSession, deviceLockFor, lockCovers, appLockShortfall, appLockRefusal,
   deviceKeyHash, deviceClaim, bindDevice, currentDevice, adoptDeviceKey, listDevices, describeCurrentDevice,
   reportDeviceLock, reportLockState, removeDevice, touchDevice, pruneIdleDevices,
 };
