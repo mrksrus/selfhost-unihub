@@ -255,3 +255,39 @@ export async function sendViaProvider(login: { host: string; port: number; user:
     transport.close();
   }
 }
+
+/** Runs one task on a connection to the stack mailbox, as another mail program would. */
+async function onProvider<T>(mailbox: string, task: (client: any) => Promise<T>): Promise<T> {
+  const login = stackImap(mailbox);
+  const client = new ImapFlow({ host: login.host, port: login.port, secure: true, logger: false,
+    auth: { user: login.user, pass: login.pass }, tls: { ca: login.ca } });
+  await client.connect();
+  try {
+    return await task(client);
+  } finally {
+    await client.logout().catch(() => undefined);
+  }
+}
+
+/** Creates a folder at the stack provider, with one synthetic message in it when a subject is given. */
+export async function createProviderFolder(mailbox: string, folder: string, subject?: string) {
+  await onProvider(mailbox, async (client) => {
+    await client.mailboxCreate(folder);
+    if (subject) await client.append(folder, `From: Sam Sender <${outside.sam}>\r\nTo: ${mailbox}\r\nSubject: ${subject}\r\nMessage-ID: <${Date.now()}.${Math.random().toString(36).slice(2)}@example.org>\r\n\r\nSynthetic message.\r\n`);
+  });
+}
+
+/** Deletes a folder at the stack provider, as another mail program would. */
+export async function deleteProviderFolder(mailbox: string, folder: string) {
+  await onProvider(mailbox, (client) => client.mailboxDelete(folder));
+}
+
+/** The folder's UIDVALIDITY and message count at the stack provider, or null when it has no such folder. */
+export async function providerFolder(mailbox: string, folder: string): Promise<{ uidValidity: string; messages: number } | null> {
+  return onProvider(mailbox, async (client) => {
+    const listed = (await client.list()).some((entry: { path: string }) => entry.path === folder);
+    if (!listed) return null;
+    const status = await client.status(folder, { uidValidity: true, messages: true });
+    return { uidValidity: String(status.uidValidity), messages: Number(status.messages) };
+  });
+}
