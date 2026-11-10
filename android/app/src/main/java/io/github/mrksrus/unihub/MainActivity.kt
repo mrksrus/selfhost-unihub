@@ -18,6 +18,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.util.Log
 import android.view.KeyEvent
 import android.view.Gravity
 import android.view.View
@@ -292,6 +293,12 @@ class MainActivity : Activity() {
         bridge = pageBridge
 
         web.webViewClient = object : WebViewClient() {
+            // Debug builds log when page content first becomes visible, so the
+            // e2e test can prove the lock cover was up before it (LOCK_LOG).
+            override fun onPageCommitVisible(view: WebView, url: String) {
+                if (BuildConfig.DEBUG) Log.i(LOCK_LOG, "page visible")
+            }
+
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 if (!request.isForMainFrame) return false
                 val url = request.url.toString()
@@ -780,6 +787,7 @@ class MainActivity : Activity() {
             return
         }
         coverReason = reason
+        if (BuildConfig.DEBUG) Log.i(LOCK_LOG, "cover up")
         val background = PageTheme.saved(this)?.second ?: getColor(R.color.background)
         val view = FrameLayout(this).apply {
             setBackgroundColor(background)
@@ -1065,6 +1073,8 @@ class MainActivity : Activity() {
         // 3 from 0.29 (appLock: the app lock with the phone's own unlock).
         const val BRIDGE_LEVEL = 3
         private const val COVER_LOCK = 1
+        /** Debug builds only: the cover and the page's first visible content, in order (tools/e2e/android/app-lock-bridge.test.mjs). */
+        private const val LOCK_LOG = "UniHubLock"
         private const val COVER_PAUSE = 2
         // The cover's own Unlock button, for a page that does not take over (it failed to load).
         private const val COVER_BUTTON_DELAY_MS = 3_000L

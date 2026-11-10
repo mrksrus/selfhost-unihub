@@ -167,9 +167,15 @@ test('with one minute, a return within it does not ask and one after 70 s does; 
   // Force-stopped: a new process covers the page before it loads. `am start
   // -W` returns once the activity has drawn its first frame, so the cover is
   // up at that moment or the first frame showed the page: one look, no wait.
+  // The debug app also logs when its cover went up and when the page's
+  // content first became visible: the cover must come first.
   adb('shell', 'am', 'force-stop', PACKAGE);
+  adb('logcat', '-c');
   const launch = adb('shell', 'am', 'start', '-W', '-n', `${PACKAGE}/.MainActivity`);
   assert.equal(lockCoverShown(), true, `covered at the first frame of a cold start (${/TotalTime: \d+/.exec(launch)?.[0] ?? 'launch time unknown'})`);
+  const order = () => adb('logcat', '-d', '-s', 'UniHubLock:I').split('\n').map(line => /cover up|page visible/.exec(line)?.[0]).filter(Boolean);
+  for (let tries = 0; tries < 60 && !order().includes('page visible'); tries++) await sleep(500);
+  assert.deepEqual(order().slice(0, 2), ['cover up', 'page visible'], 'the cover is up before the page shows anything');
   ({ device, page } = await openApp({ restart: false }));
   try {
     const cold = await state(page);
