@@ -136,8 +136,8 @@ const GlobalCommandPalette = () => {
           </CommandGroup>
         )}
         {lockedModules.length > 0 && debouncedQuery.trim().length >= 2 && (
-          <CommandGroup heading="Locked">
-            {/* forceMount: the row stays whatever is typed; the search filter must not hide the way to unlock. */}
+          <CommandGroup heading="Locked" forceMount>
+            {/* forceMount (group and row): the row stays whatever is typed; the search filter must not hide the way to unlock. */}
             {lockedModules.map(id => (
               <CommandItem key={`locked-${id}`} forceMount value={`${areaLabel(id, modules)} is locked: unlock to search it`} onSelect={() => { setOpen(false); setUnlocking(true); }}>
                 <Lock className="mr-2 h-4 w-4" />

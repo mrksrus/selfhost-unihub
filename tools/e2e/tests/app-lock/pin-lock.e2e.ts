@@ -87,8 +87,9 @@ test('"Forgot PIN? Sign out" ends the server session and removes the PIN and the
     await expect(dialog).toContainText('Recordings not uploaded yet stay here.');
     await dialog.getByRole('button', 'Sign out', { exact: true }).tap();
     await expect(browser).toHaveURL(/\/auth/);
-    expect((await own('GET', '/api/auth/me')).status, 'the server session ended').toBe(401);
-    expect(await pinRecords(browser), 'no PIN is kept').toBe(0);
+    // The page may reach the sign-in form before its clean-up has finished.
+    await expect.poll(async () => (await own('GET', '/api/auth/me')).status, { timeout: 20_000, message: 'the server session ended' }).toBe(401);
+    await expect.poll(() => pinRecords(browser), { timeout: 20_000, message: 'no PIN is kept' }).toBe(0);
     expect((await pageApi(browser, 'GET', '/api/auth/me')).status, 'the page is signed out').toBe(401);
   } finally {
     // The device keeps its lock after the sign-out, and every later session of

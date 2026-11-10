@@ -34,7 +34,9 @@ export async function acknowledge(names: readonly Person[] = PEOPLE, revision?: 
 
 /** Sets rules as the admin; everyone has seen them afterwards unless `unseen` names who has not. */
 export async function setPolicy(values: Record<string, unknown>, { unseen = [] as readonly Person[] } = {}) {
-  const admin = await signIn('admin');
+  // A session of its own: the admin's browser takes over the helper's usual
+  // one (auth.setup), and its device must not report this lock.
+  const admin = await signIn('admin', { userAgent: 'UniHub e2e policy helper' });
   // The administrator's own device is held to the lock they require, the
   // policies page included: this client reports a whole-app lock, as a page
   // does once its lock is set up, so it can change the rules back.

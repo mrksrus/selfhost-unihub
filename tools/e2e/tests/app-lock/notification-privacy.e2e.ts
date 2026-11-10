@@ -5,6 +5,7 @@ import { pageApi } from '../support/api.ts';
 import { sendMail } from '../support/mail.ts';
 import { dbRead } from '../support/db.ts';
 import { onlyOn } from '../support/ui.ts';
+import { createECDH, randomBytes } from 'node:crypto';
 import { acknowledge, hidePage, resetLock, turnOn } from './app-lock-helpers.ts';
 
 // 0.29 notification privacy while locked (F6, row 29-05): alex's browser
@@ -21,6 +22,12 @@ test('[29-05] mail that arrives while the device is in the background with Mail 
   await acknowledge(['alex']);
   await app.open('/settings?section=app-lock');
   await resetLock(browser);
+  // A notification is stored only for a person with a reachable device: this
+  // browser's session gets a push channel of a synthetic endpoint (the push
+  // service refuses it later; the stored event is what this test reads).
+  const endpoint = `https://fcm.googleapis.com/fcm/send/e2e-notification-privacy-${runId()}`;
+  const keys = { p256dh: createECDH('prime256v1').generateKeys().toString('base64url'), auth: randomBytes(16).toString('base64url') };
+  expect((await pageApi(browser, 'POST', '/api/notifications/subscription', { subscription: { endpoint, keys } })).status, 'push channel').toBeLessThan(300);
   try {
     await turnOn(app, screen, browser, ['Mail']);
     const me = (await pageApi<{ user: { id: string } }>(browser, 'GET', '/api/auth/me')).data.user;
@@ -44,6 +51,7 @@ test('[29-05] mail that arrives while the device is in the background with Mail 
       return row?.open_until ? new Date(row.open_until).getTime() <= Date.now() + 61_000 : false;
     }, { timeout: 20_000 }).toBe(true);
   } finally {
+    await pageApi(browser, 'DELETE', '/api/notifications/subscription', { endpoint });
     await resetLock(browser);
   }
 });
