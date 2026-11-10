@@ -3,6 +3,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
+import { copyText } from '@/lib/platform';
 import type { BackupCapabilities, BackupJob, RestoreJob } from '@/lib/backup-api';
 import { AuthContext, type AuthContextType } from '@/contexts/auth-context';
 import { AppLockContext, type AppLockValue } from '@/hooks/use-app-lock';
@@ -60,6 +61,16 @@ const locked = () => fakeAppLock({ status: 'locked', scope: ['mail'] });
 
 beforeEach(() => {
   stubBrowserApis();
+  // The shared dialog content leaves with a 200 ms animation; Radix keeps closing content
+  // mounted until it ends. jsdom runs no animations, so the exit state is reported by hand.
+  const real = window.getComputedStyle;
+  vi.spyOn(window, 'getComputedStyle').mockImplementation((element, pseudo) => {
+    const styles = real.call(window, element, pseudo);
+    if (element instanceof HTMLElement && element.hasAttribute('data-state')) {
+      Object.defineProperty(styles, 'animationName', { get: () => (element.dataset.state === 'closed' ? 'exit' : 'none') });
+    }
+    return styles;
+  });
   vi.mocked(api.get).mockImplementation(async (path: string) => {
     if (path === '/backup/capabilities') return { data: capabilities };
     if (path === '/backup/jobs') return { data: { jobs: [backup] } };
@@ -73,7 +84,7 @@ beforeEach(() => {
     return { data: {} };
   });
 });
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('Backup dialogs under the app lock', () => {
   it('a relock takes the shown recovery password out of the page and brings it back with the unlock', { timeout: 20_000 }, async () => {
@@ -85,10 +96,12 @@ describe('Backup dialogs under the app lock', () => {
     expect(await within(dialog).findByLabelText('Recovery password')).toHaveTextContent(PASSWORD);
 
     relock(locked());
+    // At once, not after the exit animation: nothing of the password is left, and Copy copies nothing.
+    expect(document.body.textContent).not.toContain(PASSWORD);
+    for (const button of screen.queryAllByRole('button', { name: 'Copy' })) fireEvent.click(button);
+    expect(copyText).not.toHaveBeenCalled();
     expect(screen.queryByRole('dialog', { name: 'Recovery password' })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Unlock to continue' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument();
-    expect(document.body.textContent).not.toContain(PASSWORD);
 
     // The server shows a password once: the unlock shows it again from the page's memory, with no second reveal.
     relock(unlocked());
@@ -106,9 +119,10 @@ describe('Backup dialogs under the app lock', () => {
     expect(await screen.findByRole('alertdialog', { name: 'Restore this backup?' })).toBeInTheDocument();
 
     relock(locked());
-    expect(screen.queryByRole('alertdialog', { name: 'Restore this backup?' })).not.toBeInTheDocument();
+    // At once, not after the exit animation: a Restore still on the page starts nothing.
     for (const button of screen.queryAllByRole('button', { name: 'Restore' })) fireEvent.click(button);
     expect(api.post).not.toHaveBeenCalledWith('/backup/restore-jobs/restore-me/start');
+    expect(screen.queryByRole('alertdialog', { name: 'Restore this backup?' })).not.toBeInTheDocument();
 
     relock(unlocked());
     const again = await screen.findByRole('alertdialog', { name: 'Restore this backup?' });
