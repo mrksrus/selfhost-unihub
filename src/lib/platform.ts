@@ -13,6 +13,9 @@
 // - offline copy on this device: lib/offline.ts
 // - in-page events between components: lib/app-events.ts
 
+import type { AppLockArea, LockMethod } from '../../api/src/contracts/devices';
+import { createWebDeviceLock, subscribeVisibility } from '@/lib/app-lock/web';
+
 // ── The Android app ───────────────────────────────────────────────
 // The app shows these same pages in a WebView. It adds "UniHubAndroid/<version>
 // (<code>)" to the user agent and gives the server's own top-level page a
@@ -240,6 +243,149 @@ function readNotificationState(value: unknown): AppNotificationState {
     background: state.background === 'restricted' ? 'restricted' : 'allowed',
     connected: state.connected === true,
   };
+}
+
+// ── App lock ──────────────────────────────────────────────────────
+// What locks UniHub on this device (0.29): the Android app's own prompt
+// (fingerprint, face or the phone's PIN, bridge level 3) or the UniHub PIN in
+// the page (src/lib/app-lock/). The lock's logic is the same for both
+// (contexts/AppLockProvider.tsx); only this boundary knows which one runs.
+
+export type { LockMethod } from '../../api/src/contracts/devices';
+
+/** The first bridge level with the `appLock` messages (android/.../AppLock.kt). */
+export const APP_LOCK_BRIDGE_LEVEL = 3;
+
+export interface DeviceLockMethod {
+  method: LockMethod;
+  biometric: 'available' | 'not_enrolled' | 'none';
+  /** The phone has a screen lock (Android KeyguardManager.isDeviceSecure); false on the web. */
+  deviceSecure: boolean;
+}
+
+export type DeviceLockAuthentication = 'ok' | 'cancelled' | 'lockout' | 'unavailable' | 'pin';
+
+export interface DeviceLockConfig {
+  /** The person the lock is for; the app keeps its configuration per server and person. */
+  userId: string;
+  /** What the lock covers ([] off, ['app'] the whole app): the app hides notification text of a locked module with it. */
+  scope: AppLockArea[];
+  relockAfterMs: number;
+  onDeviceLock: boolean;
+  /** The administrator forbids screenshots: the app sets FLAG_SECURE. */
+  blockScreenshots: boolean;
+}
+
+export interface DeviceLockState {
+  /**
+   * In the app: whether the lock is due now, by the app's own monotonic clock
+   * (a fresh start, longer in the background than the setting, or the screen
+   * locked with "Also when the device locks"), and no native unlock lifted the
+   * cover since. Null on the web, where the page decides from its timeline.
+   */
+  due: boolean | null;
+  /** How long the page or app was last in the background, or null if it has not been since it started. */
+  hiddenForMs: number | null;
+  /** The device's screen locked while UniHub was in the background (only where `capabilities.deviceLockSignal`). */
+  deviceLockedSinceHidden: boolean;
+  /** This is the first state since the app process (or, on the web, the page) started. */
+  freshProcess: boolean;
+  /** When the app's own cover last unlocked with the native prompt (Date.now() clock), or null. */
+  authenticatedAt: number | null;
+}
+
+export interface DeviceLock {
+  method(): Promise<DeviceLockMethod>;
+  /** The native prompt; resolves 'pin' where the page asks for its UniHub PIN instead (the web, apps without a screen lock). */
+  authenticate(reason: string): Promise<DeviceLockAuthentication>;
+  /** The app caches the configuration and sets FLAG_SECURE and the hidden recents picture; the web keeps it for its own timing. */
+  configure(config: DeviceLockConfig | null): Promise<void>;
+  state(): Promise<DeviceLockState>;
+  /** The page shows nothing locked (its lock screen or an open view): the app lifts its cover. */
+  release(): Promise<void>;
+  /** Calls `listener` when UniHub goes to the background or comes back. Returns the unsubscribe function. */
+  subscribe(listener: (event: 'hidden' | 'visible') => void): () => void;
+  capabilities: { secureWindow: boolean; hideRecents: boolean; deviceLockSignal: boolean };
+}
+
+let webLock: DeviceLock | null = null;
+let nativeLock: { bridge: AndroidBridge; lock: DeviceLock } | null = null;
+
+/** The app lock of this device: the Android app's from bridge level 3, otherwise the page's own. */
+export function deviceLock(): DeviceLock {
+  const bridge = appBridgeLevel() >= APP_LOCK_BRIDGE_LEVEL ? window.UniHubAndroid : undefined;
+  if (bridge) {
+    if (nativeLock?.bridge !== bridge) nativeLock = { bridge, lock: createNativeDeviceLock(bridge) };
+    return nativeLock.lock;
+  }
+  webLock ??= createWebDeviceLock();
+  return webLock;
+}
+
+/** In an Android app with the message bridge but older than the native app lock: the page offers its PIN and "Update the app". */
+export function appLacksNativeLock() {
+  const level = appBridgeLevel();
+  return level > 0 && level < APP_LOCK_BRIDGE_LEVEL;
+}
+
+// The prompt waits for the person; the other questions answer at once.
+const APP_LOCK_PROMPT_TIMEOUT_MS = 5 * 60_000;
+const APP_LOCK_TIMEOUT_MS = 10_000;
+
+function createNativeDeviceLock(bridge: AndroidBridge): DeviceLock {
+  const ask = (action: string, fields: Record<string, unknown> = {}, timeoutMs = APP_LOCK_TIMEOUT_MS) =>
+    askApp(bridge, { type: 'appLock', id: crypto.randomUUID(), action, ...fields }, { timeoutMs, failure: 'The app did not answer. Try again.' });
+  return {
+    async method() {
+      const reply = await ask('method');
+      return {
+        method: reply.method === 'biometric' || reply.method === 'device_credential' ? reply.method : 'pin',
+        biometric: reply.biometric === 'available' || reply.biometric === 'not_enrolled' ? reply.biometric : 'none',
+        deviceSecure: reply.deviceSecure === true,
+      };
+    },
+    async authenticate(reason) {
+      const reply = await ask('authenticate', { reason }, APP_LOCK_PROMPT_TIMEOUT_MS).catch(() => null);
+      const result = reply?.result;
+      return result === 'ok' || result === 'cancelled' || result === 'lockout' || result === 'pin' ? result : 'unavailable';
+    },
+    async configure(config) {
+      await ask('configure', config ? { ...config, on: config.scope.length > 0 } : { on: false, scope: [], relockAfterMs: 0, onDeviceLock: false, blockScreenshots: false });
+    },
+    async state() {
+      const reply = await ask('state');
+      return {
+        due: typeof reply.due === 'boolean' ? reply.due : true,
+        hiddenForMs: typeof reply.hiddenForMs === 'number' ? reply.hiddenForMs : null,
+        deviceLockedSinceHidden: reply.deviceLockedSinceHidden === true,
+        freshProcess: reply.freshProcess === true,
+        authenticatedAt: typeof reply.authenticatedAt === 'number' ? reply.authenticatedAt : null,
+      };
+    },
+    async release() { await ask('release'); },
+    subscribe: listener => subscribeVisibility(listener),
+    capabilities: { secureWindow: true, hideRecents: true, deviceLockSignal: true },
+  };
+}
+
+// ── Describing a device ──────────────────────────────────────────
+
+const BROWSERS: [RegExp, string][] = [
+  [/UniHubAndroid\//, 'UniHub app'], [/Edg\//, 'Edge'], [/OPR\//, 'Opera'], [/Firefox\//, 'Firefox'],
+  [/Chrome\//, 'Chrome'], [/Safari\//, 'Safari'],
+];
+const SYSTEMS: [RegExp, string][] = [
+  [/UniHubAndroid\/|Android/, 'Android'], [/iPhone/, 'iPhone'], [/iPad/, 'iPad'], [/Windows/, 'Windows'], [/Mac OS X|Macintosh/, 'macOS'],
+  [/CrOS/, 'ChromeOS'], [/Linux/, 'Linux'],
+];
+
+/** "Firefox on Linux" or "UniHub app on Android" from a user agent, enough to recognise a device. */
+export function describeUserAgent(userAgent: string | null | undefined) {
+  if (!userAgent) return 'Unknown device';
+  const browser = BROWSERS.find(([pattern]) => pattern.test(userAgent))?.[1];
+  const system = SYSTEMS.find(([pattern]) => pattern.test(userAgent))?.[1];
+  if (browser && system) return `${browser} on ${system}`;
+  return browser || system || 'Unknown device';
 }
 
 // ── Files in the app: Open with, Save to Downloads, Share ────────

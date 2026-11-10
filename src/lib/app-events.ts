@@ -1,3 +1,5 @@
+import type { AppLockRequiredDetails } from '../../api/src/contracts/devices';
+
 // In-page events between parts of the app that do not share React state
 // (the API client, the service worker bridge, the update flow). Every event
 // name is listed here once, with the data it carries.
@@ -29,6 +31,8 @@ export interface AppEvents {
   'unihub:recording-queued': undefined;
   /** Stop the recording upload runner in this tab. */
   'unihub:recording-stop': undefined;
+  /** The API refused a request with 403 APP_LOCK_REQUIRED (lib/api.ts): show the app lock set-up prompt. */
+  'unihub:app-lock-required': AppLockRequiredDetails;
 }
 
 export type AppEventName = keyof AppEvents;
