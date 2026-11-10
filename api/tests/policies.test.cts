@@ -93,6 +93,26 @@ test('a stored value the key cannot take and an unknown key read as no policy', 
     { value: 90, source: 'policy', allowed: true, reason: POLICIES['backup.server_retention_days'].reasons['90'] });
 });
 
+// The app lock's requirement (0.29) is a list whose strictness is
+// containment: across levels and groups the union holds, the whole app
+// stands alone, and the maximum time in the background is the shortest.
+test('app lock: the requirement is the union of the levels, the whole app stands alone, and each requirement has its words', () => {
+  const required = POLICIES['app_lock.required'];
+  const level = (value: string[], locked = false) => [{ value, locked }];
+  assert.deepEqual(resolvePolicyValue(required, [level(['contacts']), level(['mail'])]), { value: ['mail', 'contacts'], source: 'policy' });
+  assert.deepEqual(resolvePolicyValue(required, [undefined, [{ value: ['recordings'], locked: false }, { value: ['app', 'mail'], locked: false }]]), { value: ['app'], source: 'policy' });
+  assert.deepEqual(resolvePolicyValue(required, [level(['mail'], true), level(['app'])]), { value: ['mail'], source: 'policy' }, 'a locked requirement stands');
+  assert.deepEqual(resolvePolicyValue(required, [undefined, []]), { value: [], source: 'default' });
+  const longest = POLICIES['app_lock.max_background'];
+  assert.deepEqual(resolvePolicyValue(longest, [[{ value: '900', locked: false }], [{ value: '60', locked: false }, { value: '300', locked: false }]]), { value: '60', source: 'policy' });
+  assert.equal(required.reasonOf!([]), null);
+  assert.equal(required.reasonOf!(['app']), 'Your administrator requires the app lock for the whole app.');
+  assert.equal(required.reasonOf!(['contacts', 'mail']), 'Your administrator requires the app lock for Mail and Contacts.');
+  assert.equal(required.reasonOf!(['recordings', 'calendar', 'mail']), 'Your administrator requires the app lock for Mail, Calendar and ToDo, and Recordings and Music.');
+  // None of the three refuses a route by name: the request boundary's app lock check does.
+  for (const key of ['app_lock.required', 'app_lock.max_background', 'app_lock.screenshots'] as const) assert.deepEqual(POLICIES[key].refuses, [], key);
+});
+
 // Groups (0.30) are one more level after the installation's; the rules are
 // those of the policies on settings.
 test('levels: a locked value stands, an unlocked one is a floor along the key\'s order, and the strictest group wins', () => {

@@ -77,6 +77,7 @@ async function main() {
       policies: await rows('SELECT target_kind, target_id, setting_key, setting_value, locked FROM setting_policies ORDER BY target_kind, target_id, setting_key'),
       resets: {
         sessions: await count('SELECT COUNT(*) AS n FROM sessions'),
+        devices: await count('SELECT COUNT(*) AS n FROM devices'),
         fileTickets: await count('SELECT COUNT(*) AS n FROM file_tickets'),
         signInChallenges: await count('SELECT COUNT(*) AS n FROM two_factor_challenges'),
         leases: await count('SELECT (SELECT COUNT(*) FROM mail_engine_accounts WHERE lease_owner IS NOT NULL) + (SELECT COUNT(*) FROM mail_engine_jobs WHERE lease_owner IS NOT NULL) AS n'),

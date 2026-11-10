@@ -7,9 +7,19 @@ import { API_FILES_USING_CONSOLE, ROUTES_USING_DB, VIEWS_USING_API_CLIENT } from
 
 // Settings and policies have one owner (F1): services/settings.ts.
 const SETTINGS_FENCE = {
-  selector: "Literal[value=/\\b(mail_account_settings|calendar_settings|setting_policies)\\b/]:not(TSLiteralType > Literal), TemplateElement[value.raw=/\\b(mail_account_settings|calendar_settings|setting_policies)\\b/]",
+  selector: "Literal[value=/\\b(mail_account_settings|calendar_settings|device_settings|setting_policies)\\b/]:not(TSLiteralType > Literal), TemplateElement[value.raw=/\\b(mail_account_settings|calendar_settings|device_settings|setting_policies)\\b/]",
   message: "Read and write settings and policies through services/settings.ts.",
 };
+// Devices have one owner (F5): services/devices.ts. The fence finds SQL that
+// names the table; per-device behaviour asks that service.
+const DEVICES_FENCE = {
+  selector: "Literal[value=/\\b(FROM|JOIN|INTO|UPDATE|TABLE)\\s+devices\\b/i]:not(TSLiteralType > Literal), TemplateElement[value.raw=/\\b(FROM|JOIN|INTO|UPDATE|TABLE)\\s+devices\\b/i]",
+  message: "Read and write devices through services/devices.ts.",
+};
+// Schema and recovery code name the tables to create, archive and restore them.
+const SCHEMA_FILES = ["api/src/services/database.ts", "api/src/services/data-inventory.ts", "api/src/services/devices-migration.ts"];
+const SETTINGS_OWNERS = ["api/src/services/settings.ts", "api/src/services/backup-catalog.ts", "api/src/services/backup-export.ts", "api/src/services/backup-import.ts"];
+const DEVICES_OWNERS = ["api/src/services/devices.ts", "api/src/services/instance-restore.ts"];
 
 export default tseslint.config(
   { ignores: ["dist", "api/dist", ".worker-dist", "tools/ui-regression/.build", "tools/ui-regression/.browsers", "tools/ui-regression/report", "tools/ui-regression/test-results"] },
@@ -47,14 +57,22 @@ export default tseslint.config(
       "@typescript-eslint/no-require-imports": "off",
     },
   },
+  // Settings and policies (F1) and devices (F5) have one owner each. One
+  // rule takes one list per file, so each set of files gets the fences it
+  // keeps: every other file both, an owner the other one, the schema files
+  // neither.
   {
-    // Settings and policies have one owner (F1): services/settings.ts. Schema
-    // and recovery code name the tables to create, archive and restore them.
     files: ["api/src/**/*.ts"],
-    ignores: ["api/src/services/settings.ts", "api/src/services/database.ts", "api/src/services/data-inventory.ts", "api/src/services/backup-catalog.ts", "api/src/services/backup-export.ts", "api/src/services/backup-import.ts"],
-    rules: {
-      "no-restricted-syntax": ["error", SETTINGS_FENCE],
-    },
+    ignores: [...SCHEMA_FILES, ...SETTINGS_OWNERS, ...DEVICES_OWNERS],
+    rules: { "no-restricted-syntax": ["error", SETTINGS_FENCE, DEVICES_FENCE] },
+  },
+  {
+    files: SETTINGS_OWNERS,
+    rules: { "no-restricted-syntax": ["error", DEVICES_FENCE] },
+  },
+  {
+    files: DEVICES_OWNERS,
+    rules: { "no-restricted-syntax": ["error", SETTINGS_FENCE] },
   },
   // Layering (docs/ARCHITECTURE.md, Layering). Existing exceptions are listed
   // in eslint.boundaries.js and only shrink.
@@ -74,7 +92,7 @@ export default tseslint.config(
       }, {
         selector: "CallExpression[callee.property.name='split'] > MemberExpression.callee > TSNonNullExpression.object > MemberExpression.expression[property.name='url']",
         message: "Read path parameters from req.params; the boundary matched the route.",
-      }, SETTINGS_FENCE],
+      }, SETTINGS_FENCE, DEVICES_FENCE],
     },
   },
   {

@@ -14,6 +14,7 @@ export const POLICY_KEYS = [
   'backup.download_mail', 'backup.create', 'backup.restore', 'backup.delete', 'backup.server_retention_days',
   'accounts.add', 'accounts.remove', 'accounts.reset', 'accounts.admin_manage',
   'account.delete', 'data.clear', 'bin.delete',
+  'app_lock.required', 'app_lock.max_background', 'app_lock.screenshots',
 ] as const satisfies readonly PolicyKey[];
 
 /** Every key's default: allowed, from the default, no reason. Shown until the server's answer arrives. */
@@ -34,6 +35,9 @@ export const DEFAULT_POLICY_VALUES: PolicyValues = {
   'account.delete': 'allowed',
   'data.clear': 'allowed',
   'bin.delete': 'allowed',
+  'app_lock.required': [],
+  'app_lock.max_background': 'none',
+  'app_lock.screenshots': 'allowed',
 };
 
 export type EffectivePolicies = EffectivePoliciesResponse['policies'];

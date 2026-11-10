@@ -1,4 +1,4 @@
-import type { CalendarSettingValues, MailAccountSettingValues, ResolvedSettings, UserSettingValues } from '../../api/src/contracts/settings';
+import type { CalendarSettingValues, DeviceSettingValues, MailAccountSettingValues, ResolvedSettings, UserSettingValues } from '../../api/src/contracts/settings';
 
 // The registry's defaults (api/src/services/settings-registry.ts, kept equal
 // by settings-registry-parity.test.ts), shown until the account's settings load.
@@ -30,6 +30,8 @@ export const DEFAULT_MAIL_ACCOUNT_SETTINGS: MailAccountSettingValues = {
   notify_detail: 'full',
 };
 export const DEFAULT_CALENDAR_SETTINGS: CalendarSettingValues = { notify_enabled: true };
+/** This device's app lock before its settings load: off. */
+export const DEFAULT_DEVICE_SETTINGS: DeviceSettingValues = { app_lock_scope: [], app_lock_relock_after: '60', app_lock_on_device_lock: true };
 
 /** Resolved settings for values only known by default (before loading, or offline). */
 export function defaultsResolved<T extends object>(values: T): ResolvedSettings<T> {

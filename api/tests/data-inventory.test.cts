@@ -26,8 +26,30 @@ function sourceColumns(source: FixtureValue) {
 }
 const serviceSource = (name: FixtureValue) => fs.readFileSync(path.join(__dirname, '../src/services', `${name}.ts`), 'utf8');
 function productionColumns() {
-  return sourceColumns(['database-baseline', 'database', 'database-migrations', 'contacts-migration'].map(serviceSource).join('\n'));
+  return sourceColumns(['database-baseline', 'database', 'database-migrations', 'contacts-migration', 'devices-migration'].map(serviceSource).join('\n'));
 }
+
+// Devices (0.29, F5) are installation state: no personal backup carries a
+// device, its app lock or the device a session or push channel belongs to,
+// so no restore brings a device or its sessions back (an instance restore
+// deletes them, instance-backup-mysql-integration).
+test('devices, their settings and the device of each session and push channel never travel in a personal backup', () => {
+  const { NON_ARCHIVE_POLICIES, TABLE_DECLARATIONS } = require('../dist/src/services/data-inventory') as typeof import('../src/services/data-inventory');
+  const { TABLE_POLICIES } = require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog');
+  for (const table of ['devices', 'device_settings']) {
+    assert.equal(TABLE_POLICIES[table], undefined, `${table} is in no backup section`);
+    assert.equal(NON_ARCHIVE_POLICIES[table].treatment, 'security_only');
+    assert.ok(NON_ARCHIVE_POLICIES[table].columns.every(column => NON_ARCHIVE_POLICIES[table].introducedIn?.[column] === 26), `${table} comes with upgrade 26`);
+    const { owner, shareable, dataClass, module, restore } = TABLE_DECLARATIONS[table];
+    assert.deepEqual({ owner, shareable, dataClass, module }, { owner: 'user', shareable: false, dataClass: 'installation', module: null }, table);
+    assert.match(restore, /^Never restored/);
+  }
+  for (const table of ['sessions', 'push_subscriptions']) {
+    assert.equal(TABLE_POLICIES[table], undefined);
+    assert.ok(NON_ARCHIVE_POLICIES[table].columns.includes('device_id'), `${table}.device_id is classified`);
+    assert.equal(NON_ARCHIVE_POLICIES[table].introducedIn?.device_id, 26);
+  }
+});
 
 test('every runtime schema table and field has an explicit recovery policy', () => {
   const columns = productionColumns();

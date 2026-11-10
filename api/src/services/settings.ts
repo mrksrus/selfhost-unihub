@@ -19,11 +19,12 @@ import type {
   PolicySource,
   PolicyValues,
 } from '../contracts/policies';
+import type { AppLockRequiredDetails } from '../contracts/devices';
 
 import { db } from '../state';
 import { ApiError, badRequest, forbidden, notFound } from '../http/errors';
 import { SETTINGS, POLICIES, BIN_MIN_RETENTION, POLICY_EFFECTS } from './settings-registry';
-import type { Entry, Kind, PolicyEntry, ReferenceTarget, Value } from './settings-registry';
+import type { Entry, Kind, PolicyEntry, ReferenceTarget, Union, Value } from './settings-registry';
 
 // The one owner of settings and policies (F1). Every option is one entry of
 // the registry (settings-registry.ts). Values are stored per scope:
@@ -31,6 +32,8 @@ import type { Entry, Kind, PolicyEntry, ReferenceTarget, Value } from './setting
 //   the same table belong to module-settings.ts)
 // - mail_account: mail_account_settings (Mail section, follows its account)
 // - calendar: calendar_settings (Calendar section, follows its calendar)
+// - device: device_settings (0.29; one device of the person, F5: never in a
+//   backup, goes with its device record)
 // Policies live in setting_policies as (target_kind, target_id, key, value,
 // locked). Only the installation target exists until groups arrive (0.30);
 // resolution is user -> group policies (strictest wins) -> installation ->
@@ -44,6 +47,7 @@ const STORAGE: Record<SettingScope, { table: string; idColumn: string; parent?: 
   user: { table: 'user_settings', idColumn: 'user_id' },
   mail_account: { table: 'mail_account_settings', idColumn: 'mail_account_id', parent: { table: 'mail_accounts', label: 'Mail account' } },
   calendar: { table: 'calendar_settings', idColumn: 'calendar_id', parent: { table: 'calendar_calendars', label: 'Calendar' } },
+  device: { table: 'device_settings', idColumn: 'device_id', parent: { table: 'devices', label: 'Device' } },
 };
 
 const entriesOf = (scope: SettingScope) => SETTINGS[scope] as Readonly<Record<string, Entry>>;
@@ -87,7 +91,30 @@ function accept(kind: Kind, value: unknown): Value | undefined {
   }
 }
 
-const stricter = (entry: Entry, a: Value, b: Value) => entry.strictness!.indexOf(String(a)) >= entry.strictness!.indexOf(String(b)) ? a : b;
+// A key with an order (strictness) or a containment order (union) can have a floor.
+const ordered = (entry: Pick<Entry, 'strictness' | 'union'>) => !!(entry.strictness || entry.union);
+// Two values of one key are the same value (lists compare item by item).
+const sameValue = (a: Value, b: Value) => a === b || (Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, index) => item === b[index]));
+
+// The union of list values in the kind's allowed order; `alone` covers every
+// other item and stands alone. Unknown items are dropped.
+function unionOf(kind: Kind, union: Union, ...values: Value[]): string[] {
+  const items = new Set(values.flatMap(value => Array.isArray(value) ? value : []));
+  if (items.has(union.alone)) return [union.alone];
+  const order = kind.type === 'list' && kind.allowed ? kind.allowed : [...items].sort();
+  return order.filter(item => items.has(item));
+}
+
+// The stricter of two values of a key with an order: later in its
+// strictness, or the union of the two for a containment order. A value
+// outside the order counts as the least strict.
+function stricterValue(entry: Pick<Entry, 'kind' | 'strictness' | 'union'>, a: Value, b: Value): Value {
+  if (entry.union) return unionOf(entry.kind, entry.union, a, b);
+  return entry.strictness!.indexOf(String(a)) >= entry.strictness!.indexOf(String(b)) ? a : b;
+}
+const stricter = (entry: Entry, a: Value, b: Value) => stricterValue(entry, a, b);
+// A value as stored: a containment list in its canonical form.
+const canonical = (entry: Pick<Entry, 'kind' | 'union'>, value: Value) => entry.union ? unionOf(entry.kind, entry.union, value) : value;
 
 // reason: the plain words of a floor that comes from a data-safety policy.
 interface Policy { value: Value; locked: boolean; reason?: string }
@@ -102,18 +129,20 @@ async function loadPolicies(executor: SqlExecutor): Promise<Policies> {
     // A reference names one person's record, so it cannot be an
     // installation's policy; such a row is ignored.
     const value = entry && entry.kind.type !== 'reference' ? decode(entry.kind, String(row.setting_value)) : undefined;
-    if (value !== undefined) policies.set(row.setting_key, { value, locked: !!Number(row.locked) });
+    if (value !== undefined) policies.set(row.setting_key, { value: canonical(entry!, value), locked: !!Number(row.locked) });
   }
-  return withBinFloor(policies, await loadPolicyLevels(executor));
+  const levels = await loadPolicyLevels(executor);
+  return withAppLockFloor(withBinFloor(policies, levels), levels);
 }
 
 function resolve(scope: SettingScope, key: string, entry: Entry, stored: Value | undefined, policies: Policies): ResolvedSetting<Value> {
   const policy = policies.get(policyKey(scope, key));
   if (policy?.locked) return { value: policy.value, source: 'policy', locked: true };
-  if (policy && entry.strictness) {
-    const chosen = stored === undefined ? entry.default : stored;
+  if (policy && ordered(entry)) {
+    const chosen = canonical(entry, stored === undefined ? entry.default : stored);
     const value = stricter(entry, chosen, policy.value);
-    return { value, source: value === chosen && stored !== undefined ? 'user' : value === chosen ? 'default' : 'policy', locked: false, floor: policy.value };
+    const own = sameValue(value, chosen);
+    return { value, source: own && stored !== undefined ? 'user' : own ? 'default' : 'policy', locked: false, floor: policy.value };
   }
   if (stored !== undefined) return { value: stored, source: 'user', locked: false };
   if (policy) return { value: policy.value, source: 'policy', locked: false };
@@ -124,7 +153,8 @@ function resolveAll<S extends SettingScope>(scope: S, stored: Map<string, string
   const resolved: Record<string, ResolvedSetting<Value>> = {};
   for (const [key, entry] of Object.entries(entriesOf(scope))) {
     const text = stored.get(key);
-    resolved[key] = resolve(scope, key, entry, text === undefined ? undefined : decode(entry.kind, text), policies);
+    const value = text === undefined ? undefined : decode(entry.kind, text);
+    resolved[key] = resolve(scope, key, entry, value === undefined ? undefined : canonical(entry, value), policies);
   }
   return resolved as unknown as ResolvedSettings<Values<S>>;
 }
@@ -216,11 +246,12 @@ async function updateSettings<S extends SettingScope>(scope: S, userId: string, 
   for (const [key, raw] of Object.entries(values)) {
     const entry = entryOf(scope, key);
     if (!entry) throw badRequest('SETTING_UNKNOWN', `Unknown setting ${key}`);
-    const value = accept(entry.kind, raw);
-    if (value === undefined) throw badRequest('SETTING_INVALID', `Invalid value for ${key}`);
+    const accepted = accept(entry.kind, raw);
+    if (accepted === undefined) throw badRequest('SETTING_INVALID', `Invalid value for ${key}`);
+    const value = canonical(entry, accepted);
     const policy = policies.get(policyKey(scope, key));
     if (policy?.locked) throw forbidden('POLICY_LOCKED', `Your administrator has set ${key}`);
-    if (policy && entry.strictness && stricter(entry, value, policy.value) !== value) throw forbidden('POLICY_FLOOR', policy.reason ?? `Your administrator does not allow less than ${String(policy.value)} for ${key}`);
+    if (policy && ordered(entry) && !sameValue(stricter(entry, value, policy.value), value)) throw forbidden('POLICY_FLOOR', policy.reason ?? `Your administrator does not allow less than ${String(policy.value)} for ${key}`);
     await checkReference(userId, entry.kind, value, executor);
     if (key === 'notify_folders') await checkFolders(userId, value as string[], executor);
     updates.push([key, encode(entry.kind, value)]);
@@ -312,21 +343,20 @@ async function loadPolicyLevels(executor: SqlExecutor, { lock = false } = {}): P
     const key = String(row.setting_key).slice(POLICY_PREFIX.length);
     if (!isPolicyKey(key) && key !== BIN_MIN_KEY) continue;
     const value = decode(policyEntry(key).kind, String(row.setting_value));
-    if (value !== undefined) installation.set(key, [{ value, locked: !!Number(row.locked) }]);
+    if (value !== undefined) installation.set(key, [{ value: canonical(policyEntry(key), value), locked: !!Number(row.locked) }]);
   }
   return [installation];
 }
 
-// The stricter of two values of a key with an order; a value outside the
-// order counts as the least strict.
-const stricterPolicy = (order: readonly string[], a: Value, b: Value) => order.indexOf(String(a)) >= order.indexOf(String(b)) ? a : b;
+// The stricter of two values of a key with an order (stricterValue).
+const stricterPolicy = (entry: PolicyEntry, a: Value, b: Value) => stricterValue(entry, a, b);
 
 // The one value of a level with several targets (a person's groups): the
 // strictest along the key's order, else the first that refuses the action.
 function levelPolicy(entry: PolicyEntry, policies: readonly Policy[]): Policy {
-  if (entry.strictness) {
-    const value = policies.map(policy => policy.value).reduce((a, b) => stricterPolicy(entry.strictness!, a, b));
-    return { value, locked: policies.some(policy => policy.locked && policy.value === value) };
+  if (ordered(entry)) {
+    const value = policies.map(policy => policy.value).reduce((a, b) => stricterPolicy(entry, a, b));
+    return { value, locked: policies.some(policy => policy.locked && sameValue(policy.value, value)) };
   }
   return policies.find(policy => entry.refuses.includes(policy.value)) ?? policies[0];
 }
@@ -338,7 +368,7 @@ function resolvePolicyValue(entry: PolicyEntry, levels: readonly (readonly Polic
   for (const policies of levels) {
     if (!policies?.length) continue;
     const policy = levelPolicy(entry, policies);
-    value = source === 'policy' && entry.strictness ? stricterPolicy(entry.strictness, value, policy.value) : policy.value;
+    value = source === 'policy' && ordered(entry) ? stricterPolicy(entry, value, policy.value) : policy.value;
     source = 'policy';
     if (policy.locked) break;
   }
@@ -347,12 +377,13 @@ function resolvePolicyValue(entry: PolicyEntry, levels: readonly (readonly Polic
 
 function effectivePolicy<K extends PolicyKey>(key: K, levels: readonly PolicyLevel[]): EffectivePolicy<K> {
   const entry = POLICIES[key] as unknown as PolicyEntry<PolicyValues[K]>;
-  const { value, source } = resolvePolicyValue(entry as PolicyEntry, levels.map(level => level.get(key)));
+  const { value, source } = resolvePolicyValue(entry as unknown as PolicyEntry, levels.map(level => level.get(key)));
   const own = entry.refuses.includes(value as PolicyValues[K]);
   // A key implied by another refuses with its own reason when that one refuses.
   const implied = !own && entry.impliedBy ? effectivePolicy(entry.impliedBy, levels) : null;
   if (implied && !implied.allowed) return { value: value as PolicyValues[K], source: implied.source, allowed: false, reason: entry.reasons.forbidden ?? implied.reason };
-  return { value: value as PolicyValues[K], source, allowed: !own, reason: entry.reasons[String(value)] ?? null };
+  const reason = entry.reasonOf ? entry.reasonOf(value as PolicyValues[K]) : entry.reasons[String(value)] ?? null;
+  return { value: value as PolicyValues[K], source, allowed: !own, reason };
 }
 
 /**
@@ -375,10 +406,46 @@ async function binRetentionFloor(_userId: string, executor: SqlExecutor = db, { 
 function withBinFloor(policies: Policies, levels: readonly PolicyLevel[]): Policies {
   const floor = binFloor(levels);
   if (floor === null) return policies;
-  const key = policyKey('user', 'bin_retention');
-  const own = policies.get(key);
-  const value = own ? stricter(SETTINGS.user.bin_retention as Entry, own.value, floor) : floor;
-  policies.set(key, { value, locked: own?.locked ?? false, ...(value === floor ? { reason: BIN_MIN_RETENTION.reasons[floor] } : {}) });
+  return withFloor(policies, 'user', 'bin_retention', floor, BIN_MIN_RETENTION.reasons[floor]);
+}
+
+// A data-safety policy that becomes the floor of a setting, together with
+// any policy of that setting itself (the stricter holds); the reason is the
+// policy's while its value is the one that holds.
+function withFloor(policies: Policies, scope: SettingScope, key: string, floor: Value, reason: string | null): Policies {
+  const name = policyKey(scope, key);
+  const own = policies.get(name);
+  const value = own ? stricter(entryOf(scope, key)!, own.value, floor) : floor;
+  policies.set(name, { value, locked: own?.locked ?? false, ...(reason && sameValue(value, floor) ? { reason } : {}) });
+  return policies;
+}
+
+/**
+ * The app lock the person's policies require of every device (0.29): the
+ * areas (app_lock.required) and the longest time in the background
+ * (app_lock.max_background), with the administrator's reason.
+ */
+function appLockRequirement(levels: readonly PolicyLevel[]): AppLockRequiredDetails {
+  const required = effectivePolicy('app_lock.required', levels);
+  const longest = effectivePolicy('app_lock.max_background', levels);
+  const max = longest.value === 'none' ? null : longest.value;
+  const reason = required.value.length ? required.reason : null;
+  return { required: [...required.value], max_background: max, reason: reason ?? (max ? longest.reason : null) };
+}
+
+/** The app lock the person's policies require of each of their devices, for the request boundary and the notification stage. */
+async function appLockRequirementFor(_userId: string, executor: SqlExecutor = db): Promise<AppLockRequiredDetails> {
+  return appLockRequirement(await loadPolicyLevels(executor));
+}
+
+// The requirement becomes the floors of each device's app lock: at least the
+// required areas, and no longer in the background than the maximum, so the
+// device's settings answer, a refused weaker choice and the lock the page
+// applies all follow it.
+function withAppLockFloor(policies: Policies, levels: readonly PolicyLevel[]): Policies {
+  const { required, max_background } = appLockRequirement(levels);
+  if (required.length) withFloor(policies, 'device', 'app_lock_scope', required, effectivePolicy('app_lock.required', levels).reason);
+  if (max_background) withFloor(policies, 'device', 'app_lock_relock_after', max_background, effectivePolicy('app_lock.max_background', levels).reason);
   return policies;
 }
 
@@ -451,7 +518,7 @@ function rulesOf(levels: readonly PolicyLevel[]): string[] {
   const rules: string[] = [];
   for (const key of Object.keys(POLICIES) as PolicyKey[]) {
     const policy = effectivePolicy(key, levels);
-    if ((policy.allowed && policy.value === POLICIES[key].default) || !policy.reason) continue;
+    if ((policy.allowed && sameValue(policy.value as Value, POLICIES[key].default as Value)) || !policy.reason) continue;
     rules.push(policy.reason);
   }
   const floor = binFloor(levels);
@@ -628,15 +695,17 @@ async function updateAdminPolicies(adminId: string, input: unknown, { req = null
     const changed: { key: StoredPolicyKey; from: Value; to: Value }[] = [];
     for (const { key, value } of updates) {
       const entry = policyEntry(key);
+      const to = canonical(entry, value);
       const from = resolvePolicyValue(entry, before.map(level => level.get(key))).value;
       const stored = before[0].get(key);
-      if (value === entry.default) after[0].delete(key); else after[0].set(key, [{ value, locked: false }]);
-      if (from !== value || (stored !== undefined) !== (value !== entry.default)) changed.push({ key, from, to: value });
+      const isDefault = sameValue(to, entry.default);
+      if (isDefault) after[0].delete(key); else after[0].set(key, [{ value: to, locked: false }]);
+      if (!sameValue(from, to) || (stored !== undefined) !== !isDefault) changed.push({ key, from, to });
     }
     checkPolicyCombination(after);
     for (const { key, to } of changed) {
       const entry = policyEntry(key);
-      if (to === entry.default) {
+      if (sameValue(to, entry.default)) {
         await cx.execute("DELETE FROM setting_policies WHERE target_kind = 'installation' AND target_id = '' AND setting_key = ?", [POLICY_PREFIX + key]);
       } else {
         await cx.execute(`INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked, updated_by) VALUES ('installation', '', ?, ?, FALSE, ?)
@@ -644,8 +713,10 @@ async function updateAdminPolicies(adminId: string, input: unknown, { req = null
       }
     }
     for (const { key, from, to } of changed) {
-      if (from === to) continue;
-      await recordAudit({ action: 'admin.policy_changed', actorId: adminId, req, details: { key, from: from as string | number | null, to: to as string | number | null } }, cx);
+      if (sameValue(from, to)) continue;
+      // A list is recorded as its items joined by commas, an empty one as null.
+      const plain = (value: Value) => (Array.isArray(value) ? value.join(',') || null : value) as string | number | null;
+      await recordAudit({ action: 'admin.policy_changed', actorId: adminId, req, details: { key, from: plain(from), to: plain(to) } }, cx);
     }
     const stored = await loadPolicyLevels(cx);
     let next = revision;
@@ -692,6 +763,7 @@ export {
   getAdminPolicies,
   updateAdminPolicies,
   resolvePolicyValue,
+  appLockRequirementFor,
   assertAllowed,
   policyForbids,
   getSettings,

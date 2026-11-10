@@ -3,8 +3,11 @@
 // services/settings-registry.ts.
 
 import type { BinRetention } from './bin';
+import type { AppLockArea, RelockAfter } from './devices';
 
-export type SettingScope = 'user' | 'mail_account' | 'calendar';
+// `device` (0.29, F5): choices of one device of the person, kept with the
+// device record on the server (the app lock), never in a backup.
+export type SettingScope = 'user' | 'mail_account' | 'calendar' | 'device';
 
 /**
  * Where a value comes from: the person's own choice, an administrator's
@@ -81,10 +84,25 @@ export interface CalendarSettingValues {
   notify_enabled: boolean;
 }
 
+/**
+ * The app lock of one device. The server keeps it so it can enforce the
+ * administrator's requirement and hide notification content while the
+ * device is locked; the PIN or fingerprint itself never leaves the device.
+ */
+export interface DeviceSettingValues {
+  /** What locks: [] is off, ['app'] the whole app, otherwise these modules. Under a policy, at least what it requires. */
+  app_lock_scope: AppLockArea[];
+  /** Seconds in the background before it locks again; '0' asks every time UniHub opens. */
+  app_lock_relock_after: RelockAfter;
+  /** Also lock when the device's own screen locks, where the device can tell. */
+  app_lock_on_device_lock: boolean;
+}
+
 export interface SettingValuesByScope {
   user: UserSettingValues;
   mail_account: MailAccountSettingValues;
   calendar: CalendarSettingValues;
+  device: DeviceSettingValues;
 }
 
 export type ResolvedSettings<T> = { [K in keyof T]: ResolvedSetting<T[K]> };
@@ -95,6 +113,8 @@ export interface UserSettingsResponse { settings: ResolvedSettings<UserSettingVa
 export interface MailAccountSettingsResponse { accounts: Record<string, ResolvedSettings<MailAccountSettingValues>> }
 /** GET /api/settings/values/calendars: every calendar of the user, by id. */
 export interface CalendarSettingsResponse { calendars: Record<string, ResolvedSettings<CalendarSettingValues>> }
+/** GET and PUT /api/settings/values/device: the settings of the device the request came from. */
+export interface DeviceSettingsResponse { device_id: string; settings: ResolvedSettings<DeviceSettingValues> }
 /** The answer of PUT .../mail-accounts/:id and .../calendars/:id. */
 export interface ScopedSettingsResponse<T> { id: string; settings: ResolvedSettings<T> }
 

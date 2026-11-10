@@ -116,3 +116,61 @@ test('the settings registry keeps scoped values with their owner and applies ins
   const [[left]] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS count FROM mail_account_settings WHERE mail_account_id = ?', [ownAccount]);
   assert.equal(Number(left.count), 0);
 });
+
+// The device scope (0.29): the app lock of one of the person's devices,
+// under the administrator's requirement as floors. The scope is a list whose
+// strictness is containment: the floor is a union, and the whole app stands
+// alone.
+test('a device\'s app lock is the person\'s own, and the administrator\'s requirement is its floor', {
+  skip: !process.env.MYSQL_TEST_HOST, timeout: 120000,
+}, async t => {
+  process.env.BOOTSTRAP_ADMIN_EMAIL = 'device-bootstrap@example.test';
+  process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-device-bootstrap-password';
+  const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
+  t.after(captureLog(() => {}));
+  const pool = await withTestDatabase(t);
+  const settings = require('../dist/src/services/settings') as typeof import('../src/services/settings');
+
+  const owner = crypto.randomUUID(), stranger = crypto.randomUUID();
+  await pool.execute("INSERT INTO users (id, email, password_hash) VALUES (?, 'dev-owner@example.test', 'x'), (?, 'dev-stranger@example.test', 'x')", [owner, stranger]);
+  const [phone, laptop, theirs] = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+  await pool.execute("INSERT INTO devices (id, user_id, kind) VALUES (?, ?, 'android'), (?, ?, 'web'), (?, ?, 'web')", [phone, owner, laptop, owner, theirs, stranger]);
+
+  assert.deepEqual(await settings.getSettings('device', owner, phone), {
+    app_lock_scope: { value: [], source: 'default', locked: false },
+    app_lock_relock_after: { value: '60', source: 'default', locked: false },
+    app_lock_on_device_lock: { value: true, source: 'default', locked: false },
+  });
+  await assert.rejects(settings.getSettings('device', owner, theirs), { status: 404 });
+  await assert.rejects(settings.updateSettings('device', owner, theirs, { values: { app_lock_scope: ['app'] } }), { status: 404 });
+  await assert.rejects(settings.updateSettings('device', owner, phone, { values: { app_lock_scope: ['mail', 'notes'] } }), { status: 400 });
+  // Stored in its plain form: the catalog's order, the whole app alone.
+  assert.deepEqual((await settings.updateSettings('device', owner, phone, { values: { app_lock_scope: ['contacts', 'mail'] } })).app_lock_scope.value, ['mail', 'contacts']);
+  assert.deepEqual((await settings.updateSettings('device', owner, laptop, { values: { app_lock_scope: ['recordings', 'app'], app_lock_relock_after: '900' } })).app_lock_scope.value, ['app']);
+  const [[stored]] = await pool.query<RowDataPacket[]>("SELECT setting_value FROM device_settings WHERE device_id = ? AND setting_key = 'app_lock_scope'", [laptop]);
+  assert.equal(stored.setting_value, '["app"]');
+  assert.deepEqual(Object.keys(await settings.getScopedSettings('device', owner)).sort(), [phone, laptop].sort(), 'each device of the person, nobody else\'s');
+
+  // The administrator requires Mail at least, and at most 5 minutes in the background.
+  await pool.execute(`INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked) VALUES
+    ('installation', '', 'policy.app_lock.required', '["mail"]', FALSE), ('installation', '', 'policy.app_lock.max_background', '300', FALSE)`);
+  const mailReason = 'Your administrator requires the app lock for Mail.';
+  assert.deepEqual(await settings.appLockRequirementFor(owner), { required: ['mail'], max_background: '300', reason: mailReason });
+  const phoneNow = await settings.getSettings('device', owner, phone);
+  assert.deepEqual(phoneNow.app_lock_scope, { value: ['mail', 'contacts'], source: 'user', locked: false, floor: ['mail'] }, 'a choice covering the requirement stays the person\'s');
+  assert.deepEqual(phoneNow.app_lock_relock_after, { value: '60', source: 'default', locked: false, floor: '300' }, 'the default is within the maximum');
+  const theirsNow = await settings.getSettings('device', stranger, theirs);
+  assert.deepEqual(theirsNow.app_lock_scope, { value: ['mail'], source: 'policy', locked: false, floor: ['mail'] }, 'the requirement turns the lock on where it was off');
+  // Dropping a required area or waiting longer is refused with the administrator's words; covering more is not.
+  await assert.rejects(settings.updateSettings('device', owner, phone, { values: { app_lock_scope: ['contacts'] } }), { status: 403, code: 'POLICY_FLOOR', message: mailReason });
+  await assert.rejects(settings.updateSettings('device', owner, phone, { values: { app_lock_relock_after: '900' } }), { status: 403, code: 'POLICY_FLOOR' });
+  assert.equal((await settings.updateSettings('device', owner, phone, { values: { app_lock_relock_after: '0' } })).app_lock_relock_after.value, '0');
+  const laptopNow = await settings.getSettings('device', owner, laptop);
+  assert.deepEqual([laptopNow.app_lock_scope.value, laptopNow.app_lock_scope.source], [['app'], 'user'], 'the whole app covers Mail');
+  assert.deepEqual([laptopNow.app_lock_relock_after.value, laptopNow.app_lock_relock_after.source], ['300', 'policy'], 'a stored longer time reads as the maximum');
+
+  // Removing a device removes its settings.
+  await pool.execute('DELETE FROM devices WHERE id = ?', [phone]);
+  const [[gone]] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS count FROM device_settings WHERE device_id = ?', [phone]);
+  assert.equal(Number(gone.count), 0);
+});

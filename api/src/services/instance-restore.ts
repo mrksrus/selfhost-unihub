@@ -19,7 +19,7 @@ import { pauseMailRestore } from './backup-mail-engine';
 // A failure in pass 2 drops the tables and removes the files it wrote (both
 // were empty before), so the installation is empty again for another try.
 // Then what belongs to the old installation's running life is cleared: its
-// sessions, download tickets, login challenges, worker leases and restores
+// devices and sessions, download tickets, login challenges, worker leases and restores
 // whose archive stayed behind. Provider work it had accepted is never
 // replayed: mail accounts and their operations are paused as after an account
 // restore, until each person reconnects; calendar moves, scheduled sends and
@@ -86,6 +86,9 @@ const inside = (child: string, parent: string) => {
 async function clearInstallationState(connection: Connection, run: { id: string; fileName: string; size: number; sha256: string }) {
   const statements: [string, ExecuteValues[]][] = [
     ['DELETE FROM sessions', []],
+    // Devices with their settings (F5): every browser and app signs in again
+    // and becomes a device of the restored installation.
+    ['DELETE FROM devices', []],
     ['DELETE FROM file_tickets', []],
     ['DELETE FROM two_factor_challenges', []],
     ['UPDATE mail_engine_accounts SET lease_owner = NULL, lease_until = NULL', []],

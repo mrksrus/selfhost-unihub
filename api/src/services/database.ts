@@ -13,6 +13,7 @@ import { verifyDatabaseInventory } from './data-inventory';
 import { withTransaction } from './transactions';
 import { addContactModel, copyLegacyContactValues, verifyLegacyContactCopy, dropLegacyContactColumns, verifyLegacyColumnsDropped } from './contacts-migration';
 import { adoptRawCalendarUids } from './calendar-uid-upgrade';
+import { addDevices, verifyDevices } from './devices-migration';
 import { log } from '../log';
 
 type FieldRow = RowDataPacket & { Field: string };
@@ -402,6 +403,18 @@ const MIGRATIONS: readonly Migration[] = [
       if (!await hasIndex(connection, 'calendar_event_moves', 'idx_event_moves_bin_item')) throw new Error('calendar_event_moves.bin_item_id is missing');
       if (!await hasColumn(connection, 'calendar_event_moves', 'counted_before_send')) throw new Error('calendar_event_moves.counted_before_send is missing');
       if (!await hasColumn(connection, 'calendar_overlay_restores', 'failed_at')) throw new Error('calendar_overlay_restores.failed_at is missing');
+    },
+  },
+  {
+    // 0.29.0 (app lock): devices as records (F5), with their own settings
+    // scope; every session from before gets a device of its own and every
+    // push channel its session's device (devices-migration.ts).
+    id: 26,
+    name: 'devices-and-app-lock',
+    up: addDevices,
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 26 });
+      await verifyDevices(connection);
     },
   },
 ];

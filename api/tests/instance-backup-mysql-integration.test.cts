@@ -114,6 +114,13 @@ test('the instance backup copies the installation, keeps only verified runs, ref
   }
   await pool.execute(`INSERT INTO calendar_event_moves (id, user_id, target_uid, state, next_attempt_at) VALUES (?, ?, 'synthetic-move@example.test', 'removing', UTC_TIMESTAMP())`,
     [crypto.randomUUID(), users.alex]);
+  // alex's browser as a device (0.29) with its app lock: it belongs to this
+  // installation, so the dump carries it and the restore leaves none of it.
+  const alexDevice = crypto.randomUUID();
+  await pool.execute("INSERT INTO devices (id, user_id, kind, key_hash, lock_applied) VALUES (?, ?, 'web', REPEAT('d', 64), ?)",
+    [alexDevice, users.alex, JSON.stringify({ scope: ['mail'], relock_after: '60', on_device_lock: true, method: 'pin' })]);
+  await pool.execute('UPDATE sessions SET device_id = ? WHERE user_id = ?', [alexDevice, users.alex]);
+  await pool.execute("INSERT INTO device_settings (device_id, user_id, setting_key, setting_value) VALUES (?, ?, 'app_lock_scope', '[\"mail\"]')", [alexDevice, users.alex]);
 
   const recordingPath = write(path.join(rootDirs.recordings, users.alex, 'memo.webm'), crypto.randomBytes(300_000));
   await pool.execute("INSERT INTO recordings (id, user_id, title, content_type, storage_path) VALUES (?, ?, 'Synthetic memo', 'audio/webm', ?)", [crypto.randomUUID(), users.alex, recordingPath]);
@@ -856,13 +863,14 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     });
 
     // Every table as the dump had it, but for the running life of the old installation.
-    const retired: Record<string, number> = { sessions: 0, file_tickets: 0, two_factor_challenges: 0, calendar_event_moves: 0,
+    const retired: Record<string, number> = { sessions: 0, devices: 0, device_settings: 0, file_tickets: 0, two_factor_challenges: 0, calendar_event_moves: 0,
       mail_scheduled_sends: first.manifest.database.tables.mail_scheduled_sends - 1, mail_server_messages: first.manifest.database.tables.mail_server_messages - 1 };
     for (const [table, count] of Object.entries(first.manifest.database.tables)) {
       const [[row]] = await pool.query<RowDataPacket[]>(`SELECT COUNT(*) AS count FROM ${pool.escapeId(table)}`);
       assert.equal(Number(row.count), table in retired ? retired[table] : count, table);
     }
     assert.ok(first.manifest.database.tables.sessions > 0, 'the source had sessions to leave behind');
+    assert.ok(first.manifest.database.tables.devices > 0 && first.manifest.database.tables.device_settings > 0, 'and a device with its app lock');
     for (const file of included) assert.equal(sha(file), hashes.get(file), file);
     for (const file of leftOut) assert.equal(fs.existsSync(file), false, file);
 

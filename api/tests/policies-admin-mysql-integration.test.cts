@@ -100,6 +100,33 @@ test('policies, notices and the administrator\'s path for a person, with an owne
     assert.equal((await setPolicies({}, { bin_min_retention: '30' })).revision, quiet.revision, 'the minimum alone shows nobody anything');
   });
 
+  // The app lock (0.29) has the first list-valued key: it is stored and
+  // compared in its plain form (the union order, 'app' alone), so the same
+  // list again changes and records nothing, and none removes the row.
+  await t.test('the app lock policies: a list is kept in its plain form, recorded once, told to everyone, and none removes it', async () => {
+    const revision = (await call(admin, 'GET', '/api/admin/policies')).revision as number;
+    const saved = await setPolicies({ 'app_lock.required': ['contacts', 'mail', 'mail'], 'app_lock.max_background': '300' }, {}, 400);
+    assert.equal(saved.code, 'POLICY_INVALID', 'an area named twice is no list the key takes');
+    const set = await setPolicies({ 'app_lock.required': ['contacts', 'mail'], 'app_lock.max_background': '300' });
+    assert.deepEqual([set.revision, set.policies['app_lock.required'].value, set.policies['app_lock.required'].source], [revision + 1, ['mail', 'contacts'], 'policy']);
+    const stored = async (key: string) => (await pool.query<RowDataPacket[]>('SELECT setting_value FROM setting_policies WHERE setting_key = ?', [`policy.${key}`]))[0].map(row => row.setting_value);
+    assert.deepEqual(await stored('app_lock.required'), ['["mail","contacts"]']);
+    assert.deepEqual((await audit('admin.policy_changed')).slice(-2).map(entry => entry.details).sort((a, b) => a.key.localeCompare(b.key)), [
+      { key: 'app_lock.max_background', from: 'none', to: '300' }, { key: 'app_lock.required', from: null, to: 'mail,contacts' }]);
+    const recorded = (await audit('admin.policy_changed')).length;
+    assert.equal((await setPolicies({ 'app_lock.required': ['mail', 'contacts'] })).revision, revision + 1, 'the same list in another order is no change');
+    assert.equal((await audit('admin.policy_changed')).length, recorded);
+    // The whole app covers every module and stands alone.
+    assert.deepEqual((await setPolicies({ 'app_lock.required': ['mail', 'app'] })).policies['app_lock.required'].value, ['app']);
+    assert.deepEqual(await stored('app_lock.required'), ['["app"]']);
+    const effective = await call(alex, 'GET', '/api/policies/effective');
+    assert.deepEqual(effective.policies['app_lock.required'], { value: ['app'], source: 'policy', allowed: true, reason: 'Your administrator requires the app lock for the whole app.' });
+    assert.ok(effective.rules.includes('Your administrator requires the app lock for the whole app.'));
+    assert.ok(effective.rules.includes(POLICIES['app_lock.max_background'].reasons['300']));
+    await setPolicies({ 'app_lock.required': [], 'app_lock.max_background': 'none' });
+    assert.deepEqual([...await stored('app_lock.required'), ...await stored('app_lock.max_background')], []);
+  });
+
   await t.test('the rules people are told about: effective policies, the notice revision and its confirmation, sign-up', async () => {
     await setPolicies({ 'bin.delete': 'forbidden', 'accounts.remove': 'forbidden' }, { bin_min_retention: 'forever' });
     const effective = await call(alex, 'GET', '/api/policies/effective');

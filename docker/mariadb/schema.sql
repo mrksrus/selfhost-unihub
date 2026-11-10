@@ -3,7 +3,7 @@
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
--- Through migration 25.
+-- Through migration 26.
 
 CREATE TABLE `audit_log` (
   `id` char(36) NOT NULL DEFAULT uuid(),
@@ -534,6 +534,38 @@ CREATE TABLE `data_export_jobs` (
   KEY `idx_data_export_jobs_user_backup` (`user_id`,`backup_uuid`),
   KEY `idx_data_export_jobs_keep_until` (`keep_until`),
   CONSTRAINT `data_export_jobs_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `device_settings` (
+  `device_id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `setting_key` varchar(100) NOT NULL,
+  `setting_value` text NOT NULL,
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`device_id`,`setting_key`),
+  KEY `idx_device_settings_user` (`user_id`),
+  CONSTRAINT `device_settings_ibfk_1` FOREIGN KEY (`device_id`) REFERENCES `devices` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `device_settings_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `devices` (
+  `id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `key_hash` char(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  `kind` varchar(16) NOT NULL,
+  `app_version` varchar(32) DEFAULT NULL,
+  `bridge_level` smallint(5) unsigned DEFAULT NULL,
+  `user_agent` varchar(512) DEFAULT NULL,
+  `capabilities` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`capabilities`)),
+  `lock_applied` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`lock_applied`)),
+  `lock_reported_at` datetime DEFAULT NULL,
+  `open_until` datetime DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `last_seen_at` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_device_key` (`user_id`,`key_hash`),
+  KEY `idx_devices_last_seen` (`last_seen_at`),
+  CONSTRAINT `devices_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `email_attachments` (
@@ -1211,10 +1243,14 @@ CREATE TABLE `push_subscriptions` (
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   `transport` varchar(16) NOT NULL DEFAULT 'webpush',
+  `device_id` char(36) DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `endpoint_hash` (`endpoint_hash`),
+  UNIQUE KEY `unique_push_device_transport` (`device_id`,`transport`),
   KEY `session_id` (`session_id`),
   KEY `idx_push_user` (`user_id`),
+  KEY `idx_push_device` (`device_id`),
+  CONSTRAINT `fk_push_device` FOREIGN KEY (`device_id`) REFERENCES `devices` (`id`) ON DELETE CASCADE,
   CONSTRAINT `push_subscriptions_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `push_subscriptions_ibfk_2` FOREIGN KEY (`session_id`) REFERENCES `sessions` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -1330,11 +1366,14 @@ CREATE TABLE `sessions` (
   `ip_address` varchar(45) DEFAULT NULL,
   `user_agent` text DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `device_id` char(36) DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `token` (`token`),
   KEY `idx_sessions_token` (`token`),
   KEY `idx_sessions_user` (`user_id`),
   KEY `idx_sessions_expires` (`expires_at`),
+  KEY `idx_sessions_device` (`device_id`),
+  CONSTRAINT `fk_sessions_device` FOREIGN KEY (`device_id`) REFERENCES `devices` (`id`) ON DELETE CASCADE,
   CONSTRAINT `sessions_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

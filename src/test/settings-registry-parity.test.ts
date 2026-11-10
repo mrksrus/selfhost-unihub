@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SETTINGS } from '../../api/src/services/settings-registry';
 import { DEFAULT_CALENDAR_SETTINGS, DEFAULT_MAIL_ACCOUNT_SETTINGS, DEFAULT_USER_SETTINGS } from '@/lib/settings-api';
+import { DEFAULT_DEVICE_SETTINGS } from '@/lib/settings-defaults';
 
 // The page shows these until the account's settings load (and offline); a
 // mismatch would show one value and then jump to another.
@@ -10,5 +11,6 @@ describe('settings registry parity', () => {
     expect(DEFAULT_USER_SETTINGS).toEqual(defaults(SETTINGS.user));
     expect(DEFAULT_MAIL_ACCOUNT_SETTINGS).toEqual(defaults(SETTINGS.mail_account));
     expect(DEFAULT_CALENDAR_SETTINGS).toEqual(defaults(SETTINGS.calendar));
+    expect(DEFAULT_DEVICE_SETTINGS).toEqual(defaults(SETTINGS.device));
   });
 });

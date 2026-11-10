@@ -4,6 +4,8 @@
 // services/settings.ts resolves them. The server decides: a control greyed
 // out by a policy only shows what the API refuses anyway.
 
+import type { AppLockArea, RelockAfter } from './devices';
+
 /** Allowed is every key's default: nothing changes until an administrator sets a policy. */
 export type Allowance = 'allowed' | 'forbidden';
 
@@ -47,6 +49,18 @@ export interface PolicyValues {
    * (BinMinimumRetention): people may keep items longer, never shorter.
    */
   'bin.delete': Allowance;
+  /**
+   * The app lock every device of the person must have (0.29): [] requires
+   * none, ['app'] the whole app, otherwise at least these modules. It is the
+   * floor of each device's app_lock_scope; a device that does not report a
+   * lock covering it is refused the locked parts (403 APP_LOCK_REQUIRED).
+   * Strictest across groups: the union.
+   */
+  'app_lock.required': AppLockArea[];
+  /** The longest time in the background before a device locks again: the floor of app_lock_relock_after; 'none' sets no limit. */
+  'app_lock.max_background': 'none' | RelockAfter;
+  /** Screenshots and screen recording in the Android app; browsers cannot block them. */
+  'app_lock.screenshots': Allowance;
 }
 
 export type PolicyKey = keyof PolicyValues;

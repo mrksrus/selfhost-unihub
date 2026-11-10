@@ -15,6 +15,7 @@ type RouteAuth = 'public' | 'user' | 'admin';
 type RouteBodyKind = 'json' | 'backup-upload' | 'upload' | 'none';
 type RouteCsrf = 'token' | 'background-header' | 'none';
 type RouteResponseMode = 'json' | 'stream';
+type RouteAppLock = 'exempt';
 
 // The body a route with kind 'upload' receives: the raw request body, spooled
 // by the boundary to a private file under the uploads root and bounded by the
@@ -68,6 +69,14 @@ interface RoutePolicy {
   // person's policy never stops.
   destructive?: readonly PolicyDeclaration[];
   requires?: readonly PolicyDeclaration[];
+  // The app lock (0.29, F5): a device that does not report the lock the
+  // person's policies require is refused the locked parts (403
+  // APP_LOCK_REQUIRED): a route of a required module, and while the whole
+  // app is required every route. 'exempt' keeps the route open to such a
+  // device: what it needs to set the lock up, sign out, keep notifications
+  // without content and finish work that exists only on the device. Signed-in
+  // routes only; the route policy test pins the list.
+  appLock?: RouteAppLock;
 }
 // Method signatures so a handler declared with a narrower request or body
 // type (`body: Input`) is accepted; the body stays untrusted at dispatch.
@@ -126,6 +135,8 @@ function defineRoutes<T extends RouteTable>(table: T): T {
     }
     if (spec.csrf !== undefined && !CSRF_VALUES.has(spec.csrf)) invalid(key, `unknown csrf ${String(spec.csrf)}`);
     if (spec.response !== undefined && !RESPONSE_MODES.has(spec.response)) invalid(key, `unknown response ${String(spec.response)}`);
+    if (spec.appLock !== undefined && spec.appLock !== 'exempt') invalid(key, `unknown appLock ${String(spec.appLock)}`);
+    if (spec.appLock !== undefined && spec.auth === 'public') invalid(key, 'only a signed-in route declares appLock');
     for (const field of POLICY_FIELDS) {
       const declarations = spec[field];
       if (declarations === undefined) continue;
@@ -220,4 +231,4 @@ function routePolicies(spec: Pick<RoutePolicy, 'destructive' | 'requires'>, quer
 }
 
 export { defineRoutes, mergeRouteTables, assertRouteTable, destructivePolicies, routePolicies, DEFAULT_BODY_LIMIT, MUTATING_METHODS };
-export type { UploadBody, RouteSpec, RouteTable, RoutePolicy, RouteAuth, RouteBodyKind, RouteCsrf, RouteResponseMode, PublicRouteSpec, UserRouteSpec, PolicyDeclaration };
+export type { UploadBody, RouteSpec, RouteTable, RoutePolicy, RouteAuth, RouteBodyKind, RouteCsrf, RouteResponseMode, RouteAppLock, PublicRouteSpec, UserRouteSpec, PolicyDeclaration };

@@ -19,8 +19,8 @@
 // the people, the mail accounts and every table the data inventory declares
 // as the installation's, compared by scripts/instance-drill-compare.mts) and
 // each person's data (same ids, rows, files, original messages
-// and stored passwords), with only the documented resets: no session, ticket,
-// sign-in challenge or lease of the old installation, mail accounts paused
+// and stored passwords), with only the documented resets: no session, device,
+// ticket, sign-in challenge or lease of the old installation, mail accounts paused
 // with provider deletion off, and no provider work left to replay. Each
 // person signs in again and sees what they saw; the policy still applies;
 // the restored mail and calendar passwords sign in to the test providers.
@@ -174,7 +174,7 @@ try {
   assert.equal(progress(sourceState), '9007199254740993', 'The seeded mail upgrade progress reads with every digit');
   assert.deepEqual(installationProblems(sourceState.installation, targetState.installation, { backupFile: file, restore }), [],
     'What belongs to the installation (activity log, settings, policies, push identity, backup runs, upgrade history) comes back, with only the documented changes');
-  assert.deepEqual(targetState.resets, { sessions: 0, fileTickets: 0, signInChallenges: 0, leases: 0, runnableEngineJobs: 0, runnableWritebacks: 0,
+  assert.deepEqual(targetState.resets, { sessions: 0, devices: 0, fileTickets: 0, signInChallenges: 0, leases: 0, runnableEngineJobs: 0, runnableWritebacks: 0,
     calendarMoves: 0, scheduledSends: 0, providerDeletions: 0 }, 'Nothing of the old installation\'s running life or provider work is left');
   assert.deepEqual(targetState.mailAccounts.map(({ kept, id, user_id, email_address }) => ({ kept, id, user_id, email_address })),
     sourceState.mailAccounts.map(({ kept, id, user_id, email_address }) => ({ kept, id, user_id, email_address })), 'Every mail account comes back as it was, but for the resets');

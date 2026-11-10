@@ -1,5 +1,6 @@
 import type { SettingScope } from '../contracts/settings';
 import type { BinMinimumRetention, PolicyKey, PolicyValues } from '../contracts/policies';
+import type { AppLockArea } from '../contracts/devices';
 
 // The settings registry (F1): every option of every scope, with its type,
 // default and, where an administrator may set a minimum, how strict each
@@ -27,9 +28,24 @@ export interface Entry {
   // choose only as strict or stricter. Without one, an unlocked policy is the
   // installation's default.
   strictness?: readonly string[];
+  // A list whose strictness is containment: a value covering more is
+  // stricter, and the stricter of two is their union (in the kind's allowed
+  // order). `alone` covers every other item and stands alone (the app
+  // lock's 'app'). Such a key can have a floor like one with an order.
+  union?: Union;
 }
 
+export interface Union { alone: string }
+
 const FOLDER_REF = /^(role:[a-z0-9_]{1,32}|folder:[0-9a-f-]{36})$/;
+// The app lock (0.29): the whole app, or modules by the module catalog's ids
+// (calendar is Calendar and ToDo, recordings is Recordings and Music).
+const APP_LOCK_AREAS = ['app', 'mail', 'contacts', 'calendar', 'recordings'] as const satisfies readonly AppLockArea[];
+const APP_LOCK_SCOPE = { type: 'list', item: /^[a-z]{1,16}$/, maxItems: APP_LOCK_AREAS.length, unique: true, allowed: APP_LOCK_AREAS } as const satisfies Kind;
+const APP_LOCK_UNION: Union = { alone: 'app' };
+// Seconds in the background before the lock asks again, from the longest
+// (least strict) to every time UniHub opens.
+const RELOCK_AFTER = ['900', '300', '60', '0'] as const;
 const SNOOZE_CHOICES = ['1h', '3h', 'tomorrow', '1d', '2d', 'next_week', '1w', '2w', '1mo'] as const;
 
 export const SETTINGS = {
@@ -74,6 +90,14 @@ export const SETTINGS = {
   calendar: {
     notify_enabled: { scope: 'calendar', kind: { type: 'boolean' }, default: true },
   },
+  // One device of the person (F5): the app lock, kept with the device record
+  // (device_settings) so the server can enforce a requirement and hide
+  // notification content while the device is locked. Never in a backup.
+  device: {
+    app_lock_scope: { scope: 'device', kind: APP_LOCK_SCOPE, default: [], union: APP_LOCK_UNION },
+    app_lock_relock_after: { scope: 'device', kind: { type: 'enum', values: RELOCK_AFTER }, default: '60', strictness: RELOCK_AFTER },
+    app_lock_on_device_lock: { scope: 'device', kind: { type: 'boolean' }, default: true },
+  },
 } as const satisfies Record<SettingScope, Record<string, Entry>>;
 
 // Data-safety policies (F13): rules on actions, not settings of a person.
@@ -86,11 +110,15 @@ export interface PolicyEntry<V extends Value = Value> {
   default: V;
   // Values from the least to the most strict, where the key has an order.
   strictness?: readonly string[];
+  // A list key whose strictness is containment (Entry.union).
+  union?: Union;
   // The values that refuse the action the key names.
   refuses: readonly V[];
   // A plain sentence for each value other than the default, shown beside a
   // greyed control and in the notice of the rules in force.
   reasons: Readonly<Record<string, string>>;
+  // The sentence of a value `reasons` cannot list (a list key's); null for none.
+  reasonOf?(value: V): string | null;
   // The key also refuses while this one does.
   impliedBy?: PolicyKey;
 }
@@ -139,7 +167,35 @@ export const POLICIES: { readonly [K in PolicyKey]: PolicyEntry<PolicyValues[K]>
   'account.delete': allowance('Your administrator does not allow deleting your UniHub account.'),
   'data.clear': allowance('Your administrator does not allow deleting data.', 'bin.delete'),
   'bin.delete': allowance('Your administrator does not allow deleting items from the bin for good.'),
+  // The app lock (0.29). None refuses a route by name: the request boundary
+  // refuses the locked parts to a device that does not report a lock
+  // covering them (APP_LOCK_REQUIRED), and the first two become the floors
+  // of each device's app_lock_scope and app_lock_relock_after
+  // (services/settings.ts withAppLockFloor).
+  'app_lock.required': { kind: APP_LOCK_SCOPE, default: [], union: APP_LOCK_UNION, refuses: [], reasons: {}, reasonOf: appLockRequiredReason },
+  'app_lock.max_background': {
+    kind: { type: 'enum', values: ['none', ...RELOCK_AFTER] }, default: 'none', strictness: ['none', ...RELOCK_AFTER], refuses: [],
+    reasons: {
+      900: 'Your administrator allows at most 15 minutes in the background before UniHub locks again.',
+      300: 'Your administrator allows at most 5 minutes in the background before UniHub locks again.',
+      60: 'Your administrator allows at most 1 minute in the background before UniHub locks again.',
+      0: 'Your administrator requires UniHub to lock every time you leave it.',
+    },
+  },
+  'app_lock.screenshots': { ...allowance('Your administrator does not allow screenshots in the UniHub app.'), refuses: [] },
 };
+
+const APP_LOCK_AREA_NAMES: Readonly<Record<Exclude<AppLockArea, 'app'>, string>> = {
+  mail: 'Mail', contacts: 'Contacts', calendar: 'Calendar and ToDo', recordings: 'Recordings and Music',
+};
+function appLockRequiredReason(value: readonly string[]): string | null {
+  if (!value.length) return null;
+  if (value.includes('app')) return 'Your administrator requires the app lock for the whole app.';
+  const names = APP_LOCK_AREAS.filter(area => area !== 'app' && value.includes(area)).map(area => APP_LOCK_AREA_NAMES[area as Exclude<AppLockArea, 'app'>]);
+  // "Mail and Contacts"; with more, commas and a last "and" keep "Calendar and ToDo" one name.
+  const list = names.length > 2 ? `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}` : names.join(' and ');
+  return `Your administrator requires the app lock for ${list}.`;
+}
 
 // The bin's minimum retention while bin.delete is forbidden, stored as
 // policy.bin.min_retention. It only ever adds a floor to the person's
@@ -167,4 +223,9 @@ export const POLICY_EFFECTS: Readonly<Partial<Record<PolicyKey | 'bin.min_retent
   'account.delete': 'Administrators can still delete accounts.',
   'bin.delete': 'The automatic purge then keeps items for the minimum below.',
   'bin.min_retention': 'Applies while deleting from the bin for good is not allowed; people may keep items longer.',
+  'app_lock.required': 'People are asked to turn the app lock on at their next start; until then their devices cannot open the locked parts.',
+  'app_lock.max_background': 'Devices set to lock later are asked to shorten the time.',
+  'app_lock.screenshots': 'Applies in the Android app; browsers cannot block screenshots.',
 };
+
+export { APP_LOCK_AREAS };
