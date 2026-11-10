@@ -430,7 +430,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                       disabled={!available || busy || preparing || !!restorePolicy.lock} title={restorePolicy.lock}><RotateCcw aria-hidden="true" />Restore</Button>
                   </>}
                   {running && <Button variant="outline" size="sm" onClick={() => cancel.mutate(job)} disabled={job.status === 'cancelling'}><Square aria-hidden="true" />Stop</Button>}
-                  {!running && (
+                  {!running && active && (
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label={`More actions for ${title}`}><MoreHorizontal aria-hidden="true" /></Button>
@@ -573,7 +573,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                   {job.status === 'validated' && <Button size="sm" onClick={() => askToStart(job)} disabled={!available || startRestore.isPending || !!restorePolicy.lock} title={restorePolicy.lock}><Play aria-hidden="true" />Restore</Button>}
                   {['failed', 'cancelled'].includes(job.status) && job.archive_available && <Button variant="outline" size="sm" onClick={() => askToStart(job)} disabled={!available || startRestore.isPending || !!restorePolicy.lock}><RotateCcw aria-hidden="true" />Try again</Button>}
                   {running && <Button variant="outline" size="sm" onClick={() => cancelRestore.mutate(job)} disabled={job.status === 'cancelling'}><Square aria-hidden="true" />Stop</Button>}
-                  {!running && (
+                  {!running && active && (
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label={`More actions for the restore ${meta}`}><MoreHorizontal aria-hidden="true" /></Button>
@@ -591,7 +591,10 @@ export default function BackupSettings({ active }: { active: boolean }) {
         })}
     </SettingsSection>
 
-    <AlertDialog open={!!startJob} onOpenChange={open => { if (!open) setStartJob(null); }}>
+    {/* The dialogs render through portals, outside the section Settings hides under the
+        app lock: while the section is not active they are taken down as well, their state
+        kept for the unlock (a recovery password is shown by the server only once). */}
+    <AlertDialog open={!!startJob && active} onOpenChange={open => { if (!open) setStartJob(null); }}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Restore this backup?</AlertDialogTitle>
@@ -619,7 +622,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
       </AlertDialogContent>
     </AlertDialog>
 
-    <Dialog open={!!recoveryJob} onOpenChange={open => { if (!open && !recoveryStays) closeRecovery(); }}>
+    <Dialog open={!!recoveryJob && active} onOpenChange={open => { if (!open && !recoveryStays) closeRecovery(); }}>
       <DialogContent onEscapeKeyDown={event => { if (recoveryStays) event.preventDefault(); }}
         onPointerDownOutside={event => { if (recoveryStays) event.preventDefault(); }}>
         <DialogHeader>
