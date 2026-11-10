@@ -309,14 +309,14 @@ export default function BackupSettings({ active }: { active: boolean }) {
     download.mutate(job);
   };
   const saveRecoveryFile = () => {
-    if (!recoveryJob || !recoveryPassword) return;
+    if (!active || !recoveryJob || !recoveryPassword) return;
     const stillThis = inThisOpening();
     const blob = new Blob([`UniHub backup: ${recoveryJob.id}\nRecovery password: ${recoveryPassword}\n`], { type: 'text/plain;charset=utf-8' });
     saveFile(blob, `unihub-backup-${recoveryJob.id}-recovery-password.txt`).then(() => { if (stillThis()) setRecoverySaved(true); })
       .catch(() => { if (stillThis()) toast({ title: 'Could not save the file', variant: 'destructive' }); });
   };
   const copyRecoveryPassword = () => {
-    if (!recoveryPassword) return;
+    if (!active || !recoveryPassword) return;
     const stillThis = inThisOpening();
     void copyText(recoveryPassword).then(copied => { if (stillThis()) { setRecoverySaved(copied); toast({ title: copied ? 'Copied' : 'Could not copy', variant: copied ? undefined : 'destructive' }); } });
   };
@@ -592,9 +592,10 @@ export default function BackupSettings({ active }: { active: boolean }) {
     </SettingsSection>
 
     {/* The dialogs render through portals, outside the section Settings hides under the
-        app lock: while the section is not active they are taken down as well, their state
-        kept for the unlock (a recovery password is shown by the server only once). */}
-    <AlertDialog open={!!startJob && active} onOpenChange={open => { if (!open) setStartJob(null); }}>
+        app lock: while the section is not active they are unmounted at once (closing them
+        would keep their content for the exit animation), their state kept for the unlock
+        (a recovery password is shown by the server only once). */}
+    {active && <AlertDialog open={!!startJob} onOpenChange={open => { if (!open) setStartJob(null); }}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Restore this backup?</AlertDialogTitle>
@@ -617,12 +618,12 @@ export default function BackupSettings({ active }: { active: boolean }) {
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Not now</AlertDialogCancel>
-          <AlertDialogAction disabled={!!restorePolicy.lock} onClick={() => { if (startJob && !restorePolicy.lock) startRestore.mutate(startJob); setStartJob(null); }}>Restore</AlertDialogAction>
+          <AlertDialogAction disabled={!!restorePolicy.lock} onClick={() => { if (startJob && active && !restorePolicy.lock) startRestore.mutate(startJob); setStartJob(null); }}>Restore</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
-    </AlertDialog>
+    </AlertDialog>}
 
-    <Dialog open={!!recoveryJob && active} onOpenChange={open => { if (!open && !recoveryStays) closeRecovery(); }}>
+    {active && <Dialog open={!!recoveryJob} onOpenChange={open => { if (!open && !recoveryStays) closeRecovery(); }}>
       <DialogContent onEscapeKeyDown={event => { if (recoveryStays) event.preventDefault(); }}
         onPointerDownOutside={event => { if (recoveryStays) event.preventDefault(); }}>
         <DialogHeader>
@@ -685,6 +686,6 @@ export default function BackupSettings({ active }: { active: boolean }) {
           </div>
         )}
       </DialogContent>
-    </Dialog>
+    </Dialog>}
   </>);
 }
