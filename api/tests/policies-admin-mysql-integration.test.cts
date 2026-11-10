@@ -105,6 +105,10 @@ test('policies, notices and the administrator\'s path for a person, with an owne
   // list again changes and records nothing, and none removes the row.
   await t.test('the app lock policies: a list is kept in its plain form, recorded once, told to everyone, and none removes it', async () => {
     const revision = (await call(admin, 'GET', '/api/admin/policies')).revision as number;
+    // The lock gate holds the administrator's own device to the rules too
+    // (app-lock-policy-mysql-integration): this one reports a lock of the whole app.
+    const capabilities = { lock: 'pin', secure_window: false, recents_hidden: false, device_lock_signal: false };
+    await call(admin, 'PUT', '/api/devices/current/lock', { applied: { scope: ['app'], relock_after: '0', on_device_lock: true, method: 'pin' }, capabilities });
     const saved = await setPolicies({ 'app_lock.required': ['contacts', 'mail', 'mail'], 'app_lock.max_background': '300' }, {}, 400);
     assert.equal(saved.code, 'POLICY_INVALID', 'an area named twice is no list the key takes');
     const set = await setPolicies({ 'app_lock.required': ['contacts', 'mail'], 'app_lock.max_background': '300' });
@@ -125,6 +129,7 @@ test('policies, notices and the administrator\'s path for a person, with an owne
     assert.ok(effective.rules.includes(POLICIES['app_lock.max_background'].reasons['300']));
     await setPolicies({ 'app_lock.required': [], 'app_lock.max_background': 'none' });
     assert.deepEqual([...await stored('app_lock.required'), ...await stored('app_lock.max_background')], []);
+    await call(admin, 'PUT', '/api/devices/current/lock', { applied: null, capabilities });
   });
 
   await t.test('the rules people are told about: effective policies, the notice revision and its confirmation, sign-up', async () => {
