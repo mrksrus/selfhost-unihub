@@ -461,15 +461,24 @@ describe('in the Android app (bridge level 3)', () => {
     await page.started;
     expect(page.status).toBe('setup');
     expect(fake.state.lock).toBeNull();
+    // Showing the prompt turned nothing on: the next start asks the same, without the phone's own prompt first.
+    page.controller.stop();
+    const again = appTab(fake, nativeLock({ due: true }));
+    const seen: string[] = [];
+    again.controller.subscribe(() => seen.push(again.status));
+    await again.started;
+    expect(again.status).toBe('setup');
+    expect(seen).not.toContain('locked');
+    expect(fake.state.lock).toBeNull();
     fake.reportDeviceLock.mockImplementation(async report => {
       fake.state.lock = report.applied;
       fake.state.compliance = { ...fake.state.compliance, meets: !!report.applied };
     });
     // "Turn on the app lock": the finger, then the settings.
-    expect(await page.controller.confirm()).toEqual({ ok: true });
-    await page.controller.saveSettings({ app_lock_scope: ['app'] });
+    expect(await again.controller.confirm()).toEqual({ ok: true });
+    await again.controller.saveSettings({ app_lock_scope: ['app'] });
     expect(fake.state.lock).toMatchObject({ scope: ['app'], method: 'biometric' });
-    expect(page.status).toBe('unlocked');
+    expect(again.status).toBe('unlocked');
   });
 
   it('takes the app’s own locked and unlocked news; a relock tells the app at once', async () => {

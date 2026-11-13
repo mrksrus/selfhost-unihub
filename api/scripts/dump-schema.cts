@@ -32,12 +32,26 @@ function header() {
 
 // Deterministic across runs and servers: sorted tables, no AUTO_INCREMENT
 // counters. MariaDB 13 names an unnamed foreign key `1`, `2`, ... where
-// 11.8 names it `<table>_ibfk_1`; the file keeps the older form.
+// 11.8 names it `<table>_ibfk_1`; the file keeps the older form. The two
+// also list a table's foreign keys in different orders once one has a name
+// of its own (fk_push_device), so the file sorts them by name.
+const FOREIGN_KEY = /^\s*CONSTRAINT `([^`]+)` FOREIGN KEY /;
 function normalizeCreateTable(sql: string) {
   const table = /^CREATE TABLE `([^`]+)`/.exec(sql)?.[1];
-  return sql.replace(/ AUTO_INCREMENT=\d+/g, '')
+  const lines = sql.replace(/ AUTO_INCREMENT=\d+/g, '')
     .replace(/^(\s*CONSTRAINT `)(\d+)(` FOREIGN KEY)/gm, (_, start, number, end) => `${start}${table}_ibfk_${number}${end}`)
-    .trimEnd() + ';';
+    .trimEnd().split('\n');
+  const first = lines.findIndex(line => FOREIGN_KEY.test(line));
+  if (first >= 0) {
+    let end = first;
+    while (end < lines.length && FOREIGN_KEY.test(lines[end])) end++;
+    // Every line of the list but its last ends with a comma, wherever the keys land.
+    const comma = lines[end - 1].endsWith(',');
+    const name = (line: string) => FOREIGN_KEY.exec(line)![1];
+    const keys = lines.slice(first, end).map(line => line.replace(/,$/, '')).sort((a, b) => (name(a) < name(b) ? -1 : name(a) > name(b) ? 1 : 0));
+    lines.splice(first, end - first, ...keys.map((line, index) => line + (comma || index < keys.length - 1 ? ',' : '')));
+  }
+  return lines.join('\n') + ';';
 }
 
 async function dumpSchema(connection: Pick<Connection, 'query'>) {

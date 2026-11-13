@@ -216,7 +216,11 @@ export class AppLockController {
     // With this browser's records the answer is known now, also offline. A
     // browser without them waits for the server, so a cleared storage does
     // not show private views before the server says whether a lock is on.
-    if (timeline || this.offline()) this.settle();
+    // A phone whose records hold a required lock nobody turned on (a scope
+    // without a method) waits too, so its own prompt does not ask before
+    // the required prompt.
+    const unclaimed = this.nativeUnlock && !pin && !!timeline?.scope.length && timeline.method === null;
+    if ((timeline && !unclaimed) || this.offline()) this.settle();
     if (!this.offline()) await this.refresh({ adopt: true, start: true });
     if (this.ended) return;
     if (!this.ready) {
@@ -368,8 +372,9 @@ export class AppLockController {
     await writeTimelineConfig(this.userId, {
       ...this.config,
       blockScreenshots: this.screenshotsForbidden,
-      // A lock waiting for its method keeps the one it had, so a lost PIN stays lost.
-      method: this.scope.length ? (this.hasMethod ? this.methodName : this.appliedMethod) : null,
+      // A lock waiting for its method keeps the one it had, so a lost PIN stays
+      // lost; one waiting to be turned on has none, so the next start asks again.
+      method: this.scope.length ? (this.hasMethod && !this.awaitingTurnOn ? this.methodName : this.appliedMethod) : null,
     }).catch(() => {});
     if (this.ended || lost || !this.settingsLoaded || this.offline()) return;
     const report = { applied: this.applied(), capabilities: this.deviceCapabilities() };
