@@ -46,7 +46,7 @@ docker image inspect "$image" >/dev/null
 # starting anything if an unrelated local service owns the image's fixed ports.
 node --input-type=module <<'NODE'
 import net from 'node:net';
-for (const port of [80, 4000]) {
+for (const port of [80, 4000, 4001]) {
   await new Promise((resolve, reject) => {
     const socket = net.connect({ port, host: '127.0.0.1' });
     socket.setTimeout(2000);

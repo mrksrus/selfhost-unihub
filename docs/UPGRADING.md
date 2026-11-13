@@ -8,7 +8,8 @@ version-specific upgrade guidance. Preserve existing data and keys when upgradin
 ## 0.28.4 MariaDB 13
 
 No database upgrade and no configuration change. Going back to 0.28.3 is
-possible.
+possible, unless `UNIHUB_HTTP_PORT` is 4000 or an `ALLOWED_ORIGINS` entry
+only works as 0.28.4 reads it (see below).
 
 - **Existing installations** keep the MariaDB they have. The Compose file
   stays on `mariadb:11.8`, the LTS release MariaDB maintains until June 2028.
