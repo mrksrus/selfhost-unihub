@@ -23,6 +23,9 @@ possible.
   refuses.
 - **Port 4000.** `UNIHUB_HTTP_PORT=4000`, which 0.28.3 refused, now works:
   the API inside the container moves from 4000 to 4001 in that case.
+- **Origins.** An `ALLOWED_ORIGINS` entry written with capital letters,
+  `:443`, a trailing slash or a path now works; nothing to change if
+  sign-in already works.
 - **Changing an existing database from 11.8 to 13** is not part of these
   checks. MariaDB cannot move a data directory back to an older version;
   take a consistent backup of the database and the uploads first.

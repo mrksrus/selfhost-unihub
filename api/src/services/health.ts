@@ -2,7 +2,9 @@ import { db, getDb } from '../state';
 import { poolStats } from './database';
 import { log } from '../log';
 
-const HEALTH_PROBE_MS = 4000;
+// Under the two seconds Nginx gives /health (docker/nginx/default.conf): a
+// later answer never reaches the check, which then sees a 502.
+const HEALTH_PROBE_MS = 1500;
 // How long a saturated pool may keep the probe from answering before it counts
 // as a failure. Long enough to ride out a burst of sync work; short enough that
 // a pool that never drains, or a hung database, ends in a restart.

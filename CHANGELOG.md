@@ -26,6 +26,16 @@ database upgrade and nothing changes for an existing installation (see
 - **`UNIHUB_HTTP_PORT=4000` works.** 0.28.3 refused it because the API
   listens on 4000 inside the container; the API now moves to 4001 when
   Nginx is given that port.
+- **`ALLOWED_ORIGINS` accepts an address however it is written.** An entry
+  with capital letters, `:443`, a trailing slash or a path was compared
+  letter by letter with what the browser sends and never matched, so
+  sign-in failed. Each entry is now read as the origin it means.
+- **A busy server no longer looks dead to the health check.** While all
+  database connections are in use, the API answers the check with "busy"
+  after a wait. That wait was longer than Nginx allows for the check, so
+  the answer became an error. It now arrives in time.
+- **No "Aborted connection" warning in MariaDB's log at every start.** The
+  start-up check of the database now closes its connection properly.
 
 ## 0.28.3
 

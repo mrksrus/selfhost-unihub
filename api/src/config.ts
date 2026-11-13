@@ -127,10 +127,20 @@ const BACKUP_MASTER_KEY_SET = secret('BACKUP_MASTER_KEY') || '';
 const BACKUP_MASTER_KEY = BACKUP_MASTER_KEY_SET || ENCRYPTION_KEY;
 const BOOTSTRAP_ADMIN_EMAIL = (process.env.BOOTSTRAP_ADMIN_EMAIL || '').trim().toLowerCase();
 const BOOTSTRAP_ADMIN_PASSWORD = secret('BOOTSTRAP_ADMIN_PASSWORD') || '';
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
-  .split(',')
-  .map(origin => origin.trim())
-  .filter(Boolean);
+// Compared with the browser's Origin header, which has a lower-case host and
+// no default port, path or trailing slash: an address written with any of
+// those is read as the origin it means. Anything else stays as written.
+function readAllowedOrigins(value: string | undefined) {
+  return (value || '').split(',').map(origin => origin.trim()).filter(Boolean).map(origin => {
+    try {
+      const parsed = new URL(origin).origin;
+      return parsed === 'null' ? origin : parsed;
+    } catch {
+      return origin;
+    }
+  });
+}
+const ALLOWED_ORIGINS = readAllowedOrigins(process.env.ALLOWED_ORIGINS);
 const TRUST_PROXY_HEADERS = process.env.TRUST_PROXY_HEADERS === 'true';
 const TRUSTED_PROXY_CIDRS = (process.env.TRUSTED_PROXY_CIDRS || '127.0.0.1/32,::1/128')
   .split(',').map(value => value.trim()).filter(Boolean);
@@ -269,6 +279,7 @@ export {
   BOOTSTRAP_ADMIN_EMAIL,
   BOOTSTRAP_ADMIN_PASSWORD,
   ALLOWED_ORIGINS,
+  readAllowedOrigins,
   TRUST_PROXY_HEADERS,
   TRUSTED_PROXY_CIDRS,
   TRUSTED_MAIL_HOSTS,

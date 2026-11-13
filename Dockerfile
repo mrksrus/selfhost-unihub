@@ -119,6 +119,7 @@ RUN mkdir -p /app/uploads && chown unihub:unihub /app/uploads
 COPY docker/start.sh /app/start.sh
 RUN chmod +x /app/start.sh
 
+# The port when UNIHUB_HTTP_PORT is not set.
 EXPOSE 80
 
 # Allow the 300s MariaDB readiness window plus API startup before reporting failures.

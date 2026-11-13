@@ -20,9 +20,9 @@ test('readiness uses the API DATABASE_URL precedence and configured credentials 
   const calls: FixtureValue[] = [];
   await probeDatabase(selected, { timeoutMs: 2500, createConnection(options: FixtureValue) {
     calls.push(options);
-    return { promise: () => ({ query: async (sql: string) => { calls.push(sql); } }), destroy: () => calls.push('destroyed') };
+    return { promise: () => ({ query: async (sql: string) => { calls.push(sql); }, end: async () => { calls.push('ended'); } }), destroy: () => calls.push('destroyed') };
   } } as FixtureValue);
-  assert.deepEqual(calls, [{ ...selected, timezone: '+00:00', connectTimeout: 2500 }, 'SELECT 1', 'destroyed']);
+  assert.deepEqual(calls, [{ ...selected, timezone: '+00:00', connectTimeout: 2500 }, 'SELECT 1', 'ended', 'destroyed']);
 });
 
 test('a slow database retains the full default five-minute budget and exits only after SELECT1 succeeds', async () => {

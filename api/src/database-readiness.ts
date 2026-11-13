@@ -45,6 +45,8 @@ async function probeDatabase(config: DatabaseConfig, {
     });
     // SELECT1 verifies authentication and access to the configured database.
     await Promise.race([connection.promise().query('SELECT 1'), deadline]);
+    // Say goodbye: MariaDB logs a connection dropped without it as aborted.
+    await Promise.race([connection.promise().end(), deadline]).catch(() => {});
   } finally {
     clearTimer(timer);
     // Destroy also closes a stalled handshake/authentication, not just TCP connect.
