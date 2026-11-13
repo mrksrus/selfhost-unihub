@@ -104,7 +104,7 @@ published.
 
 | Promise | Check (CI step) | Run it locally |
 | --- | --- | --- |
-| API, database and recovery tests pass with no skipped test | `npm --prefix api run test:ci` (`api-tests`; this CI step is the promise, PROJECT-PREFERENCES P-34; the instance backup's test runs the MariaDB client tools of the database container) | focused files with `scripts/local-db.sh test <file>`; the whole suite with `npm run test:db` ([development](DEVELOPMENT.md)) |
+| API, database and recovery tests pass with no skipped test | `npm --prefix api run test:ci` (`api-tests`, once on MariaDB 11.8 and once on 13.0; this CI step is the promise, PROJECT-PREFERENCES P-34; the instance backup's test runs the MariaDB client tools of the database container) | focused files with `scripts/local-db.sh test <file>`; the whole suite with `npm run test:db` ([development](DEVELOPMENT.md)) |
 | Frontend tests, lint and production build | Run frontend checks | `npm test -- --run && npm run lint && npm run build` |
 | The release checks' own logic (evidence, release window, provider log) | Test the release checks | `npm run typecheck:scripts && node --test scripts/release-checks.test.mts` |
 | Pinned interface reference pictures and browser behavior | Verify the pinned interface | `npm --prefix tools/ui-regression run verify` ([setup](UI_BASELINES.md#commands)) |

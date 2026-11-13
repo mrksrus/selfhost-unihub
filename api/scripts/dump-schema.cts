@@ -30,9 +30,14 @@ function header() {
 `;
 }
 
-// Deterministic across runs: sorted tables, no AUTO_INCREMENT counters.
+// Deterministic across runs and servers: sorted tables, no AUTO_INCREMENT
+// counters. MariaDB 13 names an unnamed foreign key `1`, `2`, ... where
+// 11.8 names it `<table>_ibfk_1`; the file keeps the older form.
 function normalizeCreateTable(sql: string) {
-  return sql.replace(/ AUTO_INCREMENT=\d+/g, '').trimEnd() + ';';
+  const table = /^CREATE TABLE `([^`]+)`/.exec(sql)?.[1];
+  return sql.replace(/ AUTO_INCREMENT=\d+/g, '')
+    .replace(/^(\s*CONSTRAINT `)(\d+)(` FOREIGN KEY)/gm, (_, start, number, end) => `${start}${table}_ibfk_${number}${end}`)
+    .trimEnd() + ';';
 }
 
 async function dumpSchema(connection: Pick<Connection, 'query'>) {

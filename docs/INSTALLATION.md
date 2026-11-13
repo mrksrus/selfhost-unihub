@@ -13,7 +13,8 @@ volumes by following the fresh-install steps on an existing installation.
 
 You need Docker with the Compose plugin, Git, and persistent disk space for mail,
 recordings, backups and the database. UniHub 0.16.0 and later use
-**MariaDB 11.8 LTS** (MariaDB 10.11 or later is required). MySQL is no longer
+**MariaDB 11.8 LTS** (MariaDB 10.11 or later is required; releases are tested
+on 11.8 and 13.0). MySQL is no longer
 supported; an existing MySQL installation needs the steps in the
 [upgrade guide](UPGRADING.md#0160-mariadb). With your own database server, give
 UniHub an empty database of its own.

@@ -5,6 +5,25 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.28.4 MariaDB 13
+
+No database upgrade and no configuration change. Going back to 0.28.3 is
+possible.
+
+- **Existing installations** keep the MariaDB they have. The Compose file
+  stays on `mariadb:11.8`, the LTS release MariaDB maintains until June 2028.
+- **MariaDB 13.** UniHub's release checks now also run on MariaDB 13.0, the
+  version the TrueNAS catalog installs: all database tests, and a backup and
+  restore of a whole installation with the image's own tools. MariaDB 13.0
+  is a quarterly release, maintained only until the next one, so it suits
+  an installation whose database is updated for it, as the catalog does.
+- **Changing an existing database from 11.8 to 13** is not part of these
+  checks. MariaDB cannot move a data directory back to an older version;
+  take a consistent backup of the database and the uploads first.
+- **Android app.** 0.28.4's app is 0.28.3's app with the new version number;
+  install it when it is offered. The window is 0.28.4, 0.28.3, 0.28.2 and
+  0.28.1: the 0.28.0 app leaves it, so update a phone that still has it.
+
 ## 0.28.3 Any user, any port
 
 No database upgrade and no configuration change. Going back to 0.28.2 is

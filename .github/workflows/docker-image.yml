@@ -143,6 +143,11 @@ jobs:
     if: ${{ !cancelled() && needs.promote.outputs.found != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # docker-compose.yml's MariaDB (LTS), and the one the TrueNAS catalog ships.
+        mariadb: ["11.8", "13.0"]
     env:
       MYSQL_TEST_SCHEMA_SMOKE: "1"
       MYSQL_TEST_HOST: 127.0.0.1
@@ -154,8 +159,7 @@ jobs:
       BACKUP_MASTER_KEY: ci-test-backup-master-key
     services:
       mariadb:
-        # Same image as docker-compose.yml.
-        image: mariadb:11.8
+        image: mariadb:${{ matrix.mariadb }}
         env:
           MARIADB_ROOT_PASSWORD: test-root-password
           MARIADB_DATABASE: unihub_test
@@ -577,6 +581,13 @@ jobs:
       - name: Restore an instance backup into an empty installation
         env:
           UNIHUB_INSTANCE_DRILL_EVIDENCE: release-evidence/instance-drill.json
+        run: node scripts/instance-backup-drill.mts --image unihub:ci
+
+      # The same on the MariaDB the TrueNAS catalog ships: the image's own
+      # client tools dump and load a server newer than they are.
+      - name: Restore an instance backup on MariaDB 13.0
+        env:
+          UNIHUB_DB_IMAGE: mariadb:13.0
         run: node scripts/instance-backup-drill.mts --image unihub:ci
 
       # In Chrome: this build's worker hands over to a following build while a

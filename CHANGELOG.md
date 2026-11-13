@@ -6,6 +6,21 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.28.4
+
+For installers: MariaDB 13 is supported. No database upgrade and nothing
+changes for an existing installation (see
+[Upgrading](docs/UPGRADING.md#0284-mariadb-13)).
+
+### Added
+
+- **MariaDB 13 is supported and tested.** Every release now runs its
+  database tests, and backs up and restores a whole installation, on
+  MariaDB 13.0 as well as on 11.8 LTS. 13 is the version the TrueNAS catalog
+  installs. The Compose file stays on 11.8 LTS, which MariaDB maintains
+  until 2028; 13.0 is one of its quarterly releases, maintained only until
+  the next one.
+
 ## 0.28.3
 
 For installers: the image starts in two more ways. No database upgrade and

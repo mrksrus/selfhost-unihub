@@ -10,7 +10,8 @@ adds UniHub to the Community train. Until it is merged, TrueNAS can run UniHub
 as a custom app from the [Compose file](../docker-compose.yml).
 
 The app is the same image as every other installation, with a separate MariaDB
-container. It needs UniHub 0.28.3 or later: the container runs as the user and
+container: the catalog's MariaDB 13, which UniHub's releases are tested on
+from 0.28.4. It needs UniHub 0.28.3 or later: the container runs as the user and
 group chosen in the form (568, `apps`, unless changed), without root and
 without Linux capabilities, and listens on the port chosen in the form.
 

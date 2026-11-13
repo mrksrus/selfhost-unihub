@@ -92,7 +92,7 @@ For feature details, follow the corresponding file in docs/ rather than treating
 - Mail has Download and Sync modes, provider writebacks, and optional server deletion. Read docs/MAIL_MODES.md and docs/MAIL_SYNC.md before changing message identity, folders, read/star/move behavior, or deletion.
 - Backup/import/restore is experimental and has durable jobs and recovery-format contracts. A change to stored data may need a migration, backup/export mapping, restore mapping, and tests. Do not test against a live database or real uploads.
 - Optional modules affect navigation, API access, background work, search, and offline reads. Calendar and ToDo share one module, as do Recordings and Music; their pages are shown, hidden and ordered separately (page preferences), but enabling stays per module. A route affecting another module must check that module and its restore lock before side effects, regardless of its URL prefix. See docs/MODULES.md.
-- MariaDB 10.11 or later is required; Compose and CI use 11.8. Keep database sessions and DATETIME handling in UTC. Historical MYSQL_* configuration names, mysql2 and *-mysql-integration.test.cts filenames still apply to MariaDB.
+- MariaDB 10.11 or later is required; Compose uses 11.8 LTS, and CI runs the API tests and the instance backup drill on 13.0 as well (the TrueNAS catalog's version). Keep database sessions and DATETIME handling in UTC. Historical MYSQL_* configuration names, mysql2 and *-mysql-integration.test.cts filenames still apply to MariaDB.
 
 ## Building toward 1.0
 
