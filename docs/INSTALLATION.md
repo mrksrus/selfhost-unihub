@@ -13,7 +13,8 @@ volumes by following the fresh-install steps on an existing installation.
 
 You need Docker with the Compose plugin, Git, and persistent disk space for mail,
 recordings, backups and the database. UniHub 0.16.0 and later use
-**MariaDB 11.8 LTS** (MariaDB 10.11 or later is required). MySQL is no longer
+**MariaDB 11.8 LTS** (MariaDB 10.11 or later is required; releases are tested
+on 11.8 and, from 0.28.4, on 13.0). MySQL is no longer
 supported; an existing MySQL installation needs the steps in the
 [upgrade guide](UPGRADING.md#0160-mariadb). With your own database server, give
 UniHub an empty database of its own.
@@ -233,7 +234,8 @@ instance backup folder and secret files must already be usable by that user.
 `UNIHUB_HTTP_PORT` sets the port Nginx listens on inside the container (80
 unless set). A user other than root is not allowed to open port 80
 everywhere, so set a port above 1023 together with `user:` and map the
-published port to it, for example `"3000:8080"`.
+published port to it, for example `"3000:8080"`. Any port works: given 4000,
+the API's own port inside the container, the API moves to 4001.
 
 Use writable storage suitable for each container's actual user/permissions. Do
 not mount a new empty dataset over existing data during an upgrade. Keep the same

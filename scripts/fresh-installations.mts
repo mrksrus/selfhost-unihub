@@ -2,8 +2,8 @@
 // its own MariaDB server, uploads directory, keys and API process, so nothing
 // is shared but the machine. Two kinds:
 //
-// - container: the candidate image and a mariadb:11.8 container on a private
-//   Docker network (CI). The app listens on a loopback port of this machine.
+// - container: the candidate image and a MariaDB container (mariadb:11.8, or
+//   UNIHUB_DB_IMAGE) on a private Docker network (CI). The app listens on a loopback port of this machine.
 // - local: the built API (api/dist) and MariaDB from the official tarball
 //   (scripts/local-db.sh, UNIHUB_DB_HOME), each API in a bubblewrap mount
 //   namespace whose /app/uploads is its own directory. No Docker needed.
@@ -151,6 +151,7 @@ const keysFor = (options: InstallationOptions): InstallationKeys => ({
   JWT_SECRET: options.keys?.JWT_SECRET ?? secret(), ENCRYPTION_KEY: options.keys?.ENCRYPTION_KEY ?? secret(), BACKUP_MASTER_KEY: options.keys?.BACKUP_MASTER_KEY ?? secret(),
 });
 /** Where an installation's key file for the instance backup, and a restore's file and key, appear inside its containers. */
+const DB_IMAGE = process.env.UNIHUB_DB_IMAGE || 'mariadb:11.8';
 const IN_CONTAINER = { ca: '/run/unihub-test/ca.pem', instanceKey: '/run/unihub-test/instance.key', restoreKey: '/run/unihub-test/restore.key', restoreDir: '/run/unihub-restore', backup: '/backup' };
 
 export async function startContainerInstallation(firstImage: string, options: InstallationOptions): Promise<Installation> {
@@ -211,7 +212,7 @@ export async function startContainerInstallation(firstImage: string, options: In
     // Same server settings as docker-compose.yml.
     docker('run', '-d', '--name', db, '--network', network, '--network-alias', 'db',
       '-e', 'MARIADB_DATABASE=unihub', '-e', 'MARIADB_USER=unihub', '-e', `MARIADB_PASSWORD=${dbPassword}`, '-e', `MARIADB_ROOT_PASSWORD=${secret()}`,
-      '--mount', `type=volume,source=${dbVolume},target=/var/lib/mysql`, 'mariadb:11.8',
+      '--mount', `type=volume,source=${dbVolume},target=/var/lib/mysql`, DB_IMAGE,
       '--character-set-server=utf8mb4', '--collation-server=utf8mb4_unicode_ci', '--innodb-snapshot-isolation=OFF',
       '--innodb-flush-log-at-trx-commit=2', '--skip-name-resolve', '--local-infile=0');
     if (options.storage && options.storage !== '/app/uploads') throw new Error('A container installation keeps its files in /app/uploads');
@@ -253,7 +254,7 @@ export async function startContainerInstallation(firstImage: string, options: In
           snapshots.push(copy);
           // MariaDB's image has cp and du; the copy keeps owners and modes.
           bytes += Number(run('docker', ['run', '--rm', '--entrypoint', 'sh', '--mount', `type=volume,source=${source},target=/from,readonly`,
-            '--mount', `type=volume,source=${copy},target=/to`, 'mariadb:11.8', '-c', 'cp -a /from/. /to/ && du -sb /to | cut -f1'], { timeout: 600000 }).trim()) || 0;
+            '--mount', `type=volume,source=${copy},target=/to`, DB_IMAGE, '-c', 'cp -a /from/. /to/ && du -sb /to | cut -f1'], { timeout: 600000 }).trim()) || 0;
           volumes.push(copy);
         }
         docker('start', db);

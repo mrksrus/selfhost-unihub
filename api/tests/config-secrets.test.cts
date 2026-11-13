@@ -247,3 +247,11 @@ test('the instance backup destination is refused inside the stored files, and th
     ['backups', 'user/restores', true], ['attachments', 'imports', true],
   ] as [string, string, boolean?][]) assert.equal(left(root, relative, directory), false, `${root}/${relative} is stored data`);
 });
+
+test('allowed origins are read as the browser sends them', () => {
+  assert.deepEqual(
+    config.readAllowedOrigins(' https://Hub.Example.com/ , https://hub.example.com:443/unihub,https://10.0.0.5:8443,http://nas.local:80, https://[FD00::1]:8443/ ,not a url,,'),
+    ['https://hub.example.com', 'https://hub.example.com', 'https://10.0.0.5:8443', 'http://nas.local', 'https://[fd00::1]:8443', 'not a url'],
+  );
+  assert.deepEqual(config.readAllowedOrigins(undefined), []);
+});

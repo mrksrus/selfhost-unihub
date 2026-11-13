@@ -199,7 +199,9 @@ dump's start, file counts and the hashes of the dump and the index).
 **Restore** is a command in the image, never the web. Into an empty
 installation: the same image version or a newer one, its own new database
 volume and uploads volume, the old installation's `ENCRYPTION_KEY` and
-`BACKUP_MASTER_KEY`, and the destination mounted to read the file.
+`BACKUP_MASTER_KEY`, and the destination mounted to read the file. The
+database server must be the same MariaDB version or a newer one: a backup
+made on MariaDB 13 does not load into 11.8.
 
 ```bash
 docker compose up -d unihub-db          # the database only, not the app

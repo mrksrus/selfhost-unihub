@@ -10,7 +10,8 @@ adds UniHub to the Community train. Until it is merged, TrueNAS can run UniHub
 as a custom app from the [Compose file](../docker-compose.yml).
 
 The app is the same image as every other installation, with a separate MariaDB
-container. It needs UniHub 0.28.3 or later: the container runs as the user and
+container: the catalog's MariaDB 13, which UniHub's releases are tested on
+from 0.28.4. The container runs as the user and
 group chosen in the form (568, `apps`, unless changed), without root and
 without Linux capabilities, and listens on the port chosen in the form.
 
@@ -27,17 +28,17 @@ domain or Internet access is not required; private DNS works. See
 
 | Field | What it sets |
 | --- | --- |
-| Initial Admin Email, Initial Admin Password | `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD`: the first administrator, created once on an empty database. Changing them later does not change an existing account. |
-| Database Password, Root Database Password | The MariaDB container's `unihub` and `root` passwords. Changing them later does not change the passwords inside an existing database. |
+| Initial Admin Email, Initial Admin Password | `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD`: the first administrator, created once on an empty database. Fixed at installation; change the account in UniHub afterwards. |
+| Database Password, Root Database Password | The MariaDB container's `unihub` and `root` passwords. Do not change them after the first start: the database keeps the old ones, and the app no longer starts. |
 | JWT Secret | `JWT_SECRET`, which signs the login sessions. Changing it signs everyone out. |
 | Encryption Key | `ENCRYPTION_KEY`, which encrypts saved mail and calendar passwords and authenticator keys. Losing it makes them unreadable; keep a copy outside the NAS. |
-| Origins | `ALLOWED_ORIGINS`: every address people open UniHub at, exactly as in the browser (`https://hub.example.com`, with the port when it is not 443, no path). The app's Web UI button opens the first one. |
-| User ID, Group ID | The user everything in the UniHub container runs as and that owns the uploads. |
+| Origins | `ALLOWED_ORIGINS`: every address people open UniHub at, as in the browser (`https://hub.example.com`, with the port when it is not 443). Each must be HTTPS; the installation refuses any other address. While the port's bind mode is Publish, the app's Web UI button opens the first one. |
+| User ID, Group ID | The user everything in the UniHub container runs as and that owns the uploads. Changing it later does not change the owner of existing files. |
 | WebUI Port | `UNIHUB_HTTP_PORT` and the published port. It serves plain HTTP for your reverse proxy. |
 | Uploads Storage | `/app/uploads`: mail originals, attachments, recordings and account backups. |
 | Database Storage | MariaDB's data. |
 
-Everything else is an **Additional Environment Variable**, described in the
+Everything else goes into **Additional Environment Variables**, described in the
 [installation guide](INSTALLATION.md):
 
 - `TRUSTED_PROXY_CIDRS`: your reverse proxy's address as UniHub sees it, after

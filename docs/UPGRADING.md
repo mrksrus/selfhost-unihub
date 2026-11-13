@@ -41,8 +41,37 @@ together with the sessions, so everyone signs in again as before.
   volume is added. The web PIN never reaches the server.
 - **Android app.** Install 0.29.0's app when it is offered for the
   fingerprint and face unlock; the 0.28.x apps keep working and use a UniHub
-  PIN for the lock. The window is 0.29.0, 0.28.3, 0.28.2 and 0.28.1: the
-  0.28.0 app leaves it, so update a phone that still has it.
+  PIN for the lock. The window is 0.29.0, 0.28.4, 0.28.3 and 0.28.2: the
+  0.28.1 app leaves it, so update a phone that still has it.
+
+## 0.28.4 MariaDB 13
+
+No database upgrade and no configuration change. Going back to 0.28.3 is
+possible, unless `UNIHUB_HTTP_PORT` is 4000 or an `ALLOWED_ORIGINS` entry
+only works as 0.28.4 reads it (see below).
+
+- **Existing installations** keep the MariaDB they have. The Compose file
+  stays on `mariadb:11.8`, the LTS release MariaDB maintains until June 2028.
+- **MariaDB 13.** UniHub's release checks now also run on MariaDB 13.0, the
+  version the TrueNAS catalog installs: all database tests, and a backup and
+  restore of a whole installation with the image's own tools. MariaDB 13.0
+  is a quarterly release, maintained only until the next one, so it suits
+  an installation whose database is updated for it, as the catalog does.
+- **Instance backups between the two.** Restore an instance backup onto the
+  same MariaDB version or a newer one. A backup made on MariaDB 13 (a
+  TrueNAS app) does not load into 11.8: 13 names foreign keys in a way 11.8
+  refuses.
+- **Port 4000.** `UNIHUB_HTTP_PORT=4000`, which 0.28.3 refused, now works:
+  the API inside the container moves from 4000 to 4001 in that case.
+- **Origins.** An `ALLOWED_ORIGINS` entry written with capital letters,
+  `:443`, a trailing slash or a path now works; nothing to change if
+  sign-in already works.
+- **Changing an existing database from 11.8 to 13** is not part of these
+  checks. MariaDB cannot move a data directory back to an older version;
+  take a consistent backup of the database and the uploads first.
+- **Android app.** 0.28.4's app is 0.28.3's app with the new version number;
+  install it when it is offered. The window is 0.28.4, 0.28.3, 0.28.2 and
+  0.28.1: the 0.28.0 app leaves it, so update a phone that still has it.
 
 ## 0.28.3 Any user, any port
 
@@ -1020,7 +1049,6 @@ only `NET_BIND_SERVICE` can fail with Nginx permission errors.
 
 **Pulling a newer image alone does not update your saved custom-app YAML.** Apply
 the Compose capability change too, preserving all existing volumes and secrets.
-The proposed TrueNAS catalog supplies the corrected capability list itself.
 No database, archive-format or application-data changes are introduced.
 
 ## 0.10.7 ALPHA labels

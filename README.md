@@ -54,7 +54,8 @@ pulls both images and contains every database setting.
 It gives the exact field names, where to enter them, examples, first-login checks
 and fixes for common startup errors. Do not put passwords into the Dockerfile.
 
-Published image: `ghcr.io/mrksrus/selfhost-unihub:0.16.0`.
+Published image: `ghcr.io/mrksrus/selfhost-unihub`, tagged with each version
+(for example `0.28.4`).
 The `latest` tag follows successful main-branch and release builds; use a version
 tag when you want explicit control of upgrades. The supplied
 [Compose file](docker-compose.yml) currently uses `latest`.
@@ -107,9 +108,10 @@ from logs. Report security vulnerabilities privately through
 UniHub is AI-written. Its maintainer, **[mrksrus](https://github.com/mrksrus)**,
 is not a developer and has no formal software-development qualifications; prior
 coding experience was a tic-tac-toe game and a webpage about 15 years ago.
-Code development, maintenance and security/function reviews currently rely solely
-on OpenAI/GPT models. Future plans include Fable/Anthropic models for additional
-reviews and improvements; they are not part of the current process. Automated tests
+Code development, maintenance and security/function reviews are done with
+Anthropic's Claude models: Claude Opus 5.5 for development and independent reviews,
+Claude Fable 5.1 for frontend and design. Earlier releases were written with
+OpenAI/GPT models, which are no longer used. Automated tests
 and AI reviews do not constitute an independent professional security audit.
 UniHub is not affiliated with or endorsed by these providers.
 

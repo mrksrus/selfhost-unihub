@@ -123,8 +123,9 @@ services:
   # ── MariaDB Database ────────────────────────────────────────────
   # Everything the database needs is in this file: no config files to download.
   unihub-db:
-    # MariaDB 11.8 LTS (supported until 2030). Patch releases install with a
-    # restart; MARIADB_AUTO_UPGRADE updates the system tables when needed.
+    # MariaDB 11.8 LTS (maintained until June 2028). Patch releases install
+    # with a restart; MARIADB_AUTO_UPGRADE updates the system tables when
+    # needed. UniHub is also tested on MariaDB 13.0 (docs/UPGRADING.md, 0.28.4).
     image: mariadb:11.8
     container_name: unihub-db
     init: true

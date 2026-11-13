@@ -96,9 +96,9 @@ evidence; this table is what it is checked against.
 | App | Android 10 | Android 16 | Android 17 |
 | --- | --- | --- | --- |
 | 0.29.0 | starts and connects | starts and connects | starts and connects |
+| 0.28.4 | starts and connects | starts and connects | starts and connects |
 | 0.28.3 | starts and connects | starts and connects | starts and connects |
 | 0.28.2 | starts and connects | starts and connects | starts and connects |
-| 0.28.1 | starts and connects | starts and connects | starts and connects |
 
 All four apps put contacts on the phone and sync them both ways.
 In all four apps Android's download manager starts only from download
