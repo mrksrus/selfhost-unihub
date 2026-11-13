@@ -32,7 +32,7 @@ domain or Internet access is not required; private DNS works. See
 | Database Password, Root Database Password | The MariaDB container's `unihub` and `root` passwords. Do not change them after the first start: the database keeps the old ones, and the app no longer starts. |
 | JWT Secret | `JWT_SECRET`, which signs the login sessions. Changing it signs everyone out. |
 | Encryption Key | `ENCRYPTION_KEY`, which encrypts saved mail and calendar passwords and authenticator keys. Losing it makes them unreadable; keep a copy outside the NAS. |
-| Origins | `ALLOWED_ORIGINS`: every address people open UniHub at, as in the browser (`https://hub.example.com`, with the port when it is not 443). The app's Web UI button opens the first one. |
+| Origins | `ALLOWED_ORIGINS`: every address people open UniHub at, as in the browser (`https://hub.example.com`, with the port when it is not 443). Each must be HTTPS; the installation refuses any other address. While the port's bind mode is Publish, the app's Web UI button opens the first one. |
 | User ID, Group ID | The user everything in the UniHub container runs as and that owns the uploads. Changing it later does not change the owner of existing files. |
 | WebUI Port | `UNIHUB_HTTP_PORT` and the published port. It serves plain HTTP for your reverse proxy. |
 | Uploads Storage | `/app/uploads`: mail originals, attachments, recordings and account backups. |

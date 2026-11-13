@@ -53,8 +53,8 @@ pulls both images and contains every database setting.
 It gives the exact field names, where to enter them, examples, first-login checks
 and fixes for common startup errors. Do not put passwords into the Dockerfile.
 
-Published image: `ghcr.io/mrksrus/selfhost-unihub:0.16.0`.
-The `latest` tag follows successful main-branch and release builds; use a version
+Published image: `ghcr.io/mrksrus/selfhost-unihub`, tagged with each version
+(for example `0.28.4`). The `latest` tag follows successful main-branch and release builds; use a version
 tag when you want explicit control of upgrades. The supplied
 [Compose file](docker-compose.yml) currently uses `latest`.
 

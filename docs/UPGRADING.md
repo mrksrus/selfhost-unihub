@@ -1010,7 +1010,6 @@ only `NET_BIND_SERVICE` can fail with Nginx permission errors.
 
 **Pulling a newer image alone does not update your saved custom-app YAML.** Apply
 the Compose capability change too, preserving all existing volumes and secrets.
-The proposed TrueNAS catalog supplies the corrected capability list itself.
 No database, archive-format or application-data changes are introduced.
 
 ## 0.10.7 ALPHA labels
