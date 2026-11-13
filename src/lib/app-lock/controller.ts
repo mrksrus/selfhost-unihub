@@ -94,6 +94,8 @@ export class AppLockController {
   private screenshotsForbidden = false;
   /** The method that applied the lock here before (this browser's timeline or the server's record); a lost PIN needs a sign-in. */
   private appliedMethod: LockMethod | null = null;
+  /** The person turned the lock on in this page (Settings or the required prompt). */
+  private turnedOnHere = false;
   private confirmedAt = Number.NEGATIVE_INFINITY;
   private reported: string | null = null;
   private lastOpenReport = Number.NEGATIVE_INFINITY;
@@ -134,6 +136,14 @@ export class AppLockController {
   private get hasMethod() { return this.nativeUnlock || this.pinSet; }
   private get methodName(): LockMethod { return this.nativeUnlock ? this.native.method : 'pin'; }
   private get scope() { return this.config.scope; }
+  /**
+   * Short of a required lock that this device never turned on itself: the
+   * policy's floor is in the settings, but the person turns the lock on
+   * first (the required prompt), even where the phone could unlock at once.
+   */
+  private get awaitingTurnOn() {
+    return !!this.requirement && !this.requirement.meets && !this.pinSet && this.appliedMethod === null && !this.turnedOnHere;
+  }
 
   /** The lock was on with a UniHub PIN that is gone (storage cleared, the tenth wrong PIN), and nobody signed in since. */
   private get pinLost() {
@@ -144,6 +154,7 @@ export class AppLockController {
     if (!this.ready) return 'checking';
     if (!this.scope.length) return 'off';
     if (!this.hasMethod) return this.pinLost ? 'locked' : 'setup';
+    if (this.awaitingTurnOn) return 'setup';
     return this.unlocked ? 'unlocked' : 'locked';
   }
 
@@ -545,8 +556,9 @@ export class AppLockController {
     }
     const saved = await this.server.saveDeviceSettings(patch.app_lock_scope ? { ...patch, app_lock_scope: next.app_lock_scope } : patch);
     if (this.ended) return saved;
-    const wasOn = this.scope.length > 0;
+    const wasOn = this.scope.length > 0 && !this.awaitingTurnOn;
     this.applySettings(saved);
+    if (this.scope.length) this.turnedOnHere = true;
     if (!this.scope.length && this.pinSet) {
       // Off: the PIN goes with it, and turning the lock on again sets a new one.
       await deletePin(this.userId).catch(() => {});

@@ -453,6 +453,25 @@ describe('in the Android app (bridge level 3)', () => {
     }));
   });
 
+  it('a phone short of a required lock is asked to turn it on, even with a fingerprint, and claims the lock only then', async () => {
+    // The administrator's floor is already in the device's settings; this device never turned a lock on.
+    const fake = server({ app_lock_scope: ['app'] }, { meets: false, required: ['app'], max_background: null, reason: null });
+    const lock = nativeLock({ due: false });
+    const page = appTab(fake, lock);
+    await page.started;
+    expect(page.status).toBe('setup');
+    expect(fake.state.lock).toBeNull();
+    fake.reportDeviceLock.mockImplementation(async report => {
+      fake.state.lock = report.applied;
+      fake.state.compliance = { ...fake.state.compliance, meets: !!report.applied };
+    });
+    // "Turn on the app lock": the finger, then the settings.
+    expect(await page.controller.confirm()).toEqual({ ok: true });
+    await page.controller.saveSettings({ app_lock_scope: ['app'] });
+    expect(fake.state.lock).toMatchObject({ scope: ['app'], method: 'biometric' });
+    expect(page.status).toBe('unlocked');
+  });
+
   it('takes the app’s own locked and unlocked news; a relock tells the app at once', async () => {
     const fake = server({ app_lock_scope: ['mail'] });
     const lock = nativeLock({ due: false });

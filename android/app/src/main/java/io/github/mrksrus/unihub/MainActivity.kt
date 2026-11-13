@@ -817,6 +817,7 @@ class MainActivity : Activity() {
     private fun hideCover(offer: Boolean = true) {
         val view = cover ?: return
         cover = null
+        if (BuildConfig.DEBUG) Log.i(LOCK_LOG, "cover down")
         coverButton.removeCallbacksAndMessages(null)
         (view.parent as? ViewGroup)?.removeView(view)
         // The questions that waited for the cover.
@@ -1073,7 +1074,7 @@ class MainActivity : Activity() {
         // 3 from 0.29 (appLock: the app lock with the phone's own unlock).
         const val BRIDGE_LEVEL = 3
         private const val COVER_LOCK = 1
-        /** Debug builds only: the cover and the page's first visible content, in order (tools/e2e/android/app-lock-bridge.test.mjs). */
+        /** Debug builds only: the cover going up and down and the page's first visible content, in order (tools/e2e/android/app-lock-bridge.test.mjs). */
         private const val LOCK_LOG = "UniHubLock"
         private const val COVER_PAUSE = 2
         // The cover's own Unlock button, for a page that does not take over (it failed to load).

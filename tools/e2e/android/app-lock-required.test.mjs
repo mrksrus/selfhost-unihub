@@ -4,53 +4,25 @@
 // - an app below bridge level 3 gets the page's PIN and the update hint, and
 //   the phone's UniHub contacts stay while the device falls short
 // Every policy change is acknowledged for all three people first (the rules
-// notice is due for everyone).
+// notice is due for everyone, setPolicies).
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  PACKAGE, adb, clearDevicePin, enrollFingerprint, navigate, openApp, screenNodes, screenShare, setDevicePin, sleep, stackSession, touch, touchFinger,
-  waitForUnlockPrompt, windowIsSecure,
+  APP_LOCK_POLICIES_OFF as OFF, PACKAGE, adb, enrollFingerprint, navigate, openApp, resetAppLock, screenNodes, screenShare, setDevicePin, setPolicies, sleep,
+  touch, touchFinger, waitForUnlockPrompt, windowIsSecure,
 } from '../support/android.mjs';
 
-const PEOPLE = ['admin@example.com', 'alex@example.com', 'blair@example.com'];
-const PASSWORD = 'local-dev-admin-password';
 const previousApk = process.env.UNIHUB_E2E_PREVIOUS_APK;
 const repo = new URL('../../..', import.meta.url).pathname;
 const candidateApk = process.env.UNIHUB_E2E_CANDIDATE_APK ?? `${repo}android/app/build/outputs/apk/debug/app-debug.apk`;
-const OFF = { 'app_lock.required': [], 'app_lock.max_background': 'none', 'app_lock.screenshots': 'allowed' };
-
-let sessions;
-
-/** Sets installation policies as the administrator, then confirms the rules notice for all three people. */
-async function setPolicies(values) {
-  // The administrator's own device is held to the lock they require, the
-  // policies route included: this session reports a whole-app lock, as a page
-  // does once its lock is set up, so it can turn the rules off again.
-  const reported = await sessions[0]('PUT', '/api/devices/current/lock', {
-    applied: { scope: ['app'], relock_after: '0', on_device_lock: false, method: 'pin' },
-    capabilities: { lock: 'pin', secure_window: false, recents_hidden: false, device_lock_signal: false },
-  });
-  assert.equal(reported.status, 200, JSON.stringify(reported.data));
-  const saved = await sessions[0]('PUT', '/api/admin/policies', { values, current_password: PASSWORD });
-  assert.equal(saved.status, 200, JSON.stringify(saved.data));
-  for (const api of sessions) {
-    const { data } = await api('GET', '/api/policies/effective');
-    if (data.acknowledged_revision < data.revision) await api('POST', '/api/policies/acknowledge', { revision: data.revision });
-  }
-}
-
+// Whatever an earlier file or test left, and nothing for the next file.
 before(async () => {
-  sessions = await Promise.all(PEOPLE.map(email => stackSession(email, PASSWORD)));
+  await resetAppLock();
   setDevicePin();
   await enrollFingerprint();
 });
 
-after(async () => {
-  await setPolicies(OFF).catch(() => {});
-  adb('shell', 'am', 'force-stop', PACKAGE);
-  adb('shell', `run-as ${PACKAGE} rm -f shared_prefs/app_lock.xml`);
-  clearDevicePin();
-});
+after(resetAppLock);
 
 test('[29-08] a required whole-app lock asks to turn it on; with the finger, Mail opens', { timeout: 900_000 }, async () => {
   await setPolicies({ ...OFF, 'app_lock.required': ['app'] });

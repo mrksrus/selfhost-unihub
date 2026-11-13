@@ -9,25 +9,21 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  PACKAGE, adb, answerPromptWithPin, appLockMessage, bridgeMessage, clearDevicePin, dismissFirstRunOffers, enrollFingerprint, lockCoverShown, openApp, screenShare,
+  PACKAGE, adb, answerPromptWithPin, appLockMessage, bridgeMessage, dismissFirstRunOffers, enrollFingerprint, lockCoverShown, openApp, resetAppLock, screenShare,
   setDevicePin, shownNotifications, sleep, sleepScreen, stackSession, touch, touchFinger, unlockKeyguard, unlockPromptShown, waitForUnlockPrompt, windowIsSecure,
 } from '../support/android.mjs';
 
 const sdk = Number(adb('shell', 'getprop', 'ro.build.version.sdk').trim());
 const MINUTE = 60_000;
 
+// Whatever an earlier file or test left, and nothing for the next file.
 before(async () => {
+  await resetAppLock();
   setDevicePin();
   await enrollFingerprint();
 });
 
-after(() => {
-  // The lock off for the next files, whatever failed above: the debug app's
-  // stored configuration goes, and its next start is a new process.
-  adb('shell', 'am', 'force-stop', PACKAGE);
-  adb('shell', `run-as ${PACKAGE} rm -f shared_prefs/app_lock.xml`);
-  clearDevicePin();
-});
+after(resetAppLock);
 
 /** Leaves the app for the launcher, waits, and opens it again (no new process). */
 async function leaveAndReturn(awayMs) {
@@ -144,7 +140,7 @@ test('the app reports the phone\'s unlock, and with "every time" a return locks 
 });
 
 test('with one minute, a return within it does not ask and one after 70 s does; a cold start always asks', { timeout: 900_000 }, async () => {
-  let { device, page } = await openUnlocked();
+  const { device, page } = await openUnlocked();
   try {
     await configure(page, { relockAfterMs: MINUTE });
     await leaveAndReturn(10_000);
@@ -164,28 +160,27 @@ test('with one minute, a return within it does not ask and one after 70 s does; 
     await device.close();
   }
 
-  // Force-stopped: a new process covers the page before it loads. `am start
-  // -W` returns once the activity has drawn its first frame, so the cover is
-  // up at that moment or the first frame showed the page: one look, no wait.
-  // The debug app also logs when its cover went up and when the page's
-  // content first became visible: the cover must come first.
+  // Force-stopped: a new process covers the page before it loads. The debug
+  // app logs when its cover goes up and down and when the page's content
+  // first becomes visible; Android logs the activity's first drawn frame
+  // ("Displayed"). The cover must be up before that frame and stay up until
+  // the page shows content. A look at the screen cannot prove this: the page
+  // configures the app with its own settings as soon as it loads (here no
+  // lock, since this test configured the app directly), which lifts the cover
+  // within a second, about as long as a view dump takes. The cover goes up
+  // at the start only when the new process is locked; what the page then
+  // asks with its own settings is app-lock.test.mjs's [29-04].
   adb('shell', 'am', 'force-stop', PACKAGE);
   adb('logcat', '-c');
-  const launch = adb('shell', 'am', 'start', '-W', '-n', `${PACKAGE}/.MainActivity`);
-  assert.equal(lockCoverShown(), true, `covered at the first frame of a cold start (${/TotalTime: \d+/.exec(launch)?.[0] ?? 'launch time unknown'})`);
-  const order = () => adb('logcat', '-d', '-s', 'UniHubLock:I').split('\n').map(line => /cover up|page visible/.exec(line)?.[0]).filter(Boolean);
+  adb('shell', 'am', 'start', '-W', '-n', `${PACKAGE}/.MainActivity`);
+  const order = () => adb('logcat', '-d', '-s', 'UniHubLock:I', 'ActivityTaskManager:I').split('\n')
+    .map(line => line.includes(`Displayed ${PACKAGE}/`) ? 'first frame' : /cover up|cover down|page visible/.exec(line)?.[0]).filter(Boolean);
   for (let tries = 0; tries < 60 && !order().includes('page visible'); tries++) await sleep(500);
-  assert.deepEqual(order().slice(0, 2), ['cover up', 'page visible'], 'the cover is up before the page shows anything');
-  ({ device, page } = await openApp({ restart: false }));
-  try {
-    const cold = await state(page);
-    assert.equal(cold.due, true);
-    assert.equal(cold.freshProcess, true);
-    await appLockMessage(page, 'release');
-    await unlockWithFinger(page);
-  } finally {
-    await device.close();
-  }
+  const events = order();
+  const at = event => events.indexOf(event);
+  const down = at('cover down');
+  assert.ok(at('cover up') === 0 && at('first frame') > 0 && at('page visible') > 0 && (down < 0 || down > Math.max(at('first frame'), at('page visible'))),
+    `the cover is up from the first frame until the page shows content: ${events.join(', ')}`);
 });
 
 test('the file picker is no time away; the screen turning off locks only when asked to', { timeout: 900_000 }, async () => {

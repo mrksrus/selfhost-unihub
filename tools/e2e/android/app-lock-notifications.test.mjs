@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import {
-  PACKAGE, adb, bridgeMessage, clearDevicePin, enrollFingerprint, openApp, setDevicePin, shownNotifications, sleep, stackSession, tapNative,
+  PACKAGE, adb, bridgeMessage, enrollFingerprint, openApp, resetAppLock, setDevicePin, shownNotifications, sleep, stackSession, tapNative,
   touch, touchFinger, waitForUnlockPrompt,
 } from '../support/android.mjs';
 
@@ -43,18 +43,17 @@ async function waitForNotification(arrived, timeoutMs = 240_000) {
   throw new Error(`no such notification: ${JSON.stringify(shownNotifications())}`);
 }
 
+// Whatever an earlier file or test left, and nothing for the next file:
+// the Mail lock set here lives with the app's device on the server.
 before(async () => {
+  await resetAppLock();
   setDevicePin();
   await enrollFingerprint();
   if (sdk >= 33) adb('shell', 'pm', 'grant', PACKAGE, 'android.permission.POST_NOTIFICATIONS');
   adb('shell', 'cmd', 'deviceidle', 'whitelist', `+${PACKAGE}`);
 });
 
-after(() => {
-  adb('shell', 'am', 'force-stop', PACKAGE);
-  adb('shell', `run-as ${PACKAGE} rm -f shared_prefs/app_lock.xml`);
-  clearDevicePin();
-});
+after(resetAppLock);
 
 test('[29-05] with Mail locked, a new mail shows only "New Email"; the tap asks first, then opens it; other notifications keep their text', { timeout: 1_200_000 }, async () => {
   const api = await stackSession();

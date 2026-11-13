@@ -190,7 +190,8 @@ async function signedInPage(device, { email, password }) {
             await current.waitForURL(url => !url.pathname.startsWith('/auth'), { timeout: 60_000 }).catch(() => {});
           }
         }
-      } else if (path !== '/') {
+      // The whole-app lock screen and the required prompt replace the pages, so a locked start stays on /.
+      } else if (path !== '/' || await current.getByText(/^(UniHub is locked|Your administrator requires the app lock|Set up the app lock again)$/).first().isVisible()) {
         await answerSlowDialogs();
         await dismissFirstRunOffers({ waitMs: signIns > 0 ? 10_000 : 0 });
         return { device, page: current };
@@ -309,6 +310,58 @@ export function setDevicePin(pin = DEVICE_PIN) {
 /** Removes the PIN again, so later files run without a screen lock. On Android 16 this also deletes the enrolled fingerprints. */
 export function clearDevicePin(pin = DEVICE_PIN) {
   try { adb('shell', 'locksettings', 'clear', '--old', pin); } catch { /* no PIN set */ }
+}
+
+const PEOPLE = ['admin@example.com', 'alex@example.com', 'blair@example.com'];
+const PEOPLE_PASSWORD = 'local-dev-admin-password';
+/** The installation's app lock policies as a new installation has them. */
+export const APP_LOCK_POLICIES_OFF = { 'app_lock.required': [], 'app_lock.max_background': 'none', 'app_lock.screenshots': 'allowed' };
+let people;
+
+/** Sets installation policies as the administrator, then confirms the rules notice for all three people (it is due for everyone). */
+export async function setPolicies(values) {
+  people ??= await Promise.all(PEOPLE.map(email => stackSession(email, PEOPLE_PASSWORD)));
+  // The administrator's own device is held to the lock they require, the
+  // policies route included: this session reports a whole-app lock, as a page
+  // does once its lock is set up, so it can turn the rules off again.
+  const reported = await people[0]('PUT', '/api/devices/current/lock', {
+    applied: { scope: ['app'], relock_after: '0', on_device_lock: false, method: 'pin' },
+    capabilities: { lock: 'pin', secure_window: false, recents_hidden: false, device_lock_signal: false },
+  });
+  if (reported.status !== 200) throw new Error(`report the policy session's lock: ${reported.status} ${JSON.stringify(reported.data)}`);
+  const saved = await people[0]('PUT', '/api/admin/policies', { values, current_password: PEOPLE_PASSWORD });
+  if (saved.status !== 200) throw new Error(`save policies: ${saved.status} ${JSON.stringify(saved.data)}`);
+  for (const api of people) {
+    const { data } = await api('GET', '/api/policies/effective');
+    if (data.acknowledged_revision < data.revision) await api('POST', '/api/policies/acknowledge', { revision: data.revision });
+  }
+}
+
+/**
+ * Leaves no app lock behind, whatever a test left (run before and after each
+ * app lock file): the policies off and confirmed, the app's own configuration
+ * gone, the phone without a PIN and awake, and the administrator signed out of
+ * the app. The page keeps its lock settings on the server with the app's
+ * device, so the device goes; the next sign-in starts a new one, and the page
+ * then drops its PIN and lock records.
+ * shortcut: a device already signed out is not listed and keeps its settings for the app's next sign-in; clear the app's data if a test ever leaves one.
+ */
+export async function resetAppLock() {
+  await setPolicies(APP_LOCK_POLICIES_OFF);
+  // The administrator's policy session stays (it is the current device).
+  const api = people[0];
+  const { status, data } = await api('GET', '/api/devices');
+  if (status !== 200) throw new Error(`list devices: ${status} ${JSON.stringify(data)}`);
+  for (const { id } of data.devices.filter(d => !d.current)) {
+    const removed = await api('DELETE', `/api/devices/${id}`);
+    if (removed.status !== 200) throw new Error(`remove device: ${removed.status} ${JSON.stringify(removed.data)}`);
+  }
+  adb('shell', 'am', 'force-stop', PACKAGE);
+  adb('shell', `run-as ${PACKAGE} rm -f shared_prefs/app_lock.xml`);
+  clearDevicePin();
+  adb('shell', 'input', 'keyevent', 'KEYCODE_WAKEUP');
+  adb('shell', 'svc', 'power', 'stayon', 'true');
+  adb('shell', 'wm', 'dismiss-keyguard');
 }
 
 /** How many fingerprints are enrolled (dumpsys fingerprint's "count"). */

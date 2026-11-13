@@ -8,7 +8,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  PACKAGE, adb, answerPromptWithPin, clearDevicePin, enrollFingerprint, lockCoverShown, openApp, setDevicePin, sleep, sleepScreen,
+  PACKAGE, adb, answerPromptWithPin, enrollFingerprint, lockCoverShown, openApp, resetAppLock, setDevicePin, sleep, sleepScreen,
   touch, touchFinger, unlockKeyguard, unlockPromptShown, waitForUnlockPrompt,
 } from '../support/android.mjs';
 
@@ -26,16 +26,14 @@ const LABELS = {
   unlock: 'Unlock',
 };
 
+// Whatever an earlier file or test left, and nothing for the next file.
 before(async () => {
+  await resetAppLock();
   setDevicePin();
   await enrollFingerprint();
 });
 
-after(() => {
-  adb('shell', 'am', 'force-stop', PACKAGE);
-  adb('shell', `run-as ${PACKAGE} rm -f shared_prefs/app_lock.xml`);
-  clearDevicePin();
-});
+after(resetAppLock);
 
 const lockScreen = page => page.getByText(LABELS.locked, { exact: true });
 
@@ -56,6 +54,13 @@ async function unlockWithFinger(page) {
   await lockScreen(page).waitFor({ state: 'hidden' });
 }
 
+/** Touches a settings control in the middle of the screen: the bottom bar covers the page's lower edge. */
+async function touchInMiddle(page, locator) {
+  await locator.evaluate(element => element.scrollIntoView({ block: 'center' }));
+  await touch(page, locator);
+}
+const lockRow = (page, label) => page.getByRole('radiogroup', { name: 'Lock' }).getByText(label, { exact: true });
+
 async function openSettings(page) {
   await page.goto(new URL('/settings?section=app-lock', page.url()).href);
   await page.getByRole('heading', { name: LABELS.section }).first().waitFor();
@@ -67,7 +72,7 @@ async function turnOnWholeApp(page, { askAgain = LABELS.everyTime, onDeviceLock 
   const whole = page.getByRole('radio', { name: LABELS.wholeApp });
   if (!await whole.isChecked()) {
     // The row is the tap target; its input is drawn by the row (RadioRow).
-    await touch(page, page.getByRole('radiogroup', { name: 'Lock' }).getByText(LABELS.wholeApp, { exact: true }));
+    await touchInMiddle(page, lockRow(page, LABELS.wholeApp));
     await waitForUnlockPrompt();
     await touchFinger(1);
     for (let i = 0; i < 30 && !await whole.isChecked(); i++) await sleep(1000);
@@ -75,11 +80,13 @@ async function turnOnWholeApp(page, { askAgain = LABELS.everyTime, onDeviceLock 
   }
   // A native select or the ui/select combobox.
   await page.getByLabel(LABELS.askAgain).selectOption({ label: askAgain }, { timeout: 5000 }).catch(async () => {
-    await touch(page, page.getByRole('combobox', { name: LABELS.askAgain }));
+    await touchInMiddle(page, page.getByRole('combobox', { name: LABELS.askAgain }));
     await touch(page, page.getByRole('option', { name: askAgain }));
   });
+  // A longer time weakens the lock: the phone asks first.
+  await waitForUnlockPrompt(undefined, 5000).then(() => touchFinger(1), () => {});
   const deviceLock = page.getByRole('switch', { name: LABELS.onDeviceLock });
-  if (await deviceLock.isChecked() !== onDeviceLock) await touch(page, deviceLock);
+  if (await deviceLock.isChecked() !== onDeviceLock) await touchInMiddle(page, deviceLock);
 }
 
 /** Settings → App lock → Off; weakening asks for the unlock first. */
@@ -87,7 +94,7 @@ async function turnOff(page) {
   await openSettings(page);
   const off = page.getByRole('radio', { name: LABELS.off });
   if (await off.isChecked()) return;
-  await touch(page, page.getByRole('radiogroup', { name: 'Lock' }).getByText(LABELS.off, { exact: true }));
+  await touchInMiddle(page, lockRow(page, LABELS.off));
   await waitForUnlockPrompt();
   await touchFinger(1);
 }
