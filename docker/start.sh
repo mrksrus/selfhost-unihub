@@ -34,11 +34,12 @@ fi
 # it uses the image's configuration as it is. Otherwise it runs from a copy
 # with that port; when the container runs as another user (docker run --user,
 # no capabilities needed) the copy also keeps Nginx's pid file, logs and
-# temporary files in its own folder, which that user can write.
+# temporary files in its own folder, which that user can write. The API
+# listens on 4000 inside the container; given that port, Nginx gets it and
+# the API moves to 4001.
 UNIHUB_HTTP_PORT="${UNIHUB_HTTP_PORT:-80}"
 case "$UNIHUB_HTTP_PORT" in
   ''|*[!0-9]*|0*|??????*) UNIHUB_HTTP_PORT=0 ;;
-  4000) echo "UNIHUB_HTTP_PORT cannot be 4000: the API listens on that port inside the container." >&2; exit 1 ;;
 esac
 if [ "$UNIHUB_HTTP_PORT" -lt 1 ] || [ "$UNIHUB_HTTP_PORT" -gt 65535 ]; then
   echo "UNIHUB_HTTP_PORT must be a port number from 1 to 65535 without leading zeros." >&2
@@ -47,7 +48,9 @@ fi
 if [ "$(id -u)" != 0 ] || [ "$UNIHUB_HTTP_PORT" != 80 ]; then
   nginx_dir=/tmp/unihub-nginx
   rm -rf "$nginx_dir" && mkdir -p "$nginx_dir/conf.d" || exit 1
-  sed "s|listen 80;|listen $UNIHUB_HTTP_PORT;|" /etc/nginx/conf.d/default.conf > "$nginx_dir/conf.d/default.conf" || exit 1
+  api_port=4000
+  [ "$UNIHUB_HTTP_PORT" != 4000 ] || { api_port=4001; export PORT=4001; }
+  sed "s|listen 80;|listen $UNIHUB_HTTP_PORT;|;s|127.0.0.1:4000|127.0.0.1:$api_port|" /etc/nginx/conf.d/default.conf > "$nginx_dir/conf.d/default.conf" || exit 1
   moved="s|/etc/nginx/conf.d/|$nginx_dir/conf.d/|"
   if [ "$(id -u)" != 0 ]; then
     moved="$moved;s|/var/run/nginx.pid|$nginx_dir/nginx.pid|;s|/var/log/nginx/|$nginx_dir/|g"

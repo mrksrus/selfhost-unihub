@@ -234,7 +234,8 @@ instance backup folder and secret files must already be usable by that user.
 `UNIHUB_HTTP_PORT` sets the port Nginx listens on inside the container (80
 unless set). A user other than root is not allowed to open port 80
 everywhere, so set a port above 1023 together with `user:` and map the
-published port to it, for example `"3000:8080"`.
+published port to it, for example `"3000:8080"`. Any port works: given 4000,
+the API's own port inside the container, the API moves to 4001.
 
 Use writable storage suitable for each container's actual user/permissions. Do
 not mount a new empty dataset over existing data during an upgrade. Keep the same

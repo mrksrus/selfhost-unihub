@@ -277,15 +277,16 @@ stop_variant() {
   docker stop -t 30 "${container_name}-variant" >/dev/null
   [[ "$(docker inspect --format '{{.State.ExitCode}}' "${container_name}-variant")" == 0 ]] || { echo 'The container did not exit cleanly on docker stop.' >&2; exit 1; }
 }
-# The API's own port, and anything that is not a port, is refused by name
-# before anything starts (no database wait).
-for refused in 4000 04000 70000 8080x; do
+# Anything that is not a port is refused by name before anything starts (no
+# database wait).
+for refused in 04000 70000 8080x; do
   refusal="$(docker run --rm --network none -e "UNIHUB_HTTP_PORT=$refused" -e MYSQL_STARTUP_MAX_WAIT_SECONDS=0 "$image" 2>&1)" \
     && { echo "UNIHUB_HTTP_PORT=$refused must stop the start." >&2; exit 1; }
   [[ "$refusal" == *UNIHUB_HTTP_PORT* ]] || { echo "UNIHUB_HTTP_PORT=$refused did not stop the start by name: $refusal" >&2; exit 1; }
 done
-# A port above 1023 needs no NET_BIND_SERVICE.
-start_variant 8081 --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID
+# A port above 1023 needs no NET_BIND_SERVICE. 4000 is the API's own port
+# inside the container: Nginx gets it and the API moves to 4001.
+start_variant 4000 --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID
 stop_variant
 docker run --rm --network none --entrypoint chown \
   --mount "type=volume,source=$volume_name,target=/app/uploads" "$image" -R -h 568:568 /app/uploads

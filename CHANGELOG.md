@@ -8,8 +8,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.28.4
 
-For installers: MariaDB 13 is supported. No database upgrade and nothing
-changes for an existing installation (see
+For installers: MariaDB 13 is supported and every port can be chosen. No
+database upgrade and nothing changes for an existing installation (see
 [Upgrading](docs/UPGRADING.md#0284-mariadb-13)).
 
 ### Added
@@ -20,6 +20,12 @@ changes for an existing installation (see
   installs. The Compose file stays on 11.8 LTS, which MariaDB maintains
   until 2028; 13.0 is one of its quarterly releases, maintained only until
   the next one.
+
+### Fixed
+
+- **`UNIHUB_HTTP_PORT=4000` works.** 0.28.3 refused it because the API
+  listens on 4000 inside the container; the API now moves to 4001 when
+  Nginx is given that port.
 
 ## 0.28.3
 
