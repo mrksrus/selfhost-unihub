@@ -53,7 +53,8 @@ pulls both images and contains every database setting.
 It gives the exact field names, where to enter them, examples, first-login checks
 and fixes for common startup errors. Do not put passwords into the Dockerfile.
 
-Published image: `ghcr.io/mrksrus/selfhost-unihub:0.16.0`.
+Published image: `ghcr.io/mrksrus/selfhost-unihub`; each release is a version tag
+such as `0.28.4`.
 The `latest` tag follows successful main-branch and release builds; use a version
 tag when you want explicit control of upgrades. The supplied
 [Compose file](docker-compose.yml) currently uses `latest`.
@@ -74,9 +75,8 @@ Download important account backups and keep their recovery passwords somewhere
 safe. Backups left only on the UniHub server do not protect you if that server or
 its storage is lost. There is no built-in scheduled infrastructure backup.
 
-Version 0.10.6 enables backup creation/import again. Its schema-3 archives include
-disabled modules; older schema-1/2 archives are read automatically.
-Older applications cannot read schema-3 archives. Downgrading an image does not
+Imports read the archives of every earlier version automatically; an older
+application cannot read an archive from a newer one. Downgrading an image does not
 undo database changes. Read [Backup and restore (ALPHA)](docs/BACKUP_RESTORE.md) and
 [Upgrading](docs/UPGRADING.md) before relying on either operation.
 
