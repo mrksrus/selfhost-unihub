@@ -588,6 +588,7 @@ jobs:
       - name: Restore an instance backup on MariaDB 13.0
         env:
           UNIHUB_DB_IMAGE: mariadb:13.0
+          UNIHUB_INSTANCE_DRILL_EVIDENCE: release-evidence/instance-drill-mariadb-13.json
         run: node scripts/instance-backup-drill.mts --image unihub:ci
 
       # In Chrome: this build's worker hands over to a following build while a

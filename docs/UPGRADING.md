@@ -17,6 +17,10 @@ possible.
   restore of a whole installation with the image's own tools. MariaDB 13.0
   is a quarterly release, maintained only until the next one, so it suits
   an installation whose database is updated for it, as the catalog does.
+- **Instance backups between the two.** Restore an instance backup onto the
+  same MariaDB version or a newer one. A backup made on MariaDB 13 (a
+  TrueNAS app) does not load into 11.8: 13 names foreign keys in a way 11.8
+  refuses.
 - **Port 4000.** `UNIHUB_HTTP_PORT=4000`, which 0.28.3 refused, now works:
   the API inside the container moves from 4000 to 4001 in that case.
 - **Changing an existing database from 11.8 to 13** is not part of these
