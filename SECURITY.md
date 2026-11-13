@@ -3,9 +3,10 @@
 UniHub is AI-written and maintained by **[mrksrus](https://github.com/mrksrus)**,
 a non-developer without formal software-development qualifications. Prior coding
 experience was a tic-tac-toe game and a webpage about 15 years ago. Development,
-maintenance and security/function reviews currently rely solely on OpenAI/GPT
-models, primarily GPT 6 Astra. Fable/Anthropic models are planned for future reviews
-and improvements but are not currently used. AI review and automated tests are
+maintenance and security/function reviews are done with Anthropic's Claude models:
+Claude Opus 5.5 for development and independent reviews, Claude Fable 5.1 for
+frontend and design. Earlier releases were written with OpenAI/GPT models, which
+are no longer used. AI review and automated tests are
 not an independent professional security audit.
 
 The project treats security findings as engineering work: review the affected paths, implement a focused correction, and verify the behavior with appropriate tests. Feedback and reproducible reports are welcome.

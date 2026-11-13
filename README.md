@@ -105,9 +105,10 @@ from logs. Report security vulnerabilities privately through
 UniHub is AI-written. Its maintainer, **[mrksrus](https://github.com/mrksrus)**,
 is not a developer and has no formal software-development qualifications; prior
 coding experience was a tic-tac-toe game and a webpage about 15 years ago.
-Code development, maintenance and security/function reviews currently rely solely
-on OpenAI/GPT models. Future plans include Fable/Anthropic models for additional
-reviews and improvements; they are not part of the current process. Automated tests
+Code development, maintenance and security/function reviews are done with
+Anthropic's Claude models: Claude Opus 5.5 for development and independent reviews,
+Claude Fable 5.1 for frontend and design. Earlier releases were written with
+OpenAI/GPT models, which are no longer used. Automated tests
 and AI reviews do not constitute an independent professional security audit.
 UniHub is not affiliated with or endorsed by these providers.
 
