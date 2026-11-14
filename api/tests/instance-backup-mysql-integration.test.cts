@@ -863,7 +863,7 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     });
 
     // Every table as the dump had it, but for the running life of the old installation.
-    const retired: Record<string, number> = { sessions: 0, devices: 0, device_settings: 0, file_tickets: 0, two_factor_challenges: 0, calendar_event_moves: 0,
+    const retired: Record<string, number> = { sessions: 0, devices: 0, device_settings: 0, file_tickets: 0, two_factor_challenges: 0, calendar_event_moves: 0, invites: 0, login_attempts: 0,
       mail_scheduled_sends: first.manifest.database.tables.mail_scheduled_sends - 1, mail_server_messages: first.manifest.database.tables.mail_server_messages - 1 };
     for (const [table, count] of Object.entries(first.manifest.database.tables)) {
       const [[row]] = await pool.query<RowDataPacket[]>(`SELECT COUNT(*) AS count FROM ${pool.escapeId(table)}`);
