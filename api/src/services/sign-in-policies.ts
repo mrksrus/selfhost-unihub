@@ -15,4 +15,12 @@ async function passwordMinimum(userId: string | null, executor: SqlExecutor = db
   return Number((await resolvePolicy(userId ?? '', 'auth.password_min_length', executor)).value);
 }
 
-export { passwordMinimum };
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Whether a session signed in at `createdAt` is older than the person's auth.session_max_days. */
+async function sessionOutlived(userId: string, createdAt: Date | string, now = new Date(), executor: SqlExecutor = db): Promise<boolean> {
+  const { value } = await resolvePolicy(userId, 'auth.session_max_days', executor);
+  return value !== 'none' && now.getTime() - new Date(createdAt).getTime() >= Number(value) * DAY_MS;
+}
+
+export { passwordMinimum, sessionOutlived };

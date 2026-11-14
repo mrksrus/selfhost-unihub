@@ -63,6 +63,8 @@ export interface AuthRequest extends IncomingMessage {
   authCredential?: AuthCredentialSource;
   // The device of the accepted session (F5), null for a session without one; set by verifyToken for the app lock gate.
   sessionDeviceId?: string | null;
+  // The person's two-factor state from the session lookup, for the 2FA gate.
+  twoFactor?: { enabled: boolean; requiredSince: Date | null };
 }
 export type AuthCredentialSource = 'cookie' | 'bearer';
 

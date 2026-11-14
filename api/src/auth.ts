@@ -18,7 +18,8 @@ import { consumeAuthAttempt } from './security/login-limits';
 import { log } from './log';
 import { can } from './security/permissions';
 import type { Permission } from './security/permissions';
-import { findSession, renewSession } from './services/sessions';
+import { endSession, findSession, renewSession } from './services/sessions';
+import { sessionOutlived } from './services/sign-in-policies';
 
 
 // Password hashing
@@ -194,7 +195,8 @@ function refreshSessionCookies(req: AuthRequest, res: ServerResponse) {
 }
 
 // JWT verification + session check. The session row is the authority on
-// expiry; the JWT signature still has to match. With `renew`, a session last
+// expiry (idle, and the person's longest session since sign-in); the JWT
+// signature still has to match. With `renew`, a session last
 // renewed more than a day ago is extended and req.sessionRenewed is set.
 // On success req.authCredential names the credential that was accepted and
 // req.sessionDeviceId the session's device.
@@ -218,6 +220,12 @@ async function verifyToken(req: AuthRequest, { renew = false } = {}) {
         if (!session) return null;
         if (new Date(session.expires_at) < new Date()) return null;
         if (!session.is_active) return null;
+        // auth.session_max_days: a session older than the person's limit since
+        // its sign-in ends at this use, on top of the idle expiry above.
+        if (await sessionOutlived(String(session.user_id), session.created_at)) {
+          await endSession(token);
+          return null;
+        }
         if (renew && sessionNeedsRenewal(session.expires_at)) {
           try {
             await renewSession(token, getSessionExpiry());
@@ -238,6 +246,8 @@ async function verifyToken(req: AuthRequest, { renew = false } = {}) {
 
         req.authCredential = credential.source;
         req.sessionDeviceId = session.device_id ? String(session.device_id) : null;
+        req.twoFactor = { enabled: !!Number(session.two_factor_enabled),
+          requiredSince: session.two_factor_required_since === null ? null : new Date(session.two_factor_required_since) };
         return session.user_id || decoded.userId || decoded.sub;
       } catch (dbError) {
         retries--;
