@@ -155,6 +155,19 @@ export async function clearOfflineData() {
   }
 }
 
+/**
+ * offline.copies forbidden (0.30): the server refuses new copies but cannot
+ * erase one a browser holds, so the page deletes the signed-in person's own
+ * copy when it reads the rule. A copy of nobody signed in here is left alone.
+ * Returns whether a copy was deleted.
+ */
+export async function deleteOwnOfflineCopy() {
+  const pointer = currentPointer();
+  if (!account || pointer?.userId !== account) return false;
+  await clearOfflineData();
+  return true;
+}
+
 async function saveSnapshot(snapshot: OfflineSnapshot, user: User, epoch: string, observed: number, signal?: AbortSignal) {
   const stillCurrent = () => !signal?.aborted && generation === observed && account === user.id && localStorage.getItem(EPOCH_KEY) === epoch;
   if (!stillCurrent()) throw new Error('The account or offline setting changed. Offline data was not saved.');
@@ -163,7 +176,8 @@ async function saveSnapshot(snapshot: OfflineSnapshot, user: User, epoch: string
     if (!Array.isArray(snapshot[name]) || snapshot[name].some(row => row.user_id != null && row.user_id !== user.id)) throw new Error('The server returned an invalid offline snapshot.');
   }
   if (snapshot.emails.length > 100) throw new Error('Offline mail exceeds the 100-message limit.');
-  const safeUser: User = { id: user.id, email: user.email, full_name: user.full_name, avatar_url: user.avatar_url, timezone: user.timezone, role: user.role };
+  const safeUser: User = { id: user.id, email: user.email, full_name: user.full_name, avatar_url: user.avatar_url, timezone: user.timezone, role: user.role,
+    permissions: user.permissions, manages_groups: user.manages_groups };
   const next = { ...snapshot, user: safeUser };
   let bytes: number;
   while ((bytes = new TextEncoder().encode(JSON.stringify(next)).length) !== next.bytes) next.bytes = bytes;

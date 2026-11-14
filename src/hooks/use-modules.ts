@@ -2,6 +2,8 @@ import { clearOfflineData } from '@/lib/offline';
 import { skipToken, useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/useAuth';
 import { api } from '@/lib/api';
+import { usePolicies } from '@/hooks/use-policies';
+import { pageLock } from '@/lib/policies-api';
 
 import { defaultPages, knownPages, moduleForPath, pageForPath, type ModuleId, type ModulePreference, type PageId, type PagePreference } from '@/lib/modules';
 export type { ModuleId, ModulePreference, PageId, PagePreference } from '@/lib/modules';
@@ -30,15 +32,17 @@ export function useModules() {
   const modules = query.data || [];
   const stored = useQuery<PagePreference[]>({ queryKey: PAGES_QUERY_KEY, queryFn: skipToken }).data;
   const pages = stored ?? defaultPages(modules);
+  const { policies } = usePolicies();
   const isEnabled = (id: ModuleId) => modules.some(module => module.id === id && module.enabled);
   const isVisible = (id: ModuleId) => modules.some(module => module.id === id && module.visible);
   const canAccess = (path: string) => { const id = moduleForPath(path); return !id || isEnabled(id); };
-  // Shown in navigation: the page is not hidden and its module is enabled.
+  // Shown in navigation: the page is not hidden, its module is enabled, and
+  // no policy takes it away (pages.music removes Music while Recordings stay).
   const canNavigate = (path: string) => {
     const pageId = pageForPath(path);
     if (!pageId) return canAccess(path);
     const page = pages.find(entry => entry.id === pageId);
-    return !!page?.visible && (!page.module || isEnabled(page.module));
+    return !!page?.visible && (!page.module || isEnabled(page.module)) && !pageLock(policies, page.id, page.module);
   };
   return { ...query, modules, pages, isEnabled, isVisible, canNavigate, canAccess };
 }

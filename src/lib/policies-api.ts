@@ -1,9 +1,11 @@
 import { queryOptions } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { unwrap } from '@/lib/api-error';
+import { deleteOwnOfflineCopy } from '@/lib/offline';
+import type { ModuleId, PageId } from '@/lib/modules';
 import type { AcknowledgePoliciesRequest, AcknowledgePoliciesResponse, EffectivePoliciesResponse, EffectivePolicy, PolicyKey, PolicyValues } from '../../api/src/contracts/policies';
 
-export type { Allowance, EffectivePoliciesResponse, EffectivePolicy, PolicyKey, PolicyValues, PolicySource } from '../../api/src/contracts/policies';
+export type { Allowance, EffectivePoliciesResponse, TwoFactorRequirement, EffectivePolicy, PolicyKey, PolicyValues, PolicySource } from '../../api/src/contracts/policies';
 
 // The data-safety policies as they apply to the signed-in person (F13). The
 // server refuses a forbidden action with 403 POLICY_FORBIDS; the page only
@@ -62,11 +64,16 @@ export function defaultPolicies(): EffectivePolicies {
 
 export const policiesQueryKey = ['policies', 'effective'] as const;
 
-export async function fetchEffectivePolicies(signal?: AbortSignal): Promise<EffectivePoliciesResponse> {
+export type EffectivePoliciesAnswer = EffectivePoliciesResponse;
+
+export async function fetchEffectivePolicies(signal?: AbortSignal): Promise<EffectivePoliciesAnswer> {
   const answer = unwrap(await api.get<EffectivePoliciesResponse>('/policies/effective', { signal }));
   if (!answer?.policies) throw new Error('The server did not answer with its rules.');
   // A key the server does not know yet (an older server) keeps its default.
-  return { ...answer, policies: { ...defaultPolicies(), ...answer.policies } };
+  const policies = { ...defaultPolicies(), ...answer.policies };
+  // The server refuses new offline copies; the one this browser holds goes now.
+  if (policies['offline.copies'].allowed === false) await deleteOwnOfflineCopy().catch(() => false);
+  return { ...answer, policies };
 }
 
 export const effectivePoliciesQueryOptions = queryOptions({
@@ -84,4 +91,18 @@ export async function acknowledgePolicies(revision: number) {
 export function policyLock<K extends PolicyKey>(policy: EffectivePolicy<K> | undefined): string | undefined {
   if (!policy || policy.allowed) return undefined;
   return policy.reason ?? 'Your administrator does not allow this.';
+}
+
+const MODULE_POLICIES: Record<ModuleId, PolicyKey> = {
+  mail: 'modules.mail', calendar: 'modules.calendar', contacts: 'modules.contacts', recordings: 'modules.recordings',
+};
+
+/** Why a module is off and locked for the person (modules.*), or undefined while allowed. */
+export function moduleLock(policies: EffectivePolicies, id: ModuleId) {
+  return policyLock(policies[MODULE_POLICIES[id]]);
+}
+
+/** Why a page is unavailable: its module's policy, or for Music also pages.music. */
+export function pageLock(policies: EffectivePolicies, id: PageId, module: ModuleId | null) {
+  return (module ? moduleLock(policies, module) : undefined) ?? (id === 'music' ? policyLock(policies['pages.music']) : undefined);
 }

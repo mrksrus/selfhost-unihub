@@ -9,6 +9,7 @@ import BottomNav from '@/components/layout/BottomNav';
 import { PAGES_QUERY_KEY, useModules, type ModulePreference, type PagePreference } from '@/hooks/use-modules';
 import { defaultPages, knownModules } from '@/lib/modules';
 import { api } from '@/lib/api';
+import { defaultPolicies, policiesQueryKey } from '@/lib/policies-api';
 import { userSettingsAnswer } from './settings-fixtures';
 
 vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'owner' } }) }));
@@ -63,6 +64,18 @@ describe('pages', () => {
     function Probe() { const { canNavigate, canAccess } = useModules(); return <p>{[canNavigate('/music'), canAccess('/music'), canNavigate('/dashboard'), canNavigate('/todo'), canAccess('/todo')].join(' ')}</p>; }
     renderWithClient(<Probe />, recordingsOff, '/', pages);
     expect(screen.getByText('false false false false true')).toBeInTheDocument();
+  });
+
+  it('the Music page policy takes Music out of navigation while Recordings stay (0.30)', () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    client.setQueryData(['modules'], defaults);
+    const answer = { revision: 1, acknowledged_revision: 1, rules: [], two_factor: null,
+      policies: { ...defaultPolicies(), 'pages.music': { value: 'forbidden', source: 'policy', allowed: false, reason: 'Your administrator turned the Music page off.' } } };
+    client.setQueryData(policiesQueryKey, answer);
+    function Probe() { const { canNavigate, canAccess } = useModules(); return <p>{[canNavigate('/music'), canNavigate('/recordings'), canAccess('/recordings')].join(' ')}</p>; }
+    render(<QueryClientProvider client={client}><MemoryRouter><Probe /><BottomNav /></MemoryRouter></QueryClientProvider>);
+    expect(screen.getByText('false true true')).toBeInTheDocument();
+    expect(within(screen.getByRole('navigation')).queryByRole('link', { name: 'Music' })).toBeNull();
   });
 
   it('opens a hidden start page, and falls back to the first shown page when its module is disabled', async () => {
