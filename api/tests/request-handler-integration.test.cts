@@ -5,7 +5,7 @@ const { EventEmitter } = (require('node:events') as typeof import('node:events')
 const { PassThrough } = (require('node:stream') as typeof import('node:stream'));
 
 function handlerHarness(t: import('node:test').TestContext, { userId = 'u1', route, moduleEnabled = true, restoring = [] }: FixtureValue = {}) {
-  const paths = ['../dist/src/request-handler', '../dist/src/auth', '../dist/src/routes', '../dist/src/services/module-settings', '../dist/src/services/restore-locks', '../dist/src/services/devices'].map(name => require.resolve(name));
+  const paths = ['../dist/src/request-handler', '../dist/src/auth', '../dist/src/routes', '../dist/src/services/module-settings', '../dist/src/services/restore-locks', '../dist/src/services/devices', '../dist/src/services/sign-in-policies'].map(name => require.resolve(name));
   const previous = paths.map(name => require.cache[name]);
   t.after(() => paths.forEach((name, i) => { if (previous[i]) require.cache[name] = previous[i]; else delete require.cache[name]; }));
   const stub = (name: FixtureValue, exports: FixtureValue) => { require.cache[name] = { id: name, filename: name, loaded: true, exports } as NodeJS.Module; };
@@ -15,6 +15,8 @@ function handlerHarness(t: import('node:test').TestContext, { userId = 'u1', rou
   stub(paths[4], { getActiveRestoreSections: async () => new Set<FixtureValue>(restoring) });
   // No app lock is required (app-lock-policy-mysql-integration walks the gate).
   stub(paths[5], { ...require(paths[5]), appLockRefusal: async () => null });
+  // No 2FA is required (auth-policies-mysql-integration walks the gate).
+  stub(paths[6], { ...require(paths[6]), twoFactorRequirement: async () => ({ required: false, grace_ends_at: null, refused: null }) });
   const { legacyTable } = require('./helpers/route-table.cts') as { legacyTable: (handlers: Record<string, FixtureValue>) => FixtureValue };
   const { mergeRouteTables } = require('../dist/src/http/route') as typeof import('../src/http/route');
   // Contacts declare their own specs (routes/contacts*.ts); the test's handler replaces theirs.

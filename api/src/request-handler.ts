@@ -25,6 +25,7 @@ import { getUserModules } from './services/module-settings';
 import { getActiveRestoreSections } from './services/restore-locks';
 import { assertAllowed, resolvePolicy, withRequestPolicies } from './services/settings';
 import { appLockRefusal } from './services/devices';
+import { twoFactorRequirement } from './services/sign-in-policies';
 import { buildContentDisposition } from './http/content-disposition';
 import { BACKUP_IMPORTS_ROOT } from './services/export-jobs';
 
@@ -146,6 +147,13 @@ async function gateRefusal(spec: RouteSpec, req: RouteRequest, routeKey: string,
         details: refusal,
       } };
     }
+
+    // Two-factor authentication required (0.30, auth.two_factor): a person
+    // without it gets 7 days from the first time this gate (or a policy save)
+    // finds the rule applying to them; after that every route that is not
+    // exempt answers 403 TWO_FACTOR_REQUIRED, administrators included.
+    const { refused } = await twoFactorRequirement(userId, req.twoFactor ?? null);
+    if (refused) return { status: 403, body: { error: refused.reason, code: 'TWO_FACTOR_REQUIRED', status: 403, details: refused } };
   }
   return null;
 }

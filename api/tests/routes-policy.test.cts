@@ -245,6 +245,33 @@ test('a route that shows another module\'s data is locked with that module: a ma
     /unknown module notes/);
 });
 
+// 2FA required (0.30) for a person without it whose grace started `daysAgo`.
+const twoFactorGates = (daysAgo: number) => (sql: string) => {
+  if (sql.startsWith('SELECT setting_value FROM user_settings')) return [];
+  if (sql.includes('FROM backup_restore_jobs')) return [];
+  if (sql.startsWith('SELECT target_kind, setting_key, setting_value, locked FROM setting_policies')) return [{ target_kind: 'installation', setting_key: 'policy.auth.two_factor', setting_value: 'required', locked: 0 }];
+  if (sql.startsWith('SELECT two_factor_enabled, two_factor_required_since FROM users')) return [{ two_factor_enabled: 0, two_factor_required_since: new Date(Date.now() - daysAgo * 86400000) }];
+  return undefined;
+};
+
+test('after the 2FA grace every signed-in route that is not exempt refuses before its handler, administrators included; during it none does', async (t) => {
+  const { run, queries } = boundary(t, { userId: 'alex', role: 'owner', answer: twoFactorGates(8) });
+  const keys = Object.keys(routes).filter(key => routes[key].auth !== 'public' && routes[key].gates !== 'exempt');
+  for (const key of keys) {
+    const result = await run(key);
+    assert.deepEqual([result.status, result.body.code, result.body.error], [403, 'TWO_FACTOR_REQUIRED', 'Your administrator requires two-factor authentication.'], key);
+    assert.equal(result.body.details.reason, 'Your administrator requires two-factor authentication.', key);
+    assert.ok(Date.parse(result.body.details.grace_ended_at) < Date.now(), key);
+  }
+  assert.ok(queries.every(sql => /^SELECT (role FROM users|setting_value FROM user_settings|requested_sections|target_kind, setting_key, setting_value, locked FROM setting_policies|two_factor_enabled, two_factor_required_since FROM users)/.test(sql.trim())), 'no handler ran');
+  // Setting it up, the Android app's contacts sync and an exempt route stay open.
+  for (const [key, headers] of [['POST /api/auth/2fa/setup/start', {}], ['GET /api/policies/effective', {}], ['GET /api/contacts', { 'x-background-sync': '1' }]] as const) {
+    assert.notEqual((await run(key, headers)).body?.code, 'TWO_FACTOR_REQUIRED', key);
+  }
+  const during = boundary(t, { userId: 'alex', answer: twoFactorGates(6) });
+  assert.notEqual((await during.run('GET /api/contacts')).body?.code, 'TWO_FACTOR_REQUIRED', 'six days in, nothing is refused');
+});
+
 test('the contacts-sync routes are open to the Android app\'s own sync only', async (t) => {
   const { run } = boundary(t, { userId: 'alex', answer: openGates(['contacts']) });
   assert.equal((await run('GET /api/contacts')).body.code, 'APP_LOCK_REQUIRED');

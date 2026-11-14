@@ -2,7 +2,6 @@ import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import type { PolicyPreviewResponse, TwoFactorRequiredDetails, TwoFactorRequirement } from '../contracts/policies';
 import { db } from '../state';
-import { forbidden } from '../http/errors';
 import { resolvePolicy } from './settings';
 
 // The sign-in policies (0.30): the shortest password, the longest session and
@@ -67,11 +66,6 @@ async function twoFactorRequirement(userId: string, state?: TwoFactorState | nul
   return { required: true, grace_ends_at: ends.toISOString(), refused: now >= ends ? { grace_ended_at: ends.toISOString(), reason } : null };
 }
 
-/** 403 TWO_FACTOR_REQUIRED for a person whose grace has ended, for the request boundary. */
-function twoFactorForbidden(details: TwoFactorRequiredDetails) {
-  return forbidden('TWO_FACTOR_REQUIRED', details.reason, details);
-}
-
 /**
  * After a change of the rule or of who it covers: starts or ends the grace
  * of each person (all active people by default), so it counts from the save
@@ -103,5 +97,5 @@ async function previewTwoFactor(memberIds: readonly string[] | null, executor: S
   } };
 }
 
-export { passwordMinimum, sessionOutlived, twoFactorRequirement, twoFactorForbidden, syncTwoFactorGrace, previewTwoFactor };
+export { passwordMinimum, sessionOutlived, twoFactorRequirement, syncTwoFactorGrace, previewTwoFactor };
 export type { TwoFactorState };
