@@ -532,7 +532,7 @@ export = defineRoutes({
         return { error: 'User not found', status: 404 };
       }
 
-      const user = { ...users[0], ...await organisationOf(userId, users[0].role) };
+      const user = { ...users[0], two_factor_enabled: !!Number(users[0].two_factor_enabled), ...await organisationOf(userId, users[0].role) };
       const url = new URL(req.url, `http://${req.headers.host}`);
       const isBackgroundCheck = url.searchParams.get('background') === '1' || req.headers['x-background-sync'] === '1';
       if (isBackgroundCheck) {

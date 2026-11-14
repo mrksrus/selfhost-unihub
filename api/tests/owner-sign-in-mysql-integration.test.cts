@@ -33,7 +33,9 @@ test('an administrator cannot change the owner\'s sign-in; the owner can, and a 
   await refused(admin.request('POST', `/api/admin/users/${ids.admin}/setup-link`, { current_password: adminPassword }), 'setup link');
   assert.deepEqual(await credentials(ids.admin), before, 'the owner\'s password and two-factor authentication are untouched');
   assert.equal((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM invites WHERE user_id = ?', [ids.admin]))[0][0].n, 0, 'no setup link for the owner');
-  assert.equal((await owner.request('GET', '/api/auth/me')).status, 200, 'the owner stays signed in');
+  const me = await owner.request('GET', '/api/auth/me');
+  assert.equal(me.status, 200, 'the owner stays signed in');
+  assert.equal((me.body.user as { two_factor_enabled: unknown }).two_factor_enabled, true, 'a boolean, as at sign-in');
 
   // The same administrator against a member: allowed.
   const reset = await admin.request('PUT', `/api/admin/users/${ids.member}/password`, { new_password: 'administrator-reset-password', current_password: adminPassword });
