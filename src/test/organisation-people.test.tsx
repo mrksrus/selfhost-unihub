@@ -164,7 +164,8 @@ describe('Server › People', () => {
   });
 
   it('a person without a password gets a new setup link with the administrator\'s password, and a live link can be revoked', { timeout: 30_000 }, async () => {
-    vi.mocked(api.post).mockResolvedValue({ data: { setup_link: LINK } });
+    // The server knew no origin for the request: the link is a path, completed with this page's origin.
+    vi.mocked(api.post).mockResolvedValue({ data: { setup_link: { ...LINK, url: '/invite#synthetic-token-0123456789' } } });
     mountSignedIn(<AdminUsers />, { user: signInAs(SERVER_OWNER) });
     fireEvent.click(within(await openMenu('casey@example.com')).getByRole('menuitem', { name: 'New setup link' }));
     const confirm = await screen.findByRole('dialog', { name: 'New setup link for casey@example.com?' });
@@ -173,6 +174,7 @@ describe('Server › People', () => {
     fireEvent.click(within(confirm).getByRole('button', { name: 'Create link' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledExactlyOnceWith('/admin/users/user-casey/setup-link', { current_password: 'admin-own-password' }));
     const shown = await screen.findByRole('dialog', { name: 'Setup link for Casey Example' });
+    expect(within(shown).getByRole('textbox', { name: 'Setup link' })).toHaveValue(`${window.location.origin}/invite#synthetic-token-0123456789`);
     fireEvent.click(within(shown).getByRole('button', { name: 'Done' }));
 
     fireEvent.click(within(await openMenu('casey@example.com')).getByRole('menuitem', { name: 'Revoke setup link' }));

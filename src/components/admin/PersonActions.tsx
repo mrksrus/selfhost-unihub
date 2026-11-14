@@ -116,7 +116,8 @@ export function usePersonActions({ people = [], onDeleted }: { people?: readonly
 
   const person = dialog?.person;
   const email = person?.email ?? '';
-  const admins = people.filter(entry => entry.role === 'admin' && entry.is_active);
+  // The server hands ownership only to an administrator who can sign in.
+  const admins = people.filter(entry => entry.role === 'admin' && entry.status === 'active');
   const copy: Record<PersonAction, { title: string; description: ReactNode; action: string; destructive?: boolean }> = {
     role: person?.role === 'admin'
       ? { title: `Remove administrator rights from ${email}?`, description: 'They keep their account and data but can no longer manage people, groups or the server.', action: 'Remove administrator rights' }

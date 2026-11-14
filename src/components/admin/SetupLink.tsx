@@ -13,13 +13,15 @@ import { formatDayTime } from '@/components/admin/person-words';
  */
 export function SetupLinkBlock({ link }: { link: SetupLink }) {
   const [copied, setCopied] = useState<boolean | null>(null);
+  // The server gives a path alone when it knows no origin for the request; this page's origin completes it.
+  const url = new URL(link.url, window.location.origin).href;
   return (
     <div className="space-y-3">
       <div className="flex items-stretch gap-2">
         {/* Selected whole on focus, so it can be copied by hand where the clipboard is refused. */}
-        <input readOnly aria-label="Setup link" value={link.url} onFocus={event => event.currentTarget.select()}
+        <input readOnly aria-label="Setup link" value={url} onFocus={event => event.currentTarget.select()}
           className="h-10 min-w-0 flex-1 rounded-md border border-input bg-muted/40 px-3 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" />
-        <Button type="button" variant="outline" onClick={() => void copyText(link.url).then(setCopied)}>
+        <Button type="button" variant="outline" onClick={() => void copyText(url).then(setCopied)}>
           {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}{copied ? 'Copied' : 'Copy link'}
         </Button>
       </div>
