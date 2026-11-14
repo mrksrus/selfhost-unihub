@@ -1,27 +1,30 @@
 import { api } from '@/lib/api';
 import { ApiError, unwrap } from '@/lib/api-error';
+import type {
+  AddPersonRequest, AddPersonResponse, DeleteGroupRequest, EndDevicesResponse, GroupInput, GroupsAdminResponse, GroupSummary, OwnerTransferRequest,
+  PeopleResponse, Person, PersonDevicesResponse, Role, SetManagerRequest, SetupLinkResponse,
+} from '../../api/src/contracts/organisation';
+export type {
+  AddPersonRequest, AddPersonResponse, GroupSummary, Person, PersonGroup, PersonStatus, Role, SetupLink,
+} from '../../api/src/contracts/organisation';
 
-export interface AdminUser {
-  id: string;
-  email: string;
-  full_name: string | null;
-  role: 'user' | 'admin';
-  is_active: boolean;
-  two_factor_enabled?: boolean;
-  created_at: string;
-}
+/** One row of Server › People (GET /api/admin/users). */
+export type AdminUser = Person;
+/** The roles an administrator can give; the owner is chosen only by transferring ownership. */
+export type AssignableRole = Exclude<Role, 'owner'>;
 
 export const adminUsersQueryKey = ['admin', 'users'] as const;
 
 export async function fetchAdminUsers(signal?: AbortSignal) {
-  return unwrap(await api.get<{ users: AdminUser[] }>('/admin/users', { signal }))?.users ?? [];
+  return unwrap(await api.get<PeopleResponse>('/admin/users', { signal }))?.users ?? [];
 }
 // Deleting, deactivating, role, password and two-factor changes need the
 // acting admin's own password.
 export async function deleteAdminUser(userId: string, currentPassword: string) {
   unwrap(await api.delete(`/admin/users/${userId}`, { current_password: currentPassword }));
 }
-export async function setUserRole(userId: string, role: AdminUser['role'], currentPassword: string) {
+/** Making or removing an admin needs admins.manage (the owner); the owner's own role is refused (OWNER_PROTECTED). */
+export async function setUserRole(userId: string, role: AssignableRole, currentPassword: string) {
   unwrap(await api.put(`/admin/users/${userId}/role`, { role, current_password: currentPassword }));
 }
 /** Activating needs no password; deactivating does. */
@@ -33,6 +36,64 @@ export async function resetUserTwoFactor(userId: string, currentPassword: string
 }
 export async function setUserPassword(userId: string, newPassword: string, currentPassword: string) {
   unwrap(await api.put(`/admin/users/${userId}/password`, { new_password: newPassword, current_password: currentPassword }));
+}
+
+// ── People: Add person, setup links, owner, devices (0.30) ───────
+const personPath = (userId: string, rest = '') => `/admin/users/${encodeURIComponent(userId)}${rest}`;
+
+/**
+ * Creates the account at once. Without `password` the answer carries a
+ * setup link to copy (shown once); with it, the person signs in with that
+ * password. Needs the administrator's password.
+ */
+export async function addPerson(input: Omit<AddPersonRequest, 'current_password'>, currentPassword: string): Promise<AddPersonResponse> {
+  const answer = unwrap(await api.post<AddPersonResponse>('/admin/users', { ...input, current_password: currentPassword } satisfies AddPersonRequest));
+  if (!answer?.user) throw new Error('The server did not answer with the new person.');
+  return { user: answer.user, setup_link: answer.setup_link ?? null };
+}
+/** A new setup link for a person without a password; the earlier one stops working. */
+export async function createSetupLink(userId: string, currentPassword: string) {
+  const answer = unwrap(await api.post<SetupLinkResponse>(personPath(userId, '/setup-link'), { current_password: currentPassword }));
+  if (!answer?.setup_link) throw new Error('The server did not answer with a setup link.');
+  return answer.setup_link;
+}
+export async function revokeSetupLink(userId: string) {
+  unwrap(await api.delete(personPath(userId, '/setup-link')));
+}
+/** Hands ownership to an active administrator (the owner only); the former owner stays an admin. */
+export async function transferOwnership(userId: string, currentPassword: string) {
+  unwrap(await api.post('/admin/owner/transfer', { user_id: userId, current_password: currentPassword } satisfies OwnerTransferRequest));
+}
+
+export const personDevicesQueryKey = (userId: string) => ['admin', 'users', userId, 'devices'] as const;
+
+export async function fetchPersonDevices(userId: string, signal?: AbortSignal) {
+  return unwrap(await api.get<PersonDevicesResponse>(personPath(userId, '/devices'), { signal }))?.devices ?? [];
+}
+/** Signs one of the person's devices out (or all of them without `deviceId`); no data is deleted. Returns how many. */
+export async function endPersonDevices(userId: string, currentPassword: string, deviceId?: string) {
+  const path = personPath(userId, deviceId ? `/devices/${encodeURIComponent(deviceId)}` : '/devices');
+  return unwrap(await api.delete<EndDevicesResponse>(path, { current_password: currentPassword }))?.ended ?? 0;
+}
+
+// ── Groups (Server › Groups) ─────────────────────────────────────
+export const adminGroupsQueryKey = ['admin', 'groups'] as const;
+
+export async function fetchAdminGroups(signal?: AbortSignal) {
+  return unwrap(await api.get<GroupsAdminResponse>('/admin/groups', { signal }))?.groups ?? [];
+}
+export async function createGroup(input: GroupInput) {
+  const answer = unwrap(await api.post<{ group: GroupSummary }>('/admin/groups', input));
+  if (!answer?.group) throw new Error('The server did not answer with the new group.');
+  return answer.group;
+}
+/** Deletes the group, its memberships and its policies (its members may get looser rules); nobody's data. */
+export async function deleteGroup(groupId: string, currentPassword: string) {
+  unwrap(await api.delete(`/admin/groups/${encodeURIComponent(groupId)}`, { current_password: currentPassword } satisfies DeleteGroupRequest));
+}
+/** Names or unnames a manager; a person not yet in the group becomes a member. */
+export async function setGroupManager(groupId: string, userId: string, manager: boolean) {
+  unwrap(await api.put(`/admin/groups/${encodeURIComponent(groupId)}/managers/${encodeURIComponent(userId)}`, { manager } satisfies SetManagerRequest));
 }
 
 export type SignupMode = 'open' | 'approval' | 'disabled';
@@ -146,14 +207,32 @@ const ACTIONS: Record<string, string> = {
   'admin.instance_backup_started': 'Started an instance backup',
   // 0.29: devices.
   'device.removed': 'Signed out another device',
+  // 0.30: people, groups, the owner.
+  'admin.user_created': 'Added the person',
+  'admin.setup_link_created': 'Made a setup link',
+  'admin.setup_link_revoked': 'Revoked the setup link',
+  'auth.setup_completed': 'Set up their account',
+  'owner.transferred': 'Handed over ownership',
+  'admin.device_removed': 'Signed out a device',
+  'admin.devices_ended': 'Signed out every device',
+  'admin.group_created': 'Created a group',
+  'admin.group_deleted': 'Deleted a group',
+  'group.renamed': 'Renamed a group',
+  'group.member_added': 'Added to a group',
+  'group.member_removed': 'Removed from a group',
+  'admin.group_manager_set': 'Changed a group manager',
 };
+const ROLE_NAMES: Record<string, string> = { owner: 'owner', admin: 'admin', user: 'member' };
 
 /** What happened, in words; the person acting and the account it concerns are shown beside it. */
 export function auditActionLabel(entry: Pick<AuditEntry, 'action' | 'details'>) {
   const label = ACTIONS[entry.action] ?? entry.action;
-  if (entry.action === 'admin.role_changed' && entry.details?.role) return `${label} to ${entry.details.role === 'admin' ? 'admin' : 'standard user'}`;
+  if (entry.action === 'admin.role_changed' && entry.details?.role) return `${label} to ${ROLE_NAMES[String(entry.details.role)] ?? entry.details.role}`;
   if (entry.action === 'admin.signup_mode_changed' && entry.details?.mode) return `${label} to ${entry.details.mode}`;
-  if (entry.action === 'admin.policy_changed' && entry.details?.key) return `${label}: ${entry.details.key} to ${entry.details.to ?? '?'}`;
+  if (entry.action === 'admin.policy_changed' && entry.details?.key) {
+    const group = entry.details.target && entry.details.target !== 'installation' ? ' for a group' : '';
+    return `${label}${group}: ${entry.details.key} to ${entry.details.to ?? '?'}`;
+  }
   if (entry.action === 'admin.data_cleared' && entry.details?.module) return `${label}: ${entry.details.module}`;
   return label;
 }
@@ -163,6 +242,18 @@ import type { AdminBinMinimumRetention, AdminPoliciesResponse, AdminPoliciesUpda
 export type { AdminPolicy, AdminPoliciesResponse } from '../../api/src/contracts/policies';
 
 export const adminPoliciesQueryKey = ['admin', 'policies'] as const;
+
+/**
+ * Whose policies a page edits: Everyone (the installation's, undefined) or
+ * one group's. A group's rows have the same shape; it can only make a rule
+ * stricter than Everyone's, and the server refuses a looser value.
+ */
+export type PolicyScope = { groupId: string } | undefined;
+
+/** Everyone's key is the prefix of every group's, so invalidating it refreshes them all. */
+export const adminPoliciesQueryKeyFor = (scope?: PolicyScope) =>
+  scope ? [...adminPoliciesQueryKey, 'group', scope.groupId] as const : adminPoliciesQueryKey;
+const policiesPath = (scope?: PolicyScope) => scope ? `/admin/groups/${encodeURIComponent(scope.groupId)}/policies` : '/admin/policies';
 
 /**
  * The bin's minimum retention while bin.delete is forbidden: 30 or 90
@@ -175,20 +266,20 @@ export type BinMinimum = BinMinimumRetention;
 export type AdminBinMinimum = AdminBinMinimumRetention;
 export type AdminPoliciesAnswer = AdminPoliciesResponse;
 
-export async function fetchAdminPolicies(signal?: AbortSignal): Promise<AdminPoliciesAnswer> {
-  const answer = unwrap(await api.get<AdminPoliciesAnswer>('/admin/policies', { signal }));
+export async function fetchAdminPolicies(signal?: AbortSignal, scope?: PolicyScope): Promise<AdminPoliciesAnswer> {
+  const answer = unwrap(await api.get<AdminPoliciesAnswer>(policiesPath(scope), { signal }));
   if (!answer?.policies) throw new Error('The server did not answer with its policies.');
   return answer;
 }
 
 /**
  * Saves the changed values only, with the administrator's password; the
- * answer is every policy as now set. `binMinimum` travels as its own field
- * (AdminPoliciesUpdateRequest.bin_min_retention) when it changed.
+ * answer is every policy of that scope as now set. `binMinimum` travels as
+ * its own field (AdminPoliciesUpdateRequest.bin_min_retention) when it changed.
  */
-export async function saveAdminPolicies(values: Partial<PolicyValues>, currentPassword: string, binMinimum?: BinMinimum): Promise<AdminPoliciesAnswer> {
+export async function saveAdminPolicies(values: Partial<PolicyValues>, currentPassword: string, binMinimum?: BinMinimum, scope?: PolicyScope): Promise<AdminPoliciesAnswer> {
   const body: AdminPoliciesUpdateRequest = { values, current_password: currentPassword, ...(binMinimum ? { bin_min_retention: binMinimum } : {}) };
-  const answer = unwrap(await api.put<AdminPoliciesAnswer>('/admin/policies', body));
+  const answer = unwrap(await api.put<AdminPoliciesAnswer>(policiesPath(scope), body));
   if (!answer?.policies) throw new Error('The server did not answer with its policies.');
   return answer;
 }
