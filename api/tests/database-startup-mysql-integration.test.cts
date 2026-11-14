@@ -149,7 +149,7 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   await getDb()!.end();
   await initDatabase();
   const [history] = await db.execute<RowDataPacket[]>('SELECT id FROM schema_migrations ORDER BY id');
-  assert.deepEqual(history.map((row) => row.id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]);
+  assert.deepEqual(history.map((row) => row.id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]);
   // Both stay signed in; the table holds only hashes, and a hash is not hashed twice.
   assert.equal((await findSession(legacyToken))?.user_id, user.id);
   assert.equal((await findSession(hashedToken))?.user_id, user.id);
