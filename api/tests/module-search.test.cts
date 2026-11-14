@@ -7,6 +7,7 @@ test('global search queries only enabled domains and keeps results owner-scoped'
   const previous = getDb(); t.after(() => setDb(previous));
   const queries: FixtureValue[] = [];
   setDb({ async execute(sql: string, params: FixtureValue) {
+    if (sql.includes('FROM setting_policies')) return [[]]; // no policies
     queries.push(sql);
     assert.equal(params[0], 'owner');
     if (sql.includes('FROM user_settings')) return [[{ setting_value: JSON.stringify({ mail: { enabled: false }, calendar: { enabled: false }, recordings: { enabled: false } }) }]];
@@ -27,6 +28,7 @@ test('global search queries only enabled domains and keeps results owner-scoped'
 test('dashboard statistics omit disabled modules without reading their rows', async t => {
   const previous = getDb(); t.after(() => setDb(previous));
   setDb({ async execute(sql: string) {
+    if (sql.includes('FROM setting_policies')) return [[]]; // no policies
     assert.match(sql, /FROM user_settings/);
     return [[{ setting_value: JSON.stringify({ mail: { enabled: false }, contacts: { enabled: false }, calendar: { enabled: false } }) }]];
   } } as FixtureValue);

@@ -180,13 +180,13 @@ type CalendarSource = RowDataPacket & { id: string; user_id: string; calendar_id
   reminders?: unknown; reminder_minutes?: unknown; todo_status: string; is_visible: boolean | number | null; is_todo_only: boolean | number };
 
 // The values of the record a source names; where it names none (or one that
-// is gone), the defaults under the installation's policies.
+// is gone), the defaults under the person's policies (the least detail among them).
 async function scopedValues<S extends 'mail_account' | 'calendar'>(scope: S, userId: string, id: string | null, connection: SqlExecutor): Promise<SettingValuesByScope[S]> {
-  if (!id) return defaultSettingValues(scope, connection);
+  if (!id) return defaultSettingValues(scope, userId, connection);
   try {
     return await settingValues(scope, userId, id, connection);
   } catch (error) {
-    if (error instanceof ApiError && error.status === 404) return defaultSettingValues(scope, connection);
+    if (error instanceof ApiError && error.status === 404) return defaultSettingValues(scope, userId, connection);
     throw error;
   }
 }

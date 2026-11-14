@@ -111,7 +111,7 @@ test('oversized metadata fails preflight before any full rows are transferred an
   const previous = getDb();
   const f = fixture(({ oversizeTable: 'contacts' })); setDb(f.db as FixtureValue); t.after(() => setDb(previous));
   await assert.rejects(createOfflineSnapshot('user-1'), { status: 413 });
-  assert.equal(f.calls.filter(sql => sql.startsWith('SELECT ') && !sql.includes('estimated_bytes') && !sql.includes('FROM user_settings')).length, 0);
+  assert.equal(f.calls.filter(sql => sql.startsWith('SELECT ') && !sql.includes('estimated_bytes') && !sql.includes('FROM user_settings') && !sql.includes('FROM setting_policies')).length, 0);
   assert.ok(f.calls.includes('ROLLBACK'));
   assert.ok(f.calls.includes('RELEASE'));
   assert.equal(f.calls.includes('COMMIT'), false);

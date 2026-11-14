@@ -200,8 +200,8 @@ test('the app lock: the exempt routes are pinned with their reasons, and so are 
 const openGates = (required: string[]) => (sql: string) => {
   if (sql.startsWith('SELECT setting_value FROM user_settings')) return [];
   if (sql.includes('FROM backup_restore_jobs')) return [];
-  if (sql.startsWith('SELECT setting_key, setting_value, locked FROM setting_policies')) {
-    return [{ setting_key: 'policy.app_lock.required', setting_value: JSON.stringify(required), locked: 0 }];
+  if (sql.startsWith('SELECT target_kind, setting_key, setting_value, locked FROM setting_policies')) {
+    return [{ target_kind: 'installation', setting_key: 'policy.app_lock.required', setting_value: JSON.stringify(required), locked: 0 }];
   }
   return undefined;
 };
@@ -215,7 +215,7 @@ test('with the whole app required, every signed-in route that is not exempt refu
     assert.deepEqual([result.status, result.body.code, result.body.error], [403, 'APP_LOCK_REQUIRED', 'Your administrator requires the app lock for the whole app.'], key);
     assert.deepEqual(result.body.details, { required: ['app'], max_background: null, reason: 'Your administrator requires the app lock for the whole app.' }, key);
   }
-  assert.ok(queries.every(sql => /^SELECT (role FROM users|setting_value FROM user_settings|requested_sections|setting_key, setting_value, locked FROM setting_policies)/.test(sql.trim())), 'no handler ran');
+  assert.ok(queries.every(sql => /^SELECT (role FROM users|setting_value FROM user_settings|requested_sections|target_kind, setting_key, setting_value, locked FROM setting_policies)/.test(sql.trim())), 'no handler ran');
 });
 
 test('with Mail required, a device without the lock loses the Mail routes and the routes of no module, and keeps the other modules', async (t) => {

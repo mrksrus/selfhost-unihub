@@ -24,6 +24,7 @@ test('module updates reject unknown IDs, controls, owner injection and non-boole
 test('saved owner settings retain independent hide, disable and background choices', async () => {
   const records = new Map<string, FixtureValue>(); const writes = [];
   const connection = { async execute(sql: string, params: FixtureValue) {
+    if (sql.includes('FROM setting_policies')) return [[]]; // no policies
     const key = params[0];
     if (sql.startsWith('INSERT INTO user_settings')) {
       assert.match(sql, /JSON_MERGE_PATCH/);
@@ -57,6 +58,7 @@ test('legacy saved games and notes choices are ignored on read, backup validatio
     data: { user_settings: [{ user_id: 'u', setting_key: 'module_preferences', setting_value: JSON.stringify(stored) }] } } as FixtureValue)
     .errors.filter((error) => /module preferences/.test(error)), []);
   const connection = { async execute(sql: string, params: FixtureValue) {
+    if (sql.includes('FROM setting_policies')) return [[]]; // no policies
     if (sql.startsWith('INSERT INTO user_settings')) {
       for (const [id, values] of Object.entries(JSON.parse(params[2]))) stored[id] = { ...stored[id], ...(values as FixtureValue) };
       return [{ affectedRows: 1 }];
@@ -91,6 +93,7 @@ function keyedSettings(initial: FixtureValue = {}) {
   const records = new Map<string, FixtureValue>(Object.entries(initial));
   const writes: FixtureValue[] = [];
   return { records, writes, async execute(sql: string, params: FixtureValue) {
+    if (sql.includes('FROM setting_policies')) return [[]]; // no policies
     const id = `${params[0]}:${params[1]}`;
     if (sql.startsWith('INSERT INTO user_settings')) {
       writes.push(params[1]);
