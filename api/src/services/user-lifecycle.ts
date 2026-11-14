@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { db } from '../state';
-import { badRequest, conflict, notFound } from '../http/errors';
+import { badRequest, conflict, forbidden, notFound } from '../http/errors';
 import { withTransaction } from './transactions';
 import { getActiveRestoreSections } from './restore-locks';
 import { attachmentsRoot, rawRoot, mailPathUnderRoot, ownedMailPath } from './mail-storage';
@@ -16,6 +16,14 @@ import { recordAudit } from './audit';
 import { assertFinalStep } from './final-step';
 import { withPersonLock } from './person-lock';
 import type { AuthRequest, SqlExecutor } from '../types';
+import type { AddPersonResponse, Person, PersonStatus, Role } from '../contracts/organisation';
+import crypto from 'node:crypto';
+import { can } from '../security/permissions';
+import { hashPassword } from '../auth';
+import { assertCaller } from './caller-proof';
+import { joinGroups, membershipsByUser, underRulesLock } from './groups';
+import { assertPasswordLength, createSetupLink, peopleWithLiveLinks } from './invites';
+import { lastActiveByUser } from './devices';
 
 type DeleteActor = 'self' | 'admin';
 interface DeleteUserResult { files: { removed: number; failed: number; deferred?: boolean } }
@@ -179,5 +187,108 @@ async function removeUserFiles(userId: string, files: Set<string>, recordingPath
   return { files: { removed, failed: failed.length } };
 }
 
+// --- People (0.30): the list, Add person, the owner ------------------------------
+
+const GRACE_DAYS = 7;
+const UUID_LIST_MAX = 50;
+const iso = (value: unknown) => (value instanceof Date ? value : new Date(`${String(value).replace(' ', 'T')}Z`)).toISOString();
+
+/** GET /api/admin/users (users.read): everyone, newest first, with status, groups and last use. */
+async function listPeople(onlyId: string | null = null): Promise<Person[]> {
+  const [[rows], groups, links, lastActive] = await Promise.all([
+    db.execute<RowDataPacket[]>(`SELECT id, email, full_name, role, is_active, two_factor_enabled, two_factor_required_since, created_at,
+        password_hash = '' AS no_password FROM users${onlyId ? ' WHERE id = ?' : ''} ORDER BY created_at DESC, id`, onlyId ? [onlyId] : []),
+    membershipsByUser(), peopleWithLiveLinks(), lastActiveByUser(),
+  ]);
+  return rows.map(row => {
+    const id = String(row.id);
+    const status: PersonStatus = !Number(row.is_active) ? 'inactive' : Number(row.no_password) ? (links.has(id) ? 'invited' : 'not_set_up') : 'active';
+    const graceStart = !row.two_factor_enabled && row.two_factor_required_since ? new Date(iso(row.two_factor_required_since)) : null;
+    return {
+      id, email: String(row.email), full_name: row.full_name ?? null, role: row.role as Role, status,
+      is_active: !!Number(row.is_active), two_factor_enabled: !!Number(row.two_factor_enabled),
+      two_factor_grace_ends_at: graceStart ? new Date(graceStart.getTime() + GRACE_DAYS * 86400000).toISOString() : null,
+      groups: groups.get(id) ?? [], created_at: iso(row.created_at), last_active_at: lastActive.get(id) ?? null,
+    };
+  });
+}
+
+const adminsManageRequired = () => forbidden('ADMINS_MANAGE_REQUIRED', 'Only the owner can make or remove administrators; nothing was changed.');
+
+/** In the change's transaction: the caller (caller-proof.ts) may make or remove administrators. */
+async function assertCallerManagesAdmins(connection: SqlExecutor, callerId: string) {
+  const [[caller]] = await connection.execute<RowDataPacket[]>('SELECT role FROM users WHERE id = ? LOCK IN SHARE MODE', [callerId]);
+  if (!can(caller?.role, 'admins.manage')) throw adminsManageRequired();
+}
+
+function personInput(input: unknown) {
+  const body = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  const email = typeof body.email === 'string' ? body.email.trim() : '';
+  if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(email)) throw badRequest('EMAIL_INVALID', 'Enter the person\'s email address.');
+  if (body.full_name != null && (typeof body.full_name !== 'string' || body.full_name.length > 255)) throw badRequest('NAME_INVALID', 'A name has at most 255 characters.');
+  const fullName = typeof body.full_name === 'string' && body.full_name.trim() ? body.full_name.trim() : null;
+  if (body.role !== 'user' && body.role !== 'admin') throw badRequest('ROLE_INVALID', 'The role is user or admin.');
+  const groupIds = body.group_ids ?? [];
+  if (!Array.isArray(groupIds) || groupIds.length > UUID_LIST_MAX || !groupIds.every(id => typeof id === 'string' && UUID.test(id))) {
+    throw badRequest('GROUPS_INVALID', `Expected group_ids: at most ${UUID_LIST_MAX} group ids.`);
+  }
+  if (body.password != null && (typeof body.password !== 'string' || !body.password.length || body.password.length > 1024)) throw badRequest('PASSWORD_INVALID', 'Invalid password');
+  return { email, fullName, role: body.role as 'user' | 'admin', groupIds: [...new Set(groupIds.map(id => (id as string).toLowerCase()))], password: (body.password as string | undefined) ?? null };
+}
+
+/**
+ * POST /api/admin/users (users.manage; admins.manage for an administrator),
+ * after the route checked the administrator's password: the account exists
+ * at once, in its groups. Without a password the answer carries a setup
+ * link; with one, the person signs in with it. The password must meet the
+ * person's minimum (their groups included).
+ */
+async function addPerson(adminId: string, input: unknown, req: AuthRequest | null = null): Promise<AddPersonResponse> {
+  const person = personInput(input);
+  const passwordHash = person.password ? await hashPassword(person.password) : '';
+  const id = crypto.randomUUID();
+  const setupLink = await underRulesLock(async cx => {
+    if (person.role === 'admin') await assertCallerManagesAdmins(cx, adminId);
+    try {
+      await cx.execute('INSERT INTO users (id, email, password_hash, full_name, role, email_verified, is_active) VALUES (?, ?, ?, ?, ?, TRUE, TRUE)',
+        [id, person.email, passwordHash, person.fullName, person.role]);
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ER_DUP_ENTRY') throw conflict('USER_EXISTS', 'Someone on this server already uses this address.');
+      throw error;
+    }
+    await joinGroups(cx, adminId, id, person.groupIds);
+    if (person.password) await assertPasswordLength(id, person.password, cx);
+    const link = person.password ? null : await createSetupLink(cx, adminId, id, req);
+    await recordAudit({ action: 'admin.user_created', actorId: adminId, targetUserId: id, req,
+      details: { role: person.role, groups: person.groupIds.length, setup: link ? 'link' : 'password' } }, cx);
+    return { value: link, reached: [id] };
+  });
+  const [user] = await listPeople(id);
+  return { user, setup_link: setupLink };
+}
+
+/**
+ * POST /api/admin/owner/transfer (owner.transfer), after the route checked
+ * the owner's password: an active administrator becomes the owner and the
+ * owner an administrator, in one transaction (the database allows one owner).
+ */
+async function transferOwnership(ownerId: string, targetId: unknown, req: AuthRequest | null = null): Promise<{ owner: string }> {
+  if (typeof targetId !== 'string' || !UUID.test(targetId)) throw notFound('USER_NOT_FOUND', 'User not found');
+  return withTransaction(async cx => {
+    const [rows] = await cx.execute<RowDataPacket[]>('SELECT id, role, is_active, password_hash FROM users WHERE id IN (?, ?) ORDER BY id FOR UPDATE', [ownerId, targetId]);
+    await assertCaller(cx);
+    const target = rows.find(row => String(row.id).toLowerCase() === targetId.toLowerCase());
+    if (!target) throw notFound('USER_NOT_FOUND', 'User not found');
+    if (String(target.id) === ownerId) throw badRequest('OWNER_TRANSFER_INVALID', 'You are the owner already.');
+    if (target.role !== 'admin' || !Number(target.is_active) || !target.password_hash) {
+      throw badRequest('OWNER_TRANSFER_INVALID', 'Ownership goes to an active administrator. Make them an administrator first.');
+    }
+    await cx.execute("UPDATE users SET role = 'admin' WHERE id = ? AND role = 'owner'", [ownerId]);
+    await cx.execute("UPDATE users SET role = 'owner' WHERE id = ?", [target.id]);
+    await recordAudit({ action: 'owner.transferred', actorId: ownerId, targetUserId: String(target.id), req }, cx);
+    return { owner: String(target.id) };
+  });
+}
+
 export type { DeleteActor, DeleteUserResult };
-export { assertKeepsAnAdmin, assertNotOwner, deleteUser };
+export { assertKeepsAnAdmin, assertNotOwner, assertCallerManagesAdmins, deleteUser, listPeople, addPerson, transferOwnership };

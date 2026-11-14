@@ -9,7 +9,10 @@ import { RECORDINGS_ROOT } from '../services/recordings';
 import { BACKUPS_ROOT } from '../services/export-jobs';
 import { realtime } from '../services/realtime';
 import { endUserSessions, lockOwnSession } from '../services/sessions';
-import { assertKeepsAnAdmin, assertNotOwner, deleteUser } from '../services/user-lifecycle';
+import { addPerson, assertCallerManagesAdmins, assertKeepsAnAdmin, assertNotOwner, deleteUser, listPeople, transferOwnership } from '../services/user-lifecycle';
+import { renewSetupLink, revokeSetupLink } from '../services/invites';
+import { endPersonDevices, personDevices } from '../services/devices';
+import type { AddPersonResponse, EndDevicesResponse, PeopleResponse, PersonDevicesResponse, SetupLinkResponse } from '../contracts/organisation';
 import { asCaller, assertCaller } from '../services/caller-proof';
 import { withTransaction } from '../services/transactions';
 import { listAuditLog, recordAudit, recordAuditAfter } from '../services/audit';
@@ -17,12 +20,14 @@ import { clientError } from '../http/errors';
 import {
   hashPassword,
   getAuthTokenFromRequest,
+  hasPermission,
 } from '../auth';
 import { confirmPassword, confirmPasswordHash } from '../security/reauthentication';
 import { disableTwoFactor } from '../services/two-factor';
 import { getSignupMode, isSignupMode, setSignupMode } from '../services/settings';
 import { defineRoutes } from '../http/route';
 import { can } from '../security/permissions';
+import type { Permission } from '../security/permissions';
 import { personFromParam } from '../services/admin-path';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
@@ -65,8 +70,16 @@ function confirmAdminPassword(userId: string, body: Input, res?: import('node:ht
 // again, under its locks, that they are still an active administrator,
 // signed in with this session and, where they entered it, this password
 // (`passwordHash`, the hash it matched; null when none was asked).
-function asAdmin<T>(req: Request, userId: string, passwordHash: string | null, work: () => Promise<T>) {
-  return asCaller({ userId, token: getAuthTokenFromRequest(req), permission: 'users.manage', passwordHash }, work);
+function asAdmin<T>(req: Request, userId: string, passwordHash: string | null, work: () => Promise<T>, permission: Permission = 'users.manage') {
+  return asCaller({ userId, token: getAuthTokenFromRequest(req), permission, passwordHash }, work);
+}
+
+// A change that carries the administrator's password, as the administrator
+// (asAdmin) with the route's permission; the boundary answers a refusal with its code.
+async function confirmedChange<T>(req: Request, userId: string, body: Input, res: import('node:http').ServerResponse, permission: Permission, work: () => Promise<T>) {
+  const confirmed = await confirmPasswordHash(userId, body?.current_password, res);
+  if ('refused' in confirmed) return confirmed.refused;
+  return asAdmin(req, userId, confirmed.passwordHash, work, permission);
 }
 
 async function getUserRoleStatus(targetId: string) {
@@ -294,16 +307,53 @@ export = defineRoutes({
     }
   } },
 
-  'GET /api/admin/users': { auth: 'admin', permission: 'users.read', module: null, handler: async (req: Request, userId: string) => {
+  'GET /api/admin/users': { auth: 'admin', permission: 'users.read', module: null, handler: async (_req: Request, _userId: string) => {
+    return { users: await listPeople() } satisfies PeopleResponse;
+  } },
 
-    try {
-      const [users] = await db.execute<RowDataPacket[]>(
-        'SELECT id, email, full_name, role, is_active, two_factor_enabled, created_at FROM users ORDER BY created_at DESC'
-      );
-      return { users: users.map(user => ({ ...user, two_factor_enabled: !!user.two_factor_enabled })) };
-    } catch (error) {
-      return { error: 'Failed to get users', status: 500 };
+  // Add person: the account exists at once; a setup link unless the
+  // administrator typed an initial password. An administrator only by the owner.
+  'POST /api/admin/users': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+    if ((body as { role?: unknown })?.role === 'admin' && !await hasPermission(userId, 'admins.manage')) {
+      return { error: 'Only the owner can make or remove administrators; nothing was changed.', code: 'ADMINS_MANAGE_REQUIRED', status: 403 };
     }
+    return confirmedChange(req, userId, body, res, 'users.manage', async () => ({ ...await addPerson(userId, body, req) } satisfies AddPersonResponse));
+  } },
+
+  'POST /api/admin/users/:id/setup-link': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, body: { limit: 1024 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+    const target = await storedPerson(req);
+    if ('refused' in target) return target.refused;
+    return confirmedChange(req, userId, body, res, 'users.manage', async () => ({ setup_link: await renewSetupLink(userId, target.id, req) } satisfies SetupLinkResponse));
+  } },
+
+  // Revokes a sign-up link; no data.
+  'DELETE /api/admin/users/:id/setup-link': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, handler: async (req: Request, userId: string) => {
+    const target = await storedPerson(req);
+    if ('refused' in target) return target.refused;
+    return asAdmin(req, userId, null, () => revokeSetupLink(userId, target.id, req));
+  } },
+
+  'POST /api/admin/owner/transfer': { auth: 'admin', permission: 'owner.transfer', module: null, restoreSection: null, body: { limit: 1024 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+    return confirmedChange(req, userId, body, res, 'owner.transfer', () => transferOwnership(userId, (body as { user_id?: unknown })?.user_id, req));
+  } },
+
+  'GET /api/admin/users/:id/devices': { auth: 'admin', permission: 'users.read', module: null, handler: async (req: Request) => {
+    const target = await storedPerson(req);
+    if ('refused' in target) return target.refused;
+    return { devices: await personDevices(target.id) } satisfies PersonDevicesResponse;
+  } },
+
+  // Admin path: signs devices out; no data.
+  'DELETE /api/admin/users/:id/devices/:deviceId': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+    const target = await storedPerson(req);
+    if ('refused' in target) return target.refused;
+    return confirmedChange(req, userId, body, res, 'users.manage', async () => ({ ...await endPersonDevices(userId, target.id, req.params.deviceId, req) } satisfies EndDevicesResponse));
+  } },
+
+  'DELETE /api/admin/users/:id/devices': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+    const target = await storedPerson(req);
+    if ('refused' in target) return target.refused;
+    return confirmedChange(req, userId, body, res, 'users.manage', async () => ({ ...await endPersonDevices(userId, target.id, null, req) } satisfies EndDevicesResponse));
   } },
 
   'PUT /api/admin/users/:id/password': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
@@ -430,6 +480,10 @@ export = defineRoutes({
     if (!['user', 'admin'].includes(nextRole)) {
       return { error: 'Invalid role. Must be user or admin.', status: 400 };
     }
+    // Between member and administrator: only the owner (admins.manage).
+    if (!await hasPermission(userId, 'admins.manage')) {
+      return { error: 'Only the owner can make or remove administrators; nothing was changed.', code: 'ADMINS_MANAGE_REQUIRED', status: 403 };
+    }
 
     try {
       const confirmed = await confirmPasswordHash(userId, body?.current_password, res);
@@ -439,6 +493,7 @@ export = defineRoutes({
         if (!await lockPerson(connection, id)) return false;
         await assertNotOwner(connection, id, 'demote');
         await assertCaller(connection);
+        await assertCallerManagesAdmins(connection, userId);
         await connection.execute('UPDATE users SET role = ? WHERE id = ?', [nextRole, id]);
         return true;
       }));

@@ -23,7 +23,7 @@ test('an administrator\'s change of a person counts the administrators and the c
 
   const password = 'synthetic-admin-races-password';
   const passwordHash = await (require('bcryptjs') as typeof import('bcryptjs')).hash(password, 4);
-  async function person(name: string, role: 'admin' | 'user') {
+  async function person(name: string, role: 'owner' | 'admin' | 'user') {
     const id = crypto.randomUUID();
     await pool.execute('INSERT INTO users (id, email, password_hash, full_name, role) VALUES (?, ?, ?, ?, ?)', [id, `${name}@example.test`, passwordHash, name, role]);
     const client = api.client();
@@ -70,9 +70,9 @@ test('an administrator\'s change of a person counts the administrators and the c
 
   // Two administrators, each removing the other while the first one's change
   // waits after its count: the second change goes through, the first then
-  // finds its caller or the last administrator, and one stays.
+  // finds its caller or the last administrator, and one stays. (Demoting is
+  // the owner's alone since 0.30, and the owner cannot be demoted.)
   for (const [change, request] of [
-    ['demote', (target: string) => ({ method: 'PUT', url: `/api/admin/users/${target}/role`, body: { role: 'user', current_password: password } })],
     ['deactivate', (target: string) => ({ method: 'PUT', url: `/api/admin/users/${target}/activate`, body: { is_active: false, current_password: password } })],
     ['delete', (target: string) => ({ method: 'DELETE', url: `/api/admin/users/${target}`, body: { current_password: password } })],
   ] as const) {
@@ -113,7 +113,8 @@ test('an administrator\'s change of a person counts the administrators and the c
       ] as const) {
         const name = `${change}-${meanwhile.replace(' ', '-')}`;
         const keeper = await person(`${name}-keeper`, 'admin');
-        const a = await person(`${name}-admin`, 'admin'), target = await person(`${name}-person`, 'user');
+        // A role only the owner changes.
+        const a = await person(`${name}-admin`, change === 'role' ? 'owner' : 'admin'), target = await person(`${name}-person`, 'user');
         const before = await row(target.id);
         const pause = pauseAfter('SELECT password_hash FROM users WHERE id = ?');
         const { method, url, body } = request(target.id);

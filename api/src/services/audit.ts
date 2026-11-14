@@ -26,6 +26,11 @@ const AUDIT_ACTIONS = [
   'mail.account_disconnected', 'mail.account_purged',
   // A person signed one of their devices out for good (F5).
   'device.removed',
+  // The organisation (0.30, F3): people, setup links, the owner, groups and
+  // their members. admin.policy_changed names its target (installation or a group).
+  'admin.user_created', 'admin.setup_link_created', 'admin.setup_link_revoked', 'auth.setup_completed', 'owner.transferred',
+  'admin.device_removed', 'admin.devices_ended',
+  'admin.group_created', 'admin.group_deleted', 'admin.group_manager_set', 'group.renamed', 'group.member_added', 'group.member_removed',
 ] as const;
 type AuditAction = typeof AUDIT_ACTIONS[number];
 type AuditDetails = Record<string, string | number | boolean | null>;
