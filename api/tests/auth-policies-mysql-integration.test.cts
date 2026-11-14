@@ -18,7 +18,8 @@ function otp(secret: string) {
 // The sign-in policies (0.30) through the real request handler on the
 // disposable MariaDB, with the shared people (admin, Alex the manager, Blair
 // the member, Casey the stranger, Drew):
-// - auth.password_min_length at sign-up, a password change and an admin's reset
+// - auth.password_min_length at sign-up, a password change, an admin's reset,
+//   Add person's typed first password and a setup link
 // - auth.session_max_days: an older session ends at its next request, a younger one works
 // - auth.two_factor: the 7-day grace starts at the save (and lazily at the
 //   gate), nothing is refused during it, then only the exempt routes answer,
@@ -54,6 +55,26 @@ test('sign-in policies: password minimum, session lifetime and 2FA required with
   const reset = (pass: string) => clients.admin.request('PUT', `/api/admin/users/${ids.stranger}/password`, { new_password: pass, current_password: password });
   assert.equal((await reset('fifteen-chars-x')).status, 400);
   assert.equal((await reset(password)).status, 200);
+  // Add person with a first password the administrator types: refused short, and then nobody exists.
+  const addPerson = (email: string, extra: Record<string, unknown>) =>
+    clients.admin.request('POST', '/api/admin/users', { email, full_name: 'Added', role: 'user', current_password: password, ...extra });
+  const typed = await addPerson('typed@example.test', { password: 'fifteen-chars-x' });
+  assert.deepEqual([typed.status, typed.body.code], [400, 'PASSWORD_TOO_SHORT']);
+  assert.equal((await rows('SELECT COUNT(*) AS count FROM users WHERE email = ?', ['typed@example.test']))[0].count, 0);
+  assert.equal((await addPerson('typed@example.test', { password: 'sixteen-chars-xx' })).status, 200);
+  assert.equal((await people.api.client().request('POST', '/api/auth/signin', { email: 'typed@example.test', password: 'sixteen-chars-xx' })).status, 200);
+
+  // A setup link: the password chosen on it meets the same minimum.
+  const invited = await addPerson('invited@example.test', {});
+  assert.equal(invited.status, 200, JSON.stringify(invited.body));
+  const token = String((invited.body.setup_link as { url: string }).url.split('#')[1]);
+  const invitee = people.api.client();
+  const accept = (pass: string) => invitee.request('POST', '/api/auth/invite/accept', { token, password: pass });
+  const shortAccept = await accept('fifteen-chars-x');
+  assert.deepEqual([shortAccept.status, shortAccept.body.code], [400, 'PASSWORD_TOO_SHORT']);
+  assert.equal((await accept('sixteen-chars-xx')).status, 200);
+  assert.equal(invitee.signedIn, true);
+
   await setPolicies({ 'auth.password_min_length': 12 });
 
   // --- Session lifetime: Casey's sign-in is eight days old, Alex's new ---
