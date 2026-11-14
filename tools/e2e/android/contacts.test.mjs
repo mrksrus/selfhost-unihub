@@ -14,7 +14,7 @@
 //   Android's "Too many deletions"; an undone merge brings the contact back.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { PACKAGE, adb, answerSlowDialogs, openApp, screenNodes, sleep } from '../support/android.mjs';
+import { PACKAGE, adb, contactsOn, contactsUri, openApp, query, rawsFor, requestSync, sleep, until } from '../support/android.mjs';
 
 const instance = Number(process.env.UNIHUB_E2E_INSTANCE ?? '1');
 const base = process.env.UNIHUB_E2E_URL ?? `http://127.0.0.1:${8087 + instance}`;
@@ -23,7 +23,6 @@ const candidateApk = process.env.UNIHUB_E2E_CANDIDATE_APK ?? `${repo}android/app
 const previousApk = process.env.UNIHUB_E2E_PREVIOUS_APK;
 const run = Date.now().toString(36).slice(-5);
 const tag = `E2e${run}`;
-const contactsUri = 'content://com.android.contacts';
 // A small synthetic picture (a 128 px gradient).
 const PHOTO = '/9j/2wBDAA0JCgsKCA0LCgsODg0PEyAVExISEyccHhcgLikxMC4pLSwzOko+MzZGNywtQFdBRkxOUlNSMj5aYVpQYEpRUk//2wBDAQ4ODhMREyYVFSZPNS01T09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0//wAARCACAAIADASIAAhEBAxEB/8QAFwABAQEBAAAAAAAAAAAAAAAAAQIFBv/EABUQAQEAAAAAAAAAAAAAAAAAAAEA/8QAGQEBAQEBAQEAAAAAAAAAAAAAAwIBBgQF/8QAFhEBAQEAAAAAAAAAAAAAAAAAAAER/9oADAMBAAIRAxEAPwDmgkJCoLqtfNlSFQSFQU6WVIVBIVBZpZUhUEhUFOklSFQSFQWaWVIVBIVBTpJUhUEhUFOllSFQSEhZpJWYFQSFQXo1zkqQqCQqCnSSpCoJCoLNLKkKgkJCnSSgKgkJCnSygJCoJCzSSgJCoJCnSygJCoJCzSyswKgkJC9GublASFQSFOklASFQSFmllASFQSFOklASFQSFmllASFQSFOllASFQSFOklASFQSFmllZgSFQSF6Nc3KAkKgkKdLKAkKgkLNJKAkKgkKdLKAkKgkKdJKAkJCoLNLKAkJCoKdJKkKgkKgs0srMCQqCQvRrm5QEhIVBTpZQEhIVBZpJUhUEhUFOllSFQSFQU6SVIVBIVBZpZUhUEhUFOllSFQSFQWaSVlhUEhUF6Nc3KkKgkKgp0sqQqCQqCzSSpCoJCoKdLKkKgkKgp0sqQqCQqCzSSpCoJCQp0soCoJCQs0krMCoJCoL0a5uVIVBIVBTpZUhUEhIU6WUBUEhIWaSUBIVBIU6WUBIVBIWaSUBIVBIU6WUBIVBIWaSVmBIVBIT65yUBIVBIWaSUBIVBIU6WUBIVBIWaSUBIVBIU6WUBIVBIWaSUBIVBIU6WUBISFQWaWV//Z';
 
@@ -60,41 +59,13 @@ async function ours() {
 const v = (value, label = '', custom_label = null) => ({ value, label, custom_label, preferred: false });
 
 // ── The phone: Android's contacts provider, read and changed as a contacts app does ──
-function query(uri, projection, where) {
-  const text = adb('shell', 'content', 'query', '--uri', uri, '--projection', projection.join(':'), '--where', `"${where}"`);
-  const keys = projection.join('|');
-  return text.split(/^Row: \d+ /m).slice(1).map(chunk => {
-    const parts = chunk.replace(/\s+$/, '').split(new RegExp(`(?:^|, )(${keys})=`));
-    const row = {};
-    for (let i = 1; i < parts.length; i += 2) row[parts[i]] = parts[i + 1];
-    return row;
-  });
-}
-const rawsFor = id => query(`${contactsUri}/raw_contacts`, ['_id', 'sync1', 'starred'],
-  `account_type='${PACKAGE}' AND sourceid='${id}' AND deleted=0`);
 const dataOf = raw => query(`${contactsUri}/data`, ['_id', 'mimetype', 'data1', 'data2', 'data3', 'data4', 'data5', 'data14', 'is_primary'], `raw_contact_id=${raw}`)
   .map(row => ({ ...row, mime: row.mimetype.split('/').pop() }));
 const of = (rows, mime) => rows.filter(row => row.mime === mime);
-const hasAccount = () => /Account \{name=[^,]*, type=io\.github\.mrksrus\.unihub\}/.test(adb('shell', 'dumpsys', 'account'));
 function insertData(raw, mime, binds) {
   adb('shell', 'content', 'insert', '--uri', `${contactsUri}/data`, '--bind', `raw_contact_id:i:${raw}`, '--bind', `mimetype:s:vnd.android.cursor.item/${mime}`,
     ...Object.entries(binds).flatMap(([column, value]) => ['--bind', typeof value === 'number' ? `${column}:i:${value}` : `${column}:s:'${value}'`]));
 }
-function requestSync() {
-  adb('shell', 'requestsync', '-n', '127.0.0.1', '-t', PACKAGE, '-a', 'com.android.contacts', '-f');
-}
-/** Waits for a condition of both sides, asking for a sync now and then (Android may delay one). */
-async function until(check, what, timeoutMs = 240_000) {
-  const end = Date.now() + timeoutMs;
-  let last;
-  for (let attempt = 0; Date.now() < end; attempt++) {
-    try { if (await check()) return; } catch (error) { last = error; }
-    if (attempt % 8 === 0) requestSync();
-    await sleep(2500);
-  }
-  throw new Error(`timed out waiting for ${what}${last ? `: ${last.message}` : ''}`);
-}
-
 /** Whether the phone's default network is metered (what the app's isActiveNetworkMetered sees). */
 function defaultNetworkMetered() {
   const dump = adb('shell', 'dumpsys', 'connectivity');
@@ -130,22 +101,6 @@ async function meteredNetwork() {
     way.off();
   }
   return null;
-}
-
-/** Contacts on the phone for the signed-in admin, as Android's Settings → Add account → UniHub turns them on. */
-async function contactsOn() {
-  adb('shell', 'pm', 'grant', PACKAGE, 'android.permission.READ_CONTACTS');
-  adb('shell', 'pm', 'grant', PACKAGE, 'android.permission.WRITE_CONTACTS');
-  if (hasAccount()) return;
-  adb('shell', 'am', 'start', '-n', `${PACKAGE}/.MainActivity`, '-a', `${PACKAGE}.SHOW_CONTACTS`);
-  for (let attempt = 0; attempt < 60 && !hasAccount(); attempt++) {
-    await answerSlowDialogs();
-    // Dialog buttons show in capitals on newer Android versions.
-    const button = screenNodes().find(node => /^show contacts$/i.test(node.text));
-    if (button) adb('shell', 'input', 'tap', `${button.x}`, `${button.y}`);
-    await sleep(2000);
-  }
-  assert.ok(hasAccount(), 'contacts are on: the UniHub account exists');
 }
 
 /** Installs an app over the current one (same signing key) and signs in. */
