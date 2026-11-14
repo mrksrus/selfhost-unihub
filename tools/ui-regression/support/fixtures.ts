@@ -241,17 +241,29 @@ const POLICY_DEFAULTS: Record<string, unknown> = {
   'backup.download_mail': 'user_choice', 'backup.create': 'allowed', 'backup.restore': 'allowed', 'backup.delete': 'allowed', 'backup.server_retention_days': null,
   'accounts.add': 'allowed', 'accounts.remove': 'allowed', 'accounts.reset': 'allowed', 'accounts.admin_manage': 'available', 'account.delete': 'allowed', 'data.clear': 'allowed', 'bin.delete': 'allowed',
   'app_lock.required': [], 'app_lock.max_background': 'none', 'app_lock.screenshots': 'allowed',
+  // 0.30: sign-in, modules and pages, notifications, phone and offline.
+  'auth.two_factor': 'optional', 'auth.password_min_length': 12, 'auth.session_max_days': 'none',
+  'modules.mail': 'allowed', 'modules.calendar': 'allowed', 'modules.contacts': 'allowed', 'modules.recordings': 'allowed', 'pages.music': 'allowed',
+  'notifications.detail': 'full', 'contacts.phone_sync': 'allowed', 'offline.copies': 'allowed',
 };
 const POLICY_VALUES: Record<string, unknown[]> = {
   'mail.mode.new_accounts': ['user_choice', 'download', 'download_delete', 'sync'], 'mail.provider_delete': ['user_choice', 'forbidden', 'required'],
   'backup.download_mail': ['user_choice', 'always'], 'backup.server_retention_days': [null, 30, 90, 365], 'accounts.admin_manage': ['available'],
   'app_lock.required': [[]], 'app_lock.max_background': ['none', '900', '300', '60', '0'],
+  'auth.two_factor': ['optional', 'required'], 'auth.password_min_length': [12, 14, 16, 20], 'auth.session_max_days': ['none', '30', '14', '7', '1'],
+  'notifications.detail': ['full', 'sender', 'none'],
 };
 /** The server's effects of the app lock rules (settings-registry.ts POLICY_EFFECTS), shown under a changed row. */
 const APP_LOCK_EFFECTS: Record<string, string> = {
   'app_lock.required': 'People are asked to turn the app lock on at their next start; until then their devices cannot open the locked parts.',
   'app_lock.max_background': 'Devices set to lock later are asked to shorten the time.',
   'app_lock.screenshots': 'Applies in the Android app; browsers cannot block screenshots.',
+};
+/** The server's effects of the 0.30 rules the pictures set (settings-registry.ts POLICY_EFFECTS). */
+const ORGANISATION_EFFECTS: Record<string, string> = {
+  'auth.two_factor': 'People without two-factor authentication have 7 days to set it up; then they can use nothing else until they do.',
+  'auth.session_max_days': 'Applies to existing sessions too: an older one signs out at its next use. Nothing is deleted.',
+  'offline.copies': 'New offline copies are refused; each browser and app deletes its own copy the next time it is online.',
 };
 /** One rule set for the pictures: deleting from the bin for good is not allowed. */
 const POLICY_SET: Record<string, { value: unknown; reason: string }> = {
@@ -262,11 +274,12 @@ const POLICIES_EFFECTIVE = {
     ? { value: POLICY_SET[key].value, source: 'policy', allowed: false, reason: POLICY_SET[key].reason }
     : { value: POLICY_DEFAULTS[key], source: 'default', allowed: true, reason: null }])),
   revision: 2, acknowledged_revision: 2, rules: [POLICY_SET['bin.delete'].reason],
+  two_factor: { required: false, grace_ends_at: null },
 };
 const POLICIES_ADMIN = {
   policies: Object.fromEntries(Object.keys(POLICY_DEFAULTS).map(key => [key, {
     value: key in POLICY_SET ? POLICY_SET[key].value : POLICY_DEFAULTS[key], source: key in POLICY_SET ? 'policy' : 'default', default: POLICY_DEFAULTS[key],
-    values: POLICY_VALUES[key] ?? ['allowed', 'forbidden'], effect: key === 'mail.mode.sync' ? 'Existing Sync accounts keep working.' : key === 'bin.delete' ? 'Items stay in the bin until restored.' : APP_LOCK_EFFECTS[key] ?? null,
+    values: POLICY_VALUES[key] ?? ['allowed', 'forbidden'], effect: key === 'mail.mode.sync' ? 'Existing Sync accounts keep working.' : key === 'bin.delete' ? 'Items stay in the bin until restored.' : APP_LOCK_EFFECTS[key] ?? ORGANISATION_EFFECTS[key] ?? null,
   }])),
   bin_min_retention: { value: 'forever', source: 'default', default: 'forever', values: ['30', '90', 'forever'], applies: true, effect: 'Applies while deleting from the bin for good is not allowed; people may keep items longer.' },
   revision: 2,
@@ -369,6 +382,67 @@ export const POLICIES_ADMIN_APP_LOCK = {
   },
 };
 
+// ── 0.30 organisation: people, groups, a group's rules, setup links, required two-factor authentication ──
+const ALL_PERMISSIONS = ['users.read', 'users.manage', 'server.settings', 'storage.read', 'audit.read', 'groups.manage', 'admins.manage', 'owner.transfer'];
+/** The administrator of the server pages is the owner: every permission, so every control shows. */
+const OWNER = { ...USER, role: 'owner' as const, permissions: ALL_PERMISSIONS, manages_groups: false, two_factor_enabled: true };
+export const GROUPS = [
+  { id: 'grp-support', name: 'Support', description: 'Customer support, both shifts', member_count: 4, manager_count: 2, has_policies: true },
+  { id: 'grp-finance', name: 'Finance', description: 'Invoices, payroll and the year-end close', member_count: 3, manager_count: 1, has_policies: true },
+  { id: 'grp-night', name: 'Night shift', description: null, member_count: 1, manager_count: 0, has_policies: false },
+];
+const inGroup = (id: string, role: 'member' | 'manager' = 'member') => ({ id, name: GROUPS.find(group => group.id === id)!.name, role });
+const personRow = <T extends object>(id: string, email: string, full_name: string | null, fields: T) => row({
+  id, email, full_name, role: 'user', status: 'active', is_active: true, two_factor_enabled: true, two_factor_grace_ends_at: null as string | null,
+  groups: [] as ReturnType<typeof inGroup>[], created_at: at('01-12T09:00:00.000Z'), last_active_at: at('06-15T08:50:00.000Z') as string | null,
+}, fields);
+export const PEOPLE = [
+  personRow(USER.id, USER.email, USER.full_name, { role: 'owner' }),
+  personRow('user-grace', 'grace@example.com', 'Grace Hopper', { role: 'admin', groups: [inGroup('grp-support', 'manager')], last_active_at: at('06-14T17:20:00.000Z') }),
+  personRow('user-alex', 'alex@example.com', 'Alex Example', { groups: [inGroup('grp-support', 'manager'), inGroup('grp-finance')], two_factor_enabled: false, two_factor_grace_ends_at: at('06-20T09:00:00.000Z') }),
+  personRow('user-blair', 'blair@example.com', 'Blair Example', { groups: [inGroup('grp-support')], last_active_at: at('06-12T11:00:00.000Z') }),
+  personRow('user-katherine', 'katherine.johnson-example@accounting.example.com', 'Katherine Johnson-Example of the Accounting Office', {
+    groups: [inGroup('grp-support'), inGroup('grp-finance', 'manager'), inGroup('grp-night')], two_factor_enabled: false, last_active_at: at('06-15T06:05:00.000Z') }),
+  personRow('user-casey', 'casey@example.com', 'Casey Example', { status: 'invited', two_factor_enabled: false, groups: [inGroup('grp-finance')], last_active_at: null }),
+  personRow('user-robin', 'robin@example.org', null, { status: 'not_set_up', two_factor_enabled: false, last_active_at: null }),
+  personRow('user-drew', 'drew@example.com', 'Drew Example', { status: 'inactive', is_active: false, two_factor_enabled: false, last_active_at: at('05-02T16:30:00.000Z') }),
+];
+const groupDetail = (id: string) => {
+  const group = GROUPS.find(entry => entry.id === id);
+  if (!group) return null;
+  const members = PEOPLE.flatMap(person => person.groups.filter(entry => entry.id === id).map(entry => ({ id: person.id, email: person.email, full_name: person.full_name, role: entry.role, added_at: at('03-02T10:00:00.000Z') })));
+  return { group, can_manage: true, members };
+};
+/** Support requires two-factor authentication and locks sooner than Everyone; the rest is Everyone's. */
+const GROUP_POLICY_SET: Record<string, unknown> = { 'auth.two_factor': 'required', 'auth.session_max_days': '14', 'offline.copies': 'forbidden' };
+const groupPolicies = (id: string) => {
+  const group = GROUPS.find(entry => entry.id === id);
+  if (!group) return null;
+  const set = id === 'grp-support' ? GROUP_POLICY_SET : {};
+  return {
+    // A group's page: its own value where it sets one, else Everyone's; `default` is Everyone's, and only values at least as strict are listed.
+    policies: Object.fromEntries(Object.entries(POLICIES_ADMIN.policies).map(([key, policy]) => {
+      const from = Math.max(0, policy.values.findIndex(value => JSON.stringify(value) === JSON.stringify(policy.value)));
+      return [key, { ...policy, default: policy.value, value: key in set ? set[key] : policy.value, source: key in set ? 'policy' : 'default',
+        values: key === 'mail.mode.new_accounts' || key === 'app_lock.required' ? policy.values : policy.values.slice(from),
+        effect: policy.effect }];
+    })),
+    bin_min_retention: POLICIES_ADMIN.bin_min_retention, revision: 2, target: { kind: 'group', id, name: group.name },
+  };
+};
+/** Casey's setup link, as the public page reads it. */
+export const INVITE = {
+  email: 'casey@example.com', full_name: 'Casey Example', expires_at: at('06-22T09:30:00.000Z'), rules_revision: 2,
+  data_rules: ['Your administrator requires two-factor authentication. You have 7 days to set it up.', 'Your administrator requires passwords of at least 14 characters.', POLICY_SET['bin.delete'].reason],
+};
+/** A person whose 7 days to set up two-factor authentication ended: the prompt stands in place of the app. */
+export const POLICIES_EFFECTIVE_TWO_FACTOR = {
+  ...POLICIES_EFFECTIVE,
+  policies: { ...POLICIES_EFFECTIVE.policies, 'auth.two_factor': { value: 'required', source: 'policy', allowed: false, reason: 'Your administrator requires two-factor authentication.' } },
+  rules: [...POLICIES_EFFECTIVE.rules, 'Your administrator requires two-factor authentication.'],
+  two_factor: { required: true, grace_ends_at: at('06-12T09:00:00.000Z') },
+};
+
 export interface ApiReply { status?: number; body: unknown }
 type Handler = (url: URL, method: string, body: unknown) => ApiReply | undefined;
 type Route = [method: string, path: RegExp, handler: Handler];
@@ -414,7 +488,7 @@ function savedDraft(id: string, body: unknown) {
 function defaultRoutes(emails: typeof EMAILS, admin = false): Route[] {
   const byId = (url: URL) => emails.find(entry => entry.id === decodeURIComponent(url.pathname.split('/')[4] ?? ''));
   return [
-    ['GET', /^\/auth\/me$/, () => ok({ user: admin ? { ...USER, role: 'admin' } : USER, csrfToken: 'synthetic-csrf-token' })],
+    ['GET', /^\/auth\/me$/, () => ok({ user: admin ? OWNER : { ...USER, permissions: [], manages_groups: false }, csrfToken: 'synthetic-csrf-token' })],
     ['GET', /^\/modules$/, () => ok({ modules: MODULES, pages: PAGES })],
     ['GET', /^\/settings\/preferences$/, () => ok({ preferences: PREFERENCES })],
     ['GET', /^\/settings\/values$/, () => ok({ settings: SETTINGS })],
@@ -476,6 +550,18 @@ function defaultRoutes(emails: typeof EMAILS, admin = false): Route[] {
     ['POST', /^\/devices\/current\/lock-state$/, () => ok({})],
     ['GET', /^\/settings\/values\/device$/, () => ok({ device_id: DEVICES[0].id, settings: CURRENT_DEVICE.settings })],
     ['GET', /^\/admin\/instance-backup$/, () => ok(INSTANCE_BACKUP)],
+    // 0.30 organisation: people, a person's devices and data, groups and their rules, the setup link's public check.
+    ['GET', /^\/admin\/users$/, () => ok({ users: PEOPLE })],
+    ['GET', /^\/admin\/users\/[^/]+\/devices$/, () => ok({ devices: DEVICES.slice(1) })],
+    ['GET', /^\/admin\/users\/[^/]+\/accounts$/, url => ok({ user_id: url.pathname.split('/')[4], mail_accounts: [], calendar_accounts: [] })],
+    ['GET', /^\/admin\/users\/[^/]+\/backups$/, () => ok({ jobs: [] })],
+    ['GET', /^\/admin\/users\/[^/]+\/bin$/, () => ok({ items: [], retention: '30', next_cursor: null })],
+    ['GET', /^\/admin\/groups$/, () => ok({ groups: GROUPS })],
+    ['GET', /^\/admin\/groups\/[^/]+\/policies$/, url => { const body = groupPolicies(url.pathname.split('/')[4]); return body ? ok(body) : { status: 404, body: { error: 'Group not found', code: 'GROUP_NOT_FOUND' } }; }],
+    ['GET', /^\/groups$/, () => ok({ groups: [] })],
+    ['GET', /^\/groups\/[^/]+$/, url => { const body = groupDetail(url.pathname.split('/')[3]); return body ? ok(body) : { status: 404, body: { error: 'Group not found', code: 'GROUP_NOT_FOUND' } }; }],
+    ['GET', /^\/groups\/[^/]+\/candidates$/, () => ok({ people: PEOPLE.filter(person => person.is_active && person.groups.length === 0).map(({ id, email, full_name }) => ({ id, email, full_name })) })],
+    ['POST', /^\/auth\/invite\/check$/, () => ok(INVITE)],
     ['GET', /^\/contacts$/, url => {
       const offset = Number(url.searchParams.get('offset') || 0);
       return ok({ contacts: CONTACTS.slice(offset), has_more: false, offset });

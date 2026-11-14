@@ -4,7 +4,7 @@
 // (P-12), the theme is painted before the app runs and follows the choice
 // (P-02), and touch targets are big enough and never overlap (P-11).
 import type { Page } from '@playwright/test';
-import { RICH_TASK, TASKS } from '../support/fixtures.ts';
+import { POLICIES_EFFECTIVE_TWO_FACTOR, RICH_TASK, TASKS } from '../support/fixtures.ts';
 import { touchViolations } from '../support/geometry.ts';
 import { expectOnlyKnown, KNOWN_DEFECTS } from '../support/known-defects.ts';
 import { expect, pointerIsCoarse, test, THEMES, VIEWPORTS } from '../support/test.ts';
@@ -357,6 +357,45 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
   test('Settings, Security with Devices', async ({ page, open, settle }) => {
     await open('/settings?section=security');
     await expect(page.getByText('UniHub app 0.29.0 on Android')).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page), []);
+  });
+
+  // 0.30: the organisation's pages in a phone's hand.
+  test.describe('as an administrator', () => {
+    test.use({ admin: true });
+
+    test('Server, People', async ({ page, open, settle }) => {
+      await open('/admin/users');
+      await expect(page.getByRole('link', { name: 'Alex Example' })).toBeVisible();
+      await settle();
+      expectOnlyKnown(await touchViolations(page), []);
+    });
+
+    test('Server, a person', async ({ page, open, settle }) => {
+      await open('/admin/users/user-alex');
+      await expect(page.getByRole('switch', { name: 'Support: manager' })).toBeVisible();
+      await settle();
+      expectOnlyKnown(await touchViolations(page), []);
+    });
+
+    test('Server, a group and its Add people dialog', async ({ page, open, settle }) => {
+      await open('/admin/groups/grp-support');
+      await expect(page.getByRole('switch', { name: 'Blair Example: manager' })).toBeVisible();
+      await settle();
+      expectOnlyKnown(await touchViolations(page), []);
+      await page.getByRole('button', { name: 'Add people' }).click();
+      await expect(page.getByRole('list', { name: 'People to add' })).toBeVisible();
+      await settle();
+      expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
+    });
+  });
+
+  test('the two-factor reminder', async ({ page, open, settle }) => {
+    await page.route('**/api/policies/effective', route => route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ ...POLICIES_EFFECTIVE_TWO_FACTOR, two_factor: { required: true, grace_ends_at: '2026-06-20T09:00:00.000Z' } }) }));
+    await open('/todo');
+    await expect(page.getByRole('button', { name: 'Set up now' })).toBeVisible();
     await settle();
     expectOnlyKnown(await touchViolations(page), []);
   });
