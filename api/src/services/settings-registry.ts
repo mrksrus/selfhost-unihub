@@ -46,7 +46,9 @@ const APP_LOCK_UNION: Union = { alone: 'app' };
 // Seconds in the background before the lock asks again, from the longest
 // (least strict) to every time UniHub opens.
 const RELOCK_AFTER = ['900', '300', '60', '0'] as const;
-const SNOOZE_CHOICES = ['1h', '3h', 'tomorrow', '1d', '2d', 'next_week', '1w', '2w', '1mo'] as const;
+// The longest session after its sign-in, in days, from no limit to a day.
+const SESSION_MAX_DAYS = ['none', '30', '14', '7', '1'] as const;
+const SNOOZE_CHOICES =['1h', '3h', 'tomorrow', '1d', '2d', 'next_week', '1w', '2w', '1mo'] as const;
 
 export const SETTINGS = {
   user: {
@@ -183,6 +185,40 @@ export const POLICIES: { readonly [K in PolicyKey]: PolicyEntry<PolicyValues[K]>
     },
   },
   'app_lock.screenshots': { ...allowance('Your administrator does not allow screenshots in the UniHub app.'), refuses: [] },
+  // Sign-in, modules, notifications, phone and offline (0.30). Registered
+  // here with their values and reasons; the request boundary, the services
+  // and the workers enforce them.
+  'auth.two_factor': {
+    kind: { type: 'enum', values: ['optional', 'required'] }, default: 'optional', strictness: ['optional', 'required'], refuses: ['required'],
+    reasons: { required: 'Your administrator requires two-factor authentication.' },
+  },
+  'auth.password_min_length': {
+    kind: { type: 'integer', min: 12, max: 20, values: [12, 14, 16, 20] }, default: 12, strictness: ['12', '14', '16', '20'], refuses: [],
+    reasons: Object.fromEntries([14, 16, 20].map(length => [String(length), `Passwords need at least ${length} characters, as your administrator set.`])),
+  },
+  'auth.session_max_days': {
+    kind: { type: 'enum', values: SESSION_MAX_DAYS }, default: 'none', strictness: SESSION_MAX_DAYS, refuses: [],
+    reasons: {
+      30: 'You sign in again at least every 30 days, as your administrator set.',
+      14: 'You sign in again at least every 14 days, as your administrator set.',
+      7: 'You sign in again at least every 7 days, as your administrator set.',
+      1: 'You sign in again every day, as your administrator set.',
+    },
+  },
+  'modules.mail': allowance('Your administrator turned Mail off.'),
+  'modules.calendar': allowance('Your administrator turned Calendar and ToDo off.'),
+  'modules.contacts': allowance('Your administrator turned Contacts off.'),
+  'modules.recordings': allowance('Your administrator turned Recordings and Music off.'),
+  'pages.music': allowance('Your administrator turned the Music page off.'),
+  'notifications.detail': {
+    kind: { type: 'enum', values: ['full', 'sender', 'none'] }, default: 'full', strictness: ['full', 'sender', 'none'], refuses: [],
+    reasons: {
+      sender: 'Notifications show at most who a message is from, as your administrator set.',
+      none: 'Notifications show no content, as your administrator set.',
+    },
+  },
+  'contacts.phone_sync': allowance('Your administrator does not allow UniHub contacts in the phone\'s contacts.'),
+  'offline.copies': allowance('Your administrator does not allow offline copies.'),
 };
 
 const APP_LOCK_AREA_NAMES: Readonly<Record<Exclude<AppLockArea, 'app'>, string>> = {
@@ -226,6 +262,17 @@ export const POLICY_EFFECTS: Readonly<Partial<Record<PolicyKey | 'bin.min_retent
   'app_lock.required': 'People are asked to turn the app lock on at their next start; until then their devices cannot open the locked parts.',
   'app_lock.max_background': 'Devices set to lock later are asked to shorten the time.',
   'app_lock.screenshots': 'Applies in the Android app; browsers cannot block screenshots.',
+  'auth.two_factor': 'People without two-factor authentication have 7 days to set it up; then they can use nothing else until they do.',
+  'auth.password_min_length': 'Applies to passwords set from now on; existing passwords keep working.',
+  'auth.session_max_days': 'Applies to existing sessions too: an older one signs out at its next use. Nothing is deleted.',
+  'modules.mail': 'Mail is off for these people; their mail and accounts stay and come back when it is allowed again.',
+  'modules.calendar': 'Calendar and ToDo are off for these people; their data stays.',
+  'modules.contacts': 'Contacts are off for these people; their contacts stay. Phones remove UniHub contacts at their next sync.',
+  'modules.recordings': 'Recordings and Music are off for these people; their recordings stay.',
+  'pages.music': 'Only the Music page goes; recordings keep working.',
+  'notifications.detail': 'Applies to notifications sent from now on.',
+  'contacts.phone_sync': 'Phones remove UniHub contacts at their next sync; they stay in UniHub. Changes made on a phone since its last sync are lost.',
+  'offline.copies': 'New offline copies are refused; each browser and app deletes its own copy the next time it is online.',
 };
 
 export { APP_LOCK_AREAS };

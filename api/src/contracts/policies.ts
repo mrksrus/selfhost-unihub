@@ -61,6 +61,30 @@ export interface PolicyValues {
   'app_lock.max_background': 'none' | RelockAfter;
   /** Screenshots and screen recording in the Android app; browsers cannot block them. */
   'app_lock.screenshots': Allowance;
+  /**
+   * Two-factor authentication (0.30): `required` gives a person without it a
+   * 7-day grace from when the rule first applies to them, then refuses
+   * everything but setting it up (403 TWO_FACTOR_REQUIRED); turning it off
+   * is refused at once.
+   */
+  'auth.two_factor': 'optional' | 'required';
+  /** The shortest password accepted when one is set; existing passwords stay. */
+  'auth.password_min_length': 12 | 14 | 16 | 20;
+  /** The longest a session lives after its sign-in, in days, besides the 21-day idle rule; 'none' sets no limit. */
+  'auth.session_max_days': 'none' | '30' | '14' | '7' | '1';
+  /** Whether people may use the module at all; forbidden, it is off and locked for them and its data stays. */
+  'modules.mail': Allowance;
+  'modules.calendar': Allowance;
+  'modules.contacts': Allowance;
+  'modules.recordings': Allowance;
+  /** The Music page alone (recordings keep working). */
+  'pages.music': Allowance;
+  /** The least detail notifications may show: the floor of each mail account's and the reminders' detail. */
+  'notifications.detail': 'full' | 'sender' | 'none';
+  /** The Android app's copy of UniHub contacts in the phone's contacts; forbidden, the phones remove it at their next sync. */
+  'contacts.phone_sync': Allowance;
+  /** Offline copies in browsers and the app; forbidden, new ones are refused and each device deletes its own. */
+  'offline.copies': Allowance;
 }
 
 export type PolicyKey = keyof PolicyValues;

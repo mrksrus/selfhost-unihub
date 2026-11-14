@@ -15,6 +15,9 @@ export const POLICY_KEYS = [
   'accounts.add', 'accounts.remove', 'accounts.reset', 'accounts.admin_manage',
   'account.delete', 'data.clear', 'bin.delete',
   'app_lock.required', 'app_lock.max_background', 'app_lock.screenshots',
+  'auth.two_factor', 'auth.password_min_length', 'auth.session_max_days',
+  'modules.mail', 'modules.calendar', 'modules.contacts', 'modules.recordings', 'pages.music',
+  'notifications.detail', 'contacts.phone_sync', 'offline.copies',
 ] as const satisfies readonly PolicyKey[];
 
 /** Every key's default: allowed, from the default, no reason. Shown until the server's answer arrives. */
@@ -38,6 +41,17 @@ export const DEFAULT_POLICY_VALUES: PolicyValues = {
   'app_lock.required': [],
   'app_lock.max_background': 'none',
   'app_lock.screenshots': 'allowed',
+  'auth.two_factor': 'optional',
+  'auth.password_min_length': 12,
+  'auth.session_max_days': 'none',
+  'modules.mail': 'allowed',
+  'modules.calendar': 'allowed',
+  'modules.contacts': 'allowed',
+  'modules.recordings': 'allowed',
+  'pages.music': 'allowed',
+  'notifications.detail': 'full',
+  'contacts.phone_sync': 'allowed',
+  'offline.copies': 'allowed',
 };
 
 export type EffectivePolicies = EffectivePoliciesResponse['policies'];

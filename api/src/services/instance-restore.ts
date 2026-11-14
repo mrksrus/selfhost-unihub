@@ -87,11 +87,18 @@ async function clearInstallationState(connection: Connection, run: { id: string;
   // A backup of 0.28 (upgrade step 25) has no devices yet; the next start's
   // upgrade adds the table, empty.
   const [devicesTable] = await connection.query<RowDataPacket[]>("SHOW TABLES LIKE 'devices'");
+  // A backup from before 0.30 (upgrade step 27) has neither table.
+  const [organisationTables] = await connection.query<RowDataPacket[]>("SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('invites', 'login_attempts')");
+  const present = new Set(organisationTables.map(row => String(row.name)));
   const statements: [string, ExecuteValues[]][] = [
     ['DELETE FROM sessions', []],
     // Devices with their settings (F5): every browser and app signs in again
     // and becomes a device of the restored installation.
     ...(devicesTable.length ? [['DELETE FROM devices', []] as [string, ExecuteValues[]]] : []),
+    // Setup links are credentials and attempt budgets expire: the restored
+    // installation starts without either; groups and their policies stay.
+    ...(present.has('invites') ? [['DELETE FROM invites', []] as [string, ExecuteValues[]]] : []),
+    ...(present.has('login_attempts') ? [['DELETE FROM login_attempts', []] as [string, ExecuteValues[]]] : []),
     ['DELETE FROM file_tickets', []],
     ['DELETE FROM two_factor_challenges', []],
     ['UPDATE mail_engine_accounts SET lease_owner = NULL, lease_until = NULL', []],

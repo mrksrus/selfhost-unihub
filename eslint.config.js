@@ -16,10 +16,30 @@ const DEVICES_FENCE = {
   selector: "Literal[value=/\\b(FROM|JOIN|INTO|UPDATE|TABLE)\\s+devices\\b/i]:not(TSLiteralType > Literal), TemplateElement[value.raw=/\\b(FROM|JOIN|INTO|UPDATE|TABLE)\\s+devices\\b/i]",
   message: "Read and write devices through services/devices.ts.",
 };
+// SQL that names a table, for the fences below.
+const sqlNaming = tables => {
+  const pattern = `\\b(FROM|JOIN|INTO|UPDATE|TABLE)\\s+(${tables})\\b`;
+  return `Literal[value=/${pattern}/i]:not(TSLiteralType > Literal), TemplateElement[value.raw=/${pattern}/i]`;
+};
+// The organisation's groups and members (F3): services/groups.ts; who may
+// do what with them is services/access.ts's answer.
+const GROUPS_FENCE = { selector: sqlNaming("org_groups|org_group_members"), message: "Read and write groups through services/groups.ts." };
+// Setup links and sign-in attempt budgets are credentials and limits with
+// one owner each.
+const INVITES_FENCE = { selector: sqlNaming("invites"), message: "Read and write setup links through services/invites.ts." };
+const LOGIN_ATTEMPTS_FENCE = { selector: sqlNaming("login_attempts"), message: "Read and write sign-in attempt budgets through security/login-limits.ts." };
 // Schema and recovery code name the tables to create, archive and restore them.
-const SCHEMA_FILES = ["api/src/services/database.ts", "api/src/services/data-inventory.ts", "api/src/services/devices-migration.ts"];
-const SETTINGS_OWNERS = ["api/src/services/settings.ts", "api/src/services/backup-catalog.ts", "api/src/services/backup-export.ts", "api/src/services/backup-import.ts"];
-const DEVICES_OWNERS = ["api/src/services/devices.ts", "api/src/services/instance-restore.ts"];
+const SCHEMA_FILES = ["api/src/services/database.ts", "api/src/services/data-inventory.ts", "api/src/services/devices-migration.ts", "api/src/services/organisation-migration.ts"];
+// Each fence with the files that own its tables. An instance restore clears
+// installation state of several owners.
+const FENCES = [
+  { fence: SETTINGS_FENCE, owners: ["api/src/services/settings.ts", "api/src/services/backup-catalog.ts", "api/src/services/backup-export.ts", "api/src/services/backup-import.ts"] },
+  { fence: DEVICES_FENCE, owners: ["api/src/services/devices.ts", "api/src/services/instance-restore.ts"] },
+  { fence: GROUPS_FENCE, owners: ["api/src/services/groups.ts"] },
+  { fence: INVITES_FENCE, owners: ["api/src/services/invites.ts", "api/src/services/instance-restore.ts"] },
+  { fence: LOGIN_ATTEMPTS_FENCE, owners: ["api/src/security/login-limits.ts", "api/src/services/instance-restore.ts"] },
+];
+const FENCE_OWNERS = [...new Set(FENCES.flatMap(({ owners }) => owners))];
 
 export default tseslint.config(
   { ignores: ["dist", "api/dist", ".worker-dist", "tools/ui-regression/.build", "tools/ui-regression/.browsers", "tools/ui-regression/report", "tools/ui-regression/test-results"] },
@@ -57,23 +77,19 @@ export default tseslint.config(
       "@typescript-eslint/no-require-imports": "off",
     },
   },
-  // Settings and policies (F1) and devices (F5) have one owner each. One
-  // rule takes one list per file, so each set of files gets the fences it
-  // keeps: every other file both, an owner the other one, the schema files
-  // neither.
+  // Settings and policies (F1), devices (F5), groups (F3), setup links and
+  // sign-in attempts have one owner each. One rule takes one list per file,
+  // so each file gets the fences it keeps: every other file all of them, an
+  // owner all but its own, the schema files none.
   {
     files: ["api/src/**/*.ts"],
-    ignores: [...SCHEMA_FILES, ...SETTINGS_OWNERS, ...DEVICES_OWNERS],
-    rules: { "no-restricted-syntax": ["error", SETTINGS_FENCE, DEVICES_FENCE] },
+    ignores: [...SCHEMA_FILES, ...FENCE_OWNERS],
+    rules: { "no-restricted-syntax": ["error", ...FENCES.map(({ fence }) => fence)] },
   },
-  {
-    files: SETTINGS_OWNERS,
-    rules: { "no-restricted-syntax": ["error", DEVICES_FENCE] },
-  },
-  {
-    files: DEVICES_OWNERS,
-    rules: { "no-restricted-syntax": ["error", SETTINGS_FENCE] },
-  },
+  ...FENCE_OWNERS.map(file => ({
+    files: [file],
+    rules: { "no-restricted-syntax": ["error", ...FENCES.filter(({ owners }) => !owners.includes(file)).map(({ fence }) => fence)] },
+  })),
   // The device boundary (F8): only src/lib/platform.ts knows whether the page
   // runs in a browser or in the Android app, and how to reach the app.
   {

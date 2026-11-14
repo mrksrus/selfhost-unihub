@@ -32,7 +32,11 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
     introducedIn: Object.fromEntries(columns.split(' ').map(column =>
       [column, name === 'mail_engine_jobs' && column === 'manual_refresh' ? 8 : 6])),
   })])),
-  users: excluded('security_only', 'Login credentials and 2FA stay with the destination identity.', 'password_hash two_factor_enabled encrypted_two_factor_secret two_factor_recovery_codes'),
+  users: Object.freeze({ ...excluded('security_only', 'Login credentials and 2FA stay with the destination identity.',
+    'password_hash two_factor_enabled encrypted_two_factor_secret two_factor_recovery_codes owner_marker two_factor_required_since'),
+  // Step 27: owner_marker follows the role (one owner at most); the start of
+  // a person's two-factor grace belongs to this installation's rules.
+  introducedIn: Object.freeze({ owner_marker: 27, two_factor_required_since: 27 }) }),
   // Calendar sync state is rediscovered from the server by the next sync. A
   // restored CalDAV account is linked to its mail account again by address.
   ...Object.fromEntries([
@@ -113,11 +117,12 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
   // Upgrade step 25 (0.28.0).
   ...Object.fromEntries([
     ['policy_notices', 'deliberately_excluded', 'A person confirms the data rules of the installation they are on; a restore must not carry the confirmation elsewhere.',
-      'user_id revision acknowledged_at'],
+      'user_id revision acknowledged_at rules_hash'],
     ['instance_backups', 'deliberately_excluded', 'The runs of the instance backup belong to this installation; its own dump carries them, a personal backup never does.',
       'id trigger_kind actor_id status file_name size_bytes sha256 key_fingerprint app_version migration_id error started_at finished_at removed_at completion_seq'],
   ].map(([name, treatment, reason, columns]) => [name, Object.freeze({ ...excluded(treatment, reason, columns),
-    introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 25])) })])),
+    // policy_notices.rules_hash: step 27 (the rules a person confirmed).
+    introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, column === 'rules_hash' ? 27 : 25])) })])),
   // Upgrade step 26 (0.29.0).
   ...Object.fromEntries([
     ['devices', 'security_only', 'A device is one browser or app installation of this installation, with its sessions and push channels; a restore must not resurrect devices or their sessions.',
@@ -126,6 +131,18 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
       'device_id user_id setting_key setting_value updated_at'],
   ].map(([name, treatment, reason, columns]) => [name, Object.freeze({ ...excluded(treatment, reason, columns),
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 26])) })])),
+  // Upgrade step 27 (0.30.0).
+  ...Object.fromEntries([
+    ['org_groups', 'deliberately_excluded', 'Groups belong to the organisation, not to one person; only the instance backup carries them, with their ids.',
+      'id name description created_by created_at updated_at'],
+    ['org_group_members', 'deliberately_excluded', 'Memberships belong to the organisation; only the instance backup carries them. A person restored elsewhere starts in no group.',
+      'group_id user_id role added_by added_at'],
+    ['invites', 'security_only', 'A setup link is a credential of this installation; a restore must not bring it back.',
+      'id user_id token_hash created_by created_at expires_at used_at'],
+    ['login_attempts', 'security_only', 'Sign-in attempt budgets belong to this installation and expire; a restore must not bring them back.',
+      'scope identity_hash attempts window_ends_at'],
+  ].map(([name, treatment, reason, columns]) => [name, Object.freeze({ ...excluded(treatment, reason, columns),
+    introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 27])) })])),
 });
 
 // Every table states who owns a row, whether it can be shared, its data
@@ -168,6 +185,12 @@ const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.fr
   push_subscriptions: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: push credentials belong to a live session.' },
   devices: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: a device belongs to one installation; a restore must not resurrect devices or their sessions, and an instance restore deletes them.' },
   device_settings: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: per-device choices go with the device record.' },
+  // The organisation (upgrade step 27, 0.30.0, F3). A group is a principal,
+  // not a shared resource.
+  org_groups: { owner: 'organisation', shareable: false, dataClass: 'org', module: null, restore: 'Never in a personal backup; the instance backup restores it with its id.' },
+  org_group_members: { owner: 'organisation', shareable: false, dataClass: 'org', module: null, restore: 'Never in a personal backup; the instance backup restores it with the group; a person\'s rows go with the person.' },
+  invites: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: a setup link is a credential of its person; an instance restore deletes them and the administrator makes a new one.' },
+  login_attempts: { owner: 'installation', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: attempt budgets expire; an instance restore deletes them.' },
   notification_events: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: pending notifications are not replayed.' },
   notification_deliveries: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: delivery attempts belong to this server\'s devices.' },
   notification_reminders: { owner: 'user', shareable: false, dataClass: 'installation', module: 'calendar', restore: 'Rebuilt from the restored events.' },
