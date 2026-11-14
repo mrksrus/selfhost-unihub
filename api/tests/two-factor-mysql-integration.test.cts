@@ -238,7 +238,7 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     // Confirmations have their own budget (B-04), spent only by wrong
     // passwords: failed sign-ins do not lock the admin out of admin actions.
     const { consumeAuthAttempt } = require('../dist/src/auth') as typeof import('../src/auth');
-    while (consumeAuthAttempt('password', steward) === null);
+    while (await consumeAuthAttempt('password', steward) === null);
     // Three wrong confirmations so far, and three right ones that cost nothing.
     for (let attempt = 4; attempt <= 10; attempt++) assert.equal((await remove({ current_password: 'wrong' })).status, 403, `wrong confirmation ${attempt}`);
     assert.equal((await remove({ current_password: 'synthetic-steward-password' })).status, 429, 'ten wrong confirmations pause confirmations');
