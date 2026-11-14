@@ -9,9 +9,7 @@ import {
   consumeAuthAttempt,
   hashPassword,
   verifyPassword,
-  generateToken,
   generateCsrfToken,
-  getSessionExpiry,
   setAuthCookie,
   setCsrfCookie,
   getCsrfCookie,
@@ -37,37 +35,16 @@ import {
   deleteTwoFactorLoginChallenge,
 } from '../services/two-factor';
 import { realtime } from '../services/realtime';
-import { createSession, endOtherSessions, endSession, endSessionById, endUserSessions, listSessions, lockOwnSession } from '../services/sessions';
+import { endOtherSessions, endSession, endSessionById, endUserSessions, listSessions, lockOwnSession } from '../services/sessions';
 import { managesAnyGroup } from '../services/groups';
 import { permissionsOf } from '../security/permissions';
 import type { MeOrganisation } from '../contracts/organisation';
-import { bindDevice, deviceClaim } from '../services/devices';
+import { deviceClaim } from '../services/devices';
 import type { DeviceClaim } from '../services/devices';
 import { withTransaction } from '../services/transactions';
 import { recordAudit, recordAuditAfter } from '../services/audit';
 import { defineRoutes } from '../http/route';
-
-// The address (through the trusted-proxy rules) and the browser of a new sign-in.
-function sessionOrigin(req: Request) {
-  let ipAddress: string | null = null;
-  try { ipAddress = getClientIP(req as Parameters<typeof getClientIP>[0]) || null; } catch { /* unknown */ }
-  const agent = req.headers?.['user-agent'];
-  return { ipAddress, userAgent: typeof agent === 'string' ? agent : null };
-}
-
-// A new session on the device the sign-in names (F5): the device and the
-// session commit together, in the caller's transaction or in one of their own.
-async function openSession(userId: string, device: DeviceClaim, req: Request, connection: SqlExecutor = db) {
-  const token = generateToken(userId);
-  const expiresAt = getSessionExpiry();
-  const origin = sessionOrigin(req);
-  const open = async (cx: SqlExecutor) => {
-    const deviceId = await bindDevice(userId, device, origin.userAgent, cx);
-    await createSession({ userId, token, expiresAt, deviceId, ...origin }, cx);
-  };
-  if (connection === db) await withTransaction(open); else await open(connection);
-  return token;
-}
+import { openSession } from '../services/sign-in';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface Input {
