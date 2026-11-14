@@ -81,7 +81,7 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
     [18, 'session-token-hashes'],
     [19, 'audit-log'], [20, 'settings-and-mail-essentials'], [21, 'file-tickets'],
     [22, 'contacts-vcard-model'], [23, 'contacts-drop-legacy-columns'], [24, 'task-order-and-moves'], [25, 'backup-store-and-safety'],
-    [26, 'devices-and-app-lock'],
+    [26, 'devices-and-app-lock'], [27, 'organisation'], [28, 'organisation-owner'],
   ]);
   const [policyColumns] = await db.execute<RowDataPacket[]>(`SELECT COLUMN_NAME AS name, COLUMN_DEFAULT AS dflt, IS_NULLABLE AS nullable
     FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mail_accounts'
