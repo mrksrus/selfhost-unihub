@@ -12,7 +12,7 @@ export function policiesAnswer(changes: Partial<{ [K in PolicyKey]: { value: Pol
   for (const [key, change] of Object.entries(changes) as [PolicyKey, { value: unknown; allowed?: boolean; reason: string }][]) {
     policies[key] = { value: change.value, source: 'policy', allowed: change.allowed ?? false, reason: change.reason } as never;
   }
-  return { data: { policies, revision, acknowledged_revision: revision, rules: [] } };
+  return { data: { policies, revision, acknowledged_revision: revision, rules: [], two_factor: { required: false, grace_ends_at: null } } };
 }
 
 export const OWNER: User = { id: 'user-ada', email: 'ada@example.com', full_name: 'Ada Example', role: 'user' };
