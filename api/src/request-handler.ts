@@ -149,6 +149,40 @@ async function gateRefusal(spec: RouteSpec, req: RouteRequest, routeKey: string,
   return null;
 }
 
+// The checks before a route runs, in order: the session, CSRF, the
+// permission, then the gates. Writes the refusal and answers null, or
+// answers the signed-in person (null for a public route without one).
+async function admit(spec: RouteSpec, req: RouteRequest, res: ServerResponse, routeKey: string, url: URL): Promise<{ userId: string | null } | null> {
+  const userId = (await verifyToken(req, { renew: true })) ?? null;
+  if (userId) refreshSessionCookies(req, res);
+  if (!userId && spec.auth !== 'public') {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Unauthorized', status: 401 }));
+    return null;
+  }
+
+  // Validate CSRF token for authenticated state-changing requests
+  if (userId && !validateCsrfToken(req, spec.csrf)) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'CSRF token validation failed', status: 403 }));
+    return null;
+  }
+
+  if (spec.auth === 'admin' && !(await hasPermission(userId, spec.permission!))) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Forbidden', status: 403 }));
+    return null;
+  }
+
+  const refusal = await gateRefusal(spec, req, routeKey, url, userId);
+  if (refusal) {
+    res.writeHead(refusal.status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(refusal.body));
+    return null;
+  }
+  return { userId };
+}
+
 async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
   res.setHeader('Cache-Control', 'no-store');
   const url = requestUrl(req);
@@ -195,34 +229,12 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
 
   let temporaryUploadPath: string | null = null;
   try {
-    const userId = await verifyToken(req, { renew: true });
-    if (userId) refreshSessionCookies(req, res);
-    if (!userId && spec.auth !== 'public') {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Unauthorized', status: 401 }));
-      return;
-    }
-
-    // Validate CSRF token for authenticated state-changing requests
-    if (userId && !validateCsrfToken(req, spec.csrf)) {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'CSRF token validation failed', status: 403 }));
-      return;
-    }
-
-    if (spec.auth === 'admin' && !(await hasPermission(userId, spec.permission!))) {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Forbidden', status: 403 }));
-      return;
-    }
-
-    // The gates read the person's rules once (settings.ts withRequestPolicies).
-    const refusal = userId ? await withRequestPolicies(userId, () => gateRefusal(spec, req, routeKey, url, userId)) : await gateRefusal(spec, req, routeKey, url, null);
-    if (refusal) {
-      res.writeHead(refusal.status, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(refusal.body));
-      return;
-    }
+    // Sign-in, CSRF, permission and the gates, with the person's rules read
+    // once for all of them (settings.ts withRequestPolicies); null when one
+    // of them answered. The route runs outside, with fresh reads.
+    const admitted = await withRequestPolicies(() => admit(spec, req, res, routeKey, url));
+    if (!admitted) return;
+    const { userId } = admitted;
 
     const maxBodySize = spec.body?.limit ?? DEFAULT_BODY_LIMIT;
     if (isRequestBodyTooLarge(req, maxBodySize)) {

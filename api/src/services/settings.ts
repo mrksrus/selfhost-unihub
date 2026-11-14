@@ -426,22 +426,30 @@ function levelsIn(set: RuleSet, userId: string): PolicyLevel[] {
   return groups.size ? [set.installation, groups] : [set.installation];
 }
 
-// The request boundary reads the person's rules once and keeps them for
-// its gates (module, phone contacts, data safety, app lock, two-factor), so
-// they agree and cost one query. Only plain reads on the pool use them; a
-// transaction's or a locking read is always fresh, and the route itself runs
-// outside, so a change it makes is seen by what it reads next.
-const requestRules = new AsyncLocalStorage<{ userId: string; rules: Rules }>();
+// The request boundary reads a person's rules once and keeps them for the
+// request's checks before its route runs: the session's lifetime (in
+// verifyToken), the module, phone contacts, data-safety, app lock and
+// two-factor gates. They agree and cost one query. Only plain reads on the
+// pool use them; a transaction's or a locking read is always fresh, and the
+// route itself runs outside, so a change it makes is seen by what it reads next.
+const requestRules = new AsyncLocalStorage<Map<string, Promise<Rules>>>();
 
-/** Runs `gates` with the person's rules read once (the request boundary). */
-async function withRequestPolicies<T>(userId: string, gates: () => Promise<T>): Promise<T> {
-  return requestRules.run({ userId, rules: await readRules(db, { userId }) }, gates);
+/** Runs `admit` (the request boundary's checks) with each person's rules read at most once, on first use. */
+async function withRequestPolicies<T>(admit: () => Promise<T>): Promise<T> {
+  return requestRules.run(new Map(), admit);
 }
 
 async function loadRules(executor: SqlExecutor, { userId = null, lock = false }: { userId?: string | null; lock?: boolean } = {}): Promise<Rules> {
   const held = requestRules.getStore();
-  if (held && !lock && executor === db && held.userId === userId) return held.rules;
-  return readRules(executor, { userId, lock });
+  if (!held || lock || executor !== db || !userId) return readRules(executor, { userId, lock });
+  let rules = held.get(userId);
+  if (!rules) {
+    rules = readRules(db, { userId });
+    held.set(userId, rules);
+    // A failed read is not kept: the next check reads again.
+    rules.catch(() => held.delete(userId!));
+  }
+  return rules;
 }
 
 async function loadPolicyLevels(executor: SqlExecutor, options: { userId?: string | null; lock?: boolean } = {}): Promise<PolicyLevel[]> {
