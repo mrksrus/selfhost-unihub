@@ -25,7 +25,9 @@ function otp(secret: string) {
 //   gate), nothing is refused during it, then only the exempt routes answer,
 //   administrators included; setting 2FA up ends the grace, turning it off is
 //   refused at once; removing the rule ends every grace, a new rule starts a
-//   new one; the save preview counts who lacks 2FA and who is in grace
+//   new one; the save preview counts who lacks 2FA and who is in grace;
+//   a group's save and joining or leaving a group start and end graces for
+//   the people they reach, and a group's password minimum holds for its members
 test('sign-in policies: password minimum, session lifetime and 2FA required with its grace', { skip: !process.env.MYSQL_TEST_HOST, timeout: 300000 }, async (t) => {
   const pool = await withTestDatabase(t);
   const people = await seedPeople(t, pool);
@@ -156,4 +158,32 @@ test('sign-in policies: password minimum, session lifetime and 2FA required with
   await setPolicies({ 'auth.two_factor': 'required' });
   assert.ok((await since(ids.member))!.getTime() >= again - 2000, 'a new grace, not the old one');
   assert.equal((await blair.request('GET', '/api/contacts')).status, 200);
+
+  // --- Group rules: a group's save and a membership change start and end graces for the people they reach ---
+  await setPolicies({ 'auth.two_factor': 'optional' });
+  const setGroup = async (group: string, body: Record<string, unknown>) => {
+    const saved = await clients.admin.request('PUT', `/api/admin/groups/${group}/policies`, { ...body, current_password: password });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  };
+  await setGroup(groups.finance, { values: { 'auth.two_factor': 'required' } });
+  assert.ok(await since(ids.manager), 'Alex, in Finance, starts a grace at the group\'s save');
+  assert.equal(await since(ids.member), null, 'Blair, not in Finance, does not');
+  assert.equal(await since(ids.stranger), null);
+  const finance = await clients.admin.request('POST', '/api/admin/policies/preview', { group_id: groups.finance });
+  assert.deepEqual((finance.body.two_factor as { in_grace: { id: string }[] }).in_grace.map(person => person.id), [ids.manager]);
+
+  assert.equal((await clients.admin.request('POST', `/api/groups/${groups.finance}/members`, { user_ids: [ids.member] })).status, 200);
+  assert.ok(await since(ids.member), 'joining Finance starts Blair\'s grace');
+  assert.equal((await clients.admin.request('DELETE', `/api/groups/${groups.finance}/members/${ids.member}`)).status, 200);
+  assert.equal(await since(ids.member), null, 'leaving it ends the grace');
+  await setGroup(groups.finance, { clear: ['auth.two_factor'] });
+  assert.equal(await since(ids.manager), null, 'the group\'s rule cleared ends Alex\'s grace');
+
+  // A group's stricter password minimum holds for its members only.
+  await setGroup(groups.finance, { values: { 'auth.password_min_length': 20 } });
+  const resetOf = (id: string) => clients.admin.request('PUT', `/api/admin/users/${id}/password`, { new_password: 'sixteen-chars-xx', current_password: password });
+  const tooShort = await resetOf(ids.manager);
+  assert.deepEqual([tooShort.status, tooShort.body.error], [400, 'New password must be at least 20 characters']);
+  assert.equal((await resetOf(ids.stranger)).status, 200, 'Casey is in no group');
+  await setGroup(groups.finance, { clear: ['auth.password_min_length'] });
 });
