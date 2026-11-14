@@ -277,8 +277,10 @@ export async function fetchAdminPolicies(signal?: AbortSignal, scope?: PolicySco
  * answer is every policy of that scope as now set. `binMinimum` travels as
  * its own field (AdminPoliciesUpdateRequest.bin_min_retention) when it changed.
  */
-export async function saveAdminPolicies(values: Partial<PolicyValues>, currentPassword: string, binMinimum?: BinMinimum, scope?: PolicyScope): Promise<AdminPoliciesAnswer> {
-  const body: AdminPoliciesUpdateRequest = { values, current_password: currentPassword, ...(binMinimum ? { bin_min_retention: binMinimum } : {}) };
+export async function saveAdminPolicies(values: Partial<PolicyValues>, currentPassword: string, binMinimum?: BinMinimum, scope?: PolicyScope, clear: string[] = []): Promise<AdminPoliciesAnswer> {
+  // `clear` (a group's page only): the keys whose own rule the group gives up, so Everyone's value holds again.
+  // shortcut: typed as string[] until contracts/policies.ts carries AdminGroupPoliciesUpdateRequest (stream A); then use its `clear` type.
+  const body: AdminPoliciesUpdateRequest & { clear?: string[] } = { values, current_password: currentPassword, ...(binMinimum ? { bin_min_retention: binMinimum } : {}), ...(scope && clear.length ? { clear } : {}) };
   const answer = unwrap(await api.put<AdminPoliciesAnswer>(policiesPath(scope), body));
   if (!answer?.policies) throw new Error('The server did not answer with its policies.');
   return answer;
