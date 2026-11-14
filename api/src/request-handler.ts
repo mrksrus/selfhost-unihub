@@ -21,9 +21,9 @@ import { clientError } from './http/errors';
 import { log, newRequestId, withRequestId } from './log';
 import { compileRouteMatcher } from './http/route-matcher';
 import { DEFAULT_BODY_LIMIT, routePolicies } from './http/route';
-import { isModuleEnabled } from './services/module-settings';
+import { getUserModules } from './services/module-settings';
 import { getActiveRestoreSections } from './services/restore-locks';
-import { assertAllowed } from './services/settings';
+import { assertAllowed, resolvePolicy, withRequestPolicies } from './services/settings';
 import { appLockRefusal } from './services/devices';
 import { buildContentDisposition } from './http/content-disposition';
 import { BACKUP_IMPORTS_ROOT } from './services/export-jobs';
@@ -83,6 +83,106 @@ async function handleRequest(req: RouteRequest, res: ServerResponse) {
   });
 }
 
+interface Refusal { status: number; body: Record<string, unknown> }
+
+// The gates after sign-in, CSRF and permission, in order, before the body is
+// read and before any side effect: the first refusal answers the request.
+async function gateRefusal(spec: RouteSpec, req: RouteRequest, routeKey: string, url: URL, userId: string | null): Promise<Refusal | null> {
+  if (userId && spec.module) {
+    // A module the person switched off, or one an administrator's policy
+    // forbids them (0.30: with the policy and its reason in details).
+    const module = (await getUserModules(userId)).find(entry => entry.id === spec.module);
+    if (!module?.enabled) {
+      const policy = module?.policy;
+      return { status: 403, body: { error: policy?.reason ?? 'This module is disabled. Enable it in Settings.', code: 'MODULE_DISABLED', module: spec.module,
+        ...(policy ? { details: { policy: policy.key, reason: policy.reason } } : {}) } };
+    }
+    // Phone contacts forbidden (0.30): the Android app's contacts sync is
+    // told the module is off, and every app in the support window then
+    // removes UniHub's contacts from the phone (it treats the listing as
+    // gone); the same routes keep working for the page.
+    if (spec.module === 'contacts' && req.headers['x-background-sync'] === '1') {
+      const phoneSync = await resolvePolicy(userId, 'contacts.phone_sync');
+      if (!phoneSync.allowed) {
+        return { status: 403, body: { error: phoneSync.reason, code: 'MODULE_DISABLED', module: 'contacts', details: { policy: 'contacts.phone_sync', reason: phoneSync.reason } } };
+      }
+    }
+  }
+
+  // Reject before parsing or spooling a potentially huge backup upload.
+  if (DISABLED_BACKUP_ROUTES.has(routeKey)) return { status: 503, body: { error: BACKUP_DISABLED_MESSAGE, status: 503 } };
+
+  const section = spec.restoreSection;
+  if (userId && section) {
+    const activeSections = await getActiveRestoreSections(userId);
+    if ((section === '*' && activeSections.size > 0) || activeSections.has(section)) {
+      return { status: 409, body: {
+        error: `Restore in progress for ${section}. This section is temporarily read-only.`,
+        code: 'RESTORE_IN_PROGRESS',
+        status: 409,
+      } };
+    }
+  }
+
+  // F13: a data-safety policy that forbids the person this route's action
+  // refuses it with 403 POLICY_FORBIDS and its plain reason.
+  const policies = routePolicies(spec, url.searchParams);
+  if (userId && policies.length) await assertAllowed(userId, policies);
+
+  // The app lock (0.29): a device short of the lock the person's policies
+  // require is refused the locked parts with 403 APP_LOCK_REQUIRED and the
+  // administrator's reason, administrators included on their own devices.
+  // Exempt routes (http/route.ts appLock) stay open; with no requirement
+  // nothing changes.
+  if (userId && spec.auth !== 'public' && !appLockExempt(spec, req)) {
+    const modules = [spec.module, ...spec.appLockModules ?? []].filter((module): module is string => !!module);
+    const refusal = await appLockRefusal(userId, req.sessionDeviceId ?? null, modules);
+    if (refusal) {
+      return { status: 403, body: {
+        error: refusal.reason ?? 'Your administrator requires the app lock on this device.',
+        code: 'APP_LOCK_REQUIRED',
+        status: 403,
+        details: refusal,
+      } };
+    }
+  }
+  return null;
+}
+
+// The checks before a route runs, in order: the session, CSRF, the
+// permission, then the gates. Writes the refusal and answers null, or
+// answers the signed-in person (null for a public route without one).
+async function admit(spec: RouteSpec, req: RouteRequest, res: ServerResponse, routeKey: string, url: URL): Promise<{ userId: string | null } | null> {
+  const userId = (await verifyToken(req, { renew: true })) ?? null;
+  if (userId) refreshSessionCookies(req, res);
+  if (!userId && spec.auth !== 'public') {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Unauthorized', status: 401 }));
+    return null;
+  }
+
+  // Validate CSRF token for authenticated state-changing requests
+  if (userId && !validateCsrfToken(req, spec.csrf)) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'CSRF token validation failed', status: 403 }));
+    return null;
+  }
+
+  if (spec.auth === 'admin' && !(await hasPermission(userId, spec.permission!))) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Forbidden', status: 403 }));
+    return null;
+  }
+
+  const refusal = await gateRefusal(spec, req, routeKey, url, userId);
+  if (refusal) {
+    res.writeHead(refusal.status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(refusal.body));
+    return null;
+  }
+  return { userId };
+}
+
 async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
   res.setHeader('Cache-Control', 'no-store');
   const url = requestUrl(req);
@@ -129,79 +229,12 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
 
   let temporaryUploadPath: string | null = null;
   try {
-    const userId = await verifyToken(req, { renew: true });
-    if (userId) refreshSessionCookies(req, res);
-    if (!userId && spec.auth !== 'public') {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Unauthorized', status: 401 }));
-      return;
-    }
-
-    // Validate CSRF token for authenticated state-changing requests
-    if (userId && !validateCsrfToken(req, spec.csrf)) {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'CSRF token validation failed', status: 403 }));
-      return;
-    }
-
-    if (spec.auth === 'admin' && !(await hasPermission(userId, spec.permission!))) {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Forbidden', status: 403 }));
-      return;
-    }
-
-    if (userId && spec.module && !await isModuleEnabled(userId, spec.module)) {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'This module is disabled. Enable it in Settings.', code: 'MODULE_DISABLED', module: spec.module }));
-      return;
-    }
-
-    // Reject before parsing or spooling a potentially huge backup upload.
-    if (DISABLED_BACKUP_ROUTES.has(routeKey)) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: BACKUP_DISABLED_MESSAGE, status: 503 }));
-      return;
-    }
-
-    const section = spec.restoreSection;
-    if (userId && section) {
-      const activeSections = await getActiveRestoreSections(userId);
-      if ((section === '*' && activeSections.size > 0) || activeSections.has(section)) {
-        res.writeHead(409, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          error: `Restore in progress for ${section}. This section is temporarily read-only.`,
-          code: 'RESTORE_IN_PROGRESS',
-          status: 409,
-        }));
-        return;
-      }
-    }
-
-    // F13: a data-safety policy that forbids the person this route's action
-    // refuses it with 403 POLICY_FORBIDS and its plain reason, before the
-    // body is read and before any side effect.
-    const policies = routePolicies(spec, url.searchParams);
-    if (userId && policies.length) await assertAllowed(userId, policies);
-
-    // The app lock (0.29): a device short of the lock the person's policies
-    // require is refused the locked parts with 403 APP_LOCK_REQUIRED and the
-    // administrator's reason, before the body is read and before any side
-    // effect, administrators included on their own devices. Exempt routes
-    // (http/route.ts appLock) stay open; with no requirement nothing changes.
-    if (userId && spec.auth !== 'public' && !appLockExempt(spec, req)) {
-      const modules = [spec.module, ...spec.appLockModules ?? []].filter((module): module is string => !!module);
-      const refusal = await appLockRefusal(userId, req.sessionDeviceId ?? null, modules);
-      if (refusal) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          error: refusal.reason ?? 'Your administrator requires the app lock on this device.',
-          code: 'APP_LOCK_REQUIRED',
-          status: 403,
-          details: refusal,
-        }));
-        return;
-      }
-    }
+    // Sign-in, CSRF, permission and the gates, with the person's rules read
+    // once for all of them (settings.ts withRequestPolicies); null when one
+    // of them answered. The route runs outside, with fresh reads.
+    const admitted = await withRequestPolicies(() => admit(spec, req, res, routeKey, url));
+    if (!admitted) return;
+    const { userId } = admitted;
 
     const maxBodySize = spec.body?.limit ?? DEFAULT_BODY_LIMIT;
     if (isRequestBodyTooLarge(req, maxBodySize)) {

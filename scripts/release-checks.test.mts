@@ -203,7 +203,8 @@ test('the instance drill compares every installation-owned row in full and allow
   });
   // The restore command ran from 10:20:00.400 to 10:20:03.700.
   const context = { backupFile: file, restore: { from: new Date('2026-11-01T10:20:00.400Z'), to: new Date('2026-11-01T10:20:03.700Z') } };
-  const check = (change: (report: InstallationReport) => void) => { const target = source(); change(target); return installationProblems(source(), target, context); };
+  // The restore clears the sign-in attempt budgets.
+  const check = (change: (report: InstallationReport) => void) => { const target = source(); target.login_attempts.rows = []; change(target); return installationProblems(source(), target, context); };
   const finishedAt = (report: InstallationReport, value: string | null) => {
     report.instance_backups.rows[0].columns.finished_at = `h-${value}`;
     report.instance_backups.rows[0].plain.finished_at = value;
@@ -226,7 +227,9 @@ test('the instance drill compares every installation-owned row in full and allow
     'a changed setting': report => { report.system_settings.rows[0].columns.value = 'h-other'; },
     'a lost policy': report => { report.setting_policies.rows = []; },
     'an installation table the restored release does not report': report => { delete report.setting_policies; },
-    'a newly declared organisation table without a rule': report => { report.org_groups = { owner: 'organisation', rows: [] }; },
+    'a newly declared organisation table without a rule': report => { report.org_address_books = { owner: 'organisation', rows: [] }; },
+    'a lost group membership': report => { report.org_group_members.rows = []; },
+    'a sign-in attempt budget kept by the restore': report => { report.login_attempts.rows = source().login_attempts.rows; },
     'this backup run without a completion time': report => finishedAt(report, null),
     'this backup run finished before the restore': report => finishedAt(report, '2026-11-01 10:19:59'),
     'this backup run finished after the restore': report => finishedAt(report, '2026-11-01 10:20:05'),

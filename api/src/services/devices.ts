@@ -8,7 +8,7 @@ import type {
 import crypto from 'node:crypto';
 import { db } from '../state';
 import { badRequest, notFound, unauthorized } from '../http/errors';
-import { liveSession } from './sessions';
+import { endUserSessions, liveSession } from './sessions';
 import { withTransaction } from './transactions';
 import { recordAudit } from './audit';
 import { appLockRequirementFor, getSettings, resolvePolicy, settingValues } from './settings';
@@ -423,6 +423,54 @@ async function removeDevice(userId: string, token: string | null, id: unknown, r
   return { removed: true };
 }
 
+// --- An administrator's view of a person's devices (0.30) ----------------
+
+/** GET /api/admin/users/:id/devices (users.read): the person's signed-in devices, by last use. */
+async function personDevices(userId: string): Promise<Omit<DeviceSummary, 'current'>[]> {
+  return (await summaries(userId, '')).map(({ current: _current, ...device }) => device);
+}
+
+/** The last use of any of each person's devices, for the People list. */
+async function lastActiveByUser(executor: SqlExecutor = db): Promise<Map<string, string>> {
+  const [rows] = await executor.execute<RowDataPacket[]>('SELECT user_id, MAX(last_seen_at) AS last_seen_at FROM devices GROUP BY user_id');
+  return new Map(rows.map(row => [String(row.user_id), utcIso(row.last_seen_at)]));
+}
+
+/**
+ * DELETE /api/admin/users/:id/devices[/:deviceId] (users.manage, after the
+ * route checked the administrator's password): signs one of the person's
+ * devices out, or all of them (with any session that has no device), as the
+ * person's own removal does; their live streams close and the app learns at
+ * its next request. Their data stays. 404 DEVICE_NOT_FOUND for a device that
+ * is not the person's.
+ */
+async function endPersonDevices(adminId: string, userId: string, deviceId: unknown, req: AuthRequest | null = null): Promise<{ ended: number }> {
+  const one = deviceId !== null;
+  if (one && (typeof deviceId !== 'string' || !UUID.test(deviceId))) throw notFound('DEVICE_NOT_FOUND', 'Device not found');
+  const { assertCaller } = require('./caller-proof') as typeof import('./caller-proof');
+  const { keys, ended } = await withTransaction(async cx => {
+    await assertCaller(cx);
+    const [devices] = await cx.execute<RowDataPacket[]>(`SELECT id FROM devices WHERE user_id = ?${one ? ' AND id = ?' : ''} FOR UPDATE`, one ? [userId, (deviceId as string).toLowerCase()] : [userId]);
+    if (one && !devices.length) throw notFound('DEVICE_NOT_FOUND', 'Device not found');
+    const [sessions] = await cx.execute<RowDataPacket[]>(`SELECT token FROM sessions WHERE user_id = ?${one ? ' AND device_id = ?' : ''} FOR UPDATE`, one ? [userId, devices[0].id] : [userId]);
+    // Only devices with a live session were the person's devices (summaries).
+    const [[live]] = await cx.execute<RowDataPacket[]>(`SELECT COUNT(DISTINCT device_id) AS n FROM sessions WHERE user_id = ? AND expires_at > UTC_TIMESTAMP()${one ? ' AND device_id = ?' : ''}`, one ? [userId, devices[0].id] : [userId]);
+    if (one) await cx.execute('DELETE FROM devices WHERE id = ? AND user_id = ?', [devices[0].id, userId]);
+    else {
+      await cx.execute('DELETE FROM devices WHERE user_id = ?', [userId]);
+      await endUserSessions(userId, cx);
+    }
+    const count = one ? 1 : Number(live.n);
+    await recordAudit(one
+      ? { action: 'admin.device_removed', actorId: adminId, targetUserId: userId, req, details: { device: String(devices[0].id), sessions: sessions.length } }
+      : { action: 'admin.devices_ended', actorId: adminId, targetUserId: userId, req, details: { devices: count, sessions: sessions.length } }, cx);
+    return { keys: sessions.map(row => String(row.token)), ended: count };
+  });
+  const { realtime } = require('./realtime') as typeof import('./realtime');
+  for (const key of keys) realtime.closeSessionKey(key, { reason: 'signed_out' });
+  return { ended };
+}
+
 // --- Last use and clean-up ------------------------------------------------
 
 // The request boundary records a device's last use at most every 5 minutes
@@ -456,5 +504,6 @@ export {
   deviceFromUserAgent, parseLockApplied, deviceForSession, deviceLockFor, lockCovers, appLockShortfall, appLockRefusal,
   deviceKeyHash, deviceClaim, bindDevice, currentDevice, adoptDeviceKey, listDevices, describeCurrentDevice,
   reportDeviceLock, reportLockState, removeDevice, touchDevice, pruneIdleDevices,
+  personDevices, lastActiveByUser, endPersonDevices,
 };
 export type { DeviceLockState, DeviceClaim };

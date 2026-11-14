@@ -40,7 +40,7 @@ export = defineRoutes({
     handler: async (req: RouteRequest, userId: string, body: unknown, res: ServerResponse) => {
       const confirmed = await confirmPasswordHash(userId, (body as { current_password?: unknown } | null)?.current_password, res);
       if ('refused' in confirmed) return confirmed.refused;
-      return { ...await asCaller({ userId, token: getAuthTokenFromRequest(req), admin: true, passwordHash: confirmed.passwordHash },
+      return { ...await asCaller({ userId, token: getAuthTokenFromRequest(req), permission: 'server.settings', passwordHash: confirmed.passwordHash },
         () => updateInstanceBackupSchedule(userId, body, { req })) };
     } },
 });

@@ -100,7 +100,7 @@ try {
   assert.equal(sw.status, 200); assert.match(sw.headers.get('cache-control')!, /no-store/);
 
   const login = await primary.request<{ user: SmokeUser }>('POST', '/api/auth/signin', { email, password });
-  assert.equal(login.data.user.email, email); assert.equal(login.data.user.role, 'admin');
+  assert.equal(login.data.user.email, email); assert.equal(login.data.user.role, 'owner');
   assert(primary.cookies.has('auth-token') && primary.cookies.has('csrf-token') && primary.csrf);
   const me = await primary.request<{ user: SmokeUser }>('GET', '/api/auth/me');
   const userId = me.data.user.id;

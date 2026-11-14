@@ -83,7 +83,7 @@ test('the public routes are exactly the ones a client needs before signing in, a
   const publicKeys = Object.keys(routes).filter(key => routes[key].auth === 'public').sort();
   assert.deepEqual(publicKeys, [
     'GET /api/auth/signup-mode', 'GET /api/backup/export', 'GET /api/files/tickets/:token', 'GET /api/version', 'GET /health',
-    'POST /api/auth/2fa/login', 'POST /api/auth/signin', 'POST /api/auth/signup',
+    'POST /api/auth/2fa/login', 'POST /api/auth/invite/accept', 'POST /api/auth/invite/check', 'POST /api/auth/signin', 'POST /api/auth/signup',
   ]);
 });
 
@@ -128,7 +128,7 @@ test('restore sections: every section has a write route, destructive settings lo
 
 test('CSRF: sign-in and sign-up need no token, exactly the service-worker routes accept the background header', () => {
   const none = Object.keys(routes).filter(key => routes[key].csrf === 'none').sort();
-  assert.deepEqual(none, ['POST /api/auth/signin', 'POST /api/auth/signup']);
+  assert.deepEqual(none, ['POST /api/auth/invite/accept', 'POST /api/auth/invite/check', 'POST /api/auth/signin', 'POST /api/auth/signup']);
   const header = Object.keys(routes).filter(key => routes[key].csrf === 'background-header').sort();
   assert.deepEqual(header, ['DELETE /api/recordings/uploads/:id', 'POST /api/mail/sync/background', 'POST /api/recordings/uploads/:id/chunk',
     'POST /api/recordings/uploads/:id/complete', 'POST /api/recordings/uploads/start']);
@@ -200,14 +200,14 @@ test('the app lock: the exempt routes are pinned with their reasons, and so are 
 const openGates = (required: string[]) => (sql: string) => {
   if (sql.startsWith('SELECT setting_value FROM user_settings')) return [];
   if (sql.includes('FROM backup_restore_jobs')) return [];
-  if (sql.startsWith('SELECT setting_key, setting_value, locked FROM setting_policies')) {
-    return [{ setting_key: 'policy.app_lock.required', setting_value: JSON.stringify(required), locked: 0 }];
+  if (sql.startsWith('SELECT target_kind, setting_key, setting_value, locked FROM setting_policies')) {
+    return [{ target_kind: 'installation', setting_key: 'policy.app_lock.required', setting_value: JSON.stringify(required), locked: 0 }];
   }
   return undefined;
 };
 
 test('with the whole app required, every signed-in route that is not exempt refuses a device without the lock before its handler', async (t) => {
-  const { run, queries } = boundary(t, { userId: 'alex', role: 'admin', answer: openGates(['app']) });
+  const { run, queries } = boundary(t, { userId: 'alex', role: 'owner', answer: openGates(['app']) });
   const keys = Object.keys(routes).filter(key => routes[key].auth !== 'public' && routes[key].appLock !== 'exempt');
   assert.ok(keys.length > 100, `${keys.length} locked routes`);
   for (const key of keys) {
@@ -215,11 +215,13 @@ test('with the whole app required, every signed-in route that is not exempt refu
     assert.deepEqual([result.status, result.body.code, result.body.error], [403, 'APP_LOCK_REQUIRED', 'Your administrator requires the app lock for the whole app.'], key);
     assert.deepEqual(result.body.details, { required: ['app'], max_background: null, reason: 'Your administrator requires the app lock for the whole app.' }, key);
   }
-  assert.ok(queries.every(sql => /^SELECT (role FROM users|setting_value FROM user_settings|requested_sections|setting_key, setting_value, locked FROM setting_policies)/.test(sql.trim())), 'no handler ran');
+  assert.ok(queries.every(sql => /^SELECT (role FROM users|setting_value FROM user_settings|requested_sections|target_kind, setting_key, setting_value, locked FROM setting_policies)/.test(sql.trim())), 'no handler ran');
+  // The gates (module, data safety, app lock) share one read of the person's rules (R2).
+  assert.equal(queries.filter(sql => sql.includes('FROM setting_policies')).length, keys.length, 'one policy read per request');
 });
 
 test('with Mail required, a device without the lock loses the Mail routes and the routes of no module, and keeps the other modules', async (t) => {
-  const { run } = boundary(t, { userId: 'alex', role: 'admin', answer: openGates(['mail']) });
+  const { run } = boundary(t, { userId: 'alex', role: 'owner', answer: openGates(['mail']) });
   const locked = (key: string) => routes[key].auth !== 'public' && routes[key].appLock !== 'exempt' && (routes[key].module === 'mail' || !routes[key].module);
   for (const key of Object.keys(routes).filter(locked)) {
     const result = await run(key);
@@ -291,6 +293,12 @@ const NOT_DESTRUCTIVE: Readonly<Record<string, string>> = {
   'DELETE /api/admin/users/:id/bin/:itemId': 'admin path, as above',
   'POST /api/admin/users/:id/bin/empty': 'admin path, as above',
   'POST /api/admin/users/:id/clear/:module': 'admin path, as above',
+  // The organisation (0.30): sign-ins, links and memberships, no person's data.
+  'DELETE /api/admin/users/:id/setup-link': 'revokes a sign-up link; no data',
+  'DELETE /api/admin/users/:id/devices/:deviceId': 'admin path: signs devices out; no data',
+  'DELETE /api/admin/users/:id/devices': 'admin path: signs devices out; no data',
+  'DELETE /api/admin/groups/:id': 'admin path: a group, its memberships and its policies; no person\'s data',
+  'DELETE /api/groups/:id/members/:userId': 'a membership; no data',
 };
 const removesData = (key: string) => {
   const [method, path] = key.split(' ');
@@ -310,7 +318,7 @@ test('every route that removes data declares its policies or is on the reasoned 
   for (const key of Object.keys(NOT_DESTRUCTIVE)) assert.ok(key in routes, `${key} is listed but has no route`);
   assert.deepEqual(Object.keys(routes).filter(key => routes[key].destructive).sort(), DESTRUCTIVE);
   assert.deepEqual(Object.keys(routes).filter(key => routes[key].requires).sort(), [
-    'POST /api/backup/import', 'POST /api/backup/jobs', 'POST /api/backup/jobs/:id/restore', 'POST /api/backup/restore-jobs/:id/start',
+    'GET /api/offline/snapshot', 'POST /api/backup/import', 'POST /api/backup/jobs', 'POST /api/backup/jobs/:id/restore', 'POST /api/backup/restore-jobs/:id/start',
     'POST /api/calendar/accounts', 'POST /api/mail/accounts', 'POST /api/mail/accounts/:id/backup-export',
   ]);
 });
@@ -353,7 +361,7 @@ test('each destructive route names the policies of what it removes', () => {
   assert.deepEqual(routePolicies(routes['POST /api/backup/import'], none), ['backup.restore']);
 });
 
-test('a route declares only keys that can refuse, only on a mutating user route, with named query values', () => {
+test('a route declares only keys that can refuse, only on a user route (destructive ones on a mutating route), with named query values', () => {
   const handler = async () => ({});
   const moduleIds = MODULE_CATALOG.map(module => module.id);
   const policyKeys = Object.entries(POLICIES).filter(([, entry]) => entry.refuses.length).map(([key]) => key);

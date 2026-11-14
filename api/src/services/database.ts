@@ -14,6 +14,7 @@ import { withTransaction } from './transactions';
 import { addContactModel, copyLegacyContactValues, verifyLegacyContactCopy, dropLegacyContactColumns, verifyLegacyColumnsDropped } from './contacts-migration';
 import { adoptRawCalendarUids } from './calendar-uid-upgrade';
 import { addDevices, verifyDevices } from './devices-migration';
+import { addOrganisation, chooseOwner, verifyOrganisation, verifyOwner } from './organisation-migration';
 import { log } from '../log';
 
 type FieldRow = RowDataPacket & { Field: string };
@@ -415,6 +416,30 @@ const MIGRATIONS: readonly Migration[] = [
     verify: async (connection: PoolConnection) => {
       await verifyDatabaseInventory(connection, { throughMigration: 26 });
       await verifyDevices(connection);
+    },
+  },
+  {
+    // 0.30.0 (organisation): the owner role, groups and their members, setup
+    // links, login attempts kept across a restart, the start of a person's
+    // two-factor grace and the hash of the rules a person confirmed
+    // (organisation-migration.ts). No row changes.
+    id: 27,
+    name: 'organisation',
+    up: addOrganisation,
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 27 });
+      await verifyOrganisation(connection);
+    },
+  },
+  {
+    // 0.30.0 (organisation): the earliest-created active administrator, or
+    // the bootstrap administrator of a new installation, becomes the owner.
+    id: 28,
+    name: 'organisation-owner',
+    up: chooseOwner,
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 28 });
+      await verifyOwner(connection);
     },
   },
 ];

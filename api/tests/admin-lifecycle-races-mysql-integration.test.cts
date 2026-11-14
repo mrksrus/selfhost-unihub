@@ -23,7 +23,7 @@ test('an administrator\'s change of a person counts the administrators and the c
 
   const password = 'synthetic-admin-races-password';
   const passwordHash = await (require('bcryptjs') as typeof import('bcryptjs')).hash(password, 4);
-  async function person(name: string, role: 'admin' | 'user') {
+  async function person(name: string, role: 'owner' | 'admin' | 'user') {
     const id = crypto.randomUUID();
     await pool.execute('INSERT INTO users (id, email, password_hash, full_name, role) VALUES (?, ?, ?, ?, ?)', [id, `${name}@example.test`, passwordHash, name, role]);
     const client = api.client();
@@ -32,7 +32,7 @@ test('an administrator\'s change of a person counts the administrators and the c
     return { id, client };
   }
   const row = async (id: string) => (await pool.query<RowDataPacket[]>('SELECT role, is_active, password_hash FROM users WHERE id = ?', [id]))[0][0];
-  const activeAdmins = async () => Number((await pool.query<RowDataPacket[]>("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND is_active = TRUE"))[0][0].count);
+  const activeAdmins = async () => Number((await pool.query<RowDataPacket[]>("SELECT COUNT(*) AS count FROM users WHERE role IN ('owner', 'admin') AND is_active = TRUE"))[0][0].count);
 
   const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; };
   const within = async <T,>(promise: Promise<T>) => {
@@ -70,15 +70,15 @@ test('an administrator\'s change of a person counts the administrators and the c
 
   // Two administrators, each removing the other while the first one's change
   // waits after its count: the second change goes through, the first then
-  // finds its caller or the last administrator, and one stays.
+  // finds its caller or the last administrator, and one stays. (Demoting is
+  // the owner's alone since 0.30, and the owner cannot be demoted.)
   for (const [change, request] of [
-    ['demote', (target: string) => ({ method: 'PUT', url: `/api/admin/users/${target}/role`, body: { role: 'user', current_password: password } })],
     ['deactivate', (target: string) => ({ method: 'PUT', url: `/api/admin/users/${target}/activate`, body: { is_active: false, current_password: password } })],
     ['delete', (target: string) => ({ method: 'DELETE', url: `/api/admin/users/${target}`, body: { current_password: password } })],
   ] as const) {
     await t.test(`two administrators who ${change} each other leave one`, async () => {
       const a = await person(`${change}-a`, 'admin'), b = await person(`${change}-b`, 'admin');
-      const pause = pauseAfter("role = 'admin' AND is_active = TRUE");
+      const pause = pauseAfter("role IN ('owner', 'admin') AND is_active = TRUE");
       const first = request(b.id), second = request(a.id);
       const pending = a.client.request(first.method, first.url, first.body);
       let other: Promise<FixtureValue> | undefined;
@@ -113,7 +113,8 @@ test('an administrator\'s change of a person counts the administrators and the c
       ] as const) {
         const name = `${change}-${meanwhile.replace(' ', '-')}`;
         const keeper = await person(`${name}-keeper`, 'admin');
-        const a = await person(`${name}-admin`, 'admin'), target = await person(`${name}-person`, 'user');
+        // A role only the owner changes.
+        const a = await person(`${name}-admin`, change === 'role' ? 'owner' : 'admin'), target = await person(`${name}-person`, 'user');
         const before = await row(target.id);
         const pause = pauseAfter('SELECT password_hash FROM users WHERE id = ?');
         const { method, url, body } = request(target.id);

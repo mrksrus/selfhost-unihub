@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { ChevronRight, HardDriveDownload, LogOut, Server, Settings, ShieldCheck, Users } from 'lucide-react';
 import { useModules } from '@/hooks/use-modules';
 import { useAuth } from '@/contexts/useAuth';
+import { can } from '@/lib/permissions';
 import { BOTTOM_NAV_PAGES, navigationPages } from '@/lib/navigation';
 import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { AttentionList } from '@/components/layout/AttentionList';
@@ -18,7 +19,7 @@ const More = () => {
     // Pages that do not fit in the mobile bar, in the user's order.
     ...navigationPages(pages, canNavigate).slice(BOTTOM_NAV_PAGES).map(page => ({ title: page.name, href: page.href, icon: page.icon })),
     { title: 'Settings', href: '/settings', icon: Settings },
-    ...(user?.role === 'admin' ? [
+    ...(can(user, 'server.settings') ? [
       { title: 'Server settings', href: '/admin/settings', icon: Server },
       { title: 'Policies', href: '/admin/policies', icon: ShieldCheck },
       { title: 'Instance backup', href: '/admin/instance-backup', icon: HardDriveDownload },

@@ -7,6 +7,7 @@ const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const { POLICIES, resolvePolicy, resolvePolicies, resolvePolicyValue, assertAllowed, policyForbids } = require('../dist/src/services/settings') as typeof import('../src/services/settings');
 const { clientError } = require('../dist/src/http/errors') as typeof import('../src/http/errors');
+const { BIN_MIN_RETENTION } = require('../dist/src/services/settings-registry') as typeof import('../src/services/settings-registry');
 
 const keys = Object.keys(POLICIES) as (keyof typeof POLICIES)[];
 
@@ -27,7 +28,7 @@ test('with no policy set, every key resolves to its default and allows its actio
     assert.deepEqual(resolved, { value: POLICIES[key].default, source: 'default', allowed: true, reason: null }, key);
   }
   await assertAllowed('user-a', keys, {}, executor);
-  assert.ok(queries.every(sql => /FROM setting_policies\s+WHERE target_kind = 'installation' AND target_id = '' AND setting_key LIKE 'policy\.%'/.test(sql)), queries.join(' | '));
+  assert.ok(queries.every(sql => /FROM setting_policies WHERE \(target_kind = 'installation' AND target_id = ''\)/.test(sql)), queries.join(' | '));
 });
 
 test('every value a policy can take other than the default has a plain reason to show', () => {
@@ -126,9 +127,44 @@ test('levels: a locked value stands, an unlocked one is a floor along the key\'s
   assert.deepEqual(resolvePolicyValue(backupDelete, [level('forbidden'), level('allowed', true)]), { value: 'forbidden', source: 'policy' }, 'a narrower lock loosens no floor');
   assert.deepEqual(resolvePolicyValue(backupDelete, [undefined, [{ value: 'allowed', locked: false }, { value: 'forbidden', locked: false }]]), { value: 'forbidden', source: 'policy' });
   assert.deepEqual(resolvePolicyValue(backupDelete, [undefined, []]), { value: 'allowed', source: 'default' });
-  // Without an order a narrower level replaces the value, and among groups the one that refuses wins.
+  // Without an order a group's value replaces the installation's unless that
+  // one refuses the action (a group only makes a rule stricter, 0.30); among
+  // groups the one that refuses wins, and groups that disagree set nothing.
   const providerDelete = POLICIES['mail.provider_delete'];
-  assert.deepEqual(resolvePolicyValue(providerDelete, [level('forbidden'), level('required')]), { value: 'required', source: 'policy' });
+  assert.deepEqual(resolvePolicyValue(providerDelete, [level('forbidden'), level('required')]), { value: 'forbidden', source: 'policy' });
+  assert.deepEqual(resolvePolicyValue(providerDelete, [level('user_choice'), level('required')]), { value: 'required', source: 'policy' });
   assert.deepEqual(resolvePolicyValue(providerDelete, [level('forbidden', true), level('required')]), { value: 'forbidden', source: 'policy' });
   assert.deepEqual(resolvePolicyValue(providerDelete, [undefined, [{ value: 'required', locked: false }, { value: 'forbidden', locked: false }]]), { value: 'forbidden', source: 'policy' });
+  const newAccounts = POLICIES['mail.mode.new_accounts'];
+  assert.deepEqual(resolvePolicyValue(newAccounts, [level('download'), [{ value: 'sync', locked: false }, { value: 'sync', locked: false }]]), { value: 'sync', source: 'policy' });
+  assert.deepEqual(resolvePolicyValue(newAccounts, [level('download'), [{ value: 'sync', locked: false }, { value: 'download_delete', locked: false }]]), { value: 'download', source: 'policy' });
+  assert.deepEqual(resolvePolicyValue(newAccounts, [undefined, [{ value: 'sync', locked: false }, { value: 'download', locked: false }]]), { value: 'user_choice', source: 'default' });
+  // The bin's minimum defaults to its strictest value: a group cannot go below it, the installation can.
+  const minimum = BIN_MIN_RETENTION as unknown as typeof backupDelete;
+  assert.deepEqual(resolvePolicyValue(minimum, [undefined, level('30')]), { value: 'forever', source: 'default' });
+  assert.deepEqual(resolvePolicyValue(minimum, [level('30'), level('90')]), { value: '90', source: 'policy' });
+  assert.deepEqual(resolvePolicyValue(minimum, [level('90'), level('30')]), { value: '90', source: 'policy' });
+});
+
+// R1 (0.30): with only the installation's policies, the group level changes
+// nothing: any stored values resolve to themselves, any other key to its default.
+test('installation policies alone resolve as before groups, for random combinations', async () => {
+  let seed = 30;
+  const random = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const scalar = keys.filter(key => POLICIES[key].kind.type !== 'list');
+  for (let round = 0; round < 200; round++) {
+    const chosen = new Map<string, unknown>();
+    for (const key of scalar) {
+      const kind = POLICIES[key].kind as { type: string; values?: readonly unknown[]; nullable?: boolean };
+      const values: readonly unknown[] = kind.type === 'enum' ? kind.values! : [...(kind.nullable ? [null] : []), ...(kind.values ?? [])];
+      if (random() < 0.4) chosen.set(key, values[Math.floor(random() * values.length)]);
+    }
+    const { executor } = stored([...chosen].map(([key, value]) => ({ key: `policy.${key}`, value: value === null ? '' : String(value) })));
+    for (const key of scalar) {
+      const { value, source } = await resolvePolicy('user-a', key, executor);
+      // A key implied by a refusing one (data.clear by bin.delete) takes that one's source, as before.
+      const implied = POLICIES[key].impliedBy && chosen.get(POLICIES[key].impliedBy!) === 'forbidden';
+      assert.deepEqual({ value, source }, chosen.has(key) ? { value: chosen.get(key), source: 'policy' } : { value: POLICIES[key].default, source: implied ? 'policy' : 'default' }, `${round} ${key}`);
+    }
+  }
 });

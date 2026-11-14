@@ -96,7 +96,7 @@ test('VAPID candidates persist once and reload the winning encrypted key across 
 test('outbox duplicates do not fan out new deliveries and use the caller transaction', async () => {
   const keys = new Set<FixtureValue>(); const deliveries = [];
   const connection = { async execute(sql: string, values: FixtureValue) {
-    if (sql.includes('FROM user_settings')) return [[]];
+    if (sql.includes('FROM user_settings') || sql.includes('FROM setting_policies')) return [[]];
     if (sql.startsWith('SELECT p.id')) return [[{ id: 'device-1' }, { id: 'device-2' }]];
     if (sql.startsWith('INSERT IGNORE INTO notification_events')) {
       if (keys.has(values[2])) return [{ affectedRows: 0 }];
@@ -327,6 +327,7 @@ test('paused mail and calendar deliveries retain pending attempts and never call
         payload: { dedupeKey: 'test' }, expires_at: new Date(Date.now() + 60000),
       }]];
       if (sql.startsWith('SELECT public_key')) return [[{ public_key: 'public', encrypted_private_key: 'encrypted:secret', subject: 'mailto:test@example.com' }]];
+      if (sql.includes('FROM setting_policies')) return [[]];
       if (sql.includes('FROM user_settings')) return [[{ setting_value: JSON.stringify({ mail: { enabled: false }, calendar: { background: false } }) }]];
       writes.push({ sql, values }); return [{}];
     } };
@@ -342,6 +343,7 @@ test('a pause during source revalidation preserves the delivery before reserving
   const connection = { async execute(sql: string, values: FixtureValue) {
     if (sql.includes('FROM notification_deliveries')) return [[{ event_id: 'event', subscription_id: 'device', user_id: 'u1', kind: 'mail', source_id: 'source', attempts: 2, payload: { dedupeKey: 'test' }, expires_at: new Date(Date.now() + 60000) }]];
     if (sql.startsWith('SELECT public_key')) return [[{ public_key: 'public', encrypted_private_key: 'encrypted:secret', subject: 'mailto:test@example.com' }]];
+    if (sql.includes('FROM setting_policies')) return [[]];
     if (sql.includes('FROM user_settings')) return [[{ setting_value: JSON.stringify({ mail: { background: !paused } }) }]];
     if (sql.includes('FROM emails')) { paused = true; return [[{ folder: 'inbox', is_read: 0, is_draft: 0 }]]; }
     const read = unlockedDevice(sql, values); if (read) return read;

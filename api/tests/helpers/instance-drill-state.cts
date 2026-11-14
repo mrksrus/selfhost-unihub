@@ -48,9 +48,15 @@ async function main() {
         SELECT UUID(), 'manual', ?, 'failed', NULL, NULL, NULL, 'drillearlier0001', '0.27.0', MAX(id), 'The destination was full.', '2026-01-02 03:30:00', '2026-01-02 03:31:00', NULL FROM schema_migrations
         UNION ALL SELECT UUID(), 'schedule', NULL, 'succeeded', 'unihub-instance-20260103T033000Z-0.27.0.uhib', 4096, REPEAT('a', 64), 'drillearlier0001', '0.27.0', MAX(id), NULL,
           '2026-01-03 03:30:00', '2026-01-03 03:32:00', '2026-01-10 03:33:00' FROM schema_migrations`, [admin]);
+      // The organisation (0.30): a group with its manager come back; a setup
+      // link and a sign-in attempt budget do not.
+      await db.execute("INSERT INTO org_groups (id, name, description, created_by) VALUES (UUID(), 'Drill group', 'Synthetic', ?)", [admin]);
+      await db.execute("INSERT INTO org_group_members (group_id, user_id, role, added_by) SELECT id, ?, 'manager', ? FROM org_groups WHERE name = 'Drill group'", [admin, admin]);
+      await db.execute('INSERT INTO invites (id, user_id, token_hash, created_by, expires_at) VALUES (UUID(), ?, SHA2(UUID(), 256), ?, UTC_TIMESTAMP() + INTERVAL 7 DAY)', [admin, admin]);
+      await db.execute("INSERT INTO login_attempts (scope, identity_hash, attempts, window_ends_at) VALUES ('password', SHA2('drill', 256), 3, UTC_TIMESTAMP(3) + INTERVAL 1 DAY)");
       // Past 2^53, where a JavaScript number would round it to ...992.
       await db.execute("UPDATE mail_engine_migration_progress SET last_id = '00000000-0000-4000-8000-00000000d211', processed = IF(source_table = 'emails', 9007199254740993, processed + 7)");
-      console.log(JSON.stringify({ seeded: ['setting_policies', 'instance_backups', 'mail_engine_migration_progress'] }));
+      console.log(JSON.stringify({ seeded: ['setting_policies', 'instance_backups', 'mail_engine_migration_progress', 'org_groups', 'org_group_members', 'invites', 'login_attempts'] }));
       return;
     }
     if (process.env.DRILL_MODE !== 'report') throw new Error('DRILL_MODE is seed or report');
@@ -78,6 +84,7 @@ async function main() {
       resets: {
         sessions: await count('SELECT COUNT(*) AS n FROM sessions'),
         devices: await count('SELECT COUNT(*) AS n FROM devices'),
+        invites: await count('SELECT COUNT(*) AS n FROM invites'),
         fileTickets: await count('SELECT COUNT(*) AS n FROM file_tickets'),
         signInChallenges: await count('SELECT COUNT(*) AS n FROM two_factor_challenges'),
         leases: await count('SELECT (SELECT COUNT(*) FROM mail_engine_accounts WHERE lease_owner IS NOT NULL) + (SELECT COUNT(*) FROM mail_engine_jobs WHERE lease_owner IS NOT NULL) AS n'),

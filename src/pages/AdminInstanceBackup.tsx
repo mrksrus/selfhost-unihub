@@ -2,6 +2,7 @@ import { useId, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Play } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
+import { can } from '@/lib/permissions';
 import { useToast } from '@/hooks/use-toast';
 import { useSecretMutation } from '@/hooks/use-secret-mutation';
 import {
@@ -61,7 +62,7 @@ const AdminInstanceBackup = () => {
   const { user } = useAuth();
   const { toast } = useToast();
   const client = useQueryClient();
-  const query = useQuery({ ...instanceBackupQueryOptions, enabled: user?.role === 'admin', refetchInterval: data => data.state.data?.running ? 3000 : false });
+  const query = useQuery({ ...instanceBackupQueryOptions, enabled: can(user, 'server.settings'), refetchInterval: data => data.state.data?.running ? 3000 : false });
   const run = useMutation({
     mutationFn: runInstanceBackup,
     onSuccess: () => { void client.invalidateQueries({ queryKey: instanceBackupQueryKey }); toast({ title: 'Backup started', description: 'It runs in the background and shows below when it finishes.' }); },
@@ -88,7 +89,7 @@ const AdminInstanceBackup = () => {
   });
   const local = status ? localTimeOf(status.time_utc, user?.timezone) : null;
 
-  const body = user?.role !== 'admin' ? <p className="text-sm text-muted-foreground">Only admins can see this page.</p>
+  const body = !can(user, 'server.settings') ? <p className="text-sm text-muted-foreground">Only admins can see this page.</p>
     : query.isLoading ? <LoadingState label="Loading the instance backup…" />
     : query.error || !status ? <ErrorState title="Could not load the instance backup" error={query.error} onRetry={() => void query.refetch()} retrying={query.isFetching} />
     : (

@@ -3,7 +3,7 @@
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
--- Through migration 26.
+-- Through migration 28.
 
 CREATE TABLE `audit_log` (
   `id` char(36) NOT NULL DEFAULT uuid(),
@@ -696,6 +696,32 @@ CREATE TABLE `instance_backups` (
   KEY `idx_instance_backups_status` (`status`,`started_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `invites` (
+  `id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `token_hash` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `created_by` char(36) DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `expires_at` datetime NOT NULL,
+  `used_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_invites_user` (`user_id`),
+  UNIQUE KEY `unique_invites_token` (`token_hash`),
+  KEY `idx_invites_expires` (`expires_at`),
+  KEY `fk_invites_created_by` (`created_by`),
+  CONSTRAINT `fk_invites_created_by` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_invites_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `login_attempts` (
+  `scope` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `identity_hash` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `attempts` int(10) unsigned NOT NULL DEFAULT 0,
+  `window_ends_at` datetime(3) NOT NULL,
+  PRIMARY KEY (`scope`,`identity_hash`),
+  KEY `idx_login_attempts_window` (`window_ends_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE `mail_account_settings` (
   `mail_account_id` char(36) NOT NULL,
   `user_id` char(36) NOT NULL,
@@ -1224,10 +1250,38 @@ CREATE TABLE `notification_reminders` (
   CONSTRAINT `notification_reminders_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `org_group_members` (
+  `group_id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `role` enum('member','manager') NOT NULL DEFAULT 'member',
+  `added_by` char(36) DEFAULT NULL,
+  `added_at` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`group_id`,`user_id`),
+  KEY `idx_org_group_members_user` (`user_id`),
+  KEY `fk_org_group_members_added_by` (`added_by`),
+  CONSTRAINT `fk_org_group_members_added_by` FOREIGN KEY (`added_by`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_org_group_members_group` FOREIGN KEY (`group_id`) REFERENCES `org_groups` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_org_group_members_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `org_groups` (
+  `id` char(36) NOT NULL,
+  `name` varchar(100) NOT NULL,
+  `description` varchar(500) DEFAULT NULL,
+  `created_by` char(36) DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `updated_at` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_org_groups_name` (`name`),
+  KEY `fk_org_groups_created_by` (`created_by`),
+  CONSTRAINT `fk_org_groups_created_by` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE `policy_notices` (
   `user_id` char(36) NOT NULL,
   `revision` bigint(20) unsigned NOT NULL,
   `acknowledged_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `rules_hash` char(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
   PRIMARY KEY (`user_id`,`revision`),
   CONSTRAINT `policy_notices_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -1456,7 +1510,7 @@ CREATE TABLE `users` (
   `password_hash` varchar(255) NOT NULL,
   `full_name` varchar(255) DEFAULT NULL,
   `avatar_url` text DEFAULT NULL,
-  `role` enum('user','admin') NOT NULL DEFAULT 'user',
+  `role` enum('user','admin','owner') NOT NULL DEFAULT 'user',
   `is_active` tinyint(1) DEFAULT 1,
   `email_verified` tinyint(1) DEFAULT 0,
   `timezone` varchar(64) DEFAULT NULL,
@@ -1465,8 +1519,11 @@ CREATE TABLE `users` (
   `two_factor_recovery_codes` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`two_factor_recovery_codes`)),
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `owner_marker` tinyint(4) GENERATED ALWAYS AS (if(`role` = 'owner',1,NULL)) STORED,
+  `two_factor_required_since` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `email` (`email`),
+  UNIQUE KEY `unique_users_owner` (`owner_marker`),
   KEY `idx_users_email` (`email`),
   KEY `idx_users_active` (`is_active`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

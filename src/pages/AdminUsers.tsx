@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog';
 import { useAuth } from '@/contexts/useAuth';
+import { can } from '@/lib/permissions';
 import { adminUsersQueryKey, deleteAdminUser, fetchAdminUsers, resetUserTwoFactor, setUserActive, setUserPassword, setUserRole, type AdminUser } from '@/lib/admin-api';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSecretMutation } from '@/hooks/use-secret-mutation';
@@ -37,7 +38,7 @@ const AdminUsers = () => {
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: adminUsersQueryKey,
     queryFn: ({ signal }) => fetchAdminUsers(signal),
-    enabled: user?.role === 'admin',
+    enabled: can(user, 'users.read'),
   });
   
   const deleteUser = useSecretMutation({
@@ -172,7 +173,7 @@ const AdminUsers = () => {
     <PageShell panel={<SettingsPanel active="admin-users" />} panelLabel="Settings sections" panelId="settings">
       <PageHeader title="Settings" scope="Users" />
       <PageBody width="reading">
-        {user?.role !== 'admin' ? <p className="text-sm text-muted-foreground">Only admins can see this page.</p> : (
+        {!can(user, 'users.read') ? <p className="text-sm text-muted-foreground">Only admins can see this page.</p> : (
           <>
             <div className="mb-3">
               <h2 className="text-base font-semibold">Users</h2>

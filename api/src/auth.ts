@@ -26,7 +26,10 @@ async function hashPassword(password: string) {
   return bcrypt.hash(password, 12);
 }
 
+// An empty hash is a person who has no password yet (added by an
+// administrator, setup link not used): nothing matches it.
 async function verifyPassword(password: string, hash: string) {
+  if (!hash) return false;
   return bcrypt.compare(password, hash);
 }
 

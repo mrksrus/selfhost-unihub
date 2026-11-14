@@ -46,6 +46,9 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   // covered on the full schema (notification-filters-mysql-integration).
   await connection.execute(`CREATE TEMPORARY TABLE mail_folders (id CHAR(36) PRIMARY KEY, user_id CHAR(36), slug VARCHAR(64), special_use VARCHAR(32)) ${options}`);
   await connection.execute(`CREATE TEMPORARY TABLE setting_policies (target_kind VARCHAR(16), target_id VARCHAR(36), setting_key VARCHAR(100), setting_value TEXT, locked BOOLEAN) ${options}`);
+  // A person's group policies join their groups and memberships (0.30).
+  await connection.execute(`CREATE TEMPORARY TABLE org_groups (id CHAR(36) PRIMARY KEY, name VARCHAR(100)) ${options}`);
+  await connection.execute(`CREATE TEMPORARY TABLE org_group_members (group_id CHAR(36), user_id CHAR(36), PRIMARY KEY (group_id, user_id)) ${options}`);
   await connection.execute(`CREATE TEMPORARY TABLE recording_uploads (id CHAR(36) PRIMARY KEY, user_id CHAR(36), title VARCHAR(255), total_bytes BIGINT, bytes_received BIGINT DEFAULT 0,
     expires_at DATETIME, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ${options}`);
   await connection.execute(`CREATE TEMPORARY TABLE backup_restore_jobs (id CHAR(36) PRIMARY KEY, user_id CHAR(36), requested_sections JSON, status VARCHAR(24)) ${options}`);

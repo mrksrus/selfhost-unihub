@@ -22,6 +22,8 @@ interface Rule {
   mayChange?: (column: string, source: ReportedRow, restored: ReportedRow, context: Context) => boolean;
   /** A row only the destination has that is expected there. */
   mayAdd?: (row: ReportedRow, context: Context) => boolean;
+  /** The restore deletes every row of the table: none of the source's may remain. */
+  cleared?: boolean;
 }
 
 export const INSTALLATION_RULES: Readonly<Record<string, Rule>> = Object.freeze({
@@ -43,6 +45,10 @@ export const INSTALLATION_RULES: Readonly<Record<string, Rule>> = Object.freeze(
     reason: 'The push identity (key pair, subject, creation) comes back; the reminder scan cursors beside it move while a server runs.',
     mayChange: column => ['last_reminder_scan_at', 'reminder_revision', 'scanned_revision'].includes(column),
   },
+  // The organisation (0.30): groups and memberships come back with their ids.
+  org_groups: { reason: 'The groups come back.' },
+  org_group_members: { reason: 'Every membership comes back with its role.' },
+  login_attempts: { reason: 'Sign-in attempt budgets expire; the restore deletes them and the restored installation counts afresh.', cleared: true },
 });
 
 // A DATETIME in UTC (dateStrings), to the second, within the restore command's run.
@@ -64,7 +70,8 @@ export function installationProblems(source: InstallationReport, target: Install
     if (!sourceRows.size) problems.push(`${table}: the source has no rows to compare`);
     for (const [key, row] of sourceRows) {
       const restored = targetRows.get(key);
-      if (!restored) { problems.push(`${table} ${key}: missing after the restore`); continue; }
+      if (!restored) { if (!rule.cleared) problems.push(`${table} ${key}: missing after the restore`); continue; }
+      if (rule.cleared) { problems.push(`${table} ${key}: kept, but the restore clears the table`); continue; }
       for (const column of [...new Set([...Object.keys(row.columns), ...Object.keys(restored.columns)])].sort()) {
         if (row.columns[column] !== restored.columns[column] && !rule.mayChange?.(column, row, restored, context)) problems.push(`${table} ${key}: ${column} changed`);
       }

@@ -26,7 +26,7 @@ function sourceColumns(source: FixtureValue) {
 }
 const serviceSource = (name: FixtureValue) => fs.readFileSync(path.join(__dirname, '../src/services', `${name}.ts`), 'utf8');
 function productionColumns() {
-  return sourceColumns(['database-baseline', 'database', 'database-migrations', 'contacts-migration', 'devices-migration'].map(serviceSource).join('\n'));
+  return sourceColumns(['database-baseline', 'database', 'database-migrations', 'contacts-migration', 'devices-migration', 'organisation-migration'].map(serviceSource).join('\n'));
 }
 
 // Devices (0.29, F5) are installation state: no personal backup carries a
@@ -49,6 +49,33 @@ test('devices, their settings and the device of each session and push channel ne
     assert.ok(NON_ARCHIVE_POLICIES[table].columns.includes('device_id'), `${table}.device_id is classified`);
     assert.equal(NON_ARCHIVE_POLICIES[table].introducedIn?.device_id, 26);
   }
+});
+
+// The organisation (0.30, F3): groups and their members belong to the
+// organisation and only the instance backup carries them, with their ids,
+// so no personal restore needs to map a group; setup links and attempt
+// budgets are installation state no restore brings back. The owner marker
+// and a person's two-factor grace stay with the destination identity.
+test('groups, memberships, setup links and login attempts never travel in a personal backup', () => {
+  const { NON_ARCHIVE_POLICIES, TABLE_DECLARATIONS } = require('../dist/src/services/data-inventory') as typeof import('../src/services/data-inventory');
+  const { TABLE_POLICIES } = require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog');
+  const expected = {
+    org_groups: { treatment: 'deliberately_excluded', owner: 'organisation', dataClass: 'org' },
+    org_group_members: { treatment: 'deliberately_excluded', owner: 'organisation', dataClass: 'org' },
+    invites: { treatment: 'security_only', owner: 'user', dataClass: 'installation' },
+    login_attempts: { treatment: 'security_only', owner: 'installation', dataClass: 'installation' },
+  };
+  for (const [table, { treatment, owner, dataClass }] of Object.entries(expected)) {
+    assert.equal(TABLE_POLICIES[table], undefined, `${table} is in no backup section`);
+    assert.equal(NON_ARCHIVE_POLICIES[table].treatment, treatment, table);
+    assert.ok(NON_ARCHIVE_POLICIES[table].columns.every(column => NON_ARCHIVE_POLICIES[table].introducedIn?.[column] === 27), `${table} comes with upgrade 27`);
+    assert.deepEqual({ ...TABLE_DECLARATIONS[table], restore: undefined }, { owner, shareable: false, dataClass, module: null, restore: undefined }, table);
+  }
+  for (const column of ['owner_marker', 'two_factor_required_since']) {
+    assert.ok(!TABLE_POLICIES.user.columns.includes(column), `users.${column} is not archived`);
+    assert.equal(NON_ARCHIVE_POLICIES.users.introducedIn?.[column], 27);
+  }
+  assert.equal(NON_ARCHIVE_POLICIES.policy_notices.introducedIn?.rules_hash, 27);
 });
 
 test('every runtime schema table and field has an explicit recovery policy', () => {

@@ -4,7 +4,7 @@ import type { EffectivePolicy, PolicyKey } from '../contracts/policies';
 import type { PolicyActor } from './settings';
 import { db } from '../state';
 import { ApiError, conflict, forbidden } from '../http/errors';
-import { lockedPolicies, policyForbids } from './settings';
+import { lockedPolicies, policyForbids, POLICIES } from './settings';
 import { lockedUserModules } from './module-settings';
 import { lockedRestoreSections } from './restore-locks';
 import { sectionOf } from './access-policy';
@@ -28,11 +28,13 @@ import type { AccountSnapshot } from './account-identity';
 //      the requesting person's row and session, shared, caller-proof.ts;
 //      accounts the step carries as `unchanged` are locked here, mail
 //      accounts before calendar accounts, by id);
-//   2. the rules revision row, shared, then the installation's policies;
+//   2. the rules revision row, shared, then the person's group memberships
+//      and the policies of the installation and of those groups;
 //   3. the person's module switches row, shared;
 //   4. the person's restore jobs (every row and the gap for a new one), shared.
 //
-// An administrator's save locks the revision row first, a module switch its
+// A change of rules (a policy save or a membership change, settings.ts
+// changeRules) locks the revision row first, a module switch its
 // settings row, and a restore's admission (create, start, retry, unlock;
 // backup-restore-jobs.ts) its own job row and the person's others; each
 // therefore commits before the step reads it or waits until the step ends.
@@ -58,6 +60,7 @@ interface FinalStepAnswer {
   policy: <K extends PolicyKey>(key: K) => EffectivePolicy<K>;
 }
 
+const isPolicyKey = (key: string): key is PolicyKey => Object.prototype.hasOwnProperty.call(POLICIES, key);
 const moduleOff = (module: string) => forbidden('MODULE_DISABLED', 'This module is disabled. Enable it in Settings.', { module });
 const restoring = (module: string) => conflict('RESTORE_IN_PROGRESS', `Restore in progress for ${module}. This section is temporarily read-only.`);
 
@@ -71,7 +74,7 @@ async function assertFinalStep(connection: SqlExecutor, { userId, policies = [],
   for (const snapshot of [...unchanged].sort((a, b) => (order(a) < order(b) ? -1 : order(a) > order(b) ? 1 : 0))) {
     await lockUnchanged(connection, userId, snapshot, { lock: 'share' });
   }
-  const policy = await lockedPolicies(connection);
+  const policy = await lockedPolicies(connection, userId);
   if (!actor.adminId) {
     for (const key of policies) {
       const resolved = policy(key);
@@ -83,6 +86,9 @@ async function assertFinalStep(connection: SqlExecutor, { userId, policies = [],
     for (const id of modules) {
       const module = switches.find(entry => entry.id === id);
       if (!module?.enabled || (background && !module.background)) throw moduleOff(id);
+      // A module an administrator's policy forbids is off whatever the switch says.
+      const key = `modules.${id}`;
+      if (isPolicyKey(key) && !policy(key).allowed) throw forbidden('MODULE_DISABLED', policy(key).reason ?? 'Your administrator turned this module off.', { module: id, policy: key, reason: policy(key).reason });
     }
   }
   if (modules.length || anyRestore) {

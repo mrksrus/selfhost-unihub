@@ -16,7 +16,7 @@ import { ADMIN, mountSignedIn, policiesAnswer, stubBrowserApis, testClient } fro
 
 const state = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }), clearToasts: vi.fn() }));
-vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'user-admin', email: 'admin@example.com', role: 'admin' } }) }));
+vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'user-admin', email: 'admin@example.com', role: 'admin', permissions: ['users.read', 'users.manage', 'server.settings', 'storage.read', 'audit.read', 'groups.manage'] } }) }));
 vi.mock('@/hooks/use-modules', () => ({ useModules: () => ({ isPending: false, isEnabled: () => true, canAccess: () => true, modules: [], pages: [] }) }));
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() } }));
 
