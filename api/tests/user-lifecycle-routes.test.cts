@@ -51,7 +51,9 @@ test('admin user deletion keeps its own checks and reports the service refusal',
       throw new Error(`Unexpected query: ${sql}`);
     } } },
     '../dist/src/services/user-lifecycle': lifecycle,
-  }, ['../dist/src/routes/admin', '../dist/src/services/admin-path']);
+    // The re-authentication budget always has room (login-limits-mysql-integration).
+    '../dist/src/security/login-limits': { reserveReauth: async () => null, refundReauth: async () => {} },
+  }, ['../dist/src/routes/admin', '../dist/src/services/admin-path', '../dist/src/security/reauthentication']);
   const routes = require('../dist/src/routes/admin') as RouteTable<typeof import('../src/routes/admin')>;
   // The boundary admits only admins to these routes (routes-policy.test.cts);
   // the admin confirms with their own password (two-factor-mysql-integration).
