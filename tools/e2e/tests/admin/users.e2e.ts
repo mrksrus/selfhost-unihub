@@ -11,7 +11,7 @@ const target = people.blair.email;
 test('[23-18] deactivating or deleting a user asks for your password', { session: 'admin' }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop');
   await app.open('/admin/users');
-  for (const action of ['Deactivate', 'Delete user']) {
+  for (const action of ['Deactivate', 'Delete person']) {
     await screen.getByRole('button', `Actions for ${target}`).tap();
     await screen.getByRole('menuitem', action, { exact: true }).tap();
     const dialog = screen.getByRole('alertdialog').or(screen.getByRole('dialog')).first();
@@ -36,10 +36,10 @@ test('[23-17] after wrong sign-ins an admin still changes a role; a non-admin ca
 
     await app.open('/admin/users');
     await screen.getByRole('button', `Actions for ${target}`).tap();
-    await screen.getByRole('menuitem', 'Make admin', { exact: true }).tap();
-    const dialog = screen.getByRole('dialog', `Make ${target} an admin?`);
+    await screen.getByRole('menuitem', 'Make administrator', { exact: true }).tap();
+    const dialog = screen.getByRole('dialog', `Make ${target} an administrator?`);
     await dialog.getByLabel('Your password', { exact: true }).fill(credentials.user('admin').password);
-    await dialog.getByRole('button', 'Make admin', { exact: true }).tap();
+    await dialog.getByRole('button', 'Make administrator', { exact: true }).tap();
     await expect(dialog).toBeHidden();
     const blair = await signIn('blair');
     expect(ok(await blair<{ user: { role: string } }>('GET', '/api/auth/me'), 'blair me').user.role).toBe('admin');
@@ -49,10 +49,10 @@ test('[23-17] after wrong sign-ins an admin still changes a role; a non-admin ca
       'a non-admin is refused').toBe(403);
 
     await screen.getByRole('button', `Actions for ${target}`).tap();
-    await screen.getByRole('menuitem', 'Remove admin rights', { exact: true }).tap();
-    const remove = screen.getByRole('dialog', `Remove admin rights from ${target}?`);
+    await screen.getByRole('menuitem', 'Remove administrator rights', { exact: true }).tap();
+    const remove = screen.getByRole('dialog', `Remove administrator rights from ${target}?`);
     await remove.getByLabel('Your password', { exact: true }).fill(credentials.user('admin').password);
-    await remove.getByRole('button', 'Remove admin rights', { exact: true }).tap();
+    await remove.getByRole('button', 'Remove administrator rights', { exact: true }).tap();
     await expect(remove).toBeHidden();
     expect(ok(await blair<{ user: { role: string } }>('GET', '/api/auth/me'), 'blair me').user.role).toBe('user');
   } finally {
