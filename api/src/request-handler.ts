@@ -25,6 +25,7 @@ import { getUserModules, isModuleEnabled } from './services/module-settings';
 import { getActiveRestoreSections } from './services/restore-locks';
 import { assertAllowed, resolvePolicy, withRequestPolicies } from './services/settings';
 import { appLockRefusal } from './services/devices';
+import { twoFactorRequirement } from './services/sign-in-policies';
 import { buildContentDisposition } from './http/content-disposition';
 import { BACKUP_IMPORTS_ROOT } from './services/export-jobs';
 
@@ -37,10 +38,11 @@ const BACKUP_UPLOAD_ROOT = BACKUP_IMPORTS_ROOT;
 // segment matcher, so adding a route needs no change here.
 const matchRoute = compileRouteMatcher(Object.keys(routeTable));
 
-// 'background-sync' routes are open to the Android app's own contacts sync
-// only, which sends the header on every request (http/route.ts).
-function appLockExempt(spec: RouteSpec, req: RouteRequest) {
-  return spec.appLock === 'exempt' || (spec.appLock === 'background-sync' && req.headers['x-background-sync'] === '1');
+// The routes the compliance gates leave open (http/route.ts gates);
+// 'background-sync' ones to the Android app's own contacts sync only, which
+// sends the header on every request.
+function gatesExempt(spec: RouteSpec, req: RouteRequest) {
+  return spec.gates === 'exempt' || (spec.gates === 'background-sync' && req.headers['x-background-sync'] === '1');
 }
 
 // If-None-Match compares weakly (RFC 9110): W/"x" matches "x", and * matches any.
@@ -131,9 +133,9 @@ async function gateRefusal(spec: RouteSpec, req: RouteRequest, routeKey: string,
   // The app lock (0.29): a device short of the lock the person's policies
   // require is refused the locked parts with 403 APP_LOCK_REQUIRED and the
   // administrator's reason, administrators included on their own devices.
-  // Exempt routes (http/route.ts appLock) stay open; with no requirement
+  // Exempt routes (http/route.ts gates) stay open; with no requirement
   // nothing changes.
-  if (userId && spec.auth !== 'public' && !appLockExempt(spec, req)) {
+  if (userId && spec.auth !== 'public' && !gatesExempt(spec, req)) {
     const modules = [spec.module, ...spec.appLockModules ?? []].filter((module): module is string => !!module);
     const refusal = await appLockRefusal(userId, req.sessionDeviceId ?? null, modules);
     if (refusal) {
@@ -144,6 +146,13 @@ async function gateRefusal(spec: RouteSpec, req: RouteRequest, routeKey: string,
         details: refusal,
       } };
     }
+
+    // Two-factor authentication required (0.30, auth.two_factor): a person
+    // without it gets 7 days from the first time this gate (or a policy save)
+    // finds the rule applying to them; after that every route that is not
+    // exempt answers 403 TWO_FACTOR_REQUIRED, administrators included.
+    const { refused } = await twoFactorRequirement(userId, req.twoFactor ?? null);
+    if (refused) return { status: 403, body: { error: refused.reason, code: 'TWO_FACTOR_REQUIRED', status: 403, details: refused } };
   }
   return null;
 }

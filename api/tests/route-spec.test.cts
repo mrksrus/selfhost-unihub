@@ -35,7 +35,7 @@ test('every derived route spec equals the policy the boundary looked up before s
       // Declared since F13 (0.25 and 0.28), not derived from an older lookup.
       ...POLICIES_BY_ROUTE[key],
       // Declared since the app lock (0.29).
-      ...(APP_LOCK_EXEMPT_KEYS.has(key) ? { appLock: 'exempt' } : {}),
+      ...(APP_LOCK_EXEMPT_KEYS.has(key) ? { gates: 'exempt' } : {}),
       ...(APP_LOCK_MODULES_BY_ROUTE[key] ? { appLockModules: APP_LOCK_MODULES_BY_ROUTE[key] } : {}),
     };
     const { handler, ...policy } = spec;

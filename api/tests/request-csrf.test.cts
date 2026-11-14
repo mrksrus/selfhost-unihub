@@ -37,6 +37,8 @@ function harness(t: import('node:test').TestContext) {
     if (sql.includes('FROM users WHERE')) return [[user]];
     // No policies, so no app lock is required.
     if (sql.includes('FROM setting_policies')) return [[]];
+    // Every sign-in attempt budget has room (security/login-limits.ts).
+    if (sql.includes('login_attempts')) return [{ affectedRows: 1 }];
     return [{ affectedRows: 0 }];
   } };
   // A sign-in binds its device and creates its session in one transaction.

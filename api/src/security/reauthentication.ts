@@ -32,7 +32,7 @@ async function confirmPasswordHash(userId: string, currentPassword: unknown, res
   if (typeof currentPassword !== 'string' || !currentPassword || currentPassword.length > 1024) {
     return { refused: { error: 'Your current password is required', code: codes.required, status: 400 } };
   }
-  const retryAfter = reserveReauth(userId);
+  const retryAfter = await reserveReauth(userId);
   if (retryAfter) {
     res?.setHeader('Retry-After', String(retryAfter));
     return { refused: { error: `Too many attempts. Try again in ${retryAfter} seconds.`, status: 429 } };
@@ -44,7 +44,7 @@ async function confirmPasswordHash(userId: string, currentPassword: unknown, res
     wrong = !rows.length || !(await verifyPassword(currentPassword, rows[0].password_hash));
   } finally {
     // A right password, or a check that failed for another reason, is not a guess.
-    if (wrong !== true) refundReauth(userId);
+    if (wrong !== true) await refundReauth(userId);
   }
   if (wrong) return { refused: { error: 'Current password is incorrect', code: codes.incorrect, status: 403 } };
   return { passwordHash: hash };

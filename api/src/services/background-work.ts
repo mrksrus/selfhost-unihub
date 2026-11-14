@@ -15,6 +15,7 @@ import { idleSupervisor } from './mail-idle';
 import { processNotificationJobs } from './notifications';
 import { pruneAuditLog } from './audit';
 import { pruneIdleDevices } from './devices';
+import { pruneLoginAttempts } from '../security/login-limits';
 import { runMailThreadBackfill } from './mail-thread-backfill';
 import { runDueScheduledSends } from './mail-scheduled-send';
 import { returnDueSnoozes } from './mail-snooze';
@@ -212,13 +213,16 @@ async function runStartup(deps: BackgroundWorkDeps, state: { stopped: boolean },
   every('SNOOZE', SNOOZE_RETURN_INTERVAL_MS, deps.returnDueSnoozes);
 
   // Expired sessions, then devices left without a session for 30 days,
-  // audit entries past their year and old mail request receipts, every hour,
+  // sign-in attempt budgets whose window ended, audit entries past their
+  // year and old mail request receipts, every hour,
   // so the tables do not grow.
   every('CLEANUP', 60 * 60 * 1000, async () => {
     const [result] = await deps.db.execute<ResultSetHeader>('DELETE FROM sessions WHERE expires_at < UTC_TIMESTAMP()');
     if (result.affectedRows > 0) log.info('CLEANUP', 'Deleted expired sessions', { deleted: result.affectedRows });
     const devices = await pruneIdleDevices(deps.db);
     if (devices > 0) log.info('CLEANUP', 'Deleted devices unused for 30 days without a session', { deleted: devices });
+    const attempts = await pruneLoginAttempts(deps.db);
+    if (attempts > 0) log.info('CLEANUP', 'Deleted ended sign-in attempt budgets', { deleted: attempts });
     const audit = await deps.pruneAuditLog();
     if (audit > 0) log.info('CLEANUP', 'Deleted audit entries older than a year', { deleted: audit });
     const receipts = await pruneCommandReceipts(deps.db);

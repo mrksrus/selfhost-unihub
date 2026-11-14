@@ -3,7 +3,7 @@ import type { RouteRequest, ApiError, SqlExecutor } from '../types';
 import fs from 'fs';
 import path from 'path';
 import { db } from '../state';
-import { MIN_PASSWORD_LENGTH } from '../config';
+import { passwordMinimum } from '../services/sign-in-policies';
 import { attachmentsRoot, rawRoot } from '../services/mail-storage';
 import { RECORDINGS_ROOT } from '../services/recordings';
 import { BACKUPS_ROOT } from '../services/export-jobs';
@@ -363,8 +363,10 @@ export = defineRoutes({
     const targetId = target.id;
     const { new_password } = body;
 
-    if (!new_password || new_password.length < MIN_PASSWORD_LENGTH) {
-      return { error: `New password must be at least ${MIN_PASSWORD_LENGTH} characters`, status: 400 };
+    // The person's own rule, which their groups may make stricter.
+    const minimum = await passwordMinimum(targetId);
+    if (typeof new_password !== 'string' || new_password.length < minimum) {
+      return { error: `New password must be at least ${minimum} characters`, status: 400 };
     }
 
     try {

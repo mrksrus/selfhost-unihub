@@ -3,7 +3,6 @@ import type { RouteRequest, SqlExecutor, StoredFlag } from '../types';
 import type { ServerResponse } from 'node:http';
 import crypto from 'crypto';
 import { db } from '../state';
-import { MIN_PASSWORD_LENGTH } from '../config';
 import {
   getClientIP,
   consumeAuthAttempt,
@@ -19,6 +18,7 @@ import {
   SESSION_DAYS,
 } from '../auth';
 import { acknowledgeAtSignup, getSignupMode, signupRules } from '../services/settings';
+import { passwordMinimum } from '../services/sign-in-policies';
 import {
   generateTwoFactorSecret,
   verifyTotp,
@@ -104,8 +104,8 @@ async function organisationOf(userId: string, role: string, executor: SqlExecuto
   return { permissions: permissionsOf(role), manages_groups: await managesAnyGroup(userId, executor) };
 }
 
-function checkLoginBudget(res: ServerResponse, scope: Parameters<typeof consumeAuthAttempt>[0], identity: string) {
-  const retryAfter = consumeAuthAttempt(scope, identity);
+async function checkLoginBudget(res: ServerResponse, scope: Parameters<typeof consumeAuthAttempt>[0], identity: string) {
+  const retryAfter = await consumeAuthAttempt(scope, identity);
   if (!retryAfter) return null;
   res?.setHeader('Retry-After', String(retryAfter));
   return { error: `Too many attempts. Try again in ${retryAfter} seconds.`, status: 429 };
@@ -135,7 +135,7 @@ export = defineRoutes({
 
   'POST /api/auth/signup': { auth: 'public', module: null, body: { limit: 4096 }, csrf: 'none', handler: async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
     const ip = getClientIP(req);
-    const limited = checkLoginBudget(res, 'ip', ip);
+    const limited = await checkLoginBudget(res, 'ip', ip);
     if (limited) return limited;
 
     // Check signup mode
@@ -145,13 +145,14 @@ export = defineRoutes({
     }
 
     const { email, password, full_name } = body || {};
-    const signupLimited = checkLoginBudget(res, 'signup', ip);
+    const signupLimited = await checkLoginBudget(res, 'signup', ip);
     if (signupLimited) return signupLimited;
     if (!validCredentials(email, password)) {
       return { error: 'Email and password are required', status: 400 };
     }
-    if (String(password).length < MIN_PASSWORD_LENGTH) {
-      return { error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters`, status: 400 };
+    const minimum = await passwordMinimum(null);
+    if (String(password).length < minimum) {
+      return { error: `Password must be at least ${minimum} characters`, status: 400 };
     }
     const device = deviceClaim(body?.device);
 
@@ -200,7 +201,7 @@ export = defineRoutes({
 
   'POST /api/auth/signin': { auth: 'public', module: null, body: { limit: 4096 }, csrf: 'none', handler: async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
     const ip = getClientIP(req);
-    const limited = checkLoginBudget(res, 'ip', ip);
+    const limited = await checkLoginBudget(res, 'ip', ip);
     if (limited) return limited;
 
     const { email, password } = body || {};
@@ -232,7 +233,7 @@ export = defineRoutes({
       }
 
       const accountIdentity = users[0]?.id || `unknown:${email.trim().toLowerCase()}`;
-      const accountLimited = checkLoginBudget(res, 'password', accountIdentity);
+      const accountLimited = await checkLoginBudget(res, 'password', accountIdentity);
       if (accountLimited) return accountLimited;
       if (users.length === 0) {
         return { error: 'Invalid credentials', status: 401 };
@@ -282,7 +283,7 @@ export = defineRoutes({
 
   'POST /api/auth/2fa/login': { auth: 'public', module: null, handler: async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
     const ip = getClientIP(req);
-    const limited = checkLoginBudget(res, 'ip', ip);
+    const limited = await checkLoginBudget(res, 'ip', ip);
     if (limited) return limited;
 
     const challengeToken = String(body?.challenge_token || '').trim();
@@ -294,6 +295,12 @@ export = defineRoutes({
 
     let connection;
     try {
+      // The account's budget is spent before the transaction, so a wrong code's
+      // rollback cannot give it back; the challenge is read again under its lock.
+      const pending = await consumeTwoFactorLoginChallenge(challengeToken);
+      if (!pending) return { error: 'Two-factor challenge expired. Sign in again.', status: 401 };
+      const accountLimited = await checkLoginBudget(res, 'secondFactor', pending.id);
+      if (accountLimited) return accountLimited;
       connection = await db.getConnection();
       await connection.beginTransaction();
       const challengeUser = await consumeTwoFactorLoginChallenge(challengeToken, connection, { lock: true });
@@ -301,8 +308,6 @@ export = defineRoutes({
         await connection.rollback();
         return { error: 'Two-factor challenge expired. Sign in again.', status: 401 };
       }
-      const accountLimited = checkLoginBudget(res, 'secondFactor', challengeUser.id);
-      if (accountLimited) { await connection.rollback(); return accountLimited; }
       const verification = await verifyUserSecondFactor(challengeUser, code, connection);
       if (!verification.ok) {
         await connection.rollback();
@@ -328,7 +333,7 @@ export = defineRoutes({
     }
   } },
 
-  'GET /api/auth/2fa/status': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string) => {
+  'GET /api/auth/2fa/status': { auth: 'user', module: null, gates: 'exempt', handler: async (req: Request, userId: string) => {
     try {
       const status = await getTwoFactorStatus(userId);
       if (!status) return { error: 'User not found', status: 404 };
@@ -339,7 +344,7 @@ export = defineRoutes({
     }
   } },
 
-  'POST /api/auth/2fa/setup/start': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string) => {
+  'POST /api/auth/2fa/setup/start': { auth: 'user', module: null, gates: 'exempt', handler: async (req: Request, userId: string) => {
     try {
       const [users] = await db.execute<UserRow[]>('SELECT email, two_factor_enabled FROM users WHERE id = ?', [userId]);
       if (users.length === 0) return { error: 'User not found', status: 404 };
@@ -358,9 +363,9 @@ export = defineRoutes({
     }
   } },
 
-  'POST /api/auth/2fa/setup/confirm': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+  'POST /api/auth/2fa/setup/confirm': { auth: 'user', module: null, gates: 'exempt', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
     // Each accepted request hashes ten recovery codes, which takes seconds of CPU.
-    const limited = checkLoginBudget(res, 'secondFactor', userId);
+    const limited = await checkLoginBudget(res, 'secondFactor', userId);
     if (limited) return limited;
     const secret = String(body?.secret || '').trim().toUpperCase();
     const code = String(body?.code || '').trim();
@@ -417,8 +422,9 @@ export = defineRoutes({
     }
   } },
 
-  'POST /api/auth/2fa/disable': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
-    const limited = checkLoginBudget(res, 'secondFactor', userId);
+  // Refused while the person's policies require two-factor authentication (F13 requires).
+  'POST /api/auth/2fa/disable': { auth: 'user', module: null, gates: 'exempt', requires: ['auth.two_factor'], handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+    const limited = await checkLoginBudget(res, 'secondFactor', userId);
     if (limited) return limited;
     const { current_password, code } = body || {};
     if (!current_password || !code) {
@@ -446,8 +452,8 @@ export = defineRoutes({
     }
   } },
 
-  'POST /api/auth/2fa/recovery-codes/regenerate': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
-    const limited = checkLoginBudget(res, 'secondFactor', userId);
+  'POST /api/auth/2fa/recovery-codes/regenerate': { auth: 'user', module: null, gates: 'exempt', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+    const limited = await checkLoginBudget(res, 'secondFactor', userId);
     if (limited) return limited;
     const code = String(body?.code || '').trim();
     if (!code) return { error: 'Authentication code is required', status: 400 };
@@ -480,11 +486,11 @@ export = defineRoutes({
 
   // The signed-in devices of this account (Settings > Security), and signing
   // one of them out. The current device signs out with POST /api/auth/signout.
-  'GET /api/auth/sessions': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string) => {
+  'GET /api/auth/sessions': { auth: 'user', module: null, gates: 'exempt', handler: async (req: Request, userId: string) => {
     return { sessions: await listSessions(userId, getAuthTokenFromRequest(req), SESSION_DAYS) };
   } },
 
-  'DELETE /api/auth/sessions/:id': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string) => {
+  'DELETE /api/auth/sessions/:id': { auth: 'user', module: null, gates: 'exempt', handler: async (req: Request, userId: string) => {
     const sessionId = req.params.id;
     if (!/^[0-9a-f-]{36}$/i.test(sessionId || '')) return { error: 'Session not found', code: 'SESSION_NOT_FOUND', status: 404 };
     const current = getAuthTokenFromRequest(req);
@@ -498,7 +504,7 @@ export = defineRoutes({
     return { signedOut: true };
   } },
 
-  'POST /api/auth/signout': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+  'POST /api/auth/signout': { auth: 'user', module: null, gates: 'exempt', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
     try {
       const token = getAuthTokenFromRequest(req);
@@ -514,7 +520,7 @@ export = defineRoutes({
     }
   } },
 
-  'GET /api/auth/me': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+  'GET /api/auth/me': { auth: 'user', module: null, gates: 'exempt', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
     try {
       const [users] = await db.execute<UserRow[]>(
@@ -547,14 +553,15 @@ export = defineRoutes({
     }
   } },
 
-  'PUT /api/auth/password': { auth: 'user', module: null, appLock: 'exempt', body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+  'PUT /api/auth/password': { auth: 'user', module: null, gates: 'exempt', body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
     const { current_password, new_password } = body;
     if (!current_password || !new_password) {
       return { error: 'Current password and new password are required', status: 400 };
     }
-    if (new_password.length < MIN_PASSWORD_LENGTH) {
-      return { error: `New password must be at least ${MIN_PASSWORD_LENGTH} characters`, status: 400 };
+    const minimum = await passwordMinimum(userId);
+    if (typeof new_password !== 'string' || new_password.length < minimum) {
+      return { error: `New password must be at least ${minimum} characters`, status: 400 };
     }
 
     try {
@@ -586,7 +593,7 @@ export = defineRoutes({
     }
   } },
 
-  'PUT /api/auth/profile': { auth: 'user', module: null, appLock: 'exempt', restoreSection: 'settings', handler: async (req: Request, userId: string, body: Input) => {
+  'PUT /api/auth/profile': { auth: 'user', module: null, gates: 'exempt', restoreSection: 'settings', handler: async (req: Request, userId: string, body: Input) => {
 
     const { full_name, timezone } = body;
     if (full_name === undefined || full_name === null) {

@@ -287,8 +287,14 @@ async function joinGroups(cx: SqlExecutor, adminId: string, userId: string, grou
   }
 }
 
+/** The ids of the group's members, managers included. */
+async function groupMemberIds(groupId: string, executor: SqlExecutor = db): Promise<string[]> {
+  const [rows] = await executor.execute<RowDataPacket[]>('SELECT user_id FROM org_group_members WHERE group_id = ?', [groupId]);
+  return rows.map(row => String(row.user_id));
+}
+
 export {
-  groupsOf, membershipOf, groupExists, managesAnyGroup, allGroupIds, membershipsByUser,
+  groupsOf, groupMemberIds, membershipOf, groupExists, managesAnyGroup, allGroupIds, membershipsByUser,
   listGroups, myGroups, groupDetail, groupCandidates,
   createGroup, renameGroup, deleteGroup, addMembers, removeMember, setManager, joinGroups, underRulesLock,
 };

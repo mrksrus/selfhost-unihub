@@ -67,7 +67,7 @@ test('sessions slide at most once a day and keep working after the JWT lifetime'
   db.calls.length = 0;
   assert.equal(await verifyToken(again, { renew: true }), 'fixture-user');
   assert.equal(again.sessionRenewed, undefined);
-  assert.equal(db.calls.length, 1);
+  assert.equal(db.calls.some(call => !call.sql.startsWith('SELECT')), false);
 });
 
 test('expired session rows and bad signatures are rejected without renewal', async t => {

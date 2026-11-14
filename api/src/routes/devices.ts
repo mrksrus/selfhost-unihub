@@ -13,24 +13,24 @@ type Request = RouteRequest & { url: string; params: Record<string, string> };
 // the current device stay open to a device without the app lock its person's
 // policies require: they are how it reports and sets the lock up.
 export = defineRoutes({
-  'GET /api/devices': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string) => {
+  'GET /api/devices': { auth: 'user', module: null, gates: 'exempt', handler: async (req: Request, userId: string) => {
     return { devices: await listDevices(userId, getAuthTokenFromRequest(req)) } satisfies DevicesResponse;
   } },
-  'GET /api/devices/current': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string) => {
+  'GET /api/devices/current': { auth: 'user', module: null, gates: 'exempt', handler: async (req: Request, userId: string) => {
     return { ...await describeCurrentDevice(userId, getAuthTokenFromRequest(req)) } satisfies CurrentDeviceResponse;
   } },
-  'POST /api/devices/current/key': { auth: 'user', module: null, restoreSection: null, appLock: 'exempt', body: { limit: 1024 }, handler: async (req: Request, userId: string, body: unknown) => {
+  'POST /api/devices/current/key': { auth: 'user', module: null, restoreSection: null, gates: 'exempt', body: { limit: 1024 }, handler: async (req: Request, userId: string, body: unknown) => {
     return { ...await adoptDeviceKey(userId, getAuthTokenFromRequest(req), body) } satisfies DeviceKeyResponse;
   } },
-  'PUT /api/devices/current/lock': { auth: 'user', module: null, restoreSection: null, appLock: 'exempt', body: { limit: 2048 }, handler: async (req: Request, userId: string, body: unknown) => {
+  'PUT /api/devices/current/lock': { auth: 'user', module: null, restoreSection: null, gates: 'exempt', body: { limit: 2048 }, handler: async (req: Request, userId: string, body: unknown) => {
     return { ...await reportDeviceLock(userId, getAuthTokenFromRequest(req), body) } satisfies CurrentDeviceResponse;
   } },
-  'POST /api/devices/current/lock-state': { auth: 'user', module: null, restoreSection: null, appLock: 'exempt', body: { limit: 256 }, handler: async (req: Request, userId: string, body: unknown) => {
+  'POST /api/devices/current/lock-state': { auth: 'user', module: null, restoreSection: null, gates: 'exempt', body: { limit: 256 }, handler: async (req: Request, userId: string, body: unknown) => {
     return { ...await reportLockState(userId, getAuthTokenFromRequest(req), body) } satisfies DeviceLockStateResponse;
   } },
   // Signs one of the person's other devices out; the current one signs out
   // with POST /api/auth/signout.
-  'DELETE /api/devices/:id': { auth: 'user', module: null, appLock: 'exempt', restoreSection: null, handler: async (req: Request, userId: string) => {
+  'DELETE /api/devices/:id': { auth: 'user', module: null, gates: 'exempt', restoreSection: null, handler: async (req: Request, userId: string) => {
     return { ...await removeDevice(userId, getAuthTokenFromRequest(req), req.params.id, req) } satisfies DeviceRemovedResponse;
   } },
 });

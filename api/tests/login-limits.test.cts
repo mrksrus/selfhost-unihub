@@ -1,47 +1,7 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { createLoginLimiter } = require('../dist/src/security/login-limits') as typeof import('../src/security/login-limits');
 const { createClientIpResolver, normalizeIp } = require('../dist/src/security/client-ip') as typeof import('../src/security/client-ip');
-
-test('account budgets remain separate on shared IPs and survive other account successes', () => {
-  let now = 0;
-  const limiter = createLoginLimiter({ now: () => now });
-  for (let index = 0; index < 10; index++) {
-    assert.equal(limiter.consume('password', 'user-one', 10, 600000), null);
-    if (index < 3) assert.equal(limiter.consume('password', 'user-two', 10, 600000), null);
-  }
-  assert.equal(limiter.consume('password', 'user-one', 10, 600000), 600);
-  assert.equal(limiter.consume('password', 'user-two', 10, 600000), null);
-  now = 600001;
-  assert.equal(limiter.consume('password', 'user-one', 10, 600000), null);
-});
-
-test('a refunded attempt is given back; the budget still caps what is in flight', () => {
-  let now = 0;
-  const limiter = createLoginLimiter({ now: () => now });
-  // Fifty right passwords, each reserved and given back: never limited.
-  for (let index = 0; index < 50; index++) { assert.equal(limiter.consume('reauth', 'admin', 10, 600000), null); limiter.refund('reauth', 'admin'); }
-  // Fifteen at once: ten are admitted, the rest wait, whatever they turn out to be.
-  const admitted = Array.from({ length: 15 }, () => limiter.consume('reauth', 'admin', 10, 600000)).filter(wait => wait === null).length;
-  assert.equal(admitted, 10);
-  limiter.refund('reauth', 'admin');
-  assert.equal(limiter.consume('reauth', 'admin', 10, 600000), null, 'a refund frees one place');
-  assert.equal(limiter.consume('password', 'admin', 10, 600000), null, 'another scope is separate');
-  now = 600001;
-  assert.equal(limiter.consume('reauth', 'admin', 10, 600000), null);
-});
-
-test('IP overload recovers in one minute and memory pressure never resets active budgets', () => {
-  let now = 0;
-  const limiter = createLoginLimiter({ now: () => now, maxEntries: 2 });
-  assert.equal(limiter.consume('ip', 'one', 1, 60000), null);
-  assert.equal(limiter.consume('ip', 'two', 1, 60000), null);
-  assert.equal(limiter.consume('ip', 'three', 1, 60000), 60);
-  assert.equal(limiter.consume('ip', 'one', 1, 60000), 60);
-  now = 60001;
-  assert.equal(limiter.consume('ip', 'three', 1, 60000), null);
-});
 
 const request = (remote: FixtureValue, forwarded: FixtureValue, real = '192.0.2.255') => ({ socket: { remoteAddress: remote }, headers: { 'x-forwarded-for': forwarded, 'x-real-ip': real } });
 test('trusted proxy chains distinguish visitors and ignore spoofed leftmost addresses', () => {

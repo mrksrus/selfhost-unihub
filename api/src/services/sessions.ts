@@ -14,7 +14,11 @@ function sessionKey(token: SessionToken) {
   return crypto.createHash('sha256').update(String(token)).digest('hex');
 }
 
-interface SessionRow extends RowDataPacket { id: string; user_id: string; device_id: string | null; expires_at: Date | string; is_active: StoredFlag }
+interface SessionRow extends RowDataPacket {
+  id: string; user_id: string; device_id: string | null; expires_at: Date | string; created_at: Date | string; is_active: StoredFlag;
+  // For the 2FA gate (services/sign-in-policies.ts), from the same row read.
+  two_factor_enabled: StoredFlag; two_factor_required_since: Date | string | null;
+}
 
 // deviceId: the device the sign-in bound (services/devices.ts bindDevice) on
 // the same executor. Every session has a device (F5): without one named, the
@@ -29,9 +33,9 @@ async function createSession({ userId, token, expiresAt, deviceId, ipAddress = n
     [userId, sessionKey(token), expiresAt, device, ipAddress?.slice(0, 45) || null, userAgent?.slice(0, 512) || null]);
 }
 
-/** The session of this token with its device and its user's active flag, expired or not; null when unknown. */
+/** The session of this token with its device, its sign-in time and its user's active and 2FA state, expired or not; null when unknown. */
 async function findSession(token: SessionToken, executor: SqlExecutor = db) {
-  const [rows] = await executor.execute<SessionRow[]>(`SELECT s.id, s.user_id, s.device_id, s.expires_at, u.is_active
+  const [rows] = await executor.execute<SessionRow[]>(`SELECT s.id, s.user_id, s.device_id, s.expires_at, s.created_at, u.is_active, u.two_factor_enabled, u.two_factor_required_since
     FROM sessions s INNER JOIN users u ON u.id = s.user_id WHERE s.token = ? LIMIT 1`, [sessionKey(token)]);
   return rows[0] ?? null;
 }

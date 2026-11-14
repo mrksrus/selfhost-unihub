@@ -19,7 +19,7 @@ export = defineRoutes({
   // the session and applied the origin rules. A streaming route: once attached,
   // the handler owns the response and returns nothing; a refusal before that
   // is an ordinary JSON error.
-  'GET /api/events': { auth: 'user', module: null, appLock: 'exempt', response: 'stream', body: { kind: 'none' }, handler: async (req: AuthRequest, userId: string, body: unknown, res: ServerResponse) => {
+  'GET /api/events': { auth: 'user', module: null, gates: 'exempt', response: 'stream', body: { kind: 'none' }, handler: async (req: AuthRequest, userId: string, body: unknown, res: ServerResponse) => {
     const modules = await enabledModules(userId);
     const attached = serverEvents.attach({
       userId,

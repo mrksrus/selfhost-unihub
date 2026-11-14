@@ -184,12 +184,14 @@ async function createRecoveryCodes() {
   return { codes, hashes: await hashRecoveryCodes(codes) };
 }
 
+// Turning it on ends a grace the 2FA rule started (users.two_factor_required_since).
 async function enableTwoFactor(userId: string, secret: string, recoveryHashes: readonly string[], connection: SqlExecutor = db) {
   await connection.execute(
     `UPDATE users
      SET two_factor_enabled = TRUE,
          encrypted_two_factor_secret = ?,
-         two_factor_recovery_codes = ?
+         two_factor_recovery_codes = ?,
+         two_factor_required_since = NULL
      WHERE id = ?`,
     [encrypt(secret), JSON.stringify(recoveryHashes), userId]
   );
