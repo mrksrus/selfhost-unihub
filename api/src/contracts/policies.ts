@@ -120,7 +120,21 @@ export interface EffectivePoliciesResponse {
   acknowledged_revision: number;
   /** The rules in force, in plain words, for the notice and Settings → Profile. */
   rules: string[];
+  /** Whether the person must set up two-factor authentication, and until when they may wait (0.30). */
+  two_factor: TwoFactorRequirement;
 }
+
+/**
+ * auth.two_factor as it stands for the person: required while the rule
+ * applies and they have no 2FA; grace_ends_at is the end of their 7-day
+ * grace (counted from when the rule first applied to them), after which
+ * everything but setting it up, signing out and the phone's background work
+ * answers 403 TWO_FACTOR_REQUIRED. null when not required.
+ */
+export interface TwoFactorRequirement { required: boolean; grace_ends_at: string | null }
+
+/** The details of a 403 TWO_FACTOR_REQUIRED answer. */
+export interface TwoFactorRequiredDetails { grace_ended_at: string; reason: string }
 
 /**
  * POST /api/policies/acknowledge: the revision the person saw. A revision
@@ -221,6 +235,16 @@ export interface AdminGroupPoliciesUpdateRequest {
   clear?: (PolicyKey | 'bin.min_retention')[];
   current_password: string;
 }
+
+/**
+ * POST /api/admin/policies/preview (permission server.settings): before
+ * saving auth.two_factor = required for Everyone (no group_id) or a group,
+ * who it covers that has no 2FA, and who of them is already in a grace with
+ * its end (past when it has ended). Changes nothing.
+ */
+export interface PolicyPreviewRequest { group_id?: string | null }
+export interface PolicyPreviewPerson { id: string; email: string; full_name: string | null; grace_ends_at: string }
+export interface PolicyPreviewResponse { two_factor: { without: number; in_grace: PolicyPreviewPerson[] } }
 
 /** The details of a 403 POLICY_FORBIDS answer. */
 export interface PolicyForbidsDetails {

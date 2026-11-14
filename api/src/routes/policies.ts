@@ -6,6 +6,7 @@ import { confirmPasswordHash } from '../security/reauthentication';
 import { getAuthTokenFromRequest } from '../auth';
 import { asCaller } from '../services/caller-proof';
 import { acknowledgePolicies, getAdminPolicies, getEffectivePolicies, getGroupPolicies, updateAdminPolicies, updateGroupPolicies } from '../services/settings';
+import { twoFactorRequirement } from '../services/sign-in-policies';
 
 type GroupRequest = RouteRequest & { params: Record<string, string> };
 
@@ -14,13 +15,14 @@ type GroupRequest = RouteRequest & { params: Record<string, string> };
 // administrator's pages for Everyone (the installation) and for each group. The services decide; these routes only carry it, and
 // a refusal they throw is answered by the request boundary.
 export = defineRoutes({
-  'GET /api/policies/effective': { auth: 'user', module: null, appLock: 'exempt', handler: async (_req: RouteRequest, userId: string) => {
-    const effective: EffectivePoliciesResponse = await getEffectivePolicies(userId);
+  'GET /api/policies/effective': { auth: 'user', module: null, gates: 'exempt', handler: async (_req: RouteRequest, userId: string) => {
+    const { refused, ...two_factor } = await twoFactorRequirement(userId);
+    const effective: EffectivePoliciesResponse = { ...await getEffectivePolicies(userId), two_factor };
     return { ...effective };
   } },
 
   // Installation data, outside any person's recovery sections.
-  'POST /api/policies/acknowledge': { auth: 'user', module: null, appLock: 'exempt', restoreSection: null, body: { limit: 1024 }, handler: async (_req: RouteRequest, userId: string, body: unknown) => {
+  'POST /api/policies/acknowledge': { auth: 'user', module: null, gates: 'exempt', restoreSection: null, body: { limit: 1024 }, handler: async (_req: RouteRequest, userId: string, body: unknown) => {
     return { ...await acknowledgePolicies(userId, body) };
   } },
 

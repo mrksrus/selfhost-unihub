@@ -753,8 +753,8 @@ async function inSnapshot<T>(read: (cx: SqlExecutor) => Promise<T>): Promise<T> 
   } finally { cx.release(); }
 }
 
-/** GET /api/policies/effective: every key for the person, their rules and where their notice stands. */
-async function getEffectivePolicies(userId: string): Promise<EffectivePoliciesResponse> {
+/** GET /api/policies/effective: every key for the person, their rules and where their notice stands; the route adds two_factor (sign-in-policies.ts). */
+async function getEffectivePolicies(userId: string): Promise<Omit<EffectivePoliciesResponse, 'two_factor'>> {
   return inSnapshot(async cx => {
     const levels = await loadPolicyLevels(cx, { userId });
     const policies = Object.fromEntries((Object.keys(POLICIES) as PolicyKey[]).map(key => [key, effectivePolicy(key, levels)])) as EffectivePoliciesResponse['policies'];
