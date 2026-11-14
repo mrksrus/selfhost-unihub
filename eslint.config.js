@@ -35,7 +35,8 @@ const SCHEMA_FILES = ["api/src/services/database.ts", "api/src/services/data-inv
 const FENCES = [
   { fence: SETTINGS_FENCE, owners: ["api/src/services/settings.ts", "api/src/services/backup-catalog.ts", "api/src/services/backup-export.ts", "api/src/services/backup-import.ts"] },
   { fence: DEVICES_FENCE, owners: ["api/src/services/devices.ts", "api/src/services/instance-restore.ts"] },
-  { fence: GROUPS_FENCE, owners: ["api/src/services/groups.ts"] },
+  // settings.ts reads memberships to resolve a person's group policies in one query; writes stay in groups.ts.
+  { fence: GROUPS_FENCE, owners: ["api/src/services/groups.ts", "api/src/services/settings.ts"] },
   { fence: INVITES_FENCE, owners: ["api/src/services/invites.ts", "api/src/services/instance-restore.ts"] },
   { fence: LOGIN_ATTEMPTS_FENCE, owners: ["api/src/security/login-limits.ts", "api/src/services/instance-restore.ts"] },
 ];
