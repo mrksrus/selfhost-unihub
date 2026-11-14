@@ -541,6 +541,37 @@ async function policyLevels(executor: SqlExecutor, lock: boolean): Promise<Polic
   return loadPolicyLevels(executor, { lock: true });
 }
 
+/**
+ * The rules lock: the revision row, exclusively, until the transaction ends,
+ * as an administrator's save holds it. A membership change takes it too
+ * (groups.ts), so a destructive step's final check never acts on a
+ * half-applied membership. Returns the revision.
+ */
+async function lockRules(executor: SqlExecutor): Promise<number> {
+  await executor.execute("INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES (?, '0')", [REVISION_KEY]);
+  return policyRevision(executor, { lock: true });
+}
+
+/**
+ * Under the rules lock, before a membership change commits: refuses it with
+ * 400 POLICY_CONFLICT when a person's rules would no longer combine.
+ * shortcut: no group level is read yet, so a person's rules are the
+ * installation's, which its save already checked; the policy engine (group
+ * levels) makes this check per person.
+ */
+async function checkPeoplePolicies(_executor: SqlExecutor, _userIds: readonly string[]): Promise<void> {}
+
+/** The ids of the groups that set at least one policy. */
+async function groupsWithPolicies(executor: SqlExecutor = db): Promise<Set<string>> {
+  const [rows] = await executor.execute<RowDataPacket[]>("SELECT DISTINCT target_id FROM setting_policies WHERE target_kind = 'group'");
+  return new Set(rows.map(row => String(row.target_id)));
+}
+
+/** In the transaction that deletes a group: its policies go with it. */
+async function deleteGroupPolicies(executor: SqlExecutor, groupId: string): Promise<void> {
+  await executor.execute("DELETE FROM setting_policies WHERE target_kind = 'group' AND target_id = ?", [groupId]);
+}
+
 /** The installation's rules revision (system_settings policy_revision); 0 before any rule changed. */
 async function policyRevision(executor: SqlExecutor = db, { lock = false } = {}): Promise<number> {
   const [rows] = await executor.execute<RowDataPacket[]>(`SELECT setting_value FROM system_settings WHERE setting_key = ?${lock ? ' FOR UPDATE' : ''}`, [REVISION_KEY]);
@@ -765,6 +796,10 @@ export {
   signupRules,
   lockedPolicies,
   policyRevision,
+  lockRules,
+  checkPeoplePolicies,
+  groupsWithPolicies,
+  deleteGroupPolicies,
   getAdminPolicies,
   updateAdminPolicies,
   resolvePolicyValue,

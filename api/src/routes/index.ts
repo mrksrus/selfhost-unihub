@@ -24,6 +24,8 @@ import filesRoutes = require('./files');
 import binRoutes = require('./bin');
 import policiesRoutes = require('./policies');
 import adminPeopleRoutes = require('./admin-people');
+import groupsRoutes = require('./groups');
+import invitesRoutes = require('./invites');
 import { assertRouteTable, mergeRouteTables } from '../http/route';
 import { legacyRoutes } from './legacy-spec';
 import { MODULE_CATALOG } from '../services/module-catalog';
@@ -59,6 +61,8 @@ const routes = mergeRouteTables(
   binRoutes,
   policiesRoutes,
   adminPeopleRoutes,
+  groupsRoutes,
+  invitesRoutes,
 );
 // A route declares only policy keys that can refuse an action.
 const refusablePolicies = Object.entries(POLICIES).filter(([, entry]) => entry.refuses.length).map(([key]) => key);

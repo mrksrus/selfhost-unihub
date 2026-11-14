@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSecretMutation } from '@/hooks/use-secret-mutation';
 import { useAuth } from '@/contexts/useAuth';
+import { can } from '@/lib/permissions';
 import { useToast } from '@/hooks/use-toast';
 import { adminPoliciesQueryKey, fetchAdminPolicies, saveAdminPolicies, type AdminPolicy, type BinMinimum } from '@/lib/admin-api';
 import { acknowledgePolicies, policiesQueryKey, type PolicyKey, type PolicyValues } from '@/lib/policies-api';
@@ -162,7 +163,7 @@ const AdminPolicies = () => {
   const client = useQueryClient();
   const [draft, setDraft] = useState<Partial<Record<RowKey, unknown>>>({});
   const [confirming, setConfirming] = useState(false);
-  const query = useQuery({ queryKey: adminPoliciesQueryKey, queryFn: ({ signal }) => fetchAdminPolicies(signal), enabled: user?.role === 'admin' });
+  const query = useQuery({ queryKey: adminPoliciesQueryKey, queryFn: ({ signal }) => fetchAdminPolicies(signal), enabled: can(user, 'server.settings') });
 
   // The password is a variable of the request: useSecretMutation drops it as soon as the server answers.
   const save = useSecretMutation({
@@ -206,7 +207,7 @@ const AdminPolicies = () => {
     return undefined;
   };
 
-  const body = user?.role !== 'admin' ? <p className="text-sm text-muted-foreground">Only admins can see this page.</p>
+  const body = !can(user, 'server.settings') ? <p className="text-sm text-muted-foreground">Only admins can see this page.</p>
     : query.isLoading ? <LoadingState label="Loading policies…" />
     : query.error || !policies ? <ErrorState title="Could not load the policies" error={query.error} onRetry={() => void query.refetch()} retrying={query.isFetching} />
     : (

@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import type { User } from '@/contexts/auth-context';
 import { useAuth } from '@/contexts/useAuth';
+import { can } from '@/lib/permissions';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { usePolicies } from '@/hooks/use-policies';
@@ -34,7 +35,7 @@ export function RulesOnThisServer() {
         {isOffline ? <p className="text-sm text-muted-foreground">The rules need a connection.</p>
           : !loaded ? <p role="status" className="text-sm text-muted-foreground">Loading the rules…</p>
           : <RulesList rules={rules} className="text-sm" />}
-        {user?.role === 'admin' && loaded && <p className="mt-3 text-xs text-muted-foreground">You set these under Server › Policies; they apply to you too.</p>}
+        {can(user, 'server.settings') && loaded && <p className="mt-3 text-xs text-muted-foreground">You set these under Server › Policies; they apply to you too.</p>}
       </SettingsBlock>
     </SettingsSection>
   );

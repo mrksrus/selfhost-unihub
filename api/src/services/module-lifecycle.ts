@@ -22,5 +22,13 @@ async function applyModuleChange(userId: string, previous: readonly ModuleState[
   }
 }
 
-export { applyModuleChange };
+/**
+ * After a policy save or a membership change commits: what it means for the
+ * running work of the people it reached (their modules, open streams).
+ * shortcut: no policy reaches modules or streams yet; the policy engine
+ * (module policies, session lifetime, two-factor) fills this in.
+ */
+async function applyPolicyChange(_userIds: readonly string[]): Promise<void> {}
+
+export { applyModuleChange, applyPolicyChange };
 export type { ModuleState };

@@ -52,7 +52,7 @@ export interface AccessPermissions {
 
 // --- The signed-in person ------------------------------------------------------
 
-/** GET /api/auth/me gains, from 0.30, what the person's role grants and whether they manage a group. */
+/** The person in GET /api/auth/me and the sign-in answers gains, from 0.30, what their role grants and whether they manage a group. */
 export interface MeOrganisation {
   permissions: Permission[];
   manages_groups: boolean;

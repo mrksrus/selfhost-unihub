@@ -5,6 +5,7 @@ import { useSessionScope } from '@/lib/session-scope';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ChevronLeft, Loader2, LockKeyhole, MoreHorizontal, Plus } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
+import { can } from '@/lib/permissions';
 import { useToast } from '@/hooks/use-toast';
 import { hasCode } from '@/lib/api-error';
 import {
@@ -78,7 +79,7 @@ const AdminUserDetail = () => {
   const navigate = useNavigate();
   const client = useQueryClient();
   const scope = useSessionScope();
-  const admin = user?.role === 'admin';
+  const admin = can(user, 'users.read');
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [mailDialog, setMailDialog] = useState<AccountDialog<AdminMailAccount>>(CLOSED);
   const [calendarDialog, setCalendarDialog] = useState<AccountDialog<AdminCalendarAccount>>(CLOSED);

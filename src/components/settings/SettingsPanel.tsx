@@ -1,5 +1,6 @@
 import { HardDriveDownload, Server, ShieldCheck, Users } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
+import { can } from '@/lib/permissions';
 import { useModules } from '@/hooks/use-modules';
 import { PanelGroup, PanelHeader, PanelItem } from '@/components/layout/PageShell';
 import { SETTINGS_SECTIONS, settingsHref } from '@/components/settings/settings-sections';
@@ -16,7 +17,7 @@ export function SettingsPanel({ active }: { active: string }) {
           <PanelItem key={section.id} icon={section.icon} href={settingsHref(section.id)} active={active === section.id}>{section.label}</PanelItem>
         ))}
       </PanelGroup>
-      {user?.role === 'admin' && (
+      {can(user, 'server.settings') && (
         <PanelGroup label="Server" className="border-t border-border pt-3">
           <PanelItem icon={Server} href="/admin/settings" active={active === 'admin-settings'}>Server settings</PanelItem>
           <PanelItem icon={ShieldCheck} href="/admin/policies" active={active === 'admin-policies'}>Policies</PanelItem>

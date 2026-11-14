@@ -9,9 +9,7 @@ import {
   consumeAuthAttempt,
   hashPassword,
   verifyPassword,
-  generateToken,
   generateCsrfToken,
-  getSessionExpiry,
   setAuthCookie,
   setCsrfCookie,
   getCsrfCookie,
@@ -37,34 +35,16 @@ import {
   deleteTwoFactorLoginChallenge,
 } from '../services/two-factor';
 import { realtime } from '../services/realtime';
-import { createSession, endOtherSessions, endSession, endSessionById, endUserSessions, listSessions, lockOwnSession } from '../services/sessions';
-import { bindDevice, deviceClaim } from '../services/devices';
+import { endOtherSessions, endSession, endSessionById, endUserSessions, listSessions, lockOwnSession } from '../services/sessions';
+import { managesAnyGroup } from '../services/groups';
+import { permissionsOf } from '../security/permissions';
+import type { MeOrganisation } from '../contracts/organisation';
+import { deviceClaim } from '../services/devices';
 import type { DeviceClaim } from '../services/devices';
 import { withTransaction } from '../services/transactions';
 import { recordAudit, recordAuditAfter } from '../services/audit';
 import { defineRoutes } from '../http/route';
-
-// The address (through the trusted-proxy rules) and the browser of a new sign-in.
-function sessionOrigin(req: Request) {
-  let ipAddress: string | null = null;
-  try { ipAddress = getClientIP(req as Parameters<typeof getClientIP>[0]) || null; } catch { /* unknown */ }
-  const agent = req.headers?.['user-agent'];
-  return { ipAddress, userAgent: typeof agent === 'string' ? agent : null };
-}
-
-// A new session on the device the sign-in names (F5): the device and the
-// session commit together, in the caller's transaction or in one of their own.
-async function openSession(userId: string, device: DeviceClaim, req: Request, connection: SqlExecutor = db) {
-  const token = generateToken(userId);
-  const expiresAt = getSessionExpiry();
-  const origin = sessionOrigin(req);
-  const open = async (cx: SqlExecutor) => {
-    const deviceId = await bindDevice(userId, device, origin.userAgent, cx);
-    await createSession({ userId, token, expiresAt, deviceId, ...origin }, cx);
-  };
-  if (connection === db) await withTransaction(open); else await open(connection);
-  return token;
-}
+import { openSession } from '../services/sign-in';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface Input {
@@ -113,8 +93,15 @@ async function createSessionResponse(user: Pick<UserRow, 'id' | 'email' | 'full_
       role: user.role,
       timezone: user.timezone ?? null,
       two_factor_enabled: !!user.two_factor_enabled,
+      ...await organisationOf(user.id, user.role, connection),
     },
   };
+}
+
+// What the person's role grants and whether they manage a group, with the
+// person in /me and the sign-in answers (contracts/organisation.ts MeOrganisation).
+async function organisationOf(userId: string, role: string, executor: SqlExecutor = db): Promise<MeOrganisation> {
+  return { permissions: permissionsOf(role), manages_groups: await managesAnyGroup(userId, executor) };
 }
 
 function checkLoginBudget(res: ServerResponse, scope: Parameters<typeof consumeAuthAttempt>[0], identity: string) {
@@ -201,7 +188,7 @@ export = defineRoutes({
       const token = await openSession(newUserId, device, req);
       const csrfToken = generateCsrfToken();
 
-      const result = { csrfToken, user: { id: newUserId, email, full_name, role: 'user', timezone: null, two_factor_enabled: false } };
+      const result = { csrfToken, user: { id: newUserId, email, full_name, role: 'user', timezone: null, two_factor_enabled: false, permissions: [], manages_groups: false } };
       setAuthCookie(res, token);
       setCsrfCookie(res, csrfToken);
       return result;
@@ -539,10 +526,11 @@ export = defineRoutes({
         return { error: 'User not found', status: 404 };
       }
 
+      const user = { ...users[0], ...await organisationOf(userId, users[0].role) };
       const url = new URL(req.url, `http://${req.headers.host}`);
       const isBackgroundCheck = url.searchParams.get('background') === '1' || req.headers['x-background-sync'] === '1';
       if (isBackgroundCheck) {
-        return { user: users[0] };
+        return { user };
       }
 
       // Hand the page the browser's existing CSRF token rather than a new one:
@@ -553,7 +541,7 @@ export = defineRoutes({
       const csrfToken = getCsrfCookie(req) || generateCsrfToken();
       setCsrfCookie(res, csrfToken);
 
-      return { user: users[0], csrfToken };
+      return { user, csrfToken };
     } catch (error) {
       return { error: 'Failed to get user', status: 500 };
     }

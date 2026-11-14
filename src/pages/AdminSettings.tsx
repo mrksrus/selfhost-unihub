@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/useAuth';
+import { can } from '@/lib/permissions';
 import { fetchSignupMode, fetchStorageOverview, saveSignupMode, signupModeQueryKey, storageQueryKey, type SignupMode, type StorageUser } from '@/lib/admin-api';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { LoadingState } from '@/components/ui/page-states';
@@ -36,13 +37,13 @@ const AdminSettings = () => {
   const { data: signupMode = 'disabled', isLoading } = useQuery({
     queryKey: signupModeQueryKey,
     queryFn: ({ signal }) => fetchSignupMode(signal),
-    enabled: user?.role === 'admin',
+    enabled: can(user, 'server.settings'),
   });
 
   const { data: storageOverview, isLoading: storageLoading } = useQuery({
     queryKey: storageQueryKey,
     queryFn: ({ signal }) => fetchStorageOverview(signal),
-    enabled: user?.role === 'admin',
+    enabled: can(user, 'server.settings'),
   });
 
   const updateSignupMode = useMutation({
@@ -56,7 +57,7 @@ const AdminSettings = () => {
     },
   });
 
-  const body = user?.role !== 'admin' ? (
+  const body = !can(user, 'server.settings') ? (
     <p className="text-sm text-muted-foreground">Only admins can see this page.</p>
   ) : (
     <>

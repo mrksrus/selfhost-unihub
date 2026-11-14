@@ -23,7 +23,10 @@ test('a fresh server: the admin signs in, opens sign-up, and two people each see
   const signin = await admin.request('POST', '/api/auth/signin', { email: 'golden-admin@example.test', password: 'synthetic-golden-admin-password' });
   assert.equal(signin.status, 200, String(signin.body.error));
   assert.ok(admin.signedIn);
-  assert.equal(((await admin.request('GET', '/api/auth/me')).body.user as FixtureValue).role, 'admin');
+  // The bootstrap administrator is the installation's owner, with every right.
+  const me = (await admin.request('GET', '/api/auth/me')).body.user as FixtureValue;
+  assert.equal(me.role, 'owner');
+  assert.ok(me.permissions.includes('owner.transfer') && me.permissions.includes('server.settings'));
 
   // A new server is closed to sign-ups until the admin opens it.
   const closed = await person.request('POST', '/api/auth/signup', { email: 'person@example.test', password: 'synthetic-person-password' });

@@ -1,11 +1,15 @@
 import { createContext } from 'react';
+import type { Permission } from '../../api/src/contracts/organisation';
 
 export interface User {
   id: string;
   email: string;
   full_name?: string;
   avatar_url?: string;
-  role?: 'user' | 'admin';
+  role?: 'owner' | 'admin' | 'user';
+  /** What the role grants (from /me and sign-in; not in an offline copy). */
+  permissions?: Permission[];
+  manages_groups?: boolean;
   timezone?: string | null;
   two_factor_enabled?: boolean;
 }

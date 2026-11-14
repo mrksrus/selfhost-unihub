@@ -7,7 +7,7 @@ const { startTestApi } = require('./test-database.cts') as import('./test-databa
 // The shared organisation fixture (0.30): every feature that others can
 // reach is tested with the same people, each signed in through the real
 // sign-in of the request handler on the disposable database:
-// - admin: an administrator (the owner role arrives with its step)
+// - admin: the owner (handed over from the bootstrap administrator, who stays an administrator)
 // - manager (Alex): manager of Support, member of Finance (two groups)
 // - member (Blair): member of Support
 // - stranger (Casey): in no group
@@ -44,6 +44,9 @@ async function seedPeople(t: TestContext, pool: Pool): Promise<People> {
     await pool.execute('INSERT INTO users (id, email, password_hash, full_name, role, email_verified) VALUES (?, ?, ?, ?, ?, TRUE)',
       [ids[key], person.email, passwordHash, person.name, person.role]);
   }
+  // Step 28 made the bootstrap administrator the owner; the fixture's administrator takes over.
+  await pool.execute("UPDATE users SET role = 'admin' WHERE role = 'owner'");
+  await pool.execute("UPDATE users SET role = 'owner' WHERE id = ?", [ids.admin]);
   const groups = { support: crypto.randomUUID(), finance: crypto.randomUUID() };
   await pool.execute("INSERT INTO org_groups (id, name, description, created_by) VALUES (?, 'Support', 'Customer support', ?), (?, 'Finance', NULL, ?)",
     [groups.support, ids.admin, groups.finance, ids.admin]);

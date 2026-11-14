@@ -194,9 +194,10 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     assert.deepEqual({ ...still, two_factor_enabled: !!still.two_factor_enabled }, { two_factor_enabled: false, two_factor_recovery_codes: null });
 
     // Setting another person's password or role also needs the admin's own
-    // password (its own attempt budget: a second admin).
+    // password (its own attempt budget: a second admin, the owner, who alone changes roles).
     const steward = crypto.randomUUID();
-    await pool.execute<ResultSetHeader>("INSERT INTO users (id,email,password_hash,role,is_active) VALUES (?,'steward@example.test',?,'admin',TRUE)",
+    await pool.execute("UPDATE users SET role = 'admin' WHERE role = 'owner'");
+    await pool.execute<ResultSetHeader>("INSERT INTO users (id,email,password_hash,role,is_active) VALUES (?,'steward@example.test',?,'owner',TRUE)",
       [steward, await hashPassword('synthetic-steward-password')]);
     // From a live session of the steward's own: the change's final step asks again that it is (services/caller-proof.ts).
     await addSession(steward, 'steward-session');

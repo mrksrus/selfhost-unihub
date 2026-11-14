@@ -32,7 +32,7 @@ test('upgrade 27 adds the organisation without changing anyone, and allows one o
   // An interrupted step 27: its work ran, the step was not recorded.
   const interrupted = await pool.getConnection();
   try { await addOrganisation(interrupted); } finally { interrupted.release(); }
-  await runMigrations(pool, MIGRATIONS, BASELINE);
+  await runMigrations(pool, MIGRATIONS.filter(step => step.id <= 27), BASELINE);
   const [[step]] = await pool.query<RowDataPacket[]>('SELECT name FROM schema_migrations WHERE id = 27');
   assert.equal(step.name, 'organisation');
 
@@ -59,6 +59,32 @@ test('upgrade 27 adds the organisation without changing anyone, and allows one o
   assert.deepEqual((await pool.query<RowDataPacket[]>('SELECT user_id FROM org_group_members'))[0].map(row => row.user_id), [ids.admin]);
   await pool.execute('DELETE FROM org_groups WHERE id = ?', [group]);
   assert.equal((await pool.query<RowDataPacket[]>('SELECT * FROM org_group_members'))[0].length, 0);
+});
+
+// Upgrade step 28 (0.30): the earliest-created active administrator becomes
+// the owner; an earlier deactivated one and later ones stay administrators,
+// members stay members, and running the step again changes nothing.
+test('upgrade 28 makes the earliest active administrator the owner', { skip, timeout: 300000 }, async t => {
+  const pool = await withTestDatabase(t, { migrate: false });
+  const { runMigrations } = require('../dist/src/services/database-migrations') as typeof import('../src/services/database-migrations');
+  const { MIGRATIONS } = require('../dist/src/services/database') as typeof import('../src/services/database');
+  const { BASELINE } = require('../dist/src/services/database-baseline') as typeof import('../src/services/database-baseline');
+  const { chooseOwner } = require('../dist/src/services/organisation-migration') as typeof import('../src/services/organisation-migration');
+  await runMigrations(pool, MIGRATIONS.filter(step => step.id <= 27), BASELINE);
+  // The bootstrap administrator of the fresh install is the latest one here.
+  await pool.execute("UPDATE users SET created_at = '2026-03-01 00:00:00'");
+  const rows: [string, string, boolean, string][] = [
+    ['gone', 'admin', false, '2025-01-01 00:00:00'], ['first', 'admin', true, '2025-02-01 00:00:00'],
+    ['later', 'admin', true, '2025-02-02 00:00:00'], ['member', 'user', true, '2024-01-01 00:00:00']];
+  for (const [name, role, active, created] of rows) {
+    await pool.execute('INSERT INTO users (id, email, password_hash, full_name, role, is_active, created_at) VALUES (UUID(), ?, ?, ?, ?, ?, ?)', [`${name}@example.test`, 'x', name, role, active, created]);
+  }
+  await runMigrations(pool, MIGRATIONS, BASELINE);
+  const roles = async () => Object.fromEntries((await pool.query<RowDataPacket[]>("SELECT full_name, role FROM users WHERE email LIKE '%@example.test'"))[0].map(row => [row.full_name, row.role]));
+  assert.deepEqual(await roles(), { gone: 'admin', first: 'owner', later: 'admin', member: 'user', 'Bootstrap Admin': 'admin' });
+  const again = await pool.getConnection();
+  try { await chooseOwner(again); } finally { again.release(); }
+  assert.equal((await roles()).first, 'owner', 'an installation with an owner keeps it');
 });
 
 // The access service's first kind, a group, with the shared fixture: an

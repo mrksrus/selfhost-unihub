@@ -55,7 +55,7 @@ async function getVapidKeys(): Promise<VapidKeys> {
     if (!rows.length) {
       const webPush = require('web-push') as typeof import('web-push');
       const keys = webPush.generateVAPIDKeys();
-      const [admins] = await control.execute<RowDataPacket[]>("SELECT email FROM users WHERE role = 'admin' ORDER BY created_at LIMIT 1");
+      const [admins] = await control.execute<RowDataPacket[]>("SELECT email FROM users WHERE role IN ('owner', 'admin') ORDER BY role = 'owner' DESC, created_at LIMIT 1");
       const subject = process.env.WEB_PUSH_SUBJECT || `mailto:${admins[0]?.email || 'notifications@unihub.invalid'}`;
       // Concurrent startups may generate candidates; INSERT IGNORE and reread choose exactly one stable pair.
       await control.execute('INSERT IGNORE INTO notification_config (id, public_key, encrypted_private_key, subject) VALUES (1, ?, ?, ?)', [keys.publicKey, encrypt(keys.privateKey), subject]);
