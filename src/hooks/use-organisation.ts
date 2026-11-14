@@ -3,7 +3,7 @@ import { useAuth } from '@/contexts/useAuth';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import {
   adminGroupsQueryKey, adminPoliciesQueryKey, adminPoliciesQueryKeyFor, adminUsersQueryKey, fetchAdminGroups, fetchAdminPolicies, fetchAdminUsers,
-  fetchPersonDevices, personDevicesQueryKey, type PolicyScope,
+  fetchPersonDevices, personDevicesQueryKey, policyPreviewQueryKey, previewTwoFactorPolicy, type PolicyScope,
 } from '@/lib/admin-api';
 import { fetchGroup, fetchGroupCandidates, fetchMyGroups, groupsQueryKeys } from '@/lib/groups-api';
 import { can } from '@/lib/permissions';
@@ -47,6 +47,21 @@ export function useAdminPolicies(scope?: PolicyScope) {
     queryKey: adminPoliciesQueryKeyFor(scope),
     queryFn: ({ signal }) => fetchAdminPolicies(signal, scope),
     enabled: online && can(user, 'server.settings'),
+  });
+}
+
+/**
+ * Who requiring two-factor authentication for Everyone or a group would
+ * cover without it, and who is already in a grace (the save preview). Ask
+ * with `enabled` only while that save is being prepared.
+ */
+export function useTwoFactorPreview(scope: PolicyScope, enabled: boolean) {
+  const { user, online } = useOnline();
+  return useQuery({
+    queryKey: policyPreviewQueryKey(scope),
+    queryFn: ({ signal }) => previewTwoFactorPolicy(scope, signal),
+    enabled: enabled && online && can(user, 'server.settings'),
+    staleTime: 0,
   });
 }
 

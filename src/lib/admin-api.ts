@@ -1,7 +1,7 @@
 import { api } from '@/lib/api';
 import { ApiError, unwrap } from '@/lib/api-error';
 import type {
-  AddPersonRequest, AddPersonResponse, DeleteGroupRequest, EndDevicesResponse, GroupInput, GroupsAdminResponse, GroupSummary, OwnerTransferRequest,
+  AddPersonRequest, AddPersonResponse, DeleteGroupRequest, EndDevicesResponse, GroupInput, GroupResponse, GroupsAdminResponse, GroupSummary, OwnerTransferRequest,
   PeopleResponse, Person, PersonDevicesResponse, Role, SetManagerRequest, SetupLinkResponse,
 } from '../../api/src/contracts/organisation';
 export type {
@@ -91,9 +91,9 @@ export async function createGroup(input: GroupInput) {
 export async function deleteGroup(groupId: string, currentPassword: string) {
   unwrap(await api.delete(`/admin/groups/${encodeURIComponent(groupId)}`, { current_password: currentPassword } satisfies DeleteGroupRequest));
 }
-/** Names or unnames a manager; a person not yet in the group becomes a member. */
+/** Names or unnames a manager; a person not yet in the group becomes a member. Answers the group as now set. */
 export async function setGroupManager(groupId: string, userId: string, manager: boolean) {
-  unwrap(await api.put(`/admin/groups/${encodeURIComponent(groupId)}/managers/${encodeURIComponent(userId)}`, { manager } satisfies SetManagerRequest));
+  return unwrap(await api.put<GroupResponse>(`/admin/groups/${encodeURIComponent(groupId)}/managers/${encodeURIComponent(userId)}`, { manager } satisfies SetManagerRequest));
 }
 
 export type SignupMode = 'open' | 'approval' | 'disabled';
@@ -238,8 +238,10 @@ export function auditActionLabel(entry: Pick<AuditEntry, 'action' | 'details'>) 
 }
 
 // ── Policies (Server settings → Policies) ─────────────────────────
-import type { AdminBinMinimumRetention, AdminPoliciesResponse, AdminPoliciesUpdateRequest, BinMinimumRetention, PolicyValues } from '../../api/src/contracts/policies';
-export type { AdminPolicy, AdminPoliciesResponse } from '../../api/src/contracts/policies';
+import type {
+  AdminBinMinimumRetention, AdminGroupPoliciesUpdateRequest, AdminPoliciesResponse, AdminPoliciesUpdateRequest, BinMinimumRetention, PolicyPreviewRequest, PolicyPreviewResponse, PolicyValues,
+} from '../../api/src/contracts/policies';
+export type { AdminPolicy, AdminPolicyGroup, AdminPoliciesResponse, PolicyPreviewPerson } from '../../api/src/contracts/policies';
 
 export const adminPoliciesQueryKey = ['admin', 'policies'] as const;
 
@@ -266,6 +268,22 @@ export type BinMinimum = BinMinimumRetention;
 export type AdminBinMinimum = AdminBinMinimumRetention;
 export type AdminPoliciesAnswer = AdminPoliciesResponse;
 
+/** The keys a group's save gives back to Everyone ('bin.min_retention' for the bin's minimum). */
+export type PolicyClear = NonNullable<AdminGroupPoliciesUpdateRequest['clear']>;
+
+export const policyPreviewQueryKey = (scope?: PolicyScope) => [...adminPoliciesQueryKeyFor(scope), 'preview'] as const;
+
+/**
+ * Before saving auth.two_factor = required for Everyone or a group: how many
+ * people it covers lack 2FA, and who of them is already in a grace with its
+ * end. Reads only.
+ */
+export async function previewTwoFactorPolicy(scope?: PolicyScope, signal?: AbortSignal): Promise<PolicyPreviewResponse['two_factor']> {
+  const answer = unwrap(await api.post<PolicyPreviewResponse>('/admin/policies/preview', { group_id: scope?.groupId ?? null } satisfies PolicyPreviewRequest, { signal }));
+  if (!answer?.two_factor) throw new Error('The server did not answer with the preview.');
+  return { without: answer.two_factor.without ?? 0, in_grace: answer.two_factor.in_grace ?? [] };
+}
+
 export async function fetchAdminPolicies(signal?: AbortSignal, scope?: PolicyScope): Promise<AdminPoliciesAnswer> {
   const answer = unwrap(await api.get<AdminPoliciesAnswer>(policiesPath(scope), { signal }));
   if (!answer?.policies) throw new Error('The server did not answer with its policies.');
@@ -277,8 +295,11 @@ export async function fetchAdminPolicies(signal?: AbortSignal, scope?: PolicySco
  * answer is every policy of that scope as now set. `binMinimum` travels as
  * its own field (AdminPoliciesUpdateRequest.bin_min_retention) when it changed.
  */
-export async function saveAdminPolicies(values: Partial<PolicyValues>, currentPassword: string, binMinimum?: BinMinimum, scope?: PolicyScope): Promise<AdminPoliciesAnswer> {
-  const body: AdminPoliciesUpdateRequest = { values, current_password: currentPassword, ...(binMinimum ? { bin_min_retention: binMinimum } : {}) };
+export async function saveAdminPolicies(values: Partial<PolicyValues>, currentPassword: string, binMinimum?: BinMinimum, scope?: PolicyScope, clear: PolicyClear = []): Promise<AdminPoliciesAnswer> {
+  // `clear` (a group's page only): the keys whose own rule the group gives up, so Everyone's value holds again.
+  const body: AdminPoliciesUpdateRequest | AdminGroupPoliciesUpdateRequest = {
+    values, current_password: currentPassword, ...(binMinimum ? { bin_min_retention: binMinimum } : {}), ...(scope && clear.length ? { clear } : {}),
+  };
   const answer = unwrap(await api.put<AdminPoliciesAnswer>(policiesPath(scope), body));
   if (!answer?.policies) throw new Error('The server did not answer with its policies.');
   return answer;

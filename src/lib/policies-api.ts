@@ -5,7 +5,7 @@ import { deleteOwnOfflineCopy } from '@/lib/offline';
 import type { ModuleId, PageId } from '@/lib/modules';
 import type { AcknowledgePoliciesRequest, AcknowledgePoliciesResponse, EffectivePoliciesResponse, EffectivePolicy, PolicyKey, PolicyValues } from '../../api/src/contracts/policies';
 
-export type { Allowance, EffectivePoliciesResponse, EffectivePolicy, PolicyKey, PolicyValues, PolicySource } from '../../api/src/contracts/policies';
+export type { Allowance, EffectivePoliciesResponse, TwoFactorRequirement, EffectivePolicy, PolicyKey, PolicyValues, PolicySource } from '../../api/src/contracts/policies';
 
 // The data-safety policies as they apply to the signed-in person (F13). The
 // server refuses a forbidden action with 403 POLICY_FORBIDS; the page only
@@ -64,29 +64,16 @@ export function defaultPolicies(): EffectivePolicies {
 
 export const policiesQueryKey = ['policies', 'effective'] as const;
 
-/**
- * auth.two_factor as it applies to the person (D51): while `required` and
- * not set up, the grace end; after it the server refuses with
- * TWO_FACTOR_REQUIRED. null from a server before 0.30.
- */
-// shortcut: typed here until contracts/policies.ts carries `two_factor` (stream B); then import it.
-export interface TwoFactorRequirement { required: boolean; grace_ends_at: string | null }
-export type EffectivePoliciesAnswer = EffectivePoliciesResponse & { two_factor: TwoFactorRequirement | null };
-
-function twoFactorOf(value: unknown): TwoFactorRequirement | null {
-  if (!value || typeof value !== 'object') return null;
-  const { required, grace_ends_at: ends } = value as Record<string, unknown>;
-  return { required: required === true, grace_ends_at: typeof ends === 'string' && !Number.isNaN(Date.parse(ends)) ? ends : null };
-}
+export type EffectivePoliciesAnswer = EffectivePoliciesResponse;
 
 export async function fetchEffectivePolicies(signal?: AbortSignal): Promise<EffectivePoliciesAnswer> {
-  const answer = unwrap(await api.get<EffectivePoliciesResponse & { two_factor?: unknown }>('/policies/effective', { signal }));
+  const answer = unwrap(await api.get<EffectivePoliciesResponse>('/policies/effective', { signal }));
   if (!answer?.policies) throw new Error('The server did not answer with its rules.');
   // A key the server does not know yet (an older server) keeps its default.
   const policies = { ...defaultPolicies(), ...answer.policies };
   // The server refuses new offline copies; the one this browser holds goes now.
   if (policies['offline.copies'].allowed === false) await deleteOwnOfflineCopy().catch(() => false);
-  return { ...answer, policies, two_factor: twoFactorOf(answer.two_factor) };
+  return { ...answer, policies };
 }
 
 export const effectivePoliciesQueryOptions = queryOptions({

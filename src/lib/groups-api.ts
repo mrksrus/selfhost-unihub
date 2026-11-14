@@ -34,12 +34,12 @@ export async function updateGroup(groupId: string, input: GroupInput) {
   return unwrap(await api.put<{ group: GroupSummary }>(groupPath(groupId), input))?.group;
 }
 
-/** At most 200 people at once (the server refuses more). */
+/** At most 200 people at once (the server refuses more). Answers the group as now set. */
 export const MAX_MEMBERS_PER_ADD = 200;
 
 export async function addGroupMembers(groupId: string, userIds: string[]) {
   if (userIds.length > MAX_MEMBERS_PER_ADD) throw new Error(`Add at most ${MAX_MEMBERS_PER_ADD} people at once.`);
-  unwrap(await api.post(groupPath(groupId, '/members'), { user_ids: userIds } satisfies AddMembersRequest));
+  return unwrap(await api.post<GroupResponse>(groupPath(groupId, '/members'), { user_ids: userIds } satisfies AddMembersRequest));
 }
 
 /** Removes a membership; a manager can be removed only by an administrator. */
