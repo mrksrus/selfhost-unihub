@@ -53,11 +53,11 @@ export function PersonProfile({ person, actions }: { person: Person; actions: Ac
         {able.role && <Button variant="outline" disabled={!!able.roleLock} onClick={() => actions.open('role', person)}>{person.role === 'admin' ? 'Remove administrator rights' : 'Make administrator'}</Button>}
         {able.transfer && <Button variant="outline" onClick={() => actions.open('transfer', person)}>Hand over ownership…</Button>}
       </SettingsRow>
-      <SettingsRow label="Sign-in" description={signIn}>
-        {able.setupLink && <Button variant="outline" onClick={() => actions.open('setup-link', person)}>New setup link</Button>}
+      <SettingsRow label="Sign-in" description={signIn} lock={able.signInLock}>
+        {able.setupLink && <Button variant="outline" disabled={!!able.signInLock} onClick={() => actions.open('setup-link', person)}>New setup link</Button>}
         {able.revokeLink && <Button variant="outline" onClick={() => actions.revokeLink(person)} disabled={actions.busy}>Revoke link</Button>}
-        {able.password && <Button variant="outline" onClick={() => actions.open('password', person)}>{able.pending ? 'Set a password' : 'Set a new password'}</Button>}
-        {able.resetTwoFactor && <Button variant="outline" onClick={() => actions.open('reset-2fa', person)}>Reset 2FA</Button>}
+        {able.password && <Button variant="outline" disabled={!!able.signInLock} onClick={() => actions.open('password', person)}>{able.pending ? 'Set a password' : 'Set a new password'}</Button>}
+        {able.resetTwoFactor && <Button variant="outline" disabled={!!able.signInLock} onClick={() => actions.open('reset-2fa', person)}>Reset 2FA</Button>}
       </SettingsRow>
     </SettingsSection>
   );

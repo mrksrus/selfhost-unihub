@@ -10,7 +10,7 @@ import { BACKUPS_ROOT } from '../services/export-jobs';
 import { realtime } from '../services/realtime';
 import { endUserSessions, lockOwnSession } from '../services/sessions';
 import { addPerson, assertCallerManagesAdmins, assertKeepsAnAdmin, assertNotOwner, deleteUser, listPeople, transferOwnership } from '../services/user-lifecycle';
-import { renewSetupLink, revokeSetupLink } from '../services/invites';
+import { OWNER_SIGN_IN, assertMayChangeSignIn, renewSetupLink, revokeSetupLink } from '../services/invites';
 import { endPersonDevices, personDevices } from '../services/devices';
 import type { AddPersonResponse, EndDevicesResponse, PeopleResponse, PersonDevicesResponse, SetupLinkResponse } from '../contracts/organisation';
 import { asCaller, assertCaller } from '../services/caller-proof';
@@ -375,6 +375,7 @@ export = defineRoutes({
       const newHash = await hashPassword(new_password);
       const found = await asAdmin(req, userId, confirmed.passwordHash, () => withTransaction(async connection => {
         if (!await lockPerson(connection, targetId)) return false;
+        await assertMayChangeSignIn(connection, targetId, userId);
         await assertCaller(connection);
         await connection.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, targetId]);
         // Invalidate all sessions so the user must re-login
@@ -425,6 +426,8 @@ export = defineRoutes({
       if (!can(requester?.role, 'users.manage')) { await connection.rollback(); return { error: 'Forbidden', status: 403 }; }
       const targets = rows.filter(row => row.id === targetId);
       if (!targets.length) { await connection.rollback(); return { error: 'User not found', status: 404 }; }
+      // Only the owner changes the owner's sign-in (services/invites.ts assertMayChangeSignIn).
+      if (targets[0].role === 'owner') { await connection.rollback(); return { error: OWNER_SIGN_IN, status: 400, code: 'OWNER_PROTECTED' }; }
       if (!targets[0].two_factor_enabled) {
         await connection.rollback();
         return { error: 'Two-factor authentication is not enabled for this user', status: 400 };

@@ -29,6 +29,8 @@ export type PersonAction = 'role' | 'password' | 'reset-2fa' | 'deactivate' | 'd
 
 export const OWNER_ONLY_REASON = 'Only the owner makes or removes administrators.';
 export const OWNER_PROTECTED_REASON = 'The owner cannot be deactivated or deleted. They hand ownership to another administrator first.';
+/** The server's words (OWNER_PROTECTED): an administrator who could change the owner's sign-in could sign in as the owner. */
+export const OWNER_SIGN_IN_REASON = 'Only the owner can change the owner\'s password, two-factor authentication or setup link.';
 
 type Open = { action: PersonAction; person: Person; generation: number };
 
@@ -50,6 +52,7 @@ export function personAbilities(viewer: Parameters<typeof can>[0] & { id?: strin
     activate: manage && !person.is_active,
     remove: manage && !self,
     protectedLock: owner ? OWNER_PROTECTED_REASON : undefined,
+    signInLock: owner && !self ? OWNER_SIGN_IN_REASON : undefined,
     transfer: owner && self && can(viewer, 'owner.transfer'),
   };
 }

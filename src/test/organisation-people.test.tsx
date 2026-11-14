@@ -153,6 +153,16 @@ describe('Server › People', () => {
     }
     // The owner's role has no entry at all: it changes only by handing ownership over.
     expect(within(menu).queryByRole('menuitem', { name: /^(Make administrator|Remove administrator rights)/ })).not.toBeInTheDocument();
+    // Nor does an administrator change the owner's sign-in (the server answers OWNER_PROTECTED).
+    for (const name of [/Set a new password/, /Reset 2FA/]) {
+      const entry = within(menu).getByRole('menuitem', { name });
+      expect(entry).toHaveAttribute('aria-disabled', 'true');
+      expect(entry).toHaveTextContent('Only the owner can change the owner\'s password, two-factor authentication or setup link.');
+    }
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    // A member's sign-in stays the administrator's to reset.
+    menu = await openMenu('blair@example.com');
+    for (const name of [/Set a new password/, /Reset 2FA/]) expect(within(menu).getByRole('menuitem', { name })).not.toHaveAttribute('aria-disabled', 'true');
     fireEvent.keyDown(menu, { key: 'Escape' });
 
     // The same in Add person: the Administrator role is there, greyed.

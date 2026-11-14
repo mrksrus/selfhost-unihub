@@ -39,6 +39,20 @@ function linkFor(token: string, expiresAt: unknown, req: AuthRequest | null): Se
   return { url: `${origin}/invite#${token}`, expires_at: iso(expiresAt) };
 }
 
+const OWNER_SIGN_IN = 'Only the owner can change the owner\'s password, two-factor authentication or setup link.';
+
+/**
+ * In the transaction of a change to another person's sign-in (their
+ * password, two-factor authentication, a setup link), with their row locked:
+ * only the owner changes the owner's sign-in. Otherwise an administrator
+ * could sign in as the owner and so make or remove administrators.
+ */
+async function assertMayChangeSignIn(cx: SqlExecutor, userId: string, actorId: string) {
+  if (userId === actorId) return;
+  const [rows] = await cx.execute<RowDataPacket[]>("SELECT 1 FROM users WHERE id = ? AND role = 'owner' FOR UPDATE", [userId]);
+  if (rows.length) throw badRequest('OWNER_PROTECTED', OWNER_SIGN_IN);
+}
+
 /**
  * In the caller's transaction, with the person's row locked: a new link for
  * a person without a password; an earlier link stops working.
@@ -46,6 +60,7 @@ function linkFor(token: string, expiresAt: unknown, req: AuthRequest | null): Se
 async function createSetupLink(cx: SqlExecutor, adminId: string, userId: string, req: AuthRequest | null = null): Promise<SetupLink> {
   const [[person]] = await cx.execute<RowDataPacket[]>('SELECT password_hash FROM users WHERE id = ? FOR UPDATE', [userId]);
   if (!person) throw notFound('USER_NOT_FOUND', 'User not found');
+  await assertMayChangeSignIn(cx, userId, adminId);
   if (person.password_hash) throw badRequest('ALREADY_SET_UP', 'This person has set their password. Reset it instead if they lost it.');
   const token = crypto.randomBytes(32).toString('base64url');
   await cx.execute(`INSERT INTO invites (id, user_id, token_hash, created_by, created_at, expires_at)
@@ -120,4 +135,4 @@ async function inviteeOf(token: unknown): Promise<string> {
   return (await personOfLink(token, db)).userId;
 }
 
-export { passwordMinimum, assertPasswordLength, createSetupLink, renewSetupLink, revokeSetupLink, peopleWithLiveLinks, checkInvite, acceptInvite, inviteeOf };
+export { OWNER_SIGN_IN, assertMayChangeSignIn, passwordMinimum, assertPasswordLength, createSetupLink, renewSetupLink, revokeSetupLink, peopleWithLiveLinks, checkInvite, acceptInvite, inviteeOf };

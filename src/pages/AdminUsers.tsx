@@ -98,10 +98,10 @@ const AdminUsers = () => {
                         <DropdownMenuItem asChild><Link to={`/admin/users/${encodeURIComponent(person.id)}`}>Groups, devices and data</Link></DropdownMenuItem>
                         {able.activate && <DropdownMenuItem onClick={() => actions.activate(person)} disabled={actions.busy}>Activate</DropdownMenuItem>}
                         {able.role && <PolicyMenuItem lock={able.roleLock} onClick={() => actions.open('role', person)}>{person.role === 'admin' ? 'Remove administrator rights' : 'Make administrator'}</PolicyMenuItem>}
-                        {able.setupLink && <DropdownMenuItem onClick={() => actions.open('setup-link', person)}>New setup link</DropdownMenuItem>}
+                        {able.setupLink && <PolicyMenuItem lock={able.signInLock} onClick={() => actions.open('setup-link', person)}>New setup link</PolicyMenuItem>}
                         {able.revokeLink && <DropdownMenuItem onClick={() => actions.revokeLink(person)} disabled={actions.busy}>Revoke setup link</DropdownMenuItem>}
-                        {able.password && <DropdownMenuItem onClick={() => actions.open('password', person)}>{able.pending ? 'Set a password' : 'Set a new password'}</DropdownMenuItem>}
-                        {able.resetTwoFactor && <DropdownMenuItem onClick={() => actions.open('reset-2fa', person)}>Reset 2FA</DropdownMenuItem>}
+                        {able.password && <PolicyMenuItem lock={able.signInLock} onClick={() => actions.open('password', person)}>{able.pending ? 'Set a password' : 'Set a new password'}</PolicyMenuItem>}
+                        {able.resetTwoFactor && <PolicyMenuItem lock={able.signInLock} onClick={() => actions.open('reset-2fa', person)}>Reset 2FA</PolicyMenuItem>}
                         {able.deactivate && <PolicyMenuItem lock={able.protectedLock} onClick={() => actions.open('deactivate', person)}>Deactivate</PolicyMenuItem>}
                         {able.remove && <>
                           <DropdownMenuSeparator />
