@@ -4,12 +4,12 @@ import type { InviteCheckResponse, SetupLink } from '../contracts/organisation';
 
 import crypto from 'node:crypto';
 import { db } from '../state';
-import { MIN_PASSWORD_LENGTH } from '../config';
+import { passwordMinimum } from './sign-in-policies';
 import { badRequest, notFound } from '../http/errors';
 import { getAllowedOriginForRequest } from '../http/request';
 import { recordAudit } from './audit';
 import { assertCaller } from './caller-proof';
-import { acknowledgeAtSignup, getEffectivePolicies, resolvePolicy } from './settings';
+import { acknowledgeAtSignup, getEffectivePolicies } from './settings';
 import { withTransaction } from './transactions';
 
 // Setup links (0.30, Add person): an administrator adds a person, who sets
@@ -26,11 +26,6 @@ const LINK_DAYS = 7;
 const invalid = () => notFound('INVITE_INVALID', 'This setup link is not valid any more. Ask your administrator for a new one.');
 const hashOf = (token: string) => crypto.createHash('sha256').update(token).digest('hex');
 const iso = (value: unknown) => (value instanceof Date ? value : new Date(`${String(value).replace(' ', 'T')}Z`)).toISOString();
-
-/** The shortest password the person may set: their auth.password_min_length, never below the server's minimum. */
-async function passwordMinimum(userId: string, executor: SqlExecutor = db): Promise<number> {
-  return Math.max(MIN_PASSWORD_LENGTH, Number((await resolvePolicy(userId, 'auth.password_min_length', executor)).value));
-}
 
 async function assertPasswordLength(userId: string, password: string, executor: SqlExecutor = db) {
   const minimum = await passwordMinimum(userId, executor);
