@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSecretMutation } from '@/hooks/use-secret-mutation';
-import { useAdminPolicies, usePeople } from '@/hooks/use-organisation';
+import { useAdminPolicies, useTwoFactorPreview } from '@/hooks/use-organisation';
 import { useToast } from '@/hooks/use-toast';
-import { adminGroupsQueryKey, adminPoliciesQueryKey, adminPoliciesQueryKeyFor, adminUsersQueryKey, saveAdminPolicies, type AdminPolicy, type BinMinimum, type Person, type PolicyScope } from '@/lib/admin-api';
+import { adminGroupsQueryKey, adminPoliciesQueryKey, adminPoliciesQueryKeyFor, adminUsersQueryKey, saveAdminPolicies, type AdminPolicy, type BinMinimum, type PolicyPreviewPerson, type PolicyScope } from '@/lib/admin-api';
 import { acknowledgePolicies, policiesQueryKey, type PolicyKey, type PolicyValues } from '@/lib/policies-api';
 import type { AppLockArea } from '@/lib/devices-api';
 import { Button } from '@/components/ui/button';
@@ -34,8 +34,6 @@ import { formatDay, personName } from '@/components/admin/person-words';
 const BIN_MINIMUM_KEY = 'bin.min_retention';
 type RowKey = PolicyKey | typeof BIN_MINIMUM_KEY;
 type Row = { key: RowKey; label: string; description: string };
-// shortcut: `groups` and `conflict` are read as optional extras until contracts/policies.ts carries them (stream A); then AdminPolicy has them.
-type ScopedPolicy = AdminPolicy & { groups?: { id: string; name: string; value: unknown }[]; conflict?: boolean };
 
 const GROUPS: { title: string; description?: string; rows: Row[] }[] = [
   {
@@ -209,19 +207,17 @@ function AppLockRequiredControl({ id, value, floor, onChange, disabled }: { id: 
  * none yet, and who among them is already in their 7 days (a rule of another
  * scope started them). Nobody is locked out by saving.
  */
-function TwoFactorPreview({ people }: { people: readonly Person[] }) {
-  const without = people.filter(person => !person.two_factor_enabled);
-  const inGrace = without.filter(person => person.two_factor_grace_ends_at);
+function TwoFactorPreview({ without, inGrace }: { without: number; inGrace: readonly PolicyPreviewPerson[] }) {
   return (
     <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm" data-testid="two-factor-preview">
       <p className="font-medium">
-        {without.length === 0 ? `All ${people.length} people this covers have two-factor authentication.`
-          : `${without.length} of ${people.length} ${people.length === 1 ? 'person' : 'people'} this covers ${without.length === 1 ? 'has' : 'have'} no two-factor authentication.`}
+        {without === 0 ? 'Everyone this covers has two-factor authentication.'
+          : `${without} ${without === 1 ? 'person' : 'people'} this covers ${without === 1 ? 'has' : 'have'} no two-factor authentication.`}
       </p>
-      {without.length > 0 && <p className="mt-1 text-muted-foreground">They get 7 days to set it up and are reminded at every start. After that they can only set it up or sign out.</p>}
+      {without > 0 && <p className="mt-1 text-muted-foreground">They get 7 days to set it up and are reminded at every start. After that they can only set it up or sign out.</p>}
       {inGrace.length > 0 && (
         <ul aria-label="Already in their 7 days" className="mt-2 space-y-0.5 text-muted-foreground">
-          {inGrace.map(person => <li key={person.id}>{personName(person)}: until {formatDay(person.two_factor_grace_ends_at!)}, from an earlier rule</li>)}
+          {inGrace.map(person => <li key={person.id}>{personName(person)}: until {formatDay(person.grace_ends_at)}, from an earlier rule</li>)}
         </ul>
       )}
     </div>
@@ -234,15 +230,16 @@ export function PolicyEditor({ scope, groupName }: { scope?: PolicyScope; groupN
   const [draft, setDraft] = useState<Partial<Record<RowKey, unknown>>>({});
   const [confirming, setConfirming] = useState(false);
   const query = useAdminPolicies(scope);
-  // shortcut: the save preview counts from the people list; switch to POST /api/admin/policies/preview when its helper lands (streams B and W).
-  const people = usePeople();
   const group = !!scope;
+  const requiresTwoFactor = draft['auth.two_factor'] === 'required';
+  // Whom a newly required two-factor rule reaches, as the server counts it, asked when the save dialog opens.
+  const preview = useTwoFactorPreview(scope, confirming && requiresTwoFactor);
 
   // The server's keys, plus the bin's minimum from its own field (greyed out where the server lacks it).
-  const policies = query.data?.policies as Partial<Record<PolicyKey, ScopedPolicy>> | undefined;
+  const policies = query.data?.policies as Partial<Record<PolicyKey, AdminPolicy>> | undefined;
   const binMinimum = query.data?.bin_min_retention;
-  const policyOf = (key: RowKey): ScopedPolicy | undefined => key === BIN_MINIMUM_KEY
-    ? (binMinimum ? binMinimum as unknown as ScopedPolicy : BIN_MINIMUM_FALLBACK)
+  const policyOf = (key: RowKey): AdminPolicy | undefined => key === BIN_MINIMUM_KEY
+    ? (binMinimum ? binMinimum as unknown as AdminPolicy : BIN_MINIMUM_FALLBACK)
     : policies?.[key];
   const changed = Object.keys(draft) as RowKey[];
   const current = (key: RowKey): unknown => (key in draft ? draft[key] : policyOf(key)?.value);
@@ -290,10 +287,6 @@ export function PolicyEditor({ scope, groupName }: { scope?: PolicyScope; groupN
 
   if (query.isLoading) return <LoadingState label="Loading policies…" />;
   if (query.error || !policies) return <ErrorState title="Could not load the policies" error={query.error} onRetry={() => void query.refetch()} retrying={query.isFetching} />;
-
-  // Who a newly required two-factor rule reaches: everyone active, or this group's active members.
-  const covered = (people.data ?? []).filter(person => person.is_active && (!scope || person.groups.some(entry => entry.id === scope.groupId)));
-  const requiresTwoFactor = draft['auth.two_factor'] === 'required';
 
   return (
     <>
@@ -351,7 +344,7 @@ export function PolicyEditor({ scope, groupName }: { scope?: PolicyScope; groupN
       <PasswordConfirmDialog open={confirming} onClose={() => setConfirming(false)} title={group ? `Save the changed rules of ${groupName ?? 'this group'}?` : 'Save the changed rules?'}
         description={`${changed.map(labelOf).join(', ')}. Nothing is deleted; the rules apply from now on, and the people they change for are told at their next start.`}
         actionLabel="Save changes" pending={save.isPending} onConfirm={password => save.mutate(password)}>
-        {requiresTwoFactor && people.data && <TwoFactorPreview people={covered} />}
+        {requiresTwoFactor && preview.data && <TwoFactorPreview without={preview.data.without} inGrace={preview.data.in_grace} />}
       </PasswordConfirmDialog>
     </>
   );

@@ -28,7 +28,7 @@ test('[30-09] ten wrong passwords lock a person out, and an API restart does not
     for (let i = 0; i < 10; i++) expect(await attempt(email, 'not-the-password'), `wrong password ${i + 1}`).toBe(401);
     expect(await attempt(email, 'not-the-password'), 'the eleventh guess').toBe(429);
 
-    restartApi();
+    await restartApi();
 
     expect(await attempt(email, signInPassword), 'the right password, after the restart').toBe(429);
     await app.open('/auth');

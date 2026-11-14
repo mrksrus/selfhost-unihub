@@ -180,6 +180,12 @@ export interface GroupResponse {
   group: GroupSummary;
   can_manage: boolean;
   members: GroupMember[];
+  /**
+   * The rules the group adds for its members on top of everyone's, in plain
+   * words, read-only, for those who may manage it ([] when it adds none);
+   * null for everyone else.
+   */
+  rules: string[] | null;
 }
 
 /** POST /api/admin/groups (groups.manage); PUT /api/groups/:id (manage). */

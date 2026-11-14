@@ -26,9 +26,23 @@ export const stack = {
   dbEnvFile: values.UNIHUB_E2E_DB_ENV,
 };
 
-/** Restarts this instance's API (SIGTERM, as docker stop), for restart checks. */
-export function restartApi() {
-  return execFileSync(stackScript, ['restart-api'], { encoding: 'utf8' }).trim();
+/**
+ * Restarts this instance's API (SIGTERM, as docker stop), for restart checks,
+ * and returns once the API answers through the web server again. The poll
+ * also replaces this process's kept-alive connections, which the restart
+ * closed (in image mode nginx restarts too): a request on one fails with
+ * "other side closed".
+ */
+export async function restartApi() {
+  execFileSync(stackScript, ['restart-api'], { encoding: 'utf8' });
+  const until = Date.now() + 60_000;
+  for (;;) {
+    try {
+      if ((await fetch(`${stack.url}/api/version`)).ok) return;
+    } catch { /* not back yet */ }
+    if (Date.now() > until) throw new Error('the API did not answer within 60 s of its restart');
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
 }
 
 /** Libraries the API already depends on (nodemailer, mailparser, mysql2, imapflow), so the harness adds none. */

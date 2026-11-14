@@ -16,6 +16,7 @@ import { GroupDialog } from '@/components/organisation/GroupDialog';
 import { GroupMembers } from '@/components/organisation/GroupMembers';
 import { groupMeta } from '@/components/organisation/GroupRow';
 import { PolicyEditor } from '@/components/organisation/PolicyEditor';
+import { RulesList } from '@/components/policies/PolicyNoticeDialog';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 import { SettingsPanel } from '@/components/settings/SettingsPanel';
 import { Button } from '@/components/ui/button';
@@ -79,6 +80,7 @@ const GroupPage = ({ admin = false }: { admin?: boolean }) => {
                     {group.has_policies ? 'This group has rules of its own. They apply to every member, on top of the rules for everyone.' : 'This group has no rules of its own: the rules for everyone apply.'}
                     {' '}An administrator sets them. The rules that apply to you are under <Link to="/settings?section=account" className="underline underline-offset-2 hover:text-foreground">Settings › Profile</Link>.
                   </p>
+                  {!!query.data.rules?.length && <RulesList rules={query.data.rules} className="mt-3 max-w-prose text-sm" />}
                 </SettingsBlock>
               </SettingsSection>
             )}

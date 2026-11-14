@@ -49,14 +49,17 @@ test('[30-05] blair is reminded while the 7 days run; after them blair can only 
     await setRules({ 'auth.two_factor': 'required' }, { groupId: group.id, unseen: ['blair'] });
     expect((await effectiveOf('alex')).two_factor?.required ?? false, 'alex is not in the group').toBe(false);
 
-    // The rules notice first, then the reminder; nothing is refused yet.
+    // The rules notice first, then the reminder; nothing is refused yet. A
+    // person who never confirmed any rules gets it as "Rules on this server"
+    // (which depends on what ran before on this stack).
     await app.open('/settings');
-    const notice = screen.getByRole('dialog', 'Your administrator changed the data rules');
+    const notice = screen.getByRole('dialog', /^(Your administrator changed the data rules|Rules on this server)$/);
     await notice.getByRole('button', 'OK', { exact: true }).tap();
     await expect(notice).toBeHidden();
     const reminder = screen.getByRole('status').filter({ has: screen.getByRole('button', 'Set up now') });
     await expect(reminder).toContainText('Your administrator requires two-factor authentication.');
-    expect((await pageApi(browser, 'GET', '/api/settings/values')).status, 'nothing is refused during the 7 days').toBe(200);
+    // A route the compliance gates do not exempt (settings, policies, 2FA set-up and sign-out are exempt).
+    expect((await pageApi(browser, 'GET', '/api/contacts')).status, 'nothing is refused during the 7 days').toBe(200);
     // Closed until the next start, where it is back.
     await reminder.getByRole('button', 'Close the reminder until the next start').tap();
     await expect(reminder).toHaveCount(0);
@@ -64,7 +67,7 @@ test('[30-05] blair is reminded while the 7 days run; after them blair can only 
     await graceStartedDaysAgo(people.blair.email, 8);
     await app.open('/mail');
     await expect(screen.getByRole('heading', 'Set up two-factor authentication to continue')).toBeVisible();
-    const refused = await pageApi<{ code?: string }>(browser, 'GET', '/api/settings/values');
+    const refused = await pageApi<{ code?: string }>(browser, 'GET', '/api/contacts');
     expect(refused.status, 'the server refuses, not only the page').toBe(403);
     expect(refused.data.code).toBe('TWO_FACTOR_REQUIRED');
 
@@ -80,7 +83,7 @@ test('[30-05] blair is reminded while the 7 days run; after them blair can only 
 
     await expect(screen.getByRole('heading', 'Set up two-factor authentication to continue')).toHaveCount(0);
     expect(ok(await pageApi<{ user: { two_factor_enabled: boolean } }>(browser, 'GET', '/api/auth/me'), 'blair').user.two_factor_enabled).toBe(true);
-    expect((await pageApi(browser, 'GET', '/api/settings/values')).status, 'everything works again').toBe(200);
+    expect((await pageApi(browser, 'GET', '/api/contacts')).status, 'everything works again').toBe(200);
     // While it is required, it cannot be turned off again.
     await app.open('/settings?section=security');
     await expect(screen.getByRole('button', 'Turn off', { exact: true })).toBeDisabled();

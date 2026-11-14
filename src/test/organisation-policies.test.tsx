@@ -79,7 +79,14 @@ beforeEach(() => {
     throw new Error(`unexpected GET ${path}`);
   });
   vi.mocked(api.put).mockImplementation(async (path: string) => ({ data: path === '/admin/policies' ? installation : support }));
-  vi.mocked(api.post).mockResolvedValue({ data: { acknowledged_revision: 3 } });
+  vi.mocked(api.post).mockImplementation(async (path: string, body?: unknown) => {
+    // The server's preview: Everyone active without 2FA are Alex, Blair and Drew; Support's, Alex and Blair. Blair is in their 7 days from another rule.
+    if (path === '/admin/policies/preview') {
+      const blair = { id: 'user-blair', email: 'blair@example.com', full_name: 'Blair Example', grace_ends_at: '2026-06-20T09:00:00.000Z' };
+      return { data: { two_factor: { without: (body as { group_id: string | null }).group_id ? 2 : 3, in_grace: [blair] } } };
+    }
+    return { data: { acknowledged_revision: 3 } };
+  });
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -98,9 +105,9 @@ describe('Server › Policies by scope', () => {
     expect(screen.getByText(/have 7 days to set it up; then they can use nothing else/)).toBeInTheDocument();
     await choose('Shortest password', '14 characters');
     const dialog = await save('Save the changed rules?');
-    // Everyone active without it: Alex, Blair and Drew of five; Blair is already in their 7 days from another rule.
-    const preview = within(dialog).getByTestId('two-factor-preview');
-    expect(preview).toHaveTextContent('3 of 5 people this covers have no two-factor authentication.');
+    const preview = await within(dialog).findByTestId('two-factor-preview');
+    expect(api.post).toHaveBeenCalledWith('/admin/policies/preview', { group_id: null }, expect.anything());
+    expect(preview).toHaveTextContent('3 people this covers have no two-factor authentication.');
     expect(within(preview).getByRole('list', { name: 'Already in their 7 days' })).toHaveTextContent(/Blair Example: until (20 June|June 20)/);
     confirm(dialog);
     await waitFor(() => expect(api.put).toHaveBeenCalledExactlyOnceWith('/admin/policies', { values: { 'auth.two_factor': 'required', 'auth.password_min_length': 14 }, current_password: 'admin-own-password' }));
@@ -137,8 +144,8 @@ describe('Server › Policies by scope', () => {
 
     await choose('Two-factor authentication', 'Required');
     const dialog = await save('Save the changed rules of Support?');
-    // The group's active members without it: Alex and Blair of three (the inactive one is not counted).
-    expect(within(dialog).getByTestId('two-factor-preview')).toHaveTextContent('2 of 3 people this covers have no two-factor authentication.');
+    expect(await within(dialog).findByTestId('two-factor-preview')).toHaveTextContent('2 people this covers have no two-factor authentication.');
+    expect(api.post).toHaveBeenCalledWith('/admin/policies/preview', { group_id: 'grp-support' }, expect.anything());
     confirm(dialog);
     await waitFor(() => expect(api.put).toHaveBeenCalledExactlyOnceWith('/admin/groups/grp-support/policies', { values: { 'auth.session_max_days': '7', 'auth.two_factor': 'required' }, current_password: 'admin-own-password' }));
   });

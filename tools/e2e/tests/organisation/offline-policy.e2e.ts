@@ -29,6 +29,8 @@ test('offline reading forbidden for alex\'s group deletes this browser\'s copy a
   try {
     const group = await createGroup('No offline', [await seededId('alex')]);
     await app.open('/settings?section=offline');
+    // The button reads "Turn on" (also while the page still checks for a saved copy) or "Refresh now": decide once it can be used.
+    await expect(screen.getByRole('button', /^(Turn on|Refresh now)$/)).toBeEnabled();
     const turnOn = screen.getByRole('button', 'Turn on', { exact: true });
     if (await turnOn.count()) await turnOn.tap();
     await expect(screen.getByRole('button', 'Refresh now', { exact: true })).toBeVisible();

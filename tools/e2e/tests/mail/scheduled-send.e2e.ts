@@ -51,7 +51,7 @@ test('[24-18] scheduled sends arrive once at their time, across an API restart, 
     const drafts = await emailsWithSubject(browser, 'drafts', subject);
     expect(drafts.map((draft) => draft.scheduled_send_status), `${subject} waits in Drafts`).toEqual(['scheduled']);
   }
-  restartApi();
+  await restartApi();
 
   for (const subject of [a, b]) {
     const message = await receive(outside.sam, subject, due.getTime() + 120_000 - Date.now());

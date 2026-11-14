@@ -132,6 +132,8 @@ test('sign-in policies: password minimum, session lifetime and 2FA required with
   assert.ok(Date.parse((refused.body.details as { grace_ended_at: string }).grace_ended_at) < Date.now());
   assert.equal((await blair.request('GET', '/api/policies/effective')).status, 200);
   assert.equal((await blair.request('GET', '/api/auth/2fa/status')).status, 200);
+  // Settings stay readable: the compliance gates exempt them (the app lock's and this one share the list).
+  assert.equal((await blair.request('GET', '/api/settings/values')).status, 200);
   const sync = await blair.request('GET', '/api/contacts', undefined, { 'X-Background-Sync': '1', 'User-Agent': 'UniHubAndroid/0.29.0 (29000)' });
   assert.equal(sync.status, 200, 'the Android app\'s contacts sync keeps working');
   const upload = await blair.request('POST', '/api/recordings/uploads/start', {}, { 'X-Background-Sync': '1' });

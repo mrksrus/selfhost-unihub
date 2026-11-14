@@ -878,6 +878,14 @@ async function getGroupPolicies(groupId: string, executor: SqlExecutor = db): Pr
   return groupView(set, groupId, await policyRevision(executor));
 }
 
+/** The rules a group adds for its members on top of everyone's, in plain words (GET /api/groups/:id, read-only for its managers). */
+async function groupRules(groupId: string, executor: SqlExecutor = db): Promise<string[]> {
+  const set = await loadRuleSet(executor);
+  if (!set.groups.has(groupId)) throw groupNotFound();
+  const everyone = new Set(rulesOf([set.installation]));
+  return rulesOf(levelsOfGroup(set, groupId)).filter(rule => !everyone.has(rule));
+}
+
 const policyConflict = (message: string) => badRequest('POLICY_CONFLICT', message);
 
 // Combinations that cannot hold: refused before anything is stored. `who`
@@ -1131,6 +1139,7 @@ export {
   getAdminPolicies,
   updateAdminPolicies,
   getGroupPolicies,
+  groupRules,
   updateGroupPolicies,
   withRulesChange,
   takeUnappliedModules,

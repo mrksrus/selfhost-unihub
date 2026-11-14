@@ -78,7 +78,8 @@ installed `playwright-core` (for example `../ui-regression/.browsers` after
 `npm run browsers` there) and `E2E_TELEMETRY_DISABLED=1`.
 
 Tests sit in `tests/<area>/` and share `tests/support/`: `env.ts` (the
-instance's values, the three people, run ids, fixtures, `restartApi`),
+instance's values, the three people, run ids, fixtures, `restartApi`, which
+waits for the API to answer again),
 `mail.ts` (delivered mail, MIME, sending synthetic mail, IMAP flags and
 threading headers), `api.ts` (server-side sessions, settings, drafts),
 `caldav.ts` (reading and editing Radicale or a real CalDAV server as another
@@ -126,6 +127,10 @@ runs on port 5560 (`UNIHUB_E2E_EMULATOR_PORT`) and reaches the stack through
 Android driver (the debug build enables WebView debugging) and Android's own
 screens (document picker, permission and system dialogs) through
 uiautomator; it answers the "isn't responding" dialogs a slow emulator shows.
+`support/people.mjs` sets up the organisation for these tests: the seeded
+people's sessions, groups with a manager, a test's own people and rules for
+everyone or a group, with a reset before and after each file. The web tests
+have the same steps in `tests/organisation/organisation-helpers.ts`.
 The stack's nginx also writes `log/nginx-tickets.log`: one line per download
 ticket request with the token's first eight characters, the status, Range and
 whether a Cookie header came (never its value), so `ticketLog()` can show that

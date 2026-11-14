@@ -9,7 +9,7 @@ import { can as roleCan } from '../security/permissions';
 import { withTransaction } from './transactions';
 import { assertCaller } from './caller-proof';
 import { recordAudit } from './audit';
-import { checkPeoplePolicies, deleteGroupPolicies, groupsWithPolicies, lockRules } from './settings';
+import { checkPeoplePolicies, deleteGroupPolicies, groupRules, groupsWithPolicies, lockRules } from './settings';
 import { applyPolicyChange } from './module-lifecycle';
 
 // The organisation's groups and their members (F3) have one owner: this
@@ -108,7 +108,7 @@ async function groupDetail(userId: string, groupId: string): Promise<GroupRespon
     JOIN users u ON u.id = m.user_id WHERE m.group_id = ?${canManage ? '' : " AND m.role = 'manager'"}
     ORDER BY m.role = 'manager' DESC, u.full_name, u.email`, [id]);
   const members: GroupMember[] = rows.map(row => ({ id: String(row.id), email: String(row.email), full_name: row.full_name ?? null, role: row.role as GroupRole, added_at: iso(row.added_at) }));
-  return { group, can_manage: canManage, members };
+  return { group, can_manage: canManage, members, rules: canManage ? await groupRules(id) : null };
 }
 
 /** GET /api/groups/:id/candidates?q=: active people not in the group whose name or address matches, at most 20. */

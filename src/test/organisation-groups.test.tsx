@@ -39,7 +39,7 @@ beforeEach(() => {
     if (path === '/admin/groups') return { data: { groups: [SUPPORT, FINANCE] } };
     if (path === '/admin/users') return { data: { users: PEOPLE } };
     if (path === '/groups') return { data: { groups: [{ ...SUPPORT, role: 'manager' }, { ...FINANCE, role: 'member' }] } };
-    if (path === '/groups/grp-support') return { data: { group: SUPPORT, can_manage: true, members: MEMBERS } };
+    if (path === '/groups/grp-support') return { data: { group: SUPPORT, can_manage: true, members: MEMBERS, rules: ['Your administrator does not allow deleting backups.'] } };
     if (path.startsWith('/groups/grp-support/candidates')) return { data: { people: [{ id: 'user-drew', email: 'drew@example.com', full_name: 'Drew Example' }, { id: 'user-erin', email: 'erin@example.com', full_name: null }] } };
     if (path === '/policies/effective') return policiesAnswer();
     throw new Error(`unexpected GET ${path}`);
@@ -129,6 +129,8 @@ describe('a group for its manager, a member and a stranger', () => {
     // No person page for a manager: names are not links into Server › People.
     expect(screen.queryByRole('link', { name: 'Blair Example' })).not.toBeInTheDocument();
     expect(screen.getByText(/This group has rules of its own/)).toBeInTheDocument();
+    // The manager reads the group's own rules, in the words people see them.
+    expect(screen.getByText('Your administrator does not allow deleting backups.')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
     const dialog = await screen.findByRole('dialog', { name: 'Rename group' });

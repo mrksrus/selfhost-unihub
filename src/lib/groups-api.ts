@@ -23,11 +23,11 @@ export async function fetchMyGroups(signal?: AbortSignal): Promise<MyGroupsRespo
   return unwrap(await api.get<MyGroupsResponse>('/groups', { signal }))?.groups ?? [];
 }
 
-/** The group with its members for those who may manage it; others see its managers. */
+/** The group with its members and the rules it adds (read-only) for those who may manage it; others see its managers. */
 export async function fetchGroup(groupId: string, signal?: AbortSignal): Promise<GroupResponse> {
   const answer = unwrap(await api.get<GroupResponse>(groupPath(groupId), { signal }));
   if (!answer?.group) throw new Error('The server did not answer with the group.');
-  return { group: answer.group, can_manage: !!answer.can_manage, members: answer.members ?? [] };
+  return { group: answer.group, can_manage: !!answer.can_manage, members: answer.members ?? [], rules: Array.isArray(answer.rules) ? answer.rules : null };
 }
 
 export async function updateGroup(groupId: string, input: GroupInput) {

@@ -92,7 +92,7 @@ test('[23-15 B-29] a send interrupted by an API restart can be sent again soon, 
   execFileSync('kill', ['-STOP', greenmailPid()]);
   await screen.getByRole('button', 'Send', { visible: true }).tap();
   await expect(screen.getByRole('button', 'Sending...', { visible: true })).toBeVisible();
-  restartApi();
+  await restartApi();
   resumeMail();
   const interrupted = Date.now();
   await expect(composeDialog(screen)).toBeVisible();
