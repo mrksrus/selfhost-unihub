@@ -414,7 +414,7 @@ function savedDraft(id: string, body: unknown) {
 function defaultRoutes(emails: typeof EMAILS, admin = false): Route[] {
   const byId = (url: URL) => emails.find(entry => entry.id === decodeURIComponent(url.pathname.split('/')[4] ?? ''));
   return [
-    ['GET', /^\/auth\/me$/, () => ok({ user: admin ? { ...USER, role: 'admin' } : USER, csrfToken: 'synthetic-csrf-token' })],
+    ['GET', /^\/auth\/me$/, () => ok({ user: admin ? { ...USER, role: 'admin', permissions: ['users.read', 'users.manage', 'server.settings', 'storage.read', 'audit.read', 'groups.manage'] } : USER, csrfToken: 'synthetic-csrf-token' })],
     ['GET', /^\/modules$/, () => ok({ modules: MODULES, pages: PAGES })],
     ['GET', /^\/settings\/preferences$/, () => ok({ preferences: PREFERENCES })],
     ['GET', /^\/settings\/values$/, () => ok({ settings: SETTINGS })],

@@ -9,7 +9,7 @@ import { RECORDINGS_ROOT } from '../services/recordings';
 import { BACKUPS_ROOT } from '../services/export-jobs';
 import { realtime } from '../services/realtime';
 import { endUserSessions, lockOwnSession } from '../services/sessions';
-import { assertKeepsAnAdmin, deleteUser } from '../services/user-lifecycle';
+import { assertKeepsAnAdmin, assertNotOwner, deleteUser } from '../services/user-lifecycle';
 import { asCaller, assertCaller } from '../services/caller-proof';
 import { withTransaction } from '../services/transactions';
 import { listAuditLog, recordAudit, recordAuditAfter } from '../services/audit';
@@ -22,6 +22,7 @@ import { confirmPassword, confirmPasswordHash } from '../security/reauthenticati
 import { disableTwoFactor } from '../services/two-factor';
 import { getSignupMode, isSignupMode, setSignupMode } from '../services/settings';
 import { defineRoutes } from '../http/route';
+import { can } from '../security/permissions';
 import { personFromParam } from '../services/admin-path';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
@@ -35,7 +36,7 @@ interface Input {
 
 async function getActiveAdminCount() {
   const [rows] = await db.execute<RowDataPacket[]>(
-    "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND is_active = TRUE"
+    "SELECT COUNT(*) AS count FROM users WHERE role IN ('owner', 'admin') AND is_active = TRUE"
   );
   return Number(rows[0]?.count || 0);
 }
@@ -65,7 +66,7 @@ function confirmAdminPassword(userId: string, body: Input, res?: import('node:ht
 // signed in with this session and, where they entered it, this password
 // (`passwordHash`, the hash it matched; null when none was asked).
 function asAdmin<T>(req: Request, userId: string, passwordHash: string | null, work: () => Promise<T>) {
-  return asCaller({ userId, token: getAuthTokenFromRequest(req), admin: true, passwordHash }, work);
+  return asCaller({ userId, token: getAuthTokenFromRequest(req), permission: 'users.manage', passwordHash }, work);
 }
 
 async function getUserRoleStatus(targetId: string) {
@@ -369,7 +370,7 @@ export = defineRoutes({
         await connection.rollback();
         return { error: 'Unauthorized', status: 401 };
       }
-      if (requester?.role !== 'admin') { await connection.rollback(); return { error: 'Forbidden', status: 403 }; }
+      if (!can(requester?.role, 'users.manage')) { await connection.rollback(); return { error: 'Forbidden', status: 403 }; }
       const targets = rows.filter(row => row.id === targetId);
       if (!targets.length) { await connection.rollback(); return { error: 'User not found', status: 404 }; }
       if (!targets[0].two_factor_enabled) {
@@ -409,7 +410,7 @@ export = defineRoutes({
       const targetUser = await getUserRoleStatus(id);
       if (!targetUser) return { error: 'User not found', status: 404 };
       // A quick answer before any work stops; deleteUser checks again under its locks.
-      if (targetUser.role === 'admin' && targetUser.is_active && (await getActiveAdminCount()) <= 1) {
+      if (can(targetUser.role, 'users.manage') && targetUser.is_active && (await getActiveAdminCount()) <= 1) {
         return { error: 'Cannot delete the last active admin', status: 400 };
       }
       await asAdmin(req, userId, confirmed.passwordHash, () => deleteUser(id, { actor: 'admin', actorId: userId, req }));
@@ -436,6 +437,7 @@ export = defineRoutes({
       const found = await asAdmin(req, userId, confirmed.passwordHash, () => withTransaction(async connection => {
         if (nextRole === 'user') await assertKeepsAnAdmin(connection, id, 'demote');
         if (!await lockPerson(connection, id)) return false;
+        await assertNotOwner(connection, id, 'demote');
         await assertCaller(connection);
         await connection.execute('UPDATE users SET role = ? WHERE id = ?', [nextRole, id]);
         return true;
@@ -467,6 +469,7 @@ export = defineRoutes({
       const found = await asAdmin(req, userId, passwordHash, () => withTransaction(async connection => {
         if (!is_active) await assertKeepsAnAdmin(connection, id, 'deactivate');
         if (!await lockPerson(connection, id)) return false;
+        if (!is_active) await assertNotOwner(connection, id, 'deactivate');
         await assertCaller(connection);
         await connection.execute('UPDATE users SET is_active = ? WHERE id = ?', [!!is_active, id]);
         if (!is_active) await endUserSessions(id, connection);

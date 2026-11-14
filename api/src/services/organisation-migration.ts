@@ -124,4 +124,22 @@ async function verifyOrganisation(connection: Executor) {
   }
 }
 
-export { addOrganisation, verifyOrganisation };
+// Upgrade step 28 (0.30.0): the installation's owner. The earliest-created
+// active administrator becomes owner (the bootstrap administrator on a new
+// installation), else the earliest administrator; an installation without
+// administrators has no owner. Ships with the permission checks, so the owner
+// keeps every administrator's right.
+async function chooseOwner(connection: Executor) {
+  const [owners] = await connection.execute<RowDataPacket[]>("SELECT 1 FROM users WHERE role = 'owner' LIMIT 1");
+  if (owners.length) return;
+  const [admins] = await connection.execute<RowDataPacket[]>("SELECT id FROM users WHERE role = 'admin' ORDER BY is_active DESC, created_at, id LIMIT 1");
+  if (admins.length) await connection.execute("UPDATE users SET role = 'owner' WHERE id = ? AND role = 'admin'", [admins[0].id]);
+}
+
+/** Step 28 is complete: exactly one owner whenever there is an administrator. */
+async function verifyOwner(connection: Executor) {
+  const [[counts]] = await connection.execute<RowDataPacket[]>("SELECT SUM(role = 'owner') AS owners, SUM(role IN ('owner', 'admin')) AS admins FROM users");
+  if (Number(counts.admins ?? 0) > 0 && Number(counts.owners ?? 0) !== 1) throw new Error('The installation has administrators but no owner');
+}
+
+export { addOrganisation, verifyOrganisation, chooseOwner, verifyOwner };

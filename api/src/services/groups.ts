@@ -27,10 +27,16 @@ async function groupExists(groupId: string, executor: SqlExecutor = db): Promise
   return rows.length > 0;
 }
 
+/** Whether the person manages at least one group. */
+async function managesAnyGroup(userId: string, executor: SqlExecutor = db): Promise<boolean> {
+  const [rows] = await executor.execute<RowDataPacket[]>("SELECT 1 FROM org_group_members WHERE user_id = ? AND role = 'manager' LIMIT 1", [userId]);
+  return rows.length > 0;
+}
+
 /** Every group's id, by name. */
 async function allGroupIds(executor: SqlExecutor = db): Promise<string[]> {
   const [rows] = await executor.execute<RowDataPacket[]>('SELECT id FROM org_groups ORDER BY name, id');
   return rows.map(row => String(row.id));
 }
 
-export { groupsOf, membershipOf, groupExists, allGroupIds };
+export { groupsOf, membershipOf, groupExists, managesAnyGroup, allGroupIds };

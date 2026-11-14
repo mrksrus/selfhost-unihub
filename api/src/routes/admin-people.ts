@@ -57,7 +57,7 @@ function change(handler: Handler, limit = 4096) {
         if ('refused' in confirmed) return confirmed.refused;
         // The change may wait (the person's lock, rows); its final step asks
         // again that the administrator is one, signed in, with this password.
-        return await asCaller({ userId: adminId, token: getAuthTokenFromRequest(req), admin: true, passwordHash: confirmed.passwordHash },
+        return await asCaller({ userId: adminId, token: getAuthTokenFromRequest(req), permission: 'users.manage', passwordHash: confirmed.passwordHash },
           async () => handler(await asStored(req), adminId, body ?? {}, res));
       } catch (error) { return answer(error); }
     } };

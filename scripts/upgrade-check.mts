@@ -250,7 +250,10 @@ try {
   assert.equal(afterSteps.inventory, 'passed', 'The data inventory check passes on the upgraded database');
   evidence.migrations = { before: beforeSteps.latestApplied, after: afterSteps.latestApplied, latest: afterSteps.latestKnown, inventory: afterSteps.inventory };
   await step('The session from before the upgrade still works, on a device of its own, with its push channel', async () => {
-    await owner.json('GET', '/api/auth/me');
+    // The only administrator, so the upgrade made them the owner (step 28), with every right.
+    const { user: me } = await owner.json<{ user: Row }>('GET', '/api/auth/me');
+    assert.equal(me.role, 'owner', 'The earliest active administrator became the owner');
+    assert.ok((me.permissions as string[]).includes('owner.transfer') && (me.permissions as string[]).includes('server.settings'), `The owner keeps every right: ${JSON.stringify(me.permissions)}`);
     const { devices } = await owner.json<{ devices: Row[] }>('GET', '/api/devices');
     const current = devices.find(device => device.current);
     assert.ok(current, `The session has a device: ${JSON.stringify(devices)}`);

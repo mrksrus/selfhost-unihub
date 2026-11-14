@@ -7,7 +7,7 @@ import { TotpQrCode } from '@/components/settings/TotpQrCode';
 import { api } from '@/lib/api';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }));
-vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'admin-1', role: 'admin' } }) }));
+vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'admin-1', role: 'admin', permissions: ['users.read', 'users.manage'] } }) }));
 const { toast } = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast }) }));
 

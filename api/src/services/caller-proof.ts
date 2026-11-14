@@ -3,15 +3,17 @@ import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import { forbidden, unauthorized } from '../http/errors';
 import { lockLiveSession } from './sessions';
+import { can } from '../security/permissions';
+import type { Permission } from '../security/permissions';
 
 // Who asked for a change, as the request boundary and the route proved it:
-// the signed-in person, their session, their role where the route needs an
-// administrator, and the password they entered again (its stored hash) where
+// the signed-in person, their session, the permission their role must grant
+// where the route needs one, and the password they entered again (its stored hash) where
 // the route asks for it. A change can wait (the person's lock, an account's,
 // rows) after that proof; the final check (final-step.ts) and the
 // installation saves that run under it (policies, the instance backup's
 // schedule) ask again under their locks, so a request whose session was
-// signed out, whose person was deactivated or lost the administrator role,
+// signed out, whose person was deactivated or lost the permission,
 // or whose password was changed while it waited changes nothing.
 //
 // Held for the request's own work only: background work it starts runs
@@ -21,8 +23,8 @@ import { lockLiveSession } from './sessions';
 interface CallerProof {
   userId: string;
   token: string | null;
-  /** The route needs an administrator. */
-  admin?: boolean;
+  /** What the route needs the caller's role to grant (security/permissions.ts). */
+  permission?: Permission;
   /** The stored hash of the password the person entered again; null when the route asks for none. */
   passwordHash?: string | null;
 }
@@ -62,7 +64,7 @@ async function assertCaller(connection: SqlExecutor, proof: CallerProof | null =
   if (proof.passwordHash != null && user.password_hash !== proof.passwordHash) {
     throw forbidden('PASSWORD_CHANGED', 'Your password was changed meanwhile, so nothing was changed. Enter your current password again.');
   }
-  if (proof.admin && user.role !== 'admin') throw forbidden('ADMIN_REQUIRED', 'Only an administrator can do this; nothing was changed.');
+  if (proof.permission && !can(user.role, proof.permission)) throw forbidden('ADMIN_REQUIRED', 'Only an administrator can do this; nothing was changed.');
 }
 
 export { asCaller, assertCaller, currentCaller, outsideCaller };

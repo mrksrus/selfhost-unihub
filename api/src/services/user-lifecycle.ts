@@ -38,13 +38,29 @@ const LAST_ADMIN: Readonly<Record<AdminLoss, string>> = {
  * answer; this is the check that holds.
  */
 async function assertKeepsAnAdmin(connection: SqlExecutor, userId: string, loss: AdminLoss) {
-  const [admins] = await connection.execute<RowDataPacket[]>("SELECT id FROM users WHERE role = 'admin' AND is_active = TRUE ORDER BY id FOR UPDATE");
+  const [admins] = await connection.execute<RowDataPacket[]>("SELECT id FROM users WHERE role IN ('owner', 'admin') AND is_active = TRUE ORDER BY id FOR UPDATE");
   if (admins.length <= 1 && admins.some(row => String(row.id) === userId)) throw badRequest('LAST_ADMIN', LAST_ADMIN[loss]);
+}
+
+const OWNER_PROTECTED: Readonly<Record<AdminLoss, string>> = {
+  delete: 'The owner cannot be deleted. Hand ownership to another administrator first.',
+  demote: 'The owner\'s role cannot be changed. Hand ownership to another administrator first.',
+  deactivate: 'The owner cannot be deactivated. Hand ownership to another administrator first.',
+};
+
+/**
+ * In the transaction of a change that deletes, demotes or deactivates
+ * `userId`, with their row locked: refuses it while they are the owner, who
+ * keeps the installation until they hand it on (POST /api/admin/owner/transfer).
+ */
+async function assertNotOwner(connection: SqlExecutor, userId: string, loss: AdminLoss) {
+  const [rows] = await connection.execute<RowDataPacket[]>("SELECT 1 FROM users WHERE id = ? AND role = 'owner' FOR UPDATE", [userId]);
+  if (rows.length) throw badRequest('OWNER_PROTECTED', OWNER_PROTECTED[loss]);
 }
 
 // Removing a person's account, whether they ask (DELETE /api/settings/account)
 // or an administrator does (DELETE /api/admin/users/:id). The routes keep their
-// own checks (password, role); this owns the last-admin check and the order that keeps the
+// own checks (password, role); this owns the owner and last-admin checks and the order that keeps the
 // outcome recoverable: refuse while a restore writes for this person, stop the
 // mail work that could still write files, delete the users row (every table
 // cascades from it), then remove the files. A file that outlives its rows is a
@@ -117,6 +133,7 @@ async function removeRows(userId: string, { actor, actorId, req }: { actor: Dele
     await assertKeepsAnAdmin(connection, userId, 'delete');
     const [[person]] = await connection.execute<RowDataPacket[]>('SELECT id FROM users WHERE id = ? FOR UPDATE', [userId]);
     if (!person) return false;
+    await assertNotOwner(connection, userId, 'delete');
     await assertFinalStep(connection, { userId, policies: actor === 'self' ? ['account.delete'] : [], anyRestore: true });
     const [result] = await connection.execute<ResultSetHeader>('DELETE FROM users WHERE id = ?', [userId]);
     if (result.affectedRows > 0) {
@@ -163,4 +180,4 @@ async function removeUserFiles(userId: string, files: Set<string>, recordingPath
 }
 
 export type { DeleteActor, DeleteUserResult };
-export { assertKeepsAnAdmin, deleteUser };
+export { assertKeepsAnAdmin, assertNotOwner, deleteUser };

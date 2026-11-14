@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { permissionsOf } from '../../../api/src/security/permissions';
 import { render } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -15,7 +16,7 @@ export function policiesAnswer(changes: Partial<{ [K in PolicyKey]: { value: Pol
 }
 
 export const OWNER: User = { id: 'user-ada', email: 'ada@example.com', full_name: 'Ada Example', role: 'user' };
-export const ADMIN: User = { id: 'user-admin', email: 'admin@example.com', full_name: 'Avery Admin', role: 'admin' };
+export const ADMIN: User = { id: 'user-admin', email: 'admin@example.com', full_name: 'Avery Admin', role: 'admin', permissions: permissionsOf('admin') };
 
 export const testClient = () => new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
 
