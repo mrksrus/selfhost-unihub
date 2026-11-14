@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useUserSettings } from '@/hooks/use-settings';
 import { useModules } from '@/hooks/use-modules';
+import { usePolicy } from '@/hooks/use-policies';
 import { REMINDER_OPTIONS, calendarApi, calendarQueryKeys, type CalendarCalendar } from '@/lib/calendar-api';
 import { defaultEventCalendar, defaultTaskList, listRefusal } from '@/lib/tasks';
 import type { UserSettingValues } from '@/lib/settings-api';
@@ -36,6 +37,8 @@ const taskListCandidates = (calendars: CalendarCalendar[]) => calendars.filter(c
 
 export default function GeneralSettings() {
   const { canAccess } = useModules();
+  // The Music page can be taken away on its own (pages.music) while Recordings stay: it is then no start page to choose.
+  const musicLock = usePolicy('pages.music').lock;
   const { settings, values: preferences, change, unavailable, error, refetch, refetching } = useUserSettings();
   const lock = (key: keyof UserSettingValues) => settings[key].locked ? ADMIN_REASON : undefined;
   const disabled = (key: keyof UserSettingValues) => unavailable || settings[key].locked;
@@ -63,7 +66,7 @@ export default function GeneralSettings() {
             onValueChange={value => change({ default_start_page: value as UserSettingValues['default_start_page'] })}>
             <SelectTrigger id="start-page" className="w-full sm:w-56"><SelectValue /></SelectTrigger>
             <SelectContent>
-              {START_PAGES.filter(page => canAccess(page.path) || page.value === preferences.default_start_page).map(page => (
+              {START_PAGES.filter(page => (canAccess(page.path) && !(page.value === 'music' && musicLock)) || page.value === preferences.default_start_page).map(page => (
                 <SelectItem key={page.value} value={page.value}>{page.label}</SelectItem>
               ))}
             </SelectContent>

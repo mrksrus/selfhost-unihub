@@ -1,8 +1,8 @@
 import { useId, useState } from 'react';
+import { can } from '@/lib/permissions';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Play } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
-import { can } from '@/lib/permissions';
 import { useToast } from '@/hooks/use-toast';
 import { useSecretMutation } from '@/hooks/use-secret-mutation';
 import {
@@ -89,7 +89,7 @@ const AdminInstanceBackup = () => {
   });
   const local = status ? localTimeOf(status.time_utc, user?.timezone) : null;
 
-  const body = !can(user, 'server.settings') ? <p className="text-sm text-muted-foreground">Only admins can see this page.</p>
+  const body = !can(user, 'server.settings') ? <p className="text-sm text-muted-foreground">Only administrators can see this page.</p>
     : query.isLoading ? <LoadingState label="Loading the instance backup…" />
     : query.error || !status ? <ErrorState title="Could not load the instance backup" error={query.error} onRetry={() => void query.refetch()} retrying={query.isFetching} />
     : (

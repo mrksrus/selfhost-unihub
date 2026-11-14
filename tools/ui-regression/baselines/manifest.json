@@ -23,20 +23,20 @@
   },
   "baselines": {
     "admin-policies-app-lock-wide-dark.png": {
-      "sha256": "cadd418786588ff22777c5ee67c4d7ebddaa4d590ab4cb9ce0f4d2bc701934b4",
-      "bytes": 152780
+      "sha256": "ff92ed16c9c10e2a181c8937a8b89a4efb9deb4a63e9c506c4aad118a3ef75d9",
+      "bytes": 153939
     },
     "admin-policies-app-lock-wide-light.png": {
-      "sha256": "2b0f696a60d784bb9158726a75786b952235b02df85fb418bd2b2c74aa9f49f9",
-      "bytes": 155998
+      "sha256": "3807e2faff63593cd4c54c48d6044df048d6573e58789e425245295e556c7dc0",
+      "bytes": 157307
     },
     "admin-policies-wide-dark.png": {
-      "sha256": "8eb11265d88c6758e3b3d005245ebdd0416e82e9a67174951ef835ad190b2aac",
-      "bytes": 141343
+      "sha256": "eb485fa5442940094e86bc0e9e424274566aeec155123b57e99ec3734c853544",
+      "bytes": 132609
     },
     "admin-policies-wide-light.png": {
-      "sha256": "892a19c2d1de30d1fe54f8cec6006fa7c0b812167f043f8ca0f28e4bbf6b33fc",
-      "bytes": 145006
+      "sha256": "8d374164ea406e929db60d1c2f08c321d1d10b149fd55afa22db956d67d452cd",
+      "bytes": 135426
     },
     "bin-phone-dark.png": {
       "sha256": "368ab0af0cef3b0f14868e91ee743795b4f19657eb06561b0aa30f87fc8140d1",
@@ -102,6 +102,30 @@
       "sha256": "a2ba1fd9e8974a1c9b4d869c8c2d1dadf9a3909b1839f813aec6737ea9d6b058",
       "bytes": 115917
     },
+    "group-policies-wide-dark.png": {
+      "sha256": "d51aec2dcdd810df9acc8db4dcd253fb7f75022d4ab3016adb6189bd2182e417",
+      "bytes": 153371
+    },
+    "group-policies-wide-light.png": {
+      "sha256": "7d117e46f37ba8652a5fdaca233082ae54c602b74d85a374631695e58a6c510b",
+      "bytes": 155918
+    },
+    "groups-wide-dark.png": {
+      "sha256": "aef536e84fe780e1db54e2411f3c0bd74d4f06eac56bcd78ce718c34a3a0e0ae",
+      "bytes": 97311
+    },
+    "groups-wide-light.png": {
+      "sha256": "5779bd4008e618b92b6bae432345e6086bcb2974083c8e897acc3417ca4c5b45",
+      "bytes": 97873
+    },
+    "invite-phone-dark.png": {
+      "sha256": "897315652a4ec3265644620fae8a1858a72aafd6628cb9630103c0818cd56d20",
+      "bytes": 49833
+    },
+    "invite-phone-light.png": {
+      "sha256": "e4e52b23b961b07a554919cd487f45b8781bba566069854147533db9dd021ba8",
+      "bytes": 52833
+    },
     "lock-app-phone-dark.png": {
       "sha256": "939dfc129f35d298d59c82d2651f7eb13ae124ab149662be05556be789bf890d",
       "bytes": 13309
@@ -165,6 +189,22 @@
     "new-task-wide-light.png": {
       "sha256": "46692a3498b6a56a22197426e89d4899a9526be0f87ace4a755549bcd205e835",
       "bytes": 111601
+    },
+    "people-wide-dark.png": {
+      "sha256": "2b133f2c7058fe9bcd1f39fef488b5c399bedf5156d877aceee318e55724b678",
+      "bytes": 144096
+    },
+    "people-wide-light.png": {
+      "sha256": "a1aa6730bc15bb5bb94dd5a82d71ce708d3d934224cdf8dcef485fa4585639f3",
+      "bytes": 146598
+    },
+    "person-wide-dark.png": {
+      "sha256": "823ddd7a7bb86cdf7898c0fe746cba5986dcd5218b3035dc0fb94f1b6c007ae6",
+      "bytes": 144781
+    },
+    "person-wide-light.png": {
+      "sha256": "0014db7e0ad8f0e95a23a9e731d79d56abf2d1b7efdc3a120cb843dbf2bca606",
+      "bytes": 147728
     },
     "recordings-phone-dark.png": {
       "sha256": "30b8530f865fd11b7e05379b33d2bb208fef68a34c36933b94d1f77df017952b",
@@ -245,6 +285,14 @@
     "todo-wide-light.png": {
       "sha256": "323d3e50db34ca71c4866aaa50e959a54de923365b32a96513075c8120bca0c2",
       "bytes": 104207
+    },
+    "two-factor-required-phone-dark.png": {
+      "sha256": "541a343a30a4f9f355e3ae608a528187b12078c281b58279673016a3a6de44f9",
+      "bytes": 30799
+    },
+    "two-factor-required-phone-light.png": {
+      "sha256": "4d465e0a642bc349c692a75c9af6e6b5c256154fdbd6600e0028e81f42988d38",
+      "bytes": 33289
     }
   },
   "approvals": [
@@ -818,6 +866,61 @@
         "settings-backup-wide-light.png",
         "settings-pages-wide-dark.png",
         "settings-pages-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-14T14:16:49.106Z",
+      "reason": "0.30.0 organisation screens, designed by the frontend agent within docs/UI_ACCEPTANCE.md (PROJECT-PREFERENCES P-29) and pinned under P-27: twelve new pictures (people-wide, person-wide, groups-wide, group-policies-wide, invite-phone, two-factor-required-phone; dark and light). admin-policies-wide and admin-policies-app-lock-wide change by added content only: the Sign-in, Modules and pages, Notifications and Phone and offline rule groups, the Rules for chooser, and People and Groups in the Server panel.",
+      "source": {
+        "commit": "8664b11e0f8808a3f9c0aa7d28affb4b257df292",
+        "branch": "wip/0.30.0-d",
+        "dirty": false,
+        "digest": "fe8222c60b87d040b604251fbb56f2bf514c711a826521038c45e3963906a942"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [
+        "group-policies-wide-dark.png",
+        "group-policies-wide-light.png",
+        "groups-wide-dark.png",
+        "groups-wide-light.png",
+        "invite-phone-dark.png",
+        "invite-phone-light.png",
+        "people-wide-dark.png",
+        "people-wide-light.png",
+        "person-wide-dark.png",
+        "person-wide-light.png",
+        "two-factor-required-phone-dark.png",
+        "two-factor-required-phone-light.png"
+      ],
+      "changed": [
+        "admin-policies-app-lock-wide-dark.png",
+        "admin-policies-app-lock-wide-light.png",
+        "admin-policies-wide-dark.png",
+        "admin-policies-wide-light.png"
       ],
       "removed": []
     }

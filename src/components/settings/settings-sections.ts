@@ -1,5 +1,6 @@
-import { Archive, ArchiveRestore, Bell, CloudOff, LayoutGrid, ListFilter, Lock, Mail, Palette, Shield, SlidersHorizontal, Trash2, UserRound } from 'lucide-react';
+import { Archive, ArchiveRestore, Bell, CloudOff, HardDriveDownload, LayoutGrid, ListFilter, Lock, Mail, Palette, Server, Shield, ShieldCheck, SlidersHorizontal, Trash2, UserRound, Users, UsersRound } from 'lucide-react';
 import type { ModuleId } from '@/lib/modules';
+import type { Permission } from '@/lib/permissions';
 
 export type SettingsSectionId = 'general' | 'appearance' | 'account' | 'security' | 'app-lock' | 'notifications' | 'offline' | 'pages' | 'mail' | 'mail-rules' | 'backup' | 'bin' | 'delete';
 
@@ -18,6 +19,21 @@ export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; icon: ty
   { id: 'bin', label: 'Bin', icon: ArchiveRestore },
   { id: 'delete', label: 'Delete data', icon: Trash2 },
 ];
+
+/**
+ * The Server pages, each open to whoever the server gave its permission
+ * (lib/permissions.ts can()); the Settings panel and the phone's More page
+ * list the same ones in this order.
+ */
+export const SERVER_PAGES: { id: string; label: string; href: string; icon: typeof Bell; permission: Permission }[] = [
+  { id: 'admin-settings', label: 'Server settings', href: '/admin/settings', icon: Server, permission: 'server.settings' },
+  { id: 'admin-policies', label: 'Policies', href: '/admin/policies', icon: ShieldCheck, permission: 'server.settings' },
+  { id: 'admin-instance-backup', label: 'Instance backup', href: '/admin/instance-backup', icon: HardDriveDownload, permission: 'server.settings' },
+  { id: 'admin-users', label: 'People', href: '/admin/users', icon: Users, permission: 'users.read' },
+  { id: 'admin-groups', label: 'Groups', href: '/admin/groups', icon: UsersRound, permission: 'users.read' },
+];
+/** "Your groups", for a person who manages one. */
+export const MY_GROUPS_PAGE = { id: 'groups', label: 'Your groups', href: '/groups', icon: UsersRound };
 
 // Links from before 0.19.2 used ?tab=. Until 0.24.0, ?section=mail was the rules page; it now opens Mail, which links to the rules.
 const LEGACY_TABS: Record<string, SettingsSectionId> = { general: 'general', modules: 'pages', security: 'security', data: 'backup', mail: 'mail', danger: 'delete' };

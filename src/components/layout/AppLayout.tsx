@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { ServerOff } from 'lucide-react';
 import OfflineBanner from '@/components/offline/OfflineBanner';
 import { Outlet, Navigate } from 'react-router-dom';
@@ -16,6 +16,7 @@ import GlobalCommandPalette from '@/components/GlobalCommandPalette';
 import { MailPeek } from '@/components/mail/MailPeek';
 import { PreferenceAccent } from '@/components/theme/PreferenceAccent';
 import { PolicyNoticeDialog } from '@/components/policies/PolicyNoticeDialog';
+import { TwoFactorReminder, useTwoFactorPrompt } from '@/components/organisation/TwoFactorRequired';
 import { Button } from '@/components/ui/button';
 import { EmptyState, StartingScreen } from '@/components/ui/page-states';
 
@@ -35,6 +36,23 @@ function ServerUnavailable({ onRetry, retrying }: { onRetry: () => Promise<void>
       <EmptyState icon={ServerOff} title="UniHub's server is not answering"
         description="It may be restarting or busy. This page keeps trying; your session is kept."
         action={<Button variant="outline" disabled={retrying} onClick={() => { void onRetry(); }}>{retrying ? 'Trying…' : 'Try again'}</Button>} />
+    </div>
+  );
+}
+
+/**
+ * Two-factor authentication required and the person's grace over: the server
+ * answers nothing but its set-up, so the prompt stands in place of the shell,
+ * after the data rules notice, as the required app lock does.
+ */
+function TwoFactorGate({ children }: { children: ReactNode }) {
+  const prompt = useTwoFactorPrompt();
+  if (!prompt) return children;
+  return (
+    <div className="h-dvh overflow-hidden bg-background">
+      <PreferenceAccent />
+      {prompt}
+      <PolicyNoticeDialog />
     </div>
   );
 }
@@ -76,6 +94,7 @@ const AppLayout = () => {
   }
 
   return (
+    <TwoFactorGate>
     <div className="flex h-dvh overflow-hidden bg-background">
       <PreferenceAccent />
       <div className="hidden md:block">
@@ -84,6 +103,7 @@ const AppLayout = () => {
       {/* Phones: clears the status bar once, above the offline banner and every page header. */}
       <main className="flex min-h-0 min-w-0 flex-1 flex-col pt-[env(safe-area-inset-top,0px)] md:pt-0">
         <OfflineBanner />
+        <TwoFactorReminder />
         <div className="min-h-0 flex-1">
           <Outlet />
         </div>
@@ -94,6 +114,7 @@ const AppLayout = () => {
       <PolicyNoticeDialog />
       <BottomNav />
     </div>
+    </TwoFactorGate>
   );
 };
 

@@ -9,10 +9,12 @@
 // Settings -> App lock (Wide and Phone), the whole-app lock screen (Phone), a
 // module's lock screen (Wide), the required-by-your-administrator prompt
 // (Phone), the Policies page at its App lock group (Wide) and Settings ->
-// Security with Devices (Wide), each in Dark Default and Light Default.
-// Fifty-six pictures; see docs/UI_BASELINES.md.
+// Security with Devices (Wide), and since 0.30.0 Server -> People, a person,
+// Groups and a group's rules (Wide), the setup link page and the required
+// two-factor set-up (Phone), each in Dark Default and Light Default.
+// Sixty-eight pictures; see docs/UI_BASELINES.md.
 import { expect, expectBaseline, test, THEMES, VIEWPORTS, type Page } from '../support/test.ts';
-import { CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_EFFECTIVE_APP_LOCK, USER } from '../support/fixtures.ts';
+import { CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_EFFECTIVE_APP_LOCK, POLICIES_EFFECTIVE_TWO_FACTOR, USER } from '../support/fixtures.ts';
 
 // The app lock's state is this browser's (a PIN record in IndexedDB
 // `unihub-lock-v1`, as src/lib/app-lock/pin.ts keeps it) plus the server's
@@ -44,6 +46,9 @@ async function lockedDevice(page: Page, { scope = CURRENT_DEVICE_LOCKED.settings
   // The rules that put the floors there, with the server's reasons beside the greyed choices.
   await page.route('**/api/policies/effective', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(POLICIES_EFFECTIVE_APP_LOCK) }));
 }
+
+/** A setup link's token as the address carries it; synthetic, the fixture router accepts any. */
+const INVITE_TOKEN = 'c3ludGhldGljLXNldHVwLWxpbmstdG9rZW4tMDEyMzQ1Njc4OQ';
 
 // A row picked up with the keyboard (P-29, D29/D31): Space on the ≡ handle
 // lifts the row with everything it holds; the picture shows that state.
@@ -137,6 +142,36 @@ for (const theme of THEMES) {
           await page.getByRole('combobox', { name: 'Screenshots in the Android app' }).scrollIntoViewIfNeeded();
           await settle();
           await expectBaseline(page, `admin-policies-app-lock-wide-${theme}.png`);
+        });
+
+        // 0.30 (P-29): the organisation's pages. The administrator of the fixtures is the owner, so every control shows.
+        test(`people (wide, ${theme})`, async ({ page, open, settle }) => {
+          await open('/admin/users');
+          await expect(page.getByRole('link', { name: 'Alex Example' })).toBeVisible();
+          await settle();
+          await expectBaseline(page, `people-wide-${theme}.png`);
+        });
+
+        test(`a person (wide, ${theme})`, async ({ page, open, settle }) => {
+          await open('/admin/users/user-alex');
+          await expect(page.getByText('UniHub app 0.29.0 on Android')).toBeVisible();
+          await expect(page.getByRole('switch', { name: 'Support: manager' })).toBeChecked();
+          await settle();
+          await expectBaseline(page, `person-wide-${theme}.png`);
+        });
+
+        test(`groups (wide, ${theme})`, async ({ page, open, settle }) => {
+          await open('/admin/groups');
+          await expect(page.getByRole('link', { name: /^Support/ })).toBeVisible();
+          await settle();
+          await expectBaseline(page, `groups-wide-${theme}.png`);
+        });
+
+        test(`a group's rules (wide, ${theme})`, async ({ page, open, settle }) => {
+          await open('/admin/groups/grp-support?view=rules');
+          await expect(page.getByRole('combobox', { name: 'Two-factor authentication' })).toHaveText('Required');
+          await settle();
+          await expectBaseline(page, `group-policies-wide-${theme}.png`);
         });
       });
 
@@ -250,6 +285,23 @@ for (const theme of THEMES) {
         await expect(page.getByRole('heading', { name: 'Your administrator requires the app lock' })).toBeVisible();
         await settle();
         await expectBaseline(page, `lock-required-phone-${theme}.png`);
+      });
+
+      // 0.30: the public page of a setup link, and the two-factor set-up a rule requires once the 7 days are over.
+      test(`setup link page (phone, ${theme})`, async ({ page, open, settle }) => {
+        await page.route('**/api/auth/me', route => route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Not signed in' }) }));
+        await open(`/invite#${INVITE_TOKEN}`);
+        await expect(page.getByRole('heading', { name: 'Set up your UniHub account' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `invite-phone-${theme}.png`);
+      });
+
+      test(`two-factor authentication required (phone, ${theme})`, async ({ page, open, settle }) => {
+        await page.route('**/api/policies/effective', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(POLICIES_EFFECTIVE_TWO_FACTOR) }));
+        await open('/todo');
+        await expect(page.getByRole('heading', { name: 'Set up two-factor authentication to continue' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `two-factor-required-phone-${theme}.png`);
       });
 
       test(`recordings (phone, ${theme})`, async ({ page, open }) => {

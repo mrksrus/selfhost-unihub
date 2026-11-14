@@ -2,14 +2,16 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
-import { changePassword, confirmTwoFactorSetup, disableTwoFactor, fetchTwoFactorStatus, regenerateRecoveryCodes, startTwoFactorSetup, twoFactorStatusQueryKey, type TwoFactorSetup } from '@/lib/auth-api';
+import { changePassword, disableTwoFactor, fetchTwoFactorStatus, regenerateRecoveryCodes, startTwoFactorSetup, twoFactorStatusQueryKey, type TwoFactorSetup } from '@/lib/auth-api';
+import { usePolicy } from '@/hooks/use-policies';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ErrorState } from '@/components/ui/page-states';
-import { TotpQrCode } from '@/components/settings/TotpQrCode';
+import { RecoveryCodes, TwoFactorSetupDialog } from '@/components/settings/TwoFactorSetupDialog';
+import { PolicyNote } from '@/components/ui/policy-note';
 import { Devices } from '@/components/settings/Devices';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 
@@ -26,24 +28,18 @@ function Field({ id, label, ...props }: { id: string; label: string } & React.Co
   );
 }
 
-function RecoveryCodes({ codes }: { codes: string[] }) {
-  return (
-    <ul aria-label="Recovery codes" className="grid grid-cols-2 gap-2 rounded-md border border-border p-3 font-mono text-sm">
-      {codes.map(code => <li key={code}>{code}</li>)}
-    </ul>
-  );
-}
-
 function PasswordDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const { signOut } = useAuth();
   const { toast } = useToast();
   const [form, setForm] = useState(emptyPasswordForm);
   const [busy, setBusy] = useState(false);
+  // The shortest password the administrator's rule accepts for this person; the server checks it anyway.
+  const minimum = usePolicy('auth.password_min_length');
   const close = (next: boolean) => { onOpenChange(next); if (!next) setForm(emptyPasswordForm); };
 
   const submit = async () => {
     if (form.new_password !== form.confirm_password) { toast({ title: 'The new passwords do not match', variant: 'destructive' }); return; }
-    if (form.new_password.length < 12) { toast({ title: 'Use at least 12 characters for the new password', variant: 'destructive' }); return; }
+    if (form.new_password.length < minimum.value) { toast({ title: `Use at least ${minimum.value} characters for the new password`, variant: 'destructive' }); return; }
     setBusy(true);
     try {
       await changePassword(form.current_password, form.new_password);
@@ -67,8 +63,15 @@ function PasswordDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
         <form className="space-y-4" onSubmit={event => { event.preventDefault(); void submit(); }}>
           <Field id="current-password" label="Current password" type="password" autoComplete="current-password"
             value={form.current_password} onChange={event => setForm(prev => ({ ...prev, current_password: event.target.value }))} />
-          <Field id="new-password" label="New password" type="password" autoComplete="new-password"
-            value={form.new_password} onChange={event => setForm(prev => ({ ...prev, new_password: event.target.value }))} />
+          <div>
+            <Field id="new-password" label="New password" type="password" autoComplete="new-password" aria-describedby="new-password-hint"
+              value={form.new_password} onChange={event => setForm(prev => ({ ...prev, new_password: event.target.value }))} />
+            <div id="new-password-hint">
+              {minimum.source === 'policy' && minimum.reason
+                ? <PolicyNote reason={minimum.reason} />
+                : <p className="mt-1 text-xs text-muted-foreground">At least {minimum.value} characters.</p>}
+            </div>
+          </div>
           <Field id="confirm-password" label="New password again" type="password" autoComplete="new-password"
             value={form.confirm_password} onChange={event => setForm(prev => ({ ...prev, confirm_password: event.target.value }))} />
           <DialogFooter className="gap-2 sm:gap-0">
@@ -85,12 +88,10 @@ export default function SecuritySettings() {
   const { user, setUser } = useAuth();
   const { toast } = useToast();
   const [passwordOpen, setPasswordOpen] = useState(false);
-  const [setupOpen, setSetupOpen] = useState(false);
   const [disableOpen, setDisableOpen] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [setup, setSetup] = useState<TwoFactorSetup | null>(null);
   const [code, setCode] = useState('');
-  const [setupPassword, setSetupPassword] = useState('');
   const [disableForm, setDisableForm] = useState({ current_password: '', code: '' });
   const [newCodes, setNewCodes] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -113,24 +114,13 @@ export default function SecuritySettings() {
     }
   };
 
-  const startSetup = () => {
-    setNewCodes(null); setCode(''); setSetupPassword('');
-    void run<TwoFactorSetup | null>('Could not start two-factor authentication setup', startTwoFactorSetup, data => {
-      setSetup(data);
-      setSetupOpen(true);
-    });
-  };
+  // Required by the administrator: turning it off is refused by the server, and the button says why.
+  const requirement = usePolicy('auth.two_factor');
+  const required = requirement.value === 'required' ? requirement.reason ?? 'Your administrator requires two-factor authentication.' : undefined;
 
-  const confirmSetup = () => {
-    if (!setup) return;
-    void run('Could not turn on two-factor authentication',
-      () => confirmTwoFactorSetup({ secret: setup.secret, code, current_password: setupPassword }), async recoveryCodes => {
-        setSetupPassword('');
-        setNewCodes(recoveryCodes);
-        setUser(user ? { ...user, two_factor_enabled: true } : user);
-        await statusQuery.refetch();
-        toast({ title: 'Two-factor authentication is on' });
-      });
+  const startSetup = () => {
+    setNewCodes(null);
+    void run<TwoFactorSetup | null>('Could not start two-factor authentication setup', startTwoFactorSetup, setSetup);
   };
 
   const disable = () => void run('Could not turn off two-factor authentication', () => disableTwoFactor(disableForm), async () => {
@@ -151,7 +141,6 @@ export default function SecuritySettings() {
       toast({ title: 'New recovery codes created' });
     });
 
-  const closeSetup = () => { setSetupOpen(false); setSetup(null); setCode(''); setSetupPassword(''); };
 
   return (
     <>
@@ -159,7 +148,7 @@ export default function SecuritySettings() {
         <SettingsRow label="Password" description="Changing it signs out every device.">
           <Button variant="outline" onClick={() => setPasswordOpen(true)}>Change password</Button>
         </SettingsRow>
-        <SettingsRow label="Two-factor authentication"
+        <SettingsRow label="Two-factor authentication" lock={required}
           description={statusQuery.isLoading ? 'Checking…'
             : status?.enabled ? `On. ${status.recoveryCodesRemaining} recovery code${status.recoveryCodesRemaining === 1 ? '' : 's'} left.`
             : 'Ask for a code from an authenticator app when signing in.'}>
@@ -167,7 +156,7 @@ export default function SecuritySettings() {
             <>
               {/* New codes need a readable authenticator key; without one the server refuses. */}
               {status.secretReadable !== false && <Button variant="outline" onClick={() => setRecoveryOpen(true)}>New recovery codes</Button>}
-              <Button variant="outline" onClick={() => setDisableOpen(true)}>Turn off</Button>
+              <Button variant="outline" onClick={() => setDisableOpen(true)} disabled={!!required}>Turn off</Button>
             </>
           ) : statusQuery.isLoading || statusQuery.error ? null : (
             <Button variant="outline" onClick={startSetup} disabled={busy}>{busy && <Loader2 aria-hidden="true" className="animate-spin" />}Set up</Button>
@@ -185,7 +174,7 @@ export default function SecuritySettings() {
             <ErrorState title="Could not check two-factor authentication" error={statusQuery.error} onRetry={() => void statusQuery.refetch()} retrying={statusQuery.isFetching} />
           </SettingsBlock>
         )}
-        {newCodes && newCodes.length > 0 && !setupOpen && (
+        {newCodes && newCodes.length > 0 && !setup && (
           <SettingsBlock>
             <p className="mb-1 text-sm font-medium">Your new recovery codes</p>
             <p className="mb-3 text-sm text-muted-foreground">Keep them somewhere safe. Each one signs you in once if you lose your authenticator app.</p>
@@ -230,44 +219,7 @@ export default function SecuritySettings() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={setupOpen} onOpenChange={open => { if (!open) closeSetup(); }}>
-        <DialogContent className="sm:max-w-xl">
-          <DialogHeader><DialogTitle>Set up two-factor authentication</DialogTitle></DialogHeader>
-          {!newCodes ? (
-            <form className="space-y-4" onSubmit={event => { event.preventDefault(); confirmSetup(); }}>
-              <p className="text-sm text-muted-foreground">
-                Scan the code with your authenticator app, or open it in the app on this device, or type the key. Then enter your password and the 6-digit code the app shows.
-              </p>
-              {setup?.otpauth_uri && (
-                <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-start">
-                  <TotpQrCode uri={setup.otpauth_uri} />
-                  <div className="w-full min-w-0 space-y-3">
-                    <div className="space-y-2">
-                      <p className="text-sm font-medium">Setup key</p>
-                      <p className="break-all rounded-md bg-muted px-3 py-2 font-mono text-sm">{setup.secret}</p>
-                    </div>
-                    <Button variant="outline" asChild className="w-full sm:w-auto"><a href={setup.otpauth_uri}>Open in authenticator app</a></Button>
-                  </div>
-                </div>
-              )}
-              <Field id="confirm-2fa-password" label="Current password" type="password" autoComplete="current-password" value={setupPassword} onChange={event => setSetupPassword(event.target.value)} />
-              <Field id="confirm-2fa-code" label="Authenticator code" inputMode="numeric" autoComplete="one-time-code" value={code} onChange={event => setCode(event.target.value)} />
-              <DialogFooter className="gap-2 sm:gap-0">
-                <Button type="button" variant="ghost" onClick={closeSetup}>Cancel</Button>
-                <Button type="submit" disabled={busy || !code.trim() || !setupPassword}>{busy && <Loader2 aria-hidden="true" className="animate-spin" />}Turn on</Button>
-              </DialogFooter>
-            </form>
-          ) : (
-            <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                Two-factor authentication is on and your other devices were signed out. Save these recovery codes now; they are not shown again.
-              </p>
-              <RecoveryCodes codes={newCodes} />
-              <DialogFooter><Button onClick={closeSetup}>Done</Button></DialogFooter>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      <TwoFactorSetupDialog setup={setup} onClose={() => setSetup(null)} onEnabled={async recoveryCodes => { setNewCodes(recoveryCodes); await statusQuery.refetch(); }} />
     </>
   );
 }
