@@ -155,6 +155,19 @@ export async function clearOfflineData() {
   }
 }
 
+/**
+ * offline.copies forbidden (0.30): the server refuses new copies but cannot
+ * erase one a browser holds, so the page deletes the signed-in person's own
+ * copy when it reads the rule. A copy of nobody signed in here is left alone.
+ * Returns whether a copy was deleted.
+ */
+export async function deleteOwnOfflineCopy() {
+  const pointer = currentPointer();
+  if (!account || pointer?.userId !== account) return false;
+  await clearOfflineData();
+  return true;
+}
+
 async function saveSnapshot(snapshot: OfflineSnapshot, user: User, epoch: string, observed: number, signal?: AbortSignal) {
   const stillCurrent = () => !signal?.aborted && generation === observed && account === user.id && localStorage.getItem(EPOCH_KEY) === epoch;
   if (!stillCurrent()) throw new Error('The account or offline setting changed. Offline data was not saved.');

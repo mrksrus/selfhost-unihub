@@ -7,6 +7,8 @@ import { onAppEvent } from '@/lib/app-events';
 import { clearAppLockData, noteSignIn } from '@/lib/app-lock/session';
 import { deviceBinding, reportLockState } from '@/lib/devices-api';
 import { deviceLock } from '@/lib/platform';
+import { ApiError } from '@/lib/api-error';
+import type { InviteAcceptRequest } from '../../api/src/contracts/organisation';
 
 const AUTH_CHANGE_KEY = 'unihub:auth-change';
 // A busy server (a saturated database) can take far longer than this; the
@@ -193,6 +195,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { error: new Error('Failed to sign up') };
   };
 
+  const acceptInvite = async (token: string, password: string, fullName: string | null = null, rulesRevision: number | null = null) => {
+    const version = beginAuthentication();
+    const body: InviteAcceptRequest = {
+      token,
+      password,
+      device: deviceBinding(),
+      ...(fullName?.trim() ? { full_name: fullName.trim() } : {}),
+      ...(rulesRevision ? { rules_revision: rulesRevision } : {}),
+    };
+    const response = await api.post<{ csrfToken?: string; user?: User }>('/auth/invite/accept', body);
+    if (version !== authVersion.current) return { error: new Error('The session changed. Please sign in again.') };
+    // ApiError keeps the code, so the page can tell an expired link (INVITE_INVALID) from a weak password.
+    if (response.error) return { error: new ApiError(response) };
+    if (response.data?.user) {
+      await acceptSession(response.data.user, response.data.csrfToken, version);
+      return { error: null };
+    }
+    return { error: new Error('Failed to set up the account') };
+  };
+
   const signIn = async (email: string, password: string) => {
     const version = beginAuthentication();
     const response = await api.post<{ csrfToken?: string; user?: User; requires2fa?: boolean; challengeToken?: string }>('/auth/signin', {
@@ -277,7 +299,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, loading, serverUnavailable, retrySession: refreshSession, isOffline, offlineSavedAt, setUser, signUp, signIn, verifyTwoFactorLogin, signOut }}>
+    <AuthContext.Provider value={{ user, session, loading, serverUnavailable, retrySession: refreshSession, isOffline, offlineSavedAt, setUser, signUp, acceptInvite, signIn, verifyTwoFactorLogin, signOut }}>
       {children}
     </AuthContext.Provider>
   );
