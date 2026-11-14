@@ -3,6 +3,8 @@ import type { SqlExecutor } from '../types';
 
 import { db } from '../state';
 import { MODULE_CATALOG, PAGE_CATALOG, RETIRED_MODULE_IDS } from './module-catalog';
+import { policyForbids, policyOff, policyOffByUser } from './settings';
+import type { PolicyOff } from './settings';
 
 interface ModulePreferences { id: string; visible: boolean; enabled: boolean; background: boolean }
 type ModuleUpdates = Record<string, Partial<Pick<ModulePreferences, 'visible' | 'enabled' | 'background'>>>;
@@ -130,12 +132,25 @@ async function readSetting(userId: string, key: string, connection: SqlExecutor)
   const [rows] = await connection.execute<(RowDataPacket & { setting_value: unknown })[]>('SELECT setting_value FROM user_settings WHERE user_id = ? AND setting_key = ?', [userId, key]);
   return rows[0]?.setting_value;
 }
-async function getUserModules(userId: string, connection: SqlExecutor = db) {
+// A module an administrator's policy forbids (modules.<id>, 0.30) is off
+// for the person whatever their switch says, and carries the policy and its
+// reason; the switch itself stays as they set it, so the module comes back
+// as it was when the policy allows it again.
+function withModulePolicies<T extends { id: string; enabled: boolean }>(modules: readonly T[], off: ReadonlyMap<string, PolicyOff>) {
+  return modules.map((module): T & { policy?: PolicyOff } => off.has(module.id) ? { ...module, enabled: false, policy: off.get(module.id)! } : module);
+}
+/** The person's own switches, without the policies. */
+async function getOwnModules(userId: string, connection: SqlExecutor = db) {
   return modulesFromValue(await readSetting(userId, SETTING_KEY, connection));
+}
+/** The person's modules as they apply: their switches under their policies. */
+async function getUserModules(userId: string, connection: SqlExecutor = db) {
+  const own = await getOwnModules(userId, connection);
+  return withModulePolicies(own, (await policyOff(userId, connection)).modules);
 }
 // The person's module switches as committed now, on a transaction's
 // connection, held shared until it ends: a switch saved meanwhile waits
-// (final-step.ts).
+// (final-step.ts, which reads the module policies under its own lock).
 async function lockedUserModules(userId: string, connection: SqlExecutor) {
   const [rows] = await connection.execute<(RowDataPacket & { setting_value: unknown })[]>(
     'SELECT setting_value FROM user_settings WHERE user_id = ? AND setting_key = ? LOCK IN SHARE MODE', [userId, SETTING_KEY]);
@@ -145,12 +160,20 @@ async function lockedUserModules(userId: string, connection: SqlExecutor) {
 async function getOrderedUserModules(userId: string, connection: SqlExecutor = db) {
   return sortModules(await getUserModules(userId, connection), await readSetting(userId, ORDER_KEY, connection));
 }
+// A page a policy turns off (pages.<id>), or a page of a module a policy
+// turns off, is hidden and carries the policy and its reason: navigation,
+// More, the start page and search links leave it out.
 async function getUserPages(userId: string, connection: SqlExecutor = db) {
-  const modules = await getUserModules(userId, connection);
+  const own = await getOwnModules(userId, connection);
+  const off = await policyOff(userId, connection);
   const moduleOrder = orderFromValue(await readSetting(userId, ORDER_KEY, connection));
-  return pagesFromValues(modules, moduleOrder,
+  const pages = pagesFromValues(own, moduleOrder,
     await readSetting(userId, PAGE_SETTING_KEY, connection),
     await readSetting(userId, PAGE_ORDER_KEY, connection));
+  return pages.map(page => {
+    const policy = off.pages.get(page.id) ?? (page.module ? off.modules.get(page.module) : undefined);
+    return policy ? { ...page, visible: false, policy } : page;
+  });
 }
 async function isModuleEnabled(userId: string, id: string, connection: SqlExecutor = db) {
   return (await getUserModules(userId, connection)).find(module => module.id === id)?.enabled === true;
@@ -161,6 +184,16 @@ async function isModuleBackgroundEnabled(userId: string, id: string, connection:
 }
 async function setUserModules(userId: string, input: unknown, connection: SqlExecutor = db) {
   const { modules: updates, order, pages, pageOrder } = validateModuleRequest(input);
+  // Turning on what a policy forbids is refused; turning it off or hiding it stays the person's choice.
+  const off = await policyOff(userId, connection);
+  for (const [id, changes] of Object.entries(updates ?? {})) {
+    const policy = off.modules.get(id);
+    if (policy && changes.enabled === true) throw policyForbids(policy.key, policy.reason);
+  }
+  for (const [id, changes] of Object.entries(pages ?? {})) {
+    const policy = off.pages.get(id);
+    if (policy && changes.visible === true) throw policyForbids(policy.key, policy.reason);
+  }
   // Merge in one database statement so concurrent updates to different controls
   // cannot overwrite one another. user_settings is already archived and owner-scoped.
   if (updates) await connection.execute(`INSERT INTO user_settings (user_id, setting_key, setting_value) VALUES (?, ?, ?)
@@ -177,9 +210,22 @@ async function setUserModules(userId: string, input: unknown, connection: SqlExe
   [userId, PAGE_ORDER_KEY, JSON.stringify(pageOrder)]);
   return getOrderedUserModules(userId, connection);
 }
+// Per person, the modules whose background work is paused: switched off,
+// background work off, or forbidden by a policy (every person is listed
+// while the installation's policies forbid a module).
 async function getBackgroundPausedModulesByUser(connection: SqlExecutor = db) {
   const [rows] = await connection.execute<(RowDataPacket & { user_id: string; setting_value: unknown })[]>('SELECT user_id, setting_value FROM user_settings WHERE setting_key = ?', [SETTING_KEY]);
-  return new Map(rows.map(row => [row.user_id, new Set(modulesFromValue(row.setting_value).filter(module => !module.enabled || !module.background).map(module => module.id))]));
+  const paused = new Map(rows.map(row => [String(row.user_id), new Set(modulesFromValue(row.setting_value).filter(module => !module.enabled || !module.background).map(module => module.id))]));
+  const { everyone, byUser } = await policyOffByUser(connection);
+  const people = everyone.size ? (await connection.execute<RowDataPacket[]>('SELECT id FROM users'))[0].map(row => String(row.id)) : [...byUser.keys()];
+  for (const userId of people) {
+    const off = byUser.get(userId) ?? everyone;
+    if (!off.size) continue;
+    const modules = paused.get(userId) ?? new Set<string>();
+    for (const id of off) modules.add(id);
+    paused.set(userId, modules);
+  }
+  return paused;
 }
 export {
   lockedUserModules,
@@ -196,6 +242,8 @@ export {
   validateModuleUpdates,
   validateModuleRequest,
   getUserModules,
+  getOwnModules,
+  withModulePolicies,
   getOrderedUserModules,
   isModuleEnabled,
   isModuleBackgroundEnabled,

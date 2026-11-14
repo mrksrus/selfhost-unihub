@@ -134,7 +134,8 @@ test('a destructive step follows the rules in force when it acts, with an owner,
 
   await fromDefaults('R4: rules shown with a revision are that revision\'s, while an administrator saves between the reads', async () => {
     const before = await call(alex, 'GET', '/api/policies/effective');
-    const pause = pauseAfter("setting_key LIKE 'policy.%'");
+    // On the snapshot's connection: the request boundary's own read of the rules (on the pool) comes before it.
+    const pause = pauseAfter("setting_key LIKE 'policy.%'", { onConnection: true });
     const pending = alex.request('GET', '/api/policies/effective');
     try {
       await pause.reached();

@@ -130,7 +130,16 @@ export interface EffectivePoliciesResponse {
 export interface AcknowledgePoliciesRequest { revision: number }
 export interface AcknowledgePoliciesResponse { acknowledged_revision: number }
 
-/** One key as administrators see it. */
+/** A group that sets a key, on the installation's (Everyone's) page. */
+export interface AdminPolicyGroup<V = unknown> { id: string; name: string; value: V }
+
+/**
+ * One key as administrators see it. On a group's page (0.30) `value` is the
+ * group's own value where it sets one (source 'policy'), else Everyone's
+ * (source 'default'); `default` is Everyone's value, and a key with an order
+ * lists only the values at least as strict as Everyone's: a group only makes
+ * a rule stricter.
+ */
 export interface AdminPolicy<K extends PolicyKey = PolicyKey> {
   value: PolicyValues[K];
   source: PolicySource;
@@ -139,25 +148,42 @@ export interface AdminPolicy<K extends PolicyKey = PolicyKey> {
   values: PolicyValues[K][];
   /** What the change means for existing data, for example "Existing Sync accounts keep working". */
   effect: string | null;
+  /** Everyone's page: the groups that set the key, by name; absent when none does. */
+  groups?: AdminPolicyGroup<PolicyValues[K]>[];
+  /**
+   * Everyone's page, a key without an order (new mail accounts' mode, deleting
+   * at the provider): some person's groups set different values, so Everyone's
+   * value holds for them. Absent otherwise.
+   */
+  conflict?: true;
 }
 
 /** The bin's minimum retention as administrators see it. */
 export interface AdminBinMinimumRetention {
   value: BinMinimumRetention;
   source: PolicySource;
-  default: 'forever';
+  /** 'forever' on Everyone's page; Everyone's value on a group's. */
+  default: BinMinimumRetention;
   values: BinMinimumRetention[];
   /** True while bin.delete is forbidden: only then does the minimum hold anything. */
   applies: boolean;
   effect: string;
+  /** Everyone's page: the groups that set a minimum; absent when none does. */
+  groups?: AdminPolicyGroup<BinMinimumRetention>[];
 }
 
-/** GET /api/admin/policies (permission server.settings). */
+/**
+ * GET /api/admin/policies (Everyone, the installation) and GET
+ * /api/admin/groups/:id/policies (a group, 0.30; 404 GROUP_NOT_FOUND), both
+ * with permission server.settings.
+ */
 export interface AdminPoliciesResponse {
   policies: { [K in PolicyKey]: AdminPolicy<K> };
   /** Always sent since 0.28 C2. */
   bin_min_retention?: AdminBinMinimumRetention;
   revision: number;
+  /** A group's page (0.30): the group; absent on Everyone's page. */
+  target?: { kind: 'group'; id: string; name: string };
 }
 
 /**
@@ -177,6 +203,22 @@ export interface AdminPoliciesResponse {
 export interface AdminPoliciesUpdateRequest {
   values: Partial<PolicyValues>;
   bin_min_retention?: BinMinimumRetention;
+  current_password: string;
+}
+
+/**
+ * PUT /api/admin/groups/:id/policies (0.30): as AdminPoliciesUpdateRequest,
+ * for one group, answered with the group's AdminPoliciesResponse. A value
+ * must be at least as strict as Everyone's (else 400 POLICY_INVALID); `clear`
+ * removes the group's policy of each key named ('bin.min_retention' for the
+ * bin's minimum), so Everyone's value holds again. Combinations are checked
+ * for the group with Everyone's and for each member (400 POLICY_CONFLICT
+ * naming the group or the person); 404 GROUP_NOT_FOUND.
+ */
+export interface AdminGroupPoliciesUpdateRequest {
+  values?: Partial<PolicyValues>;
+  bin_min_retention?: BinMinimumRetention;
+  clear?: (PolicyKey | 'bin.min_retention')[];
   current_password: string;
 }
 

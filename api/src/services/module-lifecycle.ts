@@ -1,5 +1,7 @@
 import { realtime } from './realtime';
 import { onMailModuleChanged } from './mail-sync-control';
+import { getOwnModules, withModulePolicies } from './module-settings';
+import { policyOff, takeUnappliedModules } from './settings';
 
 // What a saved module choice means for running work. PUT /api/modules saves
 // the preferences and then calls applyModuleChange with the states before and
@@ -23,12 +25,23 @@ async function applyModuleChange(userId: string, previous: readonly ModuleState[
 }
 
 /**
- * After a policy save or a membership change commits: what it means for the
- * running work of the people it reached (their modules, open streams).
- * shortcut: no policy reaches modules or streams yet; the policy engine
- * (module policies, session lifetime, two-factor) fills this in.
+ * After a policy save or a membership change committed (settings.ts
+ * lockRules ... checkPeoplePolicies), for each person it reached whose
+ * policies changed: the modules a policy turned off or on run the same
+ * hooks as the person's own switch, and open event streams filter by the
+ * modules now on.
  */
-async function applyPolicyChange(_userIds: readonly string[]): Promise<void> {}
+async function applyPolicyChange(userIds: readonly string[]): Promise<void> {
+  for (const userId of userIds) {
+    const before = takeUnappliedModules(userId);
+    if (!before) continue;
+    const own = await getOwnModules(userId);
+    const previous = withModulePolicies(own, before);
+    const next = withModulePolicies(own, (await policyOff(userId)).modules);
+    if (previous.every((module, index) => module.enabled === next[index].enabled)) continue;
+    await applyModuleChange(userId, previous, next);
+  }
+}
 
 export { applyModuleChange, applyPolicyChange };
 export type { ModuleState };
