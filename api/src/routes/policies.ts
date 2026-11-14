@@ -1,12 +1,15 @@
 import type { ServerResponse } from 'node:http';
 import type { RouteRequest } from '../types';
-import type { AdminPoliciesResponse, EffectivePoliciesResponse } from '../contracts/policies';
+import type { AdminPoliciesResponse, EffectivePoliciesResponse, PolicyPreviewResponse } from '../contracts/policies';
 import { defineRoutes } from '../http/route';
 import { confirmPasswordHash } from '../security/reauthentication';
 import { getAuthTokenFromRequest } from '../auth';
 import { asCaller } from '../services/caller-proof';
 import { acknowledgePolicies, getAdminPolicies, getEffectivePolicies, getGroupPolicies, updateAdminPolicies, updateGroupPolicies } from '../services/settings';
-import { twoFactorRequirement } from '../services/sign-in-policies';
+import { previewTwoFactor, syncTwoFactorGrace, twoFactorRequirement } from '../services/sign-in-policies';
+import { groupExists, groupMemberIds } from '../services/groups';
+import { notFound } from '../http/errors';
+import { log } from '../log';
 
 type GroupRequest = RouteRequest & { params: Record<string, string> };
 
@@ -35,8 +38,21 @@ export = defineRoutes({
     handler: async (req: RouteRequest, userId: string, body: unknown, res: ServerResponse) => {
       const confirmed = await confirmPasswordHash(userId, (body as { current_password?: unknown } | null)?.current_password, res);
       if ('refused' in confirmed) return confirmed.refused;
-      return { ...await asCaller({ userId, token: getAuthTokenFromRequest(req), permission: 'server.settings', passwordHash: confirmed.passwordHash },
-        () => updateAdminPolicies(userId, body, { req })) };
+      const saved = await asCaller({ userId, token: getAuthTokenFromRequest(req), permission: 'server.settings', passwordHash: confirmed.passwordHash },
+        () => updateAdminPolicies(userId, body, { req }));
+      // The 2FA grace counts from the save; the gate starts any it missed.
+      await syncTwoFactorGrace().catch(error => log.error('POLICIES', 'Starting the 2FA graces failed', error));
+      return { ...saved };
+    } },
+
+  // Before saving auth.two_factor = required for Everyone or a group: who it
+  // covers without 2FA, and who of them is already in a grace. Reads only.
+  'POST /api/admin/policies/preview': { auth: 'admin', permission: 'server.settings', module: null, restoreSection: null, body: { limit: 1024 },
+    handler: async (_req: RouteRequest, _userId: string, body: unknown) => {
+      const groupId = (body as { group_id?: unknown } | null)?.group_id ?? null;
+      if (groupId !== null && (typeof groupId !== 'string' || !await groupExists(groupId))) throw notFound('GROUP_NOT_FOUND', 'Group not found');
+      const preview: PolicyPreviewResponse = await previewTwoFactor(groupId === null ? null : await groupMemberIds(groupId));
+      return { ...preview };
     } },
 
   'GET /api/admin/groups/:id/policies': { auth: 'admin', permission: 'server.settings', module: null, handler: async (req: GroupRequest) => {
