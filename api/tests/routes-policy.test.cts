@@ -83,7 +83,7 @@ test('the public routes are exactly the ones a client needs before signing in, a
   const publicKeys = Object.keys(routes).filter(key => routes[key].auth === 'public').sort();
   assert.deepEqual(publicKeys, [
     'GET /api/auth/signup-mode', 'GET /api/backup/export', 'GET /api/files/tickets/:token', 'GET /api/version', 'GET /health',
-    'POST /api/auth/2fa/login', 'POST /api/auth/signin', 'POST /api/auth/signup',
+    'POST /api/auth/2fa/login', 'POST /api/auth/invite/accept', 'POST /api/auth/invite/check', 'POST /api/auth/signin', 'POST /api/auth/signup',
   ]);
 });
 
@@ -128,7 +128,7 @@ test('restore sections: every section has a write route, destructive settings lo
 
 test('CSRF: sign-in and sign-up need no token, exactly the service-worker routes accept the background header', () => {
   const none = Object.keys(routes).filter(key => routes[key].csrf === 'none').sort();
-  assert.deepEqual(none, ['POST /api/auth/signin', 'POST /api/auth/signup']);
+  assert.deepEqual(none, ['POST /api/auth/invite/accept', 'POST /api/auth/invite/check', 'POST /api/auth/signin', 'POST /api/auth/signup']);
   const header = Object.keys(routes).filter(key => routes[key].csrf === 'background-header').sort();
   assert.deepEqual(header, ['DELETE /api/recordings/uploads/:id', 'POST /api/mail/sync/background', 'POST /api/recordings/uploads/:id/chunk',
     'POST /api/recordings/uploads/:id/complete', 'POST /api/recordings/uploads/start']);
@@ -207,7 +207,7 @@ const openGates = (required: string[]) => (sql: string) => {
 };
 
 test('with the whole app required, every signed-in route that is not exempt refuses a device without the lock before its handler', async (t) => {
-  const { run, queries } = boundary(t, { userId: 'alex', role: 'admin', answer: openGates(['app']) });
+  const { run, queries } = boundary(t, { userId: 'alex', role: 'owner', answer: openGates(['app']) });
   const keys = Object.keys(routes).filter(key => routes[key].auth !== 'public' && routes[key].appLock !== 'exempt');
   assert.ok(keys.length > 100, `${keys.length} locked routes`);
   for (const key of keys) {
@@ -219,7 +219,7 @@ test('with the whole app required, every signed-in route that is not exempt refu
 });
 
 test('with Mail required, a device without the lock loses the Mail routes and the routes of no module, and keeps the other modules', async (t) => {
-  const { run } = boundary(t, { userId: 'alex', role: 'admin', answer: openGates(['mail']) });
+  const { run } = boundary(t, { userId: 'alex', role: 'owner', answer: openGates(['mail']) });
   const locked = (key: string) => routes[key].auth !== 'public' && routes[key].appLock !== 'exempt' && (routes[key].module === 'mail' || !routes[key].module);
   for (const key of Object.keys(routes).filter(locked)) {
     const result = await run(key);
@@ -291,6 +291,12 @@ const NOT_DESTRUCTIVE: Readonly<Record<string, string>> = {
   'DELETE /api/admin/users/:id/bin/:itemId': 'admin path, as above',
   'POST /api/admin/users/:id/bin/empty': 'admin path, as above',
   'POST /api/admin/users/:id/clear/:module': 'admin path, as above',
+  // The organisation (0.30): sign-ins, links and memberships, no person's data.
+  'DELETE /api/admin/users/:id/setup-link': 'revokes a sign-up link; no data',
+  'DELETE /api/admin/users/:id/devices/:deviceId': 'admin path: signs devices out; no data',
+  'DELETE /api/admin/users/:id/devices': 'admin path: signs devices out; no data',
+  'DELETE /api/admin/groups/:id': 'admin path: a group, its memberships and its policies; no person\'s data',
+  'DELETE /api/groups/:id/members/:userId': 'a membership; no data',
 };
 const removesData = (key: string) => {
   const [method, path] = key.split(' ');
