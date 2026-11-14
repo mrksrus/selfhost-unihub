@@ -6,10 +6,9 @@ import { confirmPasswordHash } from '../security/reauthentication';
 import { getAuthTokenFromRequest } from '../auth';
 import { asCaller } from '../services/caller-proof';
 import { acknowledgePolicies, getAdminPolicies, getEffectivePolicies, getGroupPolicies, updateAdminPolicies, updateGroupPolicies } from '../services/settings';
-import { previewTwoFactor, syncTwoFactorGrace, twoFactorRequirement } from '../services/sign-in-policies';
+import { previewTwoFactor, twoFactorRequirement } from '../services/sign-in-policies';
 import { groupExists, groupMemberIds } from '../services/groups';
 import { notFound } from '../http/errors';
-import { log } from '../log';
 
 type GroupRequest = RouteRequest & { params: Record<string, string> };
 
@@ -38,11 +37,8 @@ export = defineRoutes({
     handler: async (req: RouteRequest, userId: string, body: unknown, res: ServerResponse) => {
       const confirmed = await confirmPasswordHash(userId, (body as { current_password?: unknown } | null)?.current_password, res);
       if ('refused' in confirmed) return confirmed.refused;
-      const saved = await asCaller({ userId, token: getAuthTokenFromRequest(req), permission: 'server.settings', passwordHash: confirmed.passwordHash },
-        () => updateAdminPolicies(userId, body, { req }));
-      // The 2FA grace counts from the save; the gate starts any it missed.
-      await syncTwoFactorGrace().catch(error => log.error('POLICIES', 'Starting the 2FA graces failed', error));
-      return { ...saved };
+      return { ...await asCaller({ userId, token: getAuthTokenFromRequest(req), permission: 'server.settings', passwordHash: confirmed.passwordHash },
+        () => updateAdminPolicies(userId, body, { req })) };
     } },
 
   // Before saving auth.two_factor = required for Everyone or a group: who it

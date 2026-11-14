@@ -1,7 +1,9 @@
 import { realtime } from './realtime';
+import { log } from '../log';
 import { onMailModuleChanged } from './mail-sync-control';
 import { getOwnModules, withModulePolicies } from './module-settings';
 import { policyOff, takeUnappliedModules } from './settings';
+import { syncTwoFactorGrace } from './sign-in-policies';
 
 // What a saved module choice means for running work. PUT /api/modules saves
 // the preferences and then calls applyModuleChange with the states before and
@@ -32,6 +34,9 @@ async function applyModuleChange(userId: string, previous: readonly ModuleState[
  * modules now on.
  */
 async function applyPolicyChange(userIds: readonly string[]): Promise<void> {
+  // The 2FA grace counts from the change that made the rule apply (and ends
+  // with the one that lifts it); the gate starts any this misses.
+  await syncTwoFactorGrace(userIds).catch(error => log.error('POLICY', 'Starting or ending 2FA graces failed', error));
   for (const userId of userIds) {
     const before = takeUnappliedModules(userId);
     if (!before) continue;
