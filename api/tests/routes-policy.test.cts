@@ -134,10 +134,12 @@ test('CSRF: sign-in and sign-up need no token, exactly the service-worker routes
     'POST /api/recordings/uploads/:id/complete', 'POST /api/recordings/uploads/start']);
 });
 
-// The app lock (0.29): the routes a device short of a required lock keeps,
-// each with its reason. Everything else is refused with APP_LOCK_REQUIRED
-// while the whole app is required, a module's routes while that module is,
-// and the routes of no module while anything is.
+// The compliance gates (http/route.ts gates): the routes a device short of
+// a required app lock (0.29), and a person past their 2FA grace (0.30),
+// keep, each with its reason. Everything else is refused with
+// APP_LOCK_REQUIRED while the whole app is required, a module's routes while
+// that module is, and the routes of no module while anything is; and with
+// TWO_FACTOR_REQUIRED after the grace.
 const APP_LOCK_EXEMPT: Readonly<Record<string, string>> = {
   'GET /api/auth/me': 'who is signed in; the page needs it to show the prompt',
   'POST /api/auth/signout': 'signing out never needs the lock',
@@ -188,12 +190,13 @@ const APP_LOCK_BACKGROUND_SYNC = [
   'PUT /api/contacts/:id', 'PUT /api/contacts/:id/photo',
 ];
 
-test('the app lock: the exempt routes are pinned with their reasons, and so are the contacts-sync routes', () => {
-  assert.deepEqual(Object.keys(routes).filter(key => routes[key].appLock === 'exempt').sort(), Object.keys(APP_LOCK_EXEMPT).sort());
-  assert.deepEqual(Object.keys(routes).filter(key => routes[key].appLock === 'background-sync').sort(), APP_LOCK_BACKGROUND_SYNC);
+test('the compliance gates: the exempt routes are pinned with their reasons, and so are the contacts-sync routes', () => {
+  assert.deepEqual(Object.keys(routes).filter(key => routes[key].gates === 'exempt').sort(), Object.keys(APP_LOCK_EXEMPT).sort());
+  assert.deepEqual(Object.keys(routes).filter(key => routes[key].gates === 'background-sync').sort(), APP_LOCK_BACKGROUND_SYNC);
   const handler = async () => ({});
-  assert.throws(() => defineRoutes({ 'GET /api/things': { auth: 'user', appLock: 'open', handler } } as FixtureValue), /unknown appLock open/);
-  assert.throws(() => defineRoutes({ 'GET /api/things': { auth: 'public', appLock: 'exempt', handler } } as FixtureValue), /only a signed-in route declares appLock/);
+  assert.throws(() => defineRoutes({ 'GET /api/things': { auth: 'user', gates: 'open', handler } } as FixtureValue), /unknown gates open/);
+  assert.throws(() => defineRoutes({ 'GET /api/things': { auth: 'public', gates: 'exempt', handler } } as FixtureValue), /only a signed-in route declares gates/);
+  assert.throws(() => defineRoutes({ 'GET /api/things': { auth: 'user', appLock: 'exempt', handler } } as FixtureValue), /appLock is now gates/);
 });
 
 // The gates before the app lock's, answered for a person with every module on and no restore running.
@@ -208,7 +211,7 @@ const openGates = (required: string[]) => (sql: string) => {
 
 test('with the whole app required, every signed-in route that is not exempt refuses a device without the lock before its handler', async (t) => {
   const { run, queries } = boundary(t, { userId: 'alex', role: 'owner', answer: openGates(['app']) });
-  const keys = Object.keys(routes).filter(key => routes[key].auth !== 'public' && routes[key].appLock !== 'exempt');
+  const keys = Object.keys(routes).filter(key => routes[key].auth !== 'public' && routes[key].gates !== 'exempt');
   assert.ok(keys.length > 100, `${keys.length} locked routes`);
   for (const key of keys) {
     const result = await run(key);
@@ -222,7 +225,7 @@ test('with the whole app required, every signed-in route that is not exempt refu
 
 test('with Mail required, a device without the lock loses the Mail routes and the routes of no module, and keeps the other modules', async (t) => {
   const { run } = boundary(t, { userId: 'alex', role: 'owner', answer: openGates(['mail']) });
-  const locked = (key: string) => routes[key].auth !== 'public' && routes[key].appLock !== 'exempt' && (routes[key].module === 'mail' || !routes[key].module);
+  const locked = (key: string) => routes[key].auth !== 'public' && routes[key].gates !== 'exempt' && (routes[key].module === 'mail' || !routes[key].module);
   for (const key of Object.keys(routes).filter(locked)) {
     const result = await run(key);
     assert.deepEqual([result.status, result.body.code, result.body.error], [403, 'APP_LOCK_REQUIRED', 'Your administrator requires the app lock for Mail.'], key);

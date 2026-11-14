@@ -48,7 +48,7 @@ function clearRoute(target: ClearTarget, destructive: readonly PolicyKey[]) {
 export = defineRoutes({
   // The settings registry (F1). Mail-account and calendar settings follow
   // their module's switch and restore lock.
-  'GET /api/settings/values': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string) => {
+  'GET /api/settings/values': { auth: 'user', module: null, gates: 'exempt', handler: async (req: Request, userId: string) => {
     try {
       return { settings: await getSettings('user', userId) } satisfies UserSettingsResponse;
     } catch (error) {
@@ -56,7 +56,7 @@ export = defineRoutes({
       return clientError(error, 'Failed to load settings');
     }
   } },
-  'PUT /api/settings/values': { auth: 'user', module: null, appLock: 'exempt', restoreSection: 'settings', handler: async (req: Request, userId: string, body: Input) => {
+  'PUT /api/settings/values': { auth: 'user', module: null, gates: 'exempt', restoreSection: 'settings', handler: async (req: Request, userId: string, body: Input) => {
     try {
       // A new bin retention applies to what is in the bin already (services/bin.ts).
       return { settings: await changeUserSettings(userId, body) } satisfies UserSettingsResponse;
@@ -102,7 +102,7 @@ export = defineRoutes({
   // from, never another's. Installation state, never restored, so no restore
   // locks them; a device without the app lock its policies require reaches
   // them to set the lock up.
-  'GET /api/settings/values/device': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string) => {
+  'GET /api/settings/values/device': { auth: 'user', module: null, gates: 'exempt', handler: async (req: Request, userId: string) => {
     try {
       const { deviceId } = await currentDevice(userId, getAuthTokenFromRequest(req));
       return { device_id: deviceId, settings: await getSettings('device', userId, deviceId) } satisfies DeviceSettingsResponse;
@@ -111,7 +111,7 @@ export = defineRoutes({
       return clientError(error, 'Failed to load the settings of this device');
     }
   } },
-  'PUT /api/settings/values/device': { auth: 'user', module: null, restoreSection: null, appLock: 'exempt', handler: async (req: Request, userId: string, body: Input) => {
+  'PUT /api/settings/values/device': { auth: 'user', module: null, restoreSection: null, gates: 'exempt', handler: async (req: Request, userId: string, body: Input) => {
     try {
       const { deviceId } = await currentDevice(userId, getAuthTokenFromRequest(req));
       return { device_id: deviceId, settings: await updateSettings('device', userId, deviceId, body) } satisfies DeviceSettingsResponse;
@@ -122,7 +122,7 @@ export = defineRoutes({
   } },
 
   // The four preferences before the registry, for clients from before 0.24.
-  'GET /api/settings/preferences': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string) => {
+  'GET /api/settings/preferences': { auth: 'user', module: null, gates: 'exempt', handler: async (req: Request, userId: string) => {
     try {
       return { preferences: await getUserPreferences(userId) };
     } catch (error) {
@@ -131,7 +131,7 @@ export = defineRoutes({
     }
   } },
 
-  'PUT /api/settings/preferences': { auth: 'user', module: null, appLock: 'exempt', restoreSection: 'settings', handler: async (req: Request, userId: string, body: Input) => {
+  'PUT /api/settings/preferences': { auth: 'user', module: null, gates: 'exempt', restoreSection: 'settings', handler: async (req: Request, userId: string, body: Input) => {
     try {
       return await setUserPreferences(userId, body || {});
     } catch (error) {

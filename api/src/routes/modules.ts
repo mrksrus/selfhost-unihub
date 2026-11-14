@@ -5,7 +5,7 @@ import { getOrderedUserModules, getUserPages, setUserModules } from '../services
 import { applyModuleChange } from '../services/module-lifecycle';
 
 export = defineRoutes({
-  'GET /api/modules': { auth: 'user', module: null, appLock: 'exempt', handler: async (_req: RouteRequest, userId: string) => {
+  'GET /api/modules': { auth: 'user', module: null, gates: 'exempt', handler: async (_req: RouteRequest, userId: string) => {
     return { modules: await getOrderedUserModules(userId), pages: await getUserPages(userId) };
   } },
   'PUT /api/modules': { auth: 'user', module: null, restoreSection: 'settings', handler: async (_req: RouteRequest, userId: string, body: unknown) => {

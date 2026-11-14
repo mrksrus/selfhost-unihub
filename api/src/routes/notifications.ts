@@ -13,7 +13,7 @@ type NotificationHandler = (req: RouteRequest, userId: string, body: Notificatio
 
 // Subscriptions are device state, not recoverable data: no module, no restore section.
 const route = (handler: NotificationHandler, policy: RoutePolicy = {}): UserRouteSpec => ({
-  auth: 'user', module: null, appLock: 'exempt', ...policy,
+  auth: 'user', module: null, gates: 'exempt', ...policy,
   handler: async (req, userId, body, res) => {
     try { return (await handler(req, userId, (body || {}) as NotificationBody, res)) as RouteResponse | undefined; }
     catch (error) {

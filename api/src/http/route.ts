@@ -15,7 +15,7 @@ type RouteAuth = 'public' | 'user' | 'admin';
 type RouteBodyKind = 'json' | 'backup-upload' | 'upload' | 'none';
 type RouteCsrf = 'token' | 'background-header' | 'none';
 type RouteResponseMode = 'json' | 'stream';
-type RouteAppLock = 'exempt' | 'background-sync';
+type RouteGates = 'exempt' | 'background-sync';
 
 // The body a route with kind 'upload' receives: the raw request body, spooled
 // by the boundary to a private file under the uploads root and bounded by the
@@ -70,19 +70,24 @@ interface RoutePolicy {
   // person's policy never stops.
   destructive?: readonly PolicyDeclaration[];
   requires?: readonly PolicyDeclaration[];
-  // The app lock (0.29, F5): a device that does not report the lock the
-  // person's policies require is refused the locked parts (403
-  // APP_LOCK_REQUIRED): a route of a required module, a route of no module
-  // while anything is required (it can show several modules' data), and
-  // while the whole app is required every route. 'exempt' keeps the route
-  // open to such a device: what it needs to set the lock up, sign out, keep
-  // notifications without content and finish work that exists only on the
-  // device. 'background-sync' keeps it open only to a request with the
-  // X-Background-Sync header: the Android app's own contacts sync, whose
-  // older versions read any 403 but MODULE_DISABLED as a refused change;
-  // the page never sends it there. Signed-in routes only; the route policy
-  // test pins both lists.
-  appLock?: RouteAppLock;
+  // The compliance gates, which refuse a signed-in person what their
+  // policies require them to set up first:
+  // - the app lock (0.29, F5): a device that does not report the lock the
+  //   person's policies require is refused the locked parts (403
+  //   APP_LOCK_REQUIRED): a route of a required module, a route of no module
+  //   while anything is required (it can show several modules' data), and
+  //   while the whole app is required every route
+  // - two-factor authentication (0.30): a person without it whose 7-day
+  //   grace under auth.two_factor has ended is refused every route (403
+  //   TWO_FACTOR_REQUIRED)
+  // 'exempt' keeps the route open through both: what is needed to set the
+  // lock or 2FA up, sign out, keep notifications without content and finish
+  // work that exists only on the device. 'background-sync' keeps it open only
+  // to a request with the X-Background-Sync header: the Android app's own
+  // contacts sync, whose older versions read any 403 but MODULE_DISABLED as a
+  // refused change; the page never sends it there. Signed-in routes only;
+  // the route policy test pins both lists.
+  gates?: RouteGates;
   // Further modules whose data the route shows or changes besides its own
   // (a mail account's linked calendar under /api/mail/): the app lock gate
   // refuses it while any of them is required, as it does for its module.
@@ -112,7 +117,7 @@ const AUTH_VALUES = new Set<string>(['public', 'user', 'admin']);
 const BODY_KINDS = new Set<string>(['json', 'backup-upload', 'upload', 'none']);
 const CSRF_VALUES = new Set<string>(['token', 'background-header', 'none']);
 const RESPONSE_MODES = new Set<string>(['json', 'stream']);
-const APP_LOCK_VALUES = new Set<string>(['exempt', 'background-sync']);
+const GATES_VALUES = new Set<string>(['exempt', 'background-sync']);
 const POLICY_FIELDS = ['destructive', 'requires'] as const;
 const isQueryValue = (value: unknown) => typeof value === 'string'
   || (Array.isArray(value) && value.length > 0 && value.every(item => typeof item === 'string'));
@@ -146,8 +151,10 @@ function defineRoutes<T extends RouteTable>(table: T): T {
     }
     if (spec.csrf !== undefined && !CSRF_VALUES.has(spec.csrf)) invalid(key, `unknown csrf ${String(spec.csrf)}`);
     if (spec.response !== undefined && !RESPONSE_MODES.has(spec.response)) invalid(key, `unknown response ${String(spec.response)}`);
-    if (spec.appLock !== undefined && !APP_LOCK_VALUES.has(spec.appLock)) invalid(key, `unknown appLock ${String(spec.appLock)}`);
-    if (spec.appLock !== undefined && spec.auth === 'public') invalid(key, 'only a signed-in route declares appLock');
+    if (spec.gates !== undefined && !GATES_VALUES.has(spec.gates)) invalid(key, `unknown gates ${String(spec.gates)}`);
+    if (spec.gates !== undefined && spec.auth === 'public') invalid(key, 'only a signed-in route declares gates');
+    // A spec written for 0.29 would silently lose its exemption.
+    if ('appLock' in spec) invalid(key, 'appLock is now gates');
     if (spec.appLockModules !== undefined) {
       if (!Array.isArray(spec.appLockModules) || !spec.appLockModules.length || !spec.appLockModules.every(module => typeof module === 'string' && module)) invalid(key, 'appLockModules lists module ids');
       if (spec.auth === 'public') invalid(key, 'only a signed-in route declares appLockModules');
@@ -248,4 +255,4 @@ function routePolicies(spec: Pick<RoutePolicy, 'destructive' | 'requires'>, quer
 }
 
 export { defineRoutes, mergeRouteTables, assertRouteTable, destructivePolicies, routePolicies, DEFAULT_BODY_LIMIT, MUTATING_METHODS };
-export type { UploadBody, RouteSpec, RouteTable, RoutePolicy, RouteAuth, RouteBodyKind, RouteCsrf, RouteResponseMode, RouteAppLock, PublicRouteSpec, UserRouteSpec, PolicyDeclaration };
+export type { UploadBody, RouteSpec, RouteTable, RoutePolicy, RouteAuth, RouteBodyKind, RouteCsrf, RouteResponseMode, RouteGates, PublicRouteSpec, UserRouteSpec, PolicyDeclaration };

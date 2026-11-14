@@ -72,8 +72,8 @@ const BACKGROUND_HEADER_CSRF_KEYS: ReadonlySet<string> = new Set([
   'DELETE /api/recordings/uploads/:id',
 ]);
 
-// The app lock gate leaves these open to a device short of a required lock
-// (http/route.ts appLock): the recording upload routes the service worker
+// The app lock and 2FA gates leave these open to a device short of a
+// required lock or a person past their 2FA grace (http/route.ts gates): the recording upload routes the service worker
 // calls, because refusing them could strand a recording that exists only on
 // the device. They write the person's own recording and show nothing else.
 const APP_LOCK_EXEMPT_KEYS: ReadonlySet<string> = new Set([
@@ -126,7 +126,7 @@ function legacyRouteSpec(key: string, handler: LegacyHandler): RouteSpec {
     restoreSection: restoreSectionFor(method, pathname),
     body: { limit: bodyLimitFor(key), kind: 'json' as const },
     ...(BACKGROUND_HEADER_CSRF_KEYS.has(key) ? { csrf: 'background-header' as const } : {}),
-    ...(APP_LOCK_EXEMPT_KEYS.has(key) ? { appLock: 'exempt' as const } : {}),
+    ...(APP_LOCK_EXEMPT_KEYS.has(key) ? { gates: 'exempt' as const } : {}),
     ...(APP_LOCK_MODULES_BY_ROUTE[key] ? { appLockModules: APP_LOCK_MODULES_BY_ROUTE[key] } : {}),
     ...POLICIES_BY_ROUTE[key],
   };
