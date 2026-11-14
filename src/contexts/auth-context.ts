@@ -1,11 +1,17 @@
 import { createContext } from 'react';
+import type { Permission, Role } from '../../api/src/contracts/organisation';
 
 export interface User {
   id: string;
   email: string;
   full_name?: string;
   avatar_url?: string;
-  role?: 'user' | 'admin';
+  /** Stored role ('user' is shown as Member). Read rights through lib/permissions.ts can(), never by role name. */
+  role?: Role;
+  /** What the role grants (0.30); absent from an offline copy saved before. */
+  permissions?: Permission[];
+  /** The person manages at least one group (My groups). */
+  manages_groups?: boolean;
   timezone?: string | null;
   two_factor_enabled?: boolean;
 }
