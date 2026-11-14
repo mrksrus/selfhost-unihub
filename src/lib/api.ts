@@ -1,7 +1,7 @@
 import { isOfflineMode, readOfflineResponse, setOfflineMode } from '@/lib/offline';
 import { emitAppEvent } from '@/lib/app-events';
 import { isOnline } from '@/lib/platform';
-import { APP_LOCK_REQUIRED, appLockRequiredDetails } from '@/lib/api-error';
+import { APP_LOCK_REQUIRED, TWO_FACTOR_REQUIRED, appLockRequiredDetails, twoFactorRequiredDetails } from '@/lib/api-error';
 
 // API client for UniHub backend
 
@@ -80,8 +80,11 @@ function getUnexpectedResponseMessage(response: Response, contentType: string, e
 // 403 APP_LOCK_REQUIRED: the administrator requires an app lock this device
 // does not report. Whichever request met it, the app lock provider shows the
 // set-up prompt instead of a page error (contexts/AppLockProvider.tsx).
-function noticeAppLockRequired(status: number, body: Record<string, unknown>) {
-  if (status === 403 && body.code === APP_LOCK_REQUIRED) emitAppEvent('unihub:app-lock-required', appLockRequiredDetails(body.details));
+// 403 TWO_FACTOR_REQUIRED (0.30) does the same for two-factor set-up.
+function noticeComplianceRefusal(status: number, body: Record<string, unknown>) {
+  if (status !== 403) return;
+  if (body.code === APP_LOCK_REQUIRED) emitAppEvent('unihub:app-lock-required', appLockRequiredDetails(body.details));
+  if (body.code === TWO_FACTOR_REQUIRED) emitAppEvent('unihub:two-factor-required', twoFactorRequiredDetails(body.details));
 }
 
 // Headers are a plain object so the client can merge the CSRF token into them.
@@ -202,7 +205,7 @@ class ApiClient {
           emitAppEvent('unihub:session-expired');
         }
         const errorData = data && typeof data === 'object' ? data as Record<string, unknown> : {};
-        noticeAppLockRequired(response.status, errorData);
+        noticeComplianceRefusal(response.status, errorData);
         return {
           ...errorData,
           status: response.status,
@@ -270,7 +273,7 @@ class ApiClient {
         // Keep fallback message
       }
 
-      if (response.status === 403 && contentType.includes('application/json')) noticeAppLockRequired(response.status, refusal);
+      if (response.status === 403 && contentType.includes('application/json')) noticeComplianceRefusal(response.status, refusal);
       const err = new Error(message) as Error & { status?: number };
       err.status = response.status;
       throw err;
@@ -334,7 +337,7 @@ class ApiClient {
       }
       const data = await response.json();
       if (!response.ok) {
-        if (data && typeof data === 'object') noticeAppLockRequired(response.status, data);
+        if (data && typeof data === 'object') noticeComplianceRefusal(response.status, data);
         return {
           ...data,
           status: response.status,

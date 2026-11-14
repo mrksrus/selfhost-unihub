@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
-import { AppLockRequired, unwrap } from '@/lib/api-error';
+import { AppLockRequired, hasCode, policyRefusal, unwrap } from '@/lib/api-error';
 import { onAppEvent } from '@/lib/app-events';
 
 describe('api client security', () => {
@@ -136,6 +136,30 @@ describe('api client security', () => {
     try { unwrap(response); } catch (error) { thrown = error; }
     expect(thrown).toBeInstanceOf(AppLockRequired);
     expect(thrown).toMatchObject({ status: 403, code: 'APP_LOCK_REQUIRED', requirement: expected });
+  });
+
+  it('two-factor required after the grace tells the app to show the set-up prompt; the error keeps its code (0.30)', async () => {
+    const refusal = { error: 'Your administrator requires two-factor authentication.', code: 'TWO_FACTOR_REQUIRED',
+      details: { grace_ended_at: '2026-11-21T10:00:00.000Z', reason: 'Your administrator requires two-factor authentication.' } };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403, statusText: 'Forbidden', headers: { get: () => 'application/json' }, json: async () => refusal }) as unknown as typeof fetch);
+    const prompts: unknown[] = [];
+    const lockPrompts: unknown[] = [];
+    const stops = [onAppEvent('unihub:two-factor-required', details => prompts.push(details)), onAppEvent('unihub:app-lock-required', details => lockPrompts.push(details))];
+    const response = await api.get('/mail/accounts');
+    stops.forEach(stop => stop());
+    expect(prompts).toEqual([refusal.details]);
+    expect(lockPrompts).toEqual([]);
+    let thrown: unknown;
+    try { unwrap(response); } catch (error) { thrown = error; }
+    expect(hasCode(thrown, 'TWO_FACTOR_REQUIRED')).toBe(true);
+  });
+
+  it('a module refused by the administrator’s policy names the rule; one the person switched off does not (0.30)', async () => {
+    const refused = (body: Record<string, unknown>) => { try { unwrap({ status: 403, ...body }); } catch (error) { return policyRefusal(error); } };
+    expect(refused({ error: 'Mail is not available on this server.', code: 'MODULE_DISABLED', details: { policy: 'modules.mail', reason: 'Your administrator turned Mail off.' } }))
+      .toEqual({ policy: 'modules.mail', reason: 'Your administrator turned Mail off.' });
+    expect(refused({ error: 'Mail is turned off. Enable it in Settings.', code: 'MODULE_DISABLED' })).toBeNull();
+    expect(refused({ error: 'Your administrator does not allow this.', code: 'POLICY_FORBIDS' })).toEqual({ policy: null, reason: 'Your administrator does not allow this.' });
   });
 
   it('another 403 is no app lock prompt', async () => {

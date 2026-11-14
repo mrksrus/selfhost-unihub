@@ -4,6 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { useAuth } from '@/contexts/useAuth';
 import { api } from '@/lib/api';
+import { hasCode } from '@/lib/api-error';
+import { inviteTokenFromHash, takeInviteToken } from '@/lib/auth-api';
+import { can, managesGroups } from '@/lib/permissions';
 import { readPin, savePin, setPinIterationsForTests } from '@/lib/app-lock/pin';
 import { recentSignIn, signedInInThisPage } from '@/lib/app-lock/session';
 import { readTimeline, writeTimelineConfig } from '@/lib/app-lock/timeline';
@@ -87,5 +90,50 @@ describe('the app lock across sign-in and sign-out', () => {
     expect(signedInInThisPage('A')).toBe(true);
     expect(recentSignIn('A')).toBe(true);
     expect(signedInInThisPage('B')).toBe(false);
+  });
+});
+
+describe('a setup link (0.30)', () => {
+  const TOKEN = 'k3J9xQ2mV7pL0aZ8bN4cR6tY1uW5eS-_';
+
+  it('reads the token from the fragment and removes it from the address bar', () => {
+    expect(inviteTokenFromHash(`#${TOKEN}`)).toBe(TOKEN);
+    expect(inviteTokenFromHash(`#token=${TOKEN}`)).toBe(TOKEN);
+    expect(inviteTokenFromHash('#short')).toBeNull();
+    expect(inviteTokenFromHash('#<script>alert(1)</script>xxxxxxxx')).toBeNull();
+    window.history.replaceState(null, '', `/invite?from=mail#${TOKEN}`);
+    expect(takeInviteToken()).toBe(TOKEN);
+    expect(window.location.hash).toBe('');
+    expect(window.location.pathname + window.location.search).toBe('/invite?from=mail');
+  });
+
+  it('accepting signs the new person in with the rights the server reports; a dead link keeps its code and signs nobody in', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue({ error: 'Not signed in', status: 401 });
+    const post = vi.spyOn(api, 'post')
+      .mockResolvedValueOnce({ error: 'This setup link no longer works.', status: 404, code: 'INVITE_INVALID' })
+      .mockResolvedValueOnce({ data: { user: { id: 'N', email: 'new@example.test', role: 'user', permissions: [], manages_groups: false }, csrfToken: 'n-token' } });
+    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let outcome!: { error: Error | null };
+    await act(async () => { outcome = await result.current.acceptInvite(TOKEN, 'a long enough password', 'New Person', 4); });
+    expect(hasCode(outcome.error, 'INVITE_INVALID')).toBe(true);
+    expect(result.current.user).toBeNull();
+
+    await act(async () => { outcome = await result.current.acceptInvite(TOKEN, 'a long enough password', ' ', 4); });
+    expect(outcome.error).toBeNull();
+    expect(result.current.user).toMatchObject({ id: 'N', permissions: [] });
+    expect(post).toHaveBeenLastCalledWith('/auth/invite/accept', expect.objectContaining({ token: TOKEN, password: 'a long enough password', rules_revision: 4 }));
+    expect(post.mock.lastCall?.[1]).not.toHaveProperty('full_name');
+  });
+
+  it('rights come from the reported permissions, never from the role name', () => {
+    expect(can({ permissions: ['users.read'] }, 'users.read')).toBe(true);
+    expect(can({ permissions: ['users.read'] }, 'admins.manage')).toBe(false);
+    // An offline copy saved before 0.30 has a role but no permissions.
+    expect(can({ role: 'admin' } as { permissions?: string[] }, 'users.read')).toBe(false);
+    expect(can(null, 'users.read')).toBe(false);
+    expect(managesGroups({ manages_groups: true })).toBe(true);
+    expect(managesGroups(undefined)).toBe(false);
   });
 });

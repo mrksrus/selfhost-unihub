@@ -1,4 +1,5 @@
 import type { AppLockRequiredDetails } from '../../api/src/contracts/devices';
+import type { TwoFactorRequiredDetails } from '@/lib/api-error';
 
 // In-page events between parts of the app that do not share React state
 // (the API client, the service worker bridge, the update flow). Every event
@@ -33,6 +34,8 @@ export interface AppEvents {
   'unihub:recording-stop': undefined;
   /** The API refused a request with 403 APP_LOCK_REQUIRED (lib/api.ts): show the app lock set-up prompt. */
   'unihub:app-lock-required': AppLockRequiredDetails;
+  /** The API refused a request with 403 TWO_FACTOR_REQUIRED (lib/api.ts): show the two-factor set-up prompt. */
+  'unihub:two-factor-required': TwoFactorRequiredDetails;
 }
 
 export type AppEventName = keyof AppEvents;

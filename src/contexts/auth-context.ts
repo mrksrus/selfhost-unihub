@@ -28,6 +28,8 @@ export interface AuthContextType {
   setUser: (user: User | null) => void;
   /** `rulesRevision`: the revision of the data rules the form listed, confirmed with the account. */
   signUp: (email: string, password: string, fullName: string, rulesRevision?: number | null) => Promise<{ error: Error | null; requiresApproval?: boolean }>;
+  /** Sets the password of a setup link and signs in; `rulesRevision` is the revision of the rules the page listed. Errors carry the server's code (INVITE_INVALID). */
+  acceptInvite: (token: string, password: string, fullName?: string | null, rulesRevision?: number | null) => Promise<{ error: Error | null }>;
   signIn: (email: string, password: string) => Promise<{ error: Error | null; requires2fa?: boolean; challengeToken?: string }>;
   verifyTwoFactorLogin: (challengeToken: string, code: string) => Promise<{ error: Error | null; usedRecoveryCode?: boolean; recoveryCodesRemaining?: number }>;
   signOut: () => Promise<void>;

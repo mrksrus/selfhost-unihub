@@ -1,7 +1,8 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { controlledIndexedDB } from './helpers/controlled-indexed-db';
-import { captureOfflineSave, clearOfflineData, getOfflineSnapshotInfo, isOfflineMode, loadOfflineSession, readOfflineResponse, resolveOfflineEndpoint, saveOfflineSnapshot, setOfflineAccount, setOfflineMode, type OfflineSnapshot } from '@/lib/offline';
+import { captureOfflineSave, clearOfflineData, deleteOwnOfflineCopy, getOfflineSnapshotInfo, isOfflineMode, loadOfflineSession, readOfflineResponse, resolveOfflineEndpoint, saveOfflineSnapshot, setOfflineAccount, setOfflineMode, type OfflineSnapshot } from '@/lib/offline';
 import { api } from '@/lib/api';
+import { fetchEffectivePolicies } from '@/lib/policies-api';
 
 const user = { id: 'A', email: 'a@example.test' };
 const snapshot = (userId = 'A'): OfflineSnapshot => ({
@@ -213,6 +214,35 @@ describe('offline account ownership and durable clearing', () => {
     await rejected;
     expect(await otherTab.loadOfflineSession()).toMatchObject({ user: { id: 'B' } });
     expect(await readOfflineResponse('/mail/emails/one')).toBeNull();
+    expect(database.records.size).toBe(1);
+  });
+});
+
+describe('offline copies forbidden by a policy (0.30)', () => {
+  const rules = (allowed: boolean) => new Response(JSON.stringify({
+    policies: { 'offline.copies': { value: allowed ? 'allowed' : 'forbidden', source: allowed ? 'default' : 'policy', allowed, reason: allowed ? null : 'Your administrator does not allow offline copies.' } },
+    revision: 2, acknowledged_revision: 2, rules: [],
+    two_factor: { required: true, grace_ends_at: '2026-11-21T10:00:00.000Z' },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  it('the page deletes the person’s own copy when it reads the rule, and keeps it while copies are allowed', async () => {
+    await saveOfflineSnapshot(snapshot(), user);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(rules(true)).mockResolvedValueOnce(rules(false)));
+    await fetchEffectivePolicies();
+    expect(await loadOfflineSession()).toMatchObject({ user: { id: 'A' } });
+    const answer = await fetchEffectivePolicies();
+    expect(answer.policies['offline.copies']).toMatchObject({ allowed: false });
+    expect(answer.two_factor).toEqual({ required: true, grace_ends_at: '2026-11-21T10:00:00.000Z' });
+    expect(await loadOfflineSession()).toBeNull();
+    expect(database.records.size).toBe(0);
+  });
+
+  it('a copy that is not the signed-in person’s is not theirs to delete', async () => {
+    await saveOfflineSnapshot(snapshot(), user);
+    setOfflineAccount('B');
+    expect(await deleteOwnOfflineCopy()).toBe(false);
+    setOfflineAccount(null);
+    expect(await deleteOwnOfflineCopy()).toBe(false);
     expect(database.records.size).toBe(1);
   });
 });

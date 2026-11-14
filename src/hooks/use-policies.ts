@@ -27,6 +27,8 @@ export function usePolicies() {
     revision: query.data?.revision ?? 0,
     acknowledgedRevision: query.data?.acknowledged_revision ?? 0,
     noticeDue: !!query.data && query.data.acknowledged_revision < query.data.revision,
+    /** auth.two_factor for the person: the grace end while it runs (the reminder); null before the answer. */
+    twoFactor: query.data?.two_factor ?? null,
   };
 }
 
