@@ -5,6 +5,9 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { _android as android } from 'playwright-core';
+import { people, setRules, stackSession } from './people.mjs';
+
+export { stackSession };
 
 const SDK = process.env.ANDROID_HOME ?? `${process.env.HOME}/Android/Sdk`;
 export const serial = `emulator-${process.env.UNIHUB_E2E_EMULATOR_PORT ?? '5560'}`;
@@ -312,28 +315,24 @@ export function clearDevicePin(pin = DEVICE_PIN) {
   try { adb('shell', 'locksettings', 'clear', '--old', pin); } catch { /* no PIN set */ }
 }
 
-const PEOPLE = ['admin@example.com', 'alex@example.com', 'blair@example.com'];
-const PEOPLE_PASSWORD = 'local-dev-admin-password';
 /** The installation's app lock policies as a new installation has them. */
 export const APP_LOCK_POLICIES_OFF = { 'app_lock.required': [], 'app_lock.max_background': 'none', 'app_lock.screenshots': 'allowed' };
-let people;
 
 /** Sets installation policies as the administrator, then confirms the rules notice for all three people (it is due for everyone). */
-export async function setPolicies(values) {
-  people ??= await Promise.all(PEOPLE.map(email => stackSession(email, PEOPLE_PASSWORD)));
-  // The administrator's own device is held to the lock they require, the
-  // policies route included: this session reports a whole-app lock, as a page
-  // does once its lock is set up, so it can turn the rules off again.
-  const reported = await people[0]('PUT', '/api/devices/current/lock', {
-    applied: { scope: ['app'], relock_after: '0', on_device_lock: false, method: 'pin' },
-    capabilities: { lock: 'pin', secure_window: false, recents_hidden: false, device_lock_signal: false },
-  });
-  if (reported.status !== 200) throw new Error(`report the policy session's lock: ${reported.status} ${JSON.stringify(reported.data)}`);
-  const saved = await people[0]('PUT', '/api/admin/policies', { values, current_password: PEOPLE_PASSWORD });
-  if (saved.status !== 200) throw new Error(`save policies: ${saved.status} ${JSON.stringify(saved.data)}`);
-  for (const api of people) {
-    const { data } = await api('GET', '/api/policies/effective');
-    if (data.acknowledged_revision < data.revision) await api('POST', '/api/policies/acknowledge', { revision: data.revision });
+export const setPolicies = values => setRules(values);
+
+/**
+ * Signs the app out: the administrator's devices other than the test's own
+ * session go (the app's among them). A test's own person is signed out by
+ * removing them (resetPeople).
+ */
+export async function signOutApp() {
+  const [api] = await people();
+  const { status, data } = await api('GET', '/api/devices');
+  if (status !== 200) throw new Error(`list devices: ${status} ${JSON.stringify(data)}`);
+  for (const { id } of data.devices.filter(d => !d.current)) {
+    const removed = await api('DELETE', `/api/devices/${id}`);
+    if (removed.status !== 200) throw new Error(`remove device: ${removed.status} ${JSON.stringify(removed.data)}`);
   }
 }
 
@@ -348,14 +347,7 @@ export async function setPolicies(values) {
  */
 export async function resetAppLock() {
   await setPolicies(APP_LOCK_POLICIES_OFF);
-  // The administrator's policy session stays (it is the current device).
-  const api = people[0];
-  const { status, data } = await api('GET', '/api/devices');
-  if (status !== 200) throw new Error(`list devices: ${status} ${JSON.stringify(data)}`);
-  for (const { id } of data.devices.filter(d => !d.current)) {
-    const removed = await api('DELETE', `/api/devices/${id}`);
-    if (removed.status !== 200) throw new Error(`remove device: ${removed.status} ${JSON.stringify(removed.data)}`);
-  }
+  await signOutApp();
   adb('shell', 'am', 'force-stop', PACKAGE);
   adb('shell', `run-as ${PACKAGE} rm -f shared_prefs/app_lock.xml`);
   clearDevicePin();
@@ -558,18 +550,50 @@ export function shownNotifications(pkg = PACKAGE) {
     }));
 }
 
-/** A session of a seeded person against the stack's API, from the test itself. */
-export async function stackSession(email = 'admin@example.com', password = 'local-dev-admin-password') {
-  const base = process.env.UNIHUB_E2E_URL ?? `http://127.0.0.1:${8087 + Number(process.env.UNIHUB_E2E_INSTANCE ?? '1')}`;
-  const response = await fetch(`${base}/api/auth/signin`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
-  const body = await response.json();
-  if (!response.ok) throw new Error(`sign-in as ${email}: ${response.status}`);
-  const cookie = response.headers.getSetCookie().map(c => c.split(';')[0]).join('; ');
-  return async (method, path, data) => {
-    const res = await fetch(`${base}${path}`, { method, headers: { Cookie: cookie, 'X-CSRF-Token': body.csrfToken,
-      ...(data !== undefined ? { 'Content-Type': 'application/json' } : {}) }, body: data === undefined ? undefined : JSON.stringify(data) });
-    const text = await res.text();
-    let json; try { json = JSON.parse(text); } catch { json = text; }
-    return { status: res.status, data: json };
-  };
+// ── Contacts on the phone: Android's contacts provider, read and changed as a contacts app does ──
+
+export const contactsUri = 'content://com.android.contacts';
+export function query(uri, projection, where) {
+  const text = adb('shell', 'content', 'query', '--uri', uri, '--projection', projection.join(':'), '--where', `"${where}"`);
+  const keys = projection.join('|');
+  return text.split(/^Row: \d+ /m).slice(1).map(chunk => {
+    const parts = chunk.replace(/\s+$/, '').split(new RegExp(`(?:^|, )(${keys})=`));
+    const row = {};
+    for (let i = 1; i < parts.length; i += 2) row[parts[i]] = parts[i + 1];
+    return row;
+  });
+}
+export const rawsFor = id => query(`${contactsUri}/raw_contacts`, ['_id', 'sync1', 'starred'],
+  `account_type='${PACKAGE}' AND sourceid='${id}' AND deleted=0`);
+export const hasAccount = () => /Account \{name=[^,]*, type=io\.github\.mrksrus\.unihub\}/.test(adb('shell', 'dumpsys', 'account'));
+
+export function requestSync() {
+  adb('shell', 'requestsync', '-n', '127.0.0.1', '-t', PACKAGE, '-a', 'com.android.contacts', '-f');
+}
+/** Waits for a condition of both sides, asking for a sync now and then (Android may delay one). */
+export async function until(check, what, timeoutMs = 240_000) {
+  const end = Date.now() + timeoutMs;
+  let last;
+  for (let attempt = 0; Date.now() < end; attempt++) {
+    try { if (await check()) return; } catch (error) { last = error; }
+    if (attempt % 8 === 0) requestSync();
+    await sleep(2500);
+  }
+  throw new Error(`timed out waiting for ${what}${last ? `: ${last.message}` : ''}`);
+}
+
+/** Contacts on the phone for the person signed in to the app, as Android's Settings → Add account → UniHub turns them on. */
+export async function contactsOn() {
+  adb('shell', 'pm', 'grant', PACKAGE, 'android.permission.READ_CONTACTS');
+  adb('shell', 'pm', 'grant', PACKAGE, 'android.permission.WRITE_CONTACTS');
+  if (hasAccount()) return;
+  adb('shell', 'am', 'start', '-n', `${PACKAGE}/.MainActivity`, '-a', `${PACKAGE}.SHOW_CONTACTS`);
+  for (let attempt = 0; attempt < 60 && !hasAccount(); attempt++) {
+    await answerSlowDialogs();
+    // Dialog buttons show in capitals on newer Android versions.
+    const button = screenNodes().find(node => /^show contacts$/i.test(node.text));
+    if (button) adb('shell', 'input', 'tap', `${button.x}`, `${button.y}`);
+    await sleep(2000);
+  }
+  if (!hasAccount()) throw new Error('contacts are not on: no UniHub account on the phone');
 }
