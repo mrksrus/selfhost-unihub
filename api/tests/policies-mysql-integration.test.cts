@@ -93,9 +93,12 @@ test('a forbidding installation policy refuses every declared route before any s
     [[`/api/mail/folders/${folder}?server=1`, 'mail.provider_delete'], [`/api/mail/folders/${folder}?server=true`, 'mail.provider_delete']], 'both server spellings are walked');
 
   for (const { key, url, policy } of cases) {
-    await forbid(policy);
+    // The value that refuses: 'forbidden' for an allowance, 'required' for auth.two_factor.
+    const refuses = (POLICIES[policy].refuses as readonly unknown[]).map(String);
+    const value = refuses.includes('forbidden') ? 'forbidden' : refuses[0];
+    await forbid(policy, { value });
     const before = await checksums();
-    const reason = POLICIES[policy].reasons.forbidden;
+    const reason = (POLICIES[policy].reasons as Record<string, string>)[value];
     for (const [name, client] of people) {
       const reply = await client.request(key.split(' ')[0], url, key.startsWith('GET ') ? undefined : {});
       assert.deepEqual([reply.status, reply.body], [403, { error: reason, status: 403, code: 'POLICY_FORBIDS', details: { policy, reason } }], `${name}: ${key} ${url} under ${policy}`);

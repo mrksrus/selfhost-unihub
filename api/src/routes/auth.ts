@@ -422,7 +422,8 @@ export = defineRoutes({
     }
   } },
 
-  'POST /api/auth/2fa/disable': { auth: 'user', module: null, appLock: 'exempt', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+  // Refused while the person's policies require two-factor authentication (F13 requires).
+  'POST /api/auth/2fa/disable': { auth: 'user', module: null, appLock: 'exempt', requires: ['auth.two_factor'], handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
     const limited = await checkLoginBudget(res, 'secondFactor', userId);
     if (limited) return limited;
     const { current_password, code } = body || {};
