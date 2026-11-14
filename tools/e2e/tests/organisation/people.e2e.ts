@@ -64,7 +64,9 @@ test('[30-01] a person added with an initial password signs in with it; a member
     const add = screen.getByRole('dialog', 'Add person');
     await add.getByLabel('Email', { exact: true }).fill(email);
     await add.getByLabel('Name', { exact: true }).fill(name);
-    await add.getByRole('radio', /^Initial password/).tap();
+    // The row is the tap target; the radio itself is drawn, not shown.
+    await add.getByText('Initial password', { exact: true }).tap();
+    await expect(add.getByRole('radio', /^Initial password/)).toBeChecked();
     await add.getByLabel('Their password', { exact: true }).fill(signInPassword);
     await add.getByLabel('Your password', { exact: true }).fill(dialogPassword());
     await add.getByRole('button', 'Add person', { exact: true }).tap();

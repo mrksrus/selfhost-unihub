@@ -28,7 +28,7 @@ test('[30-02] the owner creates groups and adds alex and blair; alex is in two g
       for (const member of members) {
         await add.getByLabel('Name or email', { exact: true }).fill(people[member].email);
         // A ticked person stays ticked while the search changes.
-        await add.getByRole('checkbox', people[member].name).check();
+        await add.getByRole('checkbox', new RegExp(`^${people[member].name}`)).check();
       }
       await add.getByRole('button', members.length > 1 ? `Add ${members.length} people` : 'Add', { exact: true }).tap();
       await expect(add).toBeHidden();

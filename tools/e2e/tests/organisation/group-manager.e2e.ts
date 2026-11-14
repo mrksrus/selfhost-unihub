@@ -29,7 +29,7 @@ test('[30-03] alex manages the members of their group, and neither another group
     await screen.getByRole('button', 'Add people', { exact: true }).tap();
     const add = screen.getByRole('dialog', `Add people to ${managed.name}`);
     await add.getByLabel('Name or email', { exact: true }).fill(people.blair.email);
-    await add.getByRole('checkbox', people.blair.name).check();
+    await add.getByRole('checkbox', new RegExp(`^${people.blair.name}`)).check();
     await add.getByRole('button', 'Add', { exact: true }).tap();
     await expect(add).toBeHidden();
     await expect(screen.getByRole('button', `Remove ${people.blair.name}`)).toBeVisible();
