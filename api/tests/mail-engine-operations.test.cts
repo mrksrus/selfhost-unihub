@@ -1,6 +1,8 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
+// Their fakes model mail work; policy reads answer as none (helpers/no-policies.cts).
+require('./helpers/no-policies.cts');
 const { setDb } = require('../dist/src/state') as typeof import('../src/state');
 const writes = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
 const settle = require('../dist/src/services/mail-engine/reconciliation') as typeof import('../src/services/mail-engine/reconciliation');

@@ -6,6 +6,8 @@ import type { FixtureValue } from './helpers/test-types.cts';
 // fetching or mutating command.
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
+// Their fakes model mail work; policy reads answer as none (helpers/no-policies.cts).
+require('./helpers/no-policies.cts');
 const net = (require('node:net') as typeof import('node:net'));
 process.env.ENCRYPTION_KEY = 'mail-idle-protocol-test-only-key';
 const { createIdleSupervisor } = require('../dist/src/services/mail-idle') as typeof import('../src/services/mail-idle');
