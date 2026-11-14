@@ -11,7 +11,8 @@ function handlerHarness(t: import('node:test').TestContext, { userId = 'u1', rou
   const stub = (name: FixtureValue, exports: FixtureValue) => { require.cache[name] = { id: name, filename: name, loaded: true, exports } as NodeJS.Module; };
   delete require.cache[paths[0]];
   stub(paths[1], { verifyToken: async () => userId, validateCsrfToken: () => true, refreshSessionCookies: () => {} });
-  stub(paths[3], { isModuleEnabled: async () => moduleEnabled });
+  // Switched off by the person (no policy): the refusal reads no policy reason.
+  stub(paths[3], { isModuleEnabled: async () => moduleEnabled, getUserModules: async () => [] });
   stub(paths[4], { getActiveRestoreSections: async () => new Set<FixtureValue>(restoring) });
   // No app lock is required (app-lock-policy-mysql-integration walks the gate).
   stub(paths[5], { ...require(paths[5]), appLockRefusal: async () => null });

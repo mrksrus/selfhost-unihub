@@ -1,6 +1,8 @@
 import type { FixtureValue, RouteTable } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
+// Their fakes model mail work; policy reads answer as none (helpers/no-policies.cts).
+require('./helpers/no-policies.cts');
 const { queueChanges, runDueWritebacks, mutateMessages } = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
 const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
 const tick = () => new Promise(resolve => setImmediate(resolve));
