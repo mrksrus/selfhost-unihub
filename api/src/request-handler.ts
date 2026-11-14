@@ -21,7 +21,7 @@ import { clientError } from './http/errors';
 import { log, newRequestId, withRequestId } from './log';
 import { compileRouteMatcher } from './http/route-matcher';
 import { DEFAULT_BODY_LIMIT, routePolicies } from './http/route';
-import { getUserModules } from './services/module-settings';
+import { getUserModules, isModuleEnabled } from './services/module-settings';
 import { getActiveRestoreSections } from './services/restore-locks';
 import { assertAllowed, resolvePolicy, withRequestPolicies } from './services/settings';
 import { appLockRefusal } from './services/devices';
@@ -91,9 +91,8 @@ async function gateRefusal(spec: RouteSpec, req: RouteRequest, routeKey: string,
   if (userId && spec.module) {
     // A module the person switched off, or one an administrator's policy
     // forbids them (0.30: with the policy and its reason in details).
-    const module = (await getUserModules(userId)).find(entry => entry.id === spec.module);
-    if (!module?.enabled) {
-      const policy = module?.policy;
+    if (!await isModuleEnabled(userId, spec.module)) {
+      const policy = (await getUserModules(userId)).find(entry => entry.id === spec.module)?.policy;
       return { status: 403, body: { error: policy?.reason ?? 'This module is disabled. Enable it in Settings.', code: 'MODULE_DISABLED', module: spec.module,
         ...(policy ? { details: { policy: policy.key, reason: policy.reason } } : {}) } };
     }
