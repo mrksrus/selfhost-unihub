@@ -3,7 +3,6 @@ import type { RouteRequest, SqlExecutor, StoredFlag } from '../types';
 import type { ServerResponse } from 'node:http';
 import crypto from 'crypto';
 import { db } from '../state';
-import { MIN_PASSWORD_LENGTH } from '../config';
 import {
   getClientIP,
   consumeAuthAttempt,
@@ -19,6 +18,7 @@ import {
   SESSION_DAYS,
 } from '../auth';
 import { acknowledgeAtSignup, getSignupMode, signupRules } from '../services/settings';
+import { passwordMinimum } from '../services/sign-in-policies';
 import {
   generateTwoFactorSecret,
   verifyTotp,
@@ -150,8 +150,9 @@ export = defineRoutes({
     if (!validCredentials(email, password)) {
       return { error: 'Email and password are required', status: 400 };
     }
-    if (String(password).length < MIN_PASSWORD_LENGTH) {
-      return { error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters`, status: 400 };
+    const minimum = await passwordMinimum(null);
+    if (String(password).length < minimum) {
+      return { error: `Password must be at least ${minimum} characters`, status: 400 };
     }
     const device = deviceClaim(body?.device);
 
@@ -557,8 +558,9 @@ export = defineRoutes({
     if (!current_password || !new_password) {
       return { error: 'Current password and new password are required', status: 400 };
     }
-    if (new_password.length < MIN_PASSWORD_LENGTH) {
-      return { error: `New password must be at least ${MIN_PASSWORD_LENGTH} characters`, status: 400 };
+    const minimum = await passwordMinimum(userId);
+    if (typeof new_password !== 'string' || new_password.length < minimum) {
+      return { error: `New password must be at least ${minimum} characters`, status: 400 };
     }
 
     try {
