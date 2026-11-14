@@ -3,7 +3,8 @@ import { createOfflineSnapshot } from '../services/offline';
 import { defineRoutes } from '../http/route';
 
 export = defineRoutes({
-  'GET /api/offline/snapshot': { auth: 'user', module: null, handler: async (_req: RouteRequest, userId: string) => {
+  // Offline copies forbidden (0.30): no new snapshot; each device deletes its own when it reads the policy.
+  'GET /api/offline/snapshot': { auth: 'user', module: null, requires: ['offline.copies'], handler: async (_req: RouteRequest, userId: string) => {
     try { return { snapshot: await createOfflineSnapshot(userId) }; }
     catch (error) {
       console.error('[OFFLINE] Snapshot failed:', (error as ApiError).message);

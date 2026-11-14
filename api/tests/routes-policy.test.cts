@@ -318,7 +318,7 @@ test('every route that removes data declares its policies or is on the reasoned 
   for (const key of Object.keys(NOT_DESTRUCTIVE)) assert.ok(key in routes, `${key} is listed but has no route`);
   assert.deepEqual(Object.keys(routes).filter(key => routes[key].destructive).sort(), DESTRUCTIVE);
   assert.deepEqual(Object.keys(routes).filter(key => routes[key].requires).sort(), [
-    'POST /api/backup/import', 'POST /api/backup/jobs', 'POST /api/backup/jobs/:id/restore', 'POST /api/backup/restore-jobs/:id/start',
+    'GET /api/offline/snapshot', 'POST /api/backup/import', 'POST /api/backup/jobs', 'POST /api/backup/jobs/:id/restore', 'POST /api/backup/restore-jobs/:id/start',
     'POST /api/calendar/accounts', 'POST /api/mail/accounts', 'POST /api/mail/accounts/:id/backup-export',
   ]);
 });
@@ -361,7 +361,7 @@ test('each destructive route names the policies of what it removes', () => {
   assert.deepEqual(routePolicies(routes['POST /api/backup/import'], none), ['backup.restore']);
 });
 
-test('a route declares only keys that can refuse, only on a mutating user route, with named query values', () => {
+test('a route declares only keys that can refuse, only on a user route (destructive ones on a mutating route), with named query values', () => {
   const handler = async () => ({});
   const moduleIds = MODULE_CATALOG.map(module => module.id);
   const policyKeys = Object.entries(POLICIES).filter(([, entry]) => entry.refuses.length).map(([key]) => key);

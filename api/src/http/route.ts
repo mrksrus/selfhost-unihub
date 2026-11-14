@@ -61,9 +61,10 @@ interface RoutePolicy {
   // 'stream': the handler may write and own the response (SSE); the boundary
   // serializes nothing once headers were sent.
   response?: RouteResponseMode;
-  // F13, mutating 'user' routes only: the policies of the data this route
-  // removes or resets, and those of the other actions a policy can forbid
-  // (adding an account, creating or restoring a backup). The route policy test
+  // F13, 'user' routes only: the policies of the data a mutating route
+  // removes or resets (destructive), and those of the other actions a policy
+  // can forbid (requires: adding an account, creating or restoring a backup,
+  // taking an offline copy). The route policy test
   // keeps every route that removes data either destructive or on its reasoned
   // list. An administrator's route acts through the admin path, which a
   // person's policy never stops.
@@ -154,7 +155,8 @@ function defineRoutes<T extends RouteTable>(table: T): T {
     for (const field of POLICY_FIELDS) {
       const declarations = spec[field];
       if (declarations === undefined) continue;
-      if (!MUTATING_METHODS.has(method)) invalid(key, `only a mutating route declares ${field} policies`);
+      // A read may require a policy too: one that hands out a copy a policy forbids (the offline snapshot, 0.30).
+      if (field === 'destructive' && !MUTATING_METHODS.has(method)) invalid(key, `only a mutating route declares ${field} policies`);
       if (spec.auth !== 'user') invalid(key, `only a user route declares ${field} policies`);
       if (!Array.isArray(declarations) || !declarations.length) invalid(key, `${field} lists at least one policy`);
       for (const entry of declarations) {

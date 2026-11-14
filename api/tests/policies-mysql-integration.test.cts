@@ -97,7 +97,7 @@ test('a forbidding installation policy refuses every declared route before any s
     const before = await checksums();
     const reason = POLICIES[policy].reasons.forbidden;
     for (const [name, client] of people) {
-      const reply = await client.request(key.split(' ')[0], url, {});
+      const reply = await client.request(key.split(' ')[0], url, key.startsWith('GET ') ? undefined : {});
       assert.deepEqual([reply.status, reply.body], [403, { error: reason, status: 403, code: 'POLICY_FORBIDS', details: { policy, reason } }], `${name}: ${key} ${url} under ${policy}`);
     }
     assert.equal(await checksums(), before, `${key} under ${policy} changed nothing`);
