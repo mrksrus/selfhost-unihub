@@ -12,11 +12,11 @@ import { AdminMailAccountDialog } from '@/components/admin/AdminAccountDialogs';
 import type { AdminPoliciesResponse } from '@/lib/admin-api';
 import { instanceBackupQueryKey, type InstanceBackupStatus } from '@/lib/instance-backup-api';
 import { DEFAULT_POLICY_VALUES, POLICY_KEYS } from '@/lib/policies-api';
-import { ADMIN, mountSignedIn, policiesAnswer, stubBrowserApis, testClient } from './helpers/data-safety';
+import { ADMIN, mountSignedIn, person, policiesAnswer, stubBrowserApis, testClient } from './helpers/data-safety';
 
 const state = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }), clearToasts: vi.fn() }));
-vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'user-admin', email: 'admin@example.com', role: 'admin' } }) }));
+vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'user-admin', email: 'admin@example.com', role: 'admin', permissions: ['users.read', 'users.manage', 'server.settings', 'storage.read', 'audit.read', 'groups.manage'] } }) }));
 vi.mock('@/hooks/use-modules', () => ({ useModules: () => ({ isPending: false, isEnabled: () => true, canAccess: () => true, modules: [], pages: [] }) }));
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() } }));
 
@@ -33,9 +33,9 @@ const instanceStatus = (fields: Partial<InstanceBackupStatus> = {}): InstanceBac
   enabled: false, missing: ['destination', 'key'], destination: null, key_fingerprint: null, time_utc: '03:30', keep: 14, schedule_source: 'environment', schedule_defaults: { time_utc: '03:30', keep: 14 }, next_run_at: null, last_run: null, last_success: null,
   kept: { count: 0, bytes: 0 }, running: false, runs: [], restore_command: 'node /app/api/dist/scripts/instance-restore.js --file <backup.uhib> --key-file <key>', ...fields,
 });
-const USERS = [{ id: 'user-admin', email: 'admin@example.com', full_name: 'Avery Admin', role: 'admin', is_active: true, created_at: '2026-01-01T00:00:00.000Z' },
-  { id: 'user-alex', email: 'alex@example.com', full_name: 'Alex Example', role: 'user', is_active: true, two_factor_enabled: true, created_at: '2026-01-02T00:00:00.000Z' },
-  { id: 'user-blair', email: 'blair@example.com', full_name: 'Blair Example', role: 'user', is_active: true, created_at: '2026-01-03T00:00:00.000Z' }];
+const USERS = [person({ id: 'user-admin', email: 'admin@example.com', full_name: 'Avery Admin', role: 'admin' }),
+  person({ id: 'user-alex', email: 'alex@example.com', full_name: 'Alex Example', two_factor_enabled: true }),
+  person({ id: 'user-blair', email: 'blair@example.com', full_name: 'Blair Example' })];
 const BIN_ITEMS = [
   { id: 'bin-1', module: 'contacts', item_type: 'contact', title: 'Grace Hopper', reason: 'deleted', group_id: null, deleted_at: '2026-06-10T09:00:00.000Z', purge_after: '2026-07-10T09:00:00.000Z', provider: 'local', origin: null },
   { id: 'bin-2', module: 'calendar', item_type: 'event', title: 'Seed swap', reason: 'calendar_deleted', group_id: 'grp', deleted_at: '2026-06-11T09:00:00.000Z', purge_after: null, provider: 'local', origin: null },
@@ -50,6 +50,9 @@ beforeEach(() => {
     if (path === '/policies/effective') return policiesAnswer();
     if (path === '/admin/instance-backup') return { data: instanceStatus() };
     if (path === '/admin/users') return { data: { users: USERS } };
+    // 0.30: the person page also shows their groups and devices, the policies page its scope chooser.
+    if (path === '/admin/groups') return { data: { groups: [] } };
+    if (/^\/admin\/users\/[^/]+\/devices$/.test(path)) return { data: { devices: [] } };
     if (path === '/admin/users/user-alex/accounts') return { data: { user_id: 'user-alex', mail_accounts: [MAIL_ACCOUNT], calendar_accounts: [] } };
     if (path === '/admin/users/user-alex/backups') return { data: { jobs: [] } };
     if (path === '/admin/users/user-alex/bin') return { data: { items: BIN_ITEMS, retention: '30' } };
@@ -407,7 +410,7 @@ describe('Admin → Users → a person', () => {
     fireEvent.click((await screen.findAllByRole('button', { name: 'Delete all' }))[0]);
     expect(await screen.findByRole('dialog')).toHaveTextContent('Delete all contacts of Alex Example?');
     await act(async () => navigate('/admin/users/user-blair'));
-    await screen.findByText(/Users · Blair Example/);
+    await screen.findByText(/People · Blair Example/);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(api.post).not.toHaveBeenCalled();
   });
@@ -429,7 +432,7 @@ describe('Admin → Users → a person', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/users/user-alex/mail-accounts', expect.objectContaining({ email_address: 'alex-new@mail.example.com' })));
     // Alex's request is still running when the page moves to Blair and a form opens for them.
     await act(async () => navigate('/admin/users/user-blair'));
-    await screen.findByText(/Users · Blair Example/);
+    await screen.findByText(/People · Blair Example/);
     fireEvent.click(screen.getByRole('button', { name: 'Add mail account' }));
     const blairDialog = await screen.findByRole('dialog', { name: 'Add a mail account' });
     fireEvent.change(within(blairDialog).getByLabelText('Email address'), { target: { value: 'blair@mail.example.com' } });

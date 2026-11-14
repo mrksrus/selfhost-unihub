@@ -1,13 +1,18 @@
-import { HardDriveDownload, Server, ShieldCheck, Users } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { useModules } from '@/hooks/use-modules';
+import { can, managesGroups } from '@/lib/permissions';
 import { PanelGroup, PanelHeader, PanelItem } from '@/components/layout/PageShell';
-import { SETTINGS_SECTIONS, settingsHref } from '@/components/settings/settings-sections';
+import { MY_GROUPS_PAGE, SERVER_PAGES, SETTINGS_SECTIONS, settingsHref } from '@/components/settings/settings-sections';
 
-/** The settings sections, plus the server pages for admins. Shared by Settings and the admin pages. */
+/**
+ * The settings sections, "Your groups" for a person who manages one, and
+ * the Server pages the person's permissions open. Shared by Settings and
+ * the Server pages.
+ */
 export function SettingsPanel({ active }: { active: string }) {
   const { user } = useAuth();
   const { isEnabled } = useModules();
+  const server = SERVER_PAGES.filter(page => can(user, page.permission));
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       <PanelHeader title="Settings" />
@@ -15,13 +20,11 @@ export function SettingsPanel({ active }: { active: string }) {
         {SETTINGS_SECTIONS.filter(section => !section.module || isEnabled(section.module)).map(section => (
           <PanelItem key={section.id} icon={section.icon} href={settingsHref(section.id)} active={active === section.id}>{section.label}</PanelItem>
         ))}
+        {managesGroups(user) && <PanelItem icon={MY_GROUPS_PAGE.icon} href={MY_GROUPS_PAGE.href} active={active === MY_GROUPS_PAGE.id}>{MY_GROUPS_PAGE.label}</PanelItem>}
       </PanelGroup>
-      {user?.role === 'admin' && (
+      {server.length > 0 && (
         <PanelGroup label="Server" className="border-t border-border pt-3">
-          <PanelItem icon={Server} href="/admin/settings" active={active === 'admin-settings'}>Server settings</PanelItem>
-          <PanelItem icon={ShieldCheck} href="/admin/policies" active={active === 'admin-policies'}>Policies</PanelItem>
-          <PanelItem icon={HardDriveDownload} href="/admin/instance-backup" active={active === 'admin-instance-backup'}>Instance backup</PanelItem>
-          <PanelItem icon={Users} href="/admin/users" active={active === 'admin-users'}>Users</PanelItem>
+          {server.map(page => <PanelItem key={page.id} icon={page.icon} href={page.href} active={active === page.id}>{page.label}</PanelItem>)}
         </PanelGroup>
       )}
     </div>

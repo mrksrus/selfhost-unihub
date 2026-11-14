@@ -6,6 +6,7 @@ import { api } from '@/lib/api';
 import { captureOfflineSave, clearOfflineData, getOfflineSnapshotInfo, saveOfflineSnapshot, type OfflineSnapshot } from '@/lib/offline';
 import { Button } from '@/components/ui/button';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
+import { usePolicy } from '@/hooks/use-policies';
 
 type Info = Awaited<ReturnType<typeof getOfflineSnapshotInfo>>;
 
@@ -16,6 +17,8 @@ export default function OfflineSettings() {
   const [error, setError] = useState('');
   const [loadingInfo, setLoadingInfo] = useState(true);
   const request = useRef<AbortController | null>(null);
+  // Offline copies forbidden: the server refuses a new one, and this browser's own went when it read the rule.
+  const { lock } = usePolicy('offline.copies');
 
   useEffect(() => {
     let active = true;
@@ -57,13 +60,14 @@ export default function OfflineSettings() {
 
   const description = loadingInfo ? 'Checking saved data…'
     : info ? <>{info.emails} emails, {info.contacts} contacts and {info.events} events, {(info.bytes / 1024 / 1024).toFixed(1)} MiB. Saved {new Date(info.savedAt).toLocaleString()}.</>
+    : lock ? 'Not available on this server.'
     : 'Off for this device.';
 
   return (
     <SettingsSection title="Offline reading" description="The latest 100 emails, your contacts and events (up to 32 MiB), readable without a connection. Cleared when you sign out.">
-      <SettingsRow label="This device" description={description}>
+      <SettingsRow label="This device" description={description} lock={lock}>
         {info && <Button type="button" variant="outline" disabled={!!busy} onClick={() => void clear()}>{busy === 'clearing' ? 'Clearing…' : 'Clear'}</Button>}
-        <Button type="button" variant={info ? 'outline' : 'default'} onClick={() => void sync()} disabled={!!busy || loadingInfo || isOffline || !isOnline()}>
+        <Button type="button" variant={info ? 'outline' : 'default'} onClick={() => void sync()} disabled={!!busy || loadingInfo || isOffline || !isOnline() || !!lock}>
           {busy === 'saving' ? 'Saving…' : info ? 'Refresh now' : 'Turn on'}
         </Button>
       </SettingsRow>

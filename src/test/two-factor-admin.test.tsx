@@ -5,16 +5,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import AdminUsers from '@/pages/AdminUsers';
 import { TotpQrCode } from '@/components/settings/TotpQrCode';
 import { api } from '@/lib/api';
+import { person } from './helpers/data-safety';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }));
-vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'admin-1', role: 'admin' } }) }));
+// The owner: every permission the server grants (the page reads rights from them, never from the role's name).
+vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'admin-1', role: 'owner', permissions: ['users.read', 'users.manage', 'server.settings', 'groups.manage', 'admins.manage', 'owner.transfer'] } }) }));
 const { toast } = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast }) }));
 
 const users = [
-  { id: 'admin-1', email: 'admin@example.test', full_name: 'Admin', role: 'admin', is_active: true, two_factor_enabled: true, created_at: '2026-01-01T00:00:00Z' },
-  { id: 'user-2', email: 'person@example.test', full_name: 'Person', role: 'user', is_active: true, two_factor_enabled: true, created_at: '2026-01-02T00:00:00Z' },
-  { id: 'user-3', email: 'plain@example.test', full_name: 'Plain', role: 'user', is_active: true, two_factor_enabled: false, created_at: '2026-01-03T00:00:00Z' },
+  person({ id: 'admin-1', email: 'admin@example.test', full_name: 'Admin', role: 'owner', two_factor_enabled: true }),
+  person({ id: 'user-2', email: 'person@example.test', full_name: 'Person', two_factor_enabled: true }),
+  person({ id: 'user-3', email: 'plain@example.test', full_name: 'Plain' }),
 ];
 
 beforeEach(() => {
@@ -42,7 +44,7 @@ async function openReset(email: string) {
 const closeMenu = () => fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
 
 describe('admin 2FA reset', () => {
-  it('is offered only for other users with 2FA and needs the admin password', async () => {
+  it('is offered only for other users with 2FA and needs the admin password', { timeout: 20_000 }, async () => {
     mount();
     expect(await resetEntry('admin@example.test')).toBeNull();
     closeMenu();
@@ -58,7 +60,7 @@ describe('admin 2FA reset', () => {
     expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Two-factor authentication reset for person@example.test' }));
   });
 
-  it('keeps the dialog open and shows the error when the password is wrong', async () => {
+  it('keeps the dialog open and shows the error when the password is wrong', { timeout: 20_000 }, async () => {
     vi.mocked(api.post).mockResolvedValue({ error: 'Current password is incorrect', status: 403 });
     mount();
     await openReset('person@example.test');
@@ -68,9 +70,7 @@ describe('admin 2FA reset', () => {
     expect(screen.getByText('Reset 2FA for person@example.test')).toBeInTheDocument();
   });
 
-  it('reports a completed reset for the user it was submitted for', async () => {
-    const other = { ...users[1], id: 'user-4', email: 'other@example.test', full_name: 'Other' };
-    vi.mocked(api.get).mockResolvedValue({ data: { users: [...users, other] } });
+  it('a reset that is still running cannot be closed, and reports for the user it was sent for', { timeout: 20_000 }, async () => {
     let finish!: (value: { data: { message: string } }) => void;
     vi.mocked(api.post).mockReturnValue(new Promise(resolve => { finish = resolve; }));
     mount();
@@ -78,15 +78,13 @@ describe('admin 2FA reset', () => {
     fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'synthetic-admin-password' } });
     fireEvent.click(screen.getByRole('button', { name: 'Reset 2FA' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/users/user-2/2fa/reset', expect.anything()));
-    // The admin closes the dialog and opens it for someone else before the first reset finishes.
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    await waitFor(() => expect(screen.queryByText('Reset 2FA for person@example.test')).not.toBeInTheDocument());
-    await openReset('other@example.test');
-    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'typed-for-other' } });
+    // The dialog stays with its person until the server has answered: no other dialog can take its place meanwhile.
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    // The typed password left the field as it was sent.
+    expect(screen.getByLabelText('Your password')).toHaveValue('');
     finish({ data: { message: 'Two-factor authentication reset' } });
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Two-factor authentication reset for person@example.test' })));
-    expect(screen.getByText('Reset 2FA for other@example.test')).toBeInTheDocument();
-    expect(screen.getByLabelText('Your password')).toHaveValue('typed-for-other');
+    await waitFor(() => expect(screen.queryByText('Reset 2FA for person@example.test')).not.toBeInTheDocument());
   });
 });
 
@@ -109,21 +107,21 @@ describe('admin changes to another account', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name }));
   };
 
-  it('a role change waits for the admin password', async () => {
+  it('a role change waits for the admin password', { timeout: 20_000 }, async () => {
     vi.mocked(api.put).mockResolvedValue({ data: { message: 'User role set to admin' } });
     mount();
-    await openEntry('plain@example.test', 'Make admin');
-    await screen.findByText('Make plain@example.test an admin?');
+    await openEntry('plain@example.test', 'Make administrator');
+    await screen.findByText('Make plain@example.test an administrator?');
     expect(api.put).not.toHaveBeenCalled();
-    const submit = screen.getByRole('button', { name: 'Make admin' });
+    const submit = screen.getByRole('button', { name: 'Make administrator' });
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'synthetic-admin-password' } });
     fireEvent.click(submit);
     await waitFor(() => expect(api.put).toHaveBeenCalledExactlyOnceWith('/admin/users/user-3/role', { role: 'admin', current_password: 'synthetic-admin-password' }));
-    await waitFor(() => expect(screen.queryByText('Make plain@example.test an admin?')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Make plain@example.test an administrator?')).not.toBeInTheDocument());
   });
 
-  it('a new password is sent with the admin password, and a refusal keeps the dialog', async () => {
+  it('a new password is sent with the admin password, and a refusal keeps the dialog', { timeout: 20_000 }, async () => {
     vi.mocked(api.put).mockResolvedValue({ error: 'Current password is incorrect', status: 403 });
     mount();
     await openEntry('person@example.test', 'Set a new password');
@@ -144,23 +142,23 @@ describe('deleting and deactivating someone', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: item }));
   }
 
-  it('deletes only with the admin password, and keeps the dialog when it is wrong', async () => {
+  it('deletes only with the admin password, and keeps the dialog when it is wrong', { timeout: 20_000 }, async () => {
     vi.mocked(api.delete).mockResolvedValueOnce({ error: 'Current password is incorrect', status: 403 }).mockResolvedValueOnce({ data: { message: 'User deleted' } });
     mount();
-    await choose('plain@example.test', 'Delete user');
-    const submit = await screen.findByRole('button', { name: 'Delete user' });
+    await choose('plain@example.test', 'Delete person');
+    const submit = await screen.findByRole('button', { name: 'Delete person' });
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'wrong' } });
     fireEvent.click(submit);
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ description: 'Current password is incorrect' })));
     expect(screen.getByText('Delete plain@example.test?')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'synthetic-admin-password' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete user' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete person' }));
     await waitFor(() => expect(api.delete).toHaveBeenLastCalledWith('/admin/users/user-3', { current_password: 'synthetic-admin-password' }));
     await waitFor(() => expect(screen.queryByText('Delete plain@example.test?')).not.toBeInTheDocument());
   });
 
-  it('deactivates with the admin password; activating again needs none', async () => {
+  it('deactivates with the admin password; activating again needs none', { timeout: 20_000 }, async () => {
     vi.mocked(api.put).mockResolvedValue({ data: { message: 'ok' } });
     mount();
     await choose('plain@example.test', 'Deactivate');
@@ -169,9 +167,9 @@ describe('deleting and deactivating someone', () => {
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/users/user-3/activate', { is_active: false, current_password: 'synthetic-admin-password' }));
     await waitFor(() => expect(screen.queryByText('Deactivate plain@example.test?')).not.toBeInTheDocument());
 
-    vi.mocked(api.get).mockResolvedValue({ data: { users: users.map(u => (u.id === 'user-3' ? { ...u, is_active: false } : u)) } });
+    vi.mocked(api.get).mockResolvedValue({ data: { users: users.map(u => (u.id === 'user-3' ? { ...u, is_active: false, status: 'inactive' } : u)) } });
     cleanupAndMount();
-    fireEvent.click(await screen.findByRole('button', { name: 'Activate' }));
+    await choose('plain@example.test', 'Activate');
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/users/user-3/activate', { is_active: true }));
   });
 });

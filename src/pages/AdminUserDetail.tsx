@@ -8,8 +8,8 @@ import { useAuth } from '@/contexts/useAuth';
 import { useToast } from '@/hooks/use-toast';
 import { hasCode } from '@/lib/api-error';
 import {
-  AdminHostTrustError, addAdminCalendarAccount, addAdminMailAccount, adminUserQueryKeys, adminUsersQueryKey, clearAdminUserModule, deleteAdminUserBackup, deleteAdminUserBinItem, emptyAdminUserBin,
-  fetchAdminUserAccounts, fetchAdminUserBackups, fetchAdminUserBin, fetchAdminUsers, removeAdminCalendarAccount, removeAdminMailAccount, updateAdminCalendarAccount, updateAdminMailAccount,
+  AdminHostTrustError, addAdminCalendarAccount, addAdminMailAccount, adminUserQueryKeys, clearAdminUserModule, deleteAdminUserBackup, deleteAdminUserBinItem, emptyAdminUserBin,
+  fetchAdminUserAccounts, fetchAdminUserBackups, fetchAdminUserBin, removeAdminCalendarAccount, removeAdminMailAccount, updateAdminCalendarAccount, updateAdminMailAccount,
   type AdminCalendarAccount, type AdminClearModule, type AdminMailAccount,
 } from '@/lib/admin-api';
 import { BIN_MODULES, groupBinItems, type BinItem, type BinModule } from '@/lib/bin-api';
@@ -23,13 +23,18 @@ import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { SettingsPanel } from '@/components/settings/SettingsPanel';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog';
+import { usePersonActions } from '@/components/admin/PersonActions';
+import { PersonAccount, PersonDevices, PersonGroups, PersonProfile } from '@/components/admin/PersonOrganisation';
+import { usePeople } from '@/hooks/use-organisation';
+import { can } from '@/lib/permissions';
 import { AdminCalendarAccountDialog, AdminMailAccountDialog } from '@/components/admin/AdminAccountDialogs';
 
 // The person's own list labels sections from the server's capabilities; here the ids and status words are shown as written, in sentence case.
 const sentenceCase = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
-// Admin → Users → a person: their mail and calendar accounts, backups, bin
+// Server › People › a person: who they are here (role, groups, devices, the
+// account itself; 0.30), then their mail and calendar accounts, backups, bin
 // and data (F13, accounts.admin_manage). A rule that forbids the person an
 // action never makes it impossible: the administrator does it here, with
 // their own password, and the activity log records it. The routes call the
@@ -78,7 +83,9 @@ const AdminUserDetail = () => {
   const navigate = useNavigate();
   const client = useQueryClient();
   const scope = useSessionScope();
-  const admin = user?.role === 'admin';
+  // The sections follow the permissions the server gave: reading people shows the page, managing them its changes.
+  const admin = can(user, 'users.read');
+  const manage = can(user, 'users.manage');
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [mailDialog, setMailDialog] = useState<AccountDialog<AdminMailAccount>>(CLOSED);
   const [calendarDialog, setCalendarDialog] = useState<AccountDialog<AdminCalendarAccount>>(CLOSED);
@@ -91,14 +98,15 @@ const AdminUserDetail = () => {
   const closeMailDialog = (generation: number) => setMailDialog(current => (current.generation === generation ? CLOSED : current));
   const closeCalendarDialog = (generation: number) => setCalendarDialog(current => (current.generation === generation ? CLOSED : current));
 
-  const usersQuery = useQuery({ queryKey: adminUsersQueryKey, queryFn: ({ signal }) => fetchAdminUsers(signal), enabled: admin });
+  const usersQuery = usePeople();
   const person = usersQuery.data?.find(entry => entry.id === id) ?? null;
-  const accountsQuery = useQuery({ queryKey: adminUserQueryKeys.accounts(id), queryFn: ({ signal }) => fetchAdminUserAccounts(id, signal), enabled: admin && !!id });
-  const backupsQuery = useQuery({ queryKey: adminUserQueryKeys.backups(id), queryFn: ({ signal }) => fetchAdminUserBackups(id, signal), enabled: admin && !!id });
+  const actions = usePersonActions({ people: usersQuery.data, onDeleted: () => navigate('/admin/users', { replace: true }) });
+  const accountsQuery = useQuery({ queryKey: adminUserQueryKeys.accounts(id), queryFn: ({ signal }) => fetchAdminUserAccounts(id, signal), enabled: manage && !!id });
+  const backupsQuery = useQuery({ queryKey: adminUserQueryKeys.backups(id), queryFn: ({ signal }) => fetchAdminUserBackups(id, signal), enabled: manage && !!id });
   // The bin a page at a time, as the person's own (whole groups, newest first); "Show older items" appends the next page.
   const binQuery = useInfiniteQuery({
     queryKey: adminUserQueryKeys.bin(id), queryFn: ({ pageParam, signal }) => fetchAdminUserBin(id, pageParam, signal),
-    initialPageParam: null as string | null, getNextPageParam: page => page.next_cursor, enabled: admin && !!id,
+    initialPageParam: null as string | null, getNextPageParam: page => page.next_cursor, enabled: manage && !!id,
   });
   // A cursor the server no longer accepts (400 BIN_INVALID): the bin is read again from the newest items, with the server's word.
   const invalidCursor = hasCode(binQuery.error, 'BIN_INVALID') ? binQuery.error : null;
@@ -214,14 +222,19 @@ const AdminUserDetail = () => {
   const olderItems = binQuery.hasNextPage;
   const binCount = (module: BinModule) => binItems.filter(item => item.module === module).length;
   const nothingAtAll = accountsQuery.data && backupsQuery.data && binQuery.data && accountsQuery.data.mail_accounts.length === 0 && accountsQuery.data.calendar_accounts.length === 0 && backupsQuery.data.length === 0 && binItems.length === 0;
-  const body = !admin ? <p className="text-sm text-muted-foreground">Only admins can see this page.</p>
+  const body = !admin ? <p className="text-sm text-muted-foreground">Only administrators can see this page.</p>
     : usersQuery.isLoading ? <LoadingState label="Loading the account…" />
     : usersQuery.error ? <ErrorState title="Could not load the account" error={usersQuery.error} onRetry={() => void usersQuery.refetch()} retrying={usersQuery.isFetching} />
     : !person ? <ErrorState title="No such account" error="The account may have been deleted." />
     : (
       <>
+        <PersonProfile person={person} actions={actions} />
+        <PersonGroups person={person} />
+        <PersonDevices person={person} />
+        <PersonAccount person={person} actions={actions} />
+        {manage && <>
         <p className="mb-8 max-w-prose text-sm text-muted-foreground">
-          What you do here is done for {name} as if they did it, with your password, and recorded in the activity log. A rule that forbids them an action does not apply to you.
+          What you do below is done for {name} as if they did it, with your password, and recorded in the activity log. A rule that forbids them an action does not apply to you.
         </p>
         {nothingAtAll && (
           <p role="status" className="mb-8 max-w-prose text-sm text-muted-foreground">{name} has no mail or calendar accounts, no backups on this server and nothing in their bin yet. Their data can still be deleted below.</p>
@@ -338,14 +351,16 @@ const AdminUserDetail = () => {
             </SettingsRow>
           ))}
         </SettingsSection>
+        </>}
       </>
     );
 
   return (
     <PageShell panel={<SettingsPanel active="admin-users" />} panelLabel="Settings sections" panelId="settings">
-      <PageHeader title="Settings" scope={person ? `Users · ${name}` : 'Users'}
-        back={<Button variant="ghost" size="icon" aria-label="Back to users" asChild><Link to="/admin/users"><ChevronLeft aria-hidden="true" /></Link></Button>} />
+      <PageHeader title="Settings" scope={person ? `People · ${name}` : 'People'}
+        back={<Button variant="ghost" size="icon" aria-label="Back to people" asChild><Link to="/admin/users"><ChevronLeft aria-hidden="true" /></Link></Button>} />
       <PageBody width="reading">{body}</PageBody>
+      {actions.dialogs}
       <PasswordConfirmDialog open={!!confirm && confirm.userId === id} onClose={() => setConfirm(null)} title={confirm?.title ?? ''} description={confirm?.description ?? ''} target={target}
         actionLabel={confirm?.action ?? ''} destructive={confirm?.destructive} pending={pending} onConfirm={password => { if (confirm?.userId === id) confirm.run(password, confirm.generation); }} />
       <AdminMailAccountDialog open={mailDialog.open} account={mailDialog.account} onClose={() => setMailDialog(CLOSED)} pending={saveMail.isPending} target={target}

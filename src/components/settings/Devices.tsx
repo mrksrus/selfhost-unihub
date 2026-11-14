@@ -17,11 +17,11 @@ import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settin
 import { describeScope } from '@/components/app-lock/area-names';
 import type { ModulePreference } from '@/lib/modules';
 
-const KIND_ICONS: Record<DeviceKind, LucideIcon> = { web: Globe, pwa: AppWindow, android: Smartphone };
+export const DEVICE_KIND_ICONS: Record<DeviceKind, LucideIcon> = { web: Globe, pwa: AppWindow, android: Smartphone };
 const METHOD_WORDS: Record<LockMethod, string> = { biometric: 'fingerprint or face', device_credential: 'the phone\'s PIN', pin: 'UniHub PIN' };
 
 /** "App lock: fingerprint or face, Mail and Contacts" or "App lock off". */
-function describeDeviceLock(lock: DeviceSummary['lock'], modules: readonly ModulePreference[]) {
+export function describeDeviceLock(lock: DeviceSummary['lock'], modules: readonly ModulePreference[]) {
   if (!lock || !lock.scope.length) return 'App lock off';
   return `App lock: ${METHOD_WORDS[lock.method]}, ${describeScope(lock.scope, modules)}`;
 }
@@ -54,7 +54,7 @@ export function Devices() {
         </SettingsBlock>
       )}
       {query.data?.map(device => {
-        const Icon = KIND_ICONS[device.kind] ?? Globe;
+        const Icon = DEVICE_KIND_ICONS[device.kind] ?? Globe;
         const label = deviceLabel(device);
         return (
           <SettingsRow key={device.id}

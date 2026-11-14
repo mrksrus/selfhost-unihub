@@ -10,6 +10,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 import { RulesList } from '@/components/policies/PolicyNoticeDialog';
+import { MyGroups } from '@/components/organisation/MyGroups';
+import { can } from '@/lib/permissions';
 
 const DEVICE_TIME_ZONE = '';
 const timeZones = (() => {
@@ -29,12 +31,12 @@ export function RulesOnThisServer() {
   const { user, isOffline } = useAuth();
   const { rules, loaded } = usePolicies();
   return (
-    <SettingsSection title="Rules on this server" description="Your administrator can limit backups, the bin, accounts and deleting data for everyone on this server. You are told at sign-up and whenever a rule changes.">
+    <SettingsSection title="Rules on this server" description="Your administrator can set rules for everyone on this server and stricter ones for a group. These apply to you; you are told when you join and whenever one of them changes.">
       <SettingsBlock>
         {isOffline ? <p className="text-sm text-muted-foreground">The rules need a connection.</p>
           : !loaded ? <p role="status" className="text-sm text-muted-foreground">Loading the rules…</p>
           : <RulesList rules={rules} className="text-sm" />}
-        {user?.role === 'admin' && loaded && <p className="mt-3 text-xs text-muted-foreground">You set these under Server › Policies; they apply to you too.</p>}
+        {can(user, 'server.settings') && loaded && <p className="mt-3 text-xs text-muted-foreground">You set these under Server › Policies; they apply to you too.</p>}
       </SettingsBlock>
     </SettingsSection>
   );
@@ -89,5 +91,6 @@ export default function AccountSettings() {
       </SettingsSection>
     </form>
     <RulesOnThisServer />
+    <MyGroups />
   </>);
 }

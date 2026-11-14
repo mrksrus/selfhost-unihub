@@ -30,6 +30,10 @@ const AdminSettings = lazy(() => import("./pages/AdminSettings"));
 const AdminPolicies = lazy(() => import("./pages/AdminPolicies"));
 const AdminInstanceBackup = lazy(() => import("./pages/AdminInstanceBackup"));
 const AdminUserDetail = lazy(() => import("./pages/AdminUserDetail"));
+const AdminGroups = lazy(() => import("./pages/AdminGroups"));
+const GroupPage = lazy(() => import("./pages/GroupPage"));
+const MyGroupsPage = lazy(() => import("./pages/MyGroupsPage"));
+const InviteAccept = lazy(() => import("./pages/InviteAccept"));
 
 const AuthenticatedApp = () => {
   const { user, session, isOffline } = useAuth();
@@ -45,6 +49,8 @@ const AuthenticatedApp = () => {
           <Suspense fallback={<StartingScreen />}>
           <Routes>
             <Route path="/auth" element={<Auth />} />
+            {/* A setup link: public, its token in the fragment. */}
+            <Route path="/invite" element={<InviteAccept />} />
             <Route element={<AppLayout />}>
               <Route path="/" element={<StartRedirect />} />
               <Route path="/dashboard" element={<Dashboard />} />
@@ -53,11 +59,15 @@ const AuthenticatedApp = () => {
               <Route path="/todo" element={<ModuleGuard id="calendar"><TodoPage /></ModuleGuard>} />
               <Route path="/mail" element={<ModuleGuard id="mail"><MailPage /></ModuleGuard>} />
               <Route path="/recordings" element={<ModuleGuard id="recordings"><Recordings /></ModuleGuard>} />
-              <Route path="/music" element={<ModuleGuard id="recordings"><Music /></ModuleGuard>} />
+              <Route path="/music" element={<ModuleGuard id="recordings" page="music"><Music /></ModuleGuard>} />
               <Route path="/more" element={<More />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/admin/users" element={<AdminUsers />} />
               <Route path="/admin/users/:id" element={<AdminUserDetail />} />
+              <Route path="/admin/groups" element={<AdminGroups />} />
+              <Route path="/admin/groups/:id" element={<GroupPage admin />} />
+              <Route path="/groups" element={<MyGroupsPage />} />
+              <Route path="/groups/:id" element={<GroupPage />} />
               <Route path="/admin/settings" element={<AdminSettings />} />
               <Route path="/admin/policies" element={<AdminPolicies />} />
               <Route path="/admin/instance-backup" element={<AdminInstanceBackup />} />

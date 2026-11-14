@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { can } from '@/lib/permissions';
 import { useAuth } from '@/contexts/useAuth';
 import { fetchSignupMode, fetchStorageOverview, saveSignupMode, signupModeQueryKey, storageQueryKey, type SignupMode, type StorageUser } from '@/lib/admin-api';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -36,13 +37,13 @@ const AdminSettings = () => {
   const { data: signupMode = 'disabled', isLoading } = useQuery({
     queryKey: signupModeQueryKey,
     queryFn: ({ signal }) => fetchSignupMode(signal),
-    enabled: user?.role === 'admin',
+    enabled: can(user, 'server.settings'),
   });
 
   const { data: storageOverview, isLoading: storageLoading } = useQuery({
     queryKey: storageQueryKey,
     queryFn: ({ signal }) => fetchStorageOverview(signal),
-    enabled: user?.role === 'admin',
+    enabled: can(user, 'storage.read'),
   });
 
   const updateSignupMode = useMutation({
@@ -56,14 +57,14 @@ const AdminSettings = () => {
     },
   });
 
-  const body = user?.role !== 'admin' ? (
-    <p className="text-sm text-muted-foreground">Only admins can see this page.</p>
+  const body = !can(user, 'server.settings') ? (
+    <p className="text-sm text-muted-foreground">Only administrators can see this page.</p>
   ) : (
     <>
       <SettingsSection title="Sign-ups">
         <SettingsRow label="Who can create an account" htmlFor="signup-mode"
           description={signupMode === 'open' ? 'Anyone can sign up and use UniHub right away.'
-            : signupMode === 'approval' ? 'Anyone can sign up, and an admin approves them in Users.'
+            : signupMode === 'approval' ? 'Anyone can sign up, and an administrator activates them under People.'
             : 'Nobody can sign up. Existing accounts keep working.'}>
           {isLoading ? <Loader2 aria-hidden="true" className="h-5 w-5 animate-spin text-muted-foreground" /> : (
             <Select value={signupMode} onValueChange={mode => updateSignupMode.mutate(mode as SignupMode)} disabled={updateSignupMode.isPending}>

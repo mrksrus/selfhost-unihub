@@ -1,15 +1,17 @@
 import { Link } from 'react-router-dom';
-import { ChevronRight, HardDriveDownload, LogOut, Server, Settings, ShieldCheck, Users } from 'lucide-react';
+import { ChevronRight, LogOut, Settings } from 'lucide-react';
 import { useModules } from '@/hooks/use-modules';
 import { useAuth } from '@/contexts/useAuth';
 import { BOTTOM_NAV_PAGES, navigationPages } from '@/lib/navigation';
+import { can, managesGroups } from '@/lib/permissions';
+import { MY_GROUPS_PAGE, SERVER_PAGES } from '@/components/settings/settings-sections';
 import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { AttentionList } from '@/components/layout/AttentionList';
 import { useVisibleAttention } from '@/components/layout/visible-attention';
 
 const rowClass = 'flex items-center gap-3 px-1 py-3.5 text-[15px] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
-/** Phone: pages that do not fit in the bottom bar, decisions waiting, settings and sign out. */
+/** Phone: pages that do not fit in the bottom bar, decisions waiting, settings, the Server pages and sign out. */
 const More = () => {
   const { pages, canNavigate } = useModules();
   const { user, signOut } = useAuth();
@@ -18,12 +20,9 @@ const More = () => {
     // Pages that do not fit in the mobile bar, in the user's order.
     ...navigationPages(pages, canNavigate).slice(BOTTOM_NAV_PAGES).map(page => ({ title: page.name, href: page.href, icon: page.icon })),
     { title: 'Settings', href: '/settings', icon: Settings },
-    ...(user?.role === 'admin' ? [
-      { title: 'Server settings', href: '/admin/settings', icon: Server },
-      { title: 'Policies', href: '/admin/policies', icon: ShieldCheck },
-      { title: 'Instance backup', href: '/admin/instance-backup', icon: HardDriveDownload },
-      { title: 'Users', href: '/admin/users', icon: Users },
-    ] : []),
+    ...(managesGroups(user) ? [{ title: MY_GROUPS_PAGE.label, href: MY_GROUPS_PAGE.href, icon: MY_GROUPS_PAGE.icon }] : []),
+    // The Server pages the person's permissions open.
+    ...SERVER_PAGES.filter(page => can(user, page.permission)).map(page => ({ title: page.label, href: page.href, icon: page.icon })),
   ];
 
   return (

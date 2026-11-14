@@ -1,334 +1,146 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog';
+import { MoreHorizontal, UserPlus } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
-import { adminUsersQueryKey, deleteAdminUser, fetchAdminUsers, resetUserTwoFactor, setUserActive, setUserPassword, setUserRole, type AdminUser } from '@/lib/admin-api';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useSecretMutation } from '@/hooks/use-secret-mutation';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { usePeople } from '@/hooks/use-organisation';
 import { useToast } from '@/hooks/use-toast';
+import { lastActiveLabel } from '@/lib/account-api';
+import type { Person } from '@/lib/admin-api';
+import { can } from '@/lib/permissions';
+import { cn } from '@/lib/utils';
+import { AddPersonDialog } from '@/components/admin/AddPersonDialog';
+import { usePersonActions } from '@/components/admin/PersonActions';
+import { ROLE_LABELS, ROW_LINK, personName, signInState } from '@/components/admin/person-words';
+import { Button } from '@/components/ui/button';
+import { Chip, ChipGroup } from '@/components/ui/chips';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { ErrorState, LoadingState } from '@/components/ui/page-states';
-import { Loader2, MoreHorizontal } from 'lucide-react';
+import { PolicyMenuItem } from '@/components/ui/policy-note';
 import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { SettingsPanel } from '@/components/settings/SettingsPanel';
 
-type UserRow = AdminUser;
+// Server › People: everyone with an account on this server, one row each.
+// The row opens the person's page; its menu holds the quick account changes.
+// On wide windows the facts stand in columns under their headings; on a
+// phone the same cells follow the name as one line.
+
+const ALL = 'all';
+const NO_GROUP = 'none';
+/** The columns after the name: role, groups, sign-in, last active. */
+const COLUMNS = 'md:grid md:grid-cols-[minmax(0,2.2fr)_7rem_minmax(0,1.6fr)_minmax(0,1.3fr)_6.5rem_2.5rem] md:items-center md:gap-x-4';
+/** A cell is a column on wide windows and one part of the second line on a phone, the parts set apart by a dot. */
+const cell = 'max-md:inline max-md:after:text-muted-foreground max-md:after:content-["_·_"] max-md:last:after:content-none md:truncate md:first-letter:uppercase';
+
+function groupsText(person: Person) {
+  if (person.groups.length === 0) return 'No group';
+  return person.groups.map(group => (group.role === 'manager' ? `${group.name} (manager)` : group.name)).join(', ');
+}
 
 const AdminUsers = () => {
   const { user } = useAuth();
   const { toast } = useToast();
-  const queryClient = useQueryClient();
-  const [passwordDialogUser, setPasswordDialogUser] = useState<UserRow | null>(null);
-  const [newPassword, setNewPassword] = useState('');
-  const [passwordLoading, setPasswordLoading] = useState(false);
-  const [resetTwoFactorUser, setResetTwoFactorUser] = useState<UserRow | null>(null);
-  const [roleChangeUser, setRoleChangeUser] = useState<UserRow | null>(null);
-  const [deletingUser, setDeletingUser] = useState<UserRow | null>(null);
-  const [deactivatingUser, setDeactivatingUser] = useState<UserRow | null>(null);
-  const [adminPassword, setAdminPassword] = useState('');
-  // The user the reset dialog shows now, read when a request completes.
-  const openResetUserId = useRef<string | null>(null);
-  useEffect(() => { openResetUserId.current = resetTwoFactorUser?.id ?? null; }, [resetTwoFactorUser]);
+  const [filter, setFilter] = useState(ALL);
+  const [adding, setAdding] = useState(false);
+  const { data, isLoading, error, refetch, isFetching } = usePeople();
+  const actions = usePersonActions({ people: data });
+  const people = data ?? [];
 
-  const { data, isLoading, error, refetch, isFetching } = useQuery({
-    queryKey: adminUsersQueryKey,
-    queryFn: ({ signal }) => fetchAdminUsers(signal),
-    enabled: user?.role === 'admin',
-  });
-  
-  const deleteUser = useSecretMutation({
-    mutationFn: ({ userId, currentPassword }: { userId: string; currentPassword: string }) => deleteAdminUser(userId, currentPassword),
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: adminUsersQueryKey });
-      toast({ title: 'User deleted' });
-      setDeletingUser(current => (current?.id === variables.userId ? null : current));
-    },
-    onError: (err: Error) => {
-      toast({ title: 'Failed to delete user', description: err.message, variant: 'destructive' });
-    },
-  });
+  // The filter's groups are those people are in: a group without members filters nothing.
+  const groups = [...new Map(people.flatMap(person => person.groups).map(group => [group.id, group.name])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  const count = (id: string) => people.filter(person => (id === NO_GROUP ? person.groups.length === 0 : person.groups.some(group => group.id === id))).length;
+  // A filter whose group lost its last member reads as All.
+  const active = filter === ALL || (filter === NO_GROUP ? count(NO_GROUP) > 0 : groups.some(([id]) => id === filter)) ? filter : ALL;
+  const shown = people.filter(person => active === ALL || (active === NO_GROUP ? person.groups.length === 0 : person.groups.some(group => group.id === active)));
 
-  const updateUserRole = useSecretMutation({
-    mutationFn: ({ userId, role, currentPassword }: { userId: string; role: 'user' | 'admin'; currentPassword: string }) => setUserRole(userId, role, currentPassword),
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: adminUsersQueryKey });
-      toast({ title: variables.role === 'admin' ? 'User promoted to admin' : 'User changed to standard user' });
-      setRoleChangeUser(current => (current?.id === variables.userId ? null : current));
-      setAdminPassword('');
-    },
-    onError: (err: Error) => {
-      toast({ title: 'Failed to update role', description: err.message, variant: 'destructive' });
-    },
-  });
-  
-  const toggleUserActive = useSecretMutation({
-    mutationFn: ({ userId, is_active, currentPassword }: { userId: string; is_active: boolean; currentPassword?: string }) => setUserActive(userId, is_active, currentPassword),
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: adminUsersQueryKey });
-      toast({ title: variables.is_active ? 'User activated' : 'User deactivated' });
-      if (!variables.is_active) setDeactivatingUser(current => (current?.id === variables.userId ? null : current));
-    },
-    onError: (err: Error) => {
-      toast({ title: 'Failed to update user status', description: err.message, variant: 'destructive' });
-    },
-  });
-  
-  const resetTwoFactor = useSecretMutation({
-    mutationFn: ({ user, currentPassword }: { user: UserRow; currentPassword: string }) => resetUserTwoFactor(user.id, currentPassword),
-    // Report on the submitted user; the dialog may have been reopened for someone else meanwhile.
-    onSuccess: (_data, { user }) => {
-      queryClient.invalidateQueries({ queryKey: adminUsersQueryKey });
-      toast({ title: `Two-factor authentication reset for ${user.email}`, description: 'They were signed out and can sign in with their password.' });
-      if (openResetUserId.current === user.id) {
-        setResetTwoFactorUser(null);
-        setAdminPassword('');
-      }
-    },
-    onError: (err: Error, { user }) => {
-      toast({ title: `Failed to reset two-factor authentication for ${user.email}`, description: err.message, variant: 'destructive' });
-    },
-  });
-
-  const handleChangePassword = async () => {
-    if (!passwordDialogUser || !newPassword || newPassword.length < 12) {
-      toast({ title: 'New password must be at least 12 characters', variant: 'destructive' });
-      return;
-    }
-    if (!adminPassword) {
-      toast({ title: 'Enter your own password to confirm', variant: 'destructive' });
-      return;
-    }
-    setPasswordLoading(true);
-    try {
-      await setUserPassword(passwordDialogUser.id, newPassword, adminPassword);
-      toast({ title: `Password updated for ${passwordDialogUser.email}` });
-      setPasswordDialogUser(null);
-      setNewPassword('');
-      setAdminPassword('');
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      toast({ title: 'Failed to change password', description: message, variant: 'destructive' });
-    } finally {
-      setPasswordLoading(false);
-    }
-  };
-
-  const list = isLoading ? <LoadingState label="Loading users…" />
-    : error ? <ErrorState title="Could not load users" error={error} onRetry={() => void refetch()} retrying={isFetching} />
+  const list = isLoading ? <LoadingState label="Loading people…" />
+    : error ? <ErrorState title="Could not load people" error={error} onRetry={() => void refetch()} retrying={isFetching} />
     : (
-      <ul aria-label="Users" className="divide-y divide-border border-y border-border">
-        {data?.map((u) => {
-          const self = u.id === user?.id;
-          const meta = [u.full_name ? u.email : null, u.role === 'admin' ? 'Admin' : null, u.two_factor_enabled ? '2FA on' : null,
-            `joined ${new Date(u.created_at).toLocaleDateString()}`].filter(Boolean).join(', ');
-          return (
-            <li key={u.id} className="flex items-center gap-3 py-3">
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">
-                  {u.full_name || u.email}{self && <span className="font-normal text-muted-foreground"> (you)</span>}
-                </p>
-                <p className="truncate text-xs text-muted-foreground">
-                  {!u.is_active && <span className="text-warning">Inactive, </span>}{meta}
-                </p>
-              </div>
-              {!u.is_active && (
-                <Button size="sm" variant="outline" onClick={() => toggleUserActive.mutate({ userId: u.id, is_active: true })} disabled={toggleUserActive.isPending}>
-                  Activate
-                </Button>
-              )}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" aria-label={`Actions for ${u.email}`}><MoreHorizontal aria-hidden="true" /></Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => { setRoleChangeUser(u); setAdminPassword(''); }} disabled={updateUserRole.isPending}>
-                    {u.role === 'admin' ? 'Remove admin rights' : 'Make admin'}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => { setPasswordDialogUser(u); setNewPassword(''); setAdminPassword(''); }}>Set a new password</DropdownMenuItem>
-                  <DropdownMenuItem asChild><Link to={`/admin/users/${encodeURIComponent(u.id)}`}>Accounts, backups and bin</Link></DropdownMenuItem>
-                  {u.two_factor_enabled && !self && (
-                    <DropdownMenuItem onClick={() => { setResetTwoFactorUser(u); setAdminPassword(''); }}>Reset 2FA</DropdownMenuItem>
+      <>
+        {groups.length > 0 && (
+          <ChipGroup label="Group" className="mb-4">
+            <Chip selected={active === ALL} onSelect={() => setFilter(ALL)} count={people.length} countLabel="people">Everyone</Chip>
+            {groups.map(([id, name]) => <Chip key={id} selected={active === id} onSelect={() => setFilter(id)} count={count(id)} countLabel="people">{name}</Chip>)}
+            {count(NO_GROUP) > 0 && <Chip selected={active === NO_GROUP} onSelect={() => setFilter(NO_GROUP)} count={count(NO_GROUP)} countLabel="people">No group</Chip>}
+          </ChipGroup>
+        )}
+        <div aria-hidden="true" className={cn('hidden border-b border-border pb-2 text-xs text-muted-foreground', COLUMNS)}>
+          <span>Name</span><span>Role</span><span>Groups</span><span>Sign-in</span><span>Last active</span><span />
+        </div>
+        <ul aria-label="People" className="divide-y divide-border border-b border-border max-md:border-t">
+          {shown.map(person => {
+            const able = actions.abilities(person);
+            const state = signInState(person);
+            return (
+              <li key={person.id} className={cn('relative flex items-center gap-3 py-3', COLUMNS)}>
+                <div className="min-w-0 flex-1 md:contents">
+                  <div className="min-w-0">
+                    <p className="flex min-w-0 items-baseline gap-1 text-sm font-medium">
+                      {/* The link itself is cut short, not its line: its box then ends where its text does. */}
+                      <Link to={`/admin/users/${encodeURIComponent(person.id)}`} className={cn(ROW_LINK, 'truncate')}>{personName(person)}</Link>
+                      {able.self && <span className="shrink-0 font-normal text-muted-foreground">(you)</span>}
+                    </p>
+                    {person.full_name && <p className="truncate text-xs text-muted-foreground">{person.email}</p>}
+                  </div>
+                  <p className="text-xs text-muted-foreground max-md:mt-0.5 md:contents md:text-sm">
+                    <span className={cn(cell, person.role !== 'user' && 'md:text-foreground')}><span className="sr-only">Role: </span>{ROLE_LABELS[person.role]}</span>
+                    <span className={cell} title={groupsText(person)}><span className="sr-only">Groups: </span>{groupsText(person)}</span>
+                    <span className={cn(cell, state.attention && 'text-warning')}><span className="sr-only">Sign-in: </span>{state.text}</span>
+                    <span className={cell}><span className="sr-only">Last active: </span>{person.last_active_at ? lastActiveLabel(person.last_active_at) : 'never'}</span>
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2 md:justify-end">
+                  {able.manage && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" aria-label={`Actions for ${person.email}`}><MoreHorizontal aria-hidden="true" /></Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem asChild><Link to={`/admin/users/${encodeURIComponent(person.id)}`}>Groups, devices and data</Link></DropdownMenuItem>
+                        {able.activate && <DropdownMenuItem onClick={() => actions.activate(person)} disabled={actions.busy}>Activate</DropdownMenuItem>}
+                        {able.role && <PolicyMenuItem lock={able.roleLock} onClick={() => actions.open('role', person)}>{person.role === 'admin' ? 'Remove administrator rights' : 'Make administrator'}</PolicyMenuItem>}
+                        {able.setupLink && <DropdownMenuItem onClick={() => actions.open('setup-link', person)}>New setup link</DropdownMenuItem>}
+                        {able.revokeLink && <DropdownMenuItem onClick={() => actions.revokeLink(person)} disabled={actions.busy}>Revoke setup link</DropdownMenuItem>}
+                        {able.password && <DropdownMenuItem onClick={() => actions.open('password', person)}>{able.pending ? 'Set a password' : 'Set a new password'}</DropdownMenuItem>}
+                        {able.resetTwoFactor && <DropdownMenuItem onClick={() => actions.open('reset-2fa', person)}>Reset 2FA</DropdownMenuItem>}
+                        {able.deactivate && <PolicyMenuItem lock={able.protectedLock} onClick={() => actions.open('deactivate', person)}>Deactivate</PolicyMenuItem>}
+                        {able.remove && <>
+                          <DropdownMenuSeparator />
+                          <PolicyMenuItem lock={able.protectedLock} className="text-destructive focus:text-destructive" onClick={() => actions.open('delete', person)}>Delete person</PolicyMenuItem>
+                        </>}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   )}
-                  {u.is_active && !self && (
-                    <DropdownMenuItem onClick={() => setDeactivatingUser(u)}>Deactivate</DropdownMenuItem>
-                  )}
-                  {!self && <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeletingUser(u)}>Delete user</DropdownMenuItem>
-                  </>}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </li>
-          );
-        })}
-      </ul>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </>
     );
 
   return (
     <PageShell panel={<SettingsPanel active="admin-users" />} panelLabel="Settings sections" panelId="settings">
-      <PageHeader title="Settings" scope="Users" />
-      <PageBody width="reading">
-        {user?.role !== 'admin' ? <p className="text-sm text-muted-foreground">Only admins can see this page.</p> : (
+      <PageHeader title="Settings" scope="People" />
+      <PageBody width="wide">
+        {!can(user, 'users.read') ? <p className="text-sm text-muted-foreground">Only administrators can see this page.</p> : (
           <>
-            <div className="mb-3">
-              <h2 className="text-base font-semibold">Users</h2>
-              <p className="mt-1 text-sm text-muted-foreground">{data ? `${data.length} ${data.length === 1 ? 'account' : 'accounts'} on this server.` : 'Accounts on this server.'}</p>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold">People</h2>
+                <p className="mt-1 text-sm text-muted-foreground">{data ? `${data.length} ${data.length === 1 ? 'person' : 'people'} on this server.` : 'Everyone with an account on this server.'}</p>
+              </div>
+              {can(user, 'users.manage') && <Button onClick={() => setAdding(true)}><UserPlus aria-hidden="true" />Add person</Button>}
             </div>
             {list}
           </>
         )}
       </PageBody>
-
-      <PasswordConfirmDialog
-        open={!!deletingUser}
-        onClose={() => setDeletingUser(null)}
-        title={`Delete ${deletingUser?.email}?`}
-        description="Their account and all of their data are deleted permanently. This cannot be undone."
-        actionLabel="Delete user"
-        destructive
-        pending={deleteUser.isPending}
-        onConfirm={currentPassword => { if (deletingUser) deleteUser.mutate({ userId: deletingUser.id, currentPassword }); }}
-      />
-      <PasswordConfirmDialog
-        open={!!deactivatingUser}
-        onClose={() => setDeactivatingUser(null)}
-        title={`Deactivate ${deactivatingUser?.email}?`}
-        description="They are signed out everywhere and cannot sign in until an admin activates the account again. Their data stays."
-        actionLabel="Deactivate"
-        pending={toggleUserActive.isPending}
-        onConfirm={currentPassword => { if (deactivatingUser) toggleUserActive.mutate({ userId: deactivatingUser.id, is_active: false, currentPassword }); }}
-      />
-
-      {/* Password change dialog */}
-      <Dialog open={!!passwordDialogUser} onOpenChange={(open) => {
-        if (!open) { setPasswordDialogUser(null); setNewPassword(''); setAdminPassword(''); }
-      }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>New password for {passwordDialogUser?.email}</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 pt-2">
-            <div className="space-y-2">
-              <Label htmlFor="adminNewPassword">New password</Label>
-              <Input
-                id="adminNewPassword"
-                type="password"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="At least 12 characters"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="adminConfirmPassword">Your password</Label>
-              <Input
-                id="adminConfirmPassword"
-                type="password"
-                autoComplete="current-password"
-                value={adminPassword}
-                onChange={(e) => setAdminPassword(e.target.value)}
-              />
-            </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <Button variant="outline" onClick={() => { setPasswordDialogUser(null); setAdminPassword(''); }}>
-                Cancel
-              </Button>
-              <Button onClick={handleChangePassword} disabled={passwordLoading || !adminPassword}>
-                {passwordLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                Set password
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={!!resetTwoFactorUser} onOpenChange={(open) => {
-        if (!open) { setResetTwoFactorUser(null); setAdminPassword(''); }
-      }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Reset 2FA for {resetTwoFactorUser?.email}</DialogTitle>
-            <DialogDescription>
-              For a user who lost their authenticator and recovery codes. Two-factor authentication is turned off and
-              they are signed out everywhere; they sign in with their password and can set it up again. Check that the
-              request really comes from them first.
-            </DialogDescription>
-          </DialogHeader>
-          <form
-            className="space-y-4 pt-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (resetTwoFactorUser && adminPassword) resetTwoFactor.mutate({ user: resetTwoFactorUser, currentPassword: adminPassword });
-            }}
-          >
-            <div className="space-y-2">
-              <Label htmlFor="adminResetPassword">Your password</Label>
-              <Input
-                id="adminResetPassword"
-                type="password"
-                autoComplete="current-password"
-                value={adminPassword}
-                onChange={(e) => setAdminPassword(e.target.value)}
-              />
-            </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <Button type="button" variant="outline" onClick={() => { setResetTwoFactorUser(null); setAdminPassword(''); }}>
-                Cancel
-              </Button>
-              <Button type="submit" variant="destructive" disabled={resetTwoFactor.isPending || !adminPassword}>
-                {resetTwoFactor.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                Reset 2FA
-              </Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
-      <Dialog open={!!roleChangeUser} onOpenChange={(open) => {
-        if (!open) { setRoleChangeUser(null); setAdminPassword(''); }
-      }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{roleChangeUser?.role === 'admin' ? `Remove admin rights from ${roleChangeUser?.email}?` : `Make ${roleChangeUser?.email} an admin?`}</DialogTitle>
-            <DialogDescription>
-              {roleChangeUser?.role === 'admin'
-                ? 'They keep their account and data but can no longer manage users or server settings.'
-                : 'Admins can manage every account on this server, including passwords and two-factor authentication.'}
-            </DialogDescription>
-          </DialogHeader>
-          <form
-            className="space-y-4 pt-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (roleChangeUser && adminPassword) {
-                updateUserRole.mutate({ userId: roleChangeUser.id, role: roleChangeUser.role === 'admin' ? 'user' : 'admin', currentPassword: adminPassword });
-              }
-            }}
-          >
-            <div className="space-y-2">
-              <Label htmlFor="adminRolePassword">Your password</Label>
-              <Input
-                id="adminRolePassword"
-                type="password"
-                autoComplete="current-password"
-                value={adminPassword}
-                onChange={(e) => setAdminPassword(e.target.value)}
-              />
-            </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <Button type="button" variant="outline" onClick={() => { setRoleChangeUser(null); setAdminPassword(''); }}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={updateUserRole.isPending || !adminPassword}>
-                {updateUserRole.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                {roleChangeUser?.role === 'admin' ? 'Remove admin rights' : 'Make admin'}
-              </Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <AddPersonDialog open={adding} onClose={() => setAdding(false)} onAdded={answer => {
+        setAdding(false);
+        if (answer.setup_link) actions.showLink(answer.setup_link, personName(answer.user));
+        else toast({ title: `${personName(answer.user)} added`, description: 'They can sign in with the password you set.' });
+      }} />
+      {actions.dialogs}
     </PageShell>
   );
 };
