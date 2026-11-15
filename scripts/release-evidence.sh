@@ -8,7 +8,8 @@
 #     kept (unihub-release-evidence-attempt<n>) into <earlier dir>; none is fine
 #   release-evidence.sh clean
 #     once this attempt's bundle is stored: deletes the parts and the earlier
-#     bundles; fails when this attempt's bundle is not listed
+#     bundles; fails when this attempt's bundle is still not listed after
+#     about a minute of listing again
 #
 # A bundle is only ever stored complete (scripts/collect-release-evidence.mts
 # checks it first), so an earlier bundle is complete evidence. Needs GH_TOKEN,
@@ -58,9 +59,16 @@ case "${1:-}" in
     fi
     ;;
   clean)
+    stored() { grep -qx "[0-9]* unihub-release-evidence-attempt$GITHUB_RUN_ATTEMPT" "$work/artifacts"; }
     list
-    grep -qx "[0-9]* unihub-release-evidence-attempt$GITHUB_RUN_ATTEMPT" "$work/artifacts" \
-      || { echo "This attempt's bundle is not stored; nothing is deleted." >&2; exit 1; }
+    # GitHub lists a just-uploaded artifact only after a moment.
+    for delay in 5 10 20 30; do
+      stored && break
+      echo "This attempt's bundle is not listed yet; listing again in ${delay}s."
+      sleep "$delay"
+      list
+    done
+    stored || { echo "This attempt's bundle is not stored; nothing is deleted." >&2; exit 1; }
     while read -r id name; do
       attempt="$(bundle_attempt "$name" || true)"
       if [[ "$name" == unihub-evidence-part-* ]] || [[ -n "$attempt" && "$attempt" -lt "$GITHUB_RUN_ATTEMPT" ]]; then
