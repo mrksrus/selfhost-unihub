@@ -24,10 +24,11 @@ function otp(secret: string) {
 // - auth.two_factor: the 7-day grace starts at the save (and lazily at the
 //   gate), nothing is refused during it, then only the exempt routes answer,
 //   administrators included; setting 2FA up ends the grace, turning it off is
-//   refused at once; removing the rule ends every grace, a new rule starts a
-//   new one; the save preview counts who lacks 2FA and who is in grace;
-//   a group's save and joining or leaving a group start and end graces for
-//   the people they reach, and a group's password minimum holds for its members
+//   refused at once; the grace runs once: removing the rule keeps its start
+//   and a new rule resumes it, so a manager who removes and re-adds a member
+//   gives them no new days; the save preview counts who lacks 2FA and who is
+//   in grace; a group's save and joining a group start graces for the people
+//   they reach, and a group's password minimum holds for its members
 test('sign-in policies: password minimum, session lifetime and 2FA required with its grace', { skip: !process.env.MYSQL_TEST_HOST, timeout: 300000 }, async (t) => {
   const pool = await withTestDatabase(t);
   const people = await seedPeople(t, pool);
@@ -152,17 +153,19 @@ test('sign-in policies: password minimum, session lifetime and 2FA required with
   const off = await clients.admin.request('POST', '/api/auth/2fa/disable', { current_password: password, code: otp(secret) });
   assert.deepEqual([off.status, off.body.code], [403, 'POLICY_FORBIDS'], 'turning it off is refused at once');
 
-  // The rule removed ends every grace; required again, a new one starts at that save.
+  // The rule removed lets Blair in and keeps the start; required again, the ended grace holds.
+  const ended = (await since(ids.member))!.getTime();
   await setPolicies({ 'auth.two_factor': 'optional' });
-  assert.equal(await since(ids.member), null);
+  assert.equal((await since(ids.member))!.getTime(), ended);
   assert.equal((await blair.request('GET', '/api/contacts')).status, 200);
-  const again = Date.now();
+  assert.equal(((await clients.admin.request('GET', '/api/admin/users')).body.users as { id: string; two_factor_grace_ends_at: string | null }[]).find(person => person.id === ids.member)!.two_factor_grace_ends_at, null, 'no grace shown while the rule does not apply');
   await setPolicies({ 'auth.two_factor': 'required' });
-  assert.ok((await since(ids.member))!.getTime() >= again - 2000, 'a new grace, not the old one');
-  assert.equal((await blair.request('GET', '/api/contacts')).status, 200);
+  assert.equal((await since(ids.member))!.getTime(), ended, 'the old grace, not a new one');
+  assert.equal((await blair.request('GET', '/api/contacts')).body.code, 'TWO_FACTOR_REQUIRED');
 
-  // --- Group rules: a group's save and a membership change start and end graces for the people they reach ---
+  // --- Group rules: a group's save and a membership change start graces for the people they reach ---
   await setPolicies({ 'auth.two_factor': 'optional' });
+  await pool.execute('UPDATE users SET two_factor_required_since = NULL WHERE id IN (?, ?, ?)', [ids.member, ids.manager, ids.stranger]);
   const setGroup = async (group: string, body: Record<string, unknown>) => {
     const saved = await clients.admin.request('PUT', `/api/admin/groups/${group}/policies`, { ...body, current_password: password });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
@@ -176,10 +179,23 @@ test('sign-in policies: password minimum, session lifetime and 2FA required with
 
   assert.equal((await clients.admin.request('POST', `/api/groups/${groups.finance}/members`, { user_ids: [ids.member] })).status, 200);
   assert.ok(await since(ids.member), 'joining Finance starts Blair\'s grace');
+  const joined = (await since(ids.member))!.getTime();
   assert.equal((await clients.admin.request('DELETE', `/api/groups/${groups.finance}/members/${ids.member}`)).status, 200);
-  assert.equal(await since(ids.member), null, 'leaving it ends the grace');
+  assert.equal((await since(ids.member))!.getTime(), joined, 'leaving it keeps the start');
   await setGroup(groups.finance, { clear: ['auth.two_factor'] });
-  assert.equal(await since(ids.manager), null, 'the group\'s rule cleared ends Alex\'s grace');
+
+  // Alex manages Support: removing Blair and adding them again leaves Blair's ended grace ended.
+  await setGroup(groups.support, { values: { 'auth.two_factor': 'required' } });
+  await pool.execute('UPDATE users SET two_factor_required_since = UTC_TIMESTAMP() - INTERVAL 8 DAY WHERE id = ?', [ids.member]);
+  const over = (await since(ids.member))!.getTime();
+  assert.equal((await blair.request('GET', '/api/contacts')).body.code, 'TWO_FACTOR_REQUIRED');
+  assert.equal((await clients.manager.request('DELETE', `/api/groups/${groups.support}/members/${ids.member}`)).status, 200);
+  assert.equal((await blair.request('GET', '/api/contacts')).status, 200, 'outside the rule Blair may use UniHub');
+  assert.equal((await clients.manager.request('POST', `/api/groups/${groups.support}/members`, { user_ids: [ids.member] })).status, 200);
+  assert.equal((await since(ids.member))!.getTime(), over, 'no new days');
+  assert.equal((await blair.request('GET', '/api/contacts')).body.code, 'TWO_FACTOR_REQUIRED');
+  assert.equal((await blair.request('POST', '/api/auth/2fa/setup/start', {})).status, 200, 'setting it up stays open');
+  await setGroup(groups.support, { clear: ['auth.two_factor'] });
 
   // A group's stricter password minimum holds for its members only.
   await setGroup(groups.finance, { values: { 'auth.password_min_length': 20 } });

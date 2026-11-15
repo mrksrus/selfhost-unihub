@@ -1027,8 +1027,9 @@ person.
 2FA gets 7 days from the first time the rule applies to them
 (`users.two_factor_required_since`, set by a policy save or membership
 change, or by the request gate for someone added later; only while empty, so
-it counts from the first time). Turning 2FA on, or the rule no longer
-applying, clears it; a later application starts a new grace. During the
+it counts from the first time). Turning 2FA on clears it. The grace runs
+once: the start stays when the rule stops applying, and a later application
+(a new rule, rejoining a group) resumes it. During the
 grace nothing is refused: `GET /api/policies/effective` carries `two_factor:
 { required, grace_ends_at }` and the app shows a reminder. After it, every
 route that is not exempt (below) answers `403 TWO_FACTOR_REQUIRED` with

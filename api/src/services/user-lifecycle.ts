@@ -23,7 +23,7 @@ import { hashPassword } from '../auth';
 import { assertCaller } from './caller-proof';
 import { joinGroups, membershipsByUser, underRulesLock } from './groups';
 import { assertMayChangeAdmin, assertPasswordLength, createSetupLink, peopleWithLiveLinks } from './invites';
-import { TWO_FACTOR_GRACE_DAYS } from './sign-in-policies';
+import { twoFactorRequirement } from './sign-in-policies';
 import { lastActiveByUser } from './devices';
 
 type DeleteActor = 'self' | 'admin';
@@ -201,14 +201,16 @@ async function listPeople(onlyId: string | null = null): Promise<Person[]> {
         password_hash = '' AS no_password FROM users${onlyId ? ' WHERE id = ?' : ''} ORDER BY created_at DESC, id`, onlyId ? [onlyId] : []),
     membershipsByUser(), peopleWithLiveLinks(), lastActiveByUser(),
   ]);
+  // A kept grace start shows only while the rule still applies to the person.
+  const graceEnds = new Map(await Promise.all(rows.filter(row => !Number(row.two_factor_enabled) && row.two_factor_required_since).map(async row =>
+    [String(row.id), (await twoFactorRequirement(String(row.id), { enabled: false, requiredSince: new Date(iso(row.two_factor_required_since)) })).grace_ends_at] as const)));
   return rows.map(row => {
     const id = String(row.id);
     const status: PersonStatus = !Number(row.is_active) ? 'inactive' : Number(row.no_password) ? (links.has(id) ? 'invited' : 'not_set_up') : 'active';
-    const graceStart = !row.two_factor_enabled && row.two_factor_required_since ? new Date(iso(row.two_factor_required_since)) : null;
     return {
       id, email: String(row.email), full_name: row.full_name ?? null, role: row.role as Role, status,
       is_active: !!Number(row.is_active), two_factor_enabled: !!Number(row.two_factor_enabled),
-      two_factor_grace_ends_at: graceStart ? new Date(graceStart.getTime() + TWO_FACTOR_GRACE_DAYS * 86400000).toISOString() : null,
+      two_factor_grace_ends_at: graceEnds.get(id) ?? null,
       groups: groups.get(id) ?? [], created_at: iso(row.created_at), last_active_at: lastActive.get(id) ?? null,
     };
   });

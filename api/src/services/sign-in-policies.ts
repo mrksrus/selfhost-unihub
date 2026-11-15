@@ -26,8 +26,8 @@ async function sessionOutlived(userId: string, createdAt: Date | string, now = n
 }
 
 // --- Two-factor authentication required (auth.two_factor) ----------------------
-// A person the rule reaches without 2FA gets this many days, counted from the
-// first time it applies to them; then only setting it up is left.
+// A person the rule reaches without 2FA gets this many days, once, counted
+// from the first time it applies to them; then only setting it up is left.
 
 const TWO_FACTOR_GRACE_DAYS = 7;
 const GRACE_MS = TWO_FACTOR_GRACE_DAYS * DAY_MS;
@@ -44,8 +44,9 @@ async function readTwoFactorState(userId: string, executor: SqlExecutor): Promis
  * auth.two_factor for the person, keeping their grace in step with it:
  * users.two_factor_required_since is set the first time the rule is found
  * to apply to them without 2FA (only while empty, so it counts from the
- * first time) and cleared once it no longer applies or they have 2FA. A
- * later application starts a new grace. `state` is the person's 2FA state
+ * first time) and cleared once they have 2FA. It stays when the rule stops
+ * applying, so leaving and rejoining a group cannot start a new grace.
+ * `state` is the person's 2FA state
  * when the caller already read it (the session lookup); without it the
  * person is read only when the rule applies.
  */
@@ -55,7 +56,7 @@ async function twoFactorRequirement(userId: string, state?: TwoFactorState | nul
   const rule = policy.value === 'required';
   if (!state && rule) state = await readTwoFactorState(userId, executor);
   if (!state || !rule || state.enabled) {
-    if (state?.requiredSince) await executor.execute('UPDATE users SET two_factor_required_since = NULL WHERE id = ?', [userId]);
+    if (state?.enabled && state.requiredSince) await executor.execute('UPDATE users SET two_factor_required_since = NULL WHERE id = ?', [userId]);
     return { required: false, grace_ends_at: null, refused: null };
   }
   let since = state.requiredSince;
