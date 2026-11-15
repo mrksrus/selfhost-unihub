@@ -187,6 +187,11 @@ async function waitFor<T>(session: string, expression: string, description: stri
   }
   throw new Error(`${description} (last: ${JSON.stringify(last)?.slice(0, 300)})`);
 }
+// The first page of a Chrome started on a fresh CI machine can take most of a
+// minute; it is asked for at launch, while the installation starts, and given
+// that time.
+let firstTab: Promise<Record<string, unknown>> | null = command('Target.createTarget', { url: 'about:blank' }, undefined, 120000);
+firstTab.catch(() => {}); // awaited by the first createBlankTab
 // Headless Chrome sometimes never answers Target.createTarget (CI run
 // 39285675264). Ask again, and use a blank page an unanswered request may
 // still have opened.
@@ -194,7 +199,9 @@ async function createBlankTab() {
   const known = new Set<string>();
   for (let attempt = 1; ; attempt++) {
     try {
-      const { targetId } = await command('Target.createTarget', { url: 'about:blank' }, undefined, 15000) as { targetId: string };
+      const request = firstTab || command('Target.createTarget', { url: 'about:blank' }, undefined, 15000);
+      firstTab = null;
+      const { targetId } = await request as { targetId: string };
       return targetId;
     } catch (error) {
       if (attempt === 3) throw error;
