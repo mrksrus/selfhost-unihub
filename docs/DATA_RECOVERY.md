@@ -381,7 +381,11 @@ writes nothing more (`409 RESTORE_IN_PROGRESS`).
   in `file_refs`: a contact's photo hashes, a recording's file in the
   person's recordings `bin/` folder. Each kind restores its own rows with
   only known columns, for the person restoring, under the old ids and
-  identities unless they are taken; nothing in a payload is trusted.
+  identities unless they are taken; nothing in a payload is trusted. A
+  contact or UniHub event whose own id is the person's again (a backup
+  restore brought it back) stays in the bin, so no copy is added: the rest
+  of its group comes back, and when nothing else is left the restore is
+  refused with `409 BIN_ITEM_ALREADY_BACK`.
 - The list (`GET /api/bin`, and the administrator's
   `GET /api/admin/users/:id/bin`) is newest first, a page at a time: up to
   2000 items in whole groups, so items deleted together are always on the

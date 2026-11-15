@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import { db } from '../state';
 import { ApiError, conflict, notFound } from '../http/errors';
 import { withTransaction } from './transactions';
-import { putInBin, parsePayload, lockBinOwner } from './bin';
+import { alreadyBack, putInBin, parsePayload, lockBinOwner } from './bin';
 import { UID_EXACT, overlayStateOf, insertOverlays, applyOverlaysToLiveRows, overlayKeyProblem } from './calendar-overlays';
 import { fencedWrite, calendarAdmission } from './calendar-move-state';
 import { itemKey } from './task-order';
@@ -260,10 +260,11 @@ async function localTarget(cx: SqlExecutor, userId: string, calendarId: unknown)
   return { id: (await resolveCalendarDefaults(userId, cx)).taskListId, note: GONE_NOTE };
 }
 
-/** Writes an event from its snapshot into an owned UniHub list; its id and identity stay unless taken. Returns the row's id. */
+/** Writes an event from its snapshot into an owned UniHub list; its id and identity stay unless taken. Returns the row's id, or null when it is the person's again (already back). */
 async function restoreLocalEvent(cx: SqlExecutor, userId: string, payload: Pick<LocalPayload, 'event' | 'subtasks' | 'attendees' | 'task_order'>, calendarId: string) {
   const event = payload.event || {};
-  const [[idTaken]] = ID_PATTERN.test(String(event.id)) ? await cx.execute<RowDataPacket[]>('SELECT id FROM calendar_events WHERE id = ?', [String(event.id)]) : [[{ id: '' }]];
+  const [[idTaken]] = ID_PATTERN.test(String(event.id)) ? await cx.execute<RowDataPacket[]>('SELECT id, user_id FROM calendar_events WHERE id = ?', [String(event.id)]) : [[{ id: '', user_id: null }]];
+  if (idTaken?.user_id === userId) return null;
   const id = idTaken ? crypto.randomUUID() : String(event.id);
   const own = typeof event.uid === 'string' && event.uid && event.uid.length <= 500 ? event.uid : id;
   const [[uidTaken]] = await cx.execute<RowDataPacket[]>(`SELECT id FROM calendar_events WHERE user_id = ? AND uid = ? ${UID_EXACT} LIMIT 1`, [userId, own]);
@@ -325,12 +326,15 @@ async function restoreGroupWithCalendar(userId: string, group: readonly BinRow[]
     if (!calendarRow) throw conflict('BIN_ITEM_CHANGED', 'These items changed in the meantime. Try again.');
     const calendarId = await restoreCalendar(cx, userId, parsePayload<CalendarPayload>(calendarRow)!);
     const answers = [restoredOf(calendarRow, calendarId, null)];
+    const back: string[] = [];
     for (const row of locked.filter(item => item !== calendarRow)) {
       const payload = parsePayload<LocalPayload>(row);
       if (!payload?.event) continue;
-      answers.push(restoredOf(row, await restoreLocalEvent(cx, userId, payload, calendarId), null));
+      const id = await restoreLocalEvent(cx, userId, payload, calendarId);
+      if (id) answers.push(restoredOf(row, id, null)); else back.push(row.id);
     }
-    await dropItems(cx, userId, locked.map(row => row.id));
+    // An event already back stays in the bin; the rest of the group comes back.
+    await dropItems(cx, userId, locked.map(row => row.id).filter(id => !back.includes(id)));
     return answers;
   });
   publishCalendarChanged(userId, null, 'local');
@@ -368,6 +372,7 @@ async function restoreLocalItem(userId: string, row: BinRow, note?: string | nul
     const target = await localTarget(cx, userId, chosenList ?? (payload.provider === 'local' ? payload.event.calendar_id : null));
     if (chosenList && target.id !== chosenList) throw listGone();
     const id = await restoreLocalEvent(cx, userId, payload, target.id);
+    if (!id) throw alreadyBack();
     await dropItems(cx, userId, [locked.id]);
     return restoredOf(locked, id, note ?? target.note);
   });

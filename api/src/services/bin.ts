@@ -89,6 +89,8 @@ const KINDS: Readonly<Record<BinItemType, () => BinKind>> = {
   calendar: () => (require('./bin-calendar') as typeof import('./bin-calendar')).eventBinKind,
   recording: () => (require('./recordings') as typeof import('./recordings')).recordingBinKind,
 };
+// The item is live again under its own id (a backup restore brought it back): a restore would add a copy.
+const alreadyBack = () => conflict('BIN_ITEM_ALREADY_BACK', 'This item is already back, for example from a backup restore. Delete it from the bin if you no longer need this version.');
 const MODULE_OF: Readonly<Record<BinItemType, BinModule>> = { contact: 'contacts', event: 'calendar', task: 'calendar', calendar: 'calendar', recording: 'recordings' };
 // Module ids and recovery sections coincide (module-catalog.ts).
 const sectionOf = (module: BinModule) => module;
@@ -779,6 +781,7 @@ async function exportableBinItems(executor: SqlExecutor, userId: string, section
 }
 
 export {
+  alreadyBack,
   listBin,
   restoreFromBin,
   restoreBinItem,

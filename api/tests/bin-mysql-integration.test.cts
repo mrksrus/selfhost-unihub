@@ -143,6 +143,53 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
   const stepsOf = async (id: string) => (await pool.query<RowDataPacket[]>('SELECT title, is_done FROM calendar_event_subtasks WHERE event_id = ? ORDER BY position', [id]))[0]
     .map(row => [row.title, !!row.is_done]);
 
+  await t.test('an item a backup restore already brought back is refused, stays in the bin and is not copied', async () => {
+    const kept = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Kept' }, emails: ['kept@example.test'] })).contact;
+    const task = await localTask('Kept task');
+    const [[contactRow]] = await pool.query<RowDataPacket[]>('SELECT * FROM contacts WHERE id = ?', [kept.id]);
+    const [[taskRow]] = await pool.query<RowDataPacket[]>('SELECT * FROM calendar_events WHERE id = ?', [task]);
+    await call(alex, 'DELETE', `/api/contacts/${kept.id}`);
+    await call(alex, 'DELETE', `/api/calendar/events/${task}`);
+    // As a section restore writes them back: the same rows under their own ids.
+    await pool.query('INSERT INTO contacts SET ?', [contactRow]);
+    await pool.query('INSERT INTO calendar_events SET ?', [taskRow]);
+    const items = await bin(alex);
+    assert.equal(items.length, 2);
+    for (const item of items) assert.equal((await restore(item.id, alex, 409)).code, 'BIN_ITEM_ALREADY_BACK', item.item_type);
+    assert.equal(await count("SELECT COUNT(*) AS n FROM contacts WHERE user_id = ? AND first_name = 'Kept'", [users.alex]), 1, 'no copy of the contact');
+    assert.equal(await count("SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ? AND title = 'Kept task'", [users.alex]), 1, 'no copy of the task');
+    assert.equal((await bin(alex)).length, 2, 'both stay in the bin');
+    for (const item of items) await call(alex, 'DELETE', `/api/bin/${item.id}`);
+    await pool.execute('DELETE FROM contacts WHERE id = ?', [kept.id]);
+    await pool.execute('DELETE FROM calendar_events WHERE id = ?', [task]);
+
+    // In a group, only what is back stays in the bin: the rest comes back.
+    const older = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Older' } })).contact;
+    const newer = (await call(alex, 'POST', '/api/contacts', { name: { given: 'Newer' } })).contact;
+    const [[olderRow]] = await pool.query<RowDataPacket[]>('SELECT * FROM contacts WHERE id = ?', [older.id]);
+    await call(alex, 'POST', '/api/contacts/bulk-delete', { ids: [older.id, newer.id] });
+    await pool.query('INSERT INTO contacts SET ?', [olderRow]);
+    const pair = await bin(alex, 'contacts');
+    assert.deepEqual((await restore(pair[0].id)).restored.map((entry: FixtureValue) => entry.item_id), [newer.id]);
+    assert.deepEqual((await bin(alex, 'contacts')).map(entry => entry.title), ['Older'], 'the one already back stays');
+    const list = crypto.randomUUID();
+    await pool.execute("INSERT INTO calendar_calendars (id, user_id, account_id, name, color) VALUES (?, ?, ?, 'Chores', '#22c55e')", [list, users.alex, localAccount]);
+    const first = await localTask('Sweep', list);
+    const second = await localTask('Mop', list);
+    const [[firstRow]] = await pool.query<RowDataPacket[]>('SELECT * FROM calendar_events WHERE id = ?', [first]);
+    await call(alex, 'DELETE', `/api/calendar/calendars/${list}`);
+    await pool.query('INSERT INTO calendar_events SET ?', [{ ...firstRow, calendar_id: inbox }]);
+    const listItem = (await bin(alex, 'calendar')).find(entry => entry.item_type === 'calendar');
+    const back = await restore(listItem.id);
+    assert.deepEqual(back.restored.map((entry: FixtureValue) => entry.item_type).sort(), ['calendar', 'task']);
+    assert.equal((await eventRow(second)).calendar_id, list, 'the newer task is back in its list');
+    assert.equal(await count("SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ? AND title = 'Sweep'", [users.alex]), 1, 'no copy of the one already back');
+    for (const item of await bin(alex)) await call(alex, 'DELETE', `/api/bin/${item.id}`);
+    await pool.execute('DELETE FROM contacts WHERE id IN (?, ?)', [older.id, newer.id]);
+    await pool.execute('DELETE FROM calendar_events WHERE id IN (?, ?)', [first, second]);
+    await pool.execute('DELETE FROM calendar_calendars WHERE id = ?', [list]);
+  });
+
   await t.test('UniHub events, tasks and lists: back into their list, or the default list when it is gone', async () => {
     const pay = await localTask('Pay rent');
     await call(blair, 'DELETE', `/api/calendar/events/${pay}`);

@@ -26,7 +26,7 @@ import { displayName, loadContacts, newUid, replaceContact, uidHash, KEPT_PROPER
 import { contactIdList, findDuplicates, singleFieldConflicts, singleFieldValue } from './contact-duplicates';
 import { valueIdentity as sameValueIdentity } from './contact-keys';
 import { withContactPhotoLock } from './contact-photos';
-import { putInBin, parsePayload, lockBinOwner } from './bin';
+import { alreadyBack, putInBin, parsePayload, lockBinOwner } from './bin';
 import type { BinKind, BinRow } from './bin';
 import type { BinRestored } from '../contracts/bin';
 
@@ -727,7 +727,9 @@ async function restoreContactItems(cx: SqlExecutor, userId: string, group: reado
     const payload = parsePayload<BinContactPayload>(item);
     const original = payload?.contact;
     if (!original || !payload) throw conflict('BIN_ITEM_UNREADABLE', 'This contact cannot be restored.');
-    const [[idTaken]] = ID_PATTERN.test(String(original.id)) ? await cx.execute<RowDataPacket[]>('SELECT id FROM contacts WHERE id = ?', [original.id]) : [[{ id: '' }]];
+    const [[idTaken]] = ID_PATTERN.test(String(original.id)) ? await cx.execute<RowDataPacket[]>('SELECT id, user_id FROM contacts WHERE id = ?', [original.id]) : [[{ id: '', user_id: null }]];
+    // Already back (a backup restore): it stays in the bin; the rest of the group comes back.
+    if (idTaken?.user_id === userId) continue;
     const id = idTaken ? crypto.randomUUID() : String(original.id);
     const ownUid = typeof original.uid === 'string' && original.uid ? original.uid : newUid(id);
     const [[uidTaken]] = await cx.execute<RowDataPacket[]>('SELECT id FROM contacts WHERE user_id = ? AND uid_hash = ?', [userId, uidHash(ownUid)]);
@@ -758,7 +760,8 @@ async function restoreContactItems(cx: SqlExecutor, userId: string, group: reado
     await cx.execute(`INSERT INTO contact_duplicate_dismissals (contact_a, contact_b, user_id) VALUES ${present.map(() => '(?, ?, ?)').join(', ')}
       ON DUPLICATE KEY UPDATE user_id = user_id`, present.flatMap(row => [id < row.id ? id : row.id, id < row.id ? row.id : id, userId]));
   }
-  await cx.execute(`DELETE FROM bin_items WHERE user_id = ? AND id IN (${placeholders(items.map(item => item.id))})`, [userId, ...items.map(item => item.id)]);
+  if (!restored.length) throw alreadyBack();
+  await cx.execute(`DELETE FROM bin_items WHERE user_id = ? AND id IN (${placeholders(restored.map(item => item.id))})`, [userId, ...restored.map(item => item.id)]);
   return restored;
 }
 
