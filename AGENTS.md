@@ -14,7 +14,7 @@ This guide holds what every task needs. Read the matching file before the work i
 
 | Before you | Read |
 | --- | --- |
-| start, decide, release or finish a version, or record a test result | [the version flow](docs/agents/version-flow.md) |
+| start, decide, build, release or finish a version, or record a test result | [the version flow](docs/agents/version-flow.md) |
 | add a table, route, setting, policy, notification, shared resource, device behaviour, export or dependency | [Building toward 1.0](docs/agents/building-toward-1.0.md) |
 | change anything a person sees | [Visual style](docs/agents/visual-style.md) and [UI acceptance](docs/UI_ACCEPTANCE.md) |
 | run checks, add tests or prepare a release | [Working and verification](docs/agents/verification.md), [unihub-verify](.agents/skills/unihub-verify/SKILL.md) |
@@ -82,7 +82,7 @@ Maintainer's rules of 2026-11-15 ([P-42](PROJECT-PREFERENCES.md#p-42-small-parts
 
 - **Parts.** Build a version as parts of at most about 3,000 production lines along its seams. Each part is reviewed on its own before it joins `feat/0.N.0-<theme>`; the release pull request carries the version change and gets the review of the whole flows. The product decisions are answered before the build starts.
 - **Patch releases.** One branch per patch release, one commit per fix, one review, one CI run. Only a fix that must ship alone and at once gets a release of its own.
-- **One owning test layer per behaviour.** A server rule (permission, policy, ownership, recovery) is proven by a real-database test through the request handler. A user flow is proven by an e2e test. A component test is for state only the client has: stale responses, account switches, focus. Do not prove the same behaviour again at another layer.
+- **One owning test layer per behaviour.** A server rule (permission, policy, ownership, recovery) is proven by a real-database test through the request handler. A user flow is proven by an e2e test. A component test is for state only the client has: stale responses, account switches, focus. Do not prove the same behaviour again at another layer: a user-visible change to a server rule gets one e2e test of the flow and the rule's cases (stranger, revoked member, refused policy) in the real-database test.
 - **Tests and documents scale with the change.** A small fix gets the one test that fails without it and a CHANGELOG line, not a new document or a new test file per layer.
 - **Say it once.** CHANGELOG.md tells users what changed. One feature page in docs/ holds the contract. docs/UPGRADING.md holds only what an upgrade requires someone to do. PROJECT-PREFERENCES.md holds the decision. Link instead of repeating.
 - **Comments.** One line for the reason the code cannot show. No version numbers, foundation or decision ids, review rounds or history in code and tests.

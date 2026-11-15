@@ -1,6 +1,6 @@
 # Road to 1.0: versions, decisions and testing
 
-Part of the [agent guide](../../AGENTS.md). Read it when you start, decide, release or finish a version, or record a test result.
+Part of the [agent guide](../../AGENTS.md). Read it when you start, decide, build, release or finish a version, or record a test result.
 
 
 [docs/ROADMAP.md](../ROADMAP.md) is the public plan up to 1.0: what 1.0 contains, the versions with their themes, the foundations F1 to F15, the scope rules and the parking lot. Contributors and clones without the private files follow it.
@@ -34,7 +34,7 @@ The maintainer's private plan holds the details. It lives in `.private/road-to-1
    - An agent fills in a row only for a check it ran itself, and says so in the note.
 4. **Test and fix.** After the release, or on a candidate image the maintainer installs, the status becomes "testing".
    - Every result the maintainer reports goes into the tracker in the same session.
-   - A ❌ becomes a "Problems found" entry and a fix on `fix/0.N.x-<topic>`, released as a patch.
+   - A ❌ becomes a "Problems found" entry and a fix on the patch release's branch `fix/0.N.x-<topic>` (one branch per patch release, one commit per fix), released as a patch.
 5. **Finish.** When every *must* row is ✅ or deferred in writing by the maintainer:
    - the status becomes "done"
    - the change log gets an entry

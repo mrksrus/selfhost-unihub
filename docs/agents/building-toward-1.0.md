@@ -3,7 +3,7 @@
 Part of the [agent guide](../../AGENTS.md). Read it before adding a table, route, setting, policy, notification, shared resource, device behaviour, export or dependency.
 
 
-Architecture and security rules for new work, so each version fits the 1.0 end state without rework. The F numbers refer to the foundations listed in [docs/ROADMAP.md](../ROADMAP.md#foundations); the private `ARCHITECTURE-AND-SECURITY.md` (see Road to 1.0) explains them in detail. Design a foundation for its later users, and build only the slice the current version needs, together with its first feature, never as a refactor-only change. Until a foundation lands, the contracts in the agent guide apply.
+Architecture and security rules for new work, so each version fits the 1.0 end state without rework. The F numbers refer to the foundations listed in [docs/ROADMAP.md](../ROADMAP.md#foundations); the private `ARCHITECTURE-AND-SECURITY.md` (see [the version flow](version-flow.md)) explains them in detail. Design a foundation for its later users, and build only the slice the current version needs, together with its first feature, never as a refactor-only change. Until a foundation lands, the contracts in the agent guide apply.
 
 - **Declare data, don't infer it.** A new table states five things, and the recovery catalog and data inventory carry them:
   - its owner: user, organisation or installation

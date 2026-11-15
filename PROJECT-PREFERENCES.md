@@ -9,7 +9,7 @@ release 0.21.4.
 ## How to use this file
 
 - **Order of precedence.** An explicit instruction in the current task wins.
-  Then this file. Then the visual style section of AGENTS.md. Then any general
+  Then this file. Then [Visual style](docs/agents/visual-style.md). Then any general
   design guidance a skill or model brings along. Approved existing design
   always beats a skill's generic aesthetics: a frontend or design skill may
   choose details this file leaves open, and may not reopen a decision below.
@@ -125,8 +125,8 @@ font service (maintainer, 2026-10-19: until 0.23.0 the security policy refused
 the Google Fonts import, so installations showed fallback fonts).
 
 Evidence: `src/main.tsx` (Fontsource imports), `src/index.css` (`body`,
-headings, `code, pre`), `tailwind.config.ts` (`fontFamily`), AGENTS.md "Visual
-style".
+headings, `code, pre`), `tailwind.config.ts` (`fontFamily`),
+[Visual style](docs/agents/visual-style.md).
 
 #### P-05 Reuse the existing controls
 
@@ -840,7 +840,12 @@ of 0.28.0's production code existed only because of review rounds.
   real-database test, user flows by e2e, client-only state by a component
   test. Tests and documents scale with the change, and a behaviour is
   described once.
-- Test tooling and CI changes ship in a pull request of their own.
+- Test tooling, CI changes and documentation ship in a pull request of their
+  own, with one review round.
+- The declarations and tests that [Building toward 1.0](docs/agents/building-toward-1.0.md)
+  requires of new work (a table's declarations, a destructive route's policy
+  key, the access service, the three-person test) and the version's scope
+  stay required checks: missing, they block.
 
 Evidence: [AGENTS.md "Change size"](AGENTS.md#change-size),
 [Code review](docs/agents/review.md).
