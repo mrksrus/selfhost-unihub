@@ -24,6 +24,10 @@ Every authenticated request verifies:
 2. matching row in `sessions`
 3. non-expired session
 4. active user account
+5. a session younger than the person's longest session lifetime
+   (`auth.session_max_days`, counted from its sign-in; see
+   [Sign-in policies](#sign-in-policies)), else the session is ended and the
+   request answers `401`
 
 Each new JWT has a random `jti`, so simultaneous logins cannot collide on the
 unique stored token. Existing tokens without this field remain valid.
@@ -94,14 +98,16 @@ server validation before writes resume. See [Offline reading](OFFLINE.md).
 
 ## Rate Limiting
 
-Authentication uses bounded in-memory attempt budgets, consumed before expensive verification:
+Authentication uses attempt budgets stored in the database (`login_attempts`,
+since 0.30), consumed before expensive verification, so restarting the API
+does not reset them:
 
 | Budget | Limit |
 | --- | --- |
 | All public authentication requests per resolved client IP | 60 per minute |
 | Password checks per existing user ID | 10 per 10 minutes |
 | Second-factor checks per user ID | 10 per 10 minutes |
-| Signup requests per client IP | 10 per hour |
+| Signup and setup-link requests per client IP | 10 per hour |
 | Wrong passwords confirming an admin action, per admin | 10 per 10 minutes |
 
 Success does not clear any budget. The admin confirmation budget is separate
@@ -114,7 +120,14 @@ budgets follow the database user ID, including email case variants. A limited
 request returns HTTP 429 with `Retry-After` in seconds. The previous five-hour
 blanket IP lockout is removed. Shared-IP users keep separate account budgets;
 a high-volume network burst can still hit the short one-minute IP budget.
-Counters reset on app restart; this release targets a single app container.
+
+Each budget is one row per scope and identity. The identity (an address or
+an account id) is stored only as a keyed hash (HMAC with `JWT_SECRET`), as
+addresses and ids are personal data. Taking an attempt is one atomic update,
+so parallel requests never get more than the budget, and the hourly cleanup
+deletes rows whose window has ended. When the database cannot answer, the
+request fails, as the sign-in would anyway. The rows belong to the
+installation: backups never carry them and an instance restore deletes them.
 
 ### Trusted proxies
 
@@ -165,13 +178,17 @@ starts with the `rules_revision` the form sends back confirmed. Rules saved
 after the form loaded, or a form that sends no revision, leave the notice due
 after the first sign-in.
 
+An administrator can add a person in every sign-up mode, `disabled`
+included ([Add person](#add-person-and-setup-links)).
+
 ## Sign-In Flow
 
 `POST /api/auth/signin`:
 
 1. checks rate limit
 2. loads user by email
-3. verifies bcrypt password
+3. verifies bcrypt password; a person who has no password yet (added with a
+   setup link they have not used) cannot sign in
 4. rejects inactive users
 5. if 2FA is enabled, returns `requires2fa` and a challenge token
 6. otherwise creates a session and sets auth/CSRF cookies
@@ -198,7 +215,7 @@ Endpoints:
 | GET | `/api/auth/2fa/status` | Current 2FA status, recovery-code count and `secretReadable` |
 | POST | `/api/auth/2fa/setup/start` | Generate secret and `otpauth_uri` |
 | POST | `/api/auth/2fa/setup/confirm` | Require current password and authenticator code, enable 2FA, return recovery codes |
-| POST | `/api/auth/2fa/disable` | Require current password and second factor |
+| POST | `/api/auth/2fa/disable` | Require current password and second factor; refused with `403 POLICY_FORBIDS` while `auth.two_factor` requires it |
 | POST | `/api/auth/2fa/recovery-codes/regenerate` | Require second factor and return new recovery codes |
 | POST | `/api/auth/2fa/login` | Complete sign-in challenge |
 
@@ -247,8 +264,10 @@ cannot take over or remove an account. Activating an account needs no
 password. The same rule applies to all of them: a missing password is `400`
 (`ADMIN_PASSWORD_REQUIRED`), a wrong one `403` (`ADMIN_PASSWORD_INCORRECT`, not
 `401`, which the browser treats as an expired session), and after 10 wrong
-passwords in 10 minutes an admin gets `429` with `Retry-After`. In **Admin >
-Users** each of these actions asks for it. The same holds for every change on
+passwords in 10 minutes an admin gets `429` with `Retry-After`. In **Server >
+People** each of these actions asks for it, as do adding a person, a setup
+link, signing a person's devices out, handing on ownership, deleting a group
+and saving a group's rules. The same holds for every change on
 the [administrator's path for a person](#the-administrators-path-for-a-person),
 for saving the [policies](#data-safety-policies) and for the instance backup's
 schedule (`api/src/security/reauthentication.ts`).
@@ -260,8 +279,8 @@ PASSWORD_REQUIRED`, `403 PASSWORD_INCORRECT`, `429` after too many wrong ones.
 ### Admin reset
 
 `POST /api/admin/users/:id/2fa/reset` with `{ "current_password": "..." }` is
-for a user who lost both the authenticator and the recovery codes. In **Admin >
-Users**, accounts with 2FA show a **2FA** badge and a **Reset 2FA** button.
+for a user who lost both the authenticator and the recovery codes. In **Server >
+People**, accounts with 2FA show a **2FA** badge and a **Reset 2FA** action.
 
 - the admin confirms with their own password; a wrong one returns `403` (not
   `401`, which the browser treats as an expired session); after 10 wrong
@@ -272,6 +291,8 @@ Users**, accounts with 2FA show a **2FA** badge and a **Reset 2FA** button.
   nothing
 - admins cannot reset their own 2FA here (`400`); they turn it off in Settings,
   which needs a code, so a stolen admin session cannot remove it
+- nobody but the owner resets the owner's 2FA (`400 OWNER_PROTECTED`; see
+  [Roles and the owner](#roles-and-the-owner))
 - the reset clears the secret and recovery codes, deletes the user's pending
   sign-in challenges and all their sessions, and closes their live connections
 - the user then signs in with their password and can set up 2FA again
@@ -299,35 +320,52 @@ Then sign in with the password and set up 2FA again.
 | --- | --- | --- |
 | POST | `/api/auth/signin` | Sign in |
 | POST | `/api/auth/signout` | Delete current session and clear cookies |
-| GET | `/api/auth/me` | Return current user and existing CSRF token, issuing one if missing or malformed |
+| GET | `/api/auth/me` | Return current user (with `permissions`, the permissions of their role, and `manages_groups`) and existing CSRF token, issuing one if missing or malformed |
 | PUT | `/api/auth/password` | Change password, delete all sessions, clear cookies |
 | PUT | `/api/auth/profile` | Update full name and timezone |
 | GET | `/api/auth/sessions` | List the user's live sessions (device, address, last use, which one is current) |
 | DELETE | `/api/auth/sessions/:id` | Sign out one other session and close its live connections; `404 SESSION_NOT_FOUND` for an unknown or foreign id, `400 SESSION_CURRENT` for the calling session (use sign-out) |
+| POST | `/api/auth/invite/check` | Public: the person, the rules that will apply to them (their groups' included) and the rules revision of a setup link; `404 INVITE_INVALID` for any link that cannot be used |
+| POST | `/api/auth/invite/accept` | Public: set the password of a setup link (`password`, optional `full_name`, `device`, `rules_revision`) and sign in |
 
 A session stores the address and user agent it signed in from, for Settings >
 Security > Signed-in devices. It renews at most once a day, so "last active" is
 known to the day.
 
-Passwords must be at least 12 characters.
+Passwords must be at least 12 characters, or the longer minimum of the
+person's `auth.password_min_length` policy: sign-up, a password change, an
+administrator's reset, Add person and a setup link all check it (`400`).
+Existing passwords keep working.
 
 ## Admin Endpoints
 
 Admin routes require an authenticated user whose role grants the route's
 permission. `api/src/security/permissions.ts` maps roles to permissions
 (`users.read`, `users.manage`, `server.settings`, `storage.read`,
-`audit.read`); today `admin` has all of them and `user` none. Every route
-declared with `auth: 'admin'` must name its permission, and the request
-boundary checks it before the handler runs.
+`audit.read`, `groups.manage`, `admins.manage`, `owner.transfer`): the owner
+has all of them, an `admin` all but `admins.manage` and `owner.transfer`, and
+a member (`user`) none. Every route declared with `auth: 'admin'` must name
+its permission, and the request boundary checks it before the handler runs.
+Rights are checked by permission, never by role name; the pages ask the
+same map through the `permissions` of `/api/auth/me`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/admin/users` | List users |
+| GET | `/api/admin/users` | People, newest first, with role, status (`active`, `inactive`, `invited`, `not_set_up`), groups, 2FA (and the end of a running grace) and last use (`users.read`) |
+| POST | `/api/admin/users` | Add a person: email, name, role (`user`, or `admin` with `admins.manage`), groups, optionally an initial password; answers with the person and, without a password, a setup link; needs the admin's password (`users.manage`) |
+| POST | `/api/admin/users/:id/setup-link` | A new setup link for a person who has no password yet; replaces a live one (`users.manage`, admin's password) |
+| DELETE | `/api/admin/users/:id/setup-link` | Revoke the person's live setup link (`users.manage`) |
 | PUT | `/api/admin/users/:id/password` | Reset a user's password and delete their sessions; needs the admin's password (`current_password`) |
 | DELETE | `/api/admin/users/:id` | Delete user, their data and their uploaded files |
-| PUT | `/api/admin/users/:id/role` | Set role to `user` or `admin`; needs the admin's password (`current_password`) |
-| PUT | `/api/admin/users/:id/activate` | Activate/deactivate user |
+| PUT | `/api/admin/users/:id/role` | Set role to `user` or `admin` (`admins.manage`: the owner only, else `403 ADMINS_MANAGE_REQUIRED`); needs the admin's password (`current_password`) |
+| PUT | `/api/admin/users/:id/activate` | Activate/deactivate user; deactivating needs the admin's password |
 | POST | `/api/admin/users/:id/2fa/reset` | Turn off another user's 2FA and delete their sessions; needs the admin's password |
+| POST | `/api/admin/owner/transfer` | `{ "user_id", "current_password" }`: hand ownership to an active administrator (`owner.transfer`) |
+| GET | `/api/admin/users/:id/devices` | The person's devices, as Settings > Security > Devices lists one's own (`users.read`) |
+| DELETE | `/api/admin/users/:id/devices/:deviceId`, `/api/admin/users/:id/devices` | Sign one of the person's devices out, or all of them; admin's password (`users.manage`) |
+| GET, POST | `/api/admin/groups` | Every group with its counts and whether it sets rules (`users.read`); create one (`groups.manage`) |
+| DELETE | `/api/admin/groups/:id` | Delete a group, its memberships and its rules; admin's password (`groups.manage`) |
+| PUT | `/api/admin/groups/:id/managers/:userId` | `{ "manager": true \| false }`: name or remove a manager, adding them as a member if needed (`groups.manage`) |
 | GET | `/api/admin/storage` | Aggregate server storage counts and byte usage |
 | GET | `/api/admin/settings/signup-mode` | Read signup mode |
 | PUT | `/api/admin/settings/signup-mode` | Set signup mode |
@@ -335,8 +373,10 @@ boundary checks it before the handler runs.
 | GET | `/api/admin/instance-backup` | Instance backup: on or off (and what is missing), the read-only destination, the key's fingerprint, the schedule in force (`time_utc`, `keep`, `schedule_source`, `schedule_defaults`), next run, kept count and size, the latest runs and the restore command (`server.settings`) |
 | POST | `/api/admin/instance-backup/run` | "Back up now": `202` with the started run; `409 INSTANCE_BACKUP_OFF` or `INSTANCE_BACKUP_RUNNING`, `503 INSTANCE_BACKUP_NOT_READY` while the process does not run the background work yet (`server.settings`) |
 | PUT | `/api/admin/instance-backup/settings` | The time of the daily run (`HH:MM`, UTC) and how many backups are kept (1 to 1000), with the admin's password (`server.settings`) |
-| GET | `/api/admin/policies` | Every data-safety policy with its value, source, default, values and what it means for existing data, the bin's minimum and the rules revision (`server.settings`) |
+| GET | `/api/admin/policies` | Everyone's policies (the installation): each with its value, source, default, values, what it means for existing data and the groups that set it, the bin's minimum and the rules revision (`server.settings`) |
 | PUT | `/api/admin/policies` | Save changed policies with the admin's password (`server.settings`) |
+| GET, PUT | `/api/admin/groups/:id/policies` | The same for one group: only values at least as strict as Everyone's, and `clear` to give a key back to Everyone (`server.settings`; `404 GROUP_NOT_FOUND`) |
+| POST | `/api/admin/policies/preview` | `{ "group_id" }` or none for Everyone: before requiring 2FA, how many people it covers have none and who of them is already in a grace; changes nothing (`server.settings`) |
 | GET | `/api/admin/users/:id/accounts`, `/backups`, `/bin` | A person's mail and calendar accounts (no credentials), backups and bin (`users.read`) |
 | POST, PUT, DELETE | `/api/admin/users/:id/mail-accounts[/:accountId]` | Add, change, disconnect (`?purge=true`: and delete UniHub's copy of its mail) a person's mail account (`users.manage`) |
 | POST, PUT, DELETE | `/api/admin/users/:id/calendar-accounts[/:accountId]` | Add, change, remove a person's calendar account (`users.manage`) |
@@ -364,7 +404,13 @@ done on the administrator's path for a person (`admin.mail_account_added`,
 `_changed`, `_removed`, `_reset`; `admin.calendar_account_added`, `_changed`,
 `_removed`; `admin.backup_deleted`, `admin.bin_emptied`,
 `admin.bin_item_deleted`, `admin.data_cleared`, with the person as the
-account concerned), and the removal of a person's mail
+account concerned), people and groups (`admin.user_created`,
+`admin.setup_link_created`, `admin.setup_link_revoked`,
+`auth.setup_completed`, `owner.transferred`, `admin.device_removed`,
+`admin.devices_ended`, `admin.group_created`, `admin.group_deleted`,
+`admin.group_manager_set`, and a manager's `group.renamed`,
+`group.member_added`, `group.member_removed`; a policy change names its
+target, the installation or the group), and the removal of a person's mail
 data: disconnecting a mail account (`mail.account_disconnected`) and deleting
 it with UniHub's copy of its mail (`mail.account_purged`). Each entry names
 the actor, the account concerned, the address and the request id; details hold
@@ -386,17 +432,23 @@ Settings > Server settings > Activity.
 Safety checks:
 
 - admins cannot delete their own account through the admin delete endpoint
+- the owner cannot be deleted (also not through Settings > Delete account),
+  demoted or deactivated, and only the owner changes the owner's password,
+  2FA or setup link (`400 OWNER_PROTECTED`; [Roles and the
+  owner](#roles-and-the-owner))
 - the last active admin cannot be deleted (also not through Settings > Delete
   account), demoted or deactivated (`400 LAST_ADMIN`). The check locks every
-  active admin's row in the transaction of the change, so two admins removing
-  each other at once leave one
+  active admin's row (the owner's included) in the transaction of the change,
+  so two admins removing each other at once leave one
 - changing a person's password, role or status and deleting a person ask
   again, in the transaction that writes, that the admin is still an active
   admin, signed in with this session and with the password entered
   (`services/caller-proof.ts`): `401 SESSION_ENDED`, `403 ADMIN_REQUIRED` or
   `403 PASSWORD_CHANGED`, and nothing changes
 - admins cannot reset their own 2FA through the admin endpoint
-- deactivating a user deletes their sessions
+- deactivating a user deletes their sessions, so every device of theirs is
+  signed out; their data, groups and manager roles stay, and activating them
+  gives everything back
 - deleting a user removes their rows and their files (mail attachments, raw
   mail, recordings, generated backup archives) through the same
   `services/user-lifecycle.ts` as self-deletion; it is refused with
@@ -406,6 +458,122 @@ The storage overview returns aggregate counts and byte totals for mail
 attachments, raw mail archives, recordings, and generated backup archives. It also
 splits those byte totals per user account. It does not return message subjects,
 filenames, contact records, or backup contents.
+
+## Roles and the owner
+
+Every person has one role: the **owner**, an **admin** or a **member**
+(stored as `user`; the pages say Member). The permission map above says what
+each may do. An installation has exactly one owner: `users.owner_marker`, a
+generated column with a unique key, lets the database itself refuse a
+second. A new installation's bootstrap administrator is the owner; upgrading
+to 0.30 makes the earliest-created active administrator the owner
+([Upgrading](UPGRADING.md)).
+
+Only the owner makes or removes administrators (`admins.manage`): giving or
+taking the admin role, and adding a person as an admin. The owner hands
+ownership on with `POST /api/admin/owner/transfer` and their password; the
+new owner must be an active administrator who has a password, and the former
+owner becomes an administrator, in one transaction. Until then nobody,
+the owner included, can demote, deactivate or delete the owner
+(`400 OWNER_PROTECTED`).
+
+Only the owner changes the owner's sign-in: an administrator's password
+reset, 2FA reset or setup link for the owner is refused with `400
+OWNER_PROTECTED`, checked in the transaction that writes with the owner's row
+locked. Otherwise an administrator could sign in as the owner and so make or
+remove administrators. An administrator may still sign the owner's devices
+out: that ends sessions only, and the owner signs in again with their own
+password and second factor. In Server > People the owner's row greys those
+actions out with the reason.
+
+## People
+
+Server > People lists everyone with their role, status, groups, 2FA and last
+use, and filters by group. A person's page holds their profile and role,
+their groups, their devices, deactivate and delete, and the
+[administrator's path](#the-administrators-path-for-a-person).
+
+### Add person and setup links
+
+**Add person** (`POST /api/admin/users`, with the admin's password) creates
+the account at once, in the chosen groups, so the administrator can add it to
+groups or set up mail accounts before the person arrives. The person then
+sets their own password through a **setup link** (the default), or signs in
+with an **initial password** the administrator types, which they may change
+later; no change is forced. Adding a person works whatever the sign-up mode.
+
+- The link is `/invite#<token>`: 32 random bytes in the fragment, so the
+  token never reaches a server or proxy log, and the page sends no referrer.
+  Only the token's SHA-256 is stored (`invites`).
+- It is shown once to copy, works once and ends after 7 days. A person has
+  one live link at most: a new one replaces it, revoking deletes it. A
+  person who has set their password gets no link (their password is reset
+  instead, `400 ALREADY_SET_UP`).
+- An unknown, used, expired or revoked link gets the same answer, `404
+  INVITE_INVALID`.
+- Opening the link lists the person's rules (their groups' included) before
+  the password; setting it signs them in with that revision of the rules
+  confirmed, as sign-up does. It counts against the sign-up budgets.
+- Until then the person has no password (`password_hash` is empty) and
+  cannot sign in. Server > People shows them as **Invited** while a link is
+  live and **Not set up** without one.
+- Links belong to the installation: backups never carry them and an instance
+  restore deletes them, so a restore never brings back a way in; the
+  administrator makes a new link.
+
+### Deactivate, delete and devices
+
+Deactivating keeps the person's data, groups and manager roles and ends all
+their sessions; activating them gives everything back. Deleting removes them
+and their data ([Admin Endpoints](#admin-endpoints)).
+
+An administrator sees a person's devices (`GET /api/admin/users/:id/devices`)
+and signs one or all of them out with their password. Live connections
+close, the Android app finds itself signed out at its next request, and the
+person's data stays. The activity log records `admin.device_removed` or
+`admin.devices_ended`.
+
+## Groups and managers
+
+Groups are flat: a person can be in several, as a member or a manager.
+**Everyone** is the built-in group of every active person; it has no row, and
+its rules are the installation's (Server > Policies, Everyone). Groups and
+their members are `services/groups.ts`'s; who may read or manage a group is
+answered by the access service (`services/access.ts`), checked before any
+change and again in the transaction that writes it.
+
+Administrators with `groups.manage` create and delete groups, add and remove
+members and name managers. Deleting a group removes its memberships and its
+rules in one transaction; nobody's data changes, but its members may get
+looser rules, which the page says before the password.
+
+A **manager** is no role, only a membership: they manage their own groups
+from Settings > Your groups (`/api/groups`). They may:
+
+- rename the group and change its description
+- add active people, found by name or email (`GET /api/groups/:id/candidates?q=`,
+  at most 20, name and email only), up to 200 at once
+- remove members
+- see the members and the rules the group adds, read-only
+
+They cannot create or delete groups, name or remove managers, change rules or
+open the Server pages. A member sees their groups and each group's managers.
+A group someone cannot see is `404 GROUP_NOT_FOUND`; one they may see but
+not manage is `403 GROUP_FORBIDDEN`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/groups` | The person's groups and their role in each |
+| GET | `/api/groups/:id` | One group; members and the group's own rules only for those who manage it |
+| PUT | `/api/groups/:id` | Name and description (manage) |
+| GET | `/api/groups/:id/candidates?q=` | Active people not in the group (manage) |
+| POST | `/api/groups/:id/members` | `{ "user_ids": [...] }` (manage) |
+| DELETE | `/api/groups/:id/members/:userId` | Remove a member (manage); a manager only with `groups.manage` |
+
+A membership change takes the rules lock, is checked for policy combinations
+that cannot hold for each person it changes (`400 POLICY_CONFLICT`), and
+then reaches the person's modules, workers and live connections as a policy
+save does ([Data-safety policies](#data-safety-policies)).
 
 ## User settings
 
@@ -445,12 +613,13 @@ Data-safety policies (F13) are rules on actions, not settings of a person:
 `policy.<key>` rows of the installation in `setting_policies`, with their keys,
 defaults and plain reasons in `settings-registry.ts` (`POLICIES`) and their
 shapes in `api/src/contracts/policies.ts`. Every default allows what UniHub
-does today. A route names the policies of its action on its spec
+does today. Policies are set for the installation (Everyone) and for groups
+(`target_kind` `installation` or `group`). A route names the policies of its action on its spec
 (`destructive`, `requires`; [Request Handling](ARCHITECTURE.md#request-handling)),
 and the request boundary refuses a forbidden action with 403 `POLICY_FORBIDS`
 and `details: { policy, reason }` before anything changes, for every person,
 administrators included on their own data. A locked policy stands; a policy
-of a key with an order is a floor that later group policies can only make
+of a key with an order is a floor that a group's policy can only make
 stricter. See [Data-safety policies](#data-safety-policies).
 
 ### User scope
@@ -564,12 +733,23 @@ the subscription of this browser or phone). They say "Saved on this device".
 
 ## Data-safety policies
 
-Administrators set them in Settings > Server settings > Policies for the whole
-installation (groups follow in 0.30). They are rules on actions (F13 on F1),
+Administrators set them in Settings > Server > Policies, for Everyone (the
+installation) or for one group. They are rules on actions (F13 on F1),
 resolved by `services/settings.ts` (`resolvePolicy`, `assertAllowed`) from the
-installation's `policy.<key>` rows, else the key's default, which always
-allows what UniHub did before. Changing a policy deletes nothing: the
-services read the rules when they act.
+installation's `policy.<key>` rows and those of the person's groups, else the
+key's default, which always allows what UniHub did before. Changing a policy
+deletes nothing: the services read the rules when they act.
+
+**Groups only make rules stricter.** Everyone's value is the most anyone
+gets. A group's page offers only the values at least as strict as
+Everyone's (else `400 POLICY_INVALID`), and among a person's groups the
+strictest value wins. Two keys have no order of strictness,
+`mail.mode.new_accounts` and `mail.provider_delete`: there a group value
+that refuses the action wins, else the value the person's groups agree on;
+when they disagree, Everyone's value holds for that person and Everyone's
+page flags the key. Everyone's page names the groups that set each key. A
+request resolves the person's levels once, in one query, and every gate of
+that request reads them.
 
 | Key | Values (default first) | What it stops |
 | --- | --- | --- |
@@ -587,6 +767,14 @@ services read the rules when they act.
 | `app_lock.required` | nothing, `app`, or a list of modules (`mail`, `contacts`, `calendar`, `recordings`) | using the listed parts on a device that does not lock them ([App lock](APP_LOCK.md#required-by-the-administrator)); a floor of the device setting `app_lock_scope` |
 | `app_lock.max_background` | `none`, `900`, `300`, `60`, `0` (seconds) | a longer **Ask again** (`app_lock_relock_after`) while a lock is required |
 | `app_lock.screenshots` | `allowed`, `forbidden` | screenshots in the Android app (a secure window) |
+| `auth.two_factor` | `optional`, `required` | using UniHub without 2FA after a 7-day grace, and turning 2FA off ([Sign-in policies](#sign-in-policies)) |
+| `auth.password_min_length` | `12`, `14`, `16`, `20` | a shorter new password; existing passwords keep working |
+| `auth.session_max_days` | `none`, `30`, `14`, `7`, `1` | a session older than that since its sign-in |
+| `modules.mail`, `modules.calendar`, `modules.contacts`, `modules.recordings` | `allowed`, `forbidden` | using the module at all: it is off and locked for the person and its data stays ([Modules](MODULES.md#administrator-policies)) |
+| `pages.music` | `allowed`, `forbidden` | the Music page alone; recordings keep working |
+| `notifications.detail` | `full`, `sender`, `none` | more detail than that in notifications: the floor of each mail account's `notify_detail`; `none` also floors reminders (a reminder has no sender, so `sender` leaves them full) |
+| `contacts.phone_sync` | `allowed`, `forbidden` | UniHub contacts in the Android app's phone contacts: the app's contacts sync is told Contacts is off (`403 MODULE_DISABLED` with the policy), so the phone removes them at its next sync; they stay in UniHub, and changes made on the phone since its last sync are lost |
+| `offline.copies` | `allowed`, `forbidden` | new offline copies (`GET /api/offline/snapshot`); each browser and app deletes its own copy when it next reads the rules online, and one that never comes online keeps it |
 
 A route names the policies of its action on its spec and the request boundary
 refuses before anything happens. A rule that depends on the body is checked
@@ -741,8 +929,8 @@ checks, takes its locks in this order:
    DELETE or UPDATE that follows the check, which holds its locks to
    commit all the same;
 2. the rules revision row (`system_settings` `policy_revision`), shared, then
-   the installation's policies; an administrator's save locks it first,
-   exclusively;
+   the installation's and the groups' policies and the memberships; an
+   administrator's save and a membership change lock it first, exclusively;
 3. the person's module switches row (`user_settings` `module_preferences`),
    shared; a switch writes it;
 4. the person's restore jobs, every row and the gap for a new one, shared.
@@ -789,10 +977,26 @@ combination that cannot hold (new accounts in a mode that is not allowed, new
 accounts deleting at the provider while that is forbidden, both mail modes
 forbidden) is `400 POLICY_CONFLICT`, and nothing is saved.
 
+A group's rules are saved the same way with `PUT
+/api/admin/groups/:id/policies`; `clear` lists the keys (`bin.min_retention`
+for the bin's minimum) whose group policy goes, so Everyone's value holds
+again, and a value equal to Everyone's on the page does the same. A save is
+checked for the group with Everyone's rules and for each of its members
+(`400 POLICY_CONFLICT` naming the group or the person). After a save or a
+membership change commits, each person it reached gets their new rules at
+once: a module turned off stops its background work and leaves their open
+event streams, and a 2FA grace starts or ends. A session older than a new
+longest lifetime ends at its next request.
+
 **Telling people.** The rules in force are listed in plain words: every
 key not at its default or refusing its action, and the bin's minimum while it
-holds. When that list changes, the rules revision (`system_settings`
+holds. When anyone's list changes, the rules revision (`system_settings`
 `policy_revision`) goes up and the administrator who saved it has seen it.
+The revision is one for the installation, but the notice is per person: a
+confirmation stores the SHA-256 of the person's list (`policy_notices.rules_hash`),
+and the notice shows only while their list differs from the one they
+confirmed. A group's rule or a membership change therefore shows it only to
+the people whose own rules changed.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -803,10 +1007,49 @@ While `acknowledged_revision` is below `revision`, the app shows the rules once
 and records the confirmation; Settings > Profile lists them; the sign-up form
 lists them from `GET /api/auth/signup-mode`.
 
+### Sign-in policies
+
+`services/sign-in-policies.ts` enforces the three sign-in rules for one
+person.
+
+**Two-factor authentication required** (`auth.two_factor`). A person without
+2FA gets 7 days from the first time the rule applies to them
+(`users.two_factor_required_since`, set by a policy save or membership
+change, or by the request gate for someone added later; only while empty, so
+it counts from the first time). Turning 2FA on, or the rule no longer
+applying, clears it; a later application starts a new grace. During the
+grace nothing is refused: `GET /api/policies/effective` carries `two_factor:
+{ required, grace_ends_at }` and the app shows a reminder. After it, every
+route that is not exempt (below) answers `403 TWO_FACTOR_REQUIRED` with
+`details: { grace_ended_at, reason }`, administrators included, and the app
+guides the person through the setup. Turning 2FA off is refused at once while
+the rule applies, grace or not. Before saving the rule the Policies page asks
+`POST /api/admin/policies/preview` how many people it covers have no 2FA and
+who of them is already in a grace, with its end. Backups of a person never
+carry the grace start; the instance backup keeps it with `users`.
+
+**Shortest password** (`auth.password_min_length`): every password set from
+then on, by the person or an administrator, needs at least that many
+characters; sign-up uses Everyone's value.
+
+**Longest session** (`auth.session_max_days`): counted from the session's
+sign-in, on top of the 21-day idle expiry. It applies to existing sessions
+too: an older one ends at its next request (`401`).
+
+**Exempt routes.** The app lock gate ([App
+lock](APP_LOCK.md#required-by-the-administrator)) and the 2FA gate share one
+list, `gates: 'exempt'` on the route spec, pinned by `routes-policy.test.cts`:
+what a person needs to set the lock or 2FA up (`/api/auth/2fa/*`, the device
+routes, settings values, password and profile), sign out, read the rules
+and their modules, keep notifications and live events, and finish work that
+exists only on the device (the recording upload routes). The Android app's
+contacts sync (`gates: 'background-sync'`, only with `X-Background-Sync: 1`)
+stays open too, because older apps read any other `403` as a refused change.
+
 ### The administrator's path for a person
 
 A rule that forbids a person something never makes it impossible: an
-administrator does it for them on Admin > Users > the person, with their own
+administrator does it for them on Server > People > the person, with their own
 password, and the activity log records it with the person as the account
 concerned (routes in [Admin Endpoints](#admin-endpoints)). Each route calls the
 service of the person's own route with the person's id and the administrator
@@ -909,7 +1152,8 @@ Behavior:
 - Auth tokens are accepted from the cookie or `Authorization: Bearer`; the
   frontend uses cookies. A bearer-only request is exempt from CSRF (see
   [CSRF Protection](#csrf-protection)).
-- All admin actions are server-side role checked.
+- All admin actions are checked on the server by permission; group managers
+  by the access service.
 - Account/user destructive actions also remove related files where the service
   owns those paths.
 - Recovery passwords and uploaded backups must be transferred over HTTPS.
@@ -918,6 +1162,5 @@ Behavior:
 
 ## Limitations
 
-- Rate limits are in-memory and reset on restart.
 - There is no email verification workflow.
 - 2FA uses TOTP/recovery codes only; WebAuthn/passkeys are not implemented.

@@ -5,6 +5,67 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.30.0 Organisation
+
+**Make a database backup first.** Two automatic database upgrades run at the
+first start. **Step 27** adds groups and their members, setup links and the
+stored sign-in limits, the owner role, the start of a person's two-factor
+grace and the record of which rules a person confirmed; it changes no row.
+**Step 28** chooses the **owner**: the earliest-created active administrator
+(on a new installation, the bootstrap administrator). Both are quick and run
+again safely if the first start is stopped part-way. Nobody is signed out.
+
+Going back to 0.29.x means restoring that backup: 0.29.x does not know steps
+27 and 28 and refuses to start ("Database upgrade history is unknown or out of
+order"). Personal backups stay data schema 7 and never hold groups. An
+instance backup carries groups, members and group rules; an instance restore
+deletes setup links and stored sign-in attempts (see
+[Data recovery](DATA_RECOVERY.md)).
+
+- **Check who became owner.** Server → People shows **Owner** on one
+  row. Only the owner makes or removes administrators and changes the owner's
+  own password, two-factor authentication or setup link; nobody can demote,
+  deactivate or delete the owner. If the wrong person was chosen, that person
+  hands ownership to another active administrator on their person page
+  (**Hand over ownership**, with their password). The other administrators
+  keep every other right.
+- **Roles keep their stored names.** "User" is shown as **Member**; the
+  database and the API still say `user`. Scripts that read `role` see
+  `owner` for one person, and `GET /api/auth/me` adds `permissions` and
+  `manages_groups`. A tab opened before the update shows the owner's Server
+  pages again after a reload.
+- **Nothing gets stricter until an administrator changes a rule.** The new
+  policies start at their defaults: two-factor authentication optional,
+  12-character passwords, no session limit beyond the 21-day idle rule, every
+  module and the Music page allowed, full notification detail, contacts on the
+  phone and offline copies allowed. Existing installation rules are now the
+  rules of **Everyone** and keep their values; there are no groups yet.
+- **Requiring two-factor authentication gives 7 days.** When an administrator
+  sets it for Everyone or a group, each person it reaches without two-factor
+  authentication gets 7 days from then, with a reminder at every start, then
+  can only set it up or sign out until they do. Administrators are included.
+  The Policies page shows how many people lack it before saving. A script or
+  other API client signed in with a session cookie is such a person: set its
+  account up with two-factor authentication first, or require it per group
+  and keep that account out of those groups.
+- **A session lifetime applies at once.** A limit on the longest time signed
+  in also ends existing sessions older than it, at their next request.
+- **Sign-in limits survive a restart.** The limits are unchanged (for
+  example 10 password checks per account in 10 minutes), but they are now kept
+  in the database, so a restart no longer clears them. The counts held before the
+  upgrade are lost once, at its restart.
+- **New answers.** `403 TWO_FACTOR_REQUIRED` after the grace,
+  `400 OWNER_PROTECTED` for an action on the owner, `404 GROUP_NOT_FOUND` and
+  `403 GROUP_FORBIDDEN` on group routes, and `404 INVITE_INVALID` for a
+  setup link that is unknown, used, revoked or expired.
+- **No new configuration.** No environment variable, port, container or
+  volume is added.
+- **Android app.** The 0.30.0 app changes nothing at the device boundary; the
+  window is 0.30.0, 0.29.0, 0.28.4 and 0.28.3, so update a phone that still
+  has the 0.28.2 app. If an administrator forbids contacts on the phone, every
+  app in the window removes UniHub's contacts from the phone at its next sync;
+  edits made on the phone and not yet synced are lost.
+
 ## 0.29.0 App lock
 
 **Make a database backup first.** One automatic database upgrade runs at the

@@ -48,6 +48,35 @@ clear snapshots on other devices too; a server setting cannot erase an offline
 copy remotely. New snapshots include the module choices used to create them.
 Older snapshots retain their original offline behavior until refreshed.
 
+## Administrator policies
+
+An administrator can turn a module off for people, for everyone or for a
+group, under Server settings → Policies → Modules and pages
+([Data-safety policies](AUTH_ADMIN_SETTINGS.md#data-safety-policies)):
+
+- **Mail, Calendar and ToDo, Contacts, Recordings and Music**
+  (`modules.mail`, `modules.calendar`, `modules.contacts`,
+  `modules.recordings`). A forbidden module is off for the person whatever
+  their own switch says: its switch is greyed out with the administrator's
+  reason, its pages leave the navigation, More, the start page choices and
+  the search, its API routes answer `403 MODULE_DISABLED` with
+  `details: { policy, reason }`, and its background work stops as if the
+  person had disabled it. Turning it on is refused with `403
+  POLICY_FORBIDS`; turning it off or hiding its pages stays possible. As with
+  the switch, Recordings and Music go off together, and so do Calendar and
+  ToDo.
+- **Music page** (`pages.music`). Only the Music page goes: it leaves the
+  navigation, More, the start page choices and the search links, and showing
+  it again is refused. Recordings keep working; Music has no data or route of
+  its own.
+
+The data stays: a policy never deletes anything, and the module comes back as
+the person had set it when the policy allows it again. Policies resolve per
+person: a group can only make the rule stricter than the one for everyone, and
+for a person in several groups the strictest applies. Contacts on the phone
+and offline copies have policies of their own (`contacts.phone_sync`,
+`offline.copies`), described with the other policies.
+
 ## Implementation contract
 
 The built-in module catalog defines page/API membership and worker capabilities.
@@ -66,6 +95,15 @@ person (`services/admin-path.ts` for accounts, the bin's per-module gates,
 `services/data-clear.ts`) refuses with `403 MODULE_DISABLED` while the person's
 module is off and `409 RESTORE_IN_PROGRESS` while their section is restored
 ([Auth and admin](AUTH_ADMIN_SETTINGS.md#the-administrators-path-for-a-person)).
+A module policy (0.30) is applied over the person's own choices, never
+written into them: `getUserModules` and `getUserPages` in
+`services/module-settings.ts` mark a forbidden module or page off and carry
+the policy key and its reason (`policyOff` in `services/settings.ts`, which
+resolves the person's levels: installation, then their groups), so the
+boundary, `canRunModule`, search, stats and offline snapshots follow the same
+answer, and workers that scan everyone use `policyOffByUser`. After a policy
+save or a membership change commits, `module-lifecycle.ts::applyPolicyChange`
+runs the same module hooks for each person whose effective modules changed.
 The recovery catalog declares durable data and remains independent of visibility.
 Settings are archived under `user_settings.module_preferences`; the order is a
 separate `user_settings.module_order` JSON list of module IDs. `PUT /api/modules`

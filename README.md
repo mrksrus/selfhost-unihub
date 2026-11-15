@@ -21,6 +21,7 @@ the nonprofit/public-institution uses it expressly lists. See [Licensing](LICENS
 | Recordings | Record in the browser or import audio, then organise, play and download it. |
 | Optional modules | Reorder, hide or disable modules and their background work. Disabling a module keeps its data and full-backup coverage. |
 | Backups / imports (ALPHA) | Experimental encrypted account exports and imports. Do not use them as your only backup. |
+| People, groups and rules | Add people with a one-time setup link, put them in groups with managers, and set rules for everyone or a group: required two-factor authentication, password length, session lifetime, modules, notification detail, phone contacts and offline copies. One owner manages the administrators. |
 | App lock | Lock the whole app or chosen modules on a device with a fingerprint, face or the phone's PIN in the Android app, or a UniHub PIN in a browser; administrators can require it. It protects an unlocked device, not the server. |
 | Mobile and offline | Installable PWA and opt-in read-only snapshots of up to 100 non-draft emails, contacts and calendar/tasks, subject to a 32 MiB limit. Notifications depend on browser and OS support. |
 
@@ -92,7 +93,7 @@ undo database changes. Read [Backup and restore (ALPHA)](docs/BACKUP_RESTORE.md)
 | Back up or restore my account | [Backup and restore (ALPHA)](docs/BACKUP_RESTORE.md) |
 | Choose Download or Sync | [Mail modes](docs/MAIL_MODES.md) |
 | Reorder, hide or disable modules | [Modules](docs/MODULES.md) |
-| Configure administrators and trusted proxies | [Authentication and administration](docs/AUTH_ADMIN_SETTINGS.md) |
+| Add people, groups, roles and rules; configure trusted proxies | [Authentication and administration](docs/AUTH_ADMIN_SETTINGS.md) |
 | Install the PWA or troubleshoot notifications | [PWA guide](docs/PWA.md) |
 | Read saved data without a connection | [Offline reading](docs/OFFLINE.md) |
 | Lock UniHub on a phone or browser | [App lock](docs/APP_LOCK.md) |

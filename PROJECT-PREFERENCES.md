@@ -742,6 +742,72 @@ administrator sets how long users' backups are kept, that is a minimum:
 nobody deletes one earlier (the administrator path with re-authentication
 excepted), and nothing is deleted automatically afterwards.
 
+#### P-36 Group rules only make things stricter
+
+Accepted, 2026-11-14 (maintainer, for 0.30.0). Built in 0.30.0.
+
+Everyone is the installation: its rules are the most anyone gets. A group can
+only make a rule stricter, and for a person in several groups the strictest
+applies. Where a rule has no order (the mode of new mail accounts, deleting at
+the provider), a group's value holds only when the person's groups agree;
+otherwise Everyone's value holds and the Policies page flags the disagreement.
+The changed-rules notice reaches only the people whose own rules changed.
+Relaxing a rule for one group stays a parking-lot idea.
+
+#### P-37 One owner, who alone manages the administrators
+
+Accepted, 2026-11-14 (maintainer, for 0.30.0). Built in 0.30.0.
+
+Every installation has exactly one owner. Only the owner makes or removes
+administrators and hands ownership to another active administrator, with
+their password. Nobody can demote, deactivate or delete the owner, and only
+the owner changes the owner's own password, two-factor authentication or
+setup link; an administrator may still sign the owner's devices out, which
+changes nothing else. After an upgrade the earliest-created active
+administrator is the owner; on a new installation the first administrator.
+The role stored as "user" is shown as Member. Rights follow permissions, not
+role names.
+
+#### P-38 What a group manager may do
+
+Accepted, 2026-11-14 (maintainer, for 0.30.0). Built in 0.30.0.
+
+A manager is a member with a manager's mark in one group, not a role. They
+rename their group, add and remove its members and read its members and rules;
+to add people they see only the names and emails of active people. They do not
+create or delete groups, name or remove managers, change rules or open the
+Server pages. Only administrators name managers.
+
+#### P-39 Required two-factor authentication gives each person 7 days
+
+Accepted, 2026-11-14 (maintainer, for 0.30.0). Built in 0.30.0.
+
+When an administrator requires two-factor authentication, each person it
+reaches without it gets 7 days from when the rule first applies to them, with
+a reminder at every start. After that they are guided to set it up and can use
+nothing else, apart from signing out and the phone's background work, until
+they do. Administrators are included. Turning it off is refused while it is
+required. Before saving, the Policies page says how many people lack it and
+who is already counting down.
+
+#### P-40 The longest time signed in counts from the sign-in
+
+Accepted, 2026-11-14 (maintainer, for 0.30.0). Built in 0.30.0.
+
+A session lifetime (none, 30, 14, 7 or 1 day) is absolute from the sign-in,
+on top of the 21-day idle rule. It applies at once to existing sessions,
+which end at their next request. Ending a session deletes no data.
+
+#### P-41 Phone contacts leave the phone when the rule forbids them
+
+Accepted, 2026-11-14 (maintainer, for 0.30.0). Built in 0.30.0.
+
+When an administrator forbids contacts on the phone, the Android app removes
+UniHub's contacts from the phone at its next sync; they stay in UniHub and
+come back when allowed again. Edits made on the phone and not yet synced are
+lost, and the Policies page says so. It works through the answer every
+supported app already understands, so no app update is needed.
+
 ## Open decisions and conflicts
 
 Open proposals do not override accepted decisions.

@@ -227,12 +227,20 @@ roots pointing at the empty installation.
 
 The restore changes these rows in the same transaction, after the load
 (`services/instance-restore.ts`). Everything else comes back as the dump had
-it: users, their data, policies, the activity log and the push identity, so
-phones keep receiving notifications.
+it: users with their roles and the owner, their data, groups with their
+members and managers, the policies for everyone and for each group, the
+activity log and the push identity, so phones keep receiving notifications.
+Ids are kept, so nothing that names a group or a person needs remapping.
 
 The old installation's sessions and credentials of the moment:
 
-- **Sessions** are deleted: everyone signs in again.
+- **Sessions** and **devices** are deleted: everyone signs in again, and
+  each browser and app becomes a device of the restored installation.
+- **Setup links** (`invites`) are deleted. A link is a credential and is
+  never resurrected: the administrator makes a new one for anyone who had
+  not set up their account yet.
+- **Sign-in attempt budgets** (`login_attempts`) are deleted; the limits
+  count afresh.
 - **Download tickets** and **two-step sign-in challenges** are deleted.
 - **Mail worker leases** (`mail_engine_accounts`, `mail_engine_jobs`) are
   cleared.
@@ -291,6 +299,23 @@ Preserve historical readers and frozen fixtures when evolving the format. Starti
 with 1.0, retain imports for every released stable backup format throughout 1.x.
 A later major release must retain old readers or provide a maintained conversion
 path before retiring one. Do not silently omit unsupported modules from a full restore.
+
+0.30.0 keeps data schema 7. The organisation is not one person's data, so a
+personal backup never carries it: groups and memberships (`org_groups`,
+`org_group_members`, class `org`) and the policies for everyone and for groups
+(`setting_policies`) travel only in the instance backup, with their ids.
+Setup links and sign-in attempt budgets (`invites`, `login_attempts`, class
+`installation`) are never in a personal backup and never restored: the
+instance backup's dump holds them, and its restore deletes them.
+Of the new columns, `users.two_factor_required_since` (when a person's 7 days
+to set up two-factor authentication began) is security-only like the 2FA
+secret, `users.owner_marker` is generated from the role, and
+`policy_notices.rules_hash` stays with the installation like the rest of the
+notice confirmations. A personal restore therefore needs no remapping, and a
+person restored onto another installation starts in no group: the rules for
+everyone apply until an administrator adds them. The rule for later versions:
+principal and group ids never appear in a personal archive; grants of shared
+resources are organisation data and follow the same path.
 
 0.28.0 writes data schema 7: a backup holds data by class (local,
 configuration, Download-mode mail by choice or policy), never a provider's

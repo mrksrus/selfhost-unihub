@@ -6,6 +6,84 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.30.0
+
+Organisation: people, groups, roles and policies. An administrator can run
+UniHub for a company: add people with a setup link, put them in groups with
+managers, and set the rules for everyone or a group. The first start after
+the upgrade runs database upgrades 27 and 28, which make the earliest active
+administrator the **owner**; nobody is signed out (see
+[Upgrading](docs/UPGRADING.md#0300-organisation)).
+
+### Added
+
+- **People.** Server → People (formerly Users) lists everyone with their
+  role, groups, sign-in state (Active, Invited, Not set up, Inactive,
+  two-factor due) and last activity, filtered by group. **Add person**
+  creates the account at once and gives either a **setup link** to copy
+  (single use, valid 7 days, shown once, renewed or revoked from the person's
+  page) or a first password the administrator types. It works in every
+  sign-up mode. The link opens a page that shows the person the rules that
+  apply to them before they choose a password.
+- **Owner.** One person is the owner. Only the owner makes or removes
+  administrators and changes the owner's own password, two-factor
+  authentication or setup link; nobody can demote, deactivate or delete the
+  owner. The owner hands ownership to another active administrator from that
+  person's page. "User" is now shown as **Member**.
+- **Groups and managers.** Server → Groups lists Everyone (every active
+  person) and the groups; a person can be in several. An administrator names
+  **managers**, who find their groups under **Your groups** in More and in
+  the Settings panel: they rename their group, add and remove members (choosing from the
+  names and emails of active people) and read its rules, but cannot set
+  rules, name managers, create or delete groups or open Server pages.
+- **Rules per group.** Server → Policies has a **Rules for** chooser:
+  Everyone, or one group. A group can only make a rule stricter, and for a
+  person in several groups the strictest applies. Each row names Everyone's
+  value, Everyone's page names the groups that set a key and flags groups
+  that disagree, and the changed-rules notice reaches only the people whose
+  own rules changed. Deleting a group takes its rules with it, and the page
+  says so first.
+- **New policies**, each for Everyone or a group:
+  - **Two-factor authentication required.** Each person it reaches without
+    it gets 7 days, with a reminder at every start; then they are guided to
+    set it up and can only do that or sign out. Administrators are included,
+    and turning it off is refused while it is required. Before saving, the
+    page says how many people lack it and who is already counting down.
+  - **Shortest password** (12, 14, 16 or 20 characters) for every password
+    set from then on; existing passwords keep working.
+  - **Longest time signed in** (30, 14, 7 days or 1 day since sign-in), on
+    top of the 21-day idle rule; older sessions end at their next use.
+  - **Modules and pages:** Mail, Calendar and ToDo, Contacts, Recordings and
+    Music, or only the Music page, off and locked with the reason; their data
+    stays and comes back when allowed again.
+  - **Notifications show at most** everything, the sender or nothing.
+  - **Contacts on the phone:** forbidden, the Android app removes UniHub's
+    contacts from the phone at its next sync; they stay in UniHub.
+  - **Offline reading:** forbidden, new offline copies are refused and each
+    browser deletes its own copy as soon as it learns the rule (a device
+    that never comes back online keeps it).
+- **A person's devices.** An administrator sees a person's devices on their
+  page and signs one or all of them out, with their password; the activity
+  log records it. Deactivating someone signs them out everywhere and keeps
+  their data, groups and manager roles for when they come back.
+
+### Changed
+
+- **Sign-in limits survive a restart.** The attempt limits are kept in the
+  database instead of in memory; the limits themselves are unchanged.
+- **Rights by permission.** The Server pages, menu entries and buttons follow
+  what the person may do (owner, administrator or member) instead of the role
+  name; greyed controls give the server's reason.
+
+### Pinned interface pictures
+
+- New pictures, dark and light: `people` (wide), `person` (wide), `groups`
+  (wide), `group-policies` (wide: a group's rules), `invite` (phone: the
+  setup-link page) and `two-factor-required` (phone: the prompt after the
+  7 days).
+- Changed pictures, dark and light, wide: `admin-policies` (the Rules for
+  chooser and the new rule groups) and `admin-policies-app-lock`.
+
 ## 0.29.0
 
 App lock: fingerprint and face. UniHub can ask for a fingerprint, a face or a

@@ -90,15 +90,15 @@ needs a current WebView; phones update theirs through the Play Store.
 
 ## Current window
 
-As recorded in `android/support-window.json` for 0.29.0. The CI table is the
+As recorded in `android/support-window.json` for 0.30.0. The CI table is the
 evidence; this table is what it is checked against.
 
 | App | Android 10 | Android 16 | Android 17 |
 | --- | --- | --- | --- |
+| 0.30.0 | starts and connects | starts and connects | starts and connects |
 | 0.29.0 | starts and connects | starts and connects | starts and connects |
 | 0.28.4 | starts and connects | starts and connects | starts and connects |
 | 0.28.3 | starts and connects | starts and connects | starts and connects |
-| 0.28.2 | starts and connects | starts and connects | starts and connects |
 
 All four apps put contacts on the phone and sync them both ways.
 In all four apps Android's download manager starts only from download
@@ -109,12 +109,17 @@ that needs the session (`/api/backup/jobs/<id>/download`): each app
 fetches exactly that address inside its own process with the WebView's
 cookie and saves it to Downloads, and refuses any other address that needs
 the session; the cookie never goes to the download manager or another app.
-The 0.29.0 app speaks bridge level 3 and locks with the phone's own unlock
+The 0.30.0 app is the 0.29.0 app with a new version: nothing changed at the
+device boundary. The 0.30.0 and 0.29.0 apps speak bridge level 3 and lock with the phone's own unlock
 ([App lock](APP_LOCK.md)). The 0.28.x apps have no native lock: the page
 offers them the UniHub PIN and an update hint. Every app's contacts sync sends
 `X-Background-Sync: 1`, and the contacts routes stay open to it while a device
-falls short of a required lock, so the 0.28.x apps, which read a 403 other
+falls short of a required lock or of required two-factor authentication, so the 0.28.x apps, which read a 403 other
 than `MODULE_DISABLED` as a refused change and skip the contact, keep syncing.
+When an administrator forbids contacts on the phone, the server answers the
+sync with that same `MODULE_DISABLED`, so every app in the window removes
+UniHub's contacts from the phone at its next sync without an app update; they
+stay in UniHub, and edits on the phone not yet synced are lost.
 All four apps keep the "Connect to <server>?" question when Android rebuilds their screen (the 0.27.0 app could lose it), and `android/scripts/launch-test.sh --candidate` checks that for the candidate only.
 From 0.23.0 the app also reads the handshake `protocol` and `minApp` when
 connecting to a server.
