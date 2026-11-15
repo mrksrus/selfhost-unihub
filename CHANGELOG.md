@@ -6,6 +6,29 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.30.1
+
+Fixes after 0.30.0. No database upgrade and nothing to do when upgrading.
+
+### Fixed
+
+- **No notification content after the two-factor grace.** A person whose 7
+  days to set up required two-factor authentication had ended was refused
+  everywhere in UniHub but still got the sender, subject and event names in
+  notifications. Their notifications now carry no content until they have
+  set it up, as on a device without a required app lock.
+- **The owner's and other administrators' data are the owner's.** An
+  administrator who is not the owner could delete the owner's or another
+  administrator's data, empty their bin, delete their backups, change or
+  remove their mail and calendar accounts, and revoke another
+  administrator's setup link. These are now the owner's alone; other
+  administrators see the controls greyed with the reason. Members stay every
+  administrator's to manage.
+- **The two-factor grace runs once.** Removing a person from a group that
+  requires two-factor authentication and adding them again gave them a new
+  7 days. The grace now counts from the first time the rule applied to them
+  and resumes when a rule applies again, until they set it up.
+
 ## 0.30.0
 
 Organisation: people, groups, roles and policies. An administrator can run

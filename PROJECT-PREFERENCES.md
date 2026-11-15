@@ -764,7 +764,12 @@ their password. Removing includes deactivating, activating or deleting
 another administrator, and changing their password, two-factor
 authentication or setup link is the owner's too (review of 0.30.0,
 2026-11-15), so one administrator can neither remove another nor sign in as
-them; any administrator may still sign another's devices out. Nobody can demote, deactivate or delete the owner, and only
+them; any administrator may still sign another's devices out. On the
+administrator's path for a person, only the owner changes the owner's or
+another administrator's data (deleting data, the bin, backups, mail and
+calendar accounts) and revokes another administrator's setup link;
+administrators keep these actions for members (decided by the maintainer on
+2026-11-15 on the reviewing agent's recommendation, 0.30.1). Nobody can demote, deactivate or delete the owner, and only
 the owner changes the owner's own password, two-factor authentication or
 setup link; an administrator may still sign the owner's devices out, which
 changes nothing else. After an upgrade the earliest-created active
@@ -790,7 +795,11 @@ When an administrator requires two-factor authentication, each person it
 reaches without it gets 7 days from when the rule first applies to them, with
 a reminder at every start. After that they are guided to set it up and can use
 nothing else, apart from signing out and the phone's background work, until
-they do. Administrators are included. Turning it off is refused while it is
+they do; their notifications carry no content until then. The grace runs
+once: it counts from the first time any rule applied to them, and leaving
+and rejoining a group, or a rule removed and set again, resumes it rather
+than starting a new one (both decided by the maintainer on 2026-11-15 on the
+reviewing agent's recommendation, 0.30.1). Administrators are included. Turning it off is refused while it is
 required. Before saving, the Policies page says how many people lack it and
 who is already counting down.
 
