@@ -64,7 +64,7 @@ through Tailwind classes and never hard-coded colours.
 
 Evidence: `src/index.css` (the `:root, .light` and `.dark` blocks and their
 header comment), `tailwind.config.ts` (every colour maps to a variable),
-AGENTS.md "Visual style".
+[Visual style](docs/agents/visual-style.md).
 
 #### P-02 Dark is the default; Light and System must work equally
 
@@ -317,8 +317,8 @@ scoped to one message and reset on leaving it. Sender HTML is never rendered as
 application UI.
 
 Evidence: `src/components/mail/SafeEmailContent.tsx`, `src/test/dark-email-content.test.tsx`,
-`src/test/safe-email-content.test.tsx`, AGENTS.md "Visual style" and review
-rules.
+`src/test/safe-email-content.test.tsx`, [Visual style](docs/agents/visual-style.md)
+and the [review rules](docs/agents/review.md).
 
 ### Mail, tasks and attachments
 
@@ -479,7 +479,7 @@ source review, local tests, CI, built-container checks, browser or device
 checks and live validation kept distinct and a missing check never reported as
 passing.
 
-Evidence: AGENTS.md "Working and verification" and "Code Review Rules";
+Evidence: [Working and verification](docs/agents/verification.md) and [Code review](docs/agents/review.md);
 `.github/workflows/docker-image.yml` and `scripts/container-smoke.sh` for the
 checks that exist today; [docs/UI_ACCEPTANCE.md](docs/UI_ACCEPTANCE.md) for the
 interface part.
@@ -634,7 +634,7 @@ Accepted, 2026-10-27 (maintainer's direction after the first agent e2e run:
 "start a goal or thread where the full roadmap gets just implemented and
 tested without me having to cover everything myself … I'm comfortable with
 switching the approach now"). Supersedes the habit of the maintainer testing
-every tracker row by hand; the five-step version flow in AGENTS.md stays.
+every tracker row by hand; the five-step [version flow](docs/agents/version-flow.md) stays.
 
 Agents implement each version and prove it end to end themselves: the web e2e
 harness (`tools/e2e`: the image's nginx, API, MariaDB, synthetic mail
@@ -812,6 +812,39 @@ come back when allowed again. Edits made on the phone and not yet synced are
 lost, and the Policies page says so. It works through the answer every
 supported app already understands, so no app update is needed.
 
+#### P-42 Small parts, a blocking bar for reviews, one test layer per behaviour
+
+Accepted, 2026-11-15 (maintainer, after the review of how 0.23.0 to 0.30.0
+were built: "implement the changes you suggested"). Refines P-28's
+"independent review"; P-19 stays: review is one input, evidence decides.
+
+What the review found: rounds after the second brought no new major defect,
+about half of their findings were defects made by the previous fix (0.28.0:
+47%), the defects that shipped were caught by executed tests, and about 38%
+of 0.28.0's production code existed only because of review rounds.
+
+- A version is built as parts of at most about 3,000 production lines, each
+  reviewed on its own before it joins the version branch; the release pull
+  request gets the review of the whole flows. Product decisions are answered
+  before the build starts.
+- A patch release is one branch with one commit per fix, one review and one
+  CI run.
+- A review finding blocks only with a shown, reachable trigger in the
+  changed code that loses or exposes data, opens a security hole, breaks a
+  user flow or fails a required check. Older defects never block; they go to
+  the maintainer as a list. A pull request or part gets two review rounds at
+  most (round one deep, round two the fix only), then the finisher.
+- A review fix adds no table, migration, queue, lock layer, route, state or
+  option.
+- Each behaviour is proven at one test layer: server rules by a
+  real-database test, user flows by e2e, client-only state by a component
+  test. Tests and documents scale with the change, and a behaviour is
+  described once.
+- Test tooling and CI changes ship in a pull request of their own.
+
+Evidence: [AGENTS.md "Change size"](AGENTS.md#change-size),
+[Code review](docs/agents/review.md).
+
 ## Open decisions and conflicts
 
 Open proposals do not override accepted decisions.
@@ -850,6 +883,16 @@ Open proposals do not override accepted decisions.
   server; only the unlock itself is the device's. Proposed by the integrating
   agent from the accepted 0.29.0 plan; to become an accepted entry when
   0.29.0 is released.
+
+- **S-08 Several releases per roadmap version.** The review of 0.23.0 to
+  0.30.0 suggests shipping a version's parts as separate releases when each
+  is ready (P-42 only splits the review, since every merge to main publishes
+  `latest`). It needs a numbering decision, as features may not ship in
+  patch releases. Proposed 2026-11-15; the maintainer has not decided.
+- **S-09 The Android emulator suite's CI run as the evidence.** CI runs the
+  Android e2e suite on every pull request since 0.28.1, while P-34 and the
+  verify skill still call the local emulator run a gate. Proposed
+  2026-11-15: CI is the evidence, and locally only the changed test runs.
 
 ### Open verification gaps
 

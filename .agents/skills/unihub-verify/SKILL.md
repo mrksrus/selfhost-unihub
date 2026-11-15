@@ -5,7 +5,7 @@ description: Choose and run the UniHub checks a change needs before it is accept
 
 # Verify a UniHub change or release
 
-Work from the candidate commit. Read `AGENTS.md` (Working and verification)
+Work from the candidate commit. Read `docs/agents/verification.md`
 and, for a release, `docs/RELEASE_CONTRACT.md`. Use synthetic data and
 disposable databases only; never point a check at a live server, database or
 uploads.
@@ -21,7 +21,7 @@ Pick checks by what the change touches; run every row that applies.
 | A new recovery section, table or file kind | the above; extend `api/tests/helpers/fresh-install-seed.cts` and the comparison in `scripts/recovery-fresh-install.mts` (the check fails until you do) |
 | Database upgrade steps, stored formats, the instance backup | the above; `node scripts/instance-backup-drill.mts --local` (or `UNIHUB_LOCAL_WITHOUT_SANDBOX=1` without `bwrap`); CI's `upgrade` job (`scripts/upgrade-check.mts`, Docker) upgrades the three previous releases and imports their exports |
 | The release checks themselves (`scripts/*.mts`, `.github/workflows/`) | `npm run typecheck:scripts`, `node --test scripts/release-checks.test.mts`, `actionlint` when available; the checks themselves run in CI |
-| Auth, sessions, CSRF, request boundary | the auth/request/login-limit tests named in `AGENTS.md`, and `node scripts/pwa-update-check.mts --local` (two tabs, one session) |
+| Auth, sessions, CSRF, request boundary | the auth/request/login-limit tests named in `docs/agents/verification.md`, and `node scripts/pwa-update-check.mts --local` (two tabs, one session) |
 | Service worker, `vite.config.ts` PWA settings, update notice, offline | `npm run build`, `node scripts/pwa-update-check.mts --local`, and with `--old <each earlier release in android/support-window.json> --new dist` |
 | Frontend UI | `npm run typecheck`, `npm run lint`, focused `npm test -- src/test/<file>.test.tsx`, `npm --prefix tools/ui-regression run verify` (setup in `docs/UI_BASELINES.md`), and relevant acceptance scenarios outside its coverage |
 | Email rendering | `node scripts/email-privacy-browser-check.mts` and the safe-email tests |

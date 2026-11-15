@@ -8,53 +8,25 @@ Before changing behavior, read [PROJECT-PREFERENCES.md](PROJECT-PREFERENCES.md).
 
 For frontend work, read [UI acceptance](docs/UI_ACCEPTANCE.md) before applying frontend-design. Preserve accepted tokens, components and interactions during ordinary changes. For feature acceptance and releases, use [unihub-verify](.agents/skills/unihub-verify/SKILL.md) and the [release contract](docs/RELEASE_CONTRACT.md); use focused checks for ordinary changes and full required gates before publishing. A missing required runtime check is not a pass. Keep model routing in user-wide guidance rather than copying model IDs here.
 
-## Road to 1.0: versions, decisions and testing
+## Read when the task needs it
 
-[docs/ROADMAP.md](docs/ROADMAP.md) is the public plan up to 1.0: what 1.0 contains, the versions with their themes, the foundations F1 to F15, the scope rules and the parking lot. Contributors and clones without the private files follow it.
+This guide holds what every task needs. Read the matching file before the work it covers; a reviewer or a small fix does not need the others.
 
-The maintainer's private plan holds the details. It lives in `.private/road-to-1.0/` of the canonical checkout: the `projectRoot` reported by the project-preferences `locate` helper. Git and Docker ignore `.private/`. Worktrees read and write those canonical files, never copies. Keep their contents (decisions, test results, devices, known-bug details) out of commits, issues, PRs and public documents. The only public reflection is docs/ROADMAP.md, a summary without dates, which changes when a version's theme, main contents or the parking lot change.
-
-| File | Holds |
+| Before you | Read |
 | --- | --- |
-| `ROAD-TO-1.0.md` | Scope rules, version status, each version's goal, scope, foundations and tests, known bugs, parking lot, change log |
-| `DECISIONS.md` | Open questions with a recommendation, when each is needed, and the maintainer's answers |
-| `ARCHITECTURE-AND-SECURITY.md` | Foundations F1 to F15 and the reasoning behind [Building toward 1.0](#building-toward-10) |
-| `TEST-TRACKER.md` | The maintainer's results on real phones, the live server, several people and real providers, and the session log |
+| start, decide, release or finish a version, or record a test result | [the version flow](docs/agents/version-flow.md) |
+| add a table, route, setting, policy, notification, shared resource, device behaviour, export or dependency | [Building toward 1.0](docs/agents/building-toward-1.0.md) |
+| change anything a person sees | [Visual style](docs/agents/visual-style.md) and [UI acceptance](docs/UI_ACCEPTANCE.md) |
+| run checks, add tests or prepare a release | [Working and verification](docs/agents/verification.md), [unihub-verify](.agents/skills/unihub-verify/SKILL.md) |
+| review a change or brief a reviewer | [Code review](docs/agents/review.md) |
 
-**Scope.** Work only on what the current version lists, or on a bug in what already exists. Bug fixes ship in patch releases, never together with features. Any other idea, including an agent's own, goes to the parking lot as a proposal. Only the maintainer swaps something into a version, and the swap is dated in the roadmap's change log.
+## Road to 1.0
 
-**A version runs in five steps.** One thread owns a version's steps and its updates to these files; another thread proposes its updates instead of editing them.
+[docs/ROADMAP.md](docs/ROADMAP.md) is the public plan up to 1.0: what 1.0 contains, the versions with their themes, the foundations F1 to F15, the scope rules and the parking lot. The maintainer's private plan lives in `.private/road-to-1.0/` of the canonical checkout (the `projectRoot` reported by the project-preferences `locate` helper); Git and Docker ignore it, and its contents (decisions, test results, devices, known-bug details) stay out of commits, issues, PRs and public documents.
 
-1. **Start.** When the maintainer asks for the roadmap or the next version:
-   - read all four files
-   - take the next version from the status table
-   - summarise its goal, scope and foundations, the decisions due, and tracker rows still ❌ or ⚠️ from earlier versions
-   - resolve the branch (`feat/0.N.0-<theme>` from `main`) and its starting commit
-2. **Decide.** Ask the decisions due for this version in one round, recommendation first.
-   - Record the answers in `DECISIONS.md` and in the roadmap's version text and change log.
-   - If an answer changes a version's main contents or the parking lot, update docs/ROADMAP.md in the version's PR.
-   - Durable product or design choices also go into PROJECT-PREFERENCES.md.
-   - The version's list is then closed, and its status becomes "in development".
-3. **Build.** Implement against the version text and [Building toward 1.0](#building-toward-10), with focused checks, independent review and the release contract.
-   - Prove the version end to end with the e2e suite (PROJECT-PREFERENCES P-28): every row an agent can reproduce locally gets a test, and the agent records its result with the test path.
-   - Add tracker rows only for what no agent can reach (P real phone, S live server, X real provider, U real people), marked *must* where they gate the release, and give the maintainer that short list.
-   - An agent fills in a row only for a check it ran itself, and says so in the note.
-4. **Test and fix.** After the release, or on a candidate image the maintainer installs, the status becomes "testing".
-   - Every result the maintainer reports goes into the tracker in the same session.
-   - A ❌ becomes a "Problems found" entry and a fix on `fix/0.N.x-<topic>`, released as a patch.
-5. **Finish.** When every *must* row is ✅ or deferred in writing by the maintainer:
-   - the status becomes "done"
-   - the change log gets an entry
-   - the next version starts at step 1
+**Scope.** Work only on what the current version lists, or on a bug in what already exists. Bug fixes ship in patch releases, never together with features. Any other idea, including an agent's own, goes to the parking lot as a proposal. Only the maintainer swaps something into a version.
 
-**Before a thread ends,** or when the maintainer says they are done:
-
-- record every result and problem reported in the chat in the tracker, with version and device
-- add a session-log line
-- update the version status and the change log
-- state the next step
-
-Test results never live only in a chat.
+Test results never live only in a chat: before a thread ends, record every result and problem the maintainer reported in the tracker. The five steps of a version, the private files and the end-of-thread duties are in [the version flow](docs/agents/version-flow.md).
 
 ## How the app fits together
 
@@ -94,63 +66,6 @@ For feature details, follow the corresponding file in docs/ rather than treating
 - Optional modules affect navigation, API access, background work, search, and offline reads. Calendar and ToDo share one module, as do Recordings and Music; their pages are shown, hidden and ordered separately (page preferences), but enabling stays per module. A route affecting another module must check that module and its restore lock before side effects, regardless of its URL prefix. See docs/MODULES.md.
 - MariaDB 10.11 or later is required; Compose uses 11.8 LTS, and CI runs the API tests and the instance backup drill on 13.0 as well (the TrueNAS catalog's version). Keep database sessions and DATETIME handling in UTC. Historical MYSQL_* configuration names, mysql2 and *-mysql-integration.test.cts filenames still apply to MariaDB.
 
-## Building toward 1.0
-
-Architecture and security rules for new work, so each version fits the 1.0 end state without rework. The F numbers refer to the foundations listed in [docs/ROADMAP.md](docs/ROADMAP.md#foundations); the private `ARCHITECTURE-AND-SECURITY.md` (see Road to 1.0) explains them in detail. Design a foundation for its later users, and build only the slice the current version needs, together with its first feature, never as a refactor-only change. Until a foundation lands, the existing contracts above apply.
-
-- **Declare data, don't infer it.** A new table states five things, and the recovery catalog and data inventory carry them:
-  - its owner: user, organisation or installation
-  - whether it can be shared (grants)
-  - its data class
-  - its module
-  - what restore does with it
-
-  The data classes (F2) are:
-  - `local`: only UniHub holds it
-  - `local-by-policy`: Download-mode mail
-  - `mirror`: a provider holds it; it is re-synced, not backed up per user
-  - `org`
-  - `config`
-  - `installation`: never restored
-  - `ciphertext`
-
-  UniHub's own additions to a mirrored item (subtasks, ToDo state, manual order, links) are a `local` overlay keyed by the provider identity.
-- **The server decides, the client shows.** Permissions, admin policies, privacy levels and module gates are enforced in the API and workers before side effects. The web page and the Android shell only reflect them: a locked control is greyed out with its reason. A rule that lives only in the client is a defect.
-- **One owner per concern,** each called from routes and workers, never re-implemented beside it:
-  - settings and policies (F1)
-  - access and grants (F4)
-  - devices (F5)
-  - notifications (F6)
-  - realtime (F7)
-  - the platform boundary in `src/lib/platform.ts` (F8)
-
-  Lint fences keep these boundaries, as they keep the 0.23 ones.
-- **Settings and policies (F1).** A new option is one typed registry entry with a scope (user, mail account, calendar, device) and, where an admin may set a minimum or lock it, a policy. Policies resolve as user → group (strictest wins) → installation → default. A setting that points at a record is typed as a reference and remapped on restore. Identity-bound values such as signatures are columns of their record, not settings.
-- **Destructive actions are policy-checked (F13).** A route that deletes or resets data names its policy key on its route spec. The boundary refuses it with `POLICY_FORBIDS` and a plain reason when the policy forbids it, and the policy test covers it. An admin path remains, with re-authentication and an activity-log entry. Changing a policy never deletes data by itself.
-- **Sharing goes through principals and grants (F3, F4).** Access is stored for principals (user, group, everyone), never as lists of user ids. Shareable resources carry `owner_kind` (user or organisation). Every shared read and write asks the access service. Revoking access reaches live streams, offline snapshots, Android copies and pending notifications. Test access with an owner, a grantee, a stranger and a revoked member through the real request handler and database.
-- **Devices are records (F5).** Behaviour that differs per device (push channel, app lock, capabilities, chat keys, ringing) is keyed by device id, never by session token or push endpoint.
-- **One notification pipeline (F6).** A new notification kind declares its source, its renderings per privacy level and its expiry, and uses the existing filters and per-device delivery. The server renders content at the resolved privacy level before encryption, except for end-to-end encrypted chat, which the device renders.
-- **Live updates are hints (F7).** Every state a client can see is a row it can fetch again; an event only says what to refetch. WebSockets (from chat) go through the same request boundary and are bound to the session, so revocation closes them.
-- **Files leave the page only through tickets (F9).** Android's open, save and share actions, external downloads and backup downloads use short-lived, single-use tickets bound to user and device. The session cookie is never handed to another app.
-- **Identifiers and contracts are stable.** Anything exported, synced or shared carries a UID or UUID that survives other installations; auto-increment ids never leave the server. New routes get shared request and response schemas (F11), and a new module is added through a module manifest. Expand, then contract: old apps and archives keep working within their windows.
-- **Keys and encryption (F10, F14).**
-  - Every secret can be given as a file (`*_FILE`) or an environment variable.
-  - Every ciphertext carries a key version.
-  - No key is stored in a backup it protects, and the instance backup has its own key.
-  - Encryption at rest is the volume's job, documented as an installation requirement.
-  - End-to-end encryption is reserved for chat and calls: MLS through OpenMLS and WebRTC media; key backups are passphrase-protected.
-- **Dependencies fit the licence.** New libraries must be compatible with PolyForm Noncommercial plus the paid commercial licence; AGPL or GPL code (for example libsignal) is not linked in.
-- **The deployment stays small.** One app container plus MariaDB, one API process (the worker owner runs background work), and the thin Android shell with native code only where the web cannot do the job. Calls add coturn and a media server as optional containers only.
-
-## Visual style
-
-- Preserve UniHub's black, white, and blue identity unless the task asks for a redesign. Dark is the default; Light and System must also work. Use the semantic CSS variables in src/index.css through Tailwind classes, including the existing module and success/warning/destructive colors. Avoid hard-coded colors in feature views.
-- Use Inter for interface text and JetBrains Mono where code or fixed-width data helps. Keep headings and actions in plain, sentence-case language. Let spacing, type, and alignment show hierarchy; add borders, cards, gradients, or motion only when they clarify a real distinction.
-- Reuse src/components/ui/ controls and their variants. Keep feature-specific layout in the feature component. Do not create a new visual treatment for a common control when an existing variant fits.
-- Pages use `PageShell`: a navigation rail and an optional context panel on wide screens (foldable from its header, remembered per browser and page); on narrow screens the page header is the top bar, the panel opens as a sheet, and a bottom bar navigates. Prefer rows to cards and one main action per row. Check both widths, long content, scrolling, touch targets, and safe-area clearance. A change should remain usable with keyboard focus, visible errors, useful empty/loading states, sufficient contrast, and reduced motion.
-- Treat displayed email as untrusted content. Keep SafeEmailContent and its privacy controls in charge of HTML mail and remote images; do not render sender HTML as ordinary application UI.
-- The default dark and light palettes are the identity. The per-device looks (OLED black, High contrast, Colour-safe, Neon, Paper, ...) are listed in src/lib/theme.ts and defined as `[data-theme]` blocks in src/index.css; the account accent (src/lib/accent.ts) is written inline on `<html>` and must keep working on top of every look.
-
 ## Code style and change shape
 
 - Frontend code is TypeScript with React components and hooks; backend source is strict TypeScript compiled to CommonJS. Classic browser workers are authored in workers/ and emitted as JavaScript. Match the surrounding file's naming and formatting instead of reformatting unrelated code. Use the existing API helpers, query keys, hooks, and UI components before adding parallel ones.
@@ -161,59 +76,18 @@ Architecture and security rules for new work, so each version fits the 1.0 end s
 - Tests should prove observable behavior and important failure paths with synthetic data. Do not copy a real mailbox, database, contact list, or server volume into a test fixture.
 - Keep a test only if a real failure would make it fail: lost, duplicated or wrongly shown data, a security or privacy boundary, a recovery or concurrency rule, or a user-visible flow. Prefer the real thing: the disposable test MariaDB (`*-mysql-integration.test.cts`), the real request handler, the installed IMAP wire peer, and rendered components with only the network mocked. Reject brittle SQL/config text, incidental labels/layout and duplicate helper assertions. Approved visual baselines, non-overlapping hit-target geometry, keyboard focus and pinned UI behavior are legitimate regression checks under docs/UI_ACCEPTANCE.md. Extend an existing scenario instead of adding a near-duplicate. When a fake database fixture breaks on a harmless query change, prefer moving that case to a real-database test over patching the fixture.
 
-## Code Review Rules
+## Change size
 
-Review the changed behavior through its callers, workers, database writes and recovery paths. Apply these rules to relevant changes; do not turn a small PR into an unrelated refactor. Prioritize exploitable security failures and irreversible data loss, then correctness and concrete maintenance costs. For each finding, cite the narrowest affected lines and explain the trigger, impact and missing guard. Check existing safeguards before reporting; distinguish demonstrated behavior from an unverified risk. Follow SECURITY.md for private vulnerability reporting and use synthetic examples.
+Maintainer's rules of 2026-11-15 ([P-42](PROJECT-PREFERENCES.md#p-42-small-parts-a-blocking-bar-for-reviews-one-test-layer-per-behaviour)), from the review of 0.23.0 to 0.30.0: pull requests of 10,000 to 35,000 lines were too large to review well, and behaviours were tested and described several times over.
 
-Every review must end with an explicit verdict for the reviewed commit. When nothing needs fixing, say so in a review comment, for example "No issues found in <commit>.", rather than staying silent, so whoever waits on the review knows it is finished.
-
-### Access and secrets
-
-- Trace user ownership through IDs, parent/child relationships, joins, bulk operations, files, job polling, downloads and SSE. Check with two users; an owned parent does not make an arbitrary child ID safe. Admin routes also need a server-side role check.
-- Check authentication, CSRF, body limits and module/restore gates at the request boundary and before service side effects. Test disabled modules and active restores, including Mail-prefixed calendar routes. Background work must recheck applicable permissions after waits or retries.
-- Preserve session revocation and single-use login challenges/recovery codes under concurrency. Do not trust forwarded client IPs beyond configured proxy hops or expand public/CSRF exceptions without a concrete reason and a boundary test.
-- Credentials, ICS subscription URLs, push endpoints, archive unlock keys and raw provider errors can contain secrets. Check API serialization, logs, notifications, exports and browser storage; keep stored credentials encrypted and use allowlisted public fields. Intentional encrypted credential backup must follow the recovery policy.
-
-### Untrusted input and network access
-
-- Validate mail, CalDAV, ICS, discovery and restored connection targets through the existing network policy. Check every redirect and DNS-resolved connection, including IPv6/private addresses; retain the original TLS hostname. TRUSTED_MAIL_HOSTS permits explicit network exceptions, not blanket TLS bypass. Preserve the existing user-confirmed mail trust policy; CalDAV/ICS require HTTPS and certificate verification. CalDAV credentials may only follow a confirmed origin or the configured built-in provider scope.
-- Treat email HTML, calendar data, backup archives and uploaded filenames as untrusted. Preserve inert email sanitization and restricted iframe/CSP. Remote-image consent resets on leaving a message, including A -> B -> A; changing the display format must not grant consent. Review path traversal, symlinks, archive expansion limits, bounded parsing/recurrence, stream size/time limits and subprocess argument handling where applicable.
-- File and recording changes must preserve original bytes, ownership and storage-root checks, bounded chunk uploads/conversion, Range validators and disconnect cleanup. Keep streaming downloads outside service-worker interception. Failed conversion must leave the original recording available.
-
-### Synchronization and recovery
-
-- Distinguish a verified remote deletion from an incomplete listing, parse failure or transport error. Keep last known-good data on failure; do not advance ETags, checkpoints or successful status before the corresponding work is safely stored. Preserve local ToDo state and subtasks when occurrences remain valid.
-- Check writeback identity, read-only providers and conflict handling before mutation. CalDAV writes must respect ETags and recurrence scope; missing restored/legacy remote links must not silently fall back to local-only edits or deletes. Account links need explicit provenance, not email equality alone. Inspect partial failure of cross-calendar moves and retries for duplicates or data loss.
-- Preserve mail mode, UID/UIDVALIDITY identity, account locking, cancellation and provider-deletion opt-in. Distinguish accepted intent from confirmed provider state. Accepted jobs/intents and pending UI state must survive retries or recover predictably; a lost connection does not prove a remote operation failed. A dispatched IMAP MOVE must reconcile its outcome without sending the MOVE again. Restore must not replay destructive provider operations.
-- For persisted-data changes, review migrations, backup-catalog field policies, data-inventory coverage, mail-engine/recovery-policy.ts, owner-safe ID remapping and credentials together. Stage files before writes; clean replaced files only after a known commit, and retain staged files while a commit outcome is uncertain. Restore must not resurrect sessions, push credentials or installation-local worker leases. Keep archive versions distinct from database migration IDs; preserve historical fixtures. Respect section locks and retired-module handling; test old archives as well as new round trips. Confirm older documentation against the current catalog and format readers when they disagree.
-
-### Roadmap fit
-
-- Check that a change is in the current version's scope or fixes a bug in existing behaviour; a feature outside the version is a finding, not a bonus.
-- Check new work against [Building toward 1.0](#building-toward-10). Report these as findings:
-  - a table without its declarations
-  - a destructive route without a policy key
-  - a sharing check outside the access service
-  - a missing three-person test
-  - a second implementation of an existing foundation
-
-### Browser state and maintainability
-
-- Check account switches, sign-out, expired sessions, module pauses and reconnects for private-data leaks through React Query, IndexedDB, delayed responses, SSE and push messages. Only transport failure may fall back to saved offline identity; 401/403 or server errors must not. Keep offline writes disabled and service-worker caches free of private API/download responses; notification links must stay on the application origin and load owned records.
-- Keep HTTP handling in the request boundary/routes, domain behavior in services and browser requests in existing API helpers. Flag duplicated security policy, hidden mutable state, unbounded work or inconsistent error/pending states only when they cause a concrete failure or maintenance cost. Prefer a focused regression test over a speculative abstraction; leave formatting and lint checks to tooling.
-
-## Working and verification
-
-- Use Node.js 26 or newer. Install frontend and API dependencies separately with npm ci and npm --prefix api ci when needed.
-- Run focused tests for changed behavior. Frontend checks are npm run typecheck, npm run lint, npm test -- src/test/<file>.test.tsx and npm run build for production-build changes; backend unit tests first build with npm --prefix api run build, then use node --test api/tests/<file>.test.cts or npm --prefix api test. Match the actual test filename and extension. Ordinary API runs can skip database tests; they do not establish the database release gate.
-- Database checks require a verified disposable test database. scripts/local-db.sh test recreates unihub_test; never point it or MYSQL_TEST_* at a live database. Use npm run test:db for the full local gate, or scripts/local-db.sh test api/tests/<file>.test.cts for focused integration checks. With an independently configured empty *_test MariaDB database, npm --prefix api run test:ci runs all API tests and fails on skips; test:recovery runs the recovery subset. Read docs/DEVELOPMENT.md before initializing or resetting local databases.
-- Choose checks by the affected boundary: auth/request/login limits for access changes; outbound-network/caldav-network and mail transport tests for connections; safe-email-content/email-privacy plus the synthetic browser request check for email rendering; offline/auth-session-switch/server-events for device state; backup ownership/roundtrip/schema-file integration tests for recovery and migrations. Calendar sync/writeback changes need synthetic malformed input, conflict, read-only, recurrence and retry coverage, not only parser tests.
-- End-to-end tests live in [tools/e2e](tools/e2e/README.md): a disposable local installation (the image's nginx configuration, the API, MariaDB with synthetic users, GreenMail for IMAP/SMTP and Radicale for CalDAV behind a local test CA), web tests on desktop, phone and Android-app targets, and tests of the real Android app in an emulator (`tools/e2e/android.sh`). Every user-visible feature or fix adds or extends a test in the matching area folder of `tools/e2e/tests/`, run on the targets it affects; a change at the device boundary (file picker, keyboard, downloads, notifications, contacts sync, app lock) also gets an `android/` test; sharing and policies use the three seeded users as owner, grantee and stranger. Run the affected tests while building and the whole suite on the release candidate. Real-provider tests (`npm run test:providers`) read accounts from the canonical checkout's `.private/e2e-providers.env` and never print them. Stop what you started (`stack.sh down`, `android.sh down`) when finished: a stack keeps about 1.5 GB of memory and the emulator 2–4 GB.
-- An e2e result is a local check: record it in the tracker as the agent's own result with its test path, never as a phone, live-server or real-provider result.
-- For UI changes, inspect the actual result at desktop and mobile widths in dark and light themes. For PWA, offline, push, or updates, verify the relevant browser state and consult docs/PWA.md and docs/OFFLINE.md. Report what was and was not verified.
-- Update the relevant feature documentation when a user-visible behavior or cross-component contract changes. Keep this file short and revise a stale rule instead of appending a conflicting one.
-- Add a CHANGELOG.md entry under the upcoming version for every user-visible change.
-- For release or deployment work, follow .github/workflows/docker-image.yml: API test:ci without skips, frontend tests/lint/build, then the built-image smoke test in scripts/container-smoke.sh. These run on the release's pull request, which carries the version change; merging and tagging publish the image it tested (docs/RELEASE_CONTRACT.md). Keep local, CI, container and real-provider/device verification separate; report failures and skips. Documentation-only edits need link/path and diff checks, not an application test run.
+- **Parts.** Build a version as parts of at most about 3,000 production lines along its seams. Each part is reviewed on its own before it joins `feat/0.N.0-<theme>`; the release pull request carries the version change and gets the review of the whole flows. The product decisions are answered before the build starts.
+- **Patch releases.** One branch per patch release, one commit per fix, one review, one CI run. Only a fix that must ship alone and at once gets a release of its own.
+- **One owning test layer per behaviour.** A server rule (permission, policy, ownership, recovery) is proven by a real-database test through the request handler. A user flow is proven by an e2e test. A component test is for state only the client has: stale responses, account switches, focus. Do not prove the same behaviour again at another layer.
+- **Tests and documents scale with the change.** A small fix gets the one test that fails without it and a CHANGELOG line, not a new document or a new test file per layer.
+- **Say it once.** CHANGELOG.md tells users what changed. One feature page in docs/ holds the contract. docs/UPGRADING.md holds only what an upgrade requires someone to do. PROJECT-PREFERENCES.md holds the decision. Link instead of repeating.
+- **Comments.** One line for the reason the code cannot show. No version numbers, foundation or decision ids, review rounds or history in code and tests.
+- **A review fix stays small** ([Code review](docs/agents/review.md)): it adds no table, migration, queue, lock layer, route, state or option.
+- **Test tooling and CI changes** ship in a pull request of their own, never inside a fix release.
 
 ## Private data and checks before committing
 

@@ -94,7 +94,7 @@ UniHub servers, AI features and new Music features.
 New work builds on these foundations, so that each version fits the 1.0 end
 state without rework. Each foundation is built in the version that first needs
 it, together with that version's feature, not as a separate refactor. The
-condensed rules are in [AGENTS.md](../AGENTS.md#building-toward-10).
+condensed rules are in [Building toward 1.0](agents/building-toward-1.0.md).
 
 | | Foundation | Built in |
 | --- | --- | --- |
