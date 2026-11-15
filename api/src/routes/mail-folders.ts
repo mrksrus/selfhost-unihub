@@ -7,6 +7,7 @@ import { keepsSnoozedInLists } from '../services/mail-snooze';
 import { filingAccountId, folderAcceptsAccount } from '../services/mail-filing';
 import crypto from 'crypto';
 import * as mailWritebacks from '../services/mail-writebacks';
+import { ensureMailbox } from '../services/mail-engine/repository';
 import { db } from '../state';
 import {
   MAIL_SENDER_RULE_MATCH_TYPES,
@@ -138,7 +139,7 @@ async function getMailFolderRowsWithCounts(userId: string, accountId: string | n
   }));
 }
 
-async function persistRemoteMailFolderBoxes(folderId: string, remoteFolder: Awaited<ReturnType<typeof createRemoteMailFolderForUserAccounts>>, connection: SqlExecutor) {
+async function persistRemoteMailFolderBoxes(userId: string, folderId: string, remoteFolder: Awaited<ReturnType<typeof createRemoteMailFolderForUserAccounts>>, connection: SqlExecutor) {
   for (const account of remoteFolder?.accounts || []) {
     if (account.status === 'failed') continue;
     await connection.execute(
@@ -146,6 +147,9 @@ async function persistRemoteMailFolderBoxes(folderId: string, remoteFolder: Awai
        VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE remote_name = VALUES(remote_name)`,
       [folderId, account.accountId, account.remoteName]
     );
+    // The generation of a folder UniHub just created, stored as discovery stores it.
+    if ('generation' in account && account.generation) await ensureMailbox({ userId, accountId: account.accountId, folderName: account.remoteName,
+      epoch: account.generation.uidvalidity, metadata: { providerMailboxId: account.generation.mailboxId } }, connection);
   }
 }
 
@@ -226,7 +230,7 @@ export = {
            VALUES (?, ?, ?, ?, ?, FALSE, ?)`,
           [folderId, userId, accountId, slug, displayName, position]
         );
-        await persistRemoteMailFolderBoxes(folderId, remoteFolder, connection);
+        await persistRemoteMailFolderBoxes(userId, folderId, remoteFolder, connection);
         await connection.commit();
       } catch (error) {
         await connection.rollback();

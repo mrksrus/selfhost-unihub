@@ -7,6 +7,7 @@ import { db } from '../state';
 import * as imapClient from './mail-imap-client';
 import { guardImapConnection, runGuardedImap, closeImapConnection } from './mail-imap-guard';
 import { buildImapConnectionConfig } from './mail-host-policy';
+import { mailboxGeneration } from './mail-engine/transport';
 
 interface SenderRule {
   id?: string;
@@ -408,7 +409,9 @@ async function createRemoteMailFolderForUserAccounts(userId: string, folderName:
         results.push({ accountId: account.id, remoteName: displayName, status: 'existing' });
       } else {
         const { created } = await createImapBox(connection, displayName);
-        results.push({ accountId: account.id, remoteName: displayName, status: created ? 'created' : 'existing' });
+        // Read now, so the new folder can be deleted before a sync has read it; null leaves that to the sync.
+        const generation = created ? await mailboxGeneration(connection, displayName).catch(() => null) : null;
+        results.push({ accountId: account.id, remoteName: displayName, status: created ? 'created' : 'existing', generation });
       }
     } catch (error) {
       results.push({ accountId: account.id, remoteName: displayName, status: 'failed', retryable: true, error: (error as Error).message || String(error) });

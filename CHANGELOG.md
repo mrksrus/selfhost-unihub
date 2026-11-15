@@ -48,6 +48,9 @@ administrator turns them on: read [the upgrade guide](docs/UPGRADING.md#0303-bac
 - **Formatted mail carries its plain-text version.** Mail written with
   formatting went out as HTML only; it now also contains the plain text,
   also when sent from a draft, and the Sent copy keeps it.
+- **A folder created in UniHub can be deleted at once.** Deleting it before
+  the next sync answered that UniHub had not read the folder on the mail
+  server yet.
 
 ### Pinned interface pictures
 

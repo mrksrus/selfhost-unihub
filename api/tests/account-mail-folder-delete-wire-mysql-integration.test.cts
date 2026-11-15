@@ -98,6 +98,12 @@ async function folderServer() {
             });
             ok(); return;
           }
+          if (cmd.startsWith('CREATE ')) {
+            const [name] = mailbox(cmd.slice(7));
+            if (state.boxes.has(name)) { send(`${tag} NO [ALREADYEXISTS] Mailbox exists\r\n`); return; }
+            state.boxes.set(name, { uidvalidity: 4000 + state.boxes.size }); ok(); return;
+          }
+          if (cmd.startsWith('SUBSCRIBE ')) { ok(); return; }
           if (cmd.startsWith('DELETE ')) {
             const [name] = mailbox(cmd.slice(7));
             const reply = state.deleteReply?.(name);
@@ -281,6 +287,24 @@ test('deleting a mail folder at the provider deletes only the copy shown, of the
     assert.equal(await folderExists(projects.id), 0);
     // A retry of the same request finds nothing to delete.
     assert.equal((await remove(owner, 'projects', now, 404)).error, 'Folder not found');
+  });
+
+  await t.test('a folder created in UniHub can be deleted at once, before any sync', async () => {
+    // Creating connects as the account does, to the synthetic server.
+    const hostPolicy = runtime('services/mail-host-policy'), buildConfig = hostPolicy.buildImapConnectionConfig;
+    hostPolicy.buildImapConnectionConfig = async (account: FixtureValue) => ({ imap: { host: '127.0.0.1', port: imap.port, user: account.email_address,
+      password: 'fixture', tls: false, keepalive: false, connTimeout: 2000, authTimeout: 2000, socketTimeout: 3000 } });
+    try {
+      const created = await owner('POST', '/mail/folders', { mail_account_id: ownerMail, display_name: 'Typo' });
+      assert.equal(created.remoteFolder.created, 1);
+    } finally { hostPolicy.buildImapConnectionConfig = buildConfig; }
+    const box = imap.login('owner-mail@example.test').boxes.get('Typo')!;
+    const copies = await shown(owner, 'typo');
+    assert.deepEqual(copies, [{ account_id: ownerMail, remote_name: 'Typo', uidvalidity: String(box.uidvalidity), mailbox_id: null }]);
+    imap.commands.length = 0;
+    await remove(owner, 'typo', copies);
+    assert.deepEqual(imap.sent('owner-mail@example.test'), ['STATUS Typo (UIDVALIDITY)', 'STATUS Typo (UIDVALIDITY)', 'DELETE Typo']);
+    assert.ok(!imap.login('owner-mail@example.test').boxes.has('Typo'));
   });
 
   await t.test('a DELETE answered "does not exist" without NONEXISTENT, beside a listing without the folder, settles nothing', async () => {
