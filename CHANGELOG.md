@@ -6,6 +6,55 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.30.3
+
+Fixes and changes the maintainer asked for after 0.30.2. No database
+upgrade. Personal and whole-server backups are now off until an
+administrator turns them on: read [the upgrade guide](docs/UPGRADING.md#0303-backups-off-by-default).
+
+### Changed
+
+- **Personal backups are off by default.** Backups are experimental and
+  under construction, so creating and restoring them is not allowed until an
+  administrator allows it under Policies. An administrator's earlier choice
+  to forbid them stays. Backups already made can still be downloaded.
+  Everyone sees the rules notice once after the update.
+- **The scheduled whole-server backup is off by default.** It no longer runs
+  by itself, even with its destination and key set, until an administrator
+  turns on "Daily backup" on the Instance backup page.
+
+### Added
+
+- **Delete for good in a Download account's Trash.** Removes UniHub's copy of
+  the selected messages and their files, after asking first. The mail server's
+  copy is never touched. An administrator who forbids deleting for good also
+  turns this off.
+
+### Fixed
+
+- **Nginx logs go to the container log.** The web server's access and error
+  logs were files inside the container that grew until a restart.
+- **A first start refuses an administrator address that is not an email
+  address.** `BOOTSTRAP_ADMIN_EMAIL` without "@" created an administrator
+  nobody could sign in as. UniHub now stops before setting anything up and
+  says why. Installations that already have users start as before.
+- **A message another mail program moves leaves UniHub's inbox within
+  seconds** in Sync mode, instead of after up to about 15 minutes.
+- **The contacts import button counts only the contacts it will import.**
+  Cards marked to skip were counted; with nothing left it now says "Nothing
+  to import".
+- **Recently merged leaves out merges with nothing left to undo**, where the
+  merged contact and every contact merged into it are gone.
+- **Formatted mail carries its plain-text version.** Mail written with
+  formatting went out as HTML only; it now also contains the plain text,
+  also when sent from a draft, and the Sent copy keeps it.
+
+### Pinned interface pictures
+
+- The Settings → Backup reference pictures (Dark and Light) say
+  "Experimental, under construction.", as the maintainer decided on
+  2026-11-15.
+
 ## 0.30.2
 
 Fixes found by testing on a live server. No database upgrade and nothing to

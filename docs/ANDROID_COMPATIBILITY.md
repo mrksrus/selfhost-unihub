@@ -90,15 +90,15 @@ needs a current WebView; phones update theirs through the Play Store.
 
 ## Current window
 
-As recorded in `android/support-window.json` for 0.30.2. The CI table is the
+As recorded in `android/support-window.json` for 0.30.3. The CI table is the
 evidence; this table is what it is checked against.
 
 | App | Android 10 | Android 16 | Android 17 |
 | --- | --- | --- | --- |
+| 0.30.3 | starts and connects | starts and connects | starts and connects |
 | 0.30.2 | starts and connects | starts and connects | starts and connects |
 | 0.30.1 | starts and connects | starts and connects | starts and connects |
 | 0.30.0 | starts and connects | starts and connects | starts and connects |
-| 0.29.0 | starts and connects | starts and connects | starts and connects |
 
 All four apps put contacts on the phone and sync them both ways.
 In all four apps Android's download manager starts only from download
