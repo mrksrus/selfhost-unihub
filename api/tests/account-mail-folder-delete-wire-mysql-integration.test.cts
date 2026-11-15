@@ -267,6 +267,7 @@ test('deleting a mail folder at the provider deletes only the copy shown, of the
     imap.login('owner-mail@example.test').boxes.set('Projects', { uidvalidity: 18 });
     const refused = await remove(owner, 'projects', before, 409);
     assert.equal(refused.code, 'FOLDER_CHANGED');
+    assert.match(refused.error, /Sync the account, then refresh the folders and try again\.$/, 'a refresh alone shows the same generation again');
     assert.deepEqual(imap.sent('owner-mail@example.test'), ['STATUS Projects (UIDVALIDITY)'], 'its generation read; no DELETE');
     assert.ok(imap.login('owner-mail@example.test').boxes.has('Projects'), 'the new Projects is still there');
     assert.equal(await folderExists(projects.id), 1);

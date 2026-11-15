@@ -174,13 +174,13 @@ describe('deleting a mail folder', () => {
 
   // Created again under the name since the list was read (409 FOLDER_CHANGED): nothing was deleted anywhere.
   it('a folder that changed on the server since it was shown is not deleted, and the folders are read again', async () => {
-    vi.mocked(api.delete).mockResolvedValue({ status: 409, error: 'The folder changed on the mail server (alex@example.test) since it was shown. Nothing was deleted there. Refresh the folders and try again.',
+    vi.mocked(api.delete).mockResolvedValue({ status: 409, error: 'The folder changed on the mail server (alex@example.test) since it was shown. Nothing was deleted there. Sync the account, then refresh the folders and try again.',
       code: 'FOLDER_CHANGED', details: { changed_on: ['alex@example.test'] } });
     const client = show();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     await deleteOnServer('Projects');
     await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Folder not deleted',
-      description: 'The folder changed on the mail server (alex@example.test) since it was shown. Nothing was deleted there. Refresh the folders and try again.' })));
+      description: 'The folder changed on the mail server (alex@example.test) since it was shown. Nothing was deleted there. Sync the account, then refresh the folders and try again.' })));
     expect(invalidate).toHaveBeenCalled();
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
   });

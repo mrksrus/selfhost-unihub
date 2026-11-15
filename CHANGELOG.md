@@ -51,6 +51,9 @@ administrator turns them on: read [the upgrade guide](docs/UPGRADING.md#0303-bac
 - **A folder created in UniHub can be deleted at once.** Deleting it before
   the next sync answered that UniHub had not read the folder on the mail
   server yet.
+- **A folder created again under the same name** at the provider now says to
+  sync the account before trying to delete it again; refreshing the folders
+  alone did not help.
 
 ### Pinned interface pictures
 

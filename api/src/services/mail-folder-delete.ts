@@ -208,7 +208,7 @@ async function deleteMailFolder(request: DeleteRequest, options: Options = {}) {
 }
 
 const changed = (addresses: string[]) => conflict('FOLDER_CHANGED',
-  `The folder changed on the mail server${addresses.length ? ` (${addresses.join(', ')})` : ''} since it was shown. Nothing was deleted there. Refresh the folders and try again.`, { changed_on: addresses });
+  `The folder changed on the mail server${addresses.length ? ` (${addresses.join(', ')})` : ''} since it was shown. Nothing was deleted there. Sync the account, then refresh the folders and try again.`, { changed_on: addresses });
 
 async function deleteNow({ userId, slug, server = false, copies }: DeleteRequest, { pool = db, connect = connectToAccount }: Options) {
   const [folders] = await pool.execute<RowDataPacket[]>('SELECT * FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1', [userId, slug]);
