@@ -569,10 +569,12 @@ async function listMerges(userId: string, executor: SqlExecutor = db): Promise<M
     WHERE user_id = ? AND purge_after > UTC_TIMESTAMP() ORDER BY created_at DESC, id LIMIT 500`, [userId]);
   if (!merges.length) return [];
   const ids = merges.map(merge => merge.id);
-  const [items] = await executor.execute<(RowDataPacket & { group_id: string; item_id: string; title: string })[]>(
-    `SELECT group_id, item_id, title FROM bin_items WHERE user_id = ? AND item_type = 'contact' AND group_id IN (${placeholders(ids)}) ORDER BY deleted_at, id`, [userId, ...ids]);
+  const [items] = await executor.execute<(RowDataPacket & { group_id: string; item_id: string; title: string; in_bin: number })[]>(
+    `SELECT group_id, item_id, title, restored_at IS NULL AS in_bin FROM bin_items WHERE user_id = ? AND item_type = 'contact' AND group_id IN (${placeholders(ids)}) ORDER BY deleted_at, id`, [userId, ...ids]);
   const survivors = new Map((await loadContacts(executor, userId, [...new Set(merges.map(merge => merge.survivor_id))])).map(contact => [contact.id, contact.display_name]));
-  return merges.map(merge => ({
+  // Undo has nothing to bring back once the survivor is deleted and no merged contact is left in the bin.
+  return merges.filter(merge => merge.undone_at || survivors.has(merge.survivor_id)
+    || items.some(item => item.group_id === merge.id && Number(item.in_bin))).map(merge => ({
     id: merge.id, survivor_id: merge.survivor_id, survivor_name: survivors.get(merge.survivor_id) ?? '',
     merged: items.filter(item => item.group_id === merge.id).map(item => ({ id: item.item_id, display_name: item.title })),
     created_at: iso(merge.created_at), purge_after: iso(merge.purge_after), undone_at: merge.undone_at ? iso(merge.undone_at) : null,

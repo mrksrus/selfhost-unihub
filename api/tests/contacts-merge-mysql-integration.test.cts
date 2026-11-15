@@ -209,6 +209,15 @@ test('contact duplicates and merges: detection, merge review, Merge all, undo, p
   }
   assert.equal((await call(owner, 'POST', '/api/contacts/merges/auto', { group_ids: listedIds, min: 'medium' }, 400)).code, 'INVALID_MERGE');
 
+  // ── Recently merged keeps a merge while Undo can bring something back ──
+  const listedMerge = async (id: string) => (await call(owner, 'GET', '/api/contacts/merges')).merges.find((merge: FixtureValue) => merge.id === id);
+  const paula = (await call(owner, 'GET', '/api/contacts/merges')).merges.find((merge: FixtureValue) => [p1.id, p2.id].includes(merge.survivor_id));
+  await call(owner, 'DELETE', `/api/contacts/${paula.survivor_id}`);
+  assert.ok(await listedMerge(paula.id), 'the merged copy in the bin can still come back');
+  const [[paulaCopy]] = await pool.execute<RowDataPacket[]>('SELECT id FROM bin_items WHERE user_id = ? AND group_id = ?', [users.owner, paula.id]);
+  await call(owner, 'DELETE', `/api/bin/${paulaCopy.id}`);
+  assert.equal(await listedMerge(paula.id), undefined, 'survivor and merged copy gone: nothing to undo');
+
   // ── Old apps' places: the survivor's stay, a merged value takes a free one ──
   const slots1 = await create({ name: { given: 'Olga', family: 'Slot' }, emails: ['o1@example.net', 'o2@example.net'] });
   const slots2 = await create({ name: { given: 'Olga', family: 'Slot' }, emails: ['o2@example.net', 'O1@Example.net', 'more@example.net', 'last@example.net'] });
