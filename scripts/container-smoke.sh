@@ -196,6 +196,10 @@ docker exec -i -u 10001:10001 -e UNIHUB_API_ROOT=/app/api "$container_name" node
 docker exec -i -u 10001:10001 -e UNIHUB_API_ROOT=/app/api \
   -e UNIHUB_SMOKE_HEIC_BASE64="$(base64 -w0 "$script_dir/../api/tests/fixtures/contacts/photos/rotated-irot.heic")" \
   "$container_name" node --input-type=commonjs-typescript < "$script_dir/../api/tests/helpers/photo-conversion-smoke.cts"
+# Nginx logs to the container log, not to files that grow until a restart.
+container_log="$(docker logs "$container_name" 2>/dev/null)"
+[[ "$container_log" == *'"GET / HTTP/1.1" 200 '* ]] || { echo 'Nginx access log lines did not reach the container log.' >&2; exit 1; }
+docker exec "$container_name" sh -c '! ls /var/log/nginx/*.log 2>/dev/null' || { echo 'Nginx wrote log files under /var/log/nginx.' >&2; exit 1; }
 # Graceful stop: with cap_drop ALL the root supervisor cannot signal the API
 # user, so shutdown goes through the IPC channel. It must finish well inside
 # Docker's grace period (no SIGKILL) and exit 0.
@@ -305,10 +309,11 @@ fs.writeFileSync("/app/uploads/.smoke-write","");fs.rmSync("/app/uploads/.smoke-
 console.log(`As --user 568:568: ${count} processes, none as root or with capabilities; uploads writable`);'
 # A request body too large for Nginx's memory buffer goes to its temporary
 # files, which that user must be able to write (Nginx notes each such file in
-# its error log, at the warn level the image sets).
+# its error log, at the warn level the image sets, which is the container log).
 head -c 300000 /dev/zero | tr '\0' a | curl --silent --output /dev/null \
   -H 'Content-Type: application/json' --data-binary @- http://localhost:8568/api/auth/signin || true
-variant_log="$(docker logs "${container_name}-variant" 2>&1; docker exec "${container_name}-variant" cat /tmp/unihub-nginx/error.log)"
+variant_log="$(docker logs "${container_name}-variant" 2>&1)"
+docker exec "${container_name}-variant" sh -c '! ls /tmp/unihub-nginx/*.log /var/log/nginx/*.log 2>/dev/null' || { echo 'As --user 568:568, Nginx wrote log files instead of the container log.' >&2; exit 1; }
 [[ "$variant_log" == *'buffered to a temporary file /tmp/unihub-nginx/client_body/'* ]] || { echo 'As --user 568:568, Nginx did not keep a large request body in its own folder.' >&2; exit 1; }
 if [[ "$variant_log" == *'Permission denied'* || "$variant_log" == *'[emerg]'* || "$variant_log" == *'[alert]'* ]]; then
   echo 'Started as --user 568:568, the container logged a permission or Nginx startup error.' >&2

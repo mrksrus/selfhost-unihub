@@ -98,11 +98,11 @@ function superviseServices({ spawnChild = spawn, delayMs = 2000, graceMs = 10000
 
 if (require.main === module) {
   const seconds = Number(process.env.UNIHUB_API_START_DELAY_SECONDS ?? 2);
-  // docker/start.sh names the configuration it wrote for another port or user;
-  // until Nginx has read it, errors go to the container log, not to a default
-  // file that user may not write.
+  // docker/start.sh names the configuration it wrote for another port or user.
+  // Until Nginx has read it, errors go to the container log, not to its
+  // compiled-in default file.
   const conf = process.env.UNIHUB_NGINX_CONF;
   superviseServices({ delayMs: Number.isSafeInteger(seconds) && seconds >= 0 && seconds <= 300 ? seconds * 1000 : 2000,
-    apiUser: apiIdentity(), nginxArgs: conf ? ['-c', conf, '-e', 'stderr'] : [] });
+    apiUser: apiIdentity(), nginxArgs: [...(conf ? ['-c', conf] : []), '-e', 'stderr'] });
 }
 export { superviseServices, apiIdentity };

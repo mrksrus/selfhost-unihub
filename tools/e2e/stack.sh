@@ -140,7 +140,8 @@ nginx_config() {
   mkdir -p "$conf/conf.d" "$conf/temp" "$STATE/downloads"
   sed -e "s|/etc/nginx/mime.types|$MIME_TYPES|" \
       -e "s|/etc/nginx/|$conf/|g" \
-      -e "s|/var/log/nginx/|$STATE/log/nginx-|g" \
+      -e "s|^error_log stderr |error_log $STATE/log/nginx-error.log |" \
+      -e "s|access_log /dev/stdout |access_log $STATE/log/nginx-access.log |" \
       -e "s|/var/run/nginx.pid|$STATE/run/nginx-master.pid|" \
       -e "s|^worker_processes auto;|worker_processes 2;\ndaemon off;|" \
       "$REPO/docker/nginx/nginx.conf" > "$conf/nginx.conf"

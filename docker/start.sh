@@ -33,7 +33,7 @@ fi
 # Nginx listens on UNIHUB_HTTP_PORT (80 unless set). Started as root on port 80
 # it uses the image's configuration as it is. Otherwise it runs from a copy
 # with that port; when the container runs as another user (docker run --user,
-# no capabilities needed) the copy also keeps Nginx's pid file, logs and
+# no capabilities needed) the copy also keeps Nginx's pid file and
 # temporary files in its own folder, which that user can write. The API
 # listens on 4000 inside the container; given that port, Nginx gets it and
 # the API moves to 4001.
@@ -53,7 +53,7 @@ if [ "$(id -u)" != 0 ] || [ "$UNIHUB_HTTP_PORT" != 80 ]; then
   sed "s|listen 80;|listen $UNIHUB_HTTP_PORT;|;s|127.0.0.1:4000|127.0.0.1:$api_port|" /etc/nginx/conf.d/default.conf > "$nginx_dir/conf.d/default.conf" || exit 1
   moved="s|/etc/nginx/conf.d/|$nginx_dir/conf.d/|"
   if [ "$(id -u)" != 0 ]; then
-    moved="$moved;s|/var/run/nginx.pid|$nginx_dir/nginx.pid|;s|/var/log/nginx/|$nginx_dir/|g"
+    moved="$moved;s|/var/run/nginx.pid|$nginx_dir/nginx.pid|"
     for kind in client_body proxy fastcgi uwsgi scgi; do
       echo "${kind}_temp_path $nginx_dir/$kind;"
     done > "$nginx_dir/conf.d/temp-paths.conf"
