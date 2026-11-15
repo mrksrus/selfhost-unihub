@@ -70,7 +70,14 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   const kept = startWith('admin');
   assert.equal(kept.status, 0, kept.stderr);
   const [settings] = await db.query<RowDataPacket[]>('SELECT setting_key, setting_value FROM system_settings ORDER BY setting_key');
-  assert.deepEqual(settings.map((row) => [row.setting_key, row.setting_value]), [['signup_mode', 'disabled'], ['signup_secure_default_applied', 'true']]);
+  assert.deepEqual(settings.map((row) => [row.setting_key, row.setting_value]), [['policy_defaults', 'personal-backups-off'], ['signup_mode', 'disabled'], ['signup_secure_default_applied', 'true']],
+    'a new installation starts with the current defaults and no rules notice');
+  // One from before personal backups were off by default shows everyone the rules notice, once.
+  await db.execute("DELETE FROM system_settings WHERE setting_key = 'policy_defaults'");
+  for (let start = 0; start < 2; start++) { await getDb()!.end(); await initDatabase(); }
+  const [[moved]] = await db.query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key = 'policy_revision'");
+  assert.equal(moved?.setting_value, '1', 'the rules revision moved once');
+  await db.execute("DELETE FROM system_settings WHERE setting_key = 'policy_revision'");
   const [progress] = await db.query<RowDataPacket[]>('SELECT source_table, last_id, processed FROM mail_engine_migration_progress ORDER BY source_table');
   assert.deepEqual(progress.map((row) => [row.source_table, row.last_id, Number(row.processed)]), [['emails', '', 0], ['mail_writebacks', '', 0]]);
   let notifications = require('../dist/src/services/notifications') as typeof import('../src/services/notifications');

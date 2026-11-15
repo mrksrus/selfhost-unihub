@@ -23,8 +23,8 @@ export const instanceBackupQueryOptions = queryOptions({
   queryFn: ({ signal }) => fetchInstanceBackup(signal),
 });
 
-/** The schedule an administrator sets: "HH:MM" UTC and how many backups to keep (1 to 1000). */
-export interface InstanceBackupSchedule { time_utc: string; keep: number }
+/** The schedule an administrator sets: whether the daily run is on, "HH:MM" UTC and how many backups to keep (1 to 1000). */
+export interface InstanceBackupSchedule { scheduled: boolean; time_utc: string; keep: number }
 export const INSTANCE_BACKUP_KEEP_MIN = 1;
 export const INSTANCE_BACKUP_KEEP_MAX = 1000;
 

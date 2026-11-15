@@ -458,7 +458,12 @@ async function ensureSchema() {
       throw new Error(`BOOTSTRAP_ADMIN_EMAIL "${BOOTSTRAP_ADMIN_EMAIL}" is not an email address, so nobody could sign in as the first administrator. Nothing was set up. Start again with an address such as admin@example.com; on TrueNAS, where the field cannot be changed, install the app again with one.`);
     }
   }
+  // Whether an earlier release finished setting this database up, read before the upgrade writes.
+  const [[history]] = await db.query<(RowDataPacket & { found: number })[]>(
+    "SELECT COUNT(*) AS found FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'schema_migrations'");
+  const [[steps]] = Number(history.found) ? await db.query<(RowDataPacket & { found: number })[]>('SELECT EXISTS (SELECT 1 FROM schema_migrations) AS found') : [[{ found: 0 }]];
   await runMigrations(getDb()!, MIGRATIONS, BASELINE);
+  await (require('./settings') as typeof import('./settings')).announceChangedDefaults({ existing: Number(steps.found) > 0 });
 }
 
 // CalDAV accounts of a mail account: linked; marked and not linked again yet

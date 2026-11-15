@@ -8,6 +8,7 @@ const os = (require('node:os') as typeof import('node:os'));
 const path = (require('node:path') as typeof import('node:path'));
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
 const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts');
+const { allowPersonalBackups } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 
 // Download tickets (F9, services/file-tickets.ts) through the real request
 // handler and database: the page asks with its session, the Android app
@@ -29,6 +30,7 @@ test('file tickets: one use without a cookie, owner-bound, refused when expired,
     const runtime = createBackupRuntime(directory, 'file-tickets-synthetic-key', pool);
     await runtime('services/database').ensureSchema();
     await runtime('services/data-inventory').verifyDatabaseInventory(pool);
+    await allowPersonalBackups(pool);
     const password = 'file-tickets-fixture-password';
     const passwordHash = await require('bcryptjs').hash(password, 10);
     const ids: Record<string, string> = {};

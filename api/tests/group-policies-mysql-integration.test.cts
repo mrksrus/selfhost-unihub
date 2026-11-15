@@ -4,7 +4,7 @@ import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const crypto = require('node:crypto') as typeof import('node:crypto');
-const { withTestDatabase } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
+const { withTestDatabase, allowPersonalBackups } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 const { seedPeople } = require('./helpers/people.cts') as import('./helpers/people.cts').PeopleHelpers;
 
 const skip = !process.env.MYSQL_TEST_HOST;
@@ -36,7 +36,7 @@ test('group policies: stricter only, the strictest group wins, floors, the notic
     for (const client of Object.values(clients)) await call(client, 'POST', '/api/policies/acknowledge', { revision: (await call(client, 'GET', '/api/policies/effective')).revision });
   };
   const noticeDue = async (client: Client) => { const effective = await call(client, 'GET', '/api/policies/effective'); return effective.acknowledged_revision < effective.revision; };
-  const clean = async () => { await pool.query('DELETE FROM setting_policies'); await acknowledgeAll(); };
+  const clean = async () => { await pool.query('DELETE FROM setting_policies'); await allowPersonalBackups(pool); await acknowledgeAll(); };
 
   await t.test('a group makes a key stricter for its members only; a looser value is refused and has no effect', async () => {
     await clean();

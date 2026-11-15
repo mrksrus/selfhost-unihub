@@ -121,16 +121,17 @@ export async function addPerson(label, { groups = [] } = {}) {
 }
 
 /**
- * Leaves the organisation as a new installation has it: every policy at its
- * default, no groups (their rules go with them), none of the test's own
+ * Leaves the organisation as the stack's seed left it: every policy at its
+ * default except the personal backups the seed turns on, no groups (their rules go with them), none of the test's own
  * people, and the notice confirmed. Run before and after each file.
  * shortcut: bin_min_retention is left as it is; reset it here once a file changes it.
  */
 export async function resetPeople() {
   const admin = await rulesSession();
   const { policies } = await ok(admin('GET', '/api/admin/policies'), 'policies');
-  const changed = Object.fromEntries(Object.entries(policies)
-    .filter(([, policy]) => JSON.stringify(policy.value) !== JSON.stringify(policy.default)).map(([key, policy]) => [key, policy.default]));
+  const seeded = { 'backup.create': 'allowed', 'backup.restore': 'allowed' }; // tools/e2e/support/seed.mjs
+  const changed = Object.fromEntries(Object.entries(policies).map(([key, policy]) => [key, policy.value, key in seeded ? seeded[key] : policy.default])
+    .filter(([, value, wanted]) => JSON.stringify(value) !== JSON.stringify(wanted)).map(([key, , wanted]) => [key, wanted]));
   if (Object.keys(changed).length) await ok(admin('PUT', '/api/admin/policies', { values: changed, current_password: PASSWORD }), 'policies to their defaults');
   const { groups } = await ok(admin('GET', '/api/admin/groups'), 'groups');
   for (const { id } of groups) await ok(admin('DELETE', `/api/admin/groups/${id}`, { current_password: PASSWORD }), 'remove group');

@@ -2,6 +2,7 @@ import type {} from 'node:module';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
+const { allowPersonalBackups } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const path = (require('node:path') as typeof import('node:path'));
 const os = (require('node:os') as typeof import('node:os'));
@@ -21,6 +22,7 @@ test('frozen actual 0.10.3 archive restores through the current reader with acco
     owned = true;
     const runtime = createBackupRuntime(directory, 'v2-destination-test-key', pool);
     await runtime('services/database').ensureSchema();
+    await allowPersonalBackups(pool);
     const user = crypto.randomUUID();
     await pool.execute<ResultSetHeader>("INSERT INTO users (id,email,password_hash,full_name) VALUES (?,?,?,'V2 destination')", [user,'v2-destination@example.test','synthetic-password-hash']);
     const fixture = path.join(__dirname, 'fixtures/backups/v2-0.10.3');

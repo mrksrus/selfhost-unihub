@@ -191,6 +191,8 @@ try {
   // Exercise the browser's backup workflow through nginx, auth/CSRF, the raw
   // upload parser and actual job workers. The second synthetic user has no
   // server-side key for this archive and must supply its recovery password.
+  // Personal backups are off by default; the administrator turns them on for everyone.
+  await primary.request('PUT', '/api/admin/policies', { values: { 'backup.create': 'allowed', 'backup.restore': 'allowed' }, current_password: password });
   const contactEmail = `ci-backup-${crypto.randomUUID()}@example.test`;
   const contact = await primary.request<{ contact: SmokeItem }>('POST', '/api/contacts', { first_name: 'CI Grüße', last_name: 'Backup', email: contactEmail, notes: 'Preserve this contact\nAnd its second line' });
   contactId = contact.data.contact.id;

@@ -239,12 +239,12 @@
       "bytes": 105699
     },
     "settings-backup-wide-dark.png": {
-      "sha256": "b3aaca946560471ad88098ceb2842caba4630d564a72c9458437cbfdb0506f90",
-      "bytes": 153612
+      "sha256": "fc8ca240c13b7ef4b00041ba1d4351020bcf1a2ac04c6d41e21729f363368999",
+      "bytes": 154895
     },
     "settings-backup-wide-light.png": {
-      "sha256": "f77768ef03d97b233744729127867373458b36b8454e01006ab978155e99e779",
-      "bytes": 159243
+      "sha256": "92362f007d92f53df1a5d2788f6a6dc9ae03bb9bb5956ab5d43665fa7292f516",
+      "bytes": 160642
     },
     "settings-pages-wide-dark.png": {
       "sha256": "037a9e0fa8fc03f7875540db3e7cda27f2ce7f7108c9412e6024219096acdbac",
@@ -921,6 +921,46 @@
         "admin-policies-app-lock-wide-light.png",
         "admin-policies-wide-dark.png",
         "admin-policies-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-15T22:24:15.544Z",
+      "reason": "Settings > Backup says Experimental, under construction (maintainer decision 2026-11-15, CHANGELOG 0.30.3)",
+      "source": {
+        "commit": "e861ecccf46f654b0e07f5afb2358becff0a1b60",
+        "branch": "fix/0.30.3-maintainer-findings",
+        "dirty": false,
+        "digest": "59594074e240434c2179992d84c03aa4f0d805681d8308eb5dc6a89793415c39"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [],
+      "changed": [
+        "settings-backup-wide-dark.png",
+        "settings-backup-wide-light.png"
       ],
       "removed": []
     }

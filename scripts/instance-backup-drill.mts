@@ -91,6 +91,9 @@ try {
   installations.push(source);
   const owner = new Session(source.url);
   const ownerId = (await owner.signIn(admin.email, admin.password)).user.id;
+  // The daily backup is off by default; the drill turns it on, as an administrator does on the admin page.
+  const { keep } = await owner.json<{ keep: number }>('GET', '/api/admin/instance-backup');
+  await owner.json('PUT', '/api/admin/instance-backup/settings', { time_utc: schedule.time, keep, scheduled: true, current_password: admin.password });
   const seeded = await seedSource(source, owner, ownerId, secrets, providers);
   // The rest of the installation: sign-ups open (a system setting), a second
   // person with data of every section and mail accounts, a second

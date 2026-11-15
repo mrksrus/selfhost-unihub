@@ -22,15 +22,15 @@ export const POLICY_KEYS = [
   'notifications.detail', 'contacts.phone_sync', 'offline.copies',
 ] as const satisfies readonly PolicyKey[];
 
-/** Every key's default: allowed, from the default, no reason. Shown until the server's answer arrives. */
+/** Every key's default (allowed, except personal backups), from the default. Shown until the server's answer arrives. */
 export const DEFAULT_POLICY_VALUES: PolicyValues = {
   'mail.mode.download': 'allowed',
   'mail.mode.sync': 'allowed',
   'mail.mode.new_accounts': 'user_choice',
   'mail.provider_delete': 'user_choice',
   'backup.download_mail': 'user_choice',
-  'backup.create': 'allowed',
-  'backup.restore': 'allowed',
+  'backup.create': 'forbidden',
+  'backup.restore': 'forbidden',
   'backup.delete': 'allowed',
   'backup.server_retention_days': null,
   'accounts.add': 'allowed',

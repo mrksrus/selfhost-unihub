@@ -2,6 +2,7 @@ import type { FixtureValue } from './helpers/test-types.cts';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
+const { allowPersonalBackups } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
 const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const os = (require('node:os') as typeof import('node:os'));
@@ -63,6 +64,7 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   const source = createBackupRuntime(path.join(directory, 'source'), 'source-accounts-key', pool);
   const destination = createBackupRuntime(path.join(directory, 'destination'), 'different-destination-accounts-key', pool);
   await source('services/database').ensureSchema();
+  await allowPersonalBackups(pool);
   const sourceCrypto = source('security/encryption');
   const destinationCrypto = destination('security/encryption');
   async function insert(table: string, row: FixtureValue) {

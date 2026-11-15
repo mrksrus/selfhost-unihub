@@ -21,13 +21,15 @@ function stored(rows: { key: string; value: string; locked?: boolean }[] = []) {
   return { executor, queries };
 }
 
-test('with no policy set, every key resolves to its default and allows its action', async () => {
+test('with no policy set, every key resolves to its default and allows its action, but personal backups', async () => {
   const { executor, queries } = stored();
+  const offByDefault = ['backup.create', 'backup.restore'];
   for (const key of keys) {
     const resolved = await resolvePolicy('user-a', key, executor);
-    assert.deepEqual(resolved, { value: POLICIES[key].default, source: 'default', allowed: true, reason: null }, key);
+    const off = offByDefault.includes(key);
+    assert.deepEqual(resolved, { value: POLICIES[key].default, source: 'default', allowed: !off, reason: off ? POLICIES[key].reasons.forbidden : null }, key);
   }
-  await assertAllowed('user-a', keys, {}, executor);
+  await assertAllowed('user-a', keys.filter(key => !offByDefault.includes(key)), {}, executor);
   assert.ok(queries.every(sql => /FROM setting_policies WHERE \(target_kind = 'installation' AND target_id = ''\)/.test(sql)), queries.join(' | '));
 });
 
@@ -35,7 +37,8 @@ test('every value a policy can take other than the default has a plain reason to
   for (const key of keys) {
     const entry = POLICIES[key];
     const values = entry.kind.type === 'enum' ? entry.kind.values : entry.kind.type === 'integer' ? entry.kind.values ?? [] : [];
-    for (const value of values.filter(value => value !== entry.default)) {
+    // Allowing what is off by default limits nobody, so it needs none.
+    for (const value of values.filter(value => value !== entry.default && !(value === 'allowed' && entry.default === 'forbidden'))) {
       assert.ok(entry.reasons[String(value)]?.trim(), `${key} = ${value} has no reason`);
     }
     for (const value of entry.refuses) assert.ok((values as readonly unknown[]).includes(value), `${key} refuses a value it cannot take`);

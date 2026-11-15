@@ -332,7 +332,7 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     assert.equal((await put({ time_utc: '11:00', keep: 0, current_password: password }, 400)).code, 'INSTANCE_BACKUP_KEEP_INVALID');
     assert.equal((await alex.request('PUT', '/api/admin/instance-backup/settings', { time_utc: '11:00', keep: 1, current_password: password })).status, 403);
     const unchanged = (await admin.request('GET', '/api/admin/instance-backup')).body as FixtureValue;
-    assert.deepEqual([unchanged.time_utc, unchanged.keep, unchanged.schedule_source, unchanged.schedule_defaults], ['03:30', 2, 'environment', { time_utc: '03:30', keep: 2 }]);
+    assert.deepEqual([unchanged.time_utc, unchanged.keep, unchanged.scheduled, unchanged.schedule_source, unchanged.schedule_defaults], ['03:30', 2, false, 'environment', { time_utc: '03:30', keep: 2 }]);
 
     // Days far from the real runs. At 02:00 on the 15th, the 03:30 run of the
     // day is not due yet, and the 14th had its scheduled run (failed).
@@ -342,9 +342,14 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     await seed(seeded[0], '2030-01-14 04:00:00');
     assert.equal(await backup.runDueInstanceBackup(new Date('2030-01-15T02:00:00Z')), null);
     const saved = await put({ time_utc: '01:00', keep: 1, current_password: password }, 200);
-    assert.deepEqual([saved.time_utc, saved.keep, saved.schedule_source], ['01:00', 1, 'admin']);
+    assert.deepEqual([saved.time_utc, saved.keep, saved.scheduled, saved.schedule_source, saved.next_run_at], ['01:00', 1, false, 'admin', null]);
     const [[entry]] = await pool.query<RowDataPacket[]>("SELECT actor_id, details FROM audit_log WHERE action = 'admin.instance_backup_settings_changed'");
-    assert.deepEqual([entry.actor_id, typeof entry.details === 'string' ? JSON.parse(entry.details) : entry.details], [users.admin, { from_time_utc: '03:30', time_utc: '01:00', from_keep: 2, keep: 1 }]);
+    assert.deepEqual([entry.actor_id, typeof entry.details === 'string' ? JSON.parse(entry.details) : entry.details],
+      [users.admin, { from_time_utc: '03:30', time_utc: '01:00', from_keep: 2, keep: 1, from_scheduled: false, scheduled: false }]);
+    // The daily run is off until an administrator turns it on, even with the destination and key set.
+    assert.equal(await backup.runDueInstanceBackup(new Date('2030-01-15T02:00:00Z')), null, 'nothing runs by itself');
+    assert.equal((await put({ time_utc: '01:00', keep: 1, scheduled: 'yes', current_password: password }, 400)).code, 'INSTANCE_BACKUP_SCHEDULED_INVALID');
+    assert.equal((await put({ time_utc: '01:00', keep: 1, scheduled: true, current_password: password }, 200)).scheduled, true);
     // The same process, no new configuration: the 15th's 01:00 run is due now, and its success keeps one backup.
     const run = await backup.runDueInstanceBackup(new Date('2030-01-15T02:00:00Z'));
     assert.ok(run, 'the new time is due');
@@ -357,7 +362,7 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     await put({ time_utc: '11:00', keep: 1, current_password: password }, 200);
     assert.equal(await backup.runDueInstanceBackup(new Date('2030-01-15T12:00:00Z')), null, 'no second scheduled run on the 15th');
     assert.equal((await backup.getInstanceBackupStatus(new Date('2030-01-15T10:00:00Z'))).next_run_at, '2030-01-16T11:00:00.000Z');
-    await pool.execute("DELETE FROM system_settings WHERE setting_key IN ('instance_backup_time_utc', 'instance_backup_keep')");
+    await pool.execute("DELETE FROM system_settings WHERE setting_key IN ('instance_backup_time_utc', 'instance_backup_keep', 'instance_backup_scheduled')");
     await pool.execute(`DELETE FROM instance_backups WHERE id IN (?, ?)`, seeded);
     assert.equal(((await admin.request('GET', '/api/admin/instance-backup')).body as FixtureValue).keep, 2, 'the environment\'s again');
   });

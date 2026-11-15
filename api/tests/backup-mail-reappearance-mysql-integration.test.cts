@@ -2,6 +2,7 @@ import type { FixtureValue } from './helpers/test-types.cts';
 import type { RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
+const { allowPersonalBackups } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
 const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const os = (require('node:os') as typeof import('node:os'));
@@ -53,6 +54,7 @@ test('a restored Sync copy is linked when the provider shows its exact address a
   owned = true;
   runtime = createBackupRuntime(directory, 'reappearance-synthetic-key', pool);
   await runtime('services/database').ensureSchema();
+  await allowPersonalBackups(pool);
   const insert = (table: string, row: FixtureValue) => pool.execute(`INSERT INTO ${table} (${Object.keys(row).map(field => '`' + field + '`').join(', ')})
     VALUES (${Object.keys(row).map(() => '?').join(', ')})`, Object.values(row));
 

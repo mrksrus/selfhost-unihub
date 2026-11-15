@@ -2,6 +2,7 @@ import type { FixtureValue } from './helpers/test-types.cts';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
+const { allowPersonalBackups } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
 const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const os = (require('node:os') as typeof import('node:os'));
@@ -52,6 +53,7 @@ test('frozen 0.27.1 archive imports what the data classes keep, with a note of w
 
   const runtime = createBackupRuntime(directory, 'v6-destination-synthetic-key', pool);
   await runtime('services/database').ensureSchema();
+  await allowPersonalBackups(pool);
   const userId = crypto.randomUUID();
   await pool.execute<ResultSetHeader>("INSERT INTO users (id, email, password_hash, full_name) VALUES (?, 'v6-reader@example.test', 'synthetic-hash', 'Reader')", [userId]);
   // The folders every account gets at sign-up.

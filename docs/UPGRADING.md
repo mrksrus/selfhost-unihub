@@ -5,6 +5,17 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.30.3 Backups off by default
+
+No database upgrade. **Personal backups are off** (Settings → Backup:
+creating and restoring), as they are experimental; completed backups stay
+downloadable, and everyone sees the rules notice once. An administrator who
+wants them turns them back on in Settings → Server → Policies.
+
+**The daily instance backup is off**, also where its destination and key are
+set: turn it on in Settings → Server settings → Instance backup → Change
+schedule. "Back up now" and the restore command work as before.
+
 ## 0.30.0 Organisation
 
 **Make a database backup first.** Two automatic database upgrades run at the

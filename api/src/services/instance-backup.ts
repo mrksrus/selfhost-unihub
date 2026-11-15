@@ -803,21 +803,25 @@ function nextRun(now: Date, timeUtc: string, lastScheduled: Date | null = null) 
 // The schedule's tick reads them every minute and a run reads the count when
 // it succeeds, so a change needs no restart. A lower count removes the
 // oldest backups at the next verified success, as the count always does.
+// The daily run itself is off until an administrator turns it on here: the
+// instance backup is experimental. Back up now works either way.
 
 const TIME_SETTING = 'instance_backup_time_utc';
 const KEEP_SETTING = 'instance_backup_keep';
+const SCHEDULED_SETTING = 'instance_backup_scheduled';
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-interface ScheduleSettings { timeUtc: string; keep: number; source: 'admin' | 'environment' }
+interface ScheduleSettings { timeUtc: string; keep: number; scheduled: boolean; source: 'admin' | 'environment' }
 
 /** The schedule in force: the administrator's values, else the environment's (or the defaults). */
 async function scheduleSettings(executor: SqlExecutor = db): Promise<ScheduleSettings> {
-  const [rows] = await executor.execute<RowDataPacket[]>('SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN (?, ?)', [TIME_SETTING, KEEP_SETTING]);
+  const [rows] = await executor.execute<RowDataPacket[]>('SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN (?, ?, ?)', [TIME_SETTING, KEEP_SETTING, SCHEDULED_SETTING]);
   const stored = new Map(rows.map(row => [String(row.setting_key), String(row.setting_value)]));
   const time = stored.get(TIME_SETTING), keepText = stored.get(KEEP_SETTING), keep = Number(keepText);
   const timeOk = time !== undefined && TIME_PATTERN.test(time);
   const keepOk = keepText !== undefined && /^\d+$/.test(keepText) && keep >= 1 && keep <= INSTANCE_BACKUP_MAX_KEEP;
-  return { timeUtc: timeOk ? time : config.timeUtc, keep: keepOk ? keep : config.keep, source: timeOk || keepOk ? 'admin' : 'environment' };
+  return { timeUtc: timeOk ? time : config.timeUtc, keep: keepOk ? keep : config.keep, scheduled: stored.get(SCHEDULED_SETTING) === 'on',
+    source: timeOk || keepOk ? 'admin' : 'environment' };
 }
 
 /**
@@ -826,23 +830,24 @@ async function scheduleSettings(executor: SqlExecutor = db): Promise<ScheduleSet
  * activity-log entry. Deletes nothing by itself.
  */
 async function updateInstanceBackupSchedule(adminId: string, input: unknown, { req = null }: { req?: AuthRequest | null } = {}): Promise<InstanceBackupStatus> {
-  const body = (input ?? {}) as { time_utc?: unknown; keep?: unknown };
+  const body = (input ?? {}) as { time_utc?: unknown; keep?: unknown; scheduled?: unknown };
   if (typeof body.time_utc !== 'string' || !TIME_PATTERN.test(body.time_utc)) throw badRequest('INSTANCE_BACKUP_TIME_INVALID', 'The time must be HH:MM, 24-hour, in UTC.');
   if (!Number.isSafeInteger(body.keep) || (body.keep as number) < 1 || (body.keep as number) > INSTANCE_BACKUP_MAX_KEEP) {
     throw badRequest('INSTANCE_BACKUP_KEEP_INVALID', `Keep a whole number of backups from 1 to ${INSTANCE_BACKUP_MAX_KEEP}.`);
   }
-  const next = { timeUtc: body.time_utc, keep: body.keep as number };
+  if (body.scheduled !== undefined && typeof body.scheduled !== 'boolean') throw badRequest('INSTANCE_BACKUP_SCHEDULED_INVALID', 'Turn the daily backup on or off with true or false.');
   const { recordAudit } = require('./audit') as typeof import('./audit');
   await inTransaction('START TRANSACTION', async connection => {
     // Locked in a fixed order, so two administrators saving at once take turns.
-    for (const key of [KEEP_SETTING, TIME_SETTING]) await connection.execute('SELECT setting_value FROM system_settings WHERE setting_key = ? FOR UPDATE', [key]);
+    for (const key of [KEEP_SETTING, SCHEDULED_SETTING, TIME_SETTING]) await connection.execute('SELECT setting_value FROM system_settings WHERE setting_key = ? FOR UPDATE', [key]);
     // Then the administrator still as their route proved them (caller-proof.ts).
     await (require('./caller-proof') as typeof import('./caller-proof')).assertCaller(connection);
     const before = await scheduleSettings(connection);
-    await connection.execute(`INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?), (?, ?)
-      ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`, [TIME_SETTING, next.timeUtc, KEEP_SETTING, String(next.keep)]);
+    const next = { timeUtc: body.time_utc as string, keep: body.keep as number, scheduled: typeof body.scheduled === 'boolean' ? body.scheduled : before.scheduled };
+    await connection.execute(`INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?), (?, ?), (?, ?)
+      ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`, [TIME_SETTING, next.timeUtc, KEEP_SETTING, String(next.keep), SCHEDULED_SETTING, next.scheduled ? 'on' : 'off']);
     await recordAudit({ action: 'admin.instance_backup_settings_changed', actorId: adminId, req,
-      details: { from_time_utc: before.timeUtc, time_utc: next.timeUtc, from_keep: before.keep, keep: next.keep } }, connection);
+      details: { from_time_utc: before.timeUtc, time_utc: next.timeUtc, from_keep: before.keep, keep: next.keep, from_scheduled: before.scheduled, scheduled: next.scheduled } }, connection);
   });
   return getInstanceBackupStatus();
 }
@@ -850,7 +855,9 @@ async function updateInstanceBackupSchedule(adminId: string, input: unknown, { r
 /** The schedule's tick (background-work.ts): one scheduled run per day, also when the server was down at the time. */
 async function runDueInstanceBackup(now = new Date()) {
   if (!enabled() || current || !isWorkerOwner()) return null;
-  const day = utcDay(latestSlot(now, (await scheduleSettings()).timeUtc));
+  const schedule = await scheduleSettings();
+  if (!schedule.scheduled) return null;
+  const day = utcDay(latestSlot(now, schedule.timeUtc));
   const [[done]] = await db.execute<RowDataPacket[]>("SELECT 1 AS done FROM instance_backups WHERE trigger_kind = 'schedule' AND started_at >= ? LIMIT 1",
     [day.toISOString().slice(0, 19).replace('T', ' ')]);
   if (done) return null;
@@ -887,9 +894,10 @@ async function getInstanceBackupStatus(now = new Date()): Promise<InstanceBackup
     key_fingerprint: on ? keyFingerprint(config.key!) : null,
     time_utc: schedule.timeUtc,
     keep: schedule.keep,
+    scheduled: schedule.scheduled,
     schedule_source: schedule.source,
     schedule_defaults: { time_utc: config.timeUtc, keep: config.keep },
-    next_run_at: on ? nextRun(now, schedule.timeUtc, lastScheduled).toISOString() : null,
+    next_run_at: on && schedule.scheduled ? nextRun(now, schedule.timeUtc, lastScheduled).toISOString() : null,
     last_run: rows[0] ? serializeRun(rows[0]) : null,
     last_success: success ? serializeRun(success) : null,
     kept: { count: Number(kept.count), bytes: Number(kept.bytes) },

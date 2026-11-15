@@ -60,8 +60,10 @@ defines the file, `instance-restore.ts` restores it.
 only (`api/src/config.ts`). The admin page (Settings > Server settings >
 Instance backup) shows them and can start a run; it cannot change them, and no
 backup file is ever offered for download, so a stolen admin session can
-neither redirect the backups nor read them. The schedule, the time of the
-daily run and how many backups are kept, is an installation setting the
+neither redirect the backups nor read them. The schedule, whether the daily
+run is on (it is off until an administrator turns it on, as the instance
+backup is experimental; "Back up now" works either way), its time and how many
+backups are kept, is an installation setting the
 administrator changes on that page with their password
 (`PUT /api/admin/instance-backup/settings`, activity-log entry
 `admin.instance_backup_settings_changed`); until then the variables below
@@ -78,7 +80,7 @@ Without a destination and a key the server runs normally and the admin page
 says what is missing. The defaults are `INSTANCE_BACKUP_DEFAULT_TIME_UTC` and
 `INSTANCE_BACKUP_DEFAULT_KEEP` in `config.ts`.
 
-**A run.** The worker owner runs one at a time: daily, once the set time has
+**A run.** The worker owner runs one at a time: daily while the daily run is on, once the set time has
 passed without a scheduled run (so a server that was down at that time catches
 up when it starts), and on "Back up now" (`POST /api/admin/instance-backup/run`,
 permission `server.settings`, activity-log entry `admin.instance_backup_started`).

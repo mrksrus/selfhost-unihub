@@ -346,7 +346,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
         Mail and calendars a provider holds are not in it: they download again after the accounts reconnect.
       </p>
       <p role="note" aria-label="Backup and restore are experimental" className="max-w-prose text-sm text-muted-foreground">
-        <span className="font-medium text-warning">Experimental. </span>Do not rely on a backup as the only copy of important data; a server recovery also needs the database, uploads and configuration.
+        <span className="font-medium text-warning">Experimental, under construction. </span>Do not rely on a backup as the only copy of important data; a server recovery also needs the database, uploads and configuration.
       </p>
       {capabilitiesQuery.error && <ErrorState title="Could not check backup availability" error={capabilitiesQuery.error} onRetry={() => void capabilitiesQuery.refetch()} retrying={capabilitiesQuery.isFetching} />}
       {capabilitiesQuery.isLoading && <p role="status" className="text-sm text-muted-foreground">Checking backup availability…</p>}

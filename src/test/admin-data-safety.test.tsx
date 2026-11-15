@@ -30,7 +30,7 @@ const adminPolicies = (): AdminPoliciesResponse => ({
   policies: Object.fromEntries(POLICY_KEYS.map(key => [key, { value: DEFAULT_POLICY_VALUES[key], source: 'default', default: DEFAULT_POLICY_VALUES[key], values: VALUES[key] ?? ['allowed', 'forbidden'], effect: key === 'mail.mode.sync' ? 'Existing Sync accounts keep working.' : null }])) as AdminPoliciesResponse['policies'],
 });
 const instanceStatus = (fields: Partial<InstanceBackupStatus> = {}): InstanceBackupStatus => ({
-  enabled: false, missing: ['destination', 'key'], destination: null, key_fingerprint: null, time_utc: '03:30', keep: 14, schedule_source: 'environment', schedule_defaults: { time_utc: '03:30', keep: 14 }, next_run_at: null, last_run: null, last_success: null,
+  enabled: false, missing: ['destination', 'key'], destination: null, key_fingerprint: null, time_utc: '03:30', keep: 14, scheduled: false, schedule_source: 'environment', schedule_defaults: { time_utc: '03:30', keep: 14 }, next_run_at: null, last_run: null, last_success: null,
   kept: { count: 0, bytes: 0 }, running: false, runs: [], restore_command: 'node /app/api/dist/scripts/instance-restore.js --file <backup.uhib> --key-file <key>', ...fields,
 });
 const USERS = [person({ id: 'user-admin', email: 'admin@example.com', full_name: 'Avery Admin', role: 'admin' }),
@@ -103,7 +103,7 @@ describe('Server settings → Policies', () => {
 
   it('stages changes and saves only the changed keys with the administrator\'s password', { timeout: 20_000 }, async () => {
     mountSignedIn(<AdminPolicies />, { user: ADMIN });
-    const create = await screen.findByRole('combobox', { name: 'Creating backups' });
+    const create = await screen.findByRole('combobox', { name: 'Deleting backups' });
     expect(create).toHaveTextContent('Allowed (default)');
     expect(screen.queryByRole('region', { name: 'Unsaved changes' })).not.toBeInTheDocument();
     fireEvent.click(create);
@@ -120,7 +120,7 @@ describe('Server settings → Policies', () => {
     expect(api.put).not.toHaveBeenCalled();
     fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
-    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/policies', { values: { 'backup.create': 'forbidden', 'mail.mode.sync': 'forbidden' }, current_password: 'admin-pw' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/policies', { values: { 'backup.delete': 'forbidden', 'mail.mode.sync': 'forbidden' }, current_password: 'admin-pw' }));
     await waitFor(() => expect(screen.queryByRole('region', { name: 'Unsaved changes' })).not.toBeInTheDocument());
     expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Policies saved' }));
   });
@@ -131,7 +131,7 @@ describe('Server settings → Policies', () => {
     const retrySession = vi.fn(async () => {});
     mountSignedIn(<Routes><Route path="/settings/admin/policies" element={<AdminPolicies />} /><Route path="/settings" element={<p>Settings home</p>} /></Routes>,
       { user: ADMIN, path: '/settings/admin/policies', auth: { retrySession } });
-    const create = await screen.findByRole('combobox', { name: 'Creating backups' });
+    const create = await screen.findByRole('combobox', { name: 'Deleting backups' });
     fireEvent.click(create);
     fireEvent.click(await screen.findByRole('option', { name: 'Not allowed' }));
     const bar = await screen.findByRole('region', { name: 'Unsaved changes' });
@@ -157,7 +157,7 @@ describe('Server settings → Policies', () => {
       });
     });
     mountSignedIn(<AdminPolicies />, { user: ADMIN, client });
-    fireEvent.click(await screen.findByRole('combobox', { name: 'Creating backups' }));
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Deleting backups' }));
     fireEvent.click(await screen.findByRole('option', { name: 'Not allowed' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save changes…' }));
     const dialog = await screen.findByRole('dialog');
@@ -230,7 +230,7 @@ describe('Server settings → Instance backup', () => {
       throw new Error(`unexpected GET ${path}`);
     });
     vi.mocked(api.put).mockImplementation(async (path: string, body: unknown) => {
-      if (path === '/admin/instance-backup/settings') { const { time_utc, keep } = body as { time_utc: string; keep: number }; return { data: instanceStatus({ enabled: true, missing: [], destination: '/backups', key_fingerprint: 'k1', time_utc, keep, schedule_source: 'admin' }) }; }
+      if (path === '/admin/instance-backup/settings') { const { time_utc, keep, scheduled } = body as { time_utc: string; keep: number; scheduled: boolean }; return { data: instanceStatus({ enabled: true, missing: [], destination: '/backups', key_fingerprint: 'k1', time_utc, keep, scheduled, schedule_source: 'admin' }) }; }
       throw new Error(`unexpected PUT ${path}`);
     });
     mountSignedIn(<AdminInstanceBackup />, { user: ADMIN });
@@ -239,17 +239,21 @@ describe('Server settings → Instance backup', () => {
     expect(screen.getAllByText(/3:30.*(UTC|GMT|Universal).*for you/).length).toBeGreaterThan(0);
     // Destination and key cannot be edited: they are text, not inputs.
     expect(screen.queryByRole('textbox', { name: /Destination|Key/ })).not.toBeInTheDocument();
+    // The daily run is off by default (experimental) until the administrator turns it on.
+    expect(screen.getByText('Off: no backup runs by itself.')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Change schedule…' }));
     const dialog = await screen.findByRole('dialog', { name: 'Change the schedule?' });
+    fireEvent.click(within(dialog).getByRole('switch', { name: 'Daily backup' }));
     fireEvent.change(within(dialog).getByLabelText('Time (UTC)'), { target: { value: '22:15' } });
     fireEvent.change(within(dialog).getByLabelText('Backups kept'), { target: { value: '7' } });
     const save = within(dialog).getByRole('button', { name: 'Save schedule' });
     expect(save).toBeDisabled();
     fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
     fireEvent.click(save);
-    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/instance-backup/settings', { time_utc: '22:15', keep: 7, current_password: 'admin-pw' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/instance-backup/settings', { scheduled: true, time_utc: '22:15', keep: 7, current_password: 'admin-pw' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(screen.getByText('22:15 UTC')).toBeInTheDocument();
+    expect(screen.getByText('On.')).toBeInTheDocument();
     expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Schedule saved' }));
   });
 
@@ -279,7 +283,7 @@ describe('Server settings → Instance backup', () => {
     expect(within(dialog).getByLabelText('Backups kept')).toHaveValue(7);
     fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'admin-pw' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save schedule' }));
-    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/instance-backup/settings', { time_utc: '22:15', keep: 7, current_password: 'admin-pw' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/instance-backup/settings', { scheduled: false, time_utc: '22:15', keep: 7, current_password: 'admin-pw' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     // Opened again, the fields start from what the server holds now.
     fireEvent.click(screen.getByRole('button', { name: 'Change schedule…' }));

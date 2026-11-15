@@ -2,6 +2,7 @@ import type { FixtureValue } from './helpers/test-types.cts';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
+const { allowPersonalBackups } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
 const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const os = (require('node:os') as typeof import('node:os'));
@@ -43,6 +44,7 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
   owned = true;
   const runtime = createBackupRuntime(directory, 'backup-classes-synthetic-key', pool);
   await runtime('services/database').ensureSchema();
+  await allowPersonalBackups(pool);
   const backup = runtime('services/backup');
   const insert = async (table: string, row: FixtureValue) => {
     const columns = Object.keys(row);

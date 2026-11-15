@@ -7,7 +7,8 @@ const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
 // The disposable MariaDB of the *-mysql-integration tests (scripts/local-db.sh
 // test, or CI). Refuses a database that is not named *_test or is not empty,
 // makes its pool the app's database, migrates it like a fresh install
-// (BOOTSTRAP_ADMIN_* create the first admin), and afterwards drops every
+// (BOOTSTRAP_ADMIN_* create the first admin) where an administrator turned
+// personal backups on (they are off by default), and afterwards drops every
 // table and puts the previous database back.
 async function withTestDatabase(t: TestContext, { migrate = true } = {}): Promise<Pool> {
   assert.match(process.env.MYSQL_TEST_DATABASE || '', /_test$/, 'Only an isolated disposable schema is allowed');
@@ -40,8 +41,19 @@ async function withTestDatabase(t: TestContext, { migrate = true } = {}): Promis
   assert.equal((await pool.query<RowDataPacket[]>('SHOW TABLES'))[0].length, 0, 'Refuse to touch a populated schema');
   owned = true;
   state.setDb(pool);
-  if (migrate) await (require('../../dist/src/services/database') as typeof import('../../src/services/database')).ensureSchema();
+  if (migrate) {
+    await (require('../../dist/src/services/database') as typeof import('../../src/services/database')).ensureSchema();
+    await allowPersonalBackups(pool);
+  }
   return pool;
+}
+
+// What an administrator does to turn personal backups on (they are off by
+// default); a test that resets the policies calls it again. A key the test
+// set already keeps its value.
+async function allowPersonalBackups(executor: Pick<Pool, 'query'>) {
+  await executor.query(`INSERT IGNORE INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked)
+    VALUES ('installation', '', 'policy.backup.create', 'allowed', 0), ('installation', '', 'policy.backup.restore', 'allowed', 0)`);
 }
 
 interface ApiReply { status: number; body: Record<string, unknown> & { error?: string }; headers: import('node:http').IncomingHttpHeaders; bytes: Buffer }
@@ -88,5 +100,5 @@ async function startTestApi(t: TestContext) {
   return { origin, client };
 }
 
-export type TestDatabaseHelpers = { withTestDatabase: typeof withTestDatabase; startTestApi: typeof startTestApi };
-module.exports = { withTestDatabase, startTestApi };
+export type TestDatabaseHelpers = { withTestDatabase: typeof withTestDatabase; startTestApi: typeof startTestApi; allowPersonalBackups: typeof allowPersonalBackups };
+module.exports = { withTestDatabase, startTestApi, allowPersonalBackups };

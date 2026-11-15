@@ -12,6 +12,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { ErrorState, LoadingState } from '@/components/ui/page-states';
 import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { SettingsPanel } from '@/components/settings/SettingsPanel';
@@ -21,9 +22,10 @@ import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog'
 // Server settings → Instance backup (D4): the whole installation, encrypted
 // with its own key, to a mount the environment names. Destination and key
 // are read-only status from the environment (F10: a compromised admin
-// session cannot redirect backups); the schedule (time in UTC, how many to
-// keep; defaults 03:30 and 14) is set here with the administrator's
-// password. Restore is a command in the image, never a web action.
+// session cannot redirect backups); the schedule (the daily run, off by
+// default; time in UTC, how many to keep; defaults 03:30 and 14) is set here
+// with the administrator's password. Restore is a command in the image,
+// never a web action.
 
 const formatBytes = (bytes: number) => bytes < 1024 ** 2 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : bytes < 1024 ** 3 ? `${(bytes / 1024 ** 2).toFixed(1)} MB` : `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 const formatWhen = (iso: string) => new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
@@ -44,6 +46,10 @@ function ScheduleFields({ value, onChange, timeZone }: { value: InstanceBackupSc
   const local = localTimeOf(value.time_utc, timeZone);
   return (
     <div className="grid gap-3 sm:grid-cols-2">
+      <div className="flex items-center justify-between gap-3 sm:col-span-2">
+        <Label htmlFor={`${id}-scheduled`}>Daily backup</Label>
+        <Switch id={`${id}-scheduled`} checked={value.scheduled} onCheckedChange={scheduled => onChange({ ...value, scheduled })} />
+      </div>
       <div className="space-y-1.5">
         <Label htmlFor={`${id}-time`}>Time (UTC)</Label>
         <Input id={`${id}-time`} type="time" required step={60} value={value.time_utc} onChange={event => onChange({ ...value, time_utc: event.target.value })} />
@@ -75,15 +81,15 @@ const AdminInstanceBackup = () => {
   // The status keeps polling while a backup runs; a changed answer must not
   // replace what they are typing.
   const [editing, setEditing] = useState(false);
-  const [schedule, setSchedule] = useState<InstanceBackupSchedule>({ time_utc: '03:30', keep: 14 });
-  const openEditor = () => { if (status) setSchedule({ time_utc: status.time_utc, keep: status.keep }); setEditing(true); };
+  const [schedule, setSchedule] = useState<InstanceBackupSchedule>({ scheduled: false, time_utc: '03:30', keep: 14 });
+  const openEditor = () => { if (status) setSchedule({ scheduled: status.scheduled, time_utc: status.time_utc, keep: status.keep }); setEditing(true); };
   const scheduleValid = TIME.test(schedule.time_utc) && Number.isInteger(schedule.keep) && schedule.keep >= KEEP_MIN && schedule.keep <= KEEP_MAX;
   const saveSchedule = useSecretMutation({
     mutationFn: (currentPassword: string) => saveInstanceBackupSchedule(schedule, currentPassword),
     onSuccess: answer => {
       client.setQueryData(instanceBackupQueryKey, answer);
       setEditing(false);
-      toast({ title: 'Schedule saved', description: `Daily at ${answer.time_utc} UTC, keeping ${answer.keep}.` });
+      toast({ title: 'Schedule saved', description: answer.scheduled ? `Daily at ${answer.time_utc} UTC, keeping ${answer.keep}.` : 'The daily backup is off.' });
     },
     onError: (error: Error) => toast({ title: 'Could not save the schedule', description: error.message, variant: 'destructive' }),
   });
@@ -95,11 +101,13 @@ const AdminInstanceBackup = () => {
     : (
       <>
         <p className="mb-8 max-w-prose text-sm text-muted-foreground">
+          <span className="font-medium text-warning">Experimental, off by default. </span>
           A backup of the whole installation: the database and every file, encrypted with the instance key. Keep the key, ENCRYPTION_KEY and BACKUP_MASTER_KEY in a password manager; without them a backup cannot be read.
         </p>
         <SettingsSection title="Status">
           <SettingsRow label={status.enabled ? 'On' : 'Off'} description={status.enabled
-            ? `Runs daily at ${status.time_utc} UTC${status.next_run_at ? `; next ${formatWhen(status.next_run_at)}` : ''}.`
+            ? status.scheduled ? `Runs daily at ${status.time_utc} UTC${status.next_run_at ? `; next ${formatWhen(status.next_run_at)}` : ''}.`
+              : 'The daily backup is off until you turn it on under Schedule. Back up now works.'
             : `Set ${status.missing.map(part => MISSING[part]).join(' and ')} in the server's environment, then restart. The server runs normally without a backup.`}>
             <Button onClick={() => run.mutate()} disabled={!status.enabled || status.running || run.isPending}>
               {status.running || run.isPending ? <Loader2 aria-hidden="true" className="animate-spin" /> : <Play aria-hidden="true" />}
@@ -115,8 +123,9 @@ const AdminInstanceBackup = () => {
           <SettingsRow label="Kept at the destination" description={status.enabled ? `${status.kept.count} ${status.kept.count === 1 ? 'backup' : 'backups'}, ${formatBytes(status.kept.bytes)}; the oldest beyond ${status.keep} is removed after a verified success.` : 'Nothing while the backup is off.'} />
         </SettingsSection>
         <SettingsSection title="Schedule"
-          description={`Daily, at a time of your choosing. Saving asks for your password.${status.schedule_source === 'environment' ? ` Until you set one, the server's environment or its defaults (${status.schedule_defaults?.time_utc ?? '03:30'} UTC, keep ${status.schedule_defaults?.keep ?? 14}) hold.` : ''}`}
+          description={`Daily, at a time of your choosing, once you turn it on; it is off by default. Saving asks for your password.${status.schedule_source === 'environment' ? ` Until you set one, the server's environment or its defaults (${status.schedule_defaults?.time_utc ?? '03:30'} UTC, keep ${status.schedule_defaults?.keep ?? 14}) hold.` : ''}`}
           action={<Button size="sm" variant="outline" onClick={openEditor}>Change schedule…</Button>}>
+          <SettingsRow label="Daily backup" description={status.scheduled ? 'On.' : 'Off: no backup runs by itself.'} />
           <SettingsRow label="Time" description={local ? `${local} for you. The run starts at this UTC time every day.` : 'The run starts at this UTC time every day.'}>
             <span className="font-mono text-sm tabular-nums">{status.time_utc} UTC</span>
           </SettingsRow>
@@ -153,7 +162,7 @@ const AdminInstanceBackup = () => {
       <PageHeader title="Settings" scope="Instance backup" />
       <PageBody width="reading">{body}</PageBody>
       <PasswordConfirmDialog open={editing} onClose={() => { if (!saveSchedule.isPending) setEditing(false); }} title="Change the schedule?"
-        description="The daily run and how many backups the destination keeps. Nothing already written is deleted by a change; the oldest beyond the number goes after the next verified success."
+        description="Whether the daily run is on, its time and how many backups the destination keeps. Nothing already written is deleted by a change; the oldest beyond the number goes after the next verified success."
         actionLabel="Save schedule" pending={saveSchedule.isPending} confirmDisabled={!scheduleValid} onConfirm={password => saveSchedule.mutate(password)}>
         <ScheduleFields value={schedule} onChange={setSchedule} timeZone={user?.timezone} />
         {!scheduleValid && <p role="alert" className="text-sm text-destructive">Choose a time as hours and minutes and a number of backups between {KEEP_MIN} and {KEEP_MAX}.</p>}

@@ -2,6 +2,7 @@ import type { FixtureValue } from './helpers/test-types.cts';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
+const { allowPersonalBackups } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 const http = (require('node:http') as typeof import('node:http'));
 const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const os = (require('node:os') as typeof import('node:os'));
@@ -71,6 +72,7 @@ test('a user backup is an encrypted ZIP other programs open, with readable mail,
     const [tables] = await pool.query<RowDataPacket[]>('SHOW TABLES'); assert.equal(tables.length, 0, 'Use an empty disposable test database'); owned = true;
     const runtime = createBackupRuntime(directory, 'envelope-synthetic-key', pool);
     await runtime('services/database').ensureSchema();
+    await allowPersonalBackups(pool);
     const loginPassword = 'envelope-fixture-password-2026';
     const passwordHash = await require('bcryptjs').hash(loginPassword, 10);
     const users: Record<string, string> = {};
@@ -417,6 +419,7 @@ test('uploaded restore archives expire after seven days, never while a restore u
     const [tables] = await pool.query<RowDataPacket[]>('SHOW TABLES'); assert.equal(tables.length, 0, 'Use an empty disposable test database'); owned = true;
     const runtime = createBackupRuntime(directory, 'expiry-synthetic-key', pool);
     await runtime('services/database').ensureSchema();
+    await allowPersonalBackups(pool);
     const userId = crypto.randomUUID();
     await pool.execute('INSERT INTO users (id,email,password_hash,full_name) VALUES (?,?,?,?)', [userId, 'expiry@example.test', 'x', 'Expiry']);
     const jobs = runtime('services/backup-restore-jobs');
@@ -505,6 +508,7 @@ test('an uploaded archive past its seven days is not unlocked or started, atomic
     const [tables] = await pool.query<RowDataPacket[]>('SHOW TABLES'); assert.equal(tables.length, 0, 'Use an empty disposable test database'); owned = true;
     const runtime = createBackupRuntime(directory, 'deadline-synthetic-key', pool);
     await runtime('services/database').ensureSchema();
+    await allowPersonalBackups(pool);
     const userId = crypto.randomUUID();
     await pool.execute('INSERT INTO users (id,email,password_hash,full_name) VALUES (?,?,?,?)', [userId, 'deadline@example.test', 'x', 'Deadline']);
     const jobs = runtime('services/backup-restore-jobs');
@@ -592,15 +596,14 @@ test('an uploaded archive past its seven days is not unlocked or started, atomic
     await deadline(expiredForbidden.id, -1); await validated(expiredForbidden.id);
     const liveForbidden = await upload('forbidden-live');
     await deadline(liveForbidden.id, 1); await validated(liveForbidden.id);
-    await pool.execute(`INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked)
-      VALUES ('installation', '', 'policy.backup.restore', 'forbidden', FALSE)`);
+    await pool.execute("UPDATE setting_policies SET setting_value = 'forbidden' WHERE setting_key = 'policy.backup.restore'");
     try {
       await assert.rejects(upload('forbidden-upload'), { status: 403, code: 'POLICY_FORBIDS' });
       assert.deepEqual(await jobs.startRestoreJob(userId, expiredForbidden.id), { error: 'This uploaded backup has expired. Upload it again to restore it.', status: 410 });
       await assert.rejects(jobs.startRestoreJob(userId, liveForbidden.id), { status: 403, code: 'POLICY_FORBIDS' });
       assert.equal((await row(liveForbidden.id)).status, 'validated');
     } finally {
-      await pool.execute("DELETE FROM setting_policies WHERE setting_key = 'policy.backup.restore'");
+      await pool.execute("UPDATE setting_policies SET setting_value = 'allowed' WHERE setting_key = 'policy.backup.restore'");
     }
     // The unlocked and started jobs were not touched by the sweeps.
     assert.notEqual((await row(early.id)).status, 'expired');

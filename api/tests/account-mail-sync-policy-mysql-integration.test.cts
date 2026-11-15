@@ -7,6 +7,7 @@ import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 // Named to sort before database-startup smoke, which leaves a populated schema.
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
+const { allowPersonalBackups } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 const http = (require('node:http') as typeof import('node:http'));
 const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const os = (require('node:os') as typeof import('node:os'));
@@ -62,6 +63,7 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'sync-policy-bootstrap@example.test';
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-sync-policy-bootstrap-password';
   await (require('../dist/src/services/database') as typeof import('../src/services/database')).ensureSchema();
+  await allowPersonalBackups(pool);
   const repo = require('../dist/src/services/mail-engine/repository') as typeof import('../src/services/mail-engine/repository');
   const transport = require('../dist/src/services/mail-engine/transport') as typeof import('../src/services/mail-engine/transport');
   const { scanMailboxSlice } = require('../dist/src/services/mail-engine/sync') as typeof import('../src/services/mail-engine/sync');
@@ -681,6 +683,7 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     await pool.execute<ResultSetHeader>("UPDATE mail_engine_jobs SET state = 'cancelled', completed_at = UTC_TIMESTAMP() WHERE state = 'queued'");
     isolated = createBackupRuntime(directory, 'sync-policy-synthetic-key', pool);
     await isolated('services/database').ensureSchema();
+    await allowPersonalBackups(pool);
     const password = 'sync-policy-fixture-password-2026';
     const hash = await require('bcryptjs').hash(password, 10);
     const ownerId = uuid();

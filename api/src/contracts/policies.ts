@@ -6,7 +6,7 @@
 
 import type { AppLockArea, RelockAfter } from './devices';
 
-/** Allowed is every key's default: nothing changes until an administrator sets a policy. */
+/** Allowed is the default of every key but backup.create and backup.restore, which are forbidden until an administrator allows them. */
 export type Allowance = 'allowed' | 'forbidden';
 
 /** The value of every policy key. Key names are final and stay fixed at 1.0. */

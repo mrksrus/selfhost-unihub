@@ -10,7 +10,7 @@ import { onlyOn } from '../support/ui.ts';
 // stack's .env). The schedule is set on the page with the
 // administrator's password whether or not the backup is on.
 
-interface Status { enabled: boolean; missing: string[]; running: boolean; last_run: { id: string; status: string } | null; time_utc: string; keep: number; schedule_defaults?: { time_utc: string; keep: number } }
+interface Status { enabled: boolean; missing: string[]; running: boolean; last_run: { id: string; status: string } | null; time_utc: string; keep: number; scheduled: boolean; schedule_defaults?: { time_utc: string; keep: number } }
 // The handle for the form; the plain value for request bodies made from Node.
 const password = credentials.user('admin').password;
 const apiPassword = signInPassword;
@@ -39,14 +39,17 @@ test('[28-06] the instance backup page is off with what is missing, or backs up 
   expect(log.entries.some((entry) => entry.action === 'admin.instance_backup_started'), `recorded (${credentials.user('admin').username})`).toBe(true);
 });
 
-test('[28-06] the admin sets the daily time and how many to keep with their password; destination and key stay read-only', { session: 'admin', timeout: 300_000 }, async ({ app, screen, browser }) => {
+test('[28-06] the admin turns the daily backup on and sets its time and how many to keep with their password; destination and key stay read-only', { session: 'admin', timeout: 300_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop', 'phone');
   await app.open('/admin/instance-backup');
   const before = ok(await pageApi<Status>(browser, 'GET', '/api/admin/instance-backup'), 'status');
-  const restore = before.schedule_defaults ?? { time_utc: before.time_utc, keep: before.keep };
+  const restore = { ...before.schedule_defaults ?? { time_utc: before.time_utc, keep: before.keep }, scheduled: before.scheduled };
   try {
+    // Off by default, and the page says so.
+    if (!before.scheduled) await expect(screen.getByText('Off: no backup runs by itself.', { exact: true })).toBeVisible();
     await screen.getByRole('button', 'Change schedule…').tap();
     const dialog = screen.getByRole('dialog', 'Change the schedule?');
+    if (!before.scheduled) await dialog.getByRole('switch', 'Daily backup').tap();
     await dialog.getByLabel('Time (UTC)').fill('04:45');
     await dialog.getByLabel('Backups kept').fill('7');
     const save = dialog.getByRole('button', 'Save schedule');
@@ -62,6 +65,8 @@ test('[28-06] the admin sets the daily time and how many to keep with their pass
     const after = ok(await pageApi<Status>(browser, 'GET', '/api/admin/instance-backup'), 'status');
     expect(after.time_utc).toBe('04:45');
     expect(after.keep).toBe(7);
+    expect(after.scheduled).toBe(true);
+    await expect(screen.getByText('On.', { exact: true })).toBeVisible();
     // A wrong password changes nothing; so does a non-admin.
     expect((await pageApi(browser, 'PUT', '/api/admin/instance-backup/settings', { time_utc: '05:00', keep: 3, current_password: 'not-the-admin-password' })).status).toBe(403);
     const alex = await signIn('alex');

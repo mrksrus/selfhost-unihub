@@ -152,8 +152,9 @@ export const POLICIES: { readonly [K in PolicyKey]: PolicyEntry<PolicyValues[K]>
     kind: { type: 'enum', values: ['user_choice', 'always'] }, default: 'user_choice', strictness: ['user_choice', 'always'], refuses: [],
     reasons: { always: 'Your backups always include downloaded mail, as your administrator requires.' },
   },
-  'backup.create': allowance('Your administrator does not allow creating backups.'),
-  'backup.restore': allowance('Your administrator does not allow restoring backups.'),
+  // Personal backups are experimental: off until an administrator allows them.
+  'backup.create': { ...allowance('Your administrator does not allow creating backups.'), default: 'forbidden' },
+  'backup.restore': { ...allowance('Your administrator does not allow restoring backups.'), default: 'forbidden' },
   'backup.delete': allowance('Your administrator does not allow deleting backups.'),
   // A minimum: the backup routes refuse deleting a younger backup
   // (services/backup-policy.ts); nothing is deleted automatically.

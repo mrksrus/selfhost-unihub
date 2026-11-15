@@ -38,6 +38,8 @@ export interface InstanceBackupStatus {
   /** "HH:MM" UTC, as in force. */
   time_utc: string;
   keep: number;
+  /** Whether the daily run is on: off until an administrator turns it on (experimental); Back up now works either way. */
+  scheduled: boolean;
   /** 'admin': set on the admin page; 'environment': INSTANCE_BACKUP_TIME/_KEEP or the defaults. Always sent since 0.28 C2. */
   schedule_source?: 'admin' | 'environment';
   /** What holds without the administrator's values. Always sent since 0.28 C2. */
@@ -78,5 +80,7 @@ export interface InstanceBackupRunResponse { run: InstanceBackupRun }
 export interface InstanceBackupSettingsRequest {
   time_utc: string;
   keep: number;
+  /** Turns the daily run on or off; left out, it stays as it is. 400 INSTANCE_BACKUP_SCHEDULED_INVALID. */
+  scheduled?: boolean;
   current_password: string;
 }

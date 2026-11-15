@@ -199,12 +199,14 @@ test('the compliance gates: the exempt routes are pinned with their reasons, and
   assert.throws(() => defineRoutes({ 'GET /api/things': { auth: 'user', appLock: 'exempt', handler } } as FixtureValue), /appLock is now gates/);
 });
 
+// An administrator turned personal backups on (they are off by default), so the data-safety gate lets the backup routes through.
+const BACKUPS_ON = ['backup.create', 'backup.restore'].map(key => ({ target_kind: 'installation', setting_key: `policy.${key}`, setting_value: 'allowed', locked: 0 }));
 // The gates before the app lock's, answered for a person with every module on and no restore running.
 const openGates = (required: string[]) => (sql: string) => {
   if (sql.startsWith('SELECT setting_value FROM user_settings')) return [];
   if (sql.includes('FROM backup_restore_jobs')) return [];
   if (sql.startsWith('SELECT target_kind, setting_key, setting_value, locked FROM setting_policies')) {
-    return [{ target_kind: 'installation', setting_key: 'policy.app_lock.required', setting_value: JSON.stringify(required), locked: 0 }];
+    return [{ target_kind: 'installation', setting_key: 'policy.app_lock.required', setting_value: JSON.stringify(required), locked: 0 }, ...BACKUPS_ON];
   }
   return undefined;
 };
@@ -249,7 +251,7 @@ test('a route that shows another module\'s data is locked with that module: a ma
 const twoFactorGates = (daysAgo: number) => (sql: string) => {
   if (sql.startsWith('SELECT setting_value FROM user_settings')) return [];
   if (sql.includes('FROM backup_restore_jobs')) return [];
-  if (sql.startsWith('SELECT target_kind, setting_key, setting_value, locked FROM setting_policies')) return [{ target_kind: 'installation', setting_key: 'policy.auth.two_factor', setting_value: 'required', locked: 0 }];
+  if (sql.startsWith('SELECT target_kind, setting_key, setting_value, locked FROM setting_policies')) return [{ target_kind: 'installation', setting_key: 'policy.auth.two_factor', setting_value: 'required', locked: 0 }, ...BACKUPS_ON];
   if (sql.startsWith('SELECT two_factor_enabled, two_factor_required_since FROM users')) return [{ two_factor_enabled: 0, two_factor_required_since: new Date(Date.now() - daysAgo * 86400000) }];
   return undefined;
 };

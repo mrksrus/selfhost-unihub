@@ -82,6 +82,8 @@ try {
   // 1. Source data in every section.
   const owner = new Session(source.url);
   const ownerId = (await owner.signIn(sourceAdmin.email, sourceAdmin.password)).user.id;
+  // Personal backups are off by default: each administrator turns on what the gate uses.
+  await owner.json('PUT', '/api/admin/policies', { values: { 'backup.create': 'allowed' }, current_password: sourceAdmin.password });
   const capabilities = await owner.json<{ sections: { id: string }[] }>('GET', '/api/backup/capabilities');
   assert.deepEqual(capabilities.sections.map(section => section.id).sort(), [...SECTIONS].sort(),
     'A recovery section was added or removed: seed and compare it in this gate (and fresh-install-seed.cts) before releasing.');
@@ -114,6 +116,7 @@ try {
   // 3. Import as a different user of a different installation, with the recovery password.
   const user = new Session(destination.url);
   const userId = (await user.signIn(destinationAdmin.email, destinationAdmin.password)).user.id;
+  await user.json('PUT', '/api/admin/policies', { values: { 'backup.restore': 'allowed' }, current_password: destinationAdmin.password });
   const destinationBefore = inspect(destination, userId, secrets);
   const imported = (await user.json<{ job: Row }>('POST', '/api/backup/import?sections=full&conflict_mode=replace&credentials_mode=restore', archive,
     { expected: 202, raw: true, headers: { 'Content-Type': 'application/vnd.unihub.backup' } })).job;

@@ -4,7 +4,7 @@ import type { RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const crypto = require('node:crypto') as typeof import('node:crypto');
-const { withTestDatabase, startTestApi } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
+const { withTestDatabase, startTestApi, allowPersonalBackups } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 
 // Data-safety policies (F13) at the request boundary, through the real
 // request handler and MariaDB. Every route that declares a policy is walked
@@ -71,6 +71,7 @@ test('a forbidding installation policy refuses every declared route before any s
   const forbid = async (key: string, { value = 'forbidden', locked = false } = {}) => {
     await pool.execute('DELETE FROM setting_policies');
     await pool.execute("INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked) VALUES ('installation', '', ?, ?, ?)", [`policy.${key}`, value, locked ? 1 : 0]);
+    await allowPersonalBackups(pool);
   };
 
   // Each route, each query variant that adds a policy (every accepted value
@@ -131,6 +132,7 @@ test('a forbidding installation policy refuses every declared route before any s
   // Policies of settings are not read as data-safety policies.
   await pool.execute('DELETE FROM setting_policies');
   await pool.execute("INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked) VALUES ('installation', '', 'user.week_start', 'sunday', 1)");
+  await allowPersonalBackups(pool);
 
   // No data-safety policy: the routes behave as before, the owner scope included.
   // (Deleting a contact answers the same whether it was there; only the owner's goes.)

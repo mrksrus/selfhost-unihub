@@ -16,7 +16,7 @@ const ROOTS = { raw: 'mail-raw', attachments: 'attachments', backups: 'backups',
 const root = (name: keyof typeof ROOTS) => path.join(storage, ROOTS[name]);
 Object.assign(process.env, { MAIL_RAW_STORAGE_ROOT: root('raw'), MAIL_ATTACHMENT_UPLOAD_ROOT: root('attachments'), BACKUP_ARCHIVES_ROOT: root('backups'),
   RECORDINGS_ROOT: root('recordings'), CONTACT_PHOTOS_ROOT: root('photos'), UPLOAD_SPOOL_ROOT: root('spool') });
-const { withTestDatabase, startTestApi } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
+const { withTestDatabase, startTestApi, allowPersonalBackups } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 
 // Data-safety rules an administrator changes while a destructive step is
 // under way (0.28 C2, review r1), through the real request handler and
@@ -127,7 +127,7 @@ test('a destructive step follows the rules in force when it acts, with an owner,
   const nonexistent = (name: string) => Object.assign(new Error(`Mailbox doesn't exist: ${name}`), { responseStatus: 'NO', serverResponseCode: 'NONEXISTENT' });
   // Each case starts with every policy at its default and no restore, whatever an earlier one left.
   const fromDefaults = (name: string, body: () => Promise<void>) => t.test(name, async () => {
-    await pool.query("DELETE FROM setting_policies WHERE target_kind = 'installation'");
+    await pool.query("DELETE FROM setting_policies WHERE target_kind = 'installation'"); await allowPersonalBackups(pool);
     await pool.query('DELETE FROM backup_restore_jobs');
     await body();
   });
@@ -1412,7 +1412,7 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     mailService.scheduleMailAccountSync = async () => ({ started: false, alreadyRunning: false, promise: Promise.resolve({ success: true }) });
     try {
       for (const [index, [values, key]] of ([[{ 'mail.mode.new_accounts': 'sync' }, 'mail.mode.new_accounts'], [{ 'mail.provider_delete': 'required' }, 'mail.provider_delete']] as const).entries()) {
-        await pool.query("DELETE FROM setting_policies WHERE target_kind = 'installation'");
+        await pool.query("DELETE FROM setting_policies WHERE target_kind = 'installation'"); await allowPersonalBackups(pool);
         const address = `forced-r6-${index}@example.test`, reached = deferred(), go = deferred();
         mailService.testImapConnection = async () => { reached.resolve(); await go.promise; return { success: true }; };
         const pending = alex.request('POST', '/api/mail/accounts', { email_address: address, provider: 'custom', encrypted_password: 'synthetic-password', imap_host: 'imap.example.test',
@@ -1605,7 +1605,7 @@ test('a destructive step follows the rules in force when it acts, with an owner,
     const stubs = mailStubbed();
     try {
       for (const mode of ['standalone', 'subscription', 'optional'] as const) {
-        await pool.query("DELETE FROM setting_policies WHERE target_kind = 'installation'");
+        await pool.query("DELETE FROM setting_policies WHERE target_kind = 'installation'"); await allowPersonalBackups(pool);
         const discovery = discoveryHeld(), url = `https://${mode}-add-r7.example.test/dav/`, address = `${mode}-add-r7@example.test`;
         const caldav = require('../dist/src/services/caldav') as FixtureValue, fetchIcs = caldav.fetchIcsFeed, validate = caldav.validateDavUrlPolicy;
         const feed = { reached: deferred(), go: deferred() };
@@ -1646,7 +1646,7 @@ test('a destructive step follows the rules in force when it acts, with an owner,
       ['deleting the person', users.dana, 'account.delete', () => dana.request('DELETE', '/api/settings/account', { current_password: password })],
     ];
     for (const [what, owner, policy, request] of cases) {
-      await pool.query("DELETE FROM setting_policies WHERE target_kind = 'installation'");
+      await pool.query("DELETE FROM setting_policies WHERE target_kind = 'installation'"); await allowPersonalBackups(pool);
       const mail = crypto.randomUUID();
       await pool.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active, encrypted_password) VALUES (?, ?, ?, 'custom', 'download', TRUE, ?)",
         [mail, owner, `${what.replace(/ /g, '-')}-r7@example.test`, encrypt('synthetic-mail-password')]);
@@ -1983,7 +1983,7 @@ test('a destructive step follows the rules in force when it acts, with an owner,
         ['settings change', 'mail.mode.download', (mail: string) => alex.request('PUT', `/api/mail/accounts/${mail}`, { sync_mode: 'download' })],
         ['disconnect', 'accounts.remove', (mail: string) => alex.request('DELETE', `/api/mail/accounts/${mail}`)],
       ] as [string, string, (mail: string) => ReturnType<typeof alex.request>][]) {
-        await pool.query("DELETE FROM setting_policies WHERE target_kind = 'installation'");
+        await pool.query("DELETE FROM setting_policies WHERE target_kind = 'installation'"); await allowPersonalBackups(pool);
         const mail = await mailOf(`intent-${what.replace(/ /g, '-')}-r8@example.test`), email = crypto.randomUUID(), folder = crypto.randomUUID();
         await pool.execute("UPDATE mail_accounts SET sync_mode = 'sync' WHERE id = ?", [mail]);
         await pool.execute("INSERT INTO mail_folders (id, user_id, slug, display_name, is_system) VALUES (?, ?, ?, 'Archive', FALSE)", [folder, users.alex, `archive-${folder.slice(0, 8)}`]);
@@ -2548,7 +2548,7 @@ test('a destructive step follows the rules in force when it acts, with an owner,
         const refused = await alex.request('DELETE', `/api/mail/accounts/${mail}`);
         assert.deepEqual([refused.status, refused.body.code], [403, 'POLICY_FORBIDS'], JSON.stringify(refused.body));
       } finally { svc.stopOwnedMailAccountWork = saved.stop; }
-      await pool.query("DELETE FROM setting_policies WHERE target_kind = 'installation'");
+      await pool.query("DELETE FROM setting_policies WHERE target_kind = 'installation'"); await allowPersonalBackups(pool);
       return captured;
     };
     const cleanup = async (running: Promise<unknown> = Promise.resolve()) => {

@@ -286,6 +286,9 @@ try {
   });
   const upgradedView = await coreView(owner, installation, admin.email);
   await step('A new backup restores into a second person', async () => {
+    // Personal backups are off after the upgrade until the administrator turns them on.
+    await owner.json('POST', '/api/backup/jobs', { sections: 'full', encrypt: true }, { expected: 403 });
+    await owner.json('PUT', '/api/admin/policies', { values: { 'backup.create': 'allowed', 'backup.restore': 'allowed' }, current_password: admin.password });
     const fresh = await exportFull(owner);
     for (const secret of [mail.sync.password, mail.download.password, dav.password, admin.password]) assert.equal(fresh.archive.includes(Buffer.from(secret)), false, 'No plain password in the backup');
     await owner.json('PUT', '/api/admin/settings/signup-mode', { signup_mode: 'open' });
@@ -313,6 +316,7 @@ try {
   });
   const freshOwner = new Session(fresh.url);
   await freshOwner.signIn(freshAdmin.email, freshAdmin.password);
+  await freshOwner.json('PUT', '/api/admin/policies', { values: { 'backup.restore': 'allowed' }, current_password: freshAdmin.password });
   const destructiveBefore = peers.log.destructive.length, failedLoginsBefore = peers.log.logins.filter(login => !login.ok).length;
   await step(`Import the ${from} export`, async () => {
     const contents = await importFull(freshOwner, oldExport.archive, oldExport.password);

@@ -43,7 +43,8 @@ test('groups: administrators create them, managers keep their members, members r
   assert.deepEqual([finance.can_manage, finance.members], [false, []], 'a member of Finance sees its managers only (it has none)');
   // Its manager reads the rules the group adds on top of everyone's, read-only; a member does not.
   await pool.execute(`INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked) VALUES
-    ('group', ?, 'policy.backup.delete', 'forbidden', FALSE), ('installation', '', 'policy.backup.create', 'forbidden', FALSE)`, [groups.support]);
+    ('group', ?, 'policy.backup.delete', 'forbidden', FALSE), ('installation', '', 'policy.backup.create', 'forbidden', FALSE)
+    ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`, [groups.support]);
   assert.deepEqual((await alex.request('GET', `/api/groups/${groups.support}`)).body.rules, ['Your administrator does not allow deleting backups.']);
   assert.equal((await blair.request('GET', `/api/groups/${groups.support}`)).body.rules, null);
   assert.equal((await alex.request('GET', `/api/groups/${groups.finance}`)).body.rules, null);

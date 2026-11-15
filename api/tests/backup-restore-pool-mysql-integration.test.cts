@@ -2,6 +2,7 @@ import type { FixtureValue } from './helpers/test-types.cts';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
+const { allowPersonalBackups } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 const http = (require('node:http') as typeof import('node:http'));
 const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const os = (require('node:os') as typeof import('node:os'));
@@ -39,6 +40,7 @@ test('a restore whose rows requests wait for with every other connection still f
     const [tables] = await pool.query<RowDataPacket[]>('SHOW TABLES'); assert.equal(tables.length, 0, 'Use an empty disposable test database'); owned = true;
     runtime = createBackupRuntime(directory, 'restore-pool-synthetic-key', pool);
     await runtime('services/database').ensureSchema();
+    await allowPersonalBackups(pool);
     const password = 'restore-pool-fixture-password-2026';
     await pool.execute<ResultSetHeader>('INSERT INTO users (id,email,password_hash,full_name) VALUES (?,?,?,?)',
       [crypto.randomUUID(), 'restorer@example.test', await require('bcryptjs').hash(password, 10), 'Restorer']);

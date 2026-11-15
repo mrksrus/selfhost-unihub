@@ -88,4 +88,12 @@ for (const person of people) {
     console.log(`seed: CalDAV account ${person.mailbox} for ${person.email}`);
   }
 }
+// Personal backups are off by default; this stack has them on, as an
+// administrator turns them on, and everyone has seen the rules since.
+await (await session(people[0].email))('PUT', '/api/admin/policies', { values: { 'backup.create': 'allowed', 'backup.restore': 'allowed' }, current_password: password });
+for (const person of people) {
+  const api = await session(person.email);
+  const effective = await api('GET', '/api/policies/effective');
+  if (effective.acknowledged_revision < effective.revision) await api('POST', '/api/policies/acknowledge', { revision: effective.revision });
+}
 console.log('seed: done');

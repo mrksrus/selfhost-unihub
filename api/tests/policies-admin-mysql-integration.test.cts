@@ -72,7 +72,7 @@ test('policies, notices and the administrator\'s path for a person, with an owne
     assert.equal((await setPolicies({ 'mail.mode.sync': 'forbidden', 'mail.mode.new_accounts': 'sync' }, {}, 400)).code, 'POLICY_CONFLICT');
     assert.equal((await setPolicies({ 'mail.provider_delete': 'forbidden', 'mail.mode.new_accounts': 'download_delete' }, {}, 400)).code, 'POLICY_CONFLICT');
     assert.equal((await setPolicies({ 'mail.mode.sync': 'forbidden', 'mail.mode.download': 'forbidden' }, {}, 400)).code, 'POLICY_CONFLICT');
-    assert.deepEqual([await count('SELECT COUNT(*) AS count FROM setting_policies'), await count('SELECT COUNT(*) AS count FROM audit_log WHERE action = ?', ['admin.policy_changed'])], [0, 0]);
+    assert.deepEqual([await count("SELECT COUNT(*) AS count FROM setting_policies WHERE setting_key NOT LIKE 'policy.backup.%'"), await count('SELECT COUNT(*) AS count FROM audit_log WHERE action = ?', ['admin.policy_changed'])], [0, 0]);
 
     // Changing a policy deletes nothing: every table but the policy, revision, notice, log and session ones stays as it was.
     const skipped = new Set(['setting_policies', 'system_settings', 'policy_notices', 'audit_log', 'sessions']);
@@ -171,6 +171,19 @@ test('policies, notices and the administrator\'s path for a person, with an owne
     await pool.execute("UPDATE system_settings SET setting_value = 'disabled' WHERE setting_key = 'signup_mode'");
     await pool.execute("DELETE FROM users WHERE email IN ('casey@example.test', 'dana@example.test', 'emery@example.test', 'flynn@example.test')");
     await setPolicies({ 'bin.delete': 'allowed', 'accounts.remove': 'allowed', 'account.delete': 'allowed' });
+  });
+
+  await t.test('personal backups are off until an administrator turns them on, and that choice stays', async () => {
+    await pool.query("DELETE FROM setting_policies WHERE setting_key IN ('policy.backup.create', 'policy.backup.restore')");
+    const effective = await call(alex, 'GET', '/api/policies/effective');
+    assert.deepEqual(['backup.create', 'backup.restore'].map(key => [effective.policies[key].value, effective.policies[key].source, effective.policies[key].allowed]),
+      [['forbidden', 'default', false], ['forbidden', 'default', false]]);
+    assert.ok(effective.rules.includes(POLICIES['backup.create'].reasons.forbidden) && effective.rules.includes(POLICIES['backup.restore'].reasons.forbidden), 'and the rules say so');
+    forbids(await call(alex, 'POST', '/api/backup/jobs', {}, 403), 'backup.create');
+    forbids(await call(alex, 'POST', '/api/backup/import', {}, 403), 'backup.restore');
+    const allowed = await setPolicies({ 'backup.create': 'allowed', 'backup.restore': 'allowed' });
+    assert.deepEqual([allowed.policies['backup.create'].source, allowed.policies['backup.restore'].source], ['policy', 'policy'], 'stored, not a default');
+    assert.equal((await call(alex, 'GET', '/api/policies/effective')).policies['backup.create'].allowed, true);
   });
 
   await t.test('deleting one\'s own account asks for the password', async () => {

@@ -1,4 +1,4 @@
-import type { RowDataPacket } from 'mysql2/promise';
+import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import type {
   ResolvedSetting,
@@ -707,6 +707,21 @@ async function groupsWithPolicies(executor: SqlExecutor = db): Promise<Set<strin
   return new Set(rows.map(row => String(row.target_id)));
 }
 
+// Personal backups became forbidden by default. A default is no saved rule,
+// so on an installation that existed before, the rules revision moves once and
+// everyone is shown the rules notice; a new one has nothing to announce.
+const DEFAULTS_KEY = 'policy_defaults';
+async function announceChangedDefaults({ existing }: { existing: boolean }) {
+  const { withTransaction } = require('./transactions') as typeof import('./transactions');
+  await withTransaction(async cx => {
+    const [added] = await cx.execute<ResultSetHeader>("INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES (?, 'personal-backups-off')", [DEFAULTS_KEY]);
+    if (!added.affectedRows || !existing) return;
+    await cx.execute("INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES (?, '0')", [REVISION_KEY]);
+    const revision = await policyRevision(cx, { lock: true });
+    await cx.execute('UPDATE system_settings SET setting_value = ? WHERE setting_key = ?', [String(revision + 1), REVISION_KEY]);
+  });
+}
+
 /** The installation's rules revision (system_settings policy_revision); 0 before any rule changed. */
 async function policyRevision(executor: SqlExecutor = db, { lock = false, share = false } = {}): Promise<number> {
   const [rows] = await executor.execute<RowDataPacket[]>(`SELECT setting_value FROM system_settings WHERE setting_key = ?${lock ? ' FOR UPDATE' : share ? ' LOCK IN SHARE MODE' : ''}`, [REVISION_KEY]);
@@ -1132,6 +1147,7 @@ export {
   signupRules,
   lockedPolicies,
   policyRevision,
+  announceChangedDefaults,
   lockRules,
   checkPeoplePolicies,
   groupsWithPolicies,

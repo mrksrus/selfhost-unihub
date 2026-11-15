@@ -386,7 +386,7 @@ same map through the `permissions` of `/api/auth/me`.
 
 The instance backup's destination and key come only from the environment (or
 `*_FILE`). Its schedule is an installation setting the admin changes on the
-page; until then `INSTANCE_BACKUP_TIME` and `INSTANCE_BACKUP_KEEP`, or daily
+page; the daily run is off until the admin turns it on there. Until the admin sets a time and a count, `INSTANCE_BACKUP_TIME` and `INSTANCE_BACKUP_KEEP`, or daily
 03:30 UTC and 14 kept, apply. The schedule reads it every minute and a run
 reads the kept count when it succeeds, so a change needs no restart; a lower
 count removes the oldest backups at the next verified success, as the count
@@ -768,7 +768,8 @@ that request reads them.
 | `mail.mode.new_accounts` | `user_choice`, `download`, `download_delete`, `sync` | a new account in another mode: the dialog preselects and locks it, the server fills it in or refuses another |
 | `mail.provider_delete` | `user_choice`, `forbidden`, `required` | `forbidden`: turning deletion at the provider on, and the deletion worker queues and deletes nothing more for anyone; `required`: a new Download account deletes at the provider |
 | `backup.download_mail` | `user_choice`, `always` | leaving downloaded mail out of a backup |
-| `backup.create`, `backup.restore`, `backup.delete` | `allowed`, `forbidden` | creating, restoring, deleting one's backups |
+| `backup.create`, `backup.restore` | `forbidden`, `allowed` | creating and restoring one's backups: personal backups are experimental and off until an administrator allows them (an installation that existed before shows everyone the rules notice once); completed backups stay downloadable |
+| `backup.delete` | `allowed`, `forbidden` | deleting one's backups |
 | `backup.server_retention_days` | none, `30`, `90`, `365` | deleting a finished backup younger than that; nothing is deleted automatically |
 | `accounts.add`, `accounts.remove`, `accounts.reset` | `allowed`, `forbidden` | adding, removing mail and calendar accounts (also turning a linked calendar on or off), deleting UniHub's copy of an account's mail |
 | `account.delete` | `allowed`, `forbidden` | deleting one's own UniHub account |
