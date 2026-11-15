@@ -1033,7 +1033,8 @@ grace nothing is refused: `GET /api/policies/effective` carries `two_factor:
 { required, grace_ends_at }` and the app shows a reminder. After it, every
 route that is not exempt (below) answers `403 TWO_FACTOR_REQUIRED` with
 `details: { grace_ended_at, reason }`, administrators included, and the app
-guides the person through the setup. Turning 2FA off is refused at once while
+guides the person through the setup; their notifications carry no content
+until then, as on a device without a required app lock. Turning 2FA off is refused at once while
 the rule applies, grace or not. Before saving the rule the Policies page asks
 `POST /api/admin/policies/preview` how many people it covers have no 2FA and
 who of them is already in a grace, with its end. Backups of a person never

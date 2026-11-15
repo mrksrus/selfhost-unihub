@@ -301,6 +301,23 @@ test('Notification privacy per device: app lock, open window, policies, other pe
     assert.equal(onBrowsers(lunch).tablet.body, 'Team lunch', 'a policy for Mail leaves Calendar content alone');
     await pool.execute("DELETE FROM setting_policies WHERE setting_key = 'policy.app_lock.required'");
 
+    // Two-factor authentication required and alex's 7 days are over: the
+    // request boundary refuses alex, so no device is sent content either.
+    await pool.execute("INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked) VALUES ('installation', '', 'policy.auth.two_factor', 'required', FALSE)");
+    await pool.execute('UPDATE users SET two_factor_required_since = UTC_TIMESTAMP() - INTERVAL 8 DAY WHERE id = ?', [ids.alex]);
+    assert.equal((await laptop('GET', '/mail/accounts', undefined, 403)).code, 'TWO_FACTOR_REQUIRED');
+    const reviewEvent = crypto.randomUUID();
+    await pool.execute<ResultSetHeader>("INSERT INTO calendar_events (id, user_id, title, start_time, end_time) VALUES (?, ?, 'Salary review', UTC_TIMESTAMP() + INTERVAL 3 DAY, UTC_TIMESTAMP() + INTERVAL 73 HOUR)", [reviewEvent, ids.alex]);
+    const ungraced = await notifications.enqueueCalendarNotification({ userId: ids.alex, eventId: reviewEvent });
+    await pass();
+    const ungracedOnPhone = await onPhone(ungraced);
+    await ack(ungraced);
+    browsers = onBrowsers(ungraced);
+    for (const payload of [ungracedOnPhone, browsers.laptop, browsers.tablet]) assert.doesNotMatch(JSON.stringify(payload), /Salary review/, 'no device is sent the content');
+    assert.match(JSON.stringify(await storedPayload(ungraced)), /Salary review/, 'it is kept for when they have set it up');
+    await pool.execute("DELETE FROM setting_policies WHERE setting_key = 'policy.auth.two_factor'");
+    await pool.execute('UPDATE users SET two_factor_required_since = NULL WHERE id = ?', [ids.alex]);
+
     // A removed device gets nothing: its channel goes with it.
     await laptop('DELETE', `/devices/${tabletDevice}`);
     const afterRemoval = await mail('After removal');

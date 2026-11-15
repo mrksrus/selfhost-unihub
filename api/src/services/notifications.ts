@@ -13,6 +13,7 @@ import { getActiveRestoreSectionsByUser } from './restore-locks';
 import { blockedBackgroundModulesByUser } from './access-policy';
 import { appLockRequirementFor, defaultSettingValues, settingValues } from './settings';
 import { mailFolderRoles } from './mail-folders';
+import { twoFactorRequirement } from './sign-in-policies';
 import { NOTIFICATION_TRANSPORTS, getVapidKeys } from './notification-transports';
 import type { DeliveryTarget, NotificationTransport } from './notification-transports';
 import {
@@ -326,10 +327,11 @@ async function prepare(kind: SourceKind<unknown>, userId: string, sourceId: stri
   const render = Object.prototype.hasOwnProperty.call(kind.render, level) ? kind.render[level] : kind.render.none;
   return { source, rendering: clip(render(source, payload)) };
 }
-/** The device a delivery goes to, as the privacy stage reads it: its lock state (undefined without a record) and what the person's policies require. */
+/** The device a delivery goes to, as the privacy stage reads it: its lock state (undefined without a record), what the person's policies require, and whether their 2FA grace has ended. */
 interface DeliveryDevice {
   lock: DeviceLockState | undefined;
   requirement: Pick<AppLockRequiredDetails, 'required' | 'max_background'>;
+  twoFactorRefused?: boolean;
 }
 // Whether the device is sent a kind's 'none' text: its lock covers the kind's
 // module and it does not count as unlocked at `now`, or the policies require a
@@ -337,7 +339,8 @@ interface DeliveryDevice {
 // then refuses the module's routes. A kind without a module is covered by the
 // whole-app lock only. A delivery whose device has no record fails closed.
 function contentHidden(module: KindSpec['module'] | undefined, device: DeliveryDevice, now: number) {
-  if (!device.lock) return true;
+  // Refused every route until they set up 2FA, the person is sent no content either.
+  if (!device.lock || device.twoFactorRefused) return true;
   const area = module ?? 'app';
   const applied = device.lock.lock_applied;
   const open = !!device.lock.open_until && device.lock.open_until.getTime() > now;
@@ -582,7 +585,8 @@ async function deliverBatch(connection: SqlExecutor, now: Date, rows: DueDeliver
     // Filtered and rendered again: settings, the device's lock and the
     // policies may have changed since it was queued, also while an earlier
     // send of this batch waited on its transport, so all are read per send.
-    const device = { lock: (await deviceLockFor([row.device_id], connection)).get(row.device_id), requirement: await appLockRequirementFor(row.user_id, connection) };
+    const device = { lock: (await deviceLockFor([row.device_id], connection)).get(row.device_id), requirement: await appLockRequirementFor(row.user_id, connection),
+      twoFactorRefused: !!(await twoFactorRequirement(row.user_id, null, new Date(), connection)).refused };
     const current = await currentPayload(row, queued, connection, device);
     // Recheck after source reads, before changing queued work or starting network IO.
     // A restore may have started since the snapshot the rows were selected with.
