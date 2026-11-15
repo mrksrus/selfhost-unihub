@@ -170,6 +170,21 @@ test('contacts import and export: preview before writing, decisions, idempotent 
   assert.equal((await waitFor(remerge.id)).state, 'committed');
   const unchanged = (await owner.call('GET', `/api/contacts/${existing.id}`)).contact;
   assert.deepEqual([unchanged.emails, unchanged.phones, unchanged.kept_properties], [merged.emails, merged.phones, merged.kept_properties]);
+  // An unmerged duplicate pair read back stays two contacts: each card is its own contact by UID.
+  const twins = [];
+  for (const emails of [['jon.twin@example.test'], ['jon.twin@example.test', 'jon.other@example.test']]) {
+    twins.push((await owner.call('POST', '/api/contacts', { name: { given: 'Jon', family: 'Twin' }, emails, phones: [`+1 202 555 015${twins.length}`] })).contact);
+  }
+  const pairFile = await owner.send('POST', '/api/contacts/export', { ids: twins.map(twin => twin.id), format: 'vcard4' });
+  const pair = await owner.call('POST', '/api/contacts/imports', pairFile.bytes, 200, 'text/vcard');
+  assert.deepEqual(pair.groups.map((group: FixtureValue) => [group.match, group.default_decision]), [['identical', 'skip'], ['identical', 'skip']]);
+  await owner.call('POST', `/api/contacts/imports/${pair.id}/commit`, { decisions: [] });
+  assert.equal((await waitFor(pair.id)).result.merged, 0);
+  for (const twin of twins) {
+    const after = (await owner.call('GET', `/api/contacts/${twin.id}`)).contact;
+    assert.deepEqual([after.emails, after.phones], [twin.emails, twin.phones], 'neither twin took the other\'s values');
+    await owner.call('DELETE', `/api/contacts/${twin.id}`);
+  }
 
   // ── CSV imports go the same way ──
   const google = await owner.call('POST', '/api/contacts/imports', fixture('google.csv'), 200, 'text/csv');

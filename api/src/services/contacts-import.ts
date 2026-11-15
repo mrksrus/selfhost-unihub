@@ -192,8 +192,13 @@ function matchCard(card: ImportedCard, index: ContactIndex): CardMatch {
   return { kind: 'new', confidence: null, existing: [], reasons: [] };
 }
 
-/** Cards that are the same person within the file: same UID, or a shared email or phone with compatible names. */
-function fileGroups(cards: readonly ImportedCard[]) {
+/**
+ * Cards that are the same person within the file: same UID, or a shared email
+ * or phone with compatible names. Two cards whose UIDs name two different
+ * contacts here stay apart (an export of this account read back).
+ */
+function fileGroups(cards: readonly ImportedCard[], matches: readonly CardMatch[]) {
+  const ownContact = (at: number) => (matches[at].kind === 'uid' ? matches[at].existing[0] : null);
   const parent = cards.map((_, at) => at);
   const find = (at: number): number => { while (parent[at] !== at) { parent[at] = parent[parent[at]]; at = parent[at]; } return at; };
   const union = (a: number, b: number) => { const [x, y] = [find(a), find(b)]; if (x !== y) parent[Math.max(x, y)] = Math.min(x, y); };
@@ -204,6 +209,8 @@ function fileGroups(cards: readonly ImportedCard[]) {
     for (const key of keys) {
       const other = firstBy.get(key);
       if (other === undefined) { firstBy.set(key, at); continue; }
+      const [mine, theirs] = [ownContact(at), ownContact(other)];
+      if (mine && theirs && mine !== theirs) continue;
       if (key.startsWith('uid:') || compatible(name, draftNameKey(cards[other].draft))) union(at, other);
     }
   });
@@ -343,7 +350,7 @@ async function matchCards(userId: string, cards: readonly ImportedCard[]) {
   const existing = new Map(loaded.map(contact => [contact.id, contact]));
   const stored = await storedIdentities(userId, loaded);
   const groups: (ImportGroup & { cardIndexes: number[] })[] = [];
-  for (const members of fileGroups(cards)) {
+  for (const members of fileGroups(cards, matches)) {
     const memberMatches = members.map(at => matches[at]);
     const uid = memberMatches.find(match => match.kind === 'uid');
     const high = memberMatches.find(match => match.confidence === 'high');

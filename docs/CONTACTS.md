@@ -205,7 +205,8 @@ compatibility](ANDROID_COMPATIBILITY.md)).
   Identical means every field, every kept detail as the export writes it and
   the same photo; a card that changed only a kept detail or its picture is
   merged by default instead of skipped
-- the groups: cards that belong together with the contacts they match, the
+- the groups: cards that belong together with the contacts they match (two
+  cards whose UIDs name two different contacts never belong together), the
   reasons, the confidence, the single values that differ (with a summary of
   each card, for "Review conflicts") and a default decision (add, merge or
   skip)
