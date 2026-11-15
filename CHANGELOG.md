@@ -6,6 +6,28 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.30.2
+
+Fixes found by testing on a live server. No database upgrade and nothing to
+do when upgrading.
+
+### Fixed
+
+- **Re-importing a contacts export no longer merges contacts.** Reading
+  your own unchanged export back merged duplicate pairs you had not merged,
+  also a pair marked "Not the same person". Each card now goes back to its
+  own contact and nothing changes.
+- **Restore in the bin after a backup restore.** An item a backup restore
+  had already brought back gave an error (a contact) or a second copy (a
+  task). It now says the item is already back and stays in the bin, where
+  you can delete it.
+- **Switching a new message to plain text keeps the line above the
+  signature.** The text written at the top ran into the "-- " line, so mail
+  programs no longer saw the signature.
+- **A message sent right after a change leaves no copy in Drafts.**
+  Inserting a template or typing and sending within about a second could
+  leave the sent message in Drafts as well.
+
 ## 0.30.1
 
 Fixes after 0.30.0. No database upgrade and nothing to do when upgrading.

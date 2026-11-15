@@ -22,10 +22,19 @@
   ],
   "releases": [
     {
+      "version": "0.30.2",
+      "apk": {
+        "versionCode": 30002,
+        "sha256": null,
+        "signing": "release"
+      },
+      "shell": "supported"
+    },
+    {
       "version": "0.30.1",
       "apk": {
         "versionCode": 30001,
-        "sha256": null,
+        "sha256": "193c5ad6e7b0db89e91b32f112ab40b6ac44ab58144550fb977a973ba182fba6",
         "signing": "release"
       },
       "shell": "supported"
@@ -48,15 +57,6 @@
       },
       "shell": "supported",
       "note": "From this app the bridge is level 3 (appLock). The earlier apps in the window have no native app lock: the page offers them the UniHub PIN, and their contacts sync (which sends X-Background-Sync: 1, like every app's own requests) reads any 403 other than MODULE_DISABLED as a refused change and skips the contact. So the server must keep the contacts routes open to the background sync while a device falls short of a required app lock, and the page must keep the PIN for apps below bridge level 3."
-    },
-    {
-      "version": "0.28.4",
-      "apk": {
-        "versionCode": 28004,
-        "sha256": "3d5317c447f7db300e170e147776005c243c71abf8dbb297f512dd63f56a4247",
-        "signing": "release"
-      },
-      "shell": "supported"
     }
   ],
   "handshake": {
