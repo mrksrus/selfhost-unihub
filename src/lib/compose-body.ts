@@ -106,7 +106,12 @@ export function responseRecipients(email: Email, mode: ResponseMode, ownAddress:
   return { to: to.join(', '), cc: cc.join(', ') };
 }
 
-/** The body converted when the format is switched. */
+// An empty first paragraph: the room to write above the signature or quote.
+const EMPTY_START = /^\s*<(p|div)>(\s|&nbsp;|<br\s*\/?>)*<\/\1>/i;
+
+/** The body converted when the format is switched; the room to write at the top stays, as a new plain message has it. */
 export function convertBody(body: string, to: ComposeFormat) {
-  return to === 'plain' ? htmlToPlainText(body) : plainTextToHtml(body);
+  if (to !== 'plain') return plainTextToHtml(body);
+  const text = htmlToPlainText(body);
+  return text && EMPTY_START.test(body) ? `\n\n${text}` : text;
 }

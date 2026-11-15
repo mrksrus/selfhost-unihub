@@ -274,6 +274,7 @@ describe('optional compose features', () => {
     fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Switch to plain text' }));
     const body = await screen.findByPlaceholderText('Write your message...');
     expect((body as HTMLTextAreaElement).value).toContain('Alex Example');
+    expect((body as HTMLTextAreaElement).value, 'room to write above the signature').toMatch(/^\n\n-- \n/);
     expect(document.getElementById('compose-body')?.getAttribute('contenteditable')).not.toBe('true');
     fireEvent.click(screen.getByRole('button', { name: 'Switch to formatted text' }));
     await waitFor(() => expect(document.getElementById('compose-body')).toHaveAttribute('contenteditable', 'true'));
