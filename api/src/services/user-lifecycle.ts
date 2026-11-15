@@ -22,7 +22,8 @@ import { can } from '../security/permissions';
 import { hashPassword } from '../auth';
 import { assertCaller } from './caller-proof';
 import { joinGroups, membershipsByUser, underRulesLock } from './groups';
-import { assertPasswordLength, createSetupLink, peopleWithLiveLinks } from './invites';
+import { assertMayChangeAdmin, assertPasswordLength, createSetupLink, peopleWithLiveLinks } from './invites';
+import { TWO_FACTOR_GRACE_DAYS } from './sign-in-policies';
 import { lastActiveByUser } from './devices';
 
 type DeleteActor = 'self' | 'admin';
@@ -142,6 +143,7 @@ async function removeRows(userId: string, { actor, actorId, req }: { actor: Dele
     const [[person]] = await connection.execute<RowDataPacket[]>('SELECT id FROM users WHERE id = ? FOR UPDATE', [userId]);
     if (!person) return false;
     await assertNotOwner(connection, userId, 'delete');
+    if (actor === 'admin' && actorId) await assertMayChangeAdmin(connection, userId, actorId);
     await assertFinalStep(connection, { userId, policies: actor === 'self' ? ['account.delete'] : [], anyRestore: true });
     const [result] = await connection.execute<ResultSetHeader>('DELETE FROM users WHERE id = ?', [userId]);
     if (result.affectedRows > 0) {
@@ -189,7 +191,6 @@ async function removeUserFiles(userId: string, files: Set<string>, recordingPath
 
 // --- People (0.30): the list, Add person, the owner ------------------------------
 
-const GRACE_DAYS = 7;
 const UUID_LIST_MAX = 50;
 const iso = (value: unknown) => (value instanceof Date ? value : new Date(`${String(value).replace(' ', 'T')}Z`)).toISOString();
 
@@ -207,7 +208,7 @@ async function listPeople(onlyId: string | null = null): Promise<Person[]> {
     return {
       id, email: String(row.email), full_name: row.full_name ?? null, role: row.role as Role, status,
       is_active: !!Number(row.is_active), two_factor_enabled: !!Number(row.two_factor_enabled),
-      two_factor_grace_ends_at: graceStart ? new Date(graceStart.getTime() + GRACE_DAYS * 86400000).toISOString() : null,
+      two_factor_grace_ends_at: graceStart ? new Date(graceStart.getTime() + TWO_FACTOR_GRACE_DAYS * 86400000).toISOString() : null,
       groups: groups.get(id) ?? [], created_at: iso(row.created_at), last_active_at: lastActive.get(id) ?? null,
     };
   });

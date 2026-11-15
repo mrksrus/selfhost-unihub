@@ -5,7 +5,8 @@ import type { InviteCheckResponse, SetupLink } from '../contracts/organisation';
 import crypto from 'node:crypto';
 import { db } from '../state';
 import { passwordMinimum } from './sign-in-policies';
-import { badRequest, notFound } from '../http/errors';
+import { badRequest, forbidden, notFound } from '../http/errors';
+import { can } from '../security/permissions';
 import { getAllowedOriginForRequest } from '../http/request';
 import { recordAudit } from './audit';
 import { assertCaller } from './caller-proof';
@@ -40,6 +41,23 @@ function linkFor(token: string, expiresAt: unknown, req: AuthRequest | null): Se
 }
 
 const OWNER_SIGN_IN = 'Only the owner can change the owner\'s password, two-factor authentication or setup link.';
+const ADMIN_ACCOUNT = 'Only the owner can deactivate, activate or delete another administrator, or change their password, two-factor authentication or setup link.';
+
+/**
+ * In the transaction of a change to another person's account (deactivating,
+ * activating or deleting it, or changing their sign-in), with their row
+ * locked: an administrator's account is the owner's to change, as making and
+ * removing administrators is. Otherwise one administrator could remove
+ * another, or sign in as them. Ending their sessions or devices stays open
+ * to every administrator; one's own account is not checked here.
+ */
+async function assertMayChangeAdmin(cx: SqlExecutor, userId: string, actorId: string) {
+  if (userId === actorId) return;
+  const [rows] = await cx.execute<RowDataPacket[]>("SELECT 1 FROM users WHERE id = ? AND role = 'admin' FOR UPDATE", [userId]);
+  if (!rows.length) return;
+  const [[actor]] = await cx.execute<RowDataPacket[]>('SELECT role FROM users WHERE id = ? LOCK IN SHARE MODE', [actorId]);
+  if (!can(actor?.role, 'admins.manage')) throw forbidden('ADMINS_OWNER_ONLY', ADMIN_ACCOUNT);
+}
 
 /**
  * In the transaction of a change to another person's sign-in (their
@@ -51,6 +69,7 @@ async function assertMayChangeSignIn(cx: SqlExecutor, userId: string, actorId: s
   if (userId === actorId) return;
   const [rows] = await cx.execute<RowDataPacket[]>("SELECT 1 FROM users WHERE id = ? AND role = 'owner' FOR UPDATE", [userId]);
   if (rows.length) throw badRequest('OWNER_PROTECTED', OWNER_SIGN_IN);
+  await assertMayChangeAdmin(cx, userId, actorId);
 }
 
 /**
@@ -135,4 +154,4 @@ async function inviteeOf(token: unknown): Promise<string> {
   return (await personOfLink(token, db)).userId;
 }
 
-export { OWNER_SIGN_IN, assertMayChangeSignIn, passwordMinimum, assertPasswordLength, createSetupLink, renewSetupLink, revokeSetupLink, peopleWithLiveLinks, checkInvite, acceptInvite, inviteeOf };
+export { OWNER_SIGN_IN, ADMIN_ACCOUNT, assertMayChangeAdmin, assertMayChangeSignIn, passwordMinimum, assertPasswordLength, createSetupLink, renewSetupLink, revokeSetupLink, peopleWithLiveLinks, checkInvite, acceptInvite, inviteeOf };

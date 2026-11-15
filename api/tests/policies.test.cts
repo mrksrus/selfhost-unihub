@@ -146,7 +146,7 @@ test('levels: a locked value stands, an unlocked one is a floor along the key\'s
   assert.deepEqual(resolvePolicyValue(minimum, [level('90'), level('30')]), { value: '90', source: 'policy' });
 });
 
-// R1 (0.30): with only the installation's policies, the group level changes
+// 0.30: with only the installation's policies, the group level changes
 // nothing: any stored values resolve to themselves, any other key to its default.
 test('installation policies alone resolve as before groups, for random combinations', async () => {
   let seed = 30;

@@ -96,7 +96,7 @@ const AdminUsers = () => {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem asChild><Link to={`/admin/users/${encodeURIComponent(person.id)}`}>Groups, devices and data</Link></DropdownMenuItem>
-                        {able.activate && <DropdownMenuItem onClick={() => actions.activate(person)} disabled={actions.busy}>Activate</DropdownMenuItem>}
+                        {able.activate && <PolicyMenuItem lock={able.activateLock} onClick={() => actions.activate(person)} disabled={actions.busy}>Activate</PolicyMenuItem>}
                         {able.role && <PolicyMenuItem lock={able.roleLock} onClick={() => actions.open('role', person)}>{person.role === 'admin' ? 'Remove administrator rights' : 'Make administrator'}</PolicyMenuItem>}
                         {able.setupLink && <PolicyMenuItem lock={able.signInLock} onClick={() => actions.open('setup-link', person)}>New setup link</PolicyMenuItem>}
                         {able.revokeLink && <DropdownMenuItem onClick={() => actions.revokeLink(person)} disabled={actions.busy}>Revoke setup link</DropdownMenuItem>}

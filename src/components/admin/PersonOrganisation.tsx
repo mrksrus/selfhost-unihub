@@ -176,7 +176,7 @@ export function PersonAccount({ person, actions }: { person: Person; actions: Ac
         </SettingsRow>
       ) : (
         <SettingsRow label="Inactive" description="They cannot sign in. Their data, groups and manager roles are kept.">
-          <Button onClick={() => actions.activate(person)} disabled={actions.busy}>Activate</Button>
+          <Button onClick={() => actions.activate(person)} disabled={actions.busy || !!able.activateLock}>Activate</Button>
         </SettingsRow>
       )}
       <SettingsRow label="Delete person" tone="destructive" description="Deletes the account with all of its data, for good.">

@@ -2,6 +2,7 @@ import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { ok, signIn } from '../support/api.ts';
 import { onlyOn } from '../support/ui.ts';
+import { signInPassword } from '../support/env.ts';
 import { addPerson, createGroup, dialogPassword, passwordSignIn, personByEmail, setManager, sweep } from './organisation-helpers.ts';
 
 // 30-08: deactivating a person signs them out and stops sign-in; activating
@@ -38,6 +39,37 @@ test('[30-08] a deactivated person cannot sign in and keeps their data, group an
     const after = await signIn(person.email, { fresh: true });
     expect((await after('GET', `/api/contacts/${contact.id}`)).status, 'their contact is still theirs').toBe(200);
     expect(ok(await after<{ groups: { id: string; role: string }[] }>('GET', '/api/groups'), 'their groups').groups).toMatchObject([{ id: group.id, role: 'manager' }]);
+  } finally {
+    await sweep();
+  }
+});
+
+// Another administrator's account is the owner's to change: an administrator
+// who is not the owner is refused deactivating, deleting or resetting one
+// (the page greys those out; src/test/organisation-people.test.tsx), may
+// still sign their devices out, and the owner may deactivate them.
+test('an administrator who is not the owner cannot deactivate, delete or reset another administrator; the owner can', { session: 'admin', timeout: 300_000 }, async ({ browser }) => {
+  await onlyOn(browser, 'desktop');
+  await sweep();
+  try {
+    const first = await addPerson('admin-one', { role: 'admin' });
+    const second = await addPerson('admin-two', { role: 'admin' });
+    const one = await signIn(first.email, { fresh: true });
+    const two = await signIn(second.email, { fresh: true });
+    const body = { current_password: signInPassword };
+    for (const [what, method, path, extra] of [
+      ['deactivate', 'PUT', `/api/admin/users/${second.id}/activate`, { is_active: false }],
+      ['delete', 'DELETE', `/api/admin/users/${second.id}`, {}],
+      ['password', 'PUT', `/api/admin/users/${second.id}/password`, { new_password: 'administrator-chosen-password' }],
+    ] as const) {
+      const refused = await one<{ code?: string }>(method, path, { ...body, ...extra });
+      expect([refused.status, refused.data.code], what).toEqual([403, 'ADMINS_OWNER_ONLY']);
+    }
+    expect((await two('GET', '/api/auth/me')).status, 'the other administrator is untouched').toBe(200);
+    ok(await one('DELETE', `/api/admin/users/${second.id}/devices`, body), 'signing their devices out stays open');
+    expect((await two('GET', '/api/auth/me')).status, 'signed out').toBe(401);
+    ok(await (await signIn('admin'))('PUT', `/api/admin/users/${second.id}/activate`, { ...body, is_active: false }), 'the owner deactivates them');
+    expect((await personByEmail(second.email)).status).toBe('inactive');
   } finally {
     await sweep();
   }

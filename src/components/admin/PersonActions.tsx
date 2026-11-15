@@ -31,6 +31,8 @@ export const OWNER_ONLY_REASON = 'Only the owner makes or removes administrators
 export const OWNER_PROTECTED_REASON = 'The owner cannot be deactivated or deleted. They hand ownership to another administrator first.';
 /** The server's words (OWNER_PROTECTED): an administrator who could change the owner's sign-in could sign in as the owner. */
 export const OWNER_SIGN_IN_REASON = 'Only the owner can change the owner\'s password, two-factor authentication or setup link.';
+/** The server's words (ADMINS_OWNER_ONLY): another administrator's account is the owner's to change. */
+export const ADMIN_ACCOUNT_REASON = 'Only the owner can deactivate, activate or delete another administrator, or change their password, two-factor authentication or setup link.';
 
 type Open = { action: PersonAction; person: Person; generation: number };
 
@@ -40,6 +42,8 @@ export function personAbilities(viewer: Parameters<typeof can>[0] & { id?: strin
   const self = person.id === viewer?.id;
   const owner = person.role === 'owner';
   const pending = person.status === 'invited' || person.status === 'not_set_up';
+  // Signing an administrator's devices out stays open; their account is the owner's to change.
+  const adminLock = person.role === 'admin' && !self && !can(viewer, 'admins.manage') ? ADMIN_ACCOUNT_REASON : undefined;
   return {
     manage, self, owner, pending,
     role: manage && !owner && !self,
@@ -51,8 +55,9 @@ export function personAbilities(viewer: Parameters<typeof can>[0] & { id?: strin
     deactivate: manage && person.is_active && !self,
     activate: manage && !person.is_active,
     remove: manage && !self,
-    protectedLock: owner ? OWNER_PROTECTED_REASON : undefined,
-    signInLock: owner && !self ? OWNER_SIGN_IN_REASON : undefined,
+    protectedLock: owner ? OWNER_PROTECTED_REASON : adminLock,
+    signInLock: owner && !self ? OWNER_SIGN_IN_REASON : adminLock,
+    activateLock: adminLock,
     transfer: owner && self && can(viewer, 'owner.transfer'),
   };
 }

@@ -760,7 +760,11 @@ Accepted, 2026-11-14 (maintainer, for 0.30.0). Built in 0.30.0.
 
 Every installation has exactly one owner. Only the owner makes or removes
 administrators and hands ownership to another active administrator, with
-their password. Nobody can demote, deactivate or delete the owner, and only
+their password. Removing includes deactivating, activating or deleting
+another administrator, and changing their password, two-factor
+authentication or setup link is the owner's too (review of 0.30.0,
+2026-11-15), so one administrator can neither remove another nor sign in as
+them; any administrator may still sign another's devices out. Nobody can demote, deactivate or delete the owner, and only
 the owner changes the owner's own password, two-factor authentication or
 setup link; an administrator may still sign the owner's devices out, which
 changes nothing else. After an upgrade the earliest-created active

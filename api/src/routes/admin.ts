@@ -10,7 +10,7 @@ import { BACKUPS_ROOT } from '../services/export-jobs';
 import { realtime } from '../services/realtime';
 import { endUserSessions, lockOwnSession } from '../services/sessions';
 import { addPerson, assertCallerManagesAdmins, assertKeepsAnAdmin, assertNotOwner, deleteUser, listPeople, transferOwnership } from '../services/user-lifecycle';
-import { OWNER_SIGN_IN, assertMayChangeSignIn, renewSetupLink, revokeSetupLink } from '../services/invites';
+import { ADMIN_ACCOUNT, assertMayChangeAdmin, assertMayChangeSignIn, renewSetupLink, revokeSetupLink } from '../services/invites';
 import { endPersonDevices, personDevices } from '../services/devices';
 import type { AddPersonResponse, EndDevicesResponse, PeopleResponse, PersonDevicesResponse, SetupLinkResponse } from '../contracts/organisation';
 import { asCaller, assertCaller } from '../services/caller-proof';
@@ -426,8 +426,8 @@ export = defineRoutes({
       if (!can(requester?.role, 'users.manage')) { await connection.rollback(); return { error: 'Forbidden', status: 403 }; }
       const targets = rows.filter(row => row.id === targetId);
       if (!targets.length) { await connection.rollback(); return { error: 'User not found', status: 404 }; }
-      // Only the owner changes the owner's sign-in (services/invites.ts assertMayChangeSignIn).
-      if (targets[0].role === 'owner') { await connection.rollback(); return { error: OWNER_SIGN_IN, status: 400, code: 'OWNER_PROTECTED' }; }
+      // Only the owner changes the owner's or another administrator's sign-in.
+      await assertMayChangeSignIn(connection, targetId, userId);
       if (!targets[0].two_factor_enabled) {
         await connection.rollback();
         return { error: 'Two-factor authentication is not enabled for this user', status: 400 };
@@ -442,8 +442,8 @@ export = defineRoutes({
       return { message: 'Two-factor authentication reset' };
     } catch (error) {
       if (connection) await connection.rollback().catch(() => {});
-      console.error('Admin 2FA reset error:', error);
-      return { error: 'Failed to reset two-factor authentication', status: 500 };
+      if (!(error as ApiError).status) console.error('Admin 2FA reset error:', error);
+      return clientError(error, 'Failed to reset two-factor authentication');
     } finally {
       connection?.release();
     }
@@ -468,6 +468,8 @@ export = defineRoutes({
       if (can(targetUser.role, 'users.manage') && targetUser.is_active && (await getActiveAdminCount()) <= 1) {
         return { error: 'Cannot delete the last active admin', status: 400 };
       }
+      // A quick answer before the mail work stops; deleteUser checks it under the person's row.
+      if (targetUser.role === 'admin' && !await hasPermission(userId, 'admins.manage')) return { error: ADMIN_ACCOUNT, code: 'ADMINS_OWNER_ONLY', status: 403 };
       await asAdmin(req, userId, confirmed.passwordHash, () => deleteUser(id, { actor: 'admin', actorId: userId, req }));
       return { message: 'User deleted' };
     } catch (error) {
@@ -530,6 +532,7 @@ export = defineRoutes({
         if (!is_active) await assertKeepsAnAdmin(connection, id, 'deactivate');
         if (!await lockPerson(connection, id)) return false;
         if (!is_active) await assertNotOwner(connection, id, 'deactivate');
+        await assertMayChangeAdmin(connection, id, userId);
         await assertCaller(connection);
         await connection.execute('UPDATE users SET is_active = ? WHERE id = ?', [!!is_active, id]);
         if (!is_active) await endUserSessions(id, connection);

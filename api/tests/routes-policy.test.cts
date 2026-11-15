@@ -219,7 +219,7 @@ test('with the whole app required, every signed-in route that is not exempt refu
     assert.deepEqual(result.body.details, { required: ['app'], max_background: null, reason: 'Your administrator requires the app lock for the whole app.' }, key);
   }
   assert.ok(queries.every(sql => /^SELECT (role FROM users|setting_value FROM user_settings|requested_sections|target_kind, setting_key, setting_value, locked FROM setting_policies)/.test(sql.trim())), 'no handler ran');
-  // The gates (module, data safety, app lock) share one read of the person's rules (R2).
+  // The gates (module, data safety, app lock) share one read of the person's rules.
   assert.equal(queries.filter(sql => sql.includes('FROM setting_policies')).length, keys.length, 'one policy read per request');
 });
 

@@ -90,3 +90,60 @@ test('roles: the owner keeps the installation, only the owner makes administrato
   const [[transfer]] = await pool.query<RowDataPacket[]>("SELECT actor_id, target_user_id FROM audit_log WHERE action = 'owner.transferred'");
   assert.deepEqual([transfer.actor_id, transfer.target_user_id], [ids.admin, bootstrapId]);
 });
+
+// Another administrator's account is the owner's to change, as making and
+// removing administrators is: an administrator who is not the owner cannot
+// deactivate, activate or delete one, reset their password or 2FA or give
+// them a setup link, but may still sign their devices out. Members stay an
+// administrator's to manage, and the owner may do all of it.
+test('roles: only the owner removes another administrator or changes their sign-in', { skip: !process.env.MYSQL_TEST_HOST, timeout: 300000 }, async t => {
+  const pool = await withTestDatabase(t);
+  const { ids, clients, password, api } = await seedPeople(t, pool);
+  const owner = clients.admin;
+  const b = api.client();
+  const bPassword = String(process.env.BOOTSTRAP_ADMIN_PASSWORD);
+  assert.equal((await b.request('POST', '/api/auth/signin', { email: process.env.BOOTSTRAP_ADMIN_EMAIL, password: bPassword })).status, 200);
+  const [[bRow]] = await pool.query<RowDataPacket[]>('SELECT id FROM users WHERE email = ?', [process.env.BOOTSTRAP_ADMIN_EMAIL]);
+  const bId = String(bRow.id);
+  // C: the manager made an administrator, with 2FA on; D: an administrator who has not set a password yet.
+  const c = ids.manager, d = ids.stranger, member = ids.member;
+  await pool.execute("UPDATE users SET role = 'admin', two_factor_enabled = TRUE WHERE id = ?", [c]);
+  await pool.execute("UPDATE users SET role = 'admin', password_hash = '' WHERE id = ?", [d]);
+  const status = async (reply: Promise<{ status: number; body: FixtureValue }>) => { const { status: code, body } = await reply; return [code, body.code ?? null]; };
+  const row = async (id: string) => (await pool.query<RowDataPacket[]>('SELECT role, is_active, password_hash, two_factor_enabled FROM users WHERE id = ?', [id]))[0][0];
+  const refused = [403, 'ADMINS_OWNER_ONLY'];
+
+  const before = await row(c);
+  assert.deepEqual(await status(b.request('PUT', `/api/admin/users/${c}/activate`, { is_active: false, current_password: bPassword })), refused, 'deactivate');
+  assert.deepEqual(await status(b.request('PUT', `/api/admin/users/${c}/password`, { new_password: 'administrator-chosen-password', current_password: bPassword })), refused, 'password');
+  assert.deepEqual(await status(b.request('POST', `/api/admin/users/${c}/2fa/reset`, { current_password: bPassword })), refused, 'two-factor reset');
+  assert.deepEqual(await status(b.request('DELETE', `/api/admin/users/${c}`, { current_password: bPassword })), refused, 'delete');
+  assert.deepEqual(await status(b.request('POST', `/api/admin/users/${d}/setup-link`, { current_password: bPassword })), refused, 'setup link');
+  assert.deepEqual(await row(c), before, 'C is untouched');
+  assert.equal((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM invites WHERE user_id = ?', [d]))[0][0].n, 0, 'no link for D');
+  await pool.execute('UPDATE users SET is_active = FALSE WHERE id = ?', [d]);
+  assert.deepEqual(await status(b.request('PUT', `/api/admin/users/${d}/activate`, { is_active: true, current_password: bPassword })), refused, 'activate');
+  assert.equal(Number((await row(d)).is_active), 0);
+  await pool.execute('UPDATE users SET is_active = TRUE WHERE id = ?', [d]);
+
+  // Signing C's devices out stays open to B: it ends sessions and changes nothing else.
+  assert.equal((await clients.manager.request('GET', '/api/auth/me')).status, 200);
+  assert.equal((await b.request('DELETE', `/api/admin/users/${c}/devices`, { current_password: bPassword })).status, 200);
+  assert.equal((await clients.manager.request('GET', '/api/auth/me')).status, 401);
+  assert.deepEqual(await row(c), before);
+
+  // A member stays B's to manage, and B's own password is B's.
+  assert.equal((await b.request('PUT', `/api/admin/users/${member}/activate`, { is_active: false, current_password: bPassword })).status, 200);
+  assert.equal((await b.request('PUT', `/api/admin/users/${member}/activate`, { is_active: true })).status, 200);
+  assert.equal((await b.request('PUT', `/api/admin/users/${member}/password`, { new_password: 'administrator-reset-password', current_password: bPassword })).status, 200);
+  assert.equal((await b.request('PUT', `/api/admin/users/${bId}/password`, { new_password: 'bootstrap-chosen-password', current_password: bPassword })).status, 200);
+
+  // The owner may do each of them.
+  assert.equal((await owner.request('POST', `/api/admin/users/${c}/2fa/reset`, { current_password: password })).status, 200);
+  assert.equal((await owner.request('PUT', `/api/admin/users/${c}/password`, { new_password: 'owner-reset-password', current_password: password })).status, 200);
+  assert.equal((await owner.request('POST', `/api/admin/users/${d}/setup-link`, { current_password: password })).status, 200);
+  assert.equal((await owner.request('PUT', `/api/admin/users/${c}/activate`, { is_active: false, current_password: password })).status, 200);
+  assert.equal((await owner.request('PUT', `/api/admin/users/${c}/activate`, { is_active: true })).status, 200);
+  assert.equal((await owner.request('DELETE', `/api/admin/users/${c}`, { current_password: password })).status, 200);
+  assert.equal((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM users WHERE id = ?', [c]))[0][0].n, 0);
+});

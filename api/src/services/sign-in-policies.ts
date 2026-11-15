@@ -25,9 +25,12 @@ async function sessionOutlived(userId: string, createdAt: Date | string, now = n
   return value !== 'none' && now.getTime() - new Date(createdAt).getTime() >= Number(value) * DAY_MS;
 }
 
-// --- Two-factor authentication required (auth.two_factor, D51) -----------------
+// --- Two-factor authentication required (auth.two_factor) ----------------------
+// A person the rule reaches without 2FA gets this many days, counted from the
+// first time it applies to them; then only setting it up is left.
 
-const GRACE_MS = 7 * DAY_MS;
+const TWO_FACTOR_GRACE_DAYS = 7;
+const GRACE_MS = TWO_FACTOR_GRACE_DAYS * DAY_MS;
 
 interface TwoFactorState { enabled: boolean; requiredSince: Date | null }
 
@@ -97,5 +100,5 @@ async function previewTwoFactor(memberIds: readonly string[] | null, executor: S
   } };
 }
 
-export { passwordMinimum, sessionOutlived, twoFactorRequirement, syncTwoFactorGrace, previewTwoFactor };
+export { TWO_FACTOR_GRACE_DAYS, passwordMinimum, sessionOutlived, twoFactorRequirement, syncTwoFactorGrace, previewTwoFactor };
 export type { TwoFactorState };

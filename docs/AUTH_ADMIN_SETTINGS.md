@@ -436,10 +436,13 @@ Safety checks:
   demoted or deactivated, and only the owner changes the owner's password,
   2FA or setup link (`400 OWNER_PROTECTED`; [Roles and the
   owner](#roles-and-the-owner))
+- only the owner deactivates, activates or deletes another administrator or
+  changes their password, 2FA or setup link (`403 ADMINS_OWNER_ONLY`)
 - the last active admin cannot be deleted (also not through Settings > Delete
   account), demoted or deactivated (`400 LAST_ADMIN`). The check locks every
-  active admin's row (the owner's included) in the transaction of the change,
-  so two admins removing each other at once leave one
+  active admin's row (the owner's included) in the transaction of the change;
+  since only the owner removes administrators and nobody removes the owner,
+  two admins cannot remove each other
 - changing a person's password, role or status and deleting a person ask
   again, in the transaction that writes, that the admin is still an active
   admin, signed in with this session and with the password entered
@@ -470,7 +473,14 @@ to 0.30 makes the earliest-created active administrator the owner
 ([Upgrading](UPGRADING.md)).
 
 Only the owner makes or removes administrators (`admins.manage`): giving or
-taking the admin role, and adding a person as an admin. The owner hands
+taking the admin role, adding a person as an admin, and deactivating,
+activating or deleting another administrator. The same holds for another
+administrator's sign-in: their password, 2FA reset and setup link. An
+administrator who is not the owner gets `403 ADMINS_OWNER_ONLY` for these,
+checked in the transaction that writes with the administrator's row locked,
+so one administrator can neither remove another nor sign in as them. Every
+administrator may still sign another administrator's devices out, act on
+members and change their own account as before. The owner hands
 ownership on with `POST /api/admin/owner/transfer` and their password; the
 new owner must be an active administrator who has a password, and the former
 owner becomes an administrator, in one transaction. Until then nobody,
@@ -484,7 +494,8 @@ locked. Otherwise an administrator could sign in as the owner and so make or
 remove administrators. An administrator may still sign the owner's devices
 out: that ends sessions only, and the owner signs in again with their own
 password and second factor. In Server > People the owner's row greys those
-actions out with the reason.
+actions out with the reason, and for an administrator who is not the owner
+so do the other administrators' rows.
 
 ## People
 

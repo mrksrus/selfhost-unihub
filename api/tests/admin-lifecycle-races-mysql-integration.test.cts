@@ -9,8 +9,9 @@ const { withTestDatabase, startTestApi } = require('./helpers/test-database.cts'
 // An administrator's change of another person (password, role, status,
 // deletion) through the real request handler and MariaDB, held after the
 // administrator's password was checked: what happens meanwhile counts when
-// it acts. Two administrators removing each other leave one; an
-// administrator signed out or demoted meanwhile changes nothing.
+// it acts. Two administrators cannot remove each other (only the owner
+// removes an administrator); an administrator signed out or demoted
+// meanwhile changes nothing.
 test('an administrator\'s change of a person counts the administrators and the caller as they are when it acts', {
   skip: !process.env.MYSQL_TEST_HOST, timeout: 120000,
 }, async t => {
@@ -40,7 +41,6 @@ test('an administrator\'s change of a person counts the administrators and the c
     try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('the change never reached its pause')), 20000); })]); }
     finally { clearTimeout(timer); }
   };
-  const settlesSoon = (promise: Promise<unknown>, ms: number) => Promise.race([promise.then(() => true, () => true), new Promise<boolean>(done => setTimeout(() => done(false), ms))]);
   // Holds the first app statement containing `marker`, on the pool or on a
   // connection taken from it, once it has answered, until release().
   function pauseAfter(marker: string) {
@@ -68,33 +68,22 @@ test('an administrator\'s change of a person counts the administrators and the c
     };
   }
 
-  // Two administrators, each removing the other while the first one's change
-  // waits after its count: the second change goes through, the first then
-  // finds its caller or the last administrator, and one stays. (Demoting is
-  // the owner's alone since 0.30, and the owner cannot be demoted.)
+  // Two administrators removing each other at once: since 0.30 another
+  // administrator's account is the owner's to change, so neither goes
+  // through and both stay (the owner, whom nobody removes, keeps the
+  // installation administered; demoting is the owner's alone too).
   for (const [change, request] of [
     ['deactivate', (target: string) => ({ method: 'PUT', url: `/api/admin/users/${target}/activate`, body: { is_active: false, current_password: password } })],
     ['delete', (target: string) => ({ method: 'DELETE', url: `/api/admin/users/${target}`, body: { current_password: password } })],
   ] as const) {
-    await t.test(`two administrators who ${change} each other leave one`, async () => {
+    await t.test(`two administrators who ${change} each other are both refused`, async () => {
       const a = await person(`${change}-a`, 'admin'), b = await person(`${change}-b`, 'admin');
-      const pause = pauseAfter("role IN ('owner', 'admin') AND is_active = TRUE");
-      const first = request(b.id), second = request(a.id);
-      const pending = a.client.request(first.method, first.url, first.body);
-      let other: Promise<FixtureValue> | undefined;
       try {
-        await pause.reached();
-        other = b.client.request(second.method, second.url, second.body);
-        // Before the fix it went through at once; now it waits for the first one's locks.
-        await settlesSoon(other, 1000);
-        pause.release();
-        const replies = [await pending, await other];
-        assert.equal(await activeAdmins(), 1, `one administrator stays: ${JSON.stringify(replies.map(reply => [reply.status, reply.body.code]))}`);
-        const [done, refused] = replies.map(reply => reply.status).sort();
-        assert.equal(done, 200, 'one change went through');
-        assert.ok([400, 401, 403].includes(refused), 'the other is refused');
+        const first = request(b.id), second = request(a.id);
+        const replies = await Promise.all([a.client.request(first.method, first.url, first.body), b.client.request(second.method, second.url, second.body)]);
+        assert.deepEqual(replies.map(reply => [reply.status, reply.body.code]), [[403, 'ADMINS_OWNER_ONLY'], [403, 'ADMINS_OWNER_ONLY']]);
+        assert.equal(await activeAdmins(), 2, 'both stay');
       } finally {
-        pause.restore(); await pending.catch(() => {}); await other?.catch(() => {});
         await pool.execute('DELETE FROM users WHERE id IN (?, ?)', [a.id, b.id]);
       }
     });

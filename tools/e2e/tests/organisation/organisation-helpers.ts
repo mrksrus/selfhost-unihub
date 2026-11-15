@@ -42,11 +42,11 @@ export async function personByEmail(email: string) {
 export const seededId = async (name: Person) => (await personByEmail(people[name].email)).id;
 
 /** A person of the test's own, added by the owner; with a password they sign in as the seeded people do. */
-export async function addPerson(label: string, { password = true, groups = [] as string[] } = {}) {
+export async function addPerson(label: string, { password = true, groups = [] as string[], role = 'user' as 'user' | 'admin' } = {}) {
   const email = newEmail(label);
   const name = `${label[0].toUpperCase()}${label.slice(1)} ${runId()}`;
   const answer = ok(await (await owner())<{ user: PersonRow; setup_link: { url: string } | null }>('POST', '/api/admin/users', {
-    email, full_name: name, role: 'user', group_ids: groups, ...(password ? { password: signInPassword } : {}), current_password: signInPassword,
+    email, full_name: name, role, group_ids: groups, ...(password ? { password: signInPassword } : {}), current_password: signInPassword,
   }), `add ${email}`);
   return { id: answer.user.id, email, name, setupLink: answer.setup_link?.url ?? null };
 }

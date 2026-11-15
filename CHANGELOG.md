@@ -26,9 +26,12 @@ administrator the **owner**; nobody is signed out (see
   sign-up mode. The link opens a page that shows the person the rules that
   apply to them before they choose a password.
 - **Owner.** One person is the owner. Only the owner makes or removes
-  administrators and changes the owner's own password, two-factor
-  authentication or setup link; nobody can demote, deactivate or delete the
-  owner. The owner hands ownership to another active administrator from that
+  administrators: deactivating, activating or deleting another administrator,
+  or changing their password, two-factor authentication or setup link, is the
+  owner's too, so one administrator can neither remove another nor sign in as
+  them. Only the owner changes the owner's own sign-in, and nobody can
+  demote, deactivate or delete the owner. Signing someone's devices out stays
+  open to every administrator. The owner hands ownership to another active administrator from that
   person's page. "User" is now shown as **Member**.
 - **Groups and managers.** Server → Groups lists Everyone (every active
   person) and the groups; a person can be in several. An administrator names

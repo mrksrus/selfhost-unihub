@@ -23,9 +23,12 @@ deletes setup links and stored sign-in attempts (see
 [Data recovery](DATA_RECOVERY.md)).
 
 - **Check who became owner.** Server → People shows **Owner** on one
-  row. Only the owner makes or removes administrators and changes the owner's
-  own password, two-factor authentication or setup link; nobody can demote,
-  deactivate or delete the owner. If the wrong person was chosen, that person
+  row. Only the owner makes or removes administrators (also deactivating,
+  activating or deleting one, or changing an administrator's password,
+  two-factor authentication or setup link) and changes the owner's own
+  sign-in; nobody can demote, deactivate or delete the owner. An
+  administrator who used to manage other administrators' accounts now asks
+  the owner (`403 ADMINS_OWNER_ONLY`). If the wrong person was chosen, that person
   hands ownership to another active administrator on their person page
   (**Hand over ownership**, with their password). The other administrators
   keep every other right.
@@ -55,7 +58,8 @@ deletes setup links and stored sign-in attempts (see
   in the database, so a restart no longer clears them. The counts held before the
   upgrade are lost once, at its restart.
 - **New answers.** `403 TWO_FACTOR_REQUIRED` after the grace,
-  `400 OWNER_PROTECTED` for an action on the owner, `404 GROUP_NOT_FOUND` and
+  `400 OWNER_PROTECTED` for an action on the owner, `403 ADMINS_OWNER_ONLY`
+  for one on another administrator, `404 GROUP_NOT_FOUND` and
   `403 GROUP_FORBIDDEN` on group routes, and `404 INVITE_INVALID` for a
   setup link that is unknown, used, revoked or expired.
 - **No new configuration.** No environment variable, port, container or

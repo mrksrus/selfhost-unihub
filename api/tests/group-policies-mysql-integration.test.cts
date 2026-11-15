@@ -31,7 +31,7 @@ test('group policies: stricter only, the strictest group wins, floors, the notic
     call(admin, 'PUT', `/api/admin/groups/${id}/policies`, { current_password: password, ...body }, status);
   const policy = async (client: Client, key: string) => (await call(client, 'GET', '/api/policies/effective')).policies[key];
   const value = async (client: Client, key: string) => (await policy(client, key)).value;
-  // Everyone confirms the rules first (the notice of 0.28 D38).
+  // Everyone confirms the rules first: a changed rule leaves its notice due, and the notice covers the page.
   const acknowledgeAll = async () => {
     for (const client of Object.values(clients)) await call(client, 'POST', '/api/policies/acknowledge', { revision: (await call(client, 'GET', '/api/policies/effective')).revision });
   };

@@ -173,6 +173,22 @@ describe('Server › People', () => {
     expect(await screen.findByRole('option', { name: 'Administrator' })).toHaveAttribute('aria-disabled', 'true');
   });
 
+  it('another administrator\'s account is the owner\'s to change: greyed with the reason for an administrator, open to the owner', { timeout: 30_000 }, async () => {
+    mountSignedIn(<AdminUsers />, { user: signInAs({ ...ADMIN, id: 'user-other', email: 'other@example.com' }) });
+    let menu = await openMenu('grace@example.com');
+    for (const name of [/Set a new password/, /Reset 2FA/, /Deactivate/, /Delete person/]) {
+      const entry = within(menu).getByRole('menuitem', { name });
+      expect(entry).toHaveAttribute('aria-disabled', 'true');
+      expect(entry).toHaveTextContent('Only the owner can deactivate, activate or delete another administrator, or change their password, two-factor authentication or setup link.');
+    }
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    cleanup();
+
+    mountSignedIn(<AdminUsers />, { user: signInAs(SERVER_OWNER) });
+    menu = await openMenu('grace@example.com');
+    for (const name of [/Set a new password/, /Reset 2FA/, /Deactivate/, /Delete person/]) expect(within(menu).getByRole('menuitem', { name })).not.toHaveAttribute('aria-disabled', 'true');
+  });
+
   it('a person without a password gets a new setup link with the administrator\'s password, and a live link can be revoked', { timeout: 30_000 }, async () => {
     // The server knew no origin for the request: the link is a path, completed with this page's origin.
     vi.mocked(api.post).mockResolvedValue({ data: { setup_link: { ...LINK, url: '/invite#synthetic-token-0123456789' } } });
