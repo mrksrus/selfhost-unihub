@@ -301,6 +301,19 @@ describe('attachments and saves of one draft (B-12)', () => {
     expect(vi.mocked(api.post).mock.calls.map(([path]) => path)).not.toContain('/mail/send');
   });
 
+  it('Send before the first autosave: the autosave due while the message is sent saves no copy', async () => {
+    const sent = deferred<Awaited<ReturnType<typeof api.post>>>();
+    vi.mocked(api.post).mockImplementation(async path => path === '/mail/send' ? sent.promise : { data: { draft, uploaded: [] } });
+    const hook = mount();
+    act(() => hook.result.current.openCompose());
+    act(() => hook.result.current.updateComposeForm({ to: 'reader@example.test', subject: 'New', body: '<p>Hi</p>' }));
+    send(hook);
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.anything(), expect.anything()));
+    await act(() => new Promise(resolve => setTimeout(resolve, 2000)));
+    await act(async () => sent.resolve({ data: { message: 'sent' } }));
+    expect(vi.mocked(api.post).mock.calls.map(([path]) => path)).not.toContain('/mail/drafts');
+  });
+
   it('Discard while the first autosave is still creating the draft deletes that draft', async () => {
     const created = deferred<Awaited<ReturnType<typeof api.post>>>();
     vi.mocked(api.post).mockImplementation(async path => path === '/mail/drafts' ? created.promise : { data: {} });

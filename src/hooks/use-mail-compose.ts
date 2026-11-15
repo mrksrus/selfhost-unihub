@@ -657,9 +657,12 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     return tracked;
   }, [saveNow]);
 
+  const sending = isSubmitting || sendEmailMutation.isPending;
   useEffect(() => {
     if (!isComposeDirty || !fromAccountId) return;
     if (!isComposeOpen && !isReplying) return;
+    // A save landing while the message is sent would leave a copy in Drafts.
+    if (sending) return;
     if (!isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length, bodyFormat)) return;
 
     const timeout = window.setTimeout(() => {
@@ -680,6 +683,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     saveCurrentDraft,
     selectedAccount,
     fromAccountId,
+    sending,
   ]);
 
   const deleteDraftById = async (draftId: string) => {
@@ -941,7 +945,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     addComposeFiles, removeComposeAttachment, removeExistingDraftAttachment, handleComposeAttachmentInput,
     inlineComposeEditorRef, dialogComposeEditorRef, updateComposeBodyFromEditor, applyComposeCommand,
     activeDraftId, isDirty: isComposeDirty || attachmentsDirty, isDraftSaving, draftSavedAt,
-    isSending: isSubmitting || sendEmailMutation.isPending,
+    isSending: sending,
     openDraftForCompose, startResponse, resetComposeState, closeComposeFlow, handleSendEmail, saveCurrentDraft,
     composeClosePromptOpen, setComposeClosePromptOpen, discardCurrentCompose, saveAndClose,
     draftToDelete, setDraftToDelete, confirmDeleteDraft,
