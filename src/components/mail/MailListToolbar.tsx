@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react';
-import { CheckCircle2, CheckSquare, FolderOpen, Mail, PenSquare, Search, Square, Star, Trash2, X } from 'lucide-react';
+import { CheckCircle2, CheckSquare, FolderOpen, Mail, PenSquare, Search, Square, Star, Trash2, X, XCircle } from 'lucide-react';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import type { MailAccount, MailFolder } from '@/lib/mail-api';
 import type { MailListView } from '@/hooks/use-mail-list-view';
 import type { MailListSelection } from '@/hooks/use-mail-list-selection';
@@ -52,6 +53,8 @@ interface ToolbarProps {
   syncControl: ReactNode;
   /** Compose moves into the header while the panel (which offers it) is folded away. */
   onCompose: () => void;
+  /** The checked messages are in a Download account's Trash and the rules allow deleting them for good. */
+  canDeleteForGood?: boolean;
 }
 
 const chip = (on: boolean) => cn('inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-sm touch:h-10 touch:px-3.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -62,8 +65,9 @@ const chip = (on: boolean) => cn('inline-flex h-8 shrink-0 items-center gap-1.5 
  * filter and search, or with the actions for checked messages.
  */
 export function MailListToolbar({ emailCount, selection, folderLabel, accountLabel, account, list, bulk,
-  moveTargets, syncControl, onCompose }: ToolbarProps) {
+  moveTargets, syncControl, onCompose, canDeleteForGood = false }: ToolbarProps) {
   const { selectedEmails, selectedIds } = selection;
+  const [confirmForGood, setConfirmForGood] = useState(false);
   const selecting = selectedEmails.size > 0;
   const allSelected = emailCount > 0 && selectedEmails.size === emailCount;
   const { folded } = usePagePanel();
@@ -107,7 +111,25 @@ export function MailListToolbar({ emailCount, selection, folderLabel, accountLab
               className="text-destructive hover:text-destructive">
               <Trash2 aria-hidden="true" /><span className="hidden sm:inline">Delete</span>
             </Button>
+            {canDeleteForGood && (
+              <Button variant="outline" size="sm" aria-label="Delete selected for good" onClick={() => setConfirmForGood(true)} disabled={bulk.deleteForGoodPending(selectedIds)}
+                className="text-destructive hover:text-destructive">
+                <XCircle aria-hidden="true" /><span className="hidden sm:inline">Delete for good</span>
+              </Button>
+            )}
           </div>
+          <AlertDialog open={confirmForGood && canDeleteForGood} onOpenChange={setConfirmForGood}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>{selectedIds.length === 1 ? 'Delete this message for good?' : `Delete ${selectedIds.length} messages for good?`}</AlertDialogTitle>
+                <AlertDialogDescription>UniHub's copy is deleted and cannot be restored. The copy on the mail server is not changed.</AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={() => bulk.deleteForGood(selectedIds)}>Delete for good</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </> : account && <>
           <button type="button" className={chip(list.showUnreadOnly)} aria-pressed={list.showUnreadOnly}
             onClick={() => list.setShowUnreadOnly(!list.showUnreadOnly)}>

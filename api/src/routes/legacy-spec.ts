@@ -102,6 +102,9 @@ const APP_LOCK_MODULES_BY_ROUTE: Readonly<Record<string, readonly string[]>> = {
 // - Deleting a mail folder at the provider as well (server=1 or true, as the
 //   route reads it) deletes its mail there and here: mail.provider_delete. A
 //   folder that is only UniHub's returns its mail to Inbox and names none.
+// - Deleting messages in a Download account's Trash for good (permanent=true)
+//   removes UniHub's only copy here: bin.delete, like deleting from the bin.
+//   Without it the messages move to Trash and name none.
 // - One mail account's backup (routes/backup.ts declares the other backup routes).
 // The rules that depend on the body are checked in their services with the
 // same function and code: the mail mode and the provider-deletion switch of
@@ -112,6 +115,7 @@ const POLICIES_BY_ROUTE: Readonly<Record<string, Pick<RoutePolicy, 'destructive'
   'POST /api/mail/accounts': { requires: ['accounts.add'] },
   'DELETE /api/mail/accounts/:id': { destructive: ['accounts.remove', { policy: 'accounts.reset', query: { purge: 'true' } }] },
   'DELETE /api/mail/folders/:slug': { destructive: [{ policy: 'mail.provider_delete', query: { server: SERVER_DELETE_VALUES } }] },
+  'POST /api/mail/emails/bulk-delete': { destructive: [{ policy: 'bin.delete', query: { permanent: 'true' } }] },
   'POST /api/mail/accounts/:id/backup-export': { requires: ['backup.create'] },
   'POST /api/calendar/accounts': { requires: ['accounts.add'] },
   'DELETE /api/calendar/accounts/:id': { destructive: ['accounts.remove'] },

@@ -773,7 +773,7 @@ that request reads them.
 | `accounts.add`, `accounts.remove`, `accounts.reset` | `allowed`, `forbidden` | adding, removing mail and calendar accounts (also turning a linked calendar on or off), deleting UniHub's copy of an account's mail |
 | `account.delete` | `allowed`, `forbidden` | deleting one's own UniHub account |
 | `data.clear` | `allowed`, `forbidden`; also forbidden while `bin.delete` is | Settings > Delete data |
-| `bin.delete` | `allowed`, `forbidden` | deleting from the bin for good and emptying it; the automatic purge then keeps items for the bin's minimum |
+| `bin.delete` | `allowed`, `forbidden` | deleting from the bin for good and emptying it, and deleting messages in a Download mail account's Trash for good; the automatic purge then keeps items for the bin's minimum |
 | `accounts.admin_manage` | `available` | nothing: the administrator's path is always there |
 | `app_lock.required` | nothing, `app`, or a list of modules (`mail`, `contacts`, `calendar`, `recordings`) | using the listed parts on a device that does not lock them ([App lock](APP_LOCK.md#required-by-the-administrator)); a floor of the device setting `app_lock_scope` |
 | `app_lock.max_background` | `none`, `900`, `300`, `60`, `0` (seconds) | a longer **Ask again** (`app_lock_relock_after`) while a lock is required |

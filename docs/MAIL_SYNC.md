@@ -755,7 +755,7 @@ conflict response.
 | GET | `/api/mail/emails/:id/thread` | Every message of the conversation that message belongs to, oldest first |
 | PUT | `/api/mail/emails/:id/read` | Set read state |
 | PUT | `/api/mail/emails/:id/star` | Set starred state |
-| POST | `/api/mail/emails/bulk-delete` | Move selected messages to `trash` |
+| POST | `/api/mail/emails/bulk-delete` | Move selected messages to `trash`; with `?permanent=true`, delete UniHub's copy of messages in a Download account's Trash for good (policy `bin.delete`; 409 `MAIL_STILL_DOWNLOADING` until the folder is read to the end) |
 | POST | `/api/mail/emails/bulk-move` | Move selected messages to another app folder |
 | POST | `/api/mail/emails/bulk-update` | Bulk read/star updates |
 | GET | `/api/mail/unread-counts` | Unread counts by folder and optionally account |

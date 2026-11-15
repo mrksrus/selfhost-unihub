@@ -1,10 +1,10 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { outside, people, runId } from '../support/env.ts';
-import { createProviderFolder, createProviderMailbox, deleteProviderFolder, moveProviderMessage, providerFlags, sendMail, setProviderFlags, waitForDelivery, waitForProviderFlag } from '../support/mail.ts';
+import { createProviderFolder, createProviderMailbox, deleteProviderFolder, deliveredWithSubject, moveProviderMessage, providerFlags, sendMail, setProviderFlags, waitForDelivery, waitForProviderFlag } from '../support/mail.ts';
 import { addMailAccount, emailsWithSubject, ok, pageApi } from '../support/api.ts';
 import { dbRead } from '../support/db.ts';
-import { onlyOn, openMessage, syncNow } from '../support/ui.ts';
+import { onlyOn, openFolder, openMessage, syncNow } from '../support/ui.ts';
 
 const mailbox = people.admin.mailbox;
 
@@ -42,7 +42,7 @@ test('[0-02] a received message opens, and read and star reach the provider', { 
 // that follows every import) observes it. The list does not show when that sweep
 // has run, so the test waits on the account's own engine state: the history
 // checkpoint past both messages and the provider flags it recorded there.
-test('[B-35] a Download account keeps read and star set in UniHub when another mail program changes them', { session: 'alex', timeout: 300_000 }, async ({ app, screen, browser }) => {
+test('[B-35 R3] a Download account keeps read and star set in UniHub when another mail program changes them, and deletes from its Trash only here', { session: 'alex', timeout: 300_000 }, async ({ app, screen, browser }) => {
   await onlyOn(browser, 'desktop', 'phone');
   const id = runId();
   const mailbox = `download-${id}@mail.test`;
@@ -115,6 +115,19 @@ test('[B-35] a Download account keeps read and star set in UniHub when another m
     await expect(starRow.getByRole('button', `Unstar ${starredHere}`)).toBeVisible();
     await expect(starRow.getByText('(unread)')).toHaveCount(1);
     expect([await stored(readHere), await stored(starredHere)]).toEqual([{ read: true, starred: false }, { read: false, starred: true }]);
+
+    // R3: in UniHub's Trash, Delete for good asks first and removes UniHub's copy only.
+    await readRow.getByRole('button', `Select ${readHere}`).tap();
+    await screen.getByRole('button', 'Delete selected', { visible: true }).tap();
+    await expect.poll(async () => (await emailsWithSubject(browser, 'trash', readHere)).length, { message: 'moved to Trash', timeout: 30_000 }).toBe(1);
+    await openFolder(app, screen, browser, 'Trash');
+    const trashRow = screen.getByRole('listitem').filter({ hasText: readHere });
+    await trashRow.getByRole('button', `Select ${readHere}`).tap();
+    await screen.getByRole('button', 'Delete selected for good', { visible: true }).tap();
+    await screen.getByRole('alertdialog', 'Delete this message for good?').getByRole('button', 'Delete for good').tap();
+    await expect(trashRow).toHaveCount(0);
+    expect(await emailsWithSubject(browser, 'trash', readHere)).toEqual([]);
+    expect(await deliveredWithSubject(mailbox, readHere), 'the provider keeps its copy').toHaveLength(1);
   } finally {
     ok(await pageApi(browser, 'DELETE', `/api/mail/accounts/${account.id}?purge=true&disconnect=true&confirm_purge=${encodeURIComponent(mailbox)}`), 'remove the added account');
   }

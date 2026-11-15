@@ -1,6 +1,7 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
 import * as mailWritebacks from '../services/mail-writebacks';
+import { deleteTrashForGood } from '../services/mail-trash';
 import * as mailRepository from '../services/mail-engine/repository';
 import { folderConnections } from '../services/mail-folder-reconciliation';
 import { filingAccountId, folderAcceptsAccount } from '../services/mail-filing';
@@ -90,6 +91,7 @@ export = {
       if (!Array.isArray(email_ids) || email_ids.length === 0) {
         return { error: 'Email IDs array required', status: 400 };
       }
+      if (new URL(req.url!, 'http://localhost').searchParams.get('permanent') === 'true') return await deleteTrashForGood(userId, email_ids);
 
       return await mailWritebacks.mutateMessages(userId, email_ids, { move: 'trash' }, undefined, operationOptions(req));
     } catch (error) {

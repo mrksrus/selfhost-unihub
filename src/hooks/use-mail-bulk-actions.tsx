@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ToastAction } from '@/components/ui/toast';
 import { useToast } from '@/hooks/use-toast';
-import { invalidateMailMoveViews, mailQueryKeys, showRequestedMoveInMailCaches, type Email, type MailFlagKind, type MovedEmail } from '@/lib/mail-api';
+import { deleteMailForGood, invalidateMailMoveViews, mailQueryKeys, showRequestedMoveInMailCaches, type Email, type MailFlagKind, type MovedEmail } from '@/lib/mail-api';
 import { acceptMailCommand, newMailCommand, UnknownMailAcceptance } from '@/lib/mail-operations';
 import { ALL_MAIL, bulkKey } from '@/components/mail/mail-page-model';
 
@@ -110,6 +110,17 @@ export function useMailBulkActions({ emails, selectedEmail, selectedFolder, requ
     onSettled: () => { void invalidateMailMoveViews(queryClient); },
   });
 
+  const bulkDeleteForGood = useMutation({
+    mutationFn: async ({ emailIds }: { emailIds: string[] }) => deleteMailForGood(emailIds),
+    onSuccess: (_data, { emailIds }) => {
+      clearSelection();
+      onMovedAway?.(emailIds);
+      toast({ title: `Deleted ${messages(emailIds.length)}for good` });
+    },
+    onError: (error: Error) => toast({ title: 'Could not delete for good', description: error.message, variant: 'destructive' }),
+    onSettled: () => { void invalidateMailMoveViews(queryClient); },
+  });
+
   // Bulk flag controls use the same per-email/field admission lanes as row and
   // reader clicks. A slow batch must not overtake a later single-message click.
   const requestBulkFlags = (emailIds: string[], kind: MailFlagKind, value: boolean) => {
@@ -137,9 +148,11 @@ export function useMailBulkActions({ emails, selectedEmail, selectedFolder, requ
     move: (emailIds: string[], folder: string, accountId?: string, folderLabel?: string) =>
       runBulk('move', { emailIds, folder, ...(accountId === undefined ? {} : { accountId }), ...(folderLabel === undefined ? {} : { folderLabel }) }, bulkMove.mutateAsync),
     trash: (emailIds: string[]) => runBulk('delete', trashPayload(emailIds), bulkDelete.mutateAsync),
+    deleteForGood: (emailIds: string[]) => runBulk('delete-for-good', { emailIds }, bulkDeleteForGood.mutateAsync),
     readPending: (emailIds: string[], is_read: boolean) => bulkPending.has(bulkKey('read', { emailIds, is_read })),
     starPending: (emailIds: string[]) => bulkPending.has(bulkKey('star', { emailIds, is_starred: true })),
     trashPending: (emailIds: string[]) => bulkPending.has(bulkKey('delete', { emailIds })),
+    deleteForGoodPending: (emailIds: string[]) => bulkPending.has(bulkKey('delete-for-good', { emailIds })),
   };
 }
 

@@ -302,7 +302,6 @@ const NOT_DESTRUCTIVE: Readonly<Record<string, string>> = {
   'DELETE /api/mail/emails/:id/snooze': 'ends a snooze',
   'DELETE /api/mail/sender-rules/:id': 'editing: a sorting rule',
   'DELETE /api/mail/templates/:id': 'editing: a template',
-  'POST /api/mail/emails/bulk-delete': 'moves messages to Trash',
   'DELETE /api/recordings/uploads/:id': 'cancels an unfinished upload',
   'POST /api/contacts/merges': 'the merged-away contacts go to the bin; the undo restores them',
   'POST /api/contacts/merges/auto': 'the same merge for several groups',
@@ -337,6 +336,7 @@ const removesData = (key: string) => {
 const DESTRUCTIVE = [
   'DELETE /api/backup/jobs/:id', 'DELETE /api/backup/restore-jobs/:id', 'DELETE /api/bin/:id', 'DELETE /api/calendar/accounts/:id',
   'DELETE /api/contacts/:id/photo', 'DELETE /api/mail/accounts/:id', 'DELETE /api/mail/folders/:slug', 'DELETE /api/settings/account', 'POST /api/bin/empty',
+  'POST /api/mail/emails/bulk-delete',
   'POST /api/settings/clear-calendar', 'POST /api/settings/clear-contacts', 'POST /api/settings/clear-mail-accounts', 'POST /api/settings/clear-recordings',
 ];
 
@@ -369,6 +369,8 @@ test('each destructive route names the policies of what it removes', () => {
     'DELETE /api/mail/accounts/:id': ['accounts.remove'],
     // A folder only UniHub has returns its mail to Inbox.
     'DELETE /api/mail/folders/:slug': [],
+    // Without permanent=true the messages move to Trash.
+    'POST /api/mail/emails/bulk-delete': [],
   };
   for (const key of DESTRUCTIVE) assert.deepEqual(routePolicies(routes[key], none), expected[key], key);
   // Removing a mail account, and deleting UniHub's copy of its mail only when asked.
@@ -387,6 +389,8 @@ test('each destructive route names the policies of what it removes', () => {
   for (const query of ['', 'server=false', 'server=0', 'server=TRUE', 'server=', 'server=0&server=1', 'servers=1']) {
     assert.deepEqual(destructivePolicies(folder, new URLSearchParams(query)), [], query);
   }
+  // Deleting a Download account's Trash for good, as the route reads it (the first value).
+  assert.deepEqual(destructivePolicies(routes['POST /api/mail/emails/bulk-delete'], new URLSearchParams('permanent=true')), ['bin.delete']);
   assert.deepEqual(routePolicies(routes['POST /api/mail/accounts'], none), ['accounts.add']);
   assert.deepEqual(routePolicies(routes['POST /api/backup/import'], none), ['backup.restore']);
 });

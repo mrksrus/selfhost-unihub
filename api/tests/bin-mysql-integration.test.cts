@@ -525,6 +525,52 @@ test('the bin: deleting moves items there, restore brings them back, the purge k
     assert.equal((await call(alex, 'POST', '/api/bin/empty', { module: 'mail' }, 400)).code, 'BIN_INVALID');
   });
 
+  await t.test("a Download account's Trash: Delete for good removes UniHub's copy and its file, never the provider's, and obeys bin.delete", async () => {
+    const rawRoot = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'unihub-bin-mail-raw-'));
+    process.env.MAIL_RAW_STORAGE_ROOT = rawRoot;
+    t.after(() => { delete process.env.MAIL_RAW_STORAGE_ROOT; fs.rmSync(rawRoot, { recursive: true, force: true }); });
+    const download = crypto.randomUUID(), synced = crypto.randomUUID(), box = crypto.randomUUID();
+    await pool.execute(`INSERT INTO mail_accounts (id, user_id, email_address, provider, sync_mode, is_active)
+      VALUES (?, ?, 'alex-archive@example.test', 'custom', 'download', TRUE), (?, ?, 'alex-sync@example.test', 'custom', 'sync', TRUE)`, [download, users.alex, synced, users.alex]);
+    await pool.execute("INSERT INTO mail_remote_mailboxes (id, user_id, mail_account_id, remote_name, uidvalidity) VALUES (?, ?, ?, 'INBOX', 7)", [box, users.alex, download]);
+    const raw = path.join(rawRoot, users.alex, 'trashed.eml');
+    fs.mkdirSync(path.dirname(raw), { recursive: true });
+    fs.writeFileSync(raw, 'Subject: Trashed\r\n\r\nSynthetic.\r\n');
+    const message = async (account: string, folder: string, uid: number | null = null, rawPath: string | null = null) => {
+      const id = crypto.randomUUID();
+      await pool.execute(`INSERT INTO emails (id, user_id, mail_account_id, subject, from_address, to_addresses, folder, raw_storage_path)
+        VALUES (?, ?, ?, 'Trashed', 'sam@example.test', '[]', ?, ?)`, [id, users.alex, account, folder, rawPath]);
+      if (uid) await pool.execute(`INSERT INTO mail_remote_occurrences (id, user_id, mail_account_id, mailbox_id, uidvalidity, uid, email_id)
+        VALUES (?, ?, ?, ?, 7, ?, ?)`, [crypto.randomUUID(), users.alex, account, box, uid, id]);
+      return id;
+    };
+    const trashed = await message(download, 'trash', 5, raw);
+    const inInbox = await message(download, 'inbox');
+    const syncTrash = await message(synced, 'trash');
+    const forGood = (client: Client, ids: string[], status: number) => call(client, 'POST', '/api/mail/emails/bulk-delete?permanent=true', { email_ids: ids }, status);
+    const left = () => count('SELECT COUNT(*) AS n FROM emails WHERE id IN (?, ?, ?)', [trashed, inInbox, syncTrash]);
+
+    // Until UniHub has read INBOX past its UID, that read would download it again.
+    assert.equal((await forGood(alex, [trashed], 409)).code, 'MAIL_STILL_DOWNLOADING');
+    await pool.execute(`INSERT INTO mail_engine_cursors (mailbox_id, stream, user_id, mail_account_id, uidvalidity, covered_through)
+      VALUES (?, 'history', ?, ?, 7, 5)`, [box, users.alex, download]);
+    await forGood(blair, [trashed], 404);
+    await forGood(alex, [trashed, inInbox], 400);
+    await forGood(alex, [syncTrash], 400);
+    await pool.execute("INSERT INTO setting_policies (target_kind, target_id, setting_key, setting_value, locked) VALUES ('installation', '', 'policy.bin.delete', 'forbidden', 0)");
+    try {
+      assert.equal((await forGood(alex, [trashed], 403)).code, 'POLICY_FORBIDS');
+    } finally {
+      await pool.execute("DELETE FROM setting_policies WHERE setting_key = 'policy.bin.delete'");
+    }
+    assert.equal(await left(), 3, 'nothing removed yet');
+    assert.deepEqual(await forGood(alex, [trashed], 200), { deleted: 1 });
+    assert.equal(await left(), 2, 'only the Trash copy is gone');
+    assert.ok(!fs.existsSync(raw), 'with its stored message');
+    assert.equal(await count('SELECT COUNT(*) AS n FROM mail_writebacks WHERE user_id = ?', [users.alex]), 0, 'nothing is sent to the provider');
+    await pool.execute('DELETE FROM mail_accounts WHERE id IN (?, ?)', [download, synced]);
+  });
+
   await t.test('past 2000 items the list pages in whole groups, newest first: older items are reached, a cursor leaks nothing, empty takes all', async () => {
     const people: Record<string, string> = {};
     for (const [name, role] of [['pager', 'user'], ['pager-admin', 'admin']] as const) {

@@ -17,7 +17,7 @@ Each mail account runs in one of two modes. They are deliberately different; cho
 
 ## Download
 
-Download imports mail and never writes to the server: filing and read/star changes stay local. A message takes read and star from the server once, when it is first imported; later changes on the server (by another mail client) do not reach UniHub's copy, so what you set in UniHub stays. Local copies are kept even after the server deletes them. Optional server deletion removes the server copy after a verified local archive exists. Download ignores retention windows.
+Download imports mail and never writes to the server: filing and read/star changes stay local. A message takes read and star from the server once, when it is first imported; later changes on the server (by another mail client) do not reach UniHub's copy, so what you set in UniHub stays. Local copies are kept even after the server deletes them. In UniHub's Trash, *Delete for good* (asked first) deletes UniHub's copy and its stored files; the server's copy is never touched. It waits until UniHub has finished downloading that message's folder, and it is not offered while an administrator forbids deleting for good (the `bin.delete` policy, which the server enforces). Optional server deletion removes the server copy after a verified local archive exists. Download ignores retention windows.
 
 ## Sync
 

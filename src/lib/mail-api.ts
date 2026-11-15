@@ -119,6 +119,12 @@ export async function confirmMailSyncPolicy(accountId: string, confirmAddress: s
   return response.data;
 }
 
+/** Deletes UniHub's copy of messages in a Download account's Trash for good (policy bin.delete); the server keeps its copy. */
+export async function deleteMailForGood(emailIds: string[]) {
+  const response = await api.post<{ deleted: number }>('/mail/emails/bulk-delete?permanent=true', { email_ids: emailIds });
+  if (response.error) throw new ApiError(response);
+  return response.data;
+}
 
 export interface EmailAttachment {
   id: string;

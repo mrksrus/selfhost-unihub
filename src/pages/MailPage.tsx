@@ -77,6 +77,7 @@ const MailPage = () => {
   const compose = useMailCompose({ activeMailAccountId, selectedAccount, isMobile });
   const accountRemoval = useMailAccountRemoval(() => setSelectedAccount(ALL_ACCOUNTS));
   const addAccountPolicy = usePolicy('accounts.add');
+  const deleteForGoodPolicy = usePolicy('bin.delete');
   const [contextMenuEmail, setContextMenuEmail] = useState<{ email: Email; x: number; y: number } | null>(null);
   const [taskEmail, setTaskEmail] = useState<TaskSource | null>(null);
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
@@ -216,6 +217,10 @@ const MailPage = () => {
         <MailListToolbar emailCount={emails.length}
           selection={selection} folderLabel={folderLabel} accountLabel={accountLabel} account={selectedAccount} list={list}
           bulk={bulk} moveTargets={movableFolders.filter(folder => folder.id !== selectedFolder)} onCompose={compose.openCompose}
+          canDeleteForGood={selectedFolder === 'trash' && !deleteForGoodPolicy.lock && selectedIds.length > 0 && selectedIds.every(id => {
+            const email = emails.find(item => item.id === id);
+            return !!email && accounts.some(account => account.id === email.mail_account_id && account.sync_mode === 'download');
+          })}
           syncControl={
             <MailSyncControl accounts={accounts}
               viewAccountIds={activeMailAccountId ? [activeMailAccountId] : accounts.filter(account => account.is_active).map(account => account.id)}
