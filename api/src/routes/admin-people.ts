@@ -9,7 +9,7 @@ import { getAuthTokenFromRequest } from '../auth';
 import { asCaller } from '../services/caller-proof';
 import type { AuditDetails, AuditEntry } from '../services/audit';
 import { recordAudit, recordAuditIntent, settleAudit } from '../services/audit';
-import { assertPerson, assertPersonModule, personAccounts, personFromParam } from '../services/admin-path';
+import { assertMayChangePerson, assertPerson, assertPersonModule, personAccounts, personFromParam } from '../services/admin-path';
 import { createMailAccount, updateMailAccount } from '../services/mail-account-changes';
 import { disconnectAccount, disconnectAndPurgeAccount } from '../services/mail-account-lifecycle';
 import { createCalendarAccount, deleteCalendarAccount, updateCalendarAccount } from '../services/calendar-account-changes';
@@ -57,8 +57,11 @@ function change(handler: Handler, limit = 4096) {
         if ('refused' in confirmed) return confirmed.refused;
         // The change may wait (the person's lock, rows); its final step asks
         // again that the administrator is one, signed in, with this password.
-        return await asCaller({ userId: adminId, token: getAuthTokenFromRequest(req), permission: 'users.manage', passwordHash: confirmed.passwordHash },
-          async () => handler(await asStored(req), adminId, body ?? {}, res));
+        return await asCaller({ userId: adminId, token: getAuthTokenFromRequest(req), permission: 'users.manage', passwordHash: confirmed.passwordHash }, async () => {
+          const stored = await asStored(req);
+          await assertMayChangePerson(stored.params.id, adminId);
+          return handler(stored, adminId, body ?? {}, res);
+        });
       } catch (error) { return answer(error); }
     } };
 }

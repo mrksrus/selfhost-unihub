@@ -32,7 +32,7 @@ export const OWNER_PROTECTED_REASON = 'The owner cannot be deactivated or delete
 /** The server's words (OWNER_PROTECTED): an administrator who could change the owner's sign-in could sign in as the owner. */
 export const OWNER_SIGN_IN_REASON = 'Only the owner can change the owner\'s password, two-factor authentication or setup link.';
 /** The server's words (ADMINS_OWNER_ONLY): another administrator's account is the owner's to change. */
-export const ADMIN_ACCOUNT_REASON = 'Only the owner can deactivate, activate or delete another administrator, or change their password, two-factor authentication or setup link.';
+export const ADMIN_ACCOUNT_REASON = 'Only the owner can deactivate, activate or delete another administrator, or change their password, two-factor authentication, setup link or data.';
 
 type Open = { action: PersonAction; person: Person; generation: number };
 
@@ -42,8 +42,8 @@ export function personAbilities(viewer: Parameters<typeof can>[0] & { id?: strin
   const self = person.id === viewer?.id;
   const owner = person.role === 'owner';
   const pending = person.status === 'invited' || person.status === 'not_set_up';
-  // Signing an administrator's devices out stays open; their account is the owner's to change.
-  const adminLock = person.role === 'admin' && !self && !can(viewer, 'admins.manage') ? ADMIN_ACCOUNT_REASON : undefined;
+  // Signing an administrator's devices out stays open; their account and data are the owner's to change.
+  const adminLock = (person.role === 'admin' || owner) && !self && !can(viewer, 'admins.manage') ? ADMIN_ACCOUNT_REASON : undefined;
   return {
     manage, self, owner, pending,
     role: manage && !owner && !self,
@@ -58,6 +58,7 @@ export function personAbilities(viewer: Parameters<typeof can>[0] & { id?: strin
     protectedLock: owner ? OWNER_PROTECTED_REASON : adminLock,
     signInLock: owner && !self ? OWNER_SIGN_IN_REASON : adminLock,
     activateLock: adminLock,
+    dataLock: adminLock,
     transfer: owner && self && can(viewer, 'owner.transfer'),
   };
 }

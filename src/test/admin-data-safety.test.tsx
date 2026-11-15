@@ -403,6 +403,15 @@ describe('Admin → Users → a person', () => {
     expect(retrySession).toHaveBeenCalled();
   });
 
+  it('another administrator\'s data is greyed with the reason for an administrator who is not the owner', { timeout: 20_000 }, async () => {
+    const get = vi.mocked(api.get).getMockImplementation()!;
+    vi.mocked(api.get).mockImplementation(async (path: string) => path === '/admin/users'
+      ? { data: { users: USERS.map(entry => entry.id === 'user-alex' ? { ...entry, role: 'admin' as const } : entry) } } : get(path));
+    mountSignedIn(<AdminUserDetail />, { user: ADMIN, path: '/admin/users/user-alex', routePath: '/admin/users/:id' });
+    expect(await screen.findAllByText(/Only the owner can deactivate, activate or delete another administrator, or change their password, two-factor authentication, setup link or data\./)).not.toHaveLength(0);
+    for (const button of [...await screen.findAllByRole('button', { name: 'Delete all' }), screen.getByRole('button', { name: 'Add mail account' }), screen.getByRole('button', { name: 'Empty bin' })]) expect(button).toBeDisabled();
+  });
+
   it('a confirmation opened for one person closes when the page moves to another', { timeout: 20_000 }, async () => {
     let navigate!: NavigateFunction;
     function Page() { navigate = useNavigate(); return <AdminUserDetail />; }

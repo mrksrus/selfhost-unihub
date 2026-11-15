@@ -4,6 +4,7 @@ import { db } from '../state';
 import { badRequest, conflict, forbidden, notFound } from '../http/errors';
 import { isModuleEnabled } from './module-settings';
 import { isSectionRestoreActive } from './restore-locks';
+import { assertMayChangeAdmin } from './invites';
 
 // The administrator's path for one person (F13, accounts.admin_manage): a
 // policy that forbids the person an action never makes it impossible. Each
@@ -70,4 +71,7 @@ async function personAccounts(userId: string): Promise<AdminUserAccountsResponse
   };
 }
 
-export { assertPerson, assertPersonModule, personAccounts, personFromParam };
+/** The owner's and another administrator's data are the owner's to change. */
+const assertMayChangePerson = (userId: string, adminId: string) => assertMayChangeAdmin(db, userId, adminId);
+
+export { assertMayChangePerson, assertPerson, assertPersonModule, personAccounts, personFromParam };

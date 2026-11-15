@@ -55,7 +55,7 @@ export function PersonProfile({ person, actions }: { person: Person; actions: Ac
       </SettingsRow>
       <SettingsRow label="Sign-in" description={signIn} lock={able.signInLock}>
         {able.setupLink && <Button variant="outline" disabled={!!able.signInLock} onClick={() => actions.open('setup-link', person)}>New setup link</Button>}
-        {able.revokeLink && <Button variant="outline" onClick={() => actions.revokeLink(person)} disabled={actions.busy}>Revoke link</Button>}
+        {able.revokeLink && <Button variant="outline" onClick={() => actions.revokeLink(person)} disabled={actions.busy || !!able.signInLock}>Revoke link</Button>}
         {able.password && <Button variant="outline" disabled={!!able.signInLock} onClick={() => actions.open('password', person)}>{able.pending ? 'Set a password' : 'Set a new password'}</Button>}
         {able.resetTwoFactor && <Button variant="outline" disabled={!!able.signInLock} onClick={() => actions.open('reset-2fa', person)}>Reset 2FA</Button>}
       </SettingsRow>

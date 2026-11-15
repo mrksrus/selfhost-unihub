@@ -3,6 +3,7 @@ import type { RowDataPacket } from 'mysql2/promise';
 // Requires an initially empty, disposable MariaDB database ending in _test.
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
+const crypto = require('node:crypto') as typeof import('node:crypto');
 const { withTestDatabase } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 const { seedPeople } = require('./helpers/people.cts') as import('./helpers/people.cts').PeopleHelpers;
 
@@ -125,6 +126,25 @@ test('roles: only the owner removes another administrator or changes their sign-
   assert.deepEqual(await status(b.request('PUT', `/api/admin/users/${d}/activate`, { is_active: true, current_password: bPassword })), refused, 'activate');
   assert.equal(Number((await row(d)).is_active), 0);
   await pool.execute('UPDATE users SET is_active = TRUE WHERE id = ?', [d]);
+
+  // Their data and the owner's are the owner's to change on the administrator's
+  // path too: B cannot delete them, empty their bin, delete a backup or revoke a link.
+  const contactOf = async (id: string) => { await pool.execute("INSERT INTO contacts (id, user_id, uid, uid_hash, first_name) VALUES (UUID(), ?, UUID(), SHA2(UUID(), 256), 'Kept')", [id]); };
+  const contacts = async (id: string) => Number((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM contacts WHERE user_id = ?', [id]))[0][0].n);
+  for (const id of [ids.admin, c, member]) await contactOf(id);
+  for (const id of [ids.admin, c]) {
+    assert.deepEqual(await status(b.request('POST', `/api/admin/users/${id}/clear/contacts`, { current_password: bPassword })), refused, 'delete data');
+    assert.deepEqual(await status(b.request('POST', `/api/admin/users/${id}/bin/empty`, { current_password: bPassword })), refused, 'empty the bin');
+    assert.deepEqual(await status(b.request('DELETE', `/api/admin/users/${id}/backups/${crypto.randomUUID()}`, { current_password: bPassword })), refused, 'delete a backup');
+    assert.equal(await contacts(id), 1);
+  }
+  assert.equal((await owner.request('POST', `/api/admin/users/${d}/setup-link`, { current_password: password })).status, 200);
+  assert.deepEqual(await status(b.request('DELETE', `/api/admin/users/${d}/setup-link`)), refused, 'revoke a setup link');
+  assert.equal((await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM invites WHERE user_id = ?', [d]))[0][0].n, 1, 'D\'s link still works');
+  assert.equal((await b.request('POST', `/api/admin/users/${member}/clear/contacts`, { current_password: bPassword })).status, 200, 'a member\'s data stays B\'s to manage');
+  assert.equal(await contacts(member), 0);
+  assert.equal((await owner.request('POST', `/api/admin/users/${c}/clear/contacts`, { current_password: password })).status, 200, 'the owner may');
+  assert.equal(await contacts(c), 0);
 
   // Signing C's devices out stays open to B: it ends sessions and changes nothing else.
   assert.equal((await clients.manager.request('GET', '/api/auth/me')).status, 200);

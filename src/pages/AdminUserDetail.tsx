@@ -23,7 +23,8 @@ import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { SettingsPanel } from '@/components/settings/SettingsPanel';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog';
-import { usePersonActions } from '@/components/admin/PersonActions';
+import { personAbilities, usePersonActions } from '@/components/admin/PersonActions';
+import { PolicyNote } from '@/components/ui/policy-note';
 import { PersonAccount, PersonDevices, PersonGroups, PersonProfile } from '@/components/admin/PersonOrganisation';
 import { usePeople } from '@/hooks/use-organisation';
 import { can } from '@/lib/permissions';
@@ -100,6 +101,7 @@ const AdminUserDetail = () => {
 
   const usersQuery = usePeople();
   const person = usersQuery.data?.find(entry => entry.id === id) ?? null;
+  const dataLock = person ? personAbilities(user, person).dataLock : undefined;
   const actions = usePersonActions({ people: usersQuery.data, onDeleted: () => navigate('/admin/users', { replace: true }) });
   const accountsQuery = useQuery({ queryKey: adminUserQueryKeys.accounts(id), queryFn: ({ signal }) => fetchAdminUserAccounts(id, signal), enabled: manage && !!id });
   const backupsQuery = useQuery({ queryKey: adminUserQueryKeys.backups(id), queryFn: ({ signal }) => fetchAdminUserBackups(id, signal), enabled: manage && !!id });
@@ -233,21 +235,22 @@ const AdminUserDetail = () => {
         <PersonDevices person={person} />
         <PersonAccount person={person} actions={actions} />
         {manage && <>
-        <p className="mb-8 max-w-prose text-sm text-muted-foreground">
+        <p className={`${dataLock ? 'mb-2' : 'mb-8'} max-w-prose text-sm text-muted-foreground`}>
           What you do below is done for {name} as if they did it, with your password, and recorded in the activity log. A rule that forbids them an action does not apply to you.
         </p>
+        {dataLock && <PolicyNote reason={dataLock} className="mb-8 max-w-prose text-sm" />}
         {nothingAtAll && (
           <p role="status" className="mb-8 max-w-prose text-sm text-muted-foreground">{name} has no mail or calendar accounts, no backups on this server and nothing in their bin yet. Their data can still be deleted below.</p>
         )}
 
-        <SettingsSection title="Mail accounts" action={<Button size="sm" variant="outline" onClick={() => openMailDialog(null)}><Plus aria-hidden="true" />Add mail account</Button>}>
+        <SettingsSection title="Mail accounts" action={<Button size="sm" variant="outline" disabled={!!dataLock} onClick={() => openMailDialog(null)}><Plus aria-hidden="true" />Add mail account</Button>}>
           {accountsQuery.isLoading ? <SettingsBlock><LoadingState compact label="Loading accounts…" /></SettingsBlock>
             : accountsQuery.error ? <SettingsBlock><ErrorState title="Could not load the accounts" error={accountsQuery.error} onRetry={() => void accountsQuery.refetch()} retrying={accountsQuery.isFetching} /></SettingsBlock>
             : accountsQuery.data!.mail_accounts.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">{name} has no mail accounts.</p></SettingsBlock>
             : accountsQuery.data!.mail_accounts.map(account => (
               <SettingsRow key={account.id} label={account.display_name ? `${account.display_name} (${account.email_address})` : account.email_address} description={mailMeta(account)}>
                 <DropdownMenu>
-                  <DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Actions for ${account.email_address}`}><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
+                  <DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" disabled={!!dataLock} aria-label={`Actions for ${account.email_address}`}><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem onClick={() => openMailDialog(account)}>Change settings or password</DropdownMenuItem>
                     {!account.disconnected_at && <DropdownMenuItem onClick={() => openConfirm({
@@ -264,7 +267,7 @@ const AdminUserDetail = () => {
             ))}
         </SettingsSection>
 
-        <SettingsSection title="Calendar accounts" action={<Button size="sm" variant="outline" onClick={() => openCalendarDialog(null)}><Plus aria-hidden="true" />Add calendar account</Button>}>
+        <SettingsSection title="Calendar accounts" action={<Button size="sm" variant="outline" disabled={!!dataLock} onClick={() => openCalendarDialog(null)}><Plus aria-hidden="true" />Add calendar account</Button>}>
           {accountsQuery.isLoading ? <SettingsBlock><LoadingState compact label="Loading accounts…" /></SettingsBlock>
             : accountsQuery.error ? null
             : accountsQuery.data!.calendar_accounts.length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">{name} has no calendar accounts.</p></SettingsBlock>
@@ -272,7 +275,7 @@ const AdminUserDetail = () => {
               <SettingsRow key={account.id} label={account.display_name || account.account_email || 'Calendars'} description={calendarMeta(account)}>
                 {account.provider !== 'local' && (
                   <DropdownMenu>
-                    <DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Actions for ${account.display_name || account.account_email || 'the calendar account'}`}><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
+                    <DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" disabled={!!dataLock} aria-label={`Actions for ${account.display_name || account.account_email || 'the calendar account'}`}><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       {!account.mail_account_id && <DropdownMenuItem onClick={() => openCalendarDialog(account)}>Change settings or password</DropdownMenuItem>}
                       <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => openConfirm({
@@ -292,7 +295,7 @@ const AdminUserDetail = () => {
             : backupsQuery.data!.map((job: BackupJob) => (
               <SettingsRow key={job.id} label={<span className="flex items-center gap-1.5">{job.encryption_enabled && <LockKeyhole aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />}{job.scope === 'full' ? 'Full backup' : `${job.requested_sections.map(sentenceCase).join(', ')} backup`}</span>}
                 description={[sentenceCase(job.status), formatWhen(job.completed_at || job.created_at), job.file_size ? formatBytes(job.file_size) : null, ].filter(Boolean).join(' · ')}>
-                <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" disabled={['queued', 'running', 'cancelling'].includes(job.status)} onClick={() => openConfirm({
+                <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" disabled={!!dataLock || ['queued', 'running', 'cancelling'].includes(job.status)} onClick={() => openConfirm({
                   userId: id, title: `Delete this backup of ${name}?`, description: 'The archive is removed from the server, whatever the minimum your rule keeps it for. A copy they downloaded is not affected.', action: 'Delete backup', destructive: true,
                   run: (password, generation) => removeBackup.mutate({ userId: id, generation, jobId: job.id, password }) })}>Delete</Button>
               </SettingsRow>
@@ -300,7 +303,7 @@ const AdminUserDetail = () => {
         </SettingsSection>
 
         <SettingsSection title="Bin" description={`What ${name} deleted waits in their bin until it is restored or gone for good. Deleting here is allowed whatever the bin rule says for them.`}
-          action={<Button size="sm" variant="outline" className="text-destructive hover:text-destructive" disabled={binItems.length === 0} onClick={() => openConfirm({
+          action={<Button size="sm" variant="outline" className="text-destructive hover:text-destructive" disabled={!!dataLock || binItems.length === 0} onClick={() => openConfirm({
             userId: id, title: `Empty the bin of ${name}?`, description: olderItems ? 'Everything in it, also the older items not shown yet, is deleted for good and cannot be restored.' : `${plural(binItems.length, 'item')} ${binItems.length === 1 ? 'is' : 'are'} deleted for good and cannot be restored.`, action: 'Delete for good', destructive: true,
             run: (password, generation) => emptyBin.mutate({ userId: id, generation, password }) })}>Empty bin</Button>}>
           {binQuery.isLoading ? <SettingsBlock><LoadingState compact label="Loading the bin…" /></SettingsBlock>
@@ -309,7 +312,7 @@ const AdminUserDetail = () => {
             : <>
               {BIN_MODULES.filter(module => binCount(module.id) > 0).map(module => (
                 <SettingsRow key={module.id} label={module.label} description={`${plural(binCount(module.id), 'item')}${olderItems ? ' shown' : ''}`}>
-                  <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => openConfirm({
+                  <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" disabled={!!dataLock} onClick={() => openConfirm({
                     userId: id, title: `Empty the ${module.label.toLowerCase()} bin of ${name}?`, description: 'Everything in it is deleted for good and cannot be restored.', action: 'Delete for good', destructive: true,
                     run: (password, generation) => emptyBin.mutate({ userId: id, generation, module: module.id, password }) })}>Empty</Button>
                 </SettingsRow>
@@ -320,7 +323,7 @@ const AdminUserDetail = () => {
                 return (
                   <SettingsRow key={lead.group_id ?? lead.id} label={<>{title}<span className="font-normal text-muted-foreground"> · {BIN_MODULES.find(module => module.id === lead.module)?.label ?? lead.module}</span></>}
                     description={[`Deleted ${formatWhen(lead.deleted_at)}`, lead.purge_after ? `gone for good ${formatWhen(lead.purge_after)}` : 'kept until restored or deleted', group.length > 1 ? `with ${group.length - 1} ${group.length === 2 ? 'item' : 'items'}` : null].filter(Boolean).join(' · ')}>
-                    <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" aria-label={`Delete ${title} for good`} onClick={() => openConfirm({
+                    <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" disabled={!!dataLock} aria-label={`Delete ${title} for good`} onClick={() => openConfirm({
                       userId: id, title: `Delete ${title} for good?`, description: group.length > 1 ? `${group.length} items of ${name} are deleted for good and cannot be restored.` : `It is deleted from the bin of ${name} for good and cannot be restored.`, action: 'Delete for good', destructive: true,
                       run: (password, generation) => removeBinItem.mutate({ userId: id, generation, itemIds: group.map(item => item.id), password }) })}>Delete for good</Button>
                   </SettingsRow>
@@ -345,7 +348,7 @@ const AdminUserDetail = () => {
         <SettingsSection title="Delete data" description="The same as the person's Settings › Delete data. Only a backup brings it back.">
           {CLEAR_TARGETS.map(target => (
             <SettingsRow key={target.module} label={target.label}>
-              <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => openConfirm({
+              <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" disabled={!!dataLock} onClick={() => openConfirm({
                 userId: id, title: `Delete all ${target.label.toLowerCase()} of ${name}?`, description: `${target.consequence} This cannot be undone.`, action: 'Delete all', destructive: true,
                 run: (password, generation) => clear.mutate({ userId: id, generation, module: target.module, password }) })}>Delete all</Button>
             </SettingsRow>

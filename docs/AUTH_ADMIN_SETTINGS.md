@@ -1072,7 +1072,9 @@ change, and an id of anyone else's record is `404`. The administrator's
 password stands for the typed address a person enters to delete an account's
 mail. Deleting the mail is still refused while a provider change of the
 account has an unresolved outcome, and a backup can be deleted before its
-minimum age. Accounts are listed without credentials.
+minimum age. Accounts are listed without credentials. Every change on this
+path to the owner or another administrator is the owner's alone (`403
+ADMINS_OWNER_ONLY`); the page greys those controls for other administrators.
 
 ## User Data Management Endpoints
 

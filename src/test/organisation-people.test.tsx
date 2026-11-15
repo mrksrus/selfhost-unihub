@@ -179,7 +179,7 @@ describe('Server › People', () => {
     for (const name of [/Set a new password/, /Reset 2FA/, /Deactivate/, /Delete person/]) {
       const entry = within(menu).getByRole('menuitem', { name });
       expect(entry).toHaveAttribute('aria-disabled', 'true');
-      expect(entry).toHaveTextContent('Only the owner can deactivate, activate or delete another administrator, or change their password, two-factor authentication or setup link.');
+      expect(entry).toHaveTextContent('Only the owner can deactivate, activate or delete another administrator, or change their password, two-factor authentication, setup link or data.');
     }
     fireEvent.keyDown(menu, { key: 'Escape' });
     cleanup();

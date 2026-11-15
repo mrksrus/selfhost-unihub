@@ -41,19 +41,20 @@ function linkFor(token: string, expiresAt: unknown, req: AuthRequest | null): Se
 }
 
 const OWNER_SIGN_IN = 'Only the owner can change the owner\'s password, two-factor authentication or setup link.';
-const ADMIN_ACCOUNT = 'Only the owner can deactivate, activate or delete another administrator, or change their password, two-factor authentication or setup link.';
+const ADMIN_ACCOUNT = 'Only the owner can deactivate, activate or delete another administrator, or change their password, two-factor authentication, setup link or data.';
 
 /**
  * In the transaction of a change to another person's account (deactivating,
- * activating or deleting it, or changing their sign-in), with their row
- * locked: an administrator's account is the owner's to change, as making and
- * removing administrators is. Otherwise one administrator could remove
- * another, or sign in as them. Ending their sessions or devices stays open
- * to every administrator; one's own account is not checked here.
+ * activating or deleting it, changing their sign-in, or their data on the
+ * administrator's path), with their row locked: an administrator's or the
+ * owner's account is the owner's to change, as making and removing
+ * administrators is. Otherwise one administrator could remove another, sign
+ * in as them or destroy their data. Ending their sessions or devices stays
+ * open to every administrator; one's own account is not checked here.
  */
 async function assertMayChangeAdmin(cx: SqlExecutor, userId: string, actorId: string) {
   if (userId === actorId) return;
-  const [rows] = await cx.execute<RowDataPacket[]>("SELECT 1 FROM users WHERE id = ? AND role = 'admin' FOR UPDATE", [userId]);
+  const [rows] = await cx.execute<RowDataPacket[]>("SELECT 1 FROM users WHERE id = ? AND role IN ('owner', 'admin') FOR UPDATE", [userId]);
   if (!rows.length) return;
   const [[actor]] = await cx.execute<RowDataPacket[]>('SELECT role FROM users WHERE id = ? LOCK IN SHARE MODE', [actorId]);
   if (!can(actor?.role, 'admins.manage')) throw forbidden('ADMINS_OWNER_ONLY', ADMIN_ACCOUNT);
@@ -103,6 +104,7 @@ async function renewSetupLink(adminId: string, userId: string, req: AuthRequest 
 async function revokeSetupLink(adminId: string, userId: string, req: AuthRequest | null = null): Promise<{ revoked: boolean }> {
   return withTransaction(async cx => {
     await assertCaller(cx);
+    await assertMayChangeSignIn(cx, userId, adminId);
     const [result] = await cx.execute<import('mysql2/promise').ResultSetHeader>('DELETE FROM invites WHERE user_id = ? AND used_at IS NULL', [userId]);
     if (result.affectedRows) await recordAudit({ action: 'admin.setup_link_revoked', actorId: adminId, targetUserId: userId, req }, cx);
     return { revoked: result.affectedRows > 0 };
