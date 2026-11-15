@@ -48,6 +48,15 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   const [existingTables] = await cleanupConnection.query<RowDataPacket[]>('SHOW TABLES');
   assert.equal(existingTables.length, 0, 'Fresh-install fixture requires an empty dedicated test database');
   ownsDatabase = true;
+  // A first start refuses a bootstrap address the sign-in page would refuse,
+  // before writing anything; once there are users, the variable is not used.
+  const startWith = (email: string) => require('node:child_process').spawnSync(process.execPath, ['-e',
+    `require(${JSON.stringify(require.resolve('../dist/src/services/database'))}).initDatabase().then(() => process.exit(0), error => { console.error(error.message); process.exit(1); })`],
+  { env: { ...process.env, BOOTSTRAP_ADMIN_EMAIL: email }, encoding: 'utf8' });
+  const refused = startWith('admin');
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /BOOTSTRAP_ADMIN_EMAIL "admin" is not an email address/);
+  assert.equal((await cleanupConnection.query<RowDataPacket[]>('SHOW TABLES'))[0].length, 0, 'A refused first start writes nothing');
   // A first setup that crashed after creating the tables, before recording its
   // history, is finished by the next start without duplicating anything.
   const { BASELINE } = require('../dist/src/services/database-baseline') as typeof import('../src/services/database-baseline');
@@ -58,6 +67,8 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
       (SELECT COUNT(*) FROM calendar_accounts WHERE provider = 'local') AS local_accounts,
       (SELECT COUNT(*) FROM calendar_calendars) AS calendars`);
   assert.deepEqual([setup.users, setup.local_accounts, setup.calendars].map(Number), [1, 1, 1]);
+  const kept = startWith('admin');
+  assert.equal(kept.status, 0, kept.stderr);
   const [settings] = await db.query<RowDataPacket[]>('SELECT setting_key, setting_value FROM system_settings ORDER BY setting_key');
   assert.deepEqual(settings.map((row) => [row.setting_key, row.setting_value]), [['signup_mode', 'disabled'], ['signup_secure_default_applied', 'true']]);
   const [progress] = await db.query<RowDataPacket[]>('SELECT source_table, last_id, processed FROM mail_engine_migration_progress ORDER BY source_table');

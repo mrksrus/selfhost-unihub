@@ -2,7 +2,7 @@ import mysql from 'mysql2/promise';
 import type { Pool, PoolConnection, RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import { db, setDb, getDb } from '../state';
-import { JWT_SECRET, ENCRYPTION_KEY } from '../config';
+import { JWT_SECRET, ENCRYPTION_KEY, BOOTSTRAP_ADMIN_EMAIL } from '../config';
 import { safeJsonParse } from './calendar';
 import { getDatabaseConfig } from './database-config';
 import { supportedServer, unsupportedServerMessage } from './database-version';
@@ -445,7 +445,19 @@ const MIGRATIONS: readonly Migration[] = [
 ];
 const LATEST_MIGRATION_ID = MIGRATIONS[MIGRATIONS.length - 1].id;
 
+// The sign-in page's rule (zod's z.email()): an address it refuses can never sign in.
+const SIGN_IN_EMAIL = /^(?:[A-Za-z0-9_'+-]+\.)*[A-Za-z0-9_'+-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9-]*\.)+[A-Za-z]{2,}$/;
+
 async function ensureSchema() {
+  // Only a first start creates the bootstrap administrator, so only then is the address checked.
+  if (BOOTSTRAP_ADMIN_EMAIL && !SIGN_IN_EMAIL.test(BOOTSTRAP_ADMIN_EMAIL)) {
+    const [[table]] = await db.query<(RowDataPacket & { found: number })[]>(
+      "SELECT COUNT(*) AS found FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'");
+    const [[users]] = Number(table.found) ? await db.query<(RowDataPacket & { found: number })[]>('SELECT EXISTS (SELECT 1 FROM users) AS found') : [[{ found: 0 }]];
+    if (!Number(users.found)) {
+      throw new Error(`BOOTSTRAP_ADMIN_EMAIL "${BOOTSTRAP_ADMIN_EMAIL}" is not an email address, so nobody could sign in as the first administrator. Nothing was set up. Start again with an address such as admin@example.com; on TrueNAS, where the field cannot be changed, install the app again with one.`);
+    }
+  }
   await runMigrations(getDb()!, MIGRATIONS, BASELINE);
 }
 
