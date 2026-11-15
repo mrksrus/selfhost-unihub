@@ -13,6 +13,8 @@ export interface OutgoingMessage {
   subject: string;
   body: string;
   isHtml: boolean;
+  /** A formatted message's plain-text version, sent beside its HTML. */
+  text?: string;
 }
 
 export interface DraftInput extends OutgoingMessage, ReplyThreading {

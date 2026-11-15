@@ -249,6 +249,7 @@ async function sendStoredDraft(userId: string, draftId: string, replyTo?: unknow
     subject: draft.subject || '(No subject)',
     body: bodyContent,
     isHtml: !!draft.body_html || (!draft.body_text && attachments.length > 0),
+    text: draft.body_html ? draft.body_text : null,
     attachments,
     // The reply link the request names, else the one the draft kept.
     ...((await replyThreading(userId, replyTo)) ?? draftThreading(draft) ?? {}),

@@ -589,6 +589,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
         subject: composeForm.subject,
         body: composeForm.body || (bodyFormat === 'rich' ? '<p></p>' : ''),
         isHtml: bodyFormat === 'rich',
+        ...(bodyFormat === 'rich' ? { text: htmlToPlainText(composeForm.body) } : {}),
         ...(replyToEmailId ? { in_reply_to_email_id: replyToEmailId } : {}),
       };
 
@@ -808,6 +809,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
         subject: composeForm.subject.trim() || '(No subject)',
         body: composeForm.body || (bodyFormat === 'rich' ? '<p></p>' : ''),
         isHtml: bodyFormat === 'rich',
+        ...(bodyFormat === 'rich' ? { text: htmlToPlainText(composeForm.body) } : {}),
         attachments: attachmentPayload,
         ...threading,
       });

@@ -27,6 +27,8 @@ interface Input {
   subject?: string;
   body?: string;
   body_html?: string;
+  /** A formatted body's plain-text version, from the composer. */
+  text?: unknown;
   attachments?: unknown;
   existing_attachment_ids?: unknown[] | null;
   /** The UniHub id of the message a reply answers; on a draft, null or '' removes the reply link. */
@@ -105,7 +107,7 @@ export = {
       const draftId = crypto.randomUUID();
       const isHtml = body?.isHtml !== false;
       const draftBody = String(body?.body_html ?? body?.body ?? '');
-      const bodyText = isHtml ? htmlToDraftText(draftBody) : draftBody;
+      const bodyText = isHtml ? (typeof body?.text === 'string' ? body.text : htmlToDraftText(draftBody)) : draftBody;
       const bodyHtml = isHtml ? draftBody : null;
       const subject = String(body?.subject ?? '');
       const threading = replyLinkRemoved(body?.in_reply_to_email_id) ? null : await replyThreading(userId, body?.in_reply_to_email_id);
@@ -197,7 +199,7 @@ export = {
         const isHtml = body?.isHtml !== false;
         const draftBody = String(body.body_html ?? body.body ?? '');
         updates.push('body_text = ?', 'body_html = ?');
-        params.push(isHtml ? htmlToDraftText(draftBody) || null : draftBody || null, isHtml ? draftBody : null);
+        params.push(isHtml ? (typeof body.text === 'string' ? body.text : htmlToDraftText(draftBody)) || null : draftBody || null, isHtml ? draftBody : null);
       }
 
       const relink = replyLinkGiven(body?.in_reply_to_email_id);
@@ -262,7 +264,7 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
-      const { account_id, to, cc, bcc, subject, body: emailBody, isHtml, attachments, in_reply_to_email_id } = body;
+      const { account_id, to, cc, bcc, subject, body: emailBody, isHtml, text, attachments, in_reply_to_email_id } = body;
       const invalidRecipients = recipientFieldError(body);
       if (invalidRecipients) return { error: invalidRecipients, status: 400 };
       if (!account_id || !(to?.trim() || cc?.trim() || bcc?.trim()) || !subject || !emailBody) {
@@ -279,7 +281,7 @@ export = {
       );
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
 
-      const message = { to: to || '', cc, bcc, subject, body: emailBody, isHtml, attachments: attachments || [] };
+      const message = { to: to || '', cc, bcc, subject, body: emailBody, isHtml, ...(typeof text === 'string' ? { text } : {}), attachments: attachments || [] };
       return await sendOnce({ userId, clientKey: idempotencyKey(req), request: { account_id, ...message, in_reply_to_email_id } }, async () => {
         const result = await sendEmail({ userId, accountId: account_id }, { ...message, ...(await replyThreading(userId, in_reply_to_email_id) ?? {}) });
         return { ...result, success: true, messageId: result.messageId };

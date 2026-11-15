@@ -37,6 +37,8 @@ interface OutgoingEmail {
   subject: string;
   body: string;
   isHtml?: boolean;
+  /** The plain-text version of an HTML body, sent beside it as multipart/alternative. */
+  text?: string | null;
   attachments?: unknown;
   /** The Message-ID this message answers, from replyThreading or a reply draft. */
   inReplyTo?: string | null;
@@ -112,7 +114,7 @@ function dataPhaseWatcher() {
 
 // The account is looked up with its owner: a stored reference (a draft's
 // account) cannot send from another user's account.
-async function sendEmail({ userId, accountId }: { userId: string; accountId: string }, { subject, body, isHtml = false, attachments = [], inReplyTo = null, references = [], threadKey = null, ...recipients }: OutgoingEmail) {
+async function sendEmail({ userId, accountId }: { userId: string; accountId: string }, { subject, body, isHtml = false, text = null, attachments = [], inReplyTo = null, references = [], threadKey = null, ...recipients }: OutgoingEmail) {
   // SMTP and the Sent copy get the same parsed recipients, names kept, whichever route sent.
   const to = normalizeRecipients(recipients.to);
   const cc = normalizeRecipients(recipients.cc);
@@ -161,7 +163,7 @@ async function sendEmail({ userId, accountId }: { userId: string; accountId: str
       cc: cc.length ? cc : undefined,
       bcc: bcc.length ? bcc : undefined,
       subject,
-      text: isHtml ? undefined : body,
+      text: isHtml ? text || undefined : body,
       html: isHtml ? body : undefined,
       attachments: smtpAttachments.length > 0 ? smtpAttachments : undefined,
       ...(inReplyTo ? { inReplyTo, references: references.length ? references : [inReplyTo] } : {}),
@@ -211,7 +213,7 @@ async function sendEmail({ userId, accountId }: { userId: string; accountId: str
             JSON.stringify(to),
             storedRecipients(cc),
             storedRecipients(bcc),
-            isHtml ? null : body,
+            isHtml ? text || null : body,
             isHtml ? body : null,
             staged.length > 0 ? 1 : 0,
             sentAt,

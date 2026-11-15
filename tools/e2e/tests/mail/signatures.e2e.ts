@@ -2,7 +2,7 @@ import { describe, test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { outside, people, runId } from '../support/env.ts';
 import { receive } from '../support/mail.ts';
-import { mailAccount, ok, pageApi, setSettings } from '../support/api.ts';
+import { emailsWithSubject, mailAccount, ok, pageApi, setSettings } from '../support/api.ts';
 import { messageBody, onlyOn, openCompose, typeAtStart } from '../support/ui.ts';
 
 const mailbox = people.admin.mailbox;
@@ -47,6 +47,13 @@ describe('per-account signature', { serial: true, session: 'admin' }, () => {
     const message = await receive(outside.sam, subject);
     expect(String(message.html)).toMatch(/<(b|strong)>\s*Avery Admin\s*<\/(b|strong)>/);
     expect(String(message.html)).toContain('Synthetic Testing Ltd');
+    // R4: a plain-text version goes beside the HTML, with the "-- " signature line,
+    // and the Sent copy keeps it.
+    expect(message.contentType).toBe('multipart/alternative');
+    expect(message.text).toMatch(/Formatted body line\.[\s\S]*-- \r?\nAvery Admin\r?\nSynthetic Testing Ltd/);
+    const [sent] = await emailsWithSubject(browser, 'sent', subject);
+    const copy = ok(await pageApi(browser, 'GET', `/api/mail/emails/${sent.id}`), 'read the Sent copy');
+    expect((copy.email ?? copy).body_text).toMatch(/Formatted body line\.[\s\S]*-- \nAvery Admin/);
   });
 
   test('[24-10 24-13 B-27] a plain-text message carries the plain signature on its own lines', async ({ app, screen, browser }) => {
