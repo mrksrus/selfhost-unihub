@@ -87,6 +87,10 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
   const busy = stage.isPending || commit.isPending || step.kind === 'committing';
   const pick = (file: File | undefined) => { if (file) { setFileName(file.name); stage.mutate(file); } };
 
+  // Cards the chosen decisions will add or merge; skipped ones are not imported.
+  const importing = (groups: ImportGroup[]) =>
+    groups.reduce((total, group) => (decisions[group.id] ?? group.default_decision) === 'skip' ? total : total + group.cards.length, 0);
+
   const setAll = (decision: ImportDecisionKind, groups: ImportGroup[]) =>
     setDecisions(prev => ({ ...prev, ...Object.fromEntries(groups.map(group => [group.id, decision])) }));
 
@@ -221,8 +225,9 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
           {step.kind === 'summary' ? (
             <>
               <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
-              <Button type="button" onClick={() => commit.mutate({ id: step.summary.id, groups: step.summary.groups })} disabled={busy || step.summary.counts.cards === 0}>
-                {commit.isPending && <Loader2 aria-hidden="true" className="motion-safe:animate-spin" />}Import {step.summary.counts.cards} contact{step.summary.counts.cards === 1 ? '' : 's'}
+              <Button type="button" onClick={() => commit.mutate({ id: step.summary.id, groups: step.summary.groups })} disabled={busy || importing(step.summary.groups) === 0}>
+                {commit.isPending && <Loader2 aria-hidden="true" className="motion-safe:animate-spin" />}
+                {importing(step.summary.groups) === 0 ? 'Nothing to import' : `Import ${importing(step.summary.groups)} contact${importing(step.summary.groups) === 1 ? '' : 's'}`}
               </Button>
             </>
           ) : step.kind === 'done' ? <Button type="button" onClick={onClose}>Done</Button>

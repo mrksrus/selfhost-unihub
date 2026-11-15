@@ -216,7 +216,7 @@ test('[26-11 D6] import decisions: merge into an existing contact, skip another,
   await dialog.getByRole('combobox', 'Decision for contacts 2').tap();
   await screen.getByRole('option', 'Skip', { exact: true }).tap();
   await expect(dialog.getByRole('combobox', 'Decision for contacts 1')).toHaveText('Merge into existing');
-  await dialog.getByRole('button', 'Import 2 contacts').tap();
+  await dialog.getByRole('button', 'Import 1 contact').tap();
   await expect(dialog.getByText('Merged', { exact: true })).toBeVisible({ timeout: 120_000 });
   await expect(dialog.getByText("Kept UniHub's value", { exact: true })).toBeVisible();
   await dialog.getByRole('button', 'Done', { exact: true }).tap();

@@ -117,6 +117,10 @@ describe('ContactImportDialog', () => {
     expect(within(dialog).getByText(/Jürgen Müller/)).toBeInTheDocument();
     expect(within(dialog).getByText('1 warning')).toBeInTheDocument();
     expect(api.post).not.toHaveBeenCalled();
+    // The button counts what the decisions import: the identical card is skipped.
+    expect(within(dialog).getByRole('button', { name: 'Import 2 contacts' })).toBeEnabled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Skip' }));
+    expect(within(dialog).getByRole('button', { name: 'Import 1 contact' })).toBeEnabled();
     // Every match becomes "add" at once; the new card has no decision row.
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Import 3 contacts' }));
@@ -138,7 +142,7 @@ describe('ContactImportDialog', () => {
     fireEvent.change(within(dialog).getByLabelText('Choose a file'), { target: { files: [new File(['BEGIN:VCARD'], 'phone.vcf', { type: 'text/vcard' })] } });
     fireEvent.click(await within(dialog).findByRole('button', { name: 'Review conflicts (1)' }));
     expect(within(dialog).getByText(/In the file: Anna Example · Example GmbH/)).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Import 3 contacts' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Import 2 contacts' }));
     expect(await within(dialog).findByText('The import stopped')).toBeInTheDocument();
     expect(within(dialog).getByText(/A restore of contacts is running/)).toBeInTheDocument();
     expect(within(dialog).getByText('So far: 1 added, 0 merged, 0 skipped.')).toBeInTheDocument();
