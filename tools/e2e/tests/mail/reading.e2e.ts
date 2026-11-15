@@ -1,7 +1,7 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { outside, people, runId } from '../support/env.ts';
-import { createProviderMailbox, providerFlags, sendMail, setProviderFlags, waitForDelivery, waitForProviderFlag } from '../support/mail.ts';
+import { createProviderFolder, createProviderMailbox, deleteProviderFolder, moveProviderMessage, providerFlags, sendMail, setProviderFlags, waitForDelivery, waitForProviderFlag } from '../support/mail.ts';
 import { addMailAccount, emailsWithSubject, ok, pageApi } from '../support/api.ts';
 import { dbRead } from '../support/db.ts';
 import { onlyOn, openMessage, syncNow } from '../support/ui.ts';
@@ -117,5 +117,41 @@ test('[B-35] a Download account keeps read and star set in UniHub when another m
     expect([await stored(readHere), await stored(starredHere)]).toEqual([{ read: true, starred: false }, { read: false, starred: true }]);
   } finally {
     ok(await pageApi(browser, 'DELETE', `/api/mail/accounts/${account.id}?purge=true&disconnect=true&confirm_purge=${encodeURIComponent(mailbox)}`), 'remove the added account');
+  }
+});
+
+// B-14: a message another mail program moves out of the inbox leaves UniHub's
+// inbox within seconds of the server's IDLE notice, also right after a sweep,
+// when the 15-minute presence throttle would otherwise hold it there.
+test('[B-14] a message another mail program moves away leaves the inbox within seconds', { session: 'alex', timeout: 300_000 }, async ({ app, screen, browser }) => {
+  await onlyOn(browser, 'desktop');
+  const id = runId();
+  const mailbox = people.alex.mailbox, subject = `Moved away ${id}`, folder = `Elsewhere-${id}`;
+  await createProviderFolder(mailbox, folder);
+  try {
+    await sendMail({ from: `Sam Sender <${outside.sam}>`, to: [mailbox], subject, text: `Body of ${subject}.` });
+    await waitForDelivery(mailbox, subject);
+    await app.open('/mail');
+    await syncNow(screen, mailbox);
+    await expect(screen.getByRole('listitem').filter({ hasText: subject })).toBeVisible({ timeout: 120_000 });
+    // The INBOX presence sweep has just finished, so its throttle is on.
+    const sweptRecently = async () => (await dbRead<{ swept: number; busy: number }>(`SELECT
+        (SELECT COUNT(*) FROM mail_engine_cursors c WHERE c.mailbox_id = m.id AND c.uidvalidity = m.uidvalidity AND c.stream = 'presence'
+          AND c.covered_through > 0 AND c.covered_through >= CAST(JSON_UNQUOTE(JSON_EXTRACT(c.coverage_json, '$.upper')) AS UNSIGNED)
+          AND c.last_covered_at >= UTC_TIMESTAMP() - INTERVAL 10 MINUTE) AS swept,
+        (SELECT COUNT(*) FROM mail_engine_jobs j WHERE j.mail_account_id = m.mail_account_id AND j.state IN ('queued','running')) AS busy
+      FROM mail_remote_mailboxes m JOIN mail_accounts a ON a.id = m.mail_account_id
+      WHERE a.email_address = ? AND m.remote_name = 'INBOX' AND m.state = 'active'`, [mailbox]))[0];
+    await expect.poll(async () => { const box = await sweptRecently(); return Number(box?.swept) === 1 && Number(box?.busy) === 0; },
+      { message: 'the INBOX presence sweep finished', timeout: 120_000, interval: 2_000 }).toBe(true);
+
+    await moveProviderMessage(mailbox, subject, folder);
+    const moved = Date.now();
+    await expect.poll(async () => (await emailsWithSubject(browser, 'inbox', subject)).length,
+      { message: 'gone from the inbox', timeout: 60_000, interval: 500 }).toBe(0);
+    console.log(`[B-14] the moved message left the inbox after ${((Date.now() - moved) / 1000).toFixed(1)} s`);
+    await expect(screen.getByRole('listitem').filter({ hasText: subject })).toHaveCount(0, { timeout: 15_000 });
+  } finally {
+    await deleteProviderFolder(mailbox, folder).catch(() => undefined);
   }
 });

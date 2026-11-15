@@ -277,6 +277,20 @@ export async function createProviderFolder(mailbox: string, folder: string, subj
   });
 }
 
+/** Moves the newest message with exactly this subject to another folder at the stack provider, as another mail program would. */
+export async function moveProviderMessage(mailbox: string, subject: string, to: string, folder = 'INBOX') {
+  const message = await imapMessage(mailbox, subject, folder);
+  if (!message) throw new Error(`no message "${subject}" in ${mailbox}/${folder}`);
+  await onProvider(mailbox, async (client) => {
+    const lock = await client.getMailboxLock(folder);
+    try {
+      if (!await client.messageMove(String(message.uid), to, { uid: true })) throw new Error(`could not move "${subject}"`);
+    } finally {
+      lock.release();
+    }
+  });
+}
+
 /** Deletes a folder at the stack provider, as another mail program would. */
 export async function deleteProviderFolder(mailbox: string, folder: string) {
   await onProvider(mailbox, (client) => client.mailboxDelete(folder));

@@ -73,13 +73,15 @@ function peer() {
   };
 }
 
-test('`* N EXISTS` during IDLE enqueues a durable recent job for the account INBOX', async t => {
+test('`* N EXISTS` during IDLE enqueues a durable recent job for the account INBOX; an external EXPUNGE sweeps it now', async t => {
   const imap = peer();
   const port = await imap.listen();
   t.after(() => imap.close());
   const old = getDb(); t.after(() => setDb(old));
+  let present = 3; // INBOX messages UniHub holds as present
   setDb({ execute: (async (query: string) => {
     if (query.includes('LEFT JOIN mail_engine_accounts')) return [[{ user_id: 'owner', sync_mode: 'sync' }]];
+    if (query.includes('FROM mail_remote_occurrences')) return [[{ n: present }]];
     if (query.includes('FROM user_settings')) return [[]];
     if (query.includes('FROM backup_restore_jobs')) return [[]];
     assert.fail(`Unexpected SQL: ${query}`);
@@ -99,6 +101,12 @@ test('`* N EXISTS` during IDLE enqueues a durable recent job for the account INB
   imap.push('* 4 EXISTS\r\n');
   await until(() => jobs.length === 2);
   assert.deepEqual(jobs[1], { userId: 'owner', accountId: 'acct-1', mailboxId: 'inbox-box', kind: 'recent', priority: 10 });
+  // Another mail program moves one of the four away: the server now holds
+  // fewer than UniHub shows, so INBOX presence is swept at once, unthrottled.
+  present = 4;
+  imap.push('* 2 EXPUNGE\r\n');
+  await until(() => jobs.length === 3);
+  assert.deepEqual(jobs[2], { userId: 'owner', accountId: 'acct-1', mailboxId: 'inbox-box', kind: 'presence', priority: 70, manualRefresh: true });
   assert.ok(imap.commands.some(cmd => cmd.startsWith('EXAMINE')), 'INBOX is opened read-only');
   assert.ok(!imap.commands.some(cmd => cmd.startsWith('SELECT')));
   supervisor.stop();

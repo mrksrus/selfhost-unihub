@@ -231,7 +231,7 @@ async function syncMailAccount(accountId: unknown, options: SyncOptions = {}) {
 // ordinary admission: background work, only while the account may run it now,
 // never a manual resweep. scheduler.enqueue persists the job and nudges a drain.
 const IDLE_STREAM_PRIORITY: Record<string, number> = { recent: 10, flags: 20, presence: 70 };
-async function enqueueIdleRefresh({ accountId, userId, mailboxId, kinds }: { accountId: string; userId: string; mailboxId: string; kinds: string[] }, { executor = db, scheduler = durableScheduler }: { executor?: SqlExecutor; scheduler?: typeof durableScheduler } = {}) {
+async function enqueueIdleRefresh({ accountId, userId, mailboxId, kinds, exists }: { accountId: string; userId: string; mailboxId: string; kinds: string[]; exists?: number }, { executor = db, scheduler = durableScheduler }: { executor?: SqlExecutor; scheduler?: typeof durableScheduler } = {}) {
   const id = normalizeMailAccountId(accountId);
   if (!id || !mailboxId || !Array.isArray(kinds)) return { enqueued: [] };
   const [accounts] = await executor.execute<RowDataPacket[]>(`SELECT a.user_id, a.sync_mode FROM mail_accounts a
@@ -239,11 +239,22 @@ async function enqueueIdleRefresh({ accountId, userId, mailboxId, kinds }: { acc
     WHERE a.id = ? AND a.user_id = ? AND a.is_active = TRUE AND a.disconnected_at IS NULL AND e.paused_reason IS NULL`, [id, userId]);
   const account = accounts[0];
   if (!account || !await canRunModule(account.user_id, 'mail', { background: true })) return { enqueued: [] };
+  // Fewer messages on the server than UniHub holds as present there: another
+  // mail program moved or deleted some, so that one mailbox is swept now
+  // instead of after the throttle. UniHub's own settled moves keep the counts equal.
+  let sweepNow = false;
+  if (account.sync_mode === 'sync' && Number.isSafeInteger(exists)) {
+    const [[present]] = await executor.execute<RowDataPacket[]>(`SELECT COUNT(*) AS n FROM mail_remote_occurrences o
+      JOIN mail_remote_mailboxes m ON m.id = o.mailbox_id AND m.uidvalidity = o.uidvalidity
+      WHERE m.id = ? AND m.user_id = ? AND m.mail_account_id = ? AND m.state = 'active' AND o.presence = 'present'`, [mailboxId, account.user_id, id]);
+    sweepNow = Number(present?.n) > exists!;
+  }
   const enqueued = [];
   await scheduler.start();
-  for (const kind of [...new Set(kinds)]) {
+  for (const kind of new Set([...kinds, ...sweepNow ? ['presence'] : []])) {
     if (!(kind in IDLE_STREAM_PRIORITY) || (kind !== 'recent' && account.sync_mode !== 'sync')) continue;
-    await scheduler.enqueue({ userId: account.user_id, accountId: id, mailboxId, kind, priority: IDLE_STREAM_PRIORITY[kind] });
+    await scheduler.enqueue({ userId: account.user_id, accountId: id, mailboxId, kind, priority: IDLE_STREAM_PRIORITY[kind],
+      ...kind === 'presence' && sweepNow ? { manualRefresh: true } : {} });
     enqueued.push(kind);
   }
   return { enqueued };

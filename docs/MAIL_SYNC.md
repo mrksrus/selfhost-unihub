@@ -395,7 +395,12 @@ INBOX mail is imported within seconds instead of at the next 30-second tick.
   durable `recent` job for that INBOX; in Sync mode `FLAGS` queues a `flags`
   job and `EXPUNGE`/`VANISHED` a `presence` job. Both are the normal
   background sweeps with their 15-minute throttle (a throttled one finishes
-  without connecting), never a manual resweep. Events are coalesced for 2
+  without connecting). When the server's message count (`EXISTS`) is lower
+  than the INBOX messages UniHub holds as present, another mail program moved
+  or deleted some, and INBOX alone is swept at once as a manual resweep would
+  be; UniHub's own settled moves keep the counts equal. With a Sync window
+  that leaves older INBOX mail out, the count may not show it, and the
+  throttled sweep catches it as before. Events are coalesced for 2
   seconds into one admission (`enqueueIdleRefresh` in `mail-sync-control.ts`),
   which rechecks the account, pause, background setting and restore state,
   persists the jobs and nudges the scheduler. Fencing, leases and imports all

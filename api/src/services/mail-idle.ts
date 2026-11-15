@@ -40,7 +40,7 @@ interface Session extends Eligible {
   debounceTimer: NodeJS.Timeout | null;
   pending: Set<string>;
 }
-type IdleInput = { accountId: string; userId: string; mailboxId: string; kinds: string[] };
+type IdleInput = { accountId: string; userId: string; mailboxId: string; kinds: string[]; exists?: number };
 type Overrides = Partial<typeof DEFAULTS> & { now?: () => number; random?: () => number; timers?: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout; setInterval: typeof setInterval; clearInterval: typeof clearInterval }; log?: (...args: unknown[]) => void; listEligible?: () => Promise<Eligible[]>; connect?: (entry: Session) => Promise<IdleClient>; enqueue?: (input: IdleInput) => Promise<unknown> }
 
 function envInt(name: string, fallback: number, low: number, high: number) {
@@ -136,8 +136,11 @@ function createIdleSupervisor(overrides: Overrides = {}) {
     const kinds = [...entry.pending];
     entry.pending.clear();
     if (!kinds.length || sessions.get(entry.accountId) !== entry) return;
+    // The server's current message count, kept up to date by EXISTS/EXPUNGE.
+    const exists = entry.client?.mailbox ? entry.client.mailbox.exists : undefined;
     Promise.resolve()
-      .then(() => enqueue({ accountId: entry.accountId, userId: entry.userId, mailboxId: entry.mailboxId, kinds }))
+      .then(() => enqueue({ accountId: entry.accountId, userId: entry.userId, mailboxId: entry.mailboxId, kinds,
+        ...(Number.isSafeInteger(exists) ? { exists } : {}) }))
       .catch(error => log(`[MAIL IDLE] Refresh for account ${entry.accountId} failed: ${(error as Error).message}`));
   }
 
