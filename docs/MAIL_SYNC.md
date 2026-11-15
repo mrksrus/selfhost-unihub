@@ -110,9 +110,12 @@ server inventory without repeating message moves.
 
 Since 0.19.3 each successful complete LIST also marks mailboxes the server no
 longer lists as `missing` (`retireUnlistedMailboxes`). Views and sync policy
-join active mailboxes only, so their mail leaves the folder views and stays in
-All mail; nothing is deleted, and a later LIST that shows the folder again
-makes it active through `ensureMailbox`.
+join active mailboxes only, so in Sync mode their mail leaves the folder views
+and stays in All mail; in Download mode the folder view follows UniHub's own
+filing, so the mail stays in the folder. Nothing is deleted, and a later LIST
+that shows the folder again makes it active through `ensureMailbox`. In both
+modes the folder itself stays listed in UniHub until it is deleted in UniHub
+too.
 
 Deleting a custom folder on the server (`DELETE /api/mail/folders/:slug?server=1`,
 `mail-folder-delete.ts`; `server=true` as well) is refused with `POLICY_FORBIDS`
@@ -142,7 +145,7 @@ the answer is `409 FOLDER_CHANGED` telling the person to sync the account,
 refresh the folders and try again. This is deliberate for servers that never
 send the code: such a folder is not settled by a delete from UniHub; the next
 complete folder listing retires its mailbox once the server stops listing it,
-and its mail leaves the folder views then (nothing is deleted).
+and in Sync mode its mail leaves the folder views then (nothing is deleted).
 A login or connection failure, or a refusal, changes nothing. Only then do
 local rows change, in one transaction, and only for a mailbox row that still
 has the deleted generation: a folder created again and read by a sync in
