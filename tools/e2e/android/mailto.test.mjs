@@ -7,7 +7,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  PACKAGE, adb, enrollFingerprint, openApp, resetAppLock, screenNodes, setDevicePin, signOutApp, sleep, tapNative, touch, touchFinger, waitForUnlockPrompt,
+  PACKAGE, adb, enrollFingerprint, openApp, resetAppLock, screenNodes, setDevicePin, signOutApp, sleep, tapNative, touchFinger, waitForUnlockPrompt,
 } from '../support/android.mjs';
 
 const run = Date.now().toString(36).slice(-5);
@@ -115,7 +115,7 @@ test('a link while the app is locked opens the composer behind the lock, shown o
   await enrollFingerprint();
   const { device, page } = await openApp();
   try {
-    // Settings → App lock → Whole app, every time UniHub opens (app-lock.test.mjs has the screens).
+    // Settings → App lock → Whole app (app-lock.test.mjs has the screens); a cold start always asks.
     await page.goto(new URL('/settings?section=app-lock', page.url()).href);
     await page.getByRole('heading', { name: 'App lock' }).first().waitFor();
     const whole = page.getByRole('radio', { name: 'Whole app' });
@@ -126,21 +126,18 @@ test('a link while the app is locked opens the composer behind the lock, shown o
       await touchFinger(1);
       for (let i = 0; i < 30 && !await whole.isChecked(); i++) await sleep(1000);
     }
-    await page.getByLabel('Ask again').selectOption({ label: 'Every time UniHub opens' }, { timeout: 5000 }).catch(async () => {
-      await touch(page, page.getByRole('combobox', { name: 'Ask again' }));
-      await touch(page, page.getByRole('option', { name: 'Every time UniHub opens' }));
-    });
+    assert.equal(await whole.isChecked(), true, 'the lock is on');
 
-    adb('shell', 'input', 'keyevent', 'KEYCODE_HOME');
-    await sleep(2000);
+    adb('shell', 'am', 'force-stop', PACKAGE);
     const expected = mail('Locked');
     openLink('SENDTO', expected.link);
     let locked = false;
     for (let attempt = 0; attempt < 30 && !locked; attempt++) {
       await sleep(2000);
-      const current = await (await device.webView({ pkg: PACKAGE })).page();
-      locked = await current.getByText('UniHub is locked', { exact: true }).isVisible().catch(() => false) &&
-        await current.getByLabel('Subject').count() === 0;
+      try {
+        const current = await (await device.webView({ pkg: PACKAGE }, { timeout: 30_000 })).page();
+        locked = await current.getByText('UniHub is locked', { exact: true }).isVisible() && await current.getByLabel('Subject').count() === 0;
+      } catch { /* the cold start's page is still on its way */ }
     }
     assert.ok(locked, 'the lock screen shows first, nothing of the message behind it');
     await waitForUnlockPrompt();
