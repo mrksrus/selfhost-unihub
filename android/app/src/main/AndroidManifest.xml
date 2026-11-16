@@ -52,6 +52,18 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="unihub" android:host="connect" />
             </intent-filter>
+            <!-- Email links (Mailto): UniHub's composer opens filled in and sends nothing by itself. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SENDTO" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="mailto" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="mailto" />
+            </intent-filter>
         </activity>
 
         <!-- "Open with…" and "Share" (FileActions): the chosen app may read

@@ -198,6 +198,8 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     setComposeForm({
       ...EMPTY_COMPOSE_FORM,
       to: params.get('to') || '',
+      cc: params.get('cc') || '',
+      bcc: params.get('bcc') || '',
       subject: params.get('subject') || '',
       body: linkBody ? (defaultFormat === 'plain' ? linkBody : plainTextToHtml(linkBody)) : '',
     });

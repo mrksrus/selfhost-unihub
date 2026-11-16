@@ -90,6 +90,10 @@ class MainActivity : Activity() {
     private var cover: View? = null
     private var coverReason = COVER_PAUSE
     private val coverButton = Handler(Looper.getMainLooper())
+    // An email link's composer (Mailto) until the page shows it: it waits
+    // through connecting and signing in; the lock keeps it behind the cover.
+    private var compose: String? = null
+    private var composeAfterSignIn = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -99,6 +103,7 @@ class MainActivity : Activity() {
         AppLock.attach(this, saved)
         applyLockWindow()
         if (saved != null) PageTheme.saved(this)?.let { (dark, background) -> applyTheme(dark, background) }
+        if (savedInstanceState == null) compose = mailtoPath(intent)
         val opened = notificationPath(intent, saved)?.takeIf { savedInstanceState == null }
         if (saved != null) showWeb(saved, savedInstanceState, opened) else showConnect()
         ConnectLink.toAsk(connectRequest(intent), savedInstanceState != null, savedInstanceState?.getString(STATE_CONNECT_ASKED), saved)
@@ -114,6 +119,23 @@ class MainActivity : Activity() {
         // A tapped notification of a locked app opens behind the cover; the page asks first.
         lockCheck()
         notificationPath(intent, server)?.let { path -> if (server != null) webView?.loadUrl(server + path) }
+        mailtoPath(intent)?.let { path ->
+            compose = path
+            composeAfterSignIn = false
+            if (server != null) webView?.loadUrl(server + path)
+        }
+    }
+
+    /** The composer for an email link (SENDTO or VIEW `mailto:`), with what the app that sent it put in the extras. */
+    private fun mailtoPath(intent: Intent?): String? {
+        if (intent?.action != Intent.ACTION_SENDTO && intent?.action != Intent.ACTION_VIEW) return null
+        val link = Mailto.parse(intent.dataString ?: return null) ?: return null
+        fun list(name: String) = intent.getStringArrayExtra(name)?.toList().orEmpty()
+        return Mailto.path(link.copy(
+            to = link.to + list(Intent.EXTRA_EMAIL), cc = link.cc + list(Intent.EXTRA_CC), bcc = link.bcc + list(Intent.EXTRA_BCC),
+            subject = link.subject.ifEmpty { intent.getCharSequenceExtra(Intent.EXTRA_SUBJECT)?.toString().orEmpty() },
+            body = link.body.ifEmpty { intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty() },
+        ))
     }
 
     /** The page a tapped notification leads to, if it came from this server. */
@@ -323,6 +345,18 @@ class MainActivity : Activity() {
                     endFileSession()
                     hideCover()
                 }
+                // The page reads the link and moves on; a sign-in page in between brings it back after.
+                compose?.let { path ->
+                    when {
+                        isSignInPage(url) -> composeAfterSignIn = true
+                        url != null && Uri.parse(url).getQueryParameter("action") == "compose" -> Unit
+                        composeAfterSignIn -> {
+                            composeAfterSignIn = false
+                            view.loadUrl(server + path)
+                        }
+                        else -> compose = null
+                    }
+                }
                 offerContacts(server)
                 offerNotifications(server)
                 resumeNotifications()
@@ -376,7 +410,7 @@ class MainActivity : Activity() {
             pageBridge.download(url, URLUtil.guessFileName(url, contentDisposition, mimeType), userAgent)
         }
 
-        if (savedInstanceState?.let { web.restoreState(it) } == null) web.loadUrl(server + (path ?: ""))
+        if (savedInstanceState?.let { web.restoreState(it) } == null) web.loadUrl(server + (path ?: compose ?: ""))
     }
 
     private fun destroyWeb() {
