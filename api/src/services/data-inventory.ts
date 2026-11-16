@@ -143,6 +143,26 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
       'scope identity_hash attempts window_ends_at'],
   ].map(([name, treatment, reason, columns]) => [name, Object.freeze({ ...excluded(treatment, reason, columns),
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 27])) })])),
+  // Upgrade step 29 (0.31.0).
+  ...Object.fromEntries([
+    ['address_books', 'Shared address books belong to the organisation, not to one person; only the instance backup carries them, with their ids.',
+      'id name description owner_kind owner_id created_by created_at updated_at deleted_at'],
+    ['grants', 'Who may reach a shared resource is organisation data; only the instance backup carries it. A person restored elsewhere holds no grant.',
+      'id resource_kind resource_id principal_kind principal_id permission granted_by granted_at'],
+    ['directory_entries', 'The company directory belongs to the organisation; only the instance backup carries it.',
+      'user_id phone job_title department updated_by updated_at'],
+  ].map(([name, reason, columns]) => [name, Object.freeze({ ...excluded('deliberately_excluded', reason, columns),
+    introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 29])) })])),
+});
+
+// Upgrade step 29 (0.31.0): rows of these personal tables may belong to a
+// shared address book instead of a person (address_book_id set, user_id
+// NULL). A personal backup selects and writes only the person's rows, so the
+// column is never archived; the instance backup carries a book's rows.
+const BOOK_ROWS = Object.freeze({
+  treatment: 'deliberately_excluded', introducedIn: 29,
+  reason: "A shared address book's rows are organisation data; a personal backup carries only the person's own rows, the instance backup the book's.",
+  tables: Object.freeze(['contacts', 'contact_values', 'contact_properties', 'contact_photos', 'bin_items']),
 });
 
 // Every table states who owns a row, whether it can be shared, its data
@@ -167,6 +187,9 @@ const CALENDAR_SETUP: readonly DataClass[] = Object.freeze(['local', 'config']);
 // Events of local calendars are local; those of CalDAV and ICS calendars
 // mirror the provider, with UniHub's ToDo state on them as a local overlay.
 const CALENDAR_CONTENT: readonly DataClass[] = Object.freeze(['local', 'mirror']);
+// A person's contacts and bin are local; a shared address book's rows in the
+// same tables belong to the organisation (BOOK_ROWS).
+const BOOK_ROW_CLASSES: readonly DataClass[] = Object.freeze(['local', 'org']);
 const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.freeze({
   // Identity, settings and the installation.
   users: { owner: 'user', shareable: false, dataClass: 'config', module: null, restore: 'Profile fields restored onto the signed-in person; login, role and 2FA stay with the destination identity.' },
@@ -190,6 +213,11 @@ const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.fr
   org_groups: { owner: 'organisation', shareable: false, dataClass: 'org', module: null, restore: 'Never in a personal backup; the instance backup restores it with its id.' },
   org_group_members: { owner: 'organisation', shareable: false, dataClass: 'org', module: null, restore: 'Never in a personal backup; the instance backup restores it with the group; a person\'s rows go with the person.' },
   invites: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: a setup link is a credential of its person; an instance restore deletes them and the administrator makes a new one.' },
+  // Shared address books and the company directory (upgrade step 29, 0.31.0, F4).
+  // Grants serve every shared kind, so they belong to no module.
+  address_books: { owner: 'organisation', shareable: true, dataClass: 'org', module: 'contacts', restore: 'Never in a personal backup; the instance backup restores it with its id, its contacts and its bin.' },
+  grants: { owner: 'organisation', shareable: false, dataClass: 'org', module: null, restore: "Never in a personal backup; the instance backup restores it with its resource; a person's or a group's grants go with them." },
+  directory_entries: { owner: 'organisation', shareable: false, dataClass: 'org', module: 'contacts', restore: 'Never in a personal backup; the instance backup restores it; it goes with its person.' },
   login_attempts: { owner: 'installation', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: attempt budgets expire; an instance restore deletes them.' },
   notification_events: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: pending notifications are not replayed.' },
   notification_deliveries: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: delivery attempts belong to this server\'s devices.' },
@@ -201,16 +229,16 @@ const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.fr
   backup_restore_jobs: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: a restore does not resume another installation\'s jobs.' },
   backup_archive_keys: { owner: 'user', shareable: false, dataClass: 'installation', module: null, restore: 'Never restored: archive keys are this installation\'s secrets.' },
   // Contacts; the vCard model since upgrade step 22 (0.26.0, F12).
-  contacts: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored with the Contacts section, matched by vCard UID; ids remapped.' },
-  contact_values: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored with its contact, which it replaces wholesale; ids remapped.' },
-  contact_properties: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored with its contact, which it replaces wholesale; ids remapped.' },
-  contact_photos: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored with its contact and its photo files.' },
+  contacts: { owner: 'user', shareable: true, dataClass: BOOK_ROW_CLASSES, module: 'contacts', restore: "Restored with the Contacts section, matched by vCard UID; ids remapped. A shared book's rows: only in the instance backup." },
+  contact_values: { owner: 'user', shareable: true, dataClass: BOOK_ROW_CLASSES, module: 'contacts', restore: "Restored with its contact, which it replaces wholesale; ids remapped. A shared book's rows: only in the instance backup." },
+  contact_properties: { owner: 'user', shareable: true, dataClass: BOOK_ROW_CLASSES, module: 'contacts', restore: "Restored with its contact, which it replaces wholesale; ids remapped. A shared book's rows: only in the instance backup." },
+  contact_photos: { owner: 'user', shareable: true, dataClass: BOOK_ROW_CLASSES, module: 'contacts', restore: "Restored with its contact and its photo files. A shared book's rows: only in the instance backup." },
   contact_uid_aliases: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored with the contact it points to.' },
   contact_duplicate_dismissals: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Restored when both contacts are; ids remapped.' },
   contact_merges: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Not archived: a restore brings back contacts, not a 30-day undo.' },
   contact_imports: { owner: 'user', shareable: false, dataClass: 'installation', module: 'contacts', restore: 'Never restored: a staged import expires after 24 hours.' },
   // Each item's module column names the module that gates it.
-  bin_items: { owner: 'user', shareable: false, dataClass: 'local', module: null, restore: 'From data schema 7 restored with the section of its module, with the time it had left (bin.ts restoreBinItems); not archived before.' },
+  bin_items: { owner: 'user', shareable: true, dataClass: BOOK_ROW_CLASSES, module: null, restore: "From data schema 7 restored with the section of its module, with the time it had left (bin.ts restoreBinItems); not archived before. A shared book's bin: only in the instance backup." },
   // Calendar and ToDo.
   calendar_accounts: { owner: 'user', shareable: false, dataClass: CALENDAR_SETUP, module: 'calendar', restore: 'Restored with the Calendar section; a CalDAV or ICS account comes back paused until it signs in.' },
   calendar_calendars: { owner: 'user', shareable: false, dataClass: CALENDAR_SETUP, module: 'calendar', restore: 'Restored with its account; matched by UID, id, server id, then name.' },
@@ -291,6 +319,7 @@ function declaredFields() {
     if (!policy.reason) throw new Error(`Missing exclusion reason: ${table}`);
     for (const column of policy.columns) add(table, column, policy.treatment, policy.introducedIn?.[column], policy.removedIn);
   }
+  for (const table of BOOK_ROWS.tables) add(table, 'address_book_id', BOOK_ROWS.treatment, BOOK_ROWS.introducedIn);
   assertTableDeclarations(fields);
   return fields;
 }
@@ -334,7 +363,8 @@ async function verifyDatabaseInventory(connection: SqlExecutor, options?: Parame
 function assertArchiveRelationships(rows: readonly RelationshipRow[]) {
   for (const row of rows) {
     const table = row.table_name === 'users' ? 'user' : row.table_name;
-    if (!TABLE_POLICIES[table]) continue; // Non-archive relationships are not restored.
+    // Non-archive relationships, and those of columns no archive carries, are not restored.
+    if (!TABLE_POLICIES[table]?.columns.includes(row.column_name)) continue;
     const parent = row.column_name === 'user_id' ? 'users' : REFERENCES[table]?.[row.column_name];
     if (!parent || parent !== row.parent_table || row.parent_column !== 'id') {
       throw new Error(`Unclassified recovery relationship ${row.table_name}.${row.column_name} -> ${row.parent_table}.${row.parent_column}`);
@@ -342,5 +372,5 @@ function assertArchiveRelationships(rows: readonly RelationshipRow[]) {
   }
 }
 
-export { NON_ARCHIVE_POLICIES, TABLE_DECLARATIONS, declaredFields, assertInventoryCoverage, assertArchiveRelationships, verifyDatabaseInventory };
+export { NON_ARCHIVE_POLICIES, BOOK_ROWS, TABLE_DECLARATIONS, declaredFields, assertInventoryCoverage, assertArchiveRelationships, verifyDatabaseInventory };
 export type { DataClass, TableDeclaration };

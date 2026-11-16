@@ -28,8 +28,10 @@ const GROUPS_FENCE = { selector: sqlNaming("org_groups|org_group_members"), mess
 // one owner each.
 const INVITES_FENCE = { selector: sqlNaming("invites"), message: "Read and write setup links through services/invites.ts." };
 const LOGIN_ATTEMPTS_FENCE = { selector: sqlNaming("login_attempts"), message: "Read and write sign-in attempt budgets through security/login-limits.ts." };
+// Grants to shared resources (F4): services/access.ts alone decides and writes them.
+const GRANTS_FENCE = { selector: sqlNaming("grants"), message: "Read and write grants through services/access.ts." };
 // Schema and recovery code name the tables to create, archive and restore them.
-const SCHEMA_FILES = ["api/src/services/database.ts", "api/src/services/data-inventory.ts", "api/src/services/devices-migration.ts", "api/src/services/organisation-migration.ts"];
+const SCHEMA_FILES = ["api/src/services/database.ts", "api/src/services/data-inventory.ts", "api/src/services/devices-migration.ts", "api/src/services/organisation-migration.ts", "api/src/services/shared-contacts-migration.ts"];
 // Each fence with the files that own its tables. An instance restore clears
 // installation state of several owners.
 const FENCES = [
@@ -39,6 +41,7 @@ const FENCES = [
   { fence: GROUPS_FENCE, owners: ["api/src/services/groups.ts", "api/src/services/settings.ts"] },
   { fence: INVITES_FENCE, owners: ["api/src/services/invites.ts", "api/src/services/instance-restore.ts"] },
   { fence: LOGIN_ATTEMPTS_FENCE, owners: ["api/src/security/login-limits.ts", "api/src/services/instance-restore.ts"] },
+  { fence: GRANTS_FENCE, owners: ["api/src/services/access.ts"] },
 ];
 const FENCE_OWNERS = [...new Set(FENCES.flatMap(({ owners }) => owners))];
 

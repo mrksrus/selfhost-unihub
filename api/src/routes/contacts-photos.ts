@@ -58,7 +58,7 @@ export = defineRoutes({
 
   'DELETE /api/contacts/:id/photo': { ...writeRoute, gates: 'background-sync', destructive: ['bin.delete'], handler: async (req: Request, userId: string) => {
     try {
-      await removeContactPhoto(userId, req.params.id);
+      await removeContactPhoto(userId, req.params.id, userId);
       const answer: ContactResponse = { contact: await getContact(userId, req.params.id) };
       return { ...answer };
     } catch (error) { return failed(error, 'Failed to remove contact photo'); }

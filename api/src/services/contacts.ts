@@ -421,16 +421,25 @@ function presentContact(row: ContactRow, values: readonly ValueRow[], keptCount:
 
 const placeholders = (items: readonly unknown[]) => items.map(() => '?').join(', ');
 
+/** Whose contacts: a person's (their id) or a shared address book's. */
+type ContactOwner = string | { bookId: string };
+// The owner column of the rows and its value: a person's rows have user_id,
+// a book's address_book_id (and no user_id), so a person's query never sees a book's.
+function ownerOf(owner: ContactOwner): ['user_id' | 'address_book_id', string] {
+  return typeof owner === 'string' ? ['user_id', owner] : ['address_book_id', owner.bookId];
+}
+
 // The contacts of `rows` with their values, kept-property counts and photos,
 // in the order given. All lookups are scoped to the owner.
-async function hydrate(executor: SqlExecutor, userId: string, rows: readonly ContactRow[]): Promise<ContactRecord[]> {
+async function hydrate(executor: SqlExecutor, owner: ContactOwner, rows: readonly ContactRow[]): Promise<ContactRecord[]> {
   if (!rows.length) return [];
+  const [column, ownerId] = ownerOf(owner);
   const ids = rows.map(row => row.id);
-  const [values] = await executor.execute<ValueRow[]>(`SELECT ${VALUE_COLUMNS} FROM contact_values WHERE user_id = ? AND contact_id IN (${placeholders(ids)})
-    ORDER BY contact_id, kind, position, id`, [userId, ...ids]);
+  const [values] = await executor.execute<ValueRow[]>(`SELECT ${VALUE_COLUMNS} FROM contact_values WHERE ${column} = ? AND contact_id IN (${placeholders(ids)})
+    ORDER BY contact_id, kind, position, id`, [ownerId, ...ids]);
   const [kept] = await executor.execute<(RowDataPacket & { contact_id: string; n: number | string })[]>(`SELECT contact_id, COUNT(*) AS n FROM contact_properties
-    WHERE user_id = ? AND contact_id IN (${placeholders(ids)}) GROUP BY contact_id`, [userId, ...ids]);
-  const [photos] = await executor.execute<PhotoRow[]>(`SELECT contact_id, sha256, width, height FROM contact_photos WHERE user_id = ? AND contact_id IN (${placeholders(ids)})`, [userId, ...ids]);
+    WHERE ${column} = ? AND contact_id IN (${placeholders(ids)}) GROUP BY contact_id`, [ownerId, ...ids]);
+  const [photos] = await executor.execute<PhotoRow[]>(`SELECT contact_id, sha256, width, height FROM contact_photos WHERE ${column} = ? AND contact_id IN (${placeholders(ids)})`, [ownerId, ...ids]);
   const valuesBy = new Map<string, ValueRow[]>();
   for (const value of values) { const list = valuesBy.get(value.contact_id) || []; list.push(value); valuesBy.set(value.contact_id, list); }
   const keptBy = new Map(kept.map(row => [row.contact_id, Number(row.n)]));
@@ -440,23 +449,25 @@ async function hydrate(executor: SqlExecutor, userId: string, rows: readonly Con
 
 const LOAD_CHUNK = 1000;
 
-async function loadContacts(executor: SqlExecutor, userId: string, ids: readonly string[]): Promise<ContactRecord[]> {
+async function loadContacts(executor: SqlExecutor, owner: ContactOwner, ids: readonly string[]): Promise<ContactRecord[]> {
   if (!ids.length) return [];
   if (ids.length > LOAD_CHUNK) {
     const loaded: ContactRecord[] = [];
-    for (let start = 0; start < ids.length; start += LOAD_CHUNK) loaded.push(...await loadContacts(executor, userId, ids.slice(start, start + LOAD_CHUNK)));
+    for (let start = 0; start < ids.length; start += LOAD_CHUNK) loaded.push(...await loadContacts(executor, owner, ids.slice(start, start + LOAD_CHUNK)));
     return loaded;
   }
-  const [rows] = await executor.execute<ContactRow[]>(`SELECT ${CONTACT_COLUMNS} FROM contacts c WHERE c.user_id = ? AND c.id IN (${placeholders(ids)})`, [userId, ...ids]);
+  const [column, ownerId] = ownerOf(owner);
+  const [rows] = await executor.execute<ContactRow[]>(`SELECT ${CONTACT_COLUMNS} FROM contacts c WHERE c.${column} = ? AND c.id IN (${placeholders(ids)})`, [ownerId, ...ids]);
   const byId = new Map(rows.map(row => [row.id, row]));
-  return hydrate(executor, userId, ids.map(id => byId.get(id)).filter((row): row is ContactRow => !!row));
+  return hydrate(executor, owner, ids.map(id => byId.get(id)).filter((row): row is ContactRow => !!row));
 }
 
-async function getContact(userId: string, id: string, executor: SqlExecutor = db): Promise<ContactDetail> {
-  const [contact] = await loadContacts(executor, userId, [id]);
+async function getContact(owner: ContactOwner, id: string, executor: SqlExecutor = db): Promise<ContactDetail> {
+  const [contact] = await loadContacts(executor, owner, [id]);
   if (!contact) throw notFound('CONTACT_NOT_FOUND', 'Contact not found');
+  const [column, ownerId] = ownerOf(owner);
   const [properties] = await executor.execute<(RowDataPacket & { name: string; vcard_group: string | null; params: unknown; value: string })[]>(
-    'SELECT name, vcard_group, params, value FROM contact_properties WHERE user_id = ? AND contact_id = ? ORDER BY position, id', [userId, id]);
+    `SELECT name, vcard_group, params, value FROM contact_properties WHERE ${column} = ? AND contact_id = ? ORDER BY position, id`, [ownerId, id]);
   return { ...contact, properties: properties.map((row): KeptProperty => ({ name: row.name, group: row.vcard_group, params: parseJson(row.params), value: row.value })) };
 }
 
@@ -499,17 +510,19 @@ const HAS_ADDRESS = "EXISTS (SELECT 1 FROM contact_values ga WHERE ga.contact_id
 
 interface ListQuery { q?: string; group?: string; limit?: number; offset?: number; includeMerged?: boolean }
 
-async function listContacts(userId: string, { q = '', group = 'all', limit = 2000, offset = 0, includeMerged = false }: ListQuery, executor: SqlExecutor = db) {
-  let where = 'c.user_id = ?';
-  const params: string[] = [userId];
+async function listContacts(owner: ContactOwner, { q = '', group = 'all', limit = 2000, offset = 0, includeMerged = false }: ListQuery, executor: SqlExecutor = db) {
+  const [column, ownerId] = ownerOf(owner);
+  let where = `c.${column} = ?`;
+  const params: string[] = [ownerId];
   if (group === 'name_only') where += ` AND ${HAS_NAME} AND NOT ${HAS_ADDRESS}`;
   else if (group === 'number_or_email_only') where += ` AND ${HAS_ADDRESS} AND NOT ${HAS_NAME}`;
   if (q) { const search = contactSearchCondition(q); where += ` AND ${search.sql}`; params.push(...search.params); }
   // LIMIT as literals (mysql2 refuses placeholders there); both bounded by the caller.
   const [rows] = await executor.execute<ContactRow[]>(`SELECT ${CONTACT_COLUMNS} FROM contacts c WHERE ${where}
     ORDER BY c.is_favorite DESC, c.first_name ASC, c.last_name ASC, c.id ASC LIMIT ${limit + 1} OFFSET ${offset}`, params);
-  const contacts = await hydrate(executor, userId, rows.slice(0, limit));
-  return { contacts, has_more: rows.length > limit, offset, ...(includeMerged ? { merged: await recentMerges(executor, userId) } : {}) };
+  const contacts = await hydrate(executor, owner, rows.slice(0, limit));
+  // Merges are a person's own.
+  return { contacts, has_more: rows.length > limit, offset, ...(includeMerged && typeof owner === 'string' ? { merged: await recentMerges(executor, owner) } : {}) };
 }
 
 // Contacts merged away in the last 30 days and not brought back, so a phone
@@ -575,10 +588,11 @@ function legacySlots(drafts: readonly ValueDraft[], kept: readonly (ValueRow | u
 // that names one of this contact's rows of the same kind keeps that row's id,
 // its import details (params, group) and its place for old apps; any other
 // id is replaced.
-async function writeValues(cx: SqlExecutor, userId: string, contactId: string, kinds: readonly ContactValueKind[], drafts: readonly ValueDraft[]) {
-  const [existing] = await cx.execute<ValueRow[]>(`SELECT ${VALUE_COLUMNS} FROM contact_values WHERE user_id = ? AND contact_id = ?`, [userId, contactId]);
+async function writeValues(cx: SqlExecutor, owner: ContactOwner, contactId: string, kinds: readonly ContactValueKind[], drafts: readonly ValueDraft[]) {
+  const [column, ownerId] = ownerOf(owner);
+  const [existing] = await cx.execute<ValueRow[]>(`SELECT ${VALUE_COLUMNS} FROM contact_values WHERE ${column} = ? AND contact_id = ?`, [ownerId, contactId]);
   const own = new Map(existing.map(row => [row.id, row]));
-  if (kinds.length) await cx.execute(`DELETE FROM contact_values WHERE user_id = ? AND contact_id = ? AND kind IN (${placeholders(kinds)})`, [userId, contactId, ...kinds]);
+  if (kinds.length) await cx.execute(`DELETE FROM contact_values WHERE ${column} = ? AND contact_id = ? AND kind IN (${placeholders(kinds)})`, [ownerId, contactId, ...kinds]);
   const used = new Set<string>();
   const kept = drafts.map(draft => {
     const stored = draft.id ? own.get(draft.id) : undefined;
@@ -593,11 +607,11 @@ async function writeValues(cx: SqlExecutor, userId: string, contactId: string, k
     const position = draft.position ?? positions.get(draft.kind) ?? 0;
     positions.set(draft.kind, position + 1);
     const params = draft.params !== undefined ? draft.params : parseJson(keep?.params);
-    return [keep ? keep.id : crypto.randomUUID(), contactId, userId, draft.kind, position, draft.preferred ? 1 : 0, draft.label, draft.custom_label, draft.value, valueKey(draft.kind, draft.value),
+    return [keep ? keep.id : crypto.randomUUID(), contactId, ownerId, draft.kind, position, draft.preferred ? 1 : 0, draft.label, draft.custom_label, draft.value, valueKey(draft.kind, draft.value),
       ...ADDRESS_PARTS.map(part => draft[part] ?? null), params == null ? null : JSON.stringify(params),
       draft.vcard_group !== undefined ? draft.vcard_group : keep?.vcard_group ?? null, slots[index]];
   });
-  await insertRows(cx, `contact_values (id, contact_id, user_id, kind, position, is_preferred, label, custom_label, value, value_key, ${ADDRESS_PARTS.join(', ')}, params, vcard_group, legacy_slot)`, rows);
+  await insertRows(cx, `contact_values (id, contact_id, ${column}, kind, position, is_preferred, label, custom_label, value, value_key, ${ADDRESS_PARTS.join(', ')}, params, vcard_group, legacy_slot)`, rows);
 }
 
 // Multi-row INSERTs through execute(), in slices that keep the placeholder count bounded.
@@ -608,11 +622,12 @@ async function insertRows(cx: SqlExecutor, target: string, rows: readonly unknow
   }
 }
 
-async function writeKeptProperties(cx: SqlExecutor, userId: string, contactId: string, properties: readonly KeptPropertyDraft[]) {
+async function writeKeptProperties(cx: SqlExecutor, owner: ContactOwner, contactId: string, properties: readonly KeptPropertyDraft[]) {
+  const [column, ownerId] = ownerOf(owner);
   if (properties.length > KEPT_PROPERTIES_MAX) throw invalid(`At most ${KEPT_PROPERTIES_MAX} kept properties per contact`);
   if (properties.reduce((sum, property) => sum + Buffer.byteLength(property.value, 'utf8'), 0) > KEPT_PROPERTIES_MAX_BYTES) throw invalid('The kept properties of a contact exceed 256 KB');
-  await insertRows(cx, 'contact_properties (id, contact_id, user_id, position, vcard_group, name, params, value, source_version)', properties.map((property, position) => [
-    crypto.randomUUID(), contactId, userId, position, property.group ?? null, property.name, property.params == null ? null : JSON.stringify(property.params), property.value, property.source_version ?? null,
+  await insertRows(cx, `contact_properties (id, contact_id, ${column}, position, vcard_group, name, params, value, source_version)`, properties.map((property, position) => [
+    crypto.randomUUID(), contactId, ownerId, position, property.group ?? null, property.name, property.params == null ? null : JSON.stringify(property.params), property.value, property.source_version ?? null,
   ]));
 }
 
@@ -621,23 +636,25 @@ const CONTENT_COLUMNS = ['display_name', 'first_name', 'last_name', 'middle_name
 interface InsertOptions { id?: string; uid?: string; properties?: readonly KeptPropertyDraft[] }
 
 /** Inserts a contact with its values (and kept properties) on `cx`; returns its id. The caller owns the transaction. */
-async function insertContact(cx: SqlExecutor, userId: string, draft: ContactDraft, { id = crypto.randomUUID(), uid = newUid(id), properties = [] }: InsertOptions = {}) {
-  await cx.execute(`INSERT INTO contacts (id, user_id, uid, uid_hash, version, ${CONTENT_COLUMNS.join(', ')}, is_favorite, name_key)
+async function insertContact(cx: SqlExecutor, owner: ContactOwner, draft: ContactDraft, { id = crypto.randomUUID(), uid = newUid(id), properties = [] }: InsertOptions = {}) {
+  const [column, ownerId] = ownerOf(owner);
+  await cx.execute(`INSERT INTO contacts (id, ${column}, uid, uid_hash, version, ${CONTENT_COLUMNS.join(', ')}, is_favorite, name_key)
     VALUES (?, ?, ?, ?, 1, ${placeholders(CONTENT_COLUMNS)}, ?, ?)`,
-  [id, userId, uid, uidHash(uid), ...CONTENT_COLUMNS.map(column => draft[column]), draft.is_favorite ? 1 : 0, draftNameKey(draft)]);
-  await writeValues(cx, userId, id, [], draft.values);
-  await writeKeptProperties(cx, userId, id, properties);
+  [id, ownerId, uid, uidHash(uid), ...CONTENT_COLUMNS.map(field => draft[field]), draft.is_favorite ? 1 : 0, draftNameKey(draft)]);
+  await writeValues(cx, owner, id, [], draft.values);
+  await writeKeptProperties(cx, owner, id, properties);
   return id;
 }
 
-async function lockContact(cx: SqlExecutor, userId: string, id: string) {
-  const [[row]] = await cx.execute<ContactRow[]>(`SELECT ${CONTACT_COLUMNS} FROM contacts c WHERE c.id = ? AND c.user_id = ? FOR UPDATE`, [id, userId]);
+async function lockContact(cx: SqlExecutor, owner: ContactOwner, id: string) {
+  const [column, ownerId] = ownerOf(owner);
+  const [[row]] = await cx.execute<ContactRow[]>(`SELECT ${CONTACT_COLUMNS} FROM contacts c WHERE c.id = ? AND c.${column} = ? FOR UPDATE`, [id, ownerId]);
   if (!row) throw notFound('CONTACT_NOT_FOUND', 'Contact not found');
   return row;
 }
 
-async function versionConflict(cx: SqlExecutor, userId: string, id: string) {
-  const [current] = await loadContacts(cx, userId, [id]);
+async function versionConflict(cx: SqlExecutor, owner: ContactOwner, id: string) {
+  const [current] = await loadContacts(cx, owner, [id]);
   return conflict('VERSION_CONFLICT', 'This contact was changed elsewhere. Load it again and repeat your change.', { contact: current });
 }
 
@@ -648,16 +665,17 @@ interface ReplaceOptions { expectedVersion: number | null; clearKept?: boolean; 
  * `expectedVersion` (null skips the check, for merges and imports that hold
  * the row locked themselves). Kept properties stay unless cleared or given.
  */
-async function replaceContact(cx: SqlExecutor, userId: string, id: string, draft: ContactDraft, { expectedVersion, clearKept = false, properties }: ReplaceOptions) {
-  const row = await lockContact(cx, userId, id);
-  if (expectedVersion !== null && Number(row.version) !== expectedVersion) throw await versionConflict(cx, userId, id);
-  await cx.execute(`UPDATE contacts SET ${CONTENT_COLUMNS.map(column => `${column} = ?`).join(', ')}, is_favorite = ?, name_key = ?, version = version + 1
-    WHERE id = ? AND user_id = ?`,
-  [...CONTENT_COLUMNS.map(column => draft[column]), (draft.is_favorite ?? !!row.is_favorite) ? 1 : 0, draftNameKey(draft), id, userId]);
-  await writeValues(cx, userId, id, VALUE_KINDS, draft.values);
+async function replaceContact(cx: SqlExecutor, owner: ContactOwner, id: string, draft: ContactDraft, { expectedVersion, clearKept = false, properties }: ReplaceOptions) {
+  const [column, ownerId] = ownerOf(owner);
+  const row = await lockContact(cx, owner, id);
+  if (expectedVersion !== null && Number(row.version) !== expectedVersion) throw await versionConflict(cx, owner, id);
+  await cx.execute(`UPDATE contacts SET ${CONTENT_COLUMNS.map(field => `${field} = ?`).join(', ')}, is_favorite = ?, name_key = ?, version = version + 1
+    WHERE id = ? AND ${column} = ?`,
+  [...CONTENT_COLUMNS.map(field => draft[field]), (draft.is_favorite ?? !!row.is_favorite) ? 1 : 0, draftNameKey(draft), id, ownerId]);
+  await writeValues(cx, owner, id, VALUE_KINDS, draft.values);
   if (clearKept || properties) {
-    await cx.execute('DELETE FROM contact_properties WHERE user_id = ? AND contact_id = ?', [userId, id]);
-    await writeKeptProperties(cx, userId, id, properties || []);
+    await cx.execute(`DELETE FROM contact_properties WHERE ${column} = ? AND contact_id = ?`, [ownerId, id]);
+    await writeKeptProperties(cx, owner, id, properties || []);
   }
 }
 
@@ -738,11 +756,12 @@ interface LegacyUpdate { whole: boolean; present: ReadonlySet<string>; favorite:
 // (in a body without first_name) stays; a value sent back as the app shows
 // it, or as an old app cuts it, leaves the stored value as it is; emails and
 // phones change only through the old apps' places (legacyPlan).
-async function applyLegacyUpdate(cx: SqlExecutor, userId: string, id: string, fields: LegacyFields, { whole, present, favorite, expectedVersion }: LegacyUpdate) {
-  const row = await lockContact(cx, userId, id);
-  if (expectedVersion !== null && Number(row.version) !== expectedVersion) throw await versionConflict(cx, userId, id);
-  const [stored] = await cx.execute<ValueRow[]>(`SELECT ${VALUE_COLUMNS} FROM contact_values WHERE user_id = ? AND contact_id = ? AND kind IN ('email', 'phone')
-    ORDER BY kind, position, id`, [userId, id]);
+async function applyLegacyUpdate(cx: SqlExecutor, owner: ContactOwner, id: string, fields: LegacyFields, { whole, present, favorite, expectedVersion }: LegacyUpdate) {
+  const [column, ownerId] = ownerOf(owner);
+  const row = await lockContact(cx, owner, id);
+  if (expectedVersion !== null && Number(row.version) !== expectedVersion) throw await versionConflict(cx, owner, id);
+  const [stored] = await cx.execute<ValueRow[]>(`SELECT ${VALUE_COLUMNS} FROM contact_values WHERE ${column} = ? AND contact_id = ? AND kind IN ('email', 'phone')
+    ORDER BY kind, position, id`, [ownerId, id]);
   const projection = legacyProjection(row, stored);
   const carries = (field: string) => whole || present.has(field);
   const changed = (field: keyof LegacyFields, current: string | null, max: number) => carries(field) && !sameForOldApp(fields[field], current, max);
@@ -765,22 +784,22 @@ async function applyLegacyUpdate(cx: SqlExecutor, userId: string, id: string, fi
     }
   }
   await cx.execute(`UPDATE contacts SET first_name = ?, last_name = ?, display_name = ?, company = ?, job_title = ?, notes = ?, is_favorite = ?, name_key = ?, version = version + 1
-    WHERE id = ? AND user_id = ?`,
+    WHERE id = ? AND ${column} = ?`,
   [names.first_name, names.last_name, names.display_name, company, jobTitle, notes, (favorite ?? !!row.is_favorite) ? 1 : 0,
-    draftNameKey({ ...names, middle_name: row.middle_name }), id, userId]);
+    draftNameKey({ ...names, middle_name: row.middle_name }), id, ownerId]);
   const removed = plans.flatMap(plan => plan.removed.map(value => value.id));
-  if (removed.length) await cx.execute(`DELETE FROM contact_values WHERE user_id = ? AND contact_id = ? AND id IN (${placeholders(removed)})`, [userId, id, ...removed]);
+  if (removed.length) await cx.execute(`DELETE FROM contact_values WHERE ${column} = ? AND contact_id = ? AND id IN (${placeholders(removed)})`, [ownerId, id, ...removed]);
   for (const { kind, changed: edits, placedLoose } of plans) {
     for (const [value, text] of edits) {
-      await cx.execute('UPDATE contact_values SET value = ?, value_key = ? WHERE id = ? AND user_id = ? AND contact_id = ?', [text, valueKey(kind, text), value.id, userId, id]);
+      await cx.execute(`UPDATE contact_values SET value = ?, value_key = ? WHERE id = ? AND ${column} = ? AND contact_id = ?`, [text, valueKey(kind, text), value.id, ownerId, id]);
     }
-    for (const [value, slot] of placedLoose) await cx.execute('UPDATE contact_values SET legacy_slot = ? WHERE id = ? AND user_id = ? AND contact_id = ?', [slot, value.id, userId, id]);
+    for (const [value, slot] of placedLoose) await cx.execute(`UPDATE contact_values SET legacy_slot = ? WHERE id = ? AND ${column} = ? AND contact_id = ?`, [slot, value.id, ownerId, id]);
   }
   const rows = plans.flatMap(({ kind, added }) => {
     const last = Math.max(-1, ...ofKind(kind).map(value => Number(value.position)));
-    return added.map(({ slot, value }, index) => [crypto.randomUUID(), id, userId, kind, last + 1 + index, '', value, valueKey(kind, value), slot]);
+    return added.map(({ slot, value }, index) => [crypto.randomUUID(), id, ownerId, kind, last + 1 + index, '', value, valueKey(kind, value), slot]);
   });
-  await insertRows(cx, 'contact_values (id, contact_id, user_id, kind, position, label, value, value_key, legacy_slot)', rows);
+  await insertRows(cx, `contact_values (id, contact_id, ${column}, kind, position, label, value, value_key, legacy_slot)`, rows);
 }
 
 // A flat create: each value keeps the place it was sent in.
@@ -795,25 +814,31 @@ function legacyDraft(fields: LegacyFields): ContactDraft {
 
 // ── Route operations ───────────────────────────────────────────────────
 
-async function createContact(userId: string, body: unknown) {
+// A book's write runs `check` in its transaction first (the access service
+// asks again there); a book contact has no favourite.
+type WriteCheck = (cx: SqlExecutor) => Promise<unknown>;
+
+async function createContact(owner: ContactOwner, body: unknown, check?: WriteCheck) {
   const parsed = parseContactBody(body, { create: true });
   const draft = parsed.shape === 'full' ? parsed.draft : legacyDraft(parsed.fields);
-  const id = await withTransaction(cx => insertContact(cx, userId, draft));
-  return (await loadContacts(db, userId, [id]))[0];
+  if (typeof owner !== 'string') draft.is_favorite = false;
+  const id = await withTransaction(async cx => { await check?.(cx); return insertContact(cx, owner, draft); });
+  return (await loadContacts(db, owner, [id]))[0];
 }
 
-async function updateContact(userId: string, id: string, body: unknown, ifMatch: unknown) {
+async function updateContact(owner: ContactOwner, id: string, body: unknown, ifMatch: unknown, check?: WriteCheck) {
   const parsed = parseContactBody(body, { create: false });
   if (parsed.shape === 'full') {
     const expectedVersion = parsed.version ?? versionFromHeader(ifMatch);
     if (expectedVersion === null) throw badRequest('VERSION_REQUIRED', 'Send the contact version (version or If-Match) with a full update');
-    await withTransaction(cx => replaceContact(cx, userId, id, parsed.draft, { expectedVersion, clearKept: parsed.clearKept }));
+    if (typeof owner !== 'string') parsed.draft.is_favorite = false;
+    await withTransaction(async cx => { await check?.(cx); await replaceContact(cx, owner, id, parsed.draft, { expectedVersion, clearKept: parsed.clearKept }); });
   } else {
     // If-Match binds a flat body too: a stale one is refused before anything changes.
     const expectedVersion = versionFromHeader(ifMatch);
-    await withTransaction(cx => applyLegacyUpdate(cx, userId, id, parsed.fields, { ...parsed, expectedVersion }));
+    await withTransaction(async cx => { await check?.(cx); await applyLegacyUpdate(cx, owner, id, parsed.fields, { ...parsed, favorite: typeof owner === 'string' ? parsed.favorite : null, expectedVersion }); });
   }
-  const [contact] = await loadContacts(db, userId, [id]);
+  const [contact] = await loadContacts(db, owner, [id]);
   if (!contact) throw notFound('CONTACT_NOT_FOUND', 'Contact not found');
   return contact;
 }
@@ -865,6 +890,7 @@ export {
   uidHash,
   newUid,
   draftNameKey,
+  ownerOf,
   LABELS,
   VALUE_KINDS,
   VALUE_LIMITS,
@@ -872,4 +898,4 @@ export {
   KEPT_PROPERTIES_MAX,
   KEPT_PROPERTIES_MAX_BYTES,
 };
-export type { ContactDraft, ValueDraft, KeptPropertyDraft, LegacyFields, ParsedBody };
+export type { ContactDraft, ContactOwner, ValueDraft, KeptPropertyDraft, LegacyFields, ParsedBody };

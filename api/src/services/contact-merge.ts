@@ -17,12 +17,12 @@ import type { SqlExecutor } from '../types';
 import type {
   AutoMergeResult, ContactRecord, ContactSingleField, ContactValueKind, DuplicateGroup, MergeRecord, MergeResult, UndoMergeResult,
 } from '../contracts/contacts';
-import type { ContactDraft, ValueDraft } from './contacts';
+import type { ContactDraft, ContactOwner, ValueDraft } from './contacts';
 import crypto from 'node:crypto';
 import { db } from '../state';
 import { badRequest, conflict, notFound } from '../http/errors';
 import { withTransaction } from './transactions';
-import { displayName, loadContacts, newUid, replaceContact, uidHash, KEPT_PROPERTIES_MAX, KEPT_PROPERTIES_MAX_BYTES, VALUES_PER_KIND } from './contacts';
+import { displayName, loadContacts, newUid, ownerOf, replaceContact, uidHash, KEPT_PROPERTIES_MAX, KEPT_PROPERTIES_MAX_BYTES, VALUES_PER_KIND } from './contacts';
 import { contactIdList, findDuplicates, singleFieldConflicts, singleFieldValue } from './contact-duplicates';
 import { valueIdentity as sameValueIdentity } from './contact-keys';
 import { withContactPhotoLock } from './contact-photos';
@@ -90,14 +90,15 @@ function sqlValue(column: string, value: unknown) {
   return value as string | number;
 }
 
-async function snapshotContacts(cx: SqlExecutor, userId: string, ids: readonly string[]): Promise<Map<string, ContactSnapshot>> {
+async function snapshotContacts(cx: SqlExecutor, owner: ContactOwner, ids: readonly string[]): Promise<Map<string, ContactSnapshot>> {
   const list = placeholders(ids);
-  const [contacts] = await cx.execute<RowDataPacket[]>(`SELECT ${CONTACT_COLUMNS.join(', ')} FROM contacts WHERE user_id = ? AND id IN (${list})`, [userId, ...ids]);
-  const [values] = await cx.execute<RowDataPacket[]>(`SELECT ${VALUE_COLUMNS.join(', ')} FROM contact_values WHERE user_id = ? AND contact_id IN (${list})
-    ORDER BY contact_id, kind, position, id`, [userId, ...ids]);
-  const [properties] = await cx.execute<RowDataPacket[]>(`SELECT ${PROPERTY_COLUMNS.join(', ')} FROM contact_properties WHERE user_id = ? AND contact_id IN (${list})
-    ORDER BY contact_id, position, id`, [userId, ...ids]);
-  const [photos] = await cx.execute<RowDataPacket[]>(`SELECT ${PHOTO_COLUMNS.join(', ')} FROM contact_photos WHERE user_id = ? AND contact_id IN (${list})`, [userId, ...ids]);
+  const [column, ownerId] = ownerOf(owner);
+  const [contacts] = await cx.execute<RowDataPacket[]>(`SELECT ${CONTACT_COLUMNS.join(', ')} FROM contacts WHERE ${column} = ? AND id IN (${list})`, [ownerId, ...ids]);
+  const [values] = await cx.execute<RowDataPacket[]>(`SELECT ${VALUE_COLUMNS.join(', ')} FROM contact_values WHERE ${column} = ? AND contact_id IN (${list})
+    ORDER BY contact_id, kind, position, id`, [ownerId, ...ids]);
+  const [properties] = await cx.execute<RowDataPacket[]>(`SELECT ${PROPERTY_COLUMNS.join(', ')} FROM contact_properties WHERE ${column} = ? AND contact_id IN (${list})
+    ORDER BY contact_id, position, id`, [ownerId, ...ids]);
+  const [photos] = await cx.execute<RowDataPacket[]>(`SELECT ${PHOTO_COLUMNS.join(', ')} FROM contact_photos WHERE ${column} = ? AND contact_id IN (${list})`, [ownerId, ...ids]);
   const snapshots = new Map<string, ContactSnapshot>();
   for (const row of contacts) snapshots.set(row.id, { contact: toStored(row) as ContactRow, values: [], properties: [], photo: null });
   for (const row of values) snapshots.get(row.contact_id)?.values.push(toStored(row) as ValueRow);
@@ -673,27 +674,29 @@ async function undoMerge(userId: string, mergeId: string): Promise<UndoMergeResu
 // ── Deleting and restoring contacts (the bin) ──────────────────────────
 
 /**
- * DELETE /api/contacts/:id and bulk-delete: the contacts into the bin, in one
- * transaction, several as one group (one undo). Another person's ids are
- * not found. Returns how many were moved.
+ * Deletes the owner's contacts among ids into the owner's bin, several as one
+ * group: how many went, and their bin items (for Undo). A book's delete runs
+ * `check` in the transaction first; aliases and dismissals are a person's own.
  */
-/** Deletes the person's contacts among ids into the bin, several as one group: how many went, and their bin items (for Undo). */
-async function moveContactsToBin(userId: string, ids: readonly string[]): Promise<{ deleted: number; binItemIds: string[] }> {
+async function moveContactsToBin(owner: ContactOwner, ids: readonly string[], check?: (cx: SqlExecutor) => Promise<unknown>): Promise<{ deleted: number; binItemIds: string[] }> {
   const sorted = [...new Set(ids)].sort();
   if (!sorted.length) return { deleted: 0, binItemIds: [] };
+  const [column, ownerId] = ownerOf(owner);
+  const personal = typeof owner === 'string';
   return withTransaction(async cx => {
+    await check?.(cx);
     const [locked] = await cx.execute<(RowDataPacket & { id: string })[]>(
-      `SELECT id FROM contacts WHERE user_id = ? AND id IN (${placeholders(sorted)}) ORDER BY id FOR UPDATE`, [userId, ...sorted]);
+      `SELECT id FROM contacts WHERE ${column} = ? AND id IN (${placeholders(sorted)}) ORDER BY id FOR UPDATE`, [ownerId, ...sorted]);
     const present = locked.map(row => row.id);
     if (!present.length) return { deleted: 0, binItemIds: [] };
-    const snapshots = await snapshotContacts(cx, userId, present);
-    const [aliases] = await cx.execute<(RowDataPacket & { uid_hash: string; uid: string; merge_id: string | null; contact_id: string })[]>(
-      `SELECT uid_hash, uid, merge_id, contact_id FROM contact_uid_aliases WHERE user_id = ? AND contact_id IN (${placeholders(present)})`, [userId, ...present]);
-    const [pairs] = await cx.execute<(RowDataPacket & { contact_a: string; contact_b: string })[]>(
+    const snapshots = await snapshotContacts(cx, owner, present);
+    const [aliases] = personal ? await cx.execute<(RowDataPacket & { uid_hash: string; uid: string; merge_id: string | null; contact_id: string })[]>(
+      `SELECT uid_hash, uid, merge_id, contact_id FROM contact_uid_aliases WHERE user_id = ? AND contact_id IN (${placeholders(present)})`, [ownerId, ...present]) : [[]];
+    const [pairs] = personal ? await cx.execute<(RowDataPacket & { contact_a: string; contact_b: string })[]>(
       `SELECT contact_a, contact_b FROM contact_duplicate_dismissals WHERE user_id = ? AND (contact_a IN (${placeholders(present)}) OR contact_b IN (${placeholders(present)}))`,
-      [userId, ...present, ...present]);
+      [ownerId, ...present, ...present]) : [[]];
     const groupId = present.length > 1 ? crypto.randomUUID() : null;
-    const binItemIds = await putInBin(cx, userId, present.map(id => {
+    const binItemIds = await putInBin(cx, owner, present.map(id => {
       const snapshot = snapshots.get(id)!;
       const payload: BinContactPayload = {
         ...snapshot,
@@ -703,7 +706,7 @@ async function moveContactsToBin(userId: string, ids: readonly string[]): Promis
       return { module: 'contacts' as const, itemType: 'contact' as const, itemId: id, title: snapshotName(snapshot), reason: 'deleted' as const, groupId,
         payload, fileRefs: snapshot.photo ? [snapshot.photo.sha256, snapshot.photo.thumb_sha256] : null };
     }));
-    const [removed] = await cx.execute<ResultSetHeader>(`DELETE FROM contacts WHERE user_id = ? AND id IN (${placeholders(present)})`, [userId, ...present]);
+    const [removed] = await cx.execute<ResultSetHeader>(`DELETE FROM contacts WHERE ${column} = ? AND id IN (${placeholders(present)})`, [ownerId, ...present]);
     return { deleted: removed.affectedRows || 0, binItemIds };
   });
 }

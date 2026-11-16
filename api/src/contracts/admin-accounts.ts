@@ -14,6 +14,7 @@
 // answers the person's route's answer; the deleting routes add `deleted`.
 import type { BackupJob } from './backup';
 import type { BinModule } from './bin';
+import type { ManagedBook } from './address-books';
 
 /** Every change through this path carries the administrator's password. */
 export interface AdminReauthentication { current_password: string }
@@ -51,6 +52,8 @@ export interface AdminUserAccountsResponse {
   user_id: string;
   mail_accounts: AdminMailAccount[];
   calendar_accounts: AdminCalendarAccount[];
+  /** The shared address books the person created and manages; they stay when the person leaves, and administrators keep managing them. */
+  managed_books: ManagedBook[];
 }
 
 /**

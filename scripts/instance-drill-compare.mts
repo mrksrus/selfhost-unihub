@@ -49,6 +49,13 @@ export const INSTALLATION_RULES: Readonly<Record<string, Rule>> = Object.freeze(
   org_groups: { reason: 'The groups come back.' },
   org_group_members: { reason: 'Every membership comes back with its role.' },
   login_attempts: { reason: 'Sign-in attempt budgets expire; the restore deletes them and the restored installation counts afresh.', cleared: true },
+  // Shared address books (0.31): the books, who may reach them, the company
+  // directory, and a book's contacts, photos and bin come back with their ids.
+  address_books: { reason: 'The shared address books come back.' },
+  grants: { reason: 'Every grant comes back with its principal and permission.' },
+  directory_entries: { reason: 'The company directory comes back.' },
+  ...Object.fromEntries(['contacts', 'contact_values', 'contact_properties', 'contact_photos', 'bin_items', 'photo files'].map(table =>
+    [`${table} of books`, { reason: "A shared book's contacts, photos and bin come back as they were." }])),
 });
 
 // A DATETIME in UTC (dateStrings), to the second, within the restore command's run.

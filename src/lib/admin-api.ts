@@ -348,7 +348,7 @@ const deleted = (answer: AdminDeleteResponse | undefined) => answer?.deleted ?? 
 
 export async function fetchAdminUserAccounts(userId: string, signal?: AbortSignal): Promise<AdminUserAccountsResponse> {
   const answer = unwrap(await api.get<AdminUserAccountsResponse>(userPath(userId, '/accounts'), { signal }));
-  return { user_id: userId, mail_accounts: answer?.mail_accounts ?? [], calendar_accounts: answer?.calendar_accounts ?? [] };
+  return { user_id: userId, mail_accounts: answer?.mail_accounts ?? [], calendar_accounts: answer?.calendar_accounts ?? [], managed_books: answer?.managed_books ?? [] };
 }
 export async function fetchAdminUserBackups(userId: string, signal?: AbortSignal) {
   return unwrap(await api.get<AdminUserBackupsResponse>(userPath(userId, '/backups'), { signal }))?.jobs ?? [];

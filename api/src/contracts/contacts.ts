@@ -133,6 +133,8 @@ export type ContactRecord = Contact & LegacyContactFields;
 /** GET /api/contacts/:id: the contact with its kept properties listed. */
 export interface ContactDetail extends ContactRecord {
   properties: KeptProperty[];
+  /** On a personal contact: the visible shared books and Company holding an entry with one of its emails or phones (AlsoIn of address-books.ts). */
+  also_in?: { book_id: string; name: string }[];
 }
 
 /** A merge of the last 30 days that was not undone (GET /api/contacts?include=merged). */

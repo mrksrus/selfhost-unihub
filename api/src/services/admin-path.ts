@@ -5,6 +5,7 @@ import { badRequest, conflict, forbidden, notFound } from '../http/errors';
 import { isModuleEnabled } from './module-settings';
 import { isSectionRestoreActive } from './restore-locks';
 import { assertMayChangeAdmin } from './invites';
+import { managedBooksOf } from './address-books';
 
 // The administrator's path for one person (F13, accounts.admin_manage): a
 // policy that forbids the person an action never makes it impossible. Each
@@ -68,6 +69,7 @@ async function personAccounts(userId: string): Promise<AdminUserAccountsResponse
       id: row.id, provider: row.provider, account_email: row.account_email ?? null, display_name: row.display_name ?? null,
       is_active: !!Number(row.is_active), sync_status: row.sync_status ?? null, last_synced_at: iso(row.last_synced_at), mail_account_id: row.mail_account_id ?? null,
     })),
+    managed_books: await managedBooksOf(userId),
   };
 }
 

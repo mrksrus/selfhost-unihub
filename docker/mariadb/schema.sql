@@ -3,7 +3,23 @@
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
--- Through migration 28.
+-- Through migration 29.
+
+CREATE TABLE `address_books` (
+  `id` char(36) NOT NULL,
+  `name` varchar(100) NOT NULL,
+  `description` varchar(500) DEFAULT NULL,
+  `owner_kind` enum('org','user') NOT NULL DEFAULT 'org',
+  `owner_id` char(36) DEFAULT NULL,
+  `created_by` char(36) DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `updated_at` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `deleted_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_address_books_deleted` (`deleted_at`),
+  KEY `fk_address_books_created_by` (`created_by`),
+  CONSTRAINT `fk_address_books_created_by` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `audit_log` (
   `id` char(36) NOT NULL DEFAULT uuid(),
@@ -77,7 +93,7 @@ CREATE TABLE `backup_restore_jobs` (
 
 CREATE TABLE `bin_items` (
   `id` char(36) NOT NULL,
-  `user_id` char(36) NOT NULL,
+  `user_id` char(36) DEFAULT NULL,
   `module` varchar(32) NOT NULL,
   `item_type` varchar(32) NOT NULL,
   `item_id` char(36) NOT NULL,
@@ -90,12 +106,16 @@ CREATE TABLE `bin_items` (
   `deleted_at` timestamp NULL DEFAULT current_timestamp(),
   `purge_after` datetime DEFAULT NULL,
   `restored_at` datetime DEFAULT NULL,
+  `address_book_id` char(36) DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_bin_items_purge` (`user_id`,`purge_after`),
   KEY `idx_bin_items_item` (`user_id`,`item_type`,`item_id`),
   KEY `idx_bin_items_group` (`group_id`),
   KEY `idx_bin_items_due` (`purge_after`),
-  CONSTRAINT `bin_items_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+  KEY `fk_bin_items_book` (`address_book_id`),
+  CONSTRAINT `bin_items_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_bin_items_book` FOREIGN KEY (`address_book_id`) REFERENCES `address_books` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_bin_items_owner` CHECK (`user_id` is null <> (`address_book_id` is null))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `calendar_accounts` (
@@ -395,7 +415,7 @@ CREATE TABLE `contact_merges` (
 
 CREATE TABLE `contact_photos` (
   `contact_id` char(36) NOT NULL,
-  `user_id` char(36) NOT NULL,
+  `user_id` char(36) DEFAULT NULL,
   `sha256` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   `width` smallint(5) unsigned NOT NULL,
   `height` smallint(5) unsigned NOT NULL,
@@ -403,16 +423,20 @@ CREATE TABLE `contact_photos` (
   `thumb_sha256` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   `source` varchar(16) NOT NULL,
   `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `address_book_id` char(36) DEFAULT NULL,
   PRIMARY KEY (`contact_id`),
   KEY `idx_contact_photos_sha` (`user_id`,`sha256`),
+  KEY `fk_contact_photos_book` (`address_book_id`),
   CONSTRAINT `contact_photos_ibfk_1` FOREIGN KEY (`contact_id`) REFERENCES `contacts` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `contact_photos_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+  CONSTRAINT `contact_photos_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_contact_photos_book` FOREIGN KEY (`address_book_id`) REFERENCES `address_books` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_contact_photos_owner` CHECK (`user_id` is null <> (`address_book_id` is null))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `contact_properties` (
   `id` char(36) NOT NULL,
   `contact_id` char(36) NOT NULL,
-  `user_id` char(36) NOT NULL,
+  `user_id` char(36) DEFAULT NULL,
   `position` smallint(5) unsigned NOT NULL DEFAULT 0,
   `vcard_group` varchar(64) DEFAULT NULL,
   `name` varchar(64) NOT NULL,
@@ -420,11 +444,15 @@ CREATE TABLE `contact_properties` (
   `value` mediumtext NOT NULL,
   `source_version` varchar(8) DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `address_book_id` char(36) DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_contact_properties_contact` (`contact_id`,`position`),
   KEY `user_id` (`user_id`),
+  KEY `fk_contact_properties_book` (`address_book_id`),
   CONSTRAINT `contact_properties_ibfk_1` FOREIGN KEY (`contact_id`) REFERENCES `contacts` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `contact_properties_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+  CONSTRAINT `contact_properties_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_contact_properties_book` FOREIGN KEY (`address_book_id`) REFERENCES `address_books` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_contact_properties_owner` CHECK (`user_id` is null <> (`address_book_id` is null))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `contact_uid_aliases` (
@@ -443,7 +471,7 @@ CREATE TABLE `contact_uid_aliases` (
 CREATE TABLE `contact_values` (
   `id` char(36) NOT NULL,
   `contact_id` char(36) NOT NULL,
-  `user_id` char(36) NOT NULL,
+  `user_id` char(36) DEFAULT NULL,
   `kind` enum('email','phone','address','url','impp','related','nickname','category') NOT NULL,
   `position` smallint(5) unsigned NOT NULL DEFAULT 0,
   `is_preferred` tinyint(1) NOT NULL DEFAULT 0,
@@ -463,17 +491,21 @@ CREATE TABLE `contact_values` (
   `legacy_slot` tinyint(3) unsigned DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `address_book_id` char(36) DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_contact_values_legacy_slot` (`contact_id`,`kind`,`legacy_slot`),
   KEY `idx_contact_values_contact` (`contact_id`,`kind`,`position`),
   KEY `idx_contact_values_key` (`user_id`,`kind`,`value_key`),
+  KEY `fk_contact_values_book` (`address_book_id`),
   CONSTRAINT `contact_values_ibfk_1` FOREIGN KEY (`contact_id`) REFERENCES `contacts` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `contact_values_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+  CONSTRAINT `contact_values_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_contact_values_book` FOREIGN KEY (`address_book_id`) REFERENCES `address_books` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_contact_values_owner` CHECK (`user_id` is null <> (`address_book_id` is null))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `contacts` (
   `id` char(36) NOT NULL DEFAULT uuid(),
-  `user_id` char(36) NOT NULL,
+  `user_id` char(36) DEFAULT NULL,
   `first_name` varchar(255) NOT NULL DEFAULT '',
   `last_name` varchar(255) DEFAULT NULL,
   `company` varchar(255) DEFAULT NULL,
@@ -493,14 +525,18 @@ CREATE TABLE `contacts` (
   `birthday` varchar(32) DEFAULT NULL,
   `anniversary` varchar(32) DEFAULT NULL,
   `name_key` varchar(255) NOT NULL DEFAULT '',
+  `address_book_id` char(36) DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_contacts_uid` (`user_id`,`uid_hash`),
+  UNIQUE KEY `uq_contacts_book_uid` (`address_book_id`,`uid_hash`),
   KEY `idx_contacts_user` (`user_id`),
   KEY `idx_contacts_name` (`first_name`,`last_name`),
   KEY `idx_contacts_favorite` (`user_id`,`is_favorite`),
   KEY `idx_contacts_user_fav_name` (`user_id`,`is_favorite`,`first_name`,`last_name`),
   KEY `idx_contacts_name_key` (`user_id`,`name_key`),
-  CONSTRAINT `contacts_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+  CONSTRAINT `contacts_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_contacts_book` FOREIGN KEY (`address_book_id`) REFERENCES `address_books` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_contacts_owner` CHECK (`user_id` is null <> (`address_book_id` is null))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `data_export_jobs` (
@@ -566,6 +602,19 @@ CREATE TABLE `devices` (
   UNIQUE KEY `unique_device_key` (`user_id`,`key_hash`),
   KEY `idx_devices_last_seen` (`last_seen_at`),
   CONSTRAINT `devices_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `directory_entries` (
+  `user_id` char(36) NOT NULL,
+  `phone` varchar(64) DEFAULT NULL,
+  `job_title` varchar(255) DEFAULT NULL,
+  `department` varchar(255) DEFAULT NULL,
+  `updated_by` char(36) DEFAULT NULL,
+  `updated_at` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`user_id`),
+  KEY `fk_directory_entries_updated_by` (`updated_by`),
+  CONSTRAINT `fk_directory_entries_updated_by` FOREIGN KEY (`updated_by`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_directory_entries_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `email_attachments` (
@@ -672,6 +721,22 @@ CREATE TABLE `file_tickets` (
   KEY `user_id` (`user_id`),
   CONSTRAINT `file_tickets_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `file_tickets_ibfk_2` FOREIGN KEY (`session_id`) REFERENCES `sessions` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `grants` (
+  `id` char(36) NOT NULL,
+  `resource_kind` varchar(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `resource_id` char(36) NOT NULL,
+  `principal_kind` enum('user','group','everyone') NOT NULL,
+  `principal_id` varchar(36) NOT NULL DEFAULT '',
+  `permission` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `granted_by` char(36) DEFAULT NULL,
+  `granted_at` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_grants_principal` (`resource_kind`,`resource_id`,`principal_kind`,`principal_id`),
+  KEY `idx_grants_principal` (`principal_kind`,`principal_id`),
+  KEY `fk_grants_granted_by` (`granted_by`),
+  CONSTRAINT `fk_grants_granted_by` FOREIGN KEY (`granted_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `instance_backups` (

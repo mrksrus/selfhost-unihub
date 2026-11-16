@@ -26,7 +26,7 @@ function sourceColumns(source: FixtureValue) {
 }
 const serviceSource = (name: FixtureValue) => fs.readFileSync(path.join(__dirname, '../src/services', `${name}.ts`), 'utf8');
 function productionColumns() {
-  return sourceColumns(['database-baseline', 'database', 'database-migrations', 'contacts-migration', 'devices-migration', 'organisation-migration'].map(serviceSource).join('\n'));
+  return sourceColumns(['database-baseline', 'database', 'database-migrations', 'contacts-migration', 'devices-migration', 'organisation-migration', 'shared-contacts-migration'].map(serviceSource).join('\n'));
 }
 
 // Devices (0.29, F5) are installation state: no personal backup carries a
@@ -76,6 +76,23 @@ test('groups, memberships, setup links and login attempts never travel in a pers
     assert.equal(NON_ARCHIVE_POLICIES.users.introducedIn?.[column], 27);
   }
   assert.equal(NON_ARCHIVE_POLICIES.policy_notices.introducedIn?.rules_hash, 27);
+});
+
+// Shared address books (0.31, F4) belong to the organisation: the books,
+// their grants and the directory entries are only in the instance backup,
+// and so are a book's rows in the contact tables and the bin, whose
+// address_book_id no personal archive carries.
+test('shared address books, grants, directory entries and a book\'s contact rows never travel in a personal backup', () => {
+  const { NON_ARCHIVE_POLICIES, BOOK_ROWS, TABLE_DECLARATIONS } = require('../dist/src/services/data-inventory') as typeof import('../src/services/data-inventory');
+  const { TABLE_POLICIES } = require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog');
+  for (const table of ['address_books', 'grants', 'directory_entries']) {
+    assert.equal(TABLE_POLICIES[table], undefined, `${table} is in no backup section`);
+    assert.equal(NON_ARCHIVE_POLICIES[table].treatment, 'deliberately_excluded', table);
+    assert.ok(NON_ARCHIVE_POLICIES[table].columns.every(column => NON_ARCHIVE_POLICIES[table].introducedIn?.[column] === 29), `${table} comes with upgrade 29`);
+    assert.deepEqual([TABLE_DECLARATIONS[table].owner, TABLE_DECLARATIONS[table].dataClass], ['organisation', 'org'], table);
+  }
+  assert.deepEqual([...BOOK_ROWS.tables].sort(), ['bin_items', 'contact_photos', 'contact_properties', 'contact_values', 'contacts']);
+  for (const table of BOOK_ROWS.tables) assert.ok(!TABLE_POLICIES[table].columns.includes('address_book_id'), `${table}.address_book_id is not archived`);
 });
 
 test('every runtime schema table and field has an explicit recovery policy', () => {

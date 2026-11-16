@@ -111,15 +111,39 @@ async function groupDetail(userId: string, groupId: string): Promise<GroupRespon
   return { group, can_manage: canManage, members, rules: canManage ? await groupRules(id) : null };
 }
 
-/** GET /api/groups/:id/candidates?q=: active people not in the group whose name or address matches, at most 20. */
-async function groupCandidates(userId: string, groupId: string, query: string): Promise<GroupCandidate[]> {
-  await assertGroup(userId, groupId, 'manage');
+/**
+ * Active people whose name or address matches, at most 20: those not in
+ * `notInGroup`, or only those in a group with `sharingGroupsWith`, or anyone.
+ */
+async function peopleMatching(query: string, { notInGroup, sharingGroupsWith }: { notInGroup?: string; sharingGroupsWith?: string } = {}): Promise<GroupCandidate[]> {
   const like = `%${query.trim().slice(0, 100).replace(/[\\%_]/g, character => `\\${character}`)}%`;
   const [rows] = await db.execute<RowDataPacket[]>(`SELECT u.id, u.email, u.full_name FROM users u
     WHERE u.is_active = TRUE AND (u.full_name LIKE ? OR u.email LIKE ?)
-      AND NOT EXISTS (SELECT 1 FROM org_group_members m WHERE m.group_id = ? AND m.user_id = u.id)
-    ORDER BY u.full_name, u.email LIMIT ${MAX_CANDIDATES}`, [like, like, groupId]);
+      ${notInGroup ? 'AND NOT EXISTS (SELECT 1 FROM org_group_members m WHERE m.group_id = ? AND m.user_id = u.id)' : ''}
+      ${sharingGroupsWith ? `AND EXISTS (SELECT 1 FROM org_group_members m JOIN org_group_members mine ON mine.group_id = m.group_id
+        WHERE m.user_id = u.id AND mine.user_id = ?)` : ''}
+    ORDER BY u.full_name, u.email LIMIT ${MAX_CANDIDATES}`, [like, like, ...[notInGroup, sharingGroupsWith].filter((id): id is string => !!id)]);
   return rows.map(row => ({ id: String(row.id), email: String(row.email), full_name: row.full_name ?? null }));
+}
+
+/** GET /api/groups/:id/candidates?q=: active people not in the group whose name or address matches, at most 20. */
+async function groupCandidates(userId: string, groupId: string, query: string): Promise<GroupCandidate[]> {
+  await assertGroup(userId, groupId, 'manage');
+  return peopleMatching(query, { notInGroup: groupId });
+}
+
+/** Whether the two people are together in at least one group. */
+async function shareAGroup(userId: string, otherId: string, executor: SqlExecutor = db): Promise<boolean> {
+  const [rows] = await executor.execute<RowDataPacket[]>(`SELECT 1 FROM org_group_members a JOIN org_group_members b ON b.group_id = a.group_id
+    WHERE a.user_id = ? AND b.user_id = ? LIMIT 1`, [userId, otherId]);
+  return rows.length > 0;
+}
+
+/** The names of the given groups that exist, by id. */
+async function groupNames(ids: readonly string[], executor: SqlExecutor = db): Promise<Map<string, string>> {
+  if (!ids.length) return new Map();
+  const [rows] = await executor.execute<RowDataPacket[]>(`SELECT id, name FROM org_groups WHERE id IN (${ids.map(() => '?').join(', ')})`, [...ids]);
+  return new Map(rows.map(row => [String(row.id), String(row.name)]));
 }
 
 // --- Changing groups --------------------------------------------------------------
@@ -187,13 +211,14 @@ async function renameGroup(userId: string, groupId: string, input: unknown, req:
   return group;
 }
 
-/** DELETE /api/admin/groups/:id (groups.manage): the group, its memberships and its policies; no person's data. */
+/** DELETE /api/admin/groups/:id (groups.manage): the group, its memberships, its policies and its grants; no person's data. */
 async function deleteGroup(adminId: string, groupId: string, req: AuthRequest | null = null): Promise<{ deleted: true }> {
   await assertGroup(adminId, groupId, 'manage');
   return underRulesLock(async cx => {
     await assertGroup(adminId, groupId, 'manage', cx);
     const [members] = await cx.execute<RowDataPacket[]>('SELECT user_id FROM org_group_members WHERE group_id = ? FOR UPDATE', [groupId]);
     await deleteGroupPolicies(cx, groupId);
+    await access().removeGrantsOf(cx, { kind: 'group', id: groupId });
     await cx.execute('DELETE FROM org_groups WHERE id = ?', [groupId]);
     await recordAudit({ action: 'admin.group_deleted', actorId: adminId, req, details: { group: groupId, members: members.length } }, cx);
     return { value: { deleted: true as const }, reached: members.map(row => String(row.user_id)) };
@@ -295,6 +320,6 @@ async function groupMemberIds(groupId: string, executor: SqlExecutor = db): Prom
 
 export {
   groupsOf, groupMemberIds, membershipOf, groupExists, managesAnyGroup, allGroupIds, membershipsByUser,
-  listGroups, myGroups, groupDetail, groupCandidates,
+  listGroups, myGroups, groupDetail, groupCandidates, peopleMatching, shareAGroup, groupNames,
   createGroup, renameGroup, deleteGroup, addMembers, removeMember, setManager, joinGroups, underRulesLock,
 };

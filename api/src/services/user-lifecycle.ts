@@ -145,6 +145,8 @@ async function removeRows(userId: string, { actor, actorId, req }: { actor: Dele
     await assertNotOwner(connection, userId, 'delete');
     if (actor === 'admin' && actorId) await assertMayChangeAdmin(connection, userId, actorId);
     await assertFinalStep(connection, { userId, policies: actor === 'self' ? ['account.delete'] : [], anyRestore: true });
+    // Their grants go with them; the books they created stay, managed by administrators.
+    await (require('./access') as typeof import('./access')).removeGrantsOf(connection, { kind: 'user', id: userId });
     const [result] = await connection.execute<ResultSetHeader>('DELETE FROM users WHERE id = ?', [userId]);
     if (result.affectedRows > 0) {
       await recordAudit({ action: actor === 'admin' ? 'admin.user_deleted' : 'auth.account_deleted', actorId, targetUserId: userId, req }, connection);

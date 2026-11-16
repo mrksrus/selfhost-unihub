@@ -166,16 +166,17 @@ async function applyBinRetention(userId: string, executor: SqlExecutor = db) {
  * Inside the transaction that removes the items' rows. Returns the bin ids.
  * The kinds call this with their own snapshots.
  */
-async function putInBin(connection: SqlExecutor, userId: string, items: readonly NewBinItem[]) {
+async function putInBin(connection: SqlExecutor, owner: string | { bookId: string }, items: readonly NewBinItem[]) {
   if (!items.length) return [];
-  const retention = await binRetention(userId, connection);
+  // shortcut: a shared book's items wait without a purge time (the per-person purge never reaches them); the book's retention comes with the books' bins.
+  const retention = typeof owner === 'string' ? await binRetention(owner, connection) : 'forever';
   const ids: string[] = [];
   for (const item of items) {
     const id = crypto.randomUUID();
     const days = retentionDays(retention, item.reason);
-    await connection.execute(`INSERT INTO bin_items (id, user_id, module, item_type, item_id, title, reason, group_id, payload, payload_version, file_refs, deleted_at, purge_after)
+    await connection.execute(`INSERT INTO bin_items (id, ${typeof owner === 'string' ? 'user_id' : 'address_book_id'}, module, item_type, item_id, title, reason, group_id, payload, payload_version, file_refs, deleted_at, purge_after)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), ${days === null ? 'NULL' : 'UTC_TIMESTAMP() + INTERVAL ? DAY'})`, [
-      id, userId, item.module, item.itemType, item.itemId, Array.from(item.title || '').slice(0, TITLE_MAX).join(''), item.reason, item.groupId ?? null,
+      id, typeof owner === 'string' ? owner : owner.bookId, item.module, item.itemType, item.itemId, Array.from(item.title || '').slice(0, TITLE_MAX).join(''), item.reason, item.groupId ?? null,
       JSON.stringify(item.payload), PAYLOAD_VERSION, item.fileRefs?.length ? JSON.stringify(item.fileRefs) : null, ...(days === null ? [] : [days]),
     ]);
     ids.push(id);

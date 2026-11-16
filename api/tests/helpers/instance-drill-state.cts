@@ -6,11 +6,14 @@ import type { RowDataPacket } from 'mysql2/promise';
 //     administrator's policy is (setting_policies; the admin routes come with
 //     stream C2), two earlier instance backup runs, and mail upgrade progress
 //     other than the defaults a new database starts with (nothing reads it
-//     once the upgrade is done).
+//     once the upgrade is done), and a shared address book with a group's
+//     grant, a contact with a value, a kept property and a photo file, an
+//     item in its bin, and a directory entry.
 //   DRILL_MODE=report: what belongs to the whole installation, not to one
 //     person's recovery sections: every table the installation's data
 //     inventory declares as owned by the installation or an organisation, row
-//     by row (scripts/instance-drill-compare.mts compares them), the people,
+//     by row (scripts/instance-drill-compare.mts compares them), a shared
+//     book's rows in the person-owned contact tables and its photo files, the people,
 //     each mail account's row, and what an instance restore resets
 //     (docs/DATA_RECOVERY.md#after-an-instance-restore): sessions, tickets,
 //     sign-in challenges, leases and provider work it must not replay.
@@ -19,7 +22,11 @@ const crypto = (require('node:crypto') as typeof import('node:crypto'));
 const apiRoot = process.env.UNIHUB_API_ROOT!;
 const mysql = require(require.resolve('mysql2/promise', { paths: [apiRoot] })) as typeof import('mysql2/promise');
 // The inventory of the release under test, as built into the installation.
-const { TABLE_DECLARATIONS } = require(require('node:path').join(apiRoot, 'src/services/data-inventory.js')) as typeof import('../../src/services/data-inventory');
+const path = require('node:path') as typeof import('node:path');
+const fs = require('node:fs') as typeof import('node:fs');
+const { TABLE_DECLARATIONS, BOOK_ROWS } = require(path.join(apiRoot, 'src/services/data-inventory.js')) as typeof import('../../src/services/data-inventory');
+// Where the installation keeps a shared book's photos (services/contact-photos.ts photoPath).
+const bookPhotos = path.resolve(process.env.CONTACT_PHOTOS_ROOT || '/app/uploads/contact-photos', 'books');
 
 // BIGINTs arrive as strings (bigNumberStrings); a whole number past 2^53 here would hash with lost digits.
 const hash = (value: unknown) => crypto.createHash('sha256').update(JSON.stringify(value, (_key, item) => {
@@ -56,21 +63,45 @@ async function main() {
       await db.execute("INSERT INTO login_attempts (scope, identity_hash, attempts, window_ends_at) VALUES ('password', SHA2('drill', 256), 3, UTC_TIMESTAMP(3) + INTERVAL 1 DAY)");
       // Past 2^53, where a JavaScript number would round it to ...992.
       await db.execute("UPDATE mail_engine_migration_progress SET last_id = '00000000-0000-4000-8000-00000000d211', processed = IF(source_table = 'emails', 9007199254740993, processed + 7)");
-      console.log(JSON.stringify({ seeded: ['setting_policies', 'instance_backups', 'mail_engine_migration_progress', 'org_groups', 'org_group_members', 'invites', 'login_attempts'] }));
+      // Shared address books (0.31): the group edits a book; its contact, photo, bin and the directory come back.
+      const [book, contact] = [crypto.randomUUID(), crypto.randomUUID()];
+      const photo = Buffer.from('synthetic drill photo');
+      const sha = crypto.createHash('sha256').update(photo).digest('hex');
+      await db.execute("INSERT INTO address_books (id, name, description, created_by) VALUES (?, 'Drill book', 'Synthetic', ?)", [book, admin]);
+      await db.execute(`INSERT INTO grants (id, resource_kind, resource_id, principal_kind, principal_id, permission, granted_by)
+        SELECT UUID(), 'address_book', ?, 'group', id, 'edit', ? FROM org_groups WHERE name = 'Drill group'`, [book, admin]);
+      await db.execute("INSERT INTO contacts (id, address_book_id, uid, uid_hash, first_name, name_key) VALUES (?, ?, ?, SHA2(?, 256), 'Drill', 'drill')", [contact, book, `urn:uuid:${contact}`, `urn:uuid:${contact}`]);
+      await db.execute("INSERT INTO contact_values (id, contact_id, address_book_id, kind, value, value_key) VALUES (UUID(), ?, ?, 'email', 'drill@example.test', 'drill@example.test')", [contact, book]);
+      await db.execute("INSERT INTO contact_properties (id, contact_id, address_book_id, name, value) VALUES (UUID(), ?, ?, 'X-DRILL', 'kept')", [contact, book]);
+      fs.mkdirSync(path.join(bookPhotos, book), { recursive: true });
+      fs.writeFileSync(path.join(bookPhotos, book, `${sha}.jpg`), photo);
+      await db.execute("INSERT INTO contact_photos (contact_id, address_book_id, sha256, width, height, bytes, thumb_sha256, source) VALUES (?, ?, ?, 1, 1, ?, ?, 'upload')", [contact, book, sha, photo.length, sha]);
+      await db.execute("INSERT INTO bin_items (id, address_book_id, module, item_type, item_id, title, reason, payload) VALUES (UUID(), ?, 'contacts', 'contact', UUID(), 'Drill binned', 'deleted', '{}')", [book]);
+      await db.execute("INSERT INTO directory_entries (user_id, phone, job_title, department, updated_by) VALUES (?, '+1 555 0100', 'Drill lead', 'Drills', ?)", [admin, admin]);
+      console.log(JSON.stringify({ seeded: ['setting_policies', 'instance_backups', 'mail_engine_migration_progress', 'org_groups', 'org_group_members', 'invites', 'login_attempts',
+        'address_books', 'grants', 'directory_entries', ...BOOK_ROWS.tables.map(table => `${table} of books`), 'photo files of books'] }));
       return;
     }
     if (process.env.DRILL_MODE !== 'report') throw new Error('DRILL_MODE is seed or report');
-    const installation: Record<string, { owner: string; rows: { key: string; columns: Record<string, string>; plain: Record<string, string | null> }[] }> = {};
-    for (const [table, declaration] of Object.entries(TABLE_DECLARATIONS).filter(([, declaration]) => declaration.owner !== 'user').sort()) {
+    type Reported = { owner: string; rows: { key: string; columns: Record<string, string>; plain: Record<string, string | null> }[] };
+    const installation: Record<string, Reported> = {};
+    const report = async (table: string, owner: string, where = 'TRUE'): Promise<Reported> => {
       const key = (await rows(`SELECT COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = 'PRIMARY'
         ORDER BY SEQ_IN_INDEX`, [table])).map(row => String(row.COLUMN_NAME));
       if (!key.length) throw new Error(`${table} has no primary key to compare rows by`);
-      installation[table] = { owner: declaration.owner, rows: (await rows(`SELECT * FROM \`${table}\` ORDER BY ${key.map(column => `\`${column}\``).join(', ')}`)).map(row => ({
+      return { owner, rows: (await rows(`SELECT * FROM \`${table}\` WHERE ${where} ORDER BY ${key.map(column => `\`${column}\``).join(', ')}`)).map(row => ({
         key: key.map(column => String(row[column])).join('/'),
         columns: Object.fromEntries(Object.entries(row).map(([column, value]) => [column, hash(value)])),
         plain: Object.fromEntries((PLAIN[table] || []).map(column => [column, row[column] == null ? null : String(row[column])])),
       })) };
+    };
+    for (const [table, declaration] of Object.entries(TABLE_DECLARATIONS).filter(([, declaration]) => declaration.owner !== 'user').sort()) {
+      installation[table] = await report(table, declaration.owner);
     }
+    // A shared book's rows in the person-owned tables, and its photo files, are the organisation's.
+    for (const table of BOOK_ROWS.tables) installation[`${table} of books`] = await report(table, 'organisation', 'address_book_id IS NOT NULL');
+    const files = fs.existsSync(bookPhotos) ? (fs.readdirSync(bookPhotos, { recursive: true }) as string[]).filter(name => fs.statSync(path.join(bookPhotos, name)).isFile()).sort() : [];
+    installation['photo files of books'] = { owner: 'organisation', rows: files.map(name => ({ key: name, columns: { content: hash(fs.readFileSync(path.join(bookPhotos, name))) }, plain: {} })) };
     const users = (await rows('SELECT * FROM users ORDER BY id')).map(row => ({ id: row.id, email: row.email, role: row.role, is_active: Number(row.is_active), row: hash(row) }));
     const mailAccounts = (await rows('SELECT * FROM mail_accounts ORDER BY id')).map(row => {
       const kept = Object.fromEntries(Object.entries(row).filter(([key]) => !ACCOUNT_RESETS.includes(key)));

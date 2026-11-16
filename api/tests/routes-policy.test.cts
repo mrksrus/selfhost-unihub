@@ -186,7 +186,7 @@ const APP_LOCK_EXEMPT: Readonly<Record<string, string>> = {
 // the apps in the support window read a 403 other than MODULE_DISABLED as a
 // refused change and skip the contact. The page never sends the header here.
 const APP_LOCK_BACKGROUND_SYNC = [
-  'DELETE /api/contacts/:id', 'DELETE /api/contacts/:id/photo', 'GET /api/contacts', 'GET /api/contacts/:id/photo', 'POST /api/contacts',
+  'DELETE /api/contacts/:id', 'DELETE /api/contacts/:id/photo', 'GET /api/address-books/:id/contacts', 'GET /api/address-books/:id/contacts/:contactId/photo', 'GET /api/contacts', 'GET /api/contacts/:id/photo', 'POST /api/contacts',
   'PUT /api/contacts/:id', 'PUT /api/contacts/:id/photo',
 ];
 
@@ -330,13 +330,17 @@ const NOT_DESTRUCTIVE: Readonly<Record<string, string>> = {
   'DELETE /api/admin/users/:id/devices': 'admin path: signs devices out; no data',
   'DELETE /api/admin/groups/:id': 'admin path: a group, its memberships and its policies; no person\'s data',
   'DELETE /api/groups/:id/members/:userId': 'a membership; no data',
+  // Shared address books (0.31): a deleted book is hidden and kept for an administrator's restore; contacts go to its bin.
+  'DELETE /api/address-books/:id': 'hides the book; an administrator restores it',
+  'DELETE /api/address-books/:id/contacts/:contactId': 'moves the contact to the book\'s bin',
+  'POST /api/address-books/:id/contacts/bulk-delete': 'moves the contacts to the book\'s bin',
 };
 const removesData = (key: string) => {
   const [method, path] = key.split(' ');
   return method === 'DELETE' || (method === 'POST' && /delete|clear|purge|reset|remove|empty|merge/.test(path));
 };
 const DESTRUCTIVE = [
-  'DELETE /api/backup/jobs/:id', 'DELETE /api/backup/restore-jobs/:id', 'DELETE /api/bin/:id', 'DELETE /api/calendar/accounts/:id',
+  'DELETE /api/address-books/:id/contacts/:contactId/photo', 'DELETE /api/backup/jobs/:id', 'DELETE /api/backup/restore-jobs/:id', 'DELETE /api/bin/:id', 'DELETE /api/calendar/accounts/:id',
   'DELETE /api/contacts/:id/photo', 'DELETE /api/mail/accounts/:id', 'DELETE /api/mail/folders/:slug', 'DELETE /api/settings/account', 'POST /api/bin/empty',
   'POST /api/mail/emails/bulk-delete',
   'POST /api/settings/clear-calendar', 'POST /api/settings/clear-contacts', 'POST /api/settings/clear-mail-accounts', 'POST /api/settings/clear-recordings',
@@ -363,6 +367,7 @@ test('each destructive route names the policies of what it removes', () => {
     // Deleting from the bin for good and emptying it; a contact's photo is
     // removed for good, not kept in the bin.
     'DELETE /api/bin/:id': ['bin.delete'], 'POST /api/bin/empty': ['bin.delete'], 'DELETE /api/contacts/:id/photo': ['bin.delete'],
+    'DELETE /api/address-books/:id/contacts/:contactId/photo': ['bin.delete'],
     'DELETE /api/settings/account': ['account.delete'],
     'POST /api/settings/clear-contacts': ['data.clear'], 'POST /api/settings/clear-recordings': ['data.clear'],
     // Clearing calendar or mail removes the module's accounts too.

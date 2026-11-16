@@ -19,7 +19,7 @@ import type {
   ContactRecord, ContactSingleField, ContactValueKind, DuplicateConfidence, DuplicateReason, ImportCardSummary, ImportDecisionKind, ImportFormat,
   ImportGroup, ImportStatus, ImportSummary, ImportWarning, PartialDate,
 } from '../contracts/contacts';
-import type { ContactDraft, KeptPropertyDraft } from './contacts';
+import type { ContactDraft, ContactOwner, KeptPropertyDraft } from './contacts';
 import type { ImportedCard, ImportedPhoto } from './contacts-vcard-map';
 import type { ConvertedPhoto } from './contact-photos';
 import crypto from 'node:crypto';
@@ -32,8 +32,9 @@ import { withTransaction } from './transactions';
 import { isModuleEnabled } from './module-settings';
 import { getActiveRestoreSections, getActiveRestoreSectionsByUser } from './restore-locks';
 import {
-  displayName, draftNameKey, insertContact, loadContacts, uidHash, KEPT_PROPERTIES_MAX, KEPT_PROPERTIES_MAX_BYTES,
+  displayName, draftNameKey, insertContact, loadContacts, ownerOf, uidHash, KEPT_PROPERTIES_MAX, KEPT_PROPERTIES_MAX_BYTES,
 } from './contacts';
+import { can } from './access';
 import { fullValueKey, valueIdentity } from './contact-keys';
 import { singleFieldConflicts } from './contact-duplicates';
 import { mergeLocked } from './contact-merge';
@@ -132,13 +133,15 @@ interface ContactIndex {
   names: Map<string, string>;
 }
 
-async function loadIndex(executor: SqlExecutor, userId: string): Promise<ContactIndex> {
+async function loadIndex(executor: SqlExecutor, owner: ContactOwner): Promise<ContactIndex> {
+  const [column, ownerId] = ownerOf(owner);
   const [contacts] = await executor.execute<(RowDataPacket & { id: string; uid_hash: string; name_key: string })[]>(
-    'SELECT id, uid_hash, name_key FROM contacts WHERE user_id = ?', [userId]);
-  const [aliases] = await executor.execute<(RowDataPacket & { uid_hash: string; contact_id: string })[]>(
-    'SELECT uid_hash, contact_id FROM contact_uid_aliases WHERE user_id = ?', [userId]);
+    `SELECT id, uid_hash, name_key FROM contacts WHERE ${column} = ?`, [ownerId]);
+  // A book has no aliases (they come from merges).
+  const [aliases] = typeof owner === 'string' ? await executor.execute<(RowDataPacket & { uid_hash: string; contact_id: string })[]>(
+    'SELECT uid_hash, contact_id FROM contact_uid_aliases WHERE user_id = ?', [owner]) : [[]];
   const [values] = await executor.execute<(RowDataPacket & { contact_id: string; kind: 'email' | 'phone'; value: string })[]>(
-    "SELECT contact_id, kind, value FROM contact_values WHERE user_id = ? AND kind IN ('email', 'phone') AND value_key <> ''", [userId]);
+    `SELECT contact_id, kind, value FROM contact_values WHERE ${column} = ? AND kind IN ('email', 'phone') AND value_key <> ''`, [ownerId]);
   const add = (map: Map<string, Set<string>>, key: string, id: string) => { const set = map.get(key) || new Set(); set.add(id); map.set(key, set); };
   const index: ContactIndex = { byUid: new Map(), byKey: new Map(), byName: new Map(), names: new Map() };
   for (const alias of aliases) index.byUid.set(alias.uid_hash, alias.contact_id);
@@ -251,7 +254,11 @@ interface StagedImport {
   format: ImportFormat;
   cards: ImportedCard[];
   groups: { id: string; cards: number[]; existing_ids: string[]; default_decision: ImportDecisionKind }[];
+  /** The shared address book the cards go into; absent for the person's own contacts. */
+  book_id?: string;
 }
+
+const ownerOfImport = (userId: string, staged: Pick<StagedImport, 'book_id'>): ContactOwner => staged.book_id ? { bookId: staged.book_id } : userId;
 
 const datePart = (stored: string | null): PartialDate | null => {
   const match = stored ? /^(?:(\d{4})|-)-(\d{2})-(\d{2})$/.exec(stored) : null;
@@ -319,15 +326,16 @@ function cardIdentity(card: ImportedCard) {
  * without one, the first inline PHOTO kept as it came is read back as the
  * card's photo. One query per thousand contacts.
  */
-async function storedIdentities(userId: string, contacts: readonly ContactRecord[]) {
+async function storedIdentities(owner: ContactOwner, contacts: readonly ContactRecord[]) {
+  const [column, ownerId] = ownerOf(owner);
   const identities = new Map<string, { kept: string[]; photo: string | null }>(contacts.map(contact => [contact.id, { kept: [], photo: contact.photo?.etag ?? null }]));
   const withKept = contacts.filter(contact => contact.kept_properties > 0);
   for (let start = 0; start < withKept.length; start += 1000) {
     const slice = withKept.slice(start, start + 1000);
     const byId = new Map(slice.map(contact => [contact.id, contact]));
     const [rows] = await db.execute<(RowDataPacket & { contact_id: string; name: string; vcard_group: string | null; params: unknown; value: string; source_version: string | null })[]>(
-      `SELECT contact_id, name, vcard_group, params, value, source_version FROM contact_properties WHERE user_id = ? AND contact_id IN (${slice.map(() => '?').join(', ')})
-       ORDER BY contact_id, position, id`, [userId, ...slice.map(contact => contact.id)]);
+      `SELECT contact_id, name, vcard_group, params, value, source_version FROM contact_properties WHERE ${column} = ? AND contact_id IN (${slice.map(() => '?').join(', ')})
+       ORDER BY contact_id, position, id`, [ownerId, ...slice.map(contact => contact.id)]);
     for (const row of rows) {
       const property: KeptPropertyDraft = { name: row.name, group: row.vcard_group, params: typeof row.params === 'string' ? JSON.parse(row.params) : (row.params as KeptPropertyDraft['params']) ?? null,
         value: row.value, source_version: row.source_version };
@@ -342,13 +350,13 @@ async function storedIdentities(userId: string, contacts: readonly ContactRecord
 }
 
 /** Matches the cards and builds the groups the person decides on. */
-async function matchCards(userId: string, cards: readonly ImportedCard[]) {
-  const index = await loadIndex(db, userId);
+async function matchCards(owner: ContactOwner, cards: readonly ImportedCard[]) {
+  const index = await loadIndex(db, owner);
   const matches = cards.map(card => matchCard(card, index));
   const targets = [...new Set(matches.flatMap(match => match.existing.slice(0, 1)))];
-  const loaded = await loadContacts(db, userId, targets);
+  const loaded = await loadContacts(db, owner, targets);
   const existing = new Map(loaded.map(contact => [contact.id, contact]));
-  const stored = await storedIdentities(userId, loaded);
+  const stored = await storedIdentities(owner, loaded);
   const groups: (ImportGroup & { cardIndexes: number[] })[] = [];
   for (const members of fileGroups(cards, matches)) {
     const memberMatches = members.map(at => matches[at]);
@@ -377,8 +385,10 @@ async function matchCards(userId: string, cards: readonly ImportedCard[]) {
       }
     }
     const large = members.length > LARGE_GROUP;
-    const default_decision: ImportDecisionKind = match === 'identical' ? 'skip'
+    let default_decision: ImportDecisionKind = match === 'identical' ? 'skip'
       : !large && (match === 'uid' || (match === 'duplicate' && confidence === 'high')) ? 'merge' : 'add';
+    // A book's contacts are never merged: a card it already holds is skipped.
+    if (typeof owner !== 'string' && default_decision === 'merge') default_decision = match === 'uid' ? 'skip' : 'add';
     groups.push({
       id: `g${groups.length + 1}`, cards: members.map(at => cards[at].number), match, confidence, existing_ids: existingIds, reasons, conflicts, default_decision,
       ...(match === 'new' ? {} : { summaries: members.map(at => cardSummary(cards[at])) }), cardIndexes: members,
@@ -387,8 +397,12 @@ async function matchCards(userId: string, cards: readonly ImportedCard[]) {
   return groups;
 }
 
-/** Step 1: parse and match the uploaded file, stage it, and answer what would happen. Writes no contact. */
-async function stageImport(userId: string, upload: { path: string; size: number }): Promise<ImportSummary> {
+/**
+ * Step 1: parse and match the uploaded file, stage it, and answer what would
+ * happen. Writes no contact. With `bookId` the cards are for that shared
+ * address book (the caller's access is checked by the route and at commit).
+ */
+async function stageImport(userId: string, upload: { path: string; size: number }, bookId?: string): Promise<ImportSummary> {
   if (upload.size > IMPORT_LIMITS.fileBytes) throw badRequest('IMPORT_TOO_LARGE', 'The file is larger than 64 MB.');
   await sweepContactImports().catch(error => log.error('contacts', 'Could not sweep expired contact imports', error));
   const bytes = await fs.promises.readFile(upload.path);
@@ -396,11 +410,11 @@ async function stageImport(userId: string, upload: { path: string; size: number 
   if (!parsed.cards.length) throw badRequest('IMPORT_EMPTY', 'No contacts were found in the file.');
   const warnings = [...parsed.warnings];
   for (const card of parsed.cards) card.properties = boundKept(card.properties, card.number, warnings);
-  const groups = await matchCards(userId, parsed.cards);
+  const groups = await matchCards(bookId ? { bookId } : userId, parsed.cards);
   const id = crypto.randomUUID();
   const expiresAt = new Date(Date.now() + EXPIRY_HOURS * 3600 * 1000);
   const staged: StagedImport = { format: parsed.format, cards: parsed.cards,
-    groups: groups.map(group => ({ id: group.id, cards: group.cards, existing_ids: group.existing_ids, default_decision: group.default_decision })) };
+    groups: groups.map(group => ({ id: group.id, cards: group.cards, existing_ids: group.existing_ids, default_decision: group.default_decision })), ...(bookId ? { book_id: bookId } : {}) };
   const file = stagedPath(userId, id);
   await fs.promises.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   await fs.promises.writeFile(file, JSON.stringify(staged), { mode: 0o600, flag: 'wx' });
@@ -476,7 +490,7 @@ async function importStatus(userId: string, id: string): Promise<ImportStatus> {
   return statusOf(row);
 }
 
-function decisionsInput(body: unknown, staged: StagedImport['groups']): Record<string, ImportDecisionKind> {
+function decisionsInput(body: unknown, staged: StagedImport['groups'], intoBook: boolean): Record<string, ImportDecisionKind> {
   const list = (body as { decisions?: unknown } | null)?.decisions;
   if (list !== undefined && !Array.isArray(list)) throw badRequest('INVALID_IMPORT_DECISIONS', 'decisions must be a list');
   const known = new Map(staged.map(group => [group.id, group]));
@@ -485,6 +499,7 @@ function decisionsInput(body: unknown, staged: StagedImport['groups']): Record<s
     const { group_id: groupId, decision } = (entry || {}) as { group_id?: unknown; decision?: unknown };
     if (typeof groupId !== 'string' || !known.has(groupId)) throw badRequest('INVALID_IMPORT_DECISIONS', 'A decision names a group this import does not have');
     if (typeof decision !== 'string' || !DECISIONS.has(decision as ImportDecisionKind)) throw badRequest('INVALID_IMPORT_DECISIONS', 'A decision must be add, merge or skip');
+    if (intoBook && decision === 'merge') throw badRequest('INVALID_IMPORT_DECISIONS', 'Contacts of a shared address book are not merged; add or skip them');
     decisions[groupId] = decision as ImportDecisionKind;
   }
   return decisions;
@@ -516,7 +531,7 @@ async function commitImport(userId: string, id: string, body: unknown): Promise<
   const previous = parseResult(row.result);
   // A failed import resumes with the decisions it started with.
   const state: CommitState = previous?.decisions ? { ...previous, error: null }
-    : { decisions: decisionsInput(body, staged.groups), next: 0, added: 0, merged: 0, skipped: 0, kept_conflicts: [], warnings: [] };
+    : { decisions: decisionsInput(body, staged.groups, !!staged.book_id), next: 0, added: 0, merged: 0, skipped: 0, kept_conflicts: [], warnings: [] };
   const [claimed] = await db.execute<ResultSetHeader>(`UPDATE contact_imports SET status = 'committing', result = ?
     WHERE id = ? AND user_id = ? AND status IN ('staged', 'failed') AND expires_at > UTC_TIMESTAMP()`, [JSON.stringify(state), id, userId]);
   if (claimed.affectedRows) startCommit(userId, id);
@@ -543,10 +558,11 @@ async function setFailed(userId: string, id: string, error: { code: string; mess
   });
 }
 
-/** Contacts module and restore lock, before every chunk (a restore may start mid-import). */
-async function commitBlocked(userId: string, executor: SqlExecutor = db) {
+/** Contacts module, restore lock and a book's access, before every chunk (a restore may start, or access end, mid-import). */
+async function commitBlocked(userId: string, executor: SqlExecutor = db, bookId?: string) {
   if (!await isModuleEnabled(userId, 'contacts', executor)) return { code: 'MODULE_DISABLED', message: 'The Contacts module was turned off. Turn it on and import again to continue.' };
   if ((await getActiveRestoreSections(userId, executor)).has('contacts')) return { code: 'RESTORE_IN_PROGRESS', message: 'A restore of contacts is running. Import again when it has finished.' };
+  if (bookId && !await can(userId, { kind: 'address_book', id: bookId }, 'edit', executor)) return { code: 'BOOK_FORBIDDEN', message: 'You can no longer change this address book.' };
   return null;
 }
 
@@ -593,10 +609,11 @@ async function convertPhotos(cards: readonly ImportedCard[]): Promise<ChunkPhoto
 async function runCommit(userId: string, id: string) {
   const row = await importRow(userId, id);
   const staged = await readStaged(userId, id, row.file_path);
+  const owner = ownerOfImport(userId, staged);
   const cardsByNumber = new Map(staged.cards.map(card => [card.number, card]));
   const cardsOf = (group: StagedImport['groups'][number]) => group.cards.map(number => cardsByNumber.get(number)!).filter(Boolean);
   for (;;) {
-    const blocked = await commitBlocked(userId);
+    const blocked = await commitBlocked(userId, db, staged.book_id);
     if (blocked) { await setFailed(userId, id, blocked); return; }
     // The next chunk is read before its transaction, so its photos are
     // converted outside it; the transaction checks that it is still next.
@@ -611,10 +628,10 @@ async function runCommit(userId: string, id: string) {
     // contacts restore are checked again before anything is written, and
     // once more inside the transaction.
     let stopped: { code: string; message: string } | null = null;
-    const outcome = await withContactPhotoLock(userId, async () => {
-      stopped = await commitBlocked(userId);
+    const outcome = await withContactPhotoLock(owner, async () => {
+      stopped = await commitBlocked(userId, db, staged.book_id);
       if (stopped) return 'blocked';
-      for (const photo of photos.converted.values()) await writePhotoFiles(userId, photo);
+      for (const photo of photos.converted.values()) await writePhotoFiles(owner, photo);
       const released: string[] = [];
       // A failed transaction leaves the new files for the photo sweep: a lost commit may still reference them.
       const result = await withTransaction(async cx => {
@@ -622,11 +639,13 @@ async function runCommit(userId: string, id: string) {
         if (!locked || locked.status !== 'committing') return 'stop';
         const state = parseResult(locked.result)!;
         if (state.next !== start) return 'again';
-        stopped = await commitBlocked(userId, cx);
+        // A book's row first, as every write to the book (address-books.ts), so the access read below sees a share removed meanwhile.
+        if (staged.book_id) await cx.execute('SELECT id FROM address_books WHERE id = ? LOCK IN SHARE MODE', [staged.book_id]);
+        stopped = await commitBlocked(userId, cx, staged.book_id);
         if (stopped) return 'blocked';
         for (let at = start; at < end; at++) {
           const group = staged.groups[at];
-          await applyGroup(cx, userId, group, decided(group, state), cardsOf(group), state, photos, released);
+          await applyGroup(cx, owner, group, decided(group, state), cardsOf(group), state, photos, released);
         }
         state.next = end;
         const done = end >= staged.groups.length;
@@ -635,7 +654,7 @@ async function runCommit(userId: string, id: string) {
           [JSON.stringify(state), progress, id, userId]);
         return done ? 'done' : 'more';
       });
-      if (released.length) await releasePhotoFiles(userId, released).catch(error => log.warn('contacts', 'Old contact photo files stay until the sweep', {}, error));
+      if (released.length) await releasePhotoFiles(owner, released).catch(error => log.warn('contacts', 'Old contact photo files stay until the sweep', {}, error));
       return result;
     });
     if (outcome === 'stop') return;
@@ -650,22 +669,24 @@ async function runCommit(userId: string, id: string) {
   }
 }
 
-async function uidTaken(cx: SqlExecutor, userId: string, uid: string) {
+async function uidTaken(cx: SqlExecutor, owner: ContactOwner, uid: string) {
   const hash = uidHash(uid);
-  const [rows] = await cx.execute<RowDataPacket[]>(`SELECT 1 FROM contacts WHERE user_id = ? AND uid_hash = ?
-    UNION ALL SELECT 1 FROM contact_uid_aliases WHERE user_id = ? AND uid_hash = ? LIMIT 1`, [userId, hash, userId, hash]);
+  const [column, ownerId] = ownerOf(owner);
+  const [rows] = await cx.execute<RowDataPacket[]>(`SELECT 1 FROM contacts WHERE ${column} = ? AND uid_hash = ?
+    UNION ALL SELECT 1 FROM contact_uid_aliases WHERE user_id = ? AND uid_hash = ? LIMIT 1`, [ownerId, hash, typeof owner === 'string' ? owner : null, hash]);
   return rows.length > 0;
 }
 
 /** A card as a new contact, with its photo; counts nothing (the caller says whether it was added or merged). */
-async function insertCard(cx: SqlExecutor, userId: string, card: ImportedCard, state: CommitState, photos: ChunkPhotos, released: string[]) {
-  const uid = card.uid && !await uidTaken(cx, userId, card.uid) ? card.uid : undefined;
+async function insertCard(cx: SqlExecutor, owner: ContactOwner, card: ImportedCard, state: CommitState, photos: ChunkPhotos, released: string[]) {
+  const uid = card.uid && !await uidTaken(cx, owner, card.uid) ? card.uid : undefined;
   const failed = photos.failed.get(card.number);
   if (failed) state.warnings.push(failed.warning);
   const properties = failed?.kept ? [failed.kept, ...card.properties] : card.properties;
-  const id = await insertContact(cx, userId, card.draft, { ...(uid ? { uid } : {}), properties: boundKept(properties, card.number, state.warnings) });
+  const draft = typeof owner === 'string' ? card.draft : { ...card.draft, is_favorite: false };
+  const id = await insertContact(cx, owner, draft, { ...(uid ? { uid } : {}), properties: boundKept(properties, card.number, state.warnings) });
   const photo = photos.converted.get(card.number);
-  if (photo) released.push(...await attachContactPhoto(cx, userId, id, photo, 'import'));
+  if (photo) released.push(...await attachContactPhoto(cx, owner, id, photo, 'import'));
   return id;
 }
 
@@ -678,12 +699,14 @@ async function insertCard(cx: SqlExecutor, userId: string, card: ImportedCard, s
  * A merge past a limit (100 values of a kind) leaves the cards as contacts
  * of their own, with a warning.
  */
-async function applyGroup(cx: SqlExecutor, userId: string, group: StagedImport['groups'][number], decision: ImportDecisionKind, cards: ImportedCard[],
+async function applyGroup(cx: SqlExecutor, owner: ContactOwner, group: StagedImport['groups'][number], decision: ImportDecisionKind, cards: ImportedCard[],
   state: CommitState, photos: ChunkPhotos, released: string[]) {
   if (!cards.length) return;
   if (decision === 'skip') { state.skipped += cards.length; return; }
-  const insert = (card: ImportedCard) => insertCard(cx, userId, card, state, photos, released);
-  if (decision === 'add') { for (const card of cards) { await insert(card); state.added++; } return; }
+  const insert = (card: ImportedCard) => insertCard(cx, owner, card, state, photos, released);
+  // A book's import never merges (decisionsInput refuses it).
+  if (decision === 'add' || typeof owner !== 'string') { for (const card of cards) { await insert(card); state.added++; } return; }
+  const userId = owner;
   let targetId: string | null = null;
   let rest = cards;
   if (group.existing_ids[0]) {

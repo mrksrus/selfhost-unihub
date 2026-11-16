@@ -42,12 +42,13 @@ export interface Principals {
 
 // --- Access (F4) -------------------------------------------------------------
 
-/** The kinds of resource the access service answers for; 0.31 adds shared ones. */
-export type AccessKind = 'group';
+/** The kinds of resource the access service answers for. */
+export type AccessKind = 'group' | 'address_book';
 
 /** Permissions on each kind, from the least to the most. */
 export interface AccessPermissions {
   group: 'read' | 'manage';
+  address_book: 'read' | 'edit' | 'manage';
 }
 
 // --- The signed-in person ------------------------------------------------------

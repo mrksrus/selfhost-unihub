@@ -1,7 +1,8 @@
 // Contact photos (D6): the server turns any reasonable picture into one
 // square JPEG of at most 512 pixels and a 96-pixel thumbnail; nobody crops or
 // adjusts anything. Both are content-addressed files under
-// <CONTACT_PHOTOS_ROOT>/<user_id>/<sha256>.jpg, referenced by contact_photos.
+// <CONTACT_PHOTOS_ROOT>/<user_id>/<sha256>.jpg (a shared address book's under
+// books/<book id>/), referenced by contact_photos.
 // The original bytes are never kept. sharp (libvips) decodes and encodes;
 // HEIC/HEIF and the other formats sharp's prebuilt libvips cannot read go
 // through the image's FFmpeg as a separate, bounded process.
@@ -15,6 +16,7 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import type { ContactPhoto } from '../contracts/contacts';
+import type { ContactOwner } from './contacts';
 import type { Metadata, OutputInfo, Sharp, SharpOptions } from 'sharp';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -27,6 +29,7 @@ import { withTransaction } from './transactions';
 import { assertFinalStep } from './final-step';
 import { getActiveRestoreSections } from './restore-locks';
 import { fileRemovalGate } from './file-removal-gate';
+import { ownerOf } from './contacts';
 
 const PHOTO_SIZE = 512;
 const THUMB_SIZE = 96;
@@ -50,6 +53,7 @@ const ORPHAN_MIN_AGE_MS = 60 * 60 * 1000;
 const UNREADABLE = 'This picture could not be read. JPEG, PNG, WebP, HEIC, AVIF and GIF work.';
 const SHA_PATTERN = /^[0-9a-f]{64}$/;
 const USER_ID_PATTERN = /^[0-9A-Za-z-]{1,64}$/;
+const BOOKS_DIRECTORY = 'books';
 
 // sharp is a native module. It loads on the first conversion, not at
 // startup: if its binary cannot load on a platform, photos answer 503 and
@@ -96,20 +100,21 @@ function photosRoot() {
   return path.resolve(process.env.CONTACT_PHOTOS_ROOT || '/app/uploads/contact-photos');
 }
 
-// The one place a photo path is built: a user id and a sha are checked against
+// The one place a photo path is built: an owner id and a sha are checked against
 // their patterns, and the result must stay inside the root.
-function photoPath(userId: string, sha: string) {
-  if (!USER_ID_PATTERN.test(userId) || !SHA_PATTERN.test(sha)) throw new Error('Invalid contact photo reference');
+function photoPath(owner: ContactOwner, sha: string) {
+  const id = typeof owner === 'string' ? owner : owner.bookId;
+  if (!USER_ID_PATTERN.test(id) || !SHA_PATTERN.test(sha)) throw new Error('Invalid contact photo reference');
   const root = photosRoot();
-  const target = path.resolve(root, userId, `${sha}.jpg`);
+  const target = typeof owner === 'string' ? path.resolve(root, id, `${sha}.jpg`) : path.resolve(root, BOOKS_DIRECTORY, id, `${sha}.jpg`);
   if (!target.startsWith(`${root}${path.sep}`)) throw new Error('Contact photo path outside its root');
   return target;
 }
 
 // A user directory that is a symlink (or anything but a directory) is refused,
 // so a planted link cannot point writes or reads elsewhere.
-async function userDirectory(userId: string, { create }: { create: boolean }) {
-  const dir = path.dirname(photoPath(userId, '0'.repeat(64)));
+async function userDirectory(owner: ContactOwner, { create }: { create: boolean }) {
+  const dir = path.dirname(photoPath(owner, '0'.repeat(64)));
   if (create) await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
   const stat = await fs.promises.lstat(dir).catch(() => null);
   if (!stat) return null;
@@ -302,8 +307,9 @@ async function readUpload(filePath: string) {
 
 const userLocks = new Map<string, Promise<unknown>>();
 
-/** Runs `work` alone among this user's photo file changes (single API process). */
-async function withContactPhotoLock<T>(userId: string, work: () => Promise<T>): Promise<T> {
+/** Runs `work` alone among this owner's photo file changes (single API process). */
+async function withContactPhotoLock<T>(owner: ContactOwner, work: () => Promise<T>): Promise<T> {
+  const userId = typeof owner === 'string' ? owner : `${BOOKS_DIRECTORY}/${owner.bookId}`;
   const previous = userLocks.get(userId) || Promise.resolve();
   const run = previous.then(work, work);
   const settled = run.then(() => {}, () => {});
@@ -328,10 +334,10 @@ async function writeFileAtomically(target: string, bytes: Buffer) {
 }
 
 /** Writes a converted photo's files. Call inside withContactPhotoLock, before the row is committed. */
-async function writePhotoFiles(userId: string, photo: ConvertedPhoto) {
-  await userDirectory(userId, { create: true });
-  await writeFileAtomically(photoPath(userId, photo.sha256), photo.full);
-  await writeFileAtomically(photoPath(userId, photo.thumbSha256), photo.thumb);
+async function writePhotoFiles(owner: ContactOwner, photo: ConvertedPhoto) {
+  await userDirectory(owner, { create: true });
+  await writeFileAtomically(photoPath(owner, photo.sha256), photo.full);
+  await writeFileAtomically(photoPath(owner, photo.thumbSha256), photo.thumb);
 }
 
 /**
@@ -365,13 +371,15 @@ async function writeRestoredPhotoFile(userId: string, sha: string, write: (tempo
 // half. file_refs and the snapshot are matched as text so their JSON shape
 // may grow. The callers also hold the user's photo lock, which merge undo and
 // the bin purge take too.
-async function isReferenced(executor: SqlExecutor, userId: string, sha: string) {
+async function isReferenced(executor: SqlExecutor, owner: ContactOwner, sha: string) {
   const pattern = `%${sha}%`;
+  const [column, ownerId] = ownerOf(owner);
+  // A book has no merges; user_id = NULL matches none.
   const [[row]] = await executor.execute<(RowDataPacket & { referenced: number })[]>(`SELECT
-      EXISTS (SELECT 1 FROM contact_photos WHERE user_id = ? AND (sha256 = ? OR thumb_sha256 = ?))
-      OR EXISTS (SELECT 1 FROM bin_items WHERE user_id = ? AND file_refs IS NOT NULL AND CAST(file_refs AS CHAR) LIKE ?)
+      EXISTS (SELECT 1 FROM contact_photos WHERE ${column} = ? AND (sha256 = ? OR thumb_sha256 = ?))
+      OR EXISTS (SELECT 1 FROM bin_items WHERE ${column} = ? AND file_refs IS NOT NULL AND CAST(file_refs AS CHAR) LIKE ?)
       OR EXISTS (SELECT 1 FROM contact_merges WHERE user_id = ? AND undone_at IS NULL AND survivor_before LIKE ?) AS referenced`,
-  [userId, sha, sha, userId, pattern, userId, pattern]);
+  [ownerId, sha, sha, ownerId, pattern, typeof owner === 'string' ? owner : null, pattern]);
   return !!Number(row?.referenced);
 }
 
@@ -383,26 +391,28 @@ async function isReferenced(executor: SqlExecutor, userId: string, sha: string) 
  * references afresh, since a file is named by its content and another
  * contact may have got the same photo meanwhile.
  */
-async function releasePhotoFiles(userId: string, shas: readonly string[], executor: SqlExecutor = db) {
+async function releasePhotoFiles(owner: ContactOwner, shas: readonly string[], executor: SqlExecutor = db) {
   const remove = async (source: SqlExecutor) => {
     for (const sha of new Set(shas)) {
-      if (!SHA_PATTERN.test(sha) || await isReferenced(source, userId, sha)) continue;
-      await fs.promises.rm(photoPath(userId, sha), { force: true });
+      if (!SHA_PATTERN.test(sha) || await isReferenced(source, owner, sha)) continue;
+      await fs.promises.rm(photoPath(owner, sha), { force: true });
     }
   };
-  await fileRemovalGate.run(() => remove(executor), () => withContactPhotoLock(userId, () => remove(db)));
+  await fileRemovalGate.run(() => remove(executor), () => withContactPhotoLock(owner, () => remove(db)));
 }
 
 // ── Rows ───────────────────────────────────────────────────────────────
 
-async function lockOwnedContact(cx: SqlExecutor, userId: string, contactId: string) {
-  const [[contact]] = await cx.execute<RowDataPacket[]>('SELECT id FROM contacts WHERE id = ? AND user_id = ? FOR UPDATE', [contactId, userId]);
+async function lockOwnedContact(cx: SqlExecutor, owner: ContactOwner, contactId: string) {
+  const [column, ownerId] = ownerOf(owner);
+  const [[contact]] = await cx.execute<RowDataPacket[]>(`SELECT id FROM contacts WHERE id = ? AND ${column} = ? FOR UPDATE`, [contactId, ownerId]);
   if (!contact) throw notFound('CONTACT_NOT_FOUND', 'Contact not found');
 }
 
-async function currentPhoto(cx: SqlExecutor, userId: string, contactId: string) {
+async function currentPhoto(cx: SqlExecutor, owner: ContactOwner, contactId: string) {
+  const [column, ownerId] = ownerOf(owner);
   const [[row]] = await cx.execute<PhotoRow[]>(
-    'SELECT contact_id, sha256, thumb_sha256, width, height FROM contact_photos WHERE contact_id = ? AND user_id = ?', [contactId, userId]);
+    `SELECT contact_id, sha256, thumb_sha256, width, height FROM contact_photos WHERE contact_id = ? AND ${column} = ?`, [contactId, ownerId]);
   return row || null;
 }
 
@@ -411,72 +421,79 @@ async function currentPhoto(cx: SqlExecutor, userId: string, contactId: string) 
  * which has written the files) and counts it as a change of the contact.
  * Returns the shas the previous photo used, for releasePhotoFiles after commit.
  */
-async function attachContactPhoto(cx: SqlExecutor, userId: string, contactId: string, photo: ConvertedPhoto, source: PhotoSource): Promise<string[]> {
-  await lockOwnedContact(cx, userId, contactId);
-  const previous = await currentPhoto(cx, userId, contactId);
-  await cx.execute(`INSERT INTO contact_photos (contact_id, user_id, sha256, width, height, bytes, thumb_sha256, source)
+async function attachContactPhoto(cx: SqlExecutor, owner: ContactOwner, contactId: string, photo: ConvertedPhoto, source: PhotoSource): Promise<string[]> {
+  const [column, ownerId] = ownerOf(owner);
+  await lockOwnedContact(cx, owner, contactId);
+  const previous = await currentPhoto(cx, owner, contactId);
+  await cx.execute(`INSERT INTO contact_photos (contact_id, ${column}, sha256, width, height, bytes, thumb_sha256, source)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON DUPLICATE KEY UPDATE sha256 = VALUES(sha256), width = VALUES(width), height = VALUES(height), bytes = VALUES(bytes),
       thumb_sha256 = VALUES(thumb_sha256), source = VALUES(source), created_at = CURRENT_TIMESTAMP`,
-  [contactId, userId, photo.sha256, photo.width, photo.height, photo.full.length, photo.thumbSha256, source]);
-  await cx.execute('UPDATE contacts SET version = version + 1 WHERE id = ? AND user_id = ?', [contactId, userId]);
+  [contactId, ownerId, photo.sha256, photo.width, photo.height, photo.full.length, photo.thumbSha256, source]);
+  await cx.execute(`UPDATE contacts SET version = version + 1 WHERE id = ? AND ${column} = ?`, [contactId, ownerId]);
   return previous ? [previous.sha256, previous.thumb_sha256] : [];
 }
 
 // ── Route operations ───────────────────────────────────────────────────
 
-/** Converts and stores a photo for the user's contact, replacing any earlier one. */
-async function setContactPhoto(userId: string, contactId: string, input: Buffer | { path: string }, source: PhotoSource = 'upload'): Promise<ContactPhoto> {
+// A book's change runs `check` in its transaction first (the access service asks again there).
+type PhotoCheck = (cx: SqlExecutor) => Promise<unknown>;
+
+/** Converts and stores a photo for the owner's contact, replacing any earlier one. */
+async function setContactPhoto(owner: ContactOwner, contactId: string, input: Buffer | { path: string }, source: PhotoSource = 'upload', check?: PhotoCheck): Promise<ContactPhoto> {
   // Refuse a stranger's or a missing contact before spending a conversion on it.
-  const [[owned]] = await db.execute<RowDataPacket[]>('SELECT id FROM contacts WHERE id = ? AND user_id = ?', [contactId, userId]);
+  const [column, ownerId] = ownerOf(owner);
+  const [[owned]] = await db.execute<RowDataPacket[]>(`SELECT id FROM contacts WHERE id = ? AND ${column} = ?`, [contactId, ownerId]);
   if (!owned) throw notFound('CONTACT_NOT_FOUND', 'Contact not found');
   const photo = await convertContactPhoto(input);
-  return withContactPhotoLock(userId, async () => {
-    await writePhotoFiles(userId, photo);
+  return withContactPhotoLock(owner, async () => {
+    await writePhotoFiles(owner, photo);
     let previous: string[];
     try {
-      previous = await withTransaction(cx => attachContactPhoto(cx, userId, contactId, photo, source));
+      previous = await withTransaction(async cx => { await check?.(cx); return attachContactPhoto(cx, owner, contactId, photo, source); });
     } catch (error) {
       // A refusal (the contact is gone) rolled back for sure: its new files go
       // unless another row uses them. Any other failure may hide a commit, so
       // the files stay for the sweep to judge.
-      if (error instanceof ApiError) await releasePhotoFiles(userId, [photo.sha256, photo.thumbSha256]).catch(() => {});
+      if (error instanceof ApiError) await releasePhotoFiles(owner, [photo.sha256, photo.thumbSha256]).catch(() => {});
       throw error;
     }
-    await releasePhotoFiles(userId, previous.filter(sha => sha !== photo.sha256 && sha !== photo.thumbSha256))
+    await releasePhotoFiles(owner, previous.filter(sha => sha !== photo.sha256 && sha !== photo.thumbSha256))
       .catch(error => log.warn('contacts', 'Old contact photo files stay until the sweep', {}, error));
     return { etag: photo.sha256, width: photo.width, height: photo.height };
   });
 }
 
-/** Removes the contact's photo; answers whether there was one. */
-async function removeContactPhoto(userId: string, contactId: string): Promise<boolean> {
-  return withContactPhotoLock(userId, async () => {
+/** Removes the contact's photo, as `actorId` (whose rules apply); answers whether there was one. */
+async function removeContactPhoto(owner: ContactOwner, contactId: string, actorId: string, check?: PhotoCheck): Promise<boolean> {
+  const [column, ownerId] = ownerOf(owner);
+  return withContactPhotoLock(owner, async () => {
     const previous = await withTransaction(async cx => {
-      await lockOwnedContact(cx, userId, contactId);
-      const row = await currentPhoto(cx, userId, contactId);
+      await check?.(cx);
+      await lockOwnedContact(cx, owner, contactId);
+      const row = await currentPhoto(cx, owner, contactId);
       if (!row) return null;
       // Deleted for good (no bin): the route's policy and Contacts' gates,
       // as they are now (final-step.ts).
-      await assertFinalStep(cx, { userId, policies: ['bin.delete'], modules: ['contacts'] });
-      await cx.execute('DELETE FROM contact_photos WHERE contact_id = ? AND user_id = ?', [contactId, userId]);
-      await cx.execute('UPDATE contacts SET version = version + 1 WHERE id = ? AND user_id = ?', [contactId, userId]);
+      await assertFinalStep(cx, { userId: actorId, policies: ['bin.delete'], modules: ['contacts'] });
+      await cx.execute(`DELETE FROM contact_photos WHERE contact_id = ? AND ${column} = ?`, [contactId, ownerId]);
+      await cx.execute(`UPDATE contacts SET version = version + 1 WHERE id = ? AND ${column} = ?`, [contactId, ownerId]);
       return [row.sha256, row.thumb_sha256];
     });
     if (!previous) return false;
-    await releasePhotoFiles(userId, previous)
+    await releasePhotoFiles(owner, previous)
       .catch(error => log.warn('contacts', 'Removed contact photo files stay until the sweep', {}, error));
     return true;
   });
 }
 
-/** The stored file of the user's contact photo, or a 404. */
-async function contactPhotoFile(userId: string, contactId: string, size: PhotoSize) {
-  const row = await currentPhoto(db, userId, contactId);
+/** The stored file of the owner's contact photo, or a 404. */
+async function contactPhotoFile(owner: ContactOwner, contactId: string, size: PhotoSize) {
+  const row = await currentPhoto(db, owner, contactId);
   if (!row) throw notFound('PHOTO_NOT_FOUND', 'This contact has no photo');
   const sha = size === 'thumb' ? row.thumb_sha256 : row.sha256;
-  const filePath = photoPath(userId, sha);
-  const dir = await userDirectory(userId, { create: false });
+  const filePath = photoPath(owner, sha);
+  const dir = await userDirectory(owner, { create: false });
   const stat = dir ? await fs.promises.lstat(filePath).catch(() => null) : null;
   if (!stat?.isFile()) {
     log.warn('contacts', 'A contact photo row names a missing file', { size });
@@ -512,6 +529,8 @@ async function sweepContactPhotos({ now = Date.now(), executor = db as SqlExecut
   for (const entry of users) {
     if (!active()) break;
     if (!entry.isDirectory() || !USER_ID_PATTERN.test(entry.name)) continue;
+    // shortcut: a shared book's orphaned files (from a crash) stay; sweep them with the books' bins.
+    if (entry.name === BOOKS_DIRECTORY) continue;
     const userId = entry.name;
     const restoring = await getActiveRestoreSections(userId).catch(() => new Set(['*']));
     if (restoring.has('contacts') || restoring.has('*')) continue;

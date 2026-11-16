@@ -15,6 +15,7 @@ import { addContactModel, copyLegacyContactValues, verifyLegacyContactCopy, drop
 import { adoptRawCalendarUids } from './calendar-uid-upgrade';
 import { addDevices, verifyDevices } from './devices-migration';
 import { addOrganisation, chooseOwner, verifyOrganisation, verifyOwner } from './organisation-migration';
+import { addSharedContacts, verifySharedContacts } from './shared-contacts-migration';
 import { log } from '../log';
 
 type FieldRow = RowDataPacket & { Field: string };
@@ -440,6 +441,18 @@ const MIGRATIONS: readonly Migration[] = [
     verify: async (connection: PoolConnection) => {
       await verifyDatabaseInventory(connection, { throughMigration: 28 });
       await verifyOwner(connection);
+    },
+  },
+  {
+    // 0.31.0 (shared address books): books, grants, directory entries, and
+    // a book's rows beside a person's in the contact tables and the bin
+    // (shared-contacts-migration.ts). No row changes.
+    id: 29,
+    name: 'shared-contacts',
+    up: addSharedContacts,
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 29 });
+      await verifySharedContacts(connection);
     },
   },
 ];
