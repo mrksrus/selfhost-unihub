@@ -97,7 +97,7 @@ export function BookShareDialog({ book, open, onClose }: { book: Pick<AddressBoo
                 </ul>
               )}
           </section>
-          <section aria-label="Add people or groups">
+          <section>
             <Label htmlFor="book-share-search">Add people or groups</Label>
             <div className="mt-2 flex items-center gap-2">
               <Input id="book-share-search" type="search" autoComplete="off" placeholder="Name, email or group" value={query} onChange={event => setQuery(event.target.value)} />
