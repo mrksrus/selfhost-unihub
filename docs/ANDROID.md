@@ -72,7 +72,8 @@ send none and count as level 1 (everything above except `fileAction` and
 `appLock`), 0.25.0 is level 2 and 0.29.0 level 3. The page offers a feature only to apps whose level has it, so a
 development build needs no version number of its own.
 
-Links to other sites, `mailto:` and `tel:` open in the matching phone app. File
+Links to other sites, `mailto:` and `tel:` open in the matching phone app
+(a `mailto:` link in UniHub's composer when UniHub is that app, below). File
 inputs open Android's file picker; from 0.25.0 the app gives the page its own
 copy of each picked file (WebView 133 on Android 16 reads the picker's
 addresses as empty files), kept and deleted like the copies for other apps
@@ -82,6 +83,26 @@ over that, or one that cannot be read, is left out, and the app names it and
 the reason in a dialog. Copies still being made when the session ends stop
 and are deleted, and the page gets none of them. Recordings ask for the
 microphone through Android's permission prompt.
+
+### Email links
+
+From 0.31.0 UniHub can be the phone's email app: an email link (`mailto:`,
+through Android's `SENDTO` or `VIEW`) in a browser or another app opens
+UniHub's composer with the link's to, cc, bcc, subject and body, as plain
+text (`Mailto.kt`). Other headers are ignored, nothing is attached and
+nothing is sent by itself. An app that adds the fields as extras of
+`SENDTO` (`EXTRA_EMAIL`, `EXTRA_CC`, `EXTRA_BCC`, `EXTRA_SUBJECT`,
+`EXTRA_TEXT`) gets them added too. The link waits while the app connects to
+its server and while the person signs in, and opens behind the app lock until
+it is unlocked. Sharing to UniHub (`SEND`) is not an email link and is not
+offered.
+
+Android has no "default email app" setting: the first link asks which app to
+use, and **Always** with UniHub makes it the one. To change it later, clear
+the choice of the app used now (Android's Settings → Apps → that app → Open
+by default → Clear default preferences, the same on GrapheneOS), then pick
+UniHub with **Always** at the next link. A server
+before 0.31.0 opens the composer without the cc and bcc.
 
 ### Files for other apps
 
@@ -247,6 +268,27 @@ that server is updated.
   removing the UniHub account in Android's settings, or uninstalling the app
   removes the account and Android deletes its contacts, including what only
   the phone kept.
+- **Shared address books (0.31.0 app and server).** With a server that
+  lists `contacts-books`, the shared books the person keeps on their phones
+  come to the phone too, Company included: each book is a read-only group of
+  the UniHub account, named after the book, and its contacts are read-only
+  copies in it (Company: name, email, the directory phone, job title and
+  department). The choice of books is made in UniHub ("On my phones" per
+  book) and applies to every phone of the person; every book is on by
+  default. The books come one way, from the server: a copy edited or deleted
+  on the phone (some contacts apps ignore the read-only flags) is written
+  again from UniHub's at the next sync, and nothing is sent to UniHub. A book
+  switched off, no longer shared with the person (also after leaving the
+  group that holds the share), deleted, or forbidden with the Contacts module
+  or phone contacts leaves the phone at the next sync with its copies, which
+  never ask "Too many deletions" and never become the person's own contacts;
+  the phone is not told at once. Book copies are told apart from personal
+  contacts by their own mark (`SYNC1` `book`, `SOURCE_ID`
+  `<book id>:<contact id>`), so a book contact with the same UID as a personal
+  one stays separate. Photos follow the same per-sync limits as personal
+  ones. The sync reads `GET /api/address-books/phone`, then each book's
+  `GET /api/address-books/<id>/contacts` and its photos. An app before 0.31.0
+  shows no books; a 0.31.0 app with an older server shows none either.
 - **Updating to 0.26.0.** Contacts the earlier app synced stay linked; nothing
   is added again. At the first sync with a 0.26.0 server, what that app kept
   as the phone's own (a fourth number, labels, addresses, birthdays, a middle

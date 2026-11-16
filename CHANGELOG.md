@@ -42,6 +42,15 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - **Before deactivating or deleting a person**, the dialog names the shared
   books they manage. The books stay; administrators keep managing them.
 
+- **Shared books on the Android phone.** With the 0.31.0 app, the shared
+  books you keep "On my phones", Company included, show in the phone's
+  contacts as read-only groups. Changes made to them on the phone are undone
+  at the next sync; [Android app](docs/ANDROID.md#contacts-on-the-phone).
+- **UniHub as the phone's email app.** With the 0.31.0 app, an email link in
+  a browser or another app opens UniHub's composer with the address, cc,
+  bcc, subject and text, also when the app was signed out or locked. Pick
+  UniHub with "Always" when Android asks; [Android app](docs/ANDROID.md#email-links).
+
 ### Fixed
 
 - **Policies: the two-factor preview counted 7 days for people already past
