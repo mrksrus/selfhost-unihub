@@ -1,11 +1,10 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Contacts from '@/pages/Contacts';
 import { api } from '@/lib/api';
 import { resolveOfflineEndpoint, type OfflineSnapshot } from '@/lib/offline';
 import { contactEmails, type Contact } from '@/lib/contacts-api';
+import { mountSignedIn } from './helpers/data-safety';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn(), getBlob: vi.fn(), postBlob: vi.fn(), uploadBlob: vi.fn(), getDownloadUrl: (path: string) => `/api${path}` } }));
 
@@ -51,12 +50,8 @@ describe('a pre-0.26 offline snapshot', () => {
   });
 
   it('opens on the contacts page, with its detail and search', async () => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(
-      <QueryClientProvider client={client}>
-        <MemoryRouter initialEntries={['/contacts?contact=c-1']}><Routes><Route path="*" element={<Contacts />} /></Routes></MemoryRouter>
-      </QueryClientProvider>,
-    );
+    // An offline session, as the page has while it reads the snapshot.
+    mountSignedIn(<Contacts />, { path: '/contacts?contact=c-1', auth: { isOffline: true } });
     const detail = await screen.findByRole('article', { name: 'Olga Oldsnapshot' }, { timeout: 5000 });
     expect(within(detail).getByText('olga.third@example.org')).toBeInTheDocument();
     expect(within(detail).getByText('+49 30 5550101')).toBeInTheDocument();
