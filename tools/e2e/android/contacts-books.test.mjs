@@ -33,7 +33,7 @@ const personal = () => query(`${contactsUri}/raw_contacts`, ['_id', 'sourceid'],
 const tooManyDeletions = () => /too many|deletes/i.test(adb('shell', 'dumpsys', 'notification', '--noredact').split(/\n\s*NotificationRecord\(/)
   .filter(record => record.includes('pkg=android ')).join('\n'));
 
-test('[31-05 31-06 31-08 agent part] shared books and Company come to the phone read-only, one way, and leave it when switched off, revoked or forbidden', { timeout: 1_800_000 }, async () => {
+test('shared books and Company come to the phone read-only, one way, and leave it when switched off, revoked or forbidden', { timeout: 1_800_000 }, async () => {
   const { support } = await seedOrganisation();
   const person = await addPerson('books', { groups: [support.id] });
   const api = await person.session();

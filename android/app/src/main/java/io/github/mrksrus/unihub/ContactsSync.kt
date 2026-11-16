@@ -89,7 +89,7 @@ object ContactsSync {
     private const val FORMAT_FULL = "3"
     // GET /api/version lists it on servers with the full contact model.
     private const val FEATURE_VCARD = "contacts-vcard"
-    // And this one on servers with shared address books (0.31.0 on).
+    // And this one on servers with shared address books.
     private const val FEATURE_BOOKS = "contacts-books"
     // Marks a phone contact and group of a shared book (SYNC1). Its SOURCE_ID is
     // "<book id>:<contact id>": a book contact may share its UID with a personal one.

@@ -62,7 +62,7 @@ async function nothingSent(expected) {
 before(resetAppLock);
 after(resetAppLock);
 
-test('[31-12 agent part] an email link opens the composer with to, cc, bcc, subject and body and sends nothing', { timeout: 600_000 }, async () => {
+test('an email link opens the composer with to, cc, bcc, subject and body and sends nothing', { timeout: 600_000 }, async () => {
   const { device } = await openApp();
   try {
     const expected = mail('Signed in');
@@ -74,7 +74,7 @@ test('[31-12 agent part] an email link opens the composer with to, cc, bcc, subj
   }
 });
 
-test('[31-12 agent part] a link to an app that is not connected yet waits through connecting and signing in', { timeout: 900_000 }, async () => {
+test('a link to an app that is not connected yet waits through connecting and signing in', { timeout: 900_000 }, async () => {
   await signOutApp();
   adb('shell', 'am', 'force-stop', PACKAGE);
   adb('shell', `run-as ${PACKAGE} rm -f shared_prefs/server.xml`);
@@ -110,7 +110,7 @@ test('[31-12 agent part] a link to an app that is not connected yet waits throug
   }
 });
 
-test('[31-12 agent part] a link while the app is locked opens the composer behind the lock, shown once unlocked', { timeout: 900_000 }, async () => {
+test('a link while the app is locked opens the composer behind the lock, shown once unlocked', { timeout: 900_000 }, async () => {
   setDevicePin();
   await enrollFingerprint();
   const { device, page } = await openApp();
