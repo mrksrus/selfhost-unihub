@@ -237,7 +237,11 @@ try {
   assertSeededMail(before.emails, allSeeds, from);
   const beforeSteps = JSON.parse(installation.exec(helper('upgrade-inspect.cts'))) as { latestApplied: number; latestKnown: number };
   assert.equal(beforeSteps.latestApplied, beforeSteps.latestKnown, `${from} finished its own upgrade steps`);
-  const oldExport = await step(`Export a full backup with ${from}`, () => exportFull(owner));
+  const oldExport = await step(`Export a full backup with ${from}`, async () => {
+    // From 0.30.3 personal backups are off until the administrator turns them on.
+    if (atLeast('0.30.3')) await owner.json('PUT', '/api/admin/policies', { values: { 'backup.create': 'allowed' }, current_password: admin.password });
+    return exportFull(owner);
+  });
   evidence.seeded = { contacts: before.contacts.length, events: before.events.length, recordings: before.recordings.length, emails: before.emails.length, archive: { sha256: oldExport.sha256, bytes: oldExport.archive.length } };
 
   // 2. A copy of the database and the storage, taken with both stopped.
@@ -287,7 +291,7 @@ try {
   const upgradedView = await coreView(owner, installation, admin.email);
   await step('A new backup restores into a second person', async () => {
     // Personal backups are off after the upgrade until the administrator turns them on.
-    await owner.json('POST', '/api/backup/jobs', { sections: 'full', encrypt: true }, { expected: 403 });
+    if (!atLeast('0.30.3')) await owner.json('POST', '/api/backup/jobs', { sections: 'full', encrypt: true }, { expected: 403 });
     await owner.json('PUT', '/api/admin/policies', { values: { 'backup.create': 'allowed', 'backup.restore': 'allowed' }, current_password: admin.password });
     const fresh = await exportFull(owner);
     for (const secret of [mail.sync.password, mail.download.password, dav.password, admin.password]) assert.equal(fresh.archive.includes(Buffer.from(secret)), false, 'No plain password in the backup');
