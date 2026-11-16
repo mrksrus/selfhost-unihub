@@ -49,6 +49,10 @@ import java.io.IOException
  * the full model (FullReconcile: every kind Android has, labels, photos,
  * version-checked writes, merges). Older servers get the 3+3 fields the apps
  * up to 0.25.1 sync (Reconcile, LegacyCard).
+ *
+ * A server that also lists `contacts-books` sends the shared address books
+ * the person keeps on their phones, Company included. They come one way
+ * (syncBooks): read-only groups and copies, never sent back.
  */
 object ContactsSync {
     const val ACCOUNT_TYPE = "io.github.mrksrus.unihub"
@@ -85,6 +89,11 @@ object ContactsSync {
     private const val FORMAT_FULL = "3"
     // GET /api/version lists it on servers with the full contact model.
     private const val FEATURE_VCARD = "contacts-vcard"
+    // And this one on servers with shared address books (0.31.0 on).
+    private const val FEATURE_BOOKS = "contacts-books"
+    // Marks a phone contact and group of a shared book (SYNC1). Its SOURCE_ID is
+    // "<book id>:<contact id>": a book contact may share its UID with a personal one.
+    private const val FORMAT_BOOK = "book"
     // Photos moved per sync, either way; the rest follow on later syncs.
     private const val MAX_PHOTO_TRANSFERS = 200
     // UniHub's photos are about 120 KB; the phone takes one through a single
@@ -241,7 +250,8 @@ object ContactsSync {
                 if (previous != null) clear(manager, account, provider, result, "another user signed in")
                 manager.setUserData(account, KEY_USER, user)
             }
-            val full = speaksVcard(context, origin, session, current)
+            val features = features(context, origin, session, current)
+            val full = FEATURE_VCARD in features
             when (val listing = fetch(context, origin, session, current, full)) {
                 is Listing.Gone -> {
                     current.check()
@@ -254,6 +264,9 @@ object ContactsSync {
                     val sent = if (full) FullReconcile(server, user, account, provider, result, extras).run(listing)
                     else Reconcile(server, user, account, provider, result, extras).run(listing.contacts)
                     Log.i(TAG, "Synced ${listing.contacts.size} contacts (${if (full) "every field" else "3+3 fields"}): ${result.stats.numInserts} added, ${result.stats.numUpdates} changed, ${result.stats.numDeletes} removed on the phone; $sent")
+                    // A server without them (or one gone back to an older version) leaves none on the phone.
+                    val books = if (full && FEATURE_BOOKS in features) fetchBooks(server) else emptyList()
+                    Log.i(TAG, syncBooks(books, server, account, provider, result))
                 }
             }
         } catch (_: Stale) {
@@ -294,6 +307,7 @@ object ContactsSync {
             ops.flushIfFull()
         }
         ops.flush()
+        syncBooks(emptyList(), null, account, provider, result)
         manager.setUserData(account, KEY_USER, null)
         Log.i(TAG, "Removed UniHub's contacts from the phone: $why" + if (kept > 0) " ($kept with the phone's own changes stay)" else "")
     }
@@ -318,16 +332,16 @@ object ContactsSync {
     }
 
     /**
-     * Whether the server keeps the full contact model (`contacts-vcard`). A
+     * The features the server lists (`contacts-vcard`, `contacts-books`). A
      * server without GET /api/version is an old one; any other failure
      * postpones the sync, so a passing error never switches the mode.
      */
-    private fun speaksVcard(context: Context, origin: String, session: String, current: Current): Boolean {
+    private fun features(context: Context, origin: String, session: String, current: Current): Set<String> {
         val answer = get(context, origin, "/api/version", session, current)
-        if (answer.status == 404) return false
+        if (answer.status == 404) return emptySet()
         answer.expectOk()
-        val features = JSONObject(answer.body).optJSONArray("features") ?: return false
-        return (0 until features.length()).any { features.optString(it) == FEATURE_VCARD }
+        val features = JSONObject(answer.body).optJSONArray("features") ?: return emptySet()
+        return (0 until features.length()).map { features.optString(it) }.toSet()
     }
 
     private sealed interface Listing {
@@ -476,11 +490,11 @@ object ContactsSync {
         fun delete(id: String): Boolean =
             (send("DELETE", "/api/contacts/" + Uri.encode(id), null) != null).also { if (it) fresh?.remove(id) }
 
-        /** The contact's photo (JPEG), or null when it has none now or it is too large for the phone. */
-        fun photo(contact: ServerContact): ByteArray? {
+        /** The contact's photo (JPEG), or null when it has none now or it is too large for the phone. [contacts]: a book's contacts route. */
+        fun photo(contact: ServerContact, contacts: String = "/api/contacts/"): ByteArray? {
             current.check()
             val answer = try {
-                AppSession.transfer(context, origin, "GET", "/api/contacts/" + Uri.encode(contact.id) + "/photo?size=full", session, current, null, null, MAX_PHOTO_DOWNLOAD)
+                AppSession.transfer(context, origin, "GET", contacts + Uri.encode(contact.id) + "/photo?size=full", session, current, null, null, MAX_PHOTO_DOWNLOAD)
             } catch (_: AppSession.TooLarge) {
                 Log.w(TAG, "A contact photo is too large for the phone")
                 return null
@@ -1142,6 +1156,156 @@ object ContactsSync {
         private fun photoIdentity(raw: Long): String = photoRowOf(provider, account, raw)?.let { ContactPhone.photoIdentity(it.first, it.second) }.orEmpty()
     }
 
+    // ── Shared address books, one way ──────────────────────────────────
+
+    private class Book(val id: String, val name: String, val contacts: List<ServerContact>) {
+        val contactsPath get() = "/api/address-books/" + Uri.encode(id) + "/contacts/"
+    }
+
+    /**
+     * The books the person keeps on their phones (GET /api/address-books/phone)
+     * with their contacts. Empty while the server refuses them (the Contacts
+     * module or phone contacts forbidden); a book that went between the two
+     * requests is left out. Any other failure postpones the sync.
+     */
+    private fun fetchBooks(server: Server): List<Book> {
+        fun answer(path: String) = get(server.context, server.origin, path, server.session, server.current)
+            .also { if (it.status == 401) throw IOException("HTTP 401") }
+        fun refused(answer: AppSession.Response) = answer.status == 403 && answer.json()?.optString("code") == "MODULE_DISABLED"
+        val listed = answer("/api/address-books/phone")
+        if (refused(listed)) return emptyList()
+        listed.expectOk()
+        val books = JSONObject(listed.body).getJSONArray("books")
+        return (0 until books.length()).mapNotNull { index ->
+            val book = books.getJSONObject(index)
+            val id = book.getString("id")
+            val contacts = ArrayList<ServerContact>()
+            while (true) {
+                val page = answer("/api/address-books/${Uri.encode(id)}/contacts?limit=$PAGE&offset=${contacts.size}")
+                if (refused(page)) return emptyList()
+                if (page.status == 404) return@mapNotNull null
+                page.expectOk()
+                val json = JSONObject(page.body)
+                val rows = json.getJSONArray("contacts")
+                val more = json.get("has_more") as? Boolean ?: throw org.json.JSONException("has_more is not a boolean")
+                for (row in 0 until rows.length()) ServerContact.from(rows.getJSONObject(row))?.let(contacts::add)
+                if (!more) break
+                if (rows.length() == 0) throw org.json.JSONException("An empty page with more to come")
+                if (contacts.size >= MAX_CONTACTS) throw IOException("More than $MAX_CONTACTS contacts in a book")
+            }
+            Book(id, book.getString("name"), contacts)
+        }
+    }
+
+    /**
+     * Makes the phone hold exactly [books]: a read-only group per book and a
+     * read-only copy of each contact in it. The server wins: a copy edited or
+     * deleted on the phone (contacts apps may ignore the read-only flags) is
+     * replaced by a fresh one, and nothing goes to UniHub. A book no longer
+     * listed leaves with its copies. SYNC3 holds the version and photo a copy
+     * was written from. Without a [server] (clear()), books is empty.
+     */
+    private fun syncBooks(books: List<Book>, server: Server?, account: Account, provider: ContentProviderClient, result: SyncResult): String {
+        val batch = Batch(provider, server?.current)
+        val groupsUri = syncUri(ContactsContract.Groups.CONTENT_URI, account)
+        val groups = HashMap<String, Long>()
+        provider.query(groupsUri, arrayOf(ContactsContract.Groups._ID, ContactsContract.Groups.SOURCE_ID, ContactsContract.Groups.TITLE, ContactsContract.Groups.DELETED),
+            "${ContactsContract.Groups.ACCOUNT_NAME} = ? AND ${ContactsContract.Groups.ACCOUNT_TYPE} = ? AND ${ContactsContract.Groups.SYNC1} = ?",
+            arrayOf(account.name, account.type, FORMAT_BOOK), null,
+        )?.use { c ->
+            while (c.moveToNext()) {
+                val book = books.find { it.id == c.getString(1) }
+                val id = arrayOf(c.getLong(0).toString())
+                // A group deleted in a contacts app is made again, with its book's copies.
+                if (book == null || book.id in groups || c.getInt(3) != 0) {
+                    batch += ContentProviderOperation.newDelete(groupsUri).withSelection("${ContactsContract.Groups._ID} = ?", id).build()
+                    continue
+                }
+                groups[book.id] = c.getLong(0)
+                if (c.getString(2) != book.name) batch += ContentProviderOperation.newUpdate(groupsUri)
+                    .withSelection("${ContactsContract.Groups._ID} = ?", id).withValue(ContactsContract.Groups.TITLE, book.name).build()
+            }
+        }
+        val newGroups = books.map { it.id }.filter { it !in groups }.toSet()
+        for (book in books) if (book.id in newGroups) {
+            server?.current?.check()
+            groups[book.id] = ContentUris.parseId(provider.insert(groupsUri, ContentValues().apply {
+                put(ContactsContract.Groups.ACCOUNT_NAME, account.name)
+                put(ContactsContract.Groups.ACCOUNT_TYPE, account.type)
+                put(ContactsContract.Groups.SOURCE_ID, book.id)
+                put(ContactsContract.Groups.SYNC1, FORMAT_BOOK)
+                put(ContactsContract.Groups.TITLE, book.name)
+                put(ContactsContract.Groups.GROUP_VISIBLE, 1)
+                put(ContactsContract.Groups.GROUP_IS_READ_ONLY, 1)
+            }) ?: throw IOException("No group for a shared book"))
+        }
+
+        class Wanted(val book: Book, val contact: ServerContact) {
+            val mark get() = "${contact.version}:${contact.photo}"
+            // Written without its photo for now (a metered network, the per-sync limit).
+            val withoutPhoto get() = "${contact.version}:"
+        }
+        val wanted = LinkedHashMap<String, Wanted>()
+        for (book in books) for (contact in book.contacts) {
+            if (contact.card.forPhone().hasIdentity) wanted["${book.id}:${contact.id}"] = Wanted(book, contact)
+        }
+        val budget = ContactPlan.PhotoBudget(
+            server?.context?.getSystemService(ConnectivityManager::class.java)?.isActiveNetworkMetered ?: true, MAX_PHOTO_TRANSFERS)
+        val kept = HashSet<String>()
+        var removed = 0
+        provider.query(syncUri(RawContacts.CONTENT_URI, account), arrayOf(RawContacts._ID, RawContacts.SOURCE_ID, RawContacts.SYNC3, RawContacts.DELETED, RawContacts.DIRTY),
+            "${RawContacts.ACCOUNT_NAME} = ? AND ${RawContacts.ACCOUNT_TYPE} = ? AND ${RawContacts.SYNC1} = ?",
+            arrayOf(account.name, account.type, FORMAT_BOOK), null,
+        )?.use { c ->
+            while (c.moveToNext()) {
+                val key = c.getString(1).orEmpty()
+                val want = wanted[key]
+                val intact = c.getInt(3) == 0 && c.getInt(4) == 0 && key !in kept && want?.book?.id !in newGroups
+                val mark = c.getString(2)
+                if (want != null && intact && (mark == want.mark || (mark == want.withoutPhoto && budget.metered))) {
+                    kept += key
+                    continue
+                }
+                batch += deleteRow(account, c.getLong(0))
+                if (want == null) removed++
+                batch.flushIfFull()
+            }
+        }
+        result.stats.numDeletes += removed
+
+        var written = 0
+        for ((key, want) in wanted) {
+            if (key in kept || server == null) continue
+            val picture = if (want.contact.photo.isEmpty() || !budget.take()) null else server.photo(want.contact, want.book.contactsPath)
+            val alone = picture != null
+            val first = if (alone) 0 else batch.size
+            val ops = ArrayList<ContentProviderOperation>()
+            ops += ContentProviderOperation.newInsert(syncUri(RawContacts.CONTENT_URI, account))
+                .withValue(RawContacts.ACCOUNT_NAME, account.name)
+                .withValue(RawContacts.ACCOUNT_TYPE, account.type)
+                .withValue(RawContacts.SOURCE_ID, key)
+                .withValue(RawContacts.SYNC1, FORMAT_BOOK)
+                .withValue(RawContacts.SYNC3, if (want.contact.photo.isEmpty() || alone) want.mark else want.withoutPhoto)
+                .withValue(RawContacts.RAW_CONTACT_IS_READ_ONLY, 1)
+                .build()
+            val data = ContactPhone.rows(want.contact.card).map { dataValues(it, withMime = true) } +
+                data(ContactsContract.CommonDataKinds.GroupMembership.CONTENT_ITEM_TYPE) {
+                    put(ContactsContract.CommonDataKinds.GroupMembership.GROUP_ROW_ID, groups.getValue(want.book.id))
+                } + listOfNotNull(picture?.let { bytes -> data(Photo.CONTENT_ITEM_TYPE) { put(Photo.PHOTO, bytes) } })
+            for (values in data) {
+                ops += ContentProviderOperation.newInsert(syncUri(ContactsContract.Data.CONTENT_URI, account))
+                    .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, first)
+                    .withValues(values).withValue(ContactsContract.Data.IS_READ_ONLY, 1).build()
+            }
+            // A picture goes in a transaction of its own: a batch of them would pass Android's binder limit.
+            if (alone) batch.applyAlone(ops) else { ops.forEach { batch += it }; batch.flushIfFull() }
+            written++
+        }
+        batch.flush()
+        result.stats.numInserts += written
+        return "Shared books: ${books.size} on the phone, $written contacts written, $removed removed"
+    }
+
     // The phone's display photo of a raw contact, else the thumbnail it holds.
     private fun phonePicture(provider: ContentProviderClient, account: Account, raw: Long): ByteArray? {
         val uri = syncUri(Uri.withAppendedPath(ContentUris.withAppendedId(RawContacts.CONTENT_URI, raw), RawContacts.DisplayPhoto.CONTENT_DIRECTORY), account)
@@ -1262,6 +1426,9 @@ object ContactsSync {
         }
     }
 
+    // The person's own contacts of the account: shared books' copies are never sent, merged or counted.
+    private val PERSONAL = "${RawContacts.ACCOUNT_NAME} = ? AND ${RawContacts.ACCOUNT_TYPE} = ? AND (${RawContacts.SYNC1} IS NULL OR ${RawContacts.SYNC1} != ?)"
+
     // Through RawContactsEntity: unlike the Data view, it shows a sync
     // adapter the data of contacts deleted on the phone, which a restore needs.
     private fun readRows(account: Account, provider: ContentProviderClient): List<Row> {
@@ -1274,8 +1441,8 @@ object ContactsSync {
                 RawContacts.SYNC1, RawContacts.SYNC2, RawContacts.SYNC3, RawContacts.SYNC4,
                 ContactsContract.RawContactsEntity.DATA_ID, ContactsContract.Data.MIMETYPE, ContactsContract.Data.IS_PRIMARY,
             ) + columns,
-            "${RawContacts.ACCOUNT_NAME} = ? AND ${RawContacts.ACCOUNT_TYPE} = ?",
-            arrayOf(account.name, account.type),
+            PERSONAL,
+            arrayOf(account.name, account.type, FORMAT_BOOK),
             "${RawContacts._ID}, ${ContactsContract.RawContactsEntity.DATA_ID}",
         )?.use { c ->
             while (c.moveToNext()) {
@@ -1295,8 +1462,8 @@ object ContactsSync {
         provider.query(
             syncUri(RawContacts.CONTENT_URI, account),
             arrayOf(RawContacts._ID, RawContacts.STARRED),
-            "${RawContacts.ACCOUNT_NAME} = ? AND ${RawContacts.ACCOUNT_TYPE} = ?",
-            arrayOf(account.name, account.type),
+            PERSONAL,
+            arrayOf(account.name, account.type, FORMAT_BOOK),
             null,
         )?.use { c -> while (c.moveToNext()) rows[c.getLong(0)]?.starred = c.getInt(1) != 0 }
         rows.values.forEach(::readLegacy)
