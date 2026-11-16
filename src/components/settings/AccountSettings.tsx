@@ -70,7 +70,7 @@ function DirectorySettings() {
     onError: (error: Error) => toast({ title: 'Could not save the directory entry', description: error.message, variant: 'destructive' }),
   });
   return (
-    <SettingsSection title="Company directory" description="What colleagues see about you in the Company address book, beside your name and email. Everyone with an account on this server can read it.">
+    <SettingsSection className="mt-10" title="Company directory" description="What colleagues see about you in the Company address book, beside your name and email. Everyone with an account on this server can read it.">
       <DirectoryEntryForm id="directory" entry={entry} unknown={!entry && !directory.isLoading} pending={save.isPending} saveLabel="Save directory entry" onSave={input => save.mutate(input)} />
     </SettingsSection>
   );

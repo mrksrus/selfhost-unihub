@@ -19,7 +19,9 @@ interface RowProps {
 
 export function ContactRow({ contact, active, selected, onOpen, onToggleSelect, onToggleFavorite, bookId }: RowProps) {
   const name = contactName(contact);
-  const secondary = [contact.organization.name, primaryDetail(contact)].map(part => (part || '').trim()).filter(Boolean).join(' · ');
+  // Without a company, the job title and department say who this is (a company directory entry).
+  const work = contact.organization.name || [contact.job_title, contact.organization.department].map(part => (part || '').trim()).filter(Boolean).join(', ');
+  const secondary = [work, primaryDetail(contact)].map(part => (part || '').trim()).filter(Boolean).join(' · ');
   return (
     <li className={cn('group flex items-center gap-3 rounded-md pl-1 pr-1 transition-colors', selected ? 'bg-accent/10' : active ? 'bg-muted' : 'hover:bg-muted/50')}>
       {/* The avatar is the selection toggle, so rows stay one tap to open; with a mouse, Ctrl/Cmd+click and Shift+click on the row select too. */}

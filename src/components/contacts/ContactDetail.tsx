@@ -13,7 +13,6 @@ import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { LoadingState } from '@/components/ui/page-states';
-import { PolicyNote } from '@/components/ui/policy-note';
 import { ContactAvatar } from '@/components/contacts/ContactAvatar';
 
 interface Props {
@@ -28,10 +27,10 @@ interface Props {
   onToggleFavorite?: () => void;
   /** The shared book the contact is in. */
   book?: { id: string; name: string };
-  /** Why the contact cannot be changed here; Edit stays, greyed out. */
-  readOnly?: string;
   /** A company entry's groups. */
   groups?: { id: string; name: string }[];
+  /** Under the fields: where the contact comes from, or why it cannot be changed here. */
+  note?: string;
   /** The shared books the person may edit, to copy their own contact into. */
   copyTo?: { books: { id: string; name: string }[]; onCopy: (bookId: string) => void };
 }
@@ -121,7 +120,7 @@ function KeptProperties({ id, count, bookId }: { id: string; count: number; book
   );
 }
 
-export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onToggleFavorite, book, readOnly, groups, copyTo }: Props) {
+export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onToggleFavorite, book, groups, note, copyTo }: Props) {
   const name = contactName(contact);
   const isOffline = !!useContext(AuthContext)?.isOffline;
   // The shared books that hold the same person; nothing is merged across them. The offline copy does not say.
@@ -150,7 +149,7 @@ export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onTo
               <Star aria-hidden="true" className={cn(contact.is_favorite && 'fill-current text-warning')} />
             </Button>
           )}
-          {(onEdit || readOnly) && <Button variant="outline" size="sm" onClick={onEdit} disabled={!onEdit}>Edit</Button>}
+          {onEdit && <Button variant="outline" size="sm" onClick={onEdit}>Edit</Button>}
           {(onDelete || copyBooks.length > 0) && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -164,7 +163,6 @@ export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onTo
           )}
         </div>
       </div>
-      {readOnly && <PolicyNote reason={readOnly} className="mb-4 mt-0" />}
 
       <div className="mb-6 flex items-center gap-4">
         <ContactAvatar contact={contact} size="detail" bookId={book?.id} />
@@ -264,6 +262,7 @@ export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onTo
       )}
 
       {contact.kept_properties > 0 && <KeptProperties id={contact.id} count={contact.kept_properties} bookId={book?.id} />}
+      {note && <p className="px-2 text-xs text-muted-foreground">{note}</p>}
     </article>
   );
 }

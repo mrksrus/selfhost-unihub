@@ -35,14 +35,14 @@ export function DirectoryEntryForm({ id, entry, unknown = false, pending, saveLa
     if (changed.length && !pending) onSave(Object.fromEntries(changed.map(field => [field.key, values[field.key].trim() || null])));
   };
   return (
-    <form onSubmit={submit}>
+    <form onSubmit={submit} className="divide-y divide-border">
       {FIELDS.map(field => (
         <SettingsRow key={field.key} label={field.label} htmlFor={`${id}-${field.key}`}>
           <Input id={`${id}-${field.key}`} className="w-full sm:w-64" maxLength={field.max} autoComplete={field.autoComplete} type={field.key === 'phone' ? 'tel' : 'text'}
             value={values[field.key]} onChange={event => setValues(current => ({ ...current, [field.key]: event.target.value }))} />
         </SettingsRow>
       ))}
-      <SettingsBlock className="flex flex-wrap items-center justify-between gap-3 border-t border-border">
+      <SettingsBlock className="flex flex-wrap items-center justify-between gap-3">
         <p className="min-w-0 max-w-prose text-xs text-muted-foreground">
           {unknown ? 'Contacts is off for you, so what the directory holds now is not shown. A field you leave empty stays as it is.' : ''}
         </p>

@@ -231,9 +231,9 @@ const AdminUserDetail = () => {
     : (
       <>
         <PersonProfile person={person} actions={actions} />
-        <PersonDirectory key={person.id} person={person} />
         <PersonGroups person={person} />
         <PersonDevices person={person} />
+        <PersonDirectory key={person.id} person={person} />
         <PersonAccount person={person} actions={actions} />
         {manage && <>
         <p className={`${dataLock ? 'mb-2' : 'mb-8'} max-w-prose text-sm text-muted-foreground`}>

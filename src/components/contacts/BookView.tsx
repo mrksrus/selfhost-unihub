@@ -172,7 +172,7 @@ export function BookView({ book, search, onEmail }: { book: AddressBook; search:
       {active && (
         <aside aria-label="Contact" className="min-h-0 flex-1 overflow-y-auto pb-mobile-nav md:pb-0 lg:w-[26rem] lg:flex-none lg:border-l lg:border-border">
           <ContactDetail contact={active} book={book} onEmail={onEmail} onBack={() => openContact(null)}
-            readOnly={company ? COMPANY_ENTRY : edits ? undefined : READ_ONLY} groups={company ? directory.data?.find(entry => entry.user_id === active.id)?.groups : undefined}
+            note={company ? COMPANY_ENTRY : edits ? undefined : READ_ONLY} groups={company ? directory.data?.find(entry => entry.user_id === active.id)?.groups : undefined}
             onEdit={edits ? () => setEditor({ kind: 'edit', contact: active }) : undefined} onDelete={edits ? () => confirmDelete(active) : undefined} />
         </aside>
       )}
