@@ -6,6 +6,52 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.31.0
+
+### Added
+
+- **Shared address books in Contacts.** The Contacts panel has a Shared
+  group: Company first, then the books shared with you and those you made,
+  and New book. Whoever makes a book manages it: Share gives people and
+  groups reading or editing (an administrator shares with anyone, a member
+  with the groups they are in and the people in them), and Rename and Delete
+  book are in the book's menu. Contacts get into a book one at a time, by
+  "Copy to" from your own contacts (a copy, not linked) or by importing a
+  vCard or CSV file with the usual review. A book you only read says so and
+  offers no changes.
+- **Each book has its own bin.** A contact deleted from a book waits under
+  the book's Deleted view, where everyone who can edit the book can restore
+  it.
+- **The company directory.** Company lists everyone with an account, with
+  the phone, job title and department they fill in under Settings › Profile,
+  and their groups. An administrator corrects an entry on the person's page
+  under Server › People.
+- **"On my phones" per book.** A switch on every book, Company included,
+  decides whether the Android app shows it in the phone's contacts
+  (read-only). It is greyed out with the reason while an administrator
+  forbids contacts on the phone.
+- **"Also in" on your own contacts.** A contact says which shared books hold
+  the same email address or phone number. Nothing is merged across them.
+- **Server › Shared books.** Administrators see every shared book, open it
+  to manage it, and restore a deleted one.
+- **Before deactivating or deleting a person**, the dialog names the shared
+  books they manage. The books stay; administrators keep managing them.
+
+### Fixed
+
+- **Policies: the two-factor preview counted 7 days for people already past
+  them.** Before saving, it now says how many people get 7 days from now,
+  who is still in theirs, and who must set it up at their next start.
+
+### Changed
+
+- **Reference pictures.** Ten new pictures (a shared book and its share
+  dialog, Wide; a book's list and a company entry, Phone; Server › Shared
+  books, Wide). The Contacts pictures in a wide window gain the Shared group
+  in the panel and "Also in Suppliers" on the pinned contact, and the Server
+  pictures gain "Shared books" in the panel: added content within the
+  accepted design.
+
 ## 0.30.3
 
 Fixes and changes the maintainer asked for after 0.30.2. No database

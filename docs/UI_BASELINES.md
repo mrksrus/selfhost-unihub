@@ -34,7 +34,7 @@ names, kernels and paths are not recorded.
 config and runs these checks against it in Chromium.
 
 **Reference screens.** Each screen is captured in Dark Default and Light Default,
-forty-two pictures in all, compared with zero tolerance:
+seventy-eight pictures in all, compared with zero tolerance:
 
 | Picture | Viewport | Steps |
 | --- | --- | --- |
@@ -58,6 +58,10 @@ forty-two pictures in all, compared with zero tolerance:
 | `group-policies-wide-*` | Wide | A group's Rules view: the Members and Rules chips, the group's own rules chosen, the others marked "(as everyone)" with "Everyone: …" under each row. Since 0.30.0. |
 | `invite-phone-*` | Phone | The setup-link page: the mark, the address the person was added as, the rules that apply to them, Name, Password twice and "Set password and sign in". Since 0.30.0. |
 | `two-factor-required-phone-*` | Phone | The prompt after the 7 days: "Set up two-factor authentication to continue" with the server's reason, the set-up and Sign out, in place of the shell. Since 0.30.0. |
+| `book-wide-*`, `book-phone-*` | Wide, Phone | Contacts, the shared book the synthetic person manages: the Shared group in the panel, the book's name, description and "You manage this book.", Share, New contact and the menu, the Contacts and Deleted views and "On my phones"; on Wide with a contact open beside the list. Since 0.31.0. |
+| `book-share-wide-*` | Wide | The book's share dialog: who has it (the creator "Manages it", a group that can edit, a person who can read), then the people and groups to add under the search with the level beside it. Since 0.31.0. |
+| `company-entry-phone-*` | Phone | Contacts → Company, an entry with a long name: job title and department, the groups as chips, phone, email and the note that it comes from the directory. Since 0.31.0. |
+| `shared-books-wide-*` | Wide | Server → Shared books as the owner: every book with its contacts and creator, one whose creator has left, and a deleted one with Restore. Since 0.31.0. |
 
 **Behaviour checks.** These run against the same build and the same data.
 
@@ -68,7 +72,7 @@ forty-two pictures in all, compared with zero tolerance:
 | P-08, N-03, N-04 (partial) | Wide Mail: "Hide panel" removes the column, moves focus to the scope button and stores `unihub:panel:mail`. The fold survives a reload and a visit to Contacts. Contacts keeps its own panel. The scope button opens the sheet and Escape returns focus to it. "Keep panel open" restores the column and focuses its fold button. |
 | P-12, N-05 | Wide Mail: 45 Tab presses cover the rail, then the panel, then the page, in that order. Every stop shows a focus ring (outline or ring shadow) and is on screen. Ctrl+K opens search with its input focused, Escape closes it, and Tab continues afterwards. |
 | P-02, A-01 | With the app script held back, the first paint is already black (default) or the stored Light colour, even when the OS prefers the other mode. After start-up, `theme-color` equals the page colour. Settings switches Light (kept after reload), System (follows a live OS change both ways) and Dark (kept after reload against a light OS). |
-| P-11, M-10, T-02 | Phone, coarse pointer (asserted). On ToDo, the Mail list, the composer, Recordings, the Contacts list and detail, the contact editor, the merge review, Settings → Mail, Backup and restore and Bin: every control in view has a tap area of at least 40 px, counting its `tap-area` pseudo-element. No two neighbouring tap areas overlap; edges that touch along one CSS pixel or less count as touching, and the part of a tap area under the fixed bottom bar does not count (the person sees and taps the bar there). Every control is reachable by hit-testing once scrolled into view, so nothing stays under the bottom bar. Since 0.30.0 also Server → People, a person's page, a group with its Add people dialog (as an administrator) and the two-factor reminder bar. |
+| P-11, M-10, T-02 | Phone, coarse pointer (asserted). On ToDo, the Mail list, the composer, Recordings, the Contacts list and detail, the contact editor, the merge review, Settings → Mail, Backup and restore and Bin: every control in view has a tap area of at least 40 px, counting its `tap-area` pseudo-element. No two neighbouring tap areas overlap; edges that touch along one CSS pixel or less count as touching, and the part of a tap area under the fixed bottom bar does not count (the person sees and taps the bar there). Every control is reachable by hit-testing once scrolled into view, so nothing stays under the bottom bar. Since 0.30.0 also Server → People, a person's page, a group with its Add people dialog (as an administrator) and the two-factor reminder bar. Since 0.31.0 also a shared book with its bin and share dialog, Company and one of its entries, and Server → Shared books. |
 | P-15, P-26, B-11 | 412 × 560 and 450 × 600, as with the keyboard open in the Android app: the composer fills the screen from the very top, and after typing one line in a new message at least 240 px of the message editor is on screen, counting every clipping box around it and the toolbar pinned above the button bar, with the typed line in view. The header rows scroll away above the message when it gets focus; at full height the layout is the approved picture. |
 
 Every test also fails on an uncaught page error, on an `/api` request that has
