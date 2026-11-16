@@ -120,18 +120,8 @@ test('a link while the app is locked opens the composer behind the lock, shown o
     await page.getByRole('heading', { name: 'App lock' }).first().waitFor();
     const whole = page.getByRole('radio', { name: 'Whole app' });
     if (!await whole.isChecked()) {
-      const row = page.getByRole('radiogroup', { name: 'Lock' }).getByText('Whole app', { exact: true });
-      // The page may still be scrolling to the section; the bottom bar covers its lower edge.
-      for (let attempt = 1; ; attempt++) {
-        await row.evaluate(element => element.scrollIntoView({ block: 'center' }));
-        try {
-          await touch(page, row);
-          break;
-        } catch (error) {
-          if (attempt >= 5) throw error;
-          await sleep(1000);
-        }
-      }
+      // A click in the page, not a finger: on some screens the bottom bar covers the row (app-lock.test.mjs touches it).
+      await whole.evaluate(input => input.click());
       await waitForUnlockPrompt();
       await touchFinger(1);
       for (let i = 0; i < 30 && !await whole.isChecked(); i++) await sleep(1000);
