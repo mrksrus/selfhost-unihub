@@ -41,7 +41,6 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   to manage it, and restore a deleted one.
 - **Before deactivating or deleting a person**, the dialog names the shared
   books they manage. The books stay; administrators keep managing them.
-
 - **Shared books on the Android phone.** With the 0.31.0 app, the shared
   books you keep "On my phones", Company included, show in the phone's
   contacts as read-only groups. Changes made to them on the phone are undone

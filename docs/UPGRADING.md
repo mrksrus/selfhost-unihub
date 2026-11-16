@@ -30,8 +30,11 @@ the directory; the instance backup carries them
   Company. An administrator who does not want that for some people turns
   Contacts off for them under Policies. Phone, job title and department
   stay empty until each person fills them in.
-- **Android app.** (Filled in with the version commit: the app update for
-  shared books and email links, and the support window.)
+- **Android app.** Shared books on the phone and email links need the
+  0.31.0 app (offered under Settings → General → App). Older apps keep syncing
+  personal contacts and simply show no shared books. The app window is now
+  0.31.0 back to 0.30.1; the 0.30.0 app leaves it
+  ([Android compatibility](ANDROID_COMPATIBILITY.md#current-window)).
 
 ## 0.30.3 Backups off by default
 

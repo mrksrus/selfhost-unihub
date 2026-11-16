@@ -22,10 +22,20 @@
   ],
   "releases": [
     {
+      "version": "0.31.0",
+      "apk": {
+        "versionCode": 31000,
+        "sha256": null,
+        "signing": "release"
+      },
+      "shell": "supported",
+      "note": "From this app the contacts sync also looks for `contacts-books`: only then does it read GET /api/address-books/phone and put shared books on the phone, read-only and one way. Older apps never see a shared book, so /api/contacts must keep leaving book rows out."
+    },
+    {
       "version": "0.30.3",
       "apk": {
         "versionCode": 30003,
-        "sha256": null,
+        "sha256": "14fb10113527dc0b0582222e0b77efda29a80bfdb93cc3778b7166a36935cbe3",
         "signing": "release"
       },
       "shell": "supported"
@@ -44,15 +54,6 @@
       "apk": {
         "versionCode": 30001,
         "sha256": "193c5ad6e7b0db89e91b32f112ab40b6ac44ab58144550fb977a973ba182fba6",
-        "signing": "release"
-      },
-      "shell": "supported"
-    },
-    {
-      "version": "0.30.0",
-      "apk": {
-        "versionCode": 30000,
-        "sha256": "e8de775682394c0d2ecfe4c5d0c4df96cc0d63a1bd8b6d8c713dc32da1da41be",
         "signing": "release"
       },
       "shell": "supported"
