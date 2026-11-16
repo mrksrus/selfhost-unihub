@@ -87,9 +87,12 @@ export async function setRules(values: Record<string, unknown>, { groupId, unsee
 
 export const effectiveOf = async (name: Person) => ok(await (await signIn(name))<Effective>('GET', '/api/policies/effective'), `${name} rules`);
 
-/** Removes the people and groups these tests made (this run's and an earlier, interrupted one's), then confirms the rules that changed with them. */
+/** Removes the people, groups and shared books these tests made (this run's and an earlier, interrupted one's), then confirms the rules that changed with them. */
 export async function sweep() {
   const api = await owner();
+  // Shared address books named like the groups; deleting hides one at once (an administrator's list keeps it until the purge).
+  const { books } = ok(await api<{ books: { id: string; name: string; deleted_at: string | null }[] }>('GET', '/api/admin/address-books'), 'shared books');
+  for (const book of books.filter((entry) => !entry.deleted_at && entry.name.startsWith(GROUP_PREFIX))) ok(await api('DELETE', `/api/address-books/${book.id}`), `remove ${book.name}`);
   for (const person of (await listPeople()).filter((entry) => entry.email.startsWith(PERSON_PREFIX))) {
     ok(await api('DELETE', `/api/admin/users/${person.id}`, { current_password: signInPassword }), `remove ${person.email}`);
   }

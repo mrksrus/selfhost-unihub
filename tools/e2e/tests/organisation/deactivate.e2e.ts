@@ -7,7 +7,8 @@ import { addPerson, createGroup, dialogPassword, passwordSignIn, personByEmail, 
 
 // 30-08: deactivating a person signs them out and stops sign-in; activating
 // brings back what they had: their data, their group and their manager
-// role. The person is the test's own, so no seeded session ends; their
+// role. The dialog names the shared address books they manage (31-07),
+// which stay. The person is the test's own, so no seeded session ends; their
 // contact stands for the data (a seeded person's mail and events are held by
 // the same account row, which deactivation does not touch).
 
@@ -20,10 +21,13 @@ test('[30-08] a deactivated person cannot sign in and keeps their data, group an
     await setManager(group.id, person.id);
     const before = await signIn(person.email, { fresh: true });
     const contact = ok(await before<{ contact: { id: string } }>('POST', '/api/contacts', { name: { given: 'Kept', family: 'Contact' }, emails: ['kept.contact@example.com'] }), 'a contact of theirs').contact;
+    const book = ok(await before<{ book: { id: string; name: string } }>('POST', '/api/address-books', { name: `${group.name} book` }), 'a shared book of theirs').book;
 
     await app.open(`/admin/users/${person.id}`);
     await screen.getByRole('button', 'Deactivate', { exact: true }).tap();
     const dialog = screen.getByRole('dialog', `Deactivate ${person.email}?`);
+    await expect(dialog.getByText(book.name, { exact: true })).toBeVisible();
+    await expect(dialog.getByText('They stay; administrators keep managing them.', { exact: true })).toBeVisible();
     await dialog.getByLabel('Your password', { exact: true }).fill(dialogPassword());
     await dialog.getByRole('button', 'Deactivate', { exact: true }).tap();
     await expect(screen.getByText(`${person.name} deactivated`, { exact: true }).first()).toBeVisible();
@@ -33,6 +37,8 @@ test('[30-08] a deactivated person cannot sign in and keeps their data, group an
     const inactive = await personByEmail(person.email);
     expect(inactive.status).toBe('inactive');
     expect(inactive.groups, 'the group and the manager role stay').toMatchObject([{ id: group.id, role: 'manager' }]);
+    const kept = ok(await (await signIn('admin'))<{ books: { id: string; deleted_at: string | null }[] }>('GET', '/api/admin/address-books'), 'every book').books.find((entry) => entry.id === book.id);
+    expect(kept?.deleted_at, 'their book stays with the organisation').toBeNull();
 
     await screen.getByRole('button', 'Activate', { exact: true }).tap();
     await expect(screen.getByText(`${person.name} activated`, { exact: true }).first()).toBeVisible();
