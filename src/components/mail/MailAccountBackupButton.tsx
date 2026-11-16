@@ -2,6 +2,7 @@ import { Download, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { useMailAccountBackup } from '@/hooks/use-mail-account-backup';
+import { usePolicy } from '@/hooks/use-policies';
 import { cn } from '@/lib/utils';
 
 /**
@@ -18,6 +19,9 @@ export function MailAccountBackupButton({ accountId, label = 'Download a backup 
   const job = backup.job;
   const running = job && ['queued', 'running', 'cancelling'].includes(job.status);
   const buttonClass = cn(size === 'sm' && 'h-8 text-xs');
+  const createPolicy = usePolicy('backup.create');
+  // A backup the rules refuse would only answer 403; one already made can still be downloaded.
+  if (createPolicy.lock && !job) return null;
 
   return <div className={cn('space-y-1.5', className)}>
     {running ? <div className="space-y-1" role="status">

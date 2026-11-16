@@ -204,6 +204,22 @@ describe('pre-save impact for an existing account', () => {
   });
 });
 
+describe('backups forbidden by the rules', () => {
+  it('offers no backup before switching Download to Sync', async () => {
+    const auth = { user: { id: 'owner' }, isOffline: false } as unknown as AuthContextType;
+    vi.mocked(api.get).mockImplementation(async (endpoint: string) => endpoint.startsWith('/policies')
+      ? policiesAnswer({ 'backup.create': { value: 'forbidden', reason: 'Your administrator has turned off backups.' } })
+      : { data: impact({ local_only: 2, total_removals: 2 }) });
+    render(<AuthContext.Provider value={auth}><QueryClientProvider client={client}><EditorHarness account={downloadAccount} /></QueryClientProvider></AuthContext.Provider>);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit account' }));
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('radio', { name: /Sync — works like a mail client/ }));
+    expect(await within(dialog).findByTestId('mail-mode-impact-total')).toHaveTextContent('2 emails will be removed from UniHub.');
+    await waitFor(() => expect(vi.mocked(api.get).mock.calls.some(([endpoint]) => endpoint.startsWith('/policies'))).toBe(true));
+    await waitFor(() => expect(within(dialog).queryByRole('button', { name: 'Download a backup first' })).not.toBeInTheDocument());
+  });
+});
+
 describe('reconnecting a paused account', () => {
   it('reactivates an account a restore paused without disconnecting it', async () => {
     const dialog = mountEditor({ ...downloadAccount, is_active: false, disconnected_at: null });

@@ -19,6 +19,8 @@ administrator turns them on: read [the upgrade guide](docs/UPGRADING.md#0303-bac
   administrator allows it under Policies. An administrator's earlier choice
   to forbid them stays. Backups already made can still be downloaded.
   Everyone sees the rules notice once after the update.
+  While they are not allowed, Mail no longer offers "Download a backup
+  first" before a change that removes mail from UniHub.
 - **The scheduled whole-server backup is off by default.** It no longer runs
   by itself, even with its destination and key set, until an administrator
   turns on "Daily backup" on the Instance backup page.
