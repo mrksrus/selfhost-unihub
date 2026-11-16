@@ -23,20 +23,20 @@
   },
   "baselines": {
     "admin-policies-app-lock-wide-dark.png": {
-      "sha256": "ff92ed16c9c10e2a181c8937a8b89a4efb9deb4a63e9c506c4aad118a3ef75d9",
-      "bytes": 153939
+      "sha256": "d808c9d7ed759db065f38198f8b2a62618701b0b0d2c0c81c36762d07ccf317e",
+      "bytes": 156063
     },
     "admin-policies-app-lock-wide-light.png": {
-      "sha256": "3807e2faff63593cd4c54c48d6044df048d6573e58789e425245295e556c7dc0",
-      "bytes": 157307
+      "sha256": "0cbae7efd6512fcdbdba8d924a955da76c62334425e9b0bbee0d536ea49ab1c4",
+      "bytes": 159300
     },
     "admin-policies-wide-dark.png": {
-      "sha256": "eb485fa5442940094e86bc0e9e424274566aeec155123b57e99ec3734c853544",
-      "bytes": 132609
+      "sha256": "571cdd4865dcd3c144b051e37a4302201490b322df114540b87c7da5a9ded6bb",
+      "bytes": 134779
     },
     "admin-policies-wide-light.png": {
-      "sha256": "8d374164ea406e929db60d1c2f08c321d1d10b149fd55afa22db956d67d452cd",
-      "bytes": 135426
+      "sha256": "fd322c8d65268bdbe5c5c437beb5b2a4b249a425556edc944636cc7622c3b27b",
+      "bytes": 137579
     },
     "bin-phone-dark.png": {
       "sha256": "368ab0af0cef3b0f14868e91ee743795b4f19657eb06561b0aa30f87fc8140d1",
@@ -54,6 +54,38 @@
       "sha256": "613b4f75fbab9f38a8d1e664701fc010ece795b60dac7192dc85f035cdf94ebb",
       "bytes": 134418
     },
+    "book-phone-dark.png": {
+      "sha256": "5883ca37ca14338439ba15970d32ad24677622e4234ea5b2f5e0cb7c905cb88f",
+      "bytes": 60502
+    },
+    "book-phone-light.png": {
+      "sha256": "cd4fbbc575b4436a403944b892f0ac21a3c64be6e6656d1bbe933ac483fc386a",
+      "bytes": 62496
+    },
+    "book-share-wide-dark.png": {
+      "sha256": "82c6279842d74fc03b4a98f6a1b20013406f8bfbfef833706f6cacfaf950fa3a",
+      "bytes": 123556
+    },
+    "book-share-wide-light.png": {
+      "sha256": "9bcd0788ab3c25265e88e132d2db377ac0dfdc4769c6937080b08bcc12b07c1b",
+      "bytes": 127122
+    },
+    "book-wide-dark.png": {
+      "sha256": "428fb1db2868ec02412a6a0cbe060cfd7ce042c8cae39f8eba4f052e449e9364",
+      "bytes": 126633
+    },
+    "book-wide-light.png": {
+      "sha256": "539250c1a7bc524e98b5088d149e484dc229f1f396307b16991fc609134b354c",
+      "bytes": 128474
+    },
+    "company-entry-phone-dark.png": {
+      "sha256": "e26268da61f4eb330ca87e8006e99db1f5acd00919148f5809fdc68e2e544785",
+      "bytes": 45367
+    },
+    "company-entry-phone-light.png": {
+      "sha256": "eb3679cf8b59c4bd8293caf5d04c9c73f01be382d4780eaed2cc03cc018e3917",
+      "bytes": 46813
+    },
     "composer-phone-dark.png": {
       "sha256": "434bd2f9e2529bdc972654ac3716f26958c6e8747598c4d3ec637b89972a902d",
       "bytes": 23093
@@ -63,20 +95,20 @@
       "bytes": 24198
     },
     "contact-detail-phone-dark.png": {
-      "sha256": "e290aed0b3ed348cf091c9552fe2d60c6444037f942ada838098368240a9aa16",
-      "bytes": 58709
+      "sha256": "6604d00492f8c18ebec242940adfddee8ee3e26ec47d9acc5d4f36988a943e63",
+      "bytes": 58485
     },
     "contact-detail-phone-light.png": {
-      "sha256": "7b851362fb1d5d712f543903e76e3cb4a9b1850a0a7e713829fabd6b0d3d0a19",
-      "bytes": 60691
+      "sha256": "f46e7662cf908008d8a168f752a62bd73fb4e5f06c8705e5e1f7ef99487add86",
+      "bytes": 60547
     },
     "contact-detail-wide-dark.png": {
-      "sha256": "6e7cc32a8b855d9cf17e718003ab9b34d144707ef86d081a03498792e5d453a0",
-      "bytes": 127941
+      "sha256": "1a3b4ab52ba6cc3a7bd6d92d40ea9068a381d454ac1e0041da237ae05bd3b803",
+      "bytes": 135483
     },
     "contact-detail-wide-light.png": {
-      "sha256": "ffeb3e5935fe4e3e3e6401933e11385ff1c3afc873c7dd14d94669abb4da0dde",
-      "bytes": 128770
+      "sha256": "fc522b1c7fee41c2dbb1b37b6c0de43719eecf7c9efbf98a7c2ebbd83fab4aa4",
+      "bytes": 136370
     },
     "contact-editor-phone-dark.png": {
       "sha256": "b8d1ce4a58c223f85572c90f781f16be22bce578399b2ed6b2d0162312001df4",
@@ -87,12 +119,12 @@
       "bytes": 52910
     },
     "contact-editor-wide-dark.png": {
-      "sha256": "0d972c72091825ae9cbe0573e7fff099f78b352919363bbaf80d6b2c8f2fc404",
-      "bytes": 118589
+      "sha256": "24e6cf7d63c136fd7a90513f9f50ac3444500960fc3196da671aca76ec8bfb59",
+      "bytes": 124978
     },
     "contact-editor-wide-light.png": {
-      "sha256": "49f1d6713104d2063aadae197e3e4f08ead80c197f51152638cc477fe3a20e8a",
-      "bytes": 122698
+      "sha256": "e7e0647cbb48466aaf72e22dffc928817b134fe552d094ca7f772e3dcb4f687a",
+      "bytes": 128601
     },
     "devices-wide-dark.png": {
       "sha256": "e92be69cf12b9f0240f3e3fb4c61a6a458ff1b4382077126db23fe1288f3aa96",
@@ -103,20 +135,20 @@
       "bytes": 115917
     },
     "group-policies-wide-dark.png": {
-      "sha256": "d51aec2dcdd810df9acc8db4dcd253fb7f75022d4ab3016adb6189bd2182e417",
-      "bytes": 153371
+      "sha256": "f259160d2c5678f35108940e1f13313003c59fce75f4a3ceba727474e3f9106c",
+      "bytes": 155517
     },
     "group-policies-wide-light.png": {
-      "sha256": "7d117e46f37ba8652a5fdaca233082ae54c602b74d85a374631695e58a6c510b",
-      "bytes": 155918
+      "sha256": "fd097133ab5a66f8270ad8deeafb7f18cf315295ed736332cd13be989b531e64",
+      "bytes": 158063
     },
     "groups-wide-dark.png": {
-      "sha256": "aef536e84fe780e1db54e2411f3c0bd74d4f06eac56bcd78ce718c34a3a0e0ae",
-      "bytes": 97311
+      "sha256": "91301b5e0d41b9525297e6d664872b2538d5a94c7a1371d948f702205a180707",
+      "bytes": 99577
     },
     "groups-wide-light.png": {
-      "sha256": "5779bd4008e618b92b6bae432345e6086bcb2974083c8e897acc3417ca4c5b45",
-      "bytes": 97873
+      "sha256": "1087e1437547717501c27e6051667fb293a0978e34cb3b82d262a0db7c0d0277",
+      "bytes": 100142
     },
     "invite-phone-dark.png": {
       "sha256": "897315652a4ec3265644620fae8a1858a72aafd6628cb9630103c0818cd56d20",
@@ -167,12 +199,12 @@
       "bytes": 66815
     },
     "merge-review-wide-dark.png": {
-      "sha256": "d1e04d2a744bbf95b55040c93e73497fa8196d48f5404184ed020b2fb67135e0",
-      "bytes": 92446
+      "sha256": "66e4f60fbf9debfbc872a0c93e22d77b5ffc32ff23a9628c00e7b26b92b5cba6",
+      "bytes": 98968
     },
     "merge-review-wide-light.png": {
-      "sha256": "9934cc5ef9236e06a98a9ff2162968af3e3e6ceff05724576707337e5748c041",
-      "bytes": 96304
+      "sha256": "399447fe07d02a40ce0558e5e864bd9910e48f1154aa1ab1edcc2317df0fe356",
+      "bytes": 102733
     },
     "new-task-phone-dark.png": {
       "sha256": "a60061670f85cfbb43bd4b8dd728d4308590f68b8c935b1c79d26defb63fac89",
@@ -191,20 +223,20 @@
       "bytes": 111601
     },
     "people-wide-dark.png": {
-      "sha256": "2b133f2c7058fe9bcd1f39fef488b5c399bedf5156d877aceee318e55724b678",
-      "bytes": 144096
+      "sha256": "a7df7c698068301bebd1256aa4051de84aa14d60d1415faafcb401e8aa883fe3",
+      "bytes": 146112
     },
     "people-wide-light.png": {
-      "sha256": "a1aa6730bc15bb5bb94dd5a82d71ce708d3d934224cdf8dcef485fa4585639f3",
-      "bytes": 146598
+      "sha256": "ed5f91ade338a8f38ece11c31318e4d04ea4e5ee1d6239d268be6a010923e1ad",
+      "bytes": 148691
     },
     "person-wide-dark.png": {
-      "sha256": "823ddd7a7bb86cdf7898c0fe746cba5986dcd5218b3035dc0fb94f1b6c007ae6",
-      "bytes": 144781
+      "sha256": "56bf5a6222410a65e1c5fe5294766418c4b0b3723ad4004313a4e182b8ef7e29",
+      "bytes": 146904
     },
     "person-wide-light.png": {
-      "sha256": "0014db7e0ad8f0e95a23a9e731d79d56abf2d1b7efdc3a120cb843dbf2bca606",
-      "bytes": 147728
+      "sha256": "4108e13a04b0997bf12c81fa1af403db3272bee84ef00187cee3fcd6eab913c2",
+      "bytes": 149843
     },
     "recordings-phone-dark.png": {
       "sha256": "30b8530f865fd11b7e05379b33d2bb208fef68a34c36933b94d1f77df017952b",
@@ -253,6 +285,14 @@
     "settings-pages-wide-light.png": {
       "sha256": "51ec64444e0fa658c8f8aeff62799ce6ddf639af77aeb9eff00767e3228174a3",
       "bytes": 122827
+    },
+    "shared-books-wide-dark.png": {
+      "sha256": "150712d68ff29a5a9b4faeb8f9e97dde61f7df0063f20debadfe13684119fe18",
+      "bytes": 126070
+    },
+    "shared-books-wide-light.png": {
+      "sha256": "7669d08f08f0dc81a76f11a400f89953e64a1dad6d042f7542551d9e07ed6240",
+      "bytes": 127095
     },
     "todo-drag-phone-dark.png": {
       "sha256": "cd9aa4c9edec5346bcb78c6293cc60dfd33ffc7e58414d6f795d1df032fa8698",
@@ -961,6 +1001,75 @@
       "changed": [
         "settings-backup-wide-dark.png",
         "settings-backup-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-16T09:09:50.320Z",
+      "reason": "0.31.0 shared address books and the company directory, designed by the frontend agent within docs/UI_ACCEPTANCE.md for the integrator's approval (P-27): ten new pictures (book-wide, book-phone, book-share-wide, company-entry-phone, shared-books-wide; dark and light). Changed by added content only: contact-detail (wide and phone) gains 'Also in Suppliers', the wide Contacts pictures (contact-detail, contact-editor, merge-review) the Shared group in the panel, and the Server pictures (people, person, groups, group-policies, admin-policies, admin-policies-app-lock) 'Shared books' in the panel",
+      "source": {
+        "commit": "e05e4a4e10dd3fb390775bead5162c9bb9a1ef45",
+        "branch": "feat/0.31.0-p3-screens",
+        "dirty": false,
+        "digest": "4dacac33799f4a08902b98f31a230cc7508816ca6d1d95b2f4de85445f77f6d8"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [
+        "book-phone-dark.png",
+        "book-phone-light.png",
+        "book-share-wide-dark.png",
+        "book-share-wide-light.png",
+        "book-wide-dark.png",
+        "book-wide-light.png",
+        "company-entry-phone-dark.png",
+        "company-entry-phone-light.png",
+        "shared-books-wide-dark.png",
+        "shared-books-wide-light.png"
+      ],
+      "changed": [
+        "admin-policies-app-lock-wide-dark.png",
+        "admin-policies-app-lock-wide-light.png",
+        "admin-policies-wide-dark.png",
+        "admin-policies-wide-light.png",
+        "contact-detail-phone-dark.png",
+        "contact-detail-phone-light.png",
+        "contact-detail-wide-dark.png",
+        "contact-detail-wide-light.png",
+        "contact-editor-wide-dark.png",
+        "contact-editor-wide-light.png",
+        "group-policies-wide-dark.png",
+        "group-policies-wide-light.png",
+        "groups-wide-dark.png",
+        "groups-wide-light.png",
+        "merge-review-wide-dark.png",
+        "merge-review-wide-light.png",
+        "people-wide-dark.png",
+        "people-wide-light.png",
+        "person-wide-dark.png",
+        "person-wide-light.png"
       ],
       "removed": []
     }
