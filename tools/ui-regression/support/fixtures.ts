@@ -459,7 +459,7 @@ const DIRECTORY_FIELDS: Record<string, { phone: string | null; job_title: string
   'user-katherine': { phone: '+1 555 0144', job_title: 'Senior accountant for payroll and the year-end close', department: 'Finance' },
 };
 export const DIRECTORY = PEOPLE.filter(person => person.is_active).map(person => ({
-  user_id: person.id, full_name: person.full_name, email: person.email, phone: null, job_title: null, department: null, ...DIRECTORY_FIELDS[person.id],
+  user_id: person.id, full_name: person.full_name, email: person.email, ...(DIRECTORY_FIELDS[person.id] ?? { phone: null, job_title: null, department: null }),
   groups: person.groups.map(({ id, name }) => ({ id, name })), version: 1,
 }));
 const book = (id: string, name: string, description: string | null, permission: 'read' | 'edit' | 'manage', contacts: unknown[]) =>
