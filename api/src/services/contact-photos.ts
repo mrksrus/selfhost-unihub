@@ -526,34 +526,47 @@ async function sweepContactPhotos({ now = Date.now(), executor = db as SqlExecut
   const root = photosRoot();
   const users = await fs.promises.readdir(root, { withFileTypes: true }).catch(() => []);
   let removed = 0;
+  // One owner's folder, under its lock: files no row references and temporary ones, older than an hour.
+  const sweep = (owner: ContactOwner, holding: () => Promise<Set<string>>) => withContactPhotoLock(owner, async () => {
+    const held = await holding();
+    const dir = await userDirectory(owner, { create: false }).catch(() => null);
+    if (!dir) return 0;
+    let count = 0;
+    const files = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const file of files) {
+      // An instance backup may start meanwhile: its copy needs these files.
+      if (!active() || fileRemovalGate.isClosed()) break;
+      if (!file.isFile()) continue;
+      const target = path.join(dir, file.name);
+      const stat = await fs.promises.lstat(target).catch(() => null);
+      if (!stat || now - stat.mtimeMs < ORPHAN_MIN_AGE_MS) continue;
+      if (file.name.endsWith('.tmp')) { await fs.promises.rm(target, { force: true }); count++; continue; }
+      const sha = file.name.endsWith('.jpg') ? file.name.slice(0, -4) : '';
+      if (!SHA_PATTERN.test(sha) || held.has(sha) || await isReferenced(executor, owner, sha)) continue;
+      await fs.promises.rm(target, { force: true });
+      count++;
+    }
+    return count;
+  });
   for (const entry of users) {
     if (!active()) break;
     if (!entry.isDirectory() || !USER_ID_PATTERN.test(entry.name)) continue;
-    // shortcut: a shared book's orphaned files (from a crash) stay; sweep them with the books' bins.
     if (entry.name === BOOKS_DIRECTORY) continue;
     const userId = entry.name;
     const restoring = await getActiveRestoreSections(userId).catch(() => new Set(['*']));
     if (restoring.has('contacts') || restoring.has('*')) continue;
     if (!await moduleEnabled(userId).catch(() => false)) continue;
-    removed += await withContactPhotoLock(userId, async () => {
-      const held = await heldForUndo(userId);
-      let count = 0;
-      const files = await fs.promises.readdir(path.join(root, userId), { withFileTypes: true }).catch(() => []);
-      for (const file of files) {
-        // An instance backup may start meanwhile: its copy needs these files.
-        if (!active() || fileRemovalGate.isClosed()) break;
-        if (!file.isFile()) continue;
-        const target = path.join(root, userId, file.name);
-        const stat = await fs.promises.lstat(target).catch(() => null);
-        if (!stat || now - stat.mtimeMs < ORPHAN_MIN_AGE_MS) continue;
-        if (file.name.endsWith('.tmp')) { await fs.promises.rm(target, { force: true }); count++; continue; }
-        const sha = file.name.endsWith('.jpg') ? file.name.slice(0, -4) : '';
-        if (!SHA_PATTERN.test(sha) || held.has(sha) || await isReferenced(executor, userId, sha)) continue;
-        await fs.promises.rm(target, { force: true });
-        count++;
-      }
-      return count;
-    });
+    removed += await sweep(userId, () => heldForUndo(userId));
+  }
+  // Shared books: their bins hold their photos (isReferenced); a purged book's folder is emptied, then removed.
+  const bookDirs = await fs.promises.readdir(path.join(root, BOOKS_DIRECTORY), { withFileTypes: true }).catch(() => []);
+  for (const entry of bookDirs) {
+    if (!active()) break;
+    if (!entry.isDirectory() || !USER_ID_PATTERN.test(entry.name)) continue;
+    const owner = { bookId: entry.name };
+    removed += await sweep(owner, async () => new Set());
+    const [[book]] = await executor.execute<RowDataPacket[]>('SELECT id FROM address_books WHERE id = ?', [entry.name]);
+    if (!book && !fileRemovalGate.isClosed()) await fs.promises.rmdir(path.join(root, BOOKS_DIRECTORY, entry.name)).catch(() => undefined);
   }
   return removed;
 }

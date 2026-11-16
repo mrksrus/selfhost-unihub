@@ -8,6 +8,7 @@ import { presentMailFiling } from './mail-filing';
 import { folderConnections } from './mail-folder-reconciliation';
 import { keepsSnoozedInLists } from './mail-snooze';
 import { loadContacts } from './contacts';
+import { offlineBooks } from './address-books';
 import {
   serializeCalendarEvent,
   serializeCalendarAccount,
@@ -65,7 +66,7 @@ const groupByEvent = <T extends { event_id: string }>(rows: readonly T[]) => {
   for (const row of rows) { const values = grouped.get(row.event_id) || []; values.push(row); grouped.set(row.event_id, values); }
   return grouped;
 };
-const budgetError = () => Object.assign(new Error('Contacts, events and the latest 100 messages exceed the 32 MiB offline storage budget. The previous snapshot was kept.'), { status: 413 });
+const budgetError = () => Object.assign(new Error('Contacts, shared books, events and the latest 100 messages exceed the 32 MiB offline storage budget. The previous snapshot was kept.'), { status: 413 });
 const fieldsFor = (section: Pick<Section, 'columns'>) => section.columns.split(' ');
 function selectSql(section: Section) {
   return `SELECT ${fieldsFor(section).join(', ')} FROM ${section.table} WHERE user_id = ?${section.filter || ''} ORDER BY ${section.order}${section.limit ? ` LIMIT ${section.limit}` : ''}`;
@@ -136,9 +137,12 @@ async function collectOfflineSnapshot(connection: SqlExecutor, userId: string) {
     cc_addresses: parseRecipients(row.cc_addresses), bcc_addresses: parseRecipients(row.bcc_addresses),
     is_read: !!row.is_read, is_starred: !!row.is_starred, is_draft: false, has_attachments: !!row.has_attachments,
     attachments: attachmentsByEmail.get(row.id) || [] }));
+  // Company and the shared books the person sees now: a revoked book is gone from the next copy.
+  const shared = modules.get('contacts') ? await offlineBooks(connection, userId) : { books: [], directory: [] };
   const snapshot = { version: 1, userId, savedAt: new Date().toISOString(), modules: moduleStates,
     pages: await getUserPages(userId, connection),
     contacts: (await loadContacts(connection, userId, data.contacts.map(row => String(row.id)))).map(contact => ({ ...contact, photo: null })), events,
+    books: shared.books, directory: shared.directory,
     calendars: projectRows(data.calendars.map(serializeCalendarCalendar), SECTIONS.calendars),
     calendarAccounts: projectRows(data.calendarAccounts.map(serializeCalendarAccount), SECTIONS.calendarAccounts),
     mailAccounts: data.mailAccounts.map(row => ({ ...row, is_active: !!row.is_active })),

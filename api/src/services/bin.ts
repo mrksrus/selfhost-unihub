@@ -26,10 +26,17 @@ import { isModuleEnabled } from './module-settings';
 // Every action checks each item's module and the restore lock of its
 // section here, not at the route: one route serves every module. Deleting
 // for good and emptying name the bin.delete policy on their routes (F13).
+//
+// A shared address book has a bin of its own (address_book_id instead of
+// user_id): whoever may edit the book lists, restores and deletes its items,
+// under their own module switch and bin.delete rule. It keeps items for the
+// book retention (bookKeepDays), and the purge takes them, and a book
+// deleted that long ago with its contacts, book by book.
 
 interface BinRow extends RowDataPacket {
   id: string;
   user_id: string;
+  address_book_id: string | null;
   module: BinModule;
   item_type: BinItemType;
   item_id: string;
@@ -79,6 +86,11 @@ const daysOf = (retention: BinRetention) => Object.prototype.hasOwnProperty.call
 const MODULES: readonly BinModule[] = ['contacts', 'calendar', 'recordings'];
 const ID_PATTERN = /^[0-9a-f-]{36}$/i;
 const TITLE_MAX = 255;
+// A shared book's bin keeps items at least this long.
+const BOOK_BIN_DAYS = 30;
+type BinOwner = string | { bookId: string };
+const ownerColumn = (owner: BinOwner): ['user_id' | 'address_book_id', string] => typeof owner === 'string' ? ['user_id', owner] : ['address_book_id', owner.bookId];
+const books = () => require('./address-books') as typeof import('./address-books');
 
 // The kinds, required when used: their services put items in the bin and
 // so require this file.
@@ -140,6 +152,17 @@ async function purgeFloorDays(userId: string, executor: SqlExecutor, { lock = fa
 }
 
 /**
+ * How long a shared book's bin keeps items: 30 days, or longer while a bin
+ * minimum of Everyone or of any group asks for it; null keeps them for good
+ * (a minimum of forever, or deleting for good forbidden without a minimum).
+ */
+async function bookKeepDays(executor: SqlExecutor = db, { lock = false } = {}): Promise<number | null> {
+  const { bookBinFloor } = require('./settings') as typeof import('./settings');
+  const floor = await bookBinFloor(executor, { lock });
+  return floor === null ? BOOK_BIN_DAYS : floor === 'forever' ? null : Math.max(BOOK_BIN_DAYS, Number(floor));
+}
+
+/**
  * After the person changed bin_retention: every open item's purge time from
  * its deletion and the new retention, so a longer choice keeps what is in
  * the bin longer and a shorter one lets it go sooner.
@@ -166,10 +189,10 @@ async function applyBinRetention(userId: string, executor: SqlExecutor = db) {
  * Inside the transaction that removes the items' rows. Returns the bin ids.
  * The kinds call this with their own snapshots.
  */
-async function putInBin(connection: SqlExecutor, owner: string | { bookId: string }, items: readonly NewBinItem[]) {
+async function putInBin(connection: SqlExecutor, owner: BinOwner, items: readonly NewBinItem[]) {
   if (!items.length) return [];
-  // shortcut: a shared book's items wait without a purge time (the per-person purge never reaches them); the book's retention comes with the books' bins.
-  const retention = typeof owner === 'string' ? await binRetention(owner, connection) : 'forever';
+  // A book's item is due after the shortest book retention; the purge asks the minimum in force then.
+  const retention = typeof owner === 'string' ? await binRetention(owner, connection) : String(BOOK_BIN_DAYS) as BinRetention;
   const ids: string[] = [];
   for (const item of items) {
     const id = crypto.randomUUID();
@@ -216,6 +239,14 @@ function parseChoice(input: unknown): RestoreChoice {
   if (typeof value !== 'string' || !ID_PATTERN.test(value)) throw badRequest('BIN_INVALID', 'calendar_id must be the id of one of your calendars');
   return { calendarId: value };
 }
+
+function parseBook(value: unknown): string | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || !ID_PATTERN.test(value)) throw notFound('BOOK_NOT_FOUND', 'Address book not found');
+  return value;
+}
+
+const bookRetention = (days: number | null): BinRetention => days === null ? 'forever' : String(days) as BinRetention;
 
 function parseModule(value: unknown): BinModule | null {
   if (value === undefined || value === null || value === '') return null;
@@ -270,20 +301,24 @@ function parseCursor(value: unknown): Position | null {
  * items; a page's first group always whole, also a larger one).
  * next_cursor, when older items remain, is the `before` of the next page.
  */
-async function listBin(userId: string, moduleInput?: unknown, beforeInput?: unknown): Promise<BinListResponse> {
+async function listBin(userId: string, moduleInput?: unknown, beforeInput?: unknown, bookInput?: unknown): Promise<BinListResponse> {
   const module = parseModule(moduleInput);
   const before = parseCursor(beforeInput);
+  const book = parseBook(bookInput);
+  // A book's bin for those who may edit the book (404 or 403 otherwise); it holds contacts only.
+  if (book) await books().assertBook(userId, book, 'edit');
   const enabled = [];
-  for (const id of module ? [module] : MODULES) if (await isModuleEnabled(userId, id)) enabled.push(id);
-  const retention = await binRetention(userId);
+  for (const id of module ? [module] : MODULES) if ((!book || id === 'contacts') && await isModuleEnabled(userId, id)) enabled.push(id);
+  const retention = book ? bookRetention(await bookKeepDays()) : await binRetention(userId);
   if (!enabled.length) return { items: [], retention, next_cursor: null };
-  const open = `user_id = ? AND restored_at IS NULL AND module IN (${placeholders(enabled)})`;
+  const [column, ownerId] = ownerColumn(book ? { bookId: book } : userId);
+  const open = `${column} = ? AND restored_at IS NULL AND module IN (${placeholders(enabled)})`;
   const [units] = await db.execute<(RowDataPacket & { unit: string; at: string; size: number })[]>(
     `SELECT unit, at, size FROM (
        SELECT ${UNIT} AS unit, DATE_FORMAT(MAX(deleted_at), '%Y-%m-%d %H:%i:%s') AS at, MAX(deleted_at) AS newest, COUNT(*) AS size
        FROM bin_items WHERE ${open} GROUP BY unit) units
      ${before ? 'WHERE newest < ? OR (newest = ? AND unit > ?)' : ''}
-     ORDER BY newest DESC, unit LIMIT ${LIST_MAX + 1}`, [userId, ...enabled, ...(before ? [before.at, before.at, before.unit] : [])]);
+     ORDER BY newest DESC, unit LIMIT ${LIST_MAX + 1}`, [ownerId, ...enabled, ...(before ? [before.at, before.at, before.unit] : [])]);
   const page: typeof units = [];
   let size = 0;
   for (const unit of units) {
@@ -298,11 +333,11 @@ async function listBin(userId: string, moduleInput?: unknown, beforeInput?: unkn
     `SELECT id, module, item_type, title, reason, group_id, deleted_at, purge_after, ${UNIT} AS unit,
        JSON_VALUE(payload, '$.provider') AS provider, JSON_VALUE(payload, '$.origin') AS origin
      FROM bin_items WHERE ${open} AND ${UNIT} IN (${placeholders(page)})
-     ORDER BY deleted_at DESC, id`, [userId, ...enabled, ...page.map(unit => unit.unit)]);
+     ORDER BY deleted_at DESC, id`, [ownerId, ...enabled, ...page.map(unit => unit.unit)]);
   // A unit's items together, in the units' order.
   const rows = [...found].sort((a, b) => order.get(a.unit)! - order.get(b.unit)!);
   const { restoringBinItems } = require('./calendar-move') as typeof import('./calendar-move');
-  const pending = await restoringBinItems(db, userId);
+  const pending = book ? new Set<string>() : await restoringBinItems(db, userId);
   const items: BinItem[] = rows.map(row => ({
     id: row.id, module: row.module, item_type: row.item_type, title: row.title, reason: row.reason, group_id: row.group_id,
     deleted_at: iso(row.deleted_at), purge_after: shownPurgeAfter(row, retention),
@@ -314,11 +349,29 @@ async function listBin(userId: string, moduleInput?: unknown, beforeInput?: unkn
 
 // --- Restoring ------------------------------------------------------------
 
-async function ownedItems(executor: SqlExecutor, userId: string, ids: readonly string[], { lock = false } = {}) {
+async function ownedItems(executor: SqlExecutor, owner: BinOwner, ids: readonly string[], { lock = false } = {}) {
   if (!ids.length) return [];
+  const [column, ownerId] = ownerColumn(owner);
   const [rows] = await executor.execute<BinRow[]>(
-    `SELECT * FROM bin_items WHERE user_id = ? AND restored_at IS NULL AND id IN (${placeholders(ids)}) ORDER BY deleted_at, id${lock ? ' FOR UPDATE' : ''}`, [userId, ...ids]);
+    `SELECT * FROM bin_items WHERE ${column} = ? AND restored_at IS NULL AND id IN (${placeholders(ids)}) ORDER BY deleted_at, id${lock ? ' FOR UPDATE' : ''}`, [ownerId, ...ids]);
   return rows;
+}
+
+/**
+ * The person's own items among the ids, and those of shared books they may
+ * edit; another book's item is not found. An administrator acting for the
+ * person (bookItems false) reaches only the person's own.
+ */
+async function reachableItems(userId: string, ids: readonly string[], { bookItems = true } = {}) {
+  const own = await ownedItems(db, userId, ids);
+  const rest = ids.filter(id => !own.some(row => row.id === id));
+  if (!bookItems || !rest.length) return own;
+  const [found] = await db.execute<BinRow[]>(
+    `SELECT * FROM bin_items WHERE address_book_id IS NOT NULL AND restored_at IS NULL AND id IN (${placeholders(rest)}) ORDER BY deleted_at, id`, rest);
+  const { can } = require('./access') as typeof import('./access');
+  const editable = new Set<string>();
+  for (const book of new Set(found.map(row => row.address_book_id!))) if (await can(userId, { kind: 'address_book', id: book }, 'edit')) editable.add(book);
+  return [...own, ...found.filter(row => editable.has(row.address_book_id!))];
 }
 
 /**
@@ -332,15 +385,17 @@ async function ownedItems(executor: SqlExecutor, userId: string, ids: readonly s
 async function restoreFromBin(userId: string, input: unknown): Promise<BinRestoreResponse> {
   const ids = parseIds(input);
   const choice = parseChoice(input);
-  const found = await ownedItems(db, userId, ids);
+  const found = await reachableItems(userId, ids);
   const groups = new Map<string, BinRow[]>();
   const foundIds = new Set(found.map(row => row.id));
   const failed: BinRestoreResponse['failed'] = ids.filter(id => !foundIds.has(id)).map(id => ({ id, error: 'Not in the bin', code: 'BIN_ITEM_NOT_FOUND' }));
   // Counted once grouped: each group, each single item, each id not found.
   if (new Set(found.map(row => row.group_id || row.id)).size + failed.length > IDS_MAX) throw tooMany();
   const groupIds = [...new Set(found.map(row => row.group_id).filter((id): id is string => !!id))];
+  const bookIds = [...new Set(found.map(row => row.address_book_id).filter((id): id is string => !!id))];
   const [members] = groupIds.length ? await db.execute<BinRow[]>(
-    `SELECT * FROM bin_items WHERE user_id = ? AND restored_at IS NULL AND group_id IN (${placeholders(groupIds)}) ORDER BY deleted_at, id`, [userId, ...groupIds]) : [[] as BinRow[]];
+    `SELECT * FROM bin_items WHERE (user_id = ?${bookIds.length ? ` OR address_book_id IN (${placeholders(bookIds)})` : ''}) AND restored_at IS NULL AND group_id IN (${placeholders(groupIds)})
+     ORDER BY deleted_at, id`, [userId, ...bookIds, ...groupIds]) : [[] as BinRow[]];
   for (const row of [...found, ...members]) {
     const key = row.group_id || row.id;
     const group = groups.get(key) || [];
@@ -401,14 +456,19 @@ interface BinDeleteActor {
 async function deleteForGood(userId: string, rows: readonly BinRow[], { adminId, record }: BinDeleteActor = {}) {
   if (!rows.length) return 0;
   const ids = rows.map(row => row.id);
+  // One owner per call: the person's items, or one book's.
+  const owner: BinOwner = rows[0].address_book_id ? { bookId: rows[0].address_book_id } : userId;
+  const [column, ownerId] = ownerColumn(owner);
   const deleted = await withTransaction(async connection => {
+    // A book's row first, then whether the person may still edit it (address-books.ts bookWrite).
+    if (typeof owner !== 'string') await books().bookWrite(userId, owner.bookId)(connection);
     // The journal first, in the order a commit of the restore locks them.
-    await connection.execute(`SELECT id FROM calendar_event_moves WHERE user_id = ? AND bin_item_id IN (${placeholders(ids)}) FOR UPDATE`, [userId, ...ids]);
-    const locked = await ownedItems(connection, userId, ids, { lock: true });
+    else await connection.execute(`SELECT id FROM calendar_event_moves WHERE user_id = ? AND bin_item_id IN (${placeholders(ids)}) FOR UPDATE`, [userId, ...ids]);
+    const locked = await ownedItems(connection, owner, ids, { lock: true });
     if (!locked.length) return [];
     const { assertFinalStep } = require('./final-step') as typeof import('./final-step');
     await assertFinalStep(connection, { userId, policies: ['bin.delete'], actor: { adminId }, modules: [...new Set(locked.map(row => row.module))] });
-    await connection.execute(`DELETE FROM bin_items WHERE user_id = ? AND id IN (${placeholders(locked.map(row => row.id))})`, [userId, ...locked.map(row => row.id)]);
+    await connection.execute(`DELETE FROM bin_items WHERE ${column} = ? AND id IN (${placeholders(locked.map(row => row.id))})`, [ownerId, ...locked.map(row => row.id)]);
     if (record) await record(connection, locked);
     return locked;
   });
@@ -426,7 +486,7 @@ async function releaseFiles(userId: string, rows: readonly BinRow[]) {
 /** DELETE /api/bin/:id. */
 async function deleteBinItem(userId: string, id: string, actor: BinDeleteActor = {}): Promise<BinDeleteResponse> {
   if (!ID_PATTERN.test(id)) throw notFound('BIN_ITEM_NOT_FOUND', 'Not in the bin');
-  const [row] = await ownedItems(db, userId, [id]);
+  const [row] = await reachableItems(userId, [id], { bookItems: !actor.adminId });
   if (!row) throw notFound('BIN_ITEM_NOT_FOUND', 'Not in the bin');
   const gate = (await moduleGates(userId)).get(row.module);
   if (gate) throw gate;
@@ -441,14 +501,19 @@ async function deleteBinItem(userId: string, id: string, actor: BinDeleteActor =
  * deleted (`details.deleted`); those stay deleted.
  */
 async function emptyBin(userId: string, input: unknown, actor: BinDeleteActor = {}): Promise<BinDeleteResponse> {
-  const module = parseModule(input && typeof input === 'object' ? (input as { module?: unknown }).module : undefined);
+  const body = (input && typeof input === 'object' ? input : {}) as { module?: unknown; book?: unknown };
+  const book = parseBook(body.book);
+  if (book && actor.adminId) throw badRequest('BIN_INVALID', 'A shared book\'s bin is emptied by someone who may edit the book.');
+  if (book) await books().assertBook(userId, book, 'edit');
+  const module = book ? 'contacts' : parseModule(body.module);
   const gates = await moduleGates(userId);
   const open = (module ? [module] : MODULES).filter(id => !gates.get(id));
   if (module && !open.length) throw gates.get(module)!;
+  const [column, ownerId] = ownerColumn(book ? { bookId: book } : userId);
   let deleted = 0;
   for (;;) {
     const [rows] = open.length ? await db.execute<BinRow[]>(
-      `SELECT * FROM bin_items WHERE user_id = ? AND restored_at IS NULL AND module IN (${placeholders(open)}) ORDER BY deleted_at, id LIMIT ${PURGE_BATCH}`, [userId, ...open]) : [[] as BinRow[]];
+      `SELECT * FROM bin_items WHERE ${column} = ? AND restored_at IS NULL AND module IN (${placeholders(open)}) ORDER BY deleted_at, id LIMIT ${PURGE_BATCH}`, [ownerId, ...open]) : [[] as BinRow[]];
     if (!rows.length) break;
     try {
       deleted += await deleteForGood(userId, rows, actor);
@@ -491,9 +556,10 @@ interface PurgeOptions {
  */
 async function purgeBin({ now = new Date(), active = () => true }: PurgeOptions = {}) {
   const [due] = await db.execute<(RowDataPacket & { user_id: string })[]>(
-    `SELECT user_id FROM bin_items WHERE purge_after IS NOT NULL AND purge_after <= ?
+    `SELECT user_id FROM bin_items WHERE user_id IS NOT NULL AND purge_after IS NOT NULL AND purge_after <= ?
      UNION SELECT user_id FROM contact_merges WHERE purge_after <= ?`, [now, now]);
-  if (!due.length) return { items: 0, merges: 0 };
+  const shared = await purgeBooks(now, active);
+  if (!due.length) return { items: shared, merges: 0 };
   const sections = await getActiveRestoreSectionsByUser(db);
   const { purgeMergeRecords, withPhotoLock } = require('./contact-merge') as typeof import('./contact-merge');
   let items = 0; let merges = 0;
@@ -554,7 +620,54 @@ async function purgeBin({ now = new Date(), active = () => true }: PurgeOptions 
       if (module === 'contacts') await withPhotoLock(userId, work); else await work();
     }
   }
-  return { items, merges };
+  return { items: items + shared, merges };
+}
+
+/**
+ * The purge of shared books: each book's items older than the book retention
+ * as it stands now, and a book deleted that long ago with its contacts, bin
+ * and shares. Nothing goes while the retention is forever. A batch locks the
+ * book's row first, as a restore and a delete for good do; the photo files
+ * go with the daily sweep (contact-photos.ts).
+ */
+async function purgeBooks(now: Date, active: () => boolean) {
+  let items = 0;
+  const keepNow = await bookKeepDays();
+  if (keepNow === null) return 0;
+  const [due] = await db.execute<(RowDataPacket & { id: string })[]>(
+    `SELECT DISTINCT address_book_id AS id FROM bin_items WHERE address_book_id IS NOT NULL AND purge_after IS NOT NULL AND purge_after <= ?
+     UNION SELECT id FROM address_books WHERE deleted_at IS NOT NULL AND deleted_at <= ? - INTERVAL ? DAY`, [now, now, keepNow]);
+  const { withContactPhotoLock } = require('./contact-photos') as typeof import('./contact-photos');
+  for (const { id: bookId } of due) {
+    if (!active()) break;
+    await withContactPhotoLock({ bookId }, async () => {
+      for (;;) {
+        const removed = await withTransaction(async cx => {
+          const [[book]] = await cx.execute<RowDataPacket[]>('SELECT id FROM address_books WHERE id = ? FOR UPDATE', [bookId]);
+          if (!book) return 0;
+          // Read under the lock: a minimum raised meanwhile holds.
+          const keep = await bookKeepDays(cx, { lock: true });
+          if (keep === null) return 0;
+          const [[expired]] = await cx.execute<RowDataPacket[]>('SELECT 1 FROM address_books WHERE id = ? AND deleted_at IS NOT NULL AND deleted_at <= ? - INTERVAL ? DAY', [bookId, now, keep]);
+          if (expired) {
+            const { removeGrantsOn } = require('./access') as typeof import('./access');
+            await removeGrantsOn(cx, { kind: 'address_book', id: bookId });
+            // Its contacts, their values, properties, photos and the book's bin go with it (foreign keys).
+            await cx.execute('DELETE FROM address_books WHERE id = ?', [bookId]);
+            return 0;
+          }
+          const [rows] = await cx.execute<(RowDataPacket & { id: string })[]>(
+            `SELECT id FROM bin_items WHERE address_book_id = ? AND purge_after IS NOT NULL AND purge_after <= ? AND deleted_at <= ? - INTERVAL ? DAY
+             ORDER BY id LIMIT ${PURGE_BATCH} FOR UPDATE`, [bookId, now, now, keep]);
+          if (rows.length) await cx.execute(`DELETE FROM bin_items WHERE address_book_id = ? AND id IN (${placeholders(rows)})`, [bookId, ...rows.map(row => row.id)]);
+          return rows.length;
+        });
+        items += removed;
+        if (removed < PURGE_BATCH || !active()) break;
+      }
+    });
+  }
+  return items;
 }
 
 /**
@@ -790,6 +903,7 @@ export {
   emptyBin,
   purgeBin,
   putInBin,
+  bookKeepDays,
   binRetention,
   applyBinRetention,
   changeUserSettings,

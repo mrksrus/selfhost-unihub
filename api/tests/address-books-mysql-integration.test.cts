@@ -41,6 +41,8 @@ test('shared address books: access, reach, isolation from personal contacts, cop
     const reply = await client.request(method, url, body);
     return [reply.status, reply.body.code ?? null];
   };
+  // The books besides Company, which everyone sees first.
+  const sharedBooks = async (client: Client) => ((await call(client, 'GET', '/api/address-books')).books as FixtureValue[]).filter(item => item.id !== 'company');
   const user = (id: string) => ({ kind: 'user', id });
   const group = (id: string) => ({ kind: 'group', id });
 
@@ -49,10 +51,10 @@ test('shared address books: access, reach, isolation from personal contacts, cop
   assert.deepEqual([created.name, created.permission, created.contact_count], ['Suppliers', 'manage', 0]);
   const book = `/api/address-books/${created.id}`;
   assert.deepEqual(await refused(blair, 'POST', '/api/address-books', { name: ' ' }), [400, 'BOOK_NAME_INVALID']);
-  for (const client of [alex, casey, drew]) assert.deepEqual((await call(client, 'GET', '/api/address-books')).books, []);
+  for (const client of [alex, casey, drew]) assert.deepEqual((await sharedBooks(client)), []);
   // An administrator manages it without a grant, and does not list it.
   assert.equal((await call(admin, 'GET', book)).book.permission, 'manage');
-  assert.deepEqual((await call(admin, 'GET', '/api/address-books')).books, []);
+  assert.deepEqual((await sharedBooks(admin)), []);
 
   // ── Reach: a member shares with their own groups and the people in them, never everyone ──
   assert.deepEqual(await refused(blair, 'PUT', `${book}/shares`, { principal: { kind: 'everyone' }, permission: 'read' }), [403, 'SHARE_OUT_OF_REACH']);
@@ -74,9 +76,9 @@ test('shared address books: access, reach, isolation from personal contacts, cop
     [['group', 'Support', 'edit'], ['user', 'Alex Manager', 'read'], ['user', 'Blair Member', 'manage'], ['user', 'Casey Stranger', 'read']]);
 
   // Each sees the book at the most any grant gives them.
-  assert.deepEqual((await call(alex, 'GET', '/api/address-books')).books.map((item: FixtureValue) => [item.name, item.permission]), [['Suppliers', 'edit']]);
-  assert.deepEqual((await call(casey, 'GET', '/api/address-books')).books.map((item: FixtureValue) => [item.name, item.permission]), [['Suppliers', 'read']]);
-  assert.deepEqual((await call(drew, 'GET', '/api/address-books')).books, []);
+  assert.deepEqual((await sharedBooks(alex)).map((item: FixtureValue) => [item.name, item.permission]), [['Suppliers', 'edit']]);
+  assert.deepEqual((await sharedBooks(casey)).map((item: FixtureValue) => [item.name, item.permission]), [['Suppliers', 'read']]);
+  assert.deepEqual((await sharedBooks(drew)), []);
 
   // ── The book's contacts: editors write, readers read, the others see nothing ──
   const contact = (await call(alex, 'POST', `${book}/contacts`, { name: { given: 'Sam', family: 'Supplier' }, emails: ['sam@supplier.example'], is_favorite: true })).contact;

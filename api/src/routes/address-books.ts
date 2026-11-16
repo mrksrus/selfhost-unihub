@@ -1,15 +1,16 @@
 import type { RouteRequest } from '../types';
 import type { UploadBody } from '../http/route';
 import type {
-  AddressBookResponse, AddressBooksResponse, BookContactResponse, BookContactsResponse, BookImportResponse, BookSharesResponse,
-  CopyToBookResponse, DeleteAddressBookResponse, ShareCandidatesResponse,
+  AddressBookResponse, AddressBooksResponse, AdminAddressBooksResponse, BookContactResponse, BookContactsResponse, BookImportResponse, BookSharesResponse,
+  CopyToBookResponse, DeleteAddressBookResponse, PhoneBooksResponse, RestoreAddressBookResponse, ShareCandidatesResponse,
 } from '../contracts/address-books';
 import fs from 'node:fs';
 import { ApiError, badRequest } from '../http/errors';
 import { defineRoutes } from '../http/route';
 import {
-  assertBook, bookShares, bookWrite, copyToBook, createBook, deleteBook, getBook, listBooks, renameBook, setShare, shareCandidates,
+  adminBooks, assertBook, bookShares, bookWrite, copyToBook, createBook, deleteBook, getBook, listBooks, phoneBooks, renameBook, restoreBook, setShare, shareCandidates,
 } from '../services/address-books';
+import { COMPANY, companyContact, companyContacts } from '../services/directory';
 import { createContact, getContact, listContacts, updateContact } from '../services/contacts';
 import { moveContactsToBin } from '../services/contact-merge';
 import { CONTACT_PHOTO_MAX_BYTES, contactPhotoFile, removeContactPhoto, setContactPhoto } from '../services/contact-photos';
@@ -54,6 +55,10 @@ export = defineRoutes({
   'GET /api/address-books': { ...route, handler: async (_req: Request, userId: string) => {
     return { books: await listBooks(userId) } satisfies AddressBooksResponse;
   } },
+  // The Android app's list of books to keep (X-Background-Sync: 1): MODULE_DISABLED under the phone rule.
+  'GET /api/address-books/phone': { ...route, gates: 'background-sync', handler: async (_req: Request, userId: string) => {
+    return { books: await phoneBooks(userId) } satisfies PhoneBooksResponse;
+  } },
   'POST /api/address-books': { ...route, body: { limit: 4096 }, handler: async (_req: Request, userId: string, body: unknown) => {
     return { book: await createBook(userId, body) } satisfies AddressBookResponse;
   } },
@@ -84,11 +89,12 @@ export = defineRoutes({
     const params = query(req);
     const limit = Number.parseInt(params.get('limit') || '2000', 10);
     const offset = Number.parseInt(params.get('offset') || '0', 10);
-    const answer = await listContacts(owner(req), {
+    const page = {
       q: (params.get('q') || '').trim(),
       limit: Number.isInteger(limit) && limit >= 1 ? Math.min(limit, 2000) : 2000,
       offset: Number.isSafeInteger(offset) && offset >= 0 ? Math.min(offset, 10000000) : 0,
-    });
+    };
+    const answer = req.params.id === COMPANY ? await companyContacts(page) : await listContacts(owner(req), page);
     return { ...answer } satisfies BookContactsResponse;
   } },
   'POST /api/address-books/:id/contacts': { ...route, body: { limit: CONTACT_BODY_LIMIT }, handler: async (req: Request, userId: string, body: unknown) => {
@@ -98,6 +104,7 @@ export = defineRoutes({
   } },
   'GET /api/address-books/:id/contacts/:contactId': { ...route, handler: async (req: Request, userId: string) => {
     await assertBook(userId, req.params.id, 'read');
+    if (req.params.id === COMPANY) return { contact: await companyContact(req.params.contactId) } satisfies BookContactResponse;
     return { contact: await getContact(owner(req), req.params.contactId) } satisfies BookContactResponse;
   } },
   'PUT /api/address-books/:id/contacts/:contactId': { ...route, body: { limit: CONTACT_BODY_LIMIT }, handler: async (req: Request, userId: string, body: unknown) => versioned(async () => {
@@ -149,5 +156,13 @@ export = defineRoutes({
   'POST /api/address-books/:id/imports': { ...route, body: { kind: 'upload', limit: IMPORT_LIMITS.fileBytes }, handler: async (req: Request, userId: string, body: unknown) => {
     await assertBook(userId, req.params.id, 'edit');
     return { ...await stageImport(userId, body as UploadBody, req.params.id) } satisfies BookImportResponse;
+  } },
+
+  // Server › Shared books: every book, deleted ones too, for administrators.
+  'GET /api/admin/address-books': { auth: 'admin', permission: 'contacts.books.manage', module: null, handler: async () => {
+    return { books: await adminBooks() } satisfies AdminAddressBooksResponse;
+  } },
+  'POST /api/admin/address-books/:id/restore': { auth: 'admin', permission: 'contacts.books.manage', module: null, restoreSection: null, handler: async (req: Request) => {
+    return { book: await restoreBook(req.params.id) } satisfies RestoreAddressBookResponse;
   } },
 });

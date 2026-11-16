@@ -8,6 +8,7 @@ import { attachmentsRoot, rawRoot } from '../services/mail-storage';
 import { RECORDINGS_ROOT } from '../services/recordings';
 import { BACKUPS_ROOT } from '../services/export-jobs';
 import { realtime } from '../services/realtime';
+import { hintEveryone } from '../services/address-books';
 import { endUserSessions, lockOwnSession } from '../services/sessions';
 import { addPerson, assertCallerManagesAdmins, assertKeepsAnAdmin, assertNotOwner, deleteUser, listPeople, transferOwnership } from '../services/user-lifecycle';
 import { ADMIN_ACCOUNT, assertMayChangeAdmin, assertMayChangeSignIn, renewSetupLink, revokeSetupLink } from '../services/invites';
@@ -540,6 +541,8 @@ export = defineRoutes({
       }));
       if (!found) return { error: 'User not found', status: 404 };
       if (!is_active) realtime.closeUser(id);
+      // The company directory gained or lost the person.
+      await hintEveryone().catch(() => undefined);
       await recordAuditAfter({ action: is_active ? 'admin.user_activated' : 'admin.user_deactivated', actorId: userId, targetUserId: id, req });
       return { message: is_active ? 'User activated' : 'User deactivated' };
     } catch (error) {

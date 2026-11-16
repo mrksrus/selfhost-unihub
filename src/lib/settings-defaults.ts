@@ -22,6 +22,7 @@ export const DEFAULT_USER_SETTINGS: UserSettingValues = {
   snooze_choices: ['1h', '1d', '1w'],
   snoozed_messages: 'hide',
   bin_retention: '30',
+  contacts_phone_books_off: [],
 };
 export const DEFAULT_MAIL_ACCOUNT_SETTINGS: MailAccountSettingValues = {
   notify_enabled: true,

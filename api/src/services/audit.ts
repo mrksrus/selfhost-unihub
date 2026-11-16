@@ -31,6 +31,8 @@ const AUDIT_ACTIONS = [
   'admin.user_created', 'admin.setup_link_created', 'admin.setup_link_revoked', 'auth.setup_completed', 'owner.transferred',
   'admin.device_removed', 'admin.devices_ended',
   'admin.group_created', 'admin.group_deleted', 'admin.group_manager_set', 'group.renamed', 'group.member_added', 'group.member_removed',
+  // An administrator's correction of a person's company directory entry (0.31).
+  'admin.directory_changed',
 ] as const;
 type AuditAction = typeof AUDIT_ACTIONS[number];
 type AuditDetails = Record<string, string | number | boolean | null>;

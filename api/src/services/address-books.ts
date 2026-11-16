@@ -1,7 +1,7 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
-import type { AddressBook, BookPermission, BookShare, ManagedBook, ShareCandidatesResponse, SharePermission } from '../contracts/address-books';
-import type { ContactRecord, KeptProperty } from '../contracts/contacts';
+import type { AddressBook, AdminAddressBook, AlsoIn, BookPermission, BookShare, ManagedBook, ShareCandidatesResponse, SharePermission } from '../contracts/address-books';
+import type { ContactDetail, ContactRecord, KeptProperty } from '../contracts/contacts';
 import type { Principal } from '../contracts/organisation';
 
 import crypto from 'node:crypto';
@@ -11,8 +11,11 @@ import { badRequest, forbidden, notFound } from '../http/errors';
 import { can as roleCan } from '../security/permissions';
 import { withTransaction } from './transactions';
 import { accessLevel, assertCan, grantsOn, heldBy, lockGrant, setGrant, visible } from './access';
-import { groupExists, groupNames, groupsOf, listGroups, membershipOf, peopleMatching, shareAGroup } from './groups';
-import { getContact, insertContact } from './contacts';
+import { groupExists, groupMemberIds, groupNames, groupsOf, listGroups, membershipOf, peopleMatching, shareAGroup } from './groups';
+import { contactSearchCondition, displayName, getContact, insertContact, listContacts } from './contacts';
+import { valueKey } from './contact-keys';
+import { COMPANY, companyContacts, listDirectory } from './directory';
+import { publishBooksChanged } from './realtime';
 import { attachContactPhoto, photoPath, withContactPhotoLock, writePhotoFiles } from './contact-photos';
 import { recordDraft } from './contacts-import';
 
@@ -34,8 +37,12 @@ const book = (id: string) => ({ kind: 'address_book' as const, id });
 const hidden = () => notFound('BOOK_NOT_FOUND', 'Address book not found');
 const iso = (value: unknown) => (value instanceof Date ? value : new Date(`${String(value).replace(' ', 'T')}Z`)).toISOString();
 
-/** 404 for an id that is no book the person can see, 403 for less than `permission`; answers their level. */
+/** 404 for an id that is no book the person can see, 403 for less than `permission`; answers their level. Company is read-only for everyone. */
 async function assertBook(userId: string, bookId: string, permission: BookPermission, executor: SqlExecutor = db): Promise<BookPermission> {
+  if (bookId === COMPANY) {
+    if (permission !== 'read') throw forbidden('BOOK_FORBIDDEN', 'The company directory is read-only; each person keeps their own entry under Settings › Profile.');
+    return 'read';
+  }
   if (!UUID.test(bookId)) throw hidden();
   return assertCan(userId, book(bookId), permission, executor);
 }
@@ -46,9 +53,9 @@ const bookWrite = (userId: string, bookId: string) => async (cx: SqlExecutor) =>
   return assertBook(userId, bookId, 'edit', cx);
 };
 
-async function presentBooks(ids: readonly string[], permissions: ReadonlyMap<string, BookPermission>): Promise<AddressBook[]> {
+async function presentBooks(ids: readonly string[], permissions: ReadonlyMap<string, BookPermission>, executor: SqlExecutor = db): Promise<AddressBook[]> {
   if (!ids.length) return [];
-  const [rows] = await db.execute<RowDataPacket[]>(`SELECT b.id, b.name, b.description, b.created_at, b.updated_at,
+  const [rows] = await executor.execute<RowDataPacket[]>(`SELECT b.id, b.name, b.description, b.created_at, b.updated_at,
       (SELECT COUNT(*) FROM contacts c WHERE c.address_book_id = b.id) AS contact_count
     FROM address_books b WHERE b.id IN (${ids.map(() => '?').join(', ')}) ORDER BY b.name, b.id`, [...ids]);
   return rows.map(row => ({
@@ -57,20 +64,51 @@ async function presentBooks(ids: readonly string[], permissions: ReadonlyMap<str
   }));
 }
 
-/** GET /api/address-books: the books a grant reaches the person through, by name. */
-async function listBooks(userId: string): Promise<AddressBook[]> {
-  const ids = await visible(userId, 'address_book');
+/** The company directory as a book: every active person, read-only. */
+async function companyBook(executor: SqlExecutor = db): Promise<AddressBook> {
+  const [[row]] = await executor.execute<RowDataPacket[]>(`SELECT COUNT(*) AS people, MIN(created_at) AS created_at,
+      GREATEST(MAX(COALESCE(updated_at, created_at)), COALESCE((SELECT MAX(updated_at) FROM directory_entries), MIN(created_at))) AS updated_at
+    FROM users WHERE is_active = TRUE`);
+  return { id: COMPANY, name: 'Company', description: null, permission: 'read', contact_count: Number(row.people), created_at: iso(row.created_at), updated_at: iso(row.updated_at) };
+}
+
+/** GET /api/address-books: Company, then the books a grant reaches the person through, by name. */
+async function listBooks(userId: string, executor: SqlExecutor = db): Promise<AddressBook[]> {
+  const ids = await visible(userId, 'address_book', executor);
   const permissions = new Map<string, BookPermission>();
   for (const id of ids) {
-    const level = await accessLevel(userId, book(id));
+    const level = await accessLevel(userId, book(id), executor);
     if (level) permissions.set(id, level);
   }
-  return presentBooks([...permissions.keys()], permissions);
+  return [await companyBook(executor), ...await presentBooks([...permissions.keys()], permissions, executor)];
 }
 
 async function getBook(userId: string, bookId: string): Promise<AddressBook> {
   const permission = await assertBook(userId, bookId, 'read');
+  if (bookId === COMPANY) return companyBook();
   return (await presentBooks([bookId], new Map([[bookId, permission]])))[0];
+}
+
+/** Everyone a share to these principals reaches, for the hint that their books changed. */
+async function peopleOf(principals: readonly Principal[], executor: SqlExecutor = db): Promise<string[]> {
+  if (principals.some(principal => principal.kind === 'everyone')) {
+    const [rows] = await executor.execute<RowDataPacket[]>('SELECT id FROM users WHERE is_active = TRUE');
+    return rows.map(row => String(row.id));
+  }
+  const people = principals.flatMap(principal => principal.kind === 'user' ? [principal.id] : []);
+  for (const principal of principals) if (principal.kind === 'group') people.push(...await groupMemberIds(principal.id, executor));
+  return people;
+}
+
+/** Tells the people a book reaches that it changed (deleted, restored); the page refetches. */
+// After the change committed, so a failed lookup only loses the hint.
+async function hintBookReach(bookId: string) {
+  publishBooksChanged(await grantsOn(book(bookId)).then(grants => peopleOf(grants.map(grant => grant.principal))).catch(() => []));
+}
+
+/** Tells everyone their books changed: the directory lost or regained a person. */
+async function hintEveryone() {
+  publishBooksChanged(await peopleOf([{ kind: 'everyone' }]));
 }
 
 function bookInput(input: unknown): { name: string; description: string | null } {
@@ -115,15 +153,30 @@ async function deleteBook(userId: string, bookId: string): Promise<{ deleted: tr
     await assertBook(userId, bookId, 'manage', cx);
     await cx.execute('UPDATE address_books SET deleted_at = UTC_TIMESTAMP() WHERE id = ?', [bookId]);
   });
+  await hintBookReach(bookId);
   return { deleted: true };
 }
 
-/** An administrator (contacts.books.manage, checked by the route) brings a deleted book back as it was. */
-async function restoreBook(bookId: string): Promise<void> {
+/** GET /api/admin/address-books (contacts.books.manage, checked by the route): every book, deleted ones included. */
+async function adminBooks(bookId?: string): Promise<AdminAddressBook[]> {
+  const [rows] = await db.execute<RowDataPacket[]>(`SELECT b.id, b.name, b.description, b.created_at, b.updated_at, b.deleted_at,
+      (SELECT COUNT(*) FROM contacts c WHERE c.address_book_id = b.id) AS contact_count, u.id AS creator_id, u.full_name, u.email
+    FROM address_books b LEFT JOIN users u ON u.id = b.created_by ${bookId ? 'WHERE b.id = ?' : ''} ORDER BY b.name, b.id`, bookId ? [bookId] : []);
+  return rows.map(row => ({
+    id: String(row.id), name: String(row.name), description: row.description == null ? null : String(row.description), contact_count: Number(row.contact_count),
+    created_at: iso(row.created_at), updated_at: iso(row.updated_at), deleted_at: row.deleted_at == null ? null : iso(row.deleted_at),
+    created_by: row.creator_id == null ? null : { id: String(row.creator_id), full_name: row.full_name == null ? null : String(row.full_name), email: String(row.email) },
+  }));
+}
+
+/** POST /api/admin/address-books/:id/restore (contacts.books.manage, checked by the route): a deleted book back as it was. */
+async function restoreBook(bookId: string): Promise<AdminAddressBook> {
   if (!UUID.test(bookId)) throw hidden();
-  const [[row]] = await db.execute<RowDataPacket[]>('SELECT deleted_at FROM address_books WHERE id = ?', [bookId]);
+  const [[row]] = await db.execute<RowDataPacket[]>('SELECT id FROM address_books WHERE id = ?', [bookId]);
   if (!row) throw hidden();
   await db.execute('UPDATE address_books SET deleted_at = NULL WHERE id = ?', [bookId]);
+  await hintBookReach(bookId);
+  return (await adminBooks(bookId))[0];
 }
 
 // --- Shares ----------------------------------------------------------------------
@@ -187,7 +240,7 @@ async function setShare(userId: string, bookId: string, input: unknown): Promise
     if (raised) await assertReach(cx, userId, principal);
     if (current !== permission) await setGrant(cx, book(bookId), principal, permission, userId);
     return bookShares(userId, bookId, cx);
-  });
+  }).then(async shares => { publishBooksChanged(await peopleOf([principal]).catch(() => [])); return shares; });
 }
 
 /** GET /api/address-books/:id/share-candidates?q= (manage): people and groups within the caller's reach. */
@@ -262,7 +315,76 @@ async function copyToBook(userId: string, bookId: string, input: unknown): Promi
   });
 }
 
+// --- Where the books show beside the person's own contacts -----------------------
+
+/** GET /api/address-books/phone: the visible books, Company first, less those the person switched off for their phones. */
+async function phoneBooks(userId: string): Promise<{ id: string; name: string }[]> {
+  const { getSettings } = require('./settings') as typeof import('./settings');
+  // Unknown ids (a book gone, a setting restored elsewhere) match nothing.
+  const off = new Set((await getSettings('user', userId, userId)).contacts_phone_books_off.value);
+  return (await listBooks(userId)).filter(item => !off.has(item.id)).map(({ id, name }) => ({ id, name }));
+}
+
+/** On a personal contact's detail: Company and the visible books holding an entry with one of its emails or phones, by name. */
+async function alsoIn(userId: string, contact: Pick<ContactRecord, 'emails' | 'phones'>): Promise<AlsoIn[]> {
+  const keys = (kind: 'email' | 'phone', values: readonly { value: string }[]) => [...new Set(values.map(item => valueKey(kind, item.value)).filter(Boolean))];
+  const emails = keys('email', contact.emails);
+  const phones = keys('phone', contact.phones);
+  if (!emails.length && !phones.length) return [];
+  const found: AlsoIn[] = [];
+  const matches = (await listDirectory()).some(entry => emails.includes(valueKey('email', entry.email)) || (!!entry.phone && phones.includes(valueKey('phone', entry.phone))));
+  if (matches) found.push({ book_id: COMPANY, name: 'Company' });
+  const books = await visible(userId, 'address_book');
+  if (!books.length) return found;
+  const list = (items: readonly string[]) => items.map(() => '?').join(', ');
+  const [rows] = await db.execute<RowDataPacket[]>(`SELECT b.id, b.name FROM address_books b WHERE b.id IN (${list(books)}) AND EXISTS (SELECT 1 FROM contact_values v WHERE v.address_book_id = b.id
+      AND (${[emails.length ? `(v.kind = 'email' AND v.value_key IN (${list(emails)}))` : '', phones.length ? `(v.kind = 'phone' AND v.value_key IN (${list(phones)}))` : ''].filter(Boolean).join(' OR ')}))
+    ORDER BY b.name, b.id`, [...books, ...emails, ...phones]);
+  return [...found, ...rows.map(row => ({ book_id: String(row.id), name: String(row.name) }))];
+}
+
+/** A personal contact's detail with the books that also hold it. */
+async function withAlsoIn(userId: string, contact: ContactDetail): Promise<ContactDetail> {
+  return { ...contact, also_in: await alsoIn(userId, contact) };
+}
+
+/** For /api/search: matching entries of Company and the visible books, each naming its book. */
+async function searchBooks(userId: string, q: string, limit: number) {
+  const company = (await companyContacts({ q, limit })).contacts.map(contact => ({ book: { id: COMPANY, name: 'Company' }, contact }));
+  const books = await visible(userId, 'address_book');
+  if (!books.length) return company;
+  const search = contactSearchCondition(q);
+  const [rows] = await db.execute<RowDataPacket[]>(`SELECT c.id, c.first_name, c.middle_name, c.last_name, c.display_name, c.company, b.id AS book_id, b.name AS book_name,
+      (SELECT v.value FROM contact_values v WHERE v.contact_id = c.id AND v.kind = 'email' ORDER BY v.position LIMIT 1) AS email,
+      (SELECT v.value FROM contact_values v WHERE v.contact_id = c.id AND v.kind = 'phone' ORDER BY v.position LIMIT 1) AS phone
+    FROM contacts c JOIN address_books b ON b.id = c.address_book_id
+    WHERE c.address_book_id IN (${books.map(() => '?').join(', ')}) AND ${search.sql}
+    ORDER BY c.first_name, c.last_name, c.id LIMIT ${limit}`, [...books, ...search.params]);
+  return [...company, ...rows.map(row => {
+    const values = [{ kind: 'email', value: row.email || '' }, { kind: 'phone', value: row.phone || '' }].filter(value => value.value);
+    return { book: { id: String(row.book_id), name: String(row.book_name) },
+      contact: { id: String(row.id), display_name: displayName(row as Parameters<typeof displayName>[0], values), email: row.email ?? null, phone: row.phone ?? null, company: row.company ?? null } };
+  })];
+}
+
+/**
+ * For the offline snapshot, in its transaction: Company and the visible
+ * books with their contacts (no photos), and the directory with its groups.
+ */
+async function offlineBooks(connection: SqlExecutor, userId: string) {
+  const books = await listBooks(userId, connection);
+  const withContacts = [];
+  for (const item of books) {
+    // shortcut: a book is read whole; the snapshot's measured size still refuses more than 32 MiB. Page it if books grow that large.
+    const { contacts } = item.id === COMPANY ? await companyContacts({ limit: 1000000 }, connection) : await listContacts({ bookId: item.id }, { limit: 1000000 }, connection);
+    withContacts.push({ ...item, contacts: contacts.map(contact => ({ ...contact, photo: null })) });
+  }
+  const directory = (await listDirectory(connection)).map(({ created_at: _created, updated_at: _updated, ...entry }) => entry);
+  return { books: withContacts, directory };
+}
+
 export {
-  assertBook, bookWrite, listBooks, getBook, createBook, renameBook, deleteBook, restoreBook,
+  assertBook, bookWrite, listBooks, getBook, createBook, renameBook, deleteBook, restoreBook, adminBooks,
   bookShares, setShare, shareCandidates, managedBooksOf, copyToBook,
+  phoneBooks, withAlsoIn, searchBooks, offlineBooks, hintEveryone, peopleOf,
 };

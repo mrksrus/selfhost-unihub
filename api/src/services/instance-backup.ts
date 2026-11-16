@@ -92,15 +92,15 @@ const ROOT_NAMES = ['attachments', 'mail-raw', 'recordings', 'contact-photos', '
 // bring back. A stored file keeps any name a person gave it (an attachment
 // called report.tmp is data), so nothing else is matched by its ending.
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-const TEMPORARY_FILES: Readonly<Record<string, { name: RegExp; depth?: number }>> = {
+const TEMPORARY_FILES: Readonly<Record<string, { name: RegExp; depth?: readonly number[] }>> = {
   // mail-engine/content.ts publishRaw: <user>/<email>-<uuid>.eml.part, renamed when written.
-  'mail-raw': { name: new RegExp(`^${UUID}-${UUID}\\.eml\\.part$`, 'i'), depth: 2 },
+  'mail-raw': { name: new RegExp(`^${UUID}-${UUID}\\.eml\\.part$`, 'i'), depth: [2] },
   // recordings.ts conversion: <final>.<uuid>.tmp.mp3 beside the recording.
   recordings: { name: new RegExp(`\\.${UUID}\\.tmp\\.mp3$`, 'i') },
-  // contact-photos.ts writes: <user>/.<name>.<uuid>.tmp.
-  'contact-photos': { name: new RegExp(`^\\..+\\.${UUID}\\.tmp$`, 'i'), depth: 2 },
+  // contact-photos.ts writes: <user>/.<name>.<uuid>.tmp, a shared book's books/<book>/.<name>.<uuid>.tmp.
+  'contact-photos': { name: new RegExp(`^\\..+\\.${UUID}\\.tmp$`, 'i'), depth: [2, 3] },
   // export-jobs.ts: <user>/<job>.zip.partial until the archive is complete.
-  backups: { name: new RegExp(`^${UUID}\\.zip\\.partial$`, 'i'), depth: 2 },
+  backups: { name: new RegExp(`^${UUID}\\.zip\\.partial$`, 'i'), depth: [2] },
 };
 // Directories that hold only work in progress: recording chunks being
 // uploaded (recordings.ts), backup uploads being received (request-handler.ts
@@ -116,7 +116,7 @@ function leftOut(root: string, segments: readonly string[], isDirectory: boolean
   const name = segments[segments.length - 1];
   if (isDirectory) return segments.length === 1 && (TEMPORARY_DIRECTORIES[root] ?? []).includes(name);
   const temporary = TEMPORARY_FILES[root];
-  return !!temporary && (temporary.depth === undefined || temporary.depth === segments.length) && temporary.name.test(name);
+  return !!temporary && (temporary.depth === undefined || temporary.depth.includes(segments.length)) && temporary.name.test(name);
 }
 
 const inside = (child: string, parent: string) => {

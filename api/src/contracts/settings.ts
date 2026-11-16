@@ -67,6 +67,8 @@ export interface UserSettingValues {
   snoozed_messages: SnoozedMessages;
   /** How long the bin keeps deleted items, in days or 'forever' (contracts/bin.ts). */
   bin_retention: BinRetention;
+  /** The shared books, by id, and `company` that stay off the person's phones; the others go there (read-only). */
+  contacts_phone_books_off: string[];
 }
 
 /** A folder by its role (inbox, sent, drafts, archive, trash, junk, ...) or by id. */

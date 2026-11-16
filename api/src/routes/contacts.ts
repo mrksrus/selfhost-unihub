@@ -7,6 +7,7 @@ import {
   listContacts, getContact, createContact, updateContact, setFavorite, bulkUpdateContacts,
 } from '../services/contacts';
 import { moveContactsToBin } from '../services/contact-merge';
+import { withAlsoIn } from '../services/address-books';
 
 // Contacts: list, read, write, favourite and bulk actions (F12, D17). Import
 // and export are in contacts-transfer.ts, photos in contacts-photos.ts,
@@ -58,7 +59,7 @@ export = defineRoutes({
   } },
 
   'GET /api/contacts/:id': { ...readRoute, handler: async (req: Request, userId: string) => {
-    try { return { contact: await getContact(userId, req.params.id) }; } catch (error) { return failed(error, 'Failed to get contact'); }
+    try { return { contact: await withAlsoIn(userId, await getContact(userId, req.params.id)) }; } catch (error) { return failed(error, 'Failed to get contact'); }
   } },
 
   'POST /api/contacts': { ...contactRoute, gates: 'background-sync', body: { limit: CONTACT_BODY_LIMIT }, handler: async (_req: Request, userId: string, body: unknown) => {

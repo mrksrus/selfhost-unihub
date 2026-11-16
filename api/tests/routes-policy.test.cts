@@ -186,7 +186,7 @@ const APP_LOCK_EXEMPT: Readonly<Record<string, string>> = {
 // the apps in the support window read a 403 other than MODULE_DISABLED as a
 // refused change and skip the contact. The page never sends the header here.
 const APP_LOCK_BACKGROUND_SYNC = [
-  'DELETE /api/contacts/:id', 'DELETE /api/contacts/:id/photo', 'GET /api/address-books/:id/contacts', 'GET /api/address-books/:id/contacts/:contactId/photo', 'GET /api/contacts', 'GET /api/contacts/:id/photo', 'POST /api/contacts',
+  'DELETE /api/contacts/:id', 'DELETE /api/contacts/:id/photo', 'GET /api/address-books/:id/contacts', 'GET /api/address-books/:id/contacts/:contactId/photo', 'GET /api/address-books/phone', 'GET /api/contacts', 'GET /api/contacts/:id/photo', 'POST /api/contacts',
   'PUT /api/contacts/:id', 'PUT /api/contacts/:id/photo',
 ];
 

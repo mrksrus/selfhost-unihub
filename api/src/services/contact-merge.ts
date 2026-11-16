@@ -124,14 +124,17 @@ async function freeIds(cx: SqlExecutor, table: string, rows: readonly StoredRow[
   return rows.map(row => used.has(String(row.id)) ? { ...row, id: crypto.randomUUID() } : row);
 }
 
-/** Writes a snapshot's children onto `contactId` of `userId` (its own rows of those tables are already gone). */
-async function insertChildren(cx: SqlExecutor, userId: string, contactId: string, snapshot: ContactSnapshot) {
-  const owned = (rows: readonly StoredRow[]) => rows.map(row => ({ ...row, contact_id: contactId, user_id: userId }));
-  await insertStored(cx, 'contact_values', VALUE_COLUMNS, await freeIds(cx, 'contact_values', owned(snapshot.values || [])));
-  await insertStored(cx, 'contact_properties', PROPERTY_COLUMNS, await freeIds(cx, 'contact_properties', owned(snapshot.properties || [])));
+/** Writes a snapshot's children onto `contactId` of the owner (its own rows of those tables are already gone). */
+async function insertChildren(cx: SqlExecutor, owner: ContactOwner, contactId: string, snapshot: ContactSnapshot) {
+  const owned = (rows: readonly StoredRow[]) => rows.map(row => ({ ...row, contact_id: contactId, ...ownerColumns(owner) }));
+  await insertStored(cx, 'contact_values', [...VALUE_COLUMNS, 'address_book_id'], await freeIds(cx, 'contact_values', owned(snapshot.values || [])));
+  await insertStored(cx, 'contact_properties', [...PROPERTY_COLUMNS, 'address_book_id'], await freeIds(cx, 'contact_properties', owned(snapshot.properties || [])));
   const photo = snapshot.photo;
-  if (photo && SHA256.test(String(photo.sha256)) && SHA256.test(String(photo.thumb_sha256))) await insertStored(cx, 'contact_photos', PHOTO_COLUMNS, owned([photo]));
+  if (photo && SHA256.test(String(photo.sha256)) && SHA256.test(String(photo.thumb_sha256))) await insertStored(cx, 'contact_photos', [...PHOTO_COLUMNS, 'address_book_id'], owned([photo]));
 }
+
+// A payload is not trusted: its rows get the owner's columns, whatever they named.
+const ownerColumns = (owner: ContactOwner) => typeof owner === 'string' ? { user_id: owner, address_book_id: null } : { user_id: null, address_book_id: owner.bookId };
 
 function parseJson<T>(value: unknown): T | null {
   if (value == null) return null;
@@ -608,7 +611,7 @@ async function undoLocked(cx: SqlExecutor, userId: string, mergeId: string): Pro
     const id = idTaken ? crypto.randomUUID() : original.id;
     const [[uidTaken]] = await cx.execute<RowDataPacket[]>('SELECT id FROM contacts WHERE user_id = ? AND uid_hash = ?', [userId, original.uid_hash]);
     const uid = uidTaken ? newUid(id) : original.uid;
-    await insertStored(cx, 'contacts', CONTACT_COLUMNS, [{ ...original, id, user_id: userId, uid, uid_hash: uidTaken ? uidHash(uid) : original.uid_hash }]);
+    await insertStored(cx, 'contacts', [...CONTACT_COLUMNS, 'address_book_id'], [{ ...original, id, ...ownerColumns(userId), uid, uid_hash: uidTaken ? uidHash(uid) : original.uid_hash }]);
     await insertChildren(cx, userId, id, payload);
     // The UIDs it held as aliases come back to it from the survivor.
     const held = (payload.aliases || []).map(alias => alias.uid_hash);
@@ -783,9 +786,46 @@ const contactBinKind: BinKind = {
         return group.map((row, index) => ({ id: row.id, item_type: 'contact' as const, item_id: result.restored_ids[index] ?? row.item_id, note: index === 0 ? result.message : null }));
       }
     }
+    const bookId = lead.address_book_id;
+    if (bookId) return withContactPhotoLock({ bookId }, () => withTransaction(cx => restoreBookContactItems(cx, userId, bookId, group)));
     return withContactPhotoLock(userId, () => withTransaction(cx => restoreContactItems(cx, userId, group)));
   },
 };
+
+/**
+ * A shared book's contacts back from its bin into the book, while the
+ * person may still edit it (asked after the book's row is locked), with
+ * their UIDs unless the book took one meanwhile. Book contacts have no
+ * aliases, pairs or favourites.
+ */
+async function restoreBookContactItems(cx: SqlExecutor, userId: string, bookId: string, group: readonly BinRow[]): Promise<BinRestored[]> {
+  const { bookWrite } = require('./address-books') as typeof import('./address-books');
+  await bookWrite(userId, bookId)(cx);
+  const ids = group.map(row => row.id);
+  const [items] = await cx.execute<BinRow[]>(
+    `SELECT * FROM bin_items WHERE address_book_id = ? AND restored_at IS NULL AND item_type = 'contact' AND id IN (${placeholders(ids)}) ORDER BY deleted_at, id FOR UPDATE`, [bookId, ...ids]);
+  if (!items.length) throw notFound('BIN_ITEM_NOT_FOUND', 'Not in the bin');
+  const restored: BinRestored[] = [];
+  for (const item of items) {
+    const payload = parsePayload<BinContactPayload>(item);
+    const original = payload?.contact;
+    if (!original || !payload) throw conflict('BIN_ITEM_UNREADABLE', 'This contact cannot be restored.');
+    const [[idTaken]] = ID_PATTERN.test(String(original.id)) ? await cx.execute<RowDataPacket[]>('SELECT id, address_book_id FROM contacts WHERE id = ?', [original.id]) : [[{ id: '', address_book_id: null }]];
+    if (idTaken?.address_book_id === bookId) continue;
+    const id = idTaken ? crypto.randomUUID() : String(original.id);
+    const ownUid = typeof original.uid === 'string' && original.uid ? original.uid : newUid(id);
+    const [[uidTaken]] = await cx.execute<RowDataPacket[]>('SELECT id FROM contacts WHERE address_book_id = ? AND uid_hash = ?', [bookId, uidHash(ownUid)]);
+    const uid = uidTaken ? newUid(id) : ownUid;
+    await insertStored(cx, 'contacts', [...CONTACT_COLUMNS, 'address_book_id'], [{
+      ...original, id, ...ownerColumns({ bookId }), uid, uid_hash: uidHash(uid), is_favorite: false, version: Number(original.version) || 1,
+    }]);
+    await insertChildren(cx, { bookId }, id, payload);
+    restored.push({ id: item.id, item_type: 'contact', item_id: id, note: null });
+  }
+  if (!restored.length) throw alreadyBack();
+  await cx.execute(`DELETE FROM bin_items WHERE address_book_id = ? AND id IN (${placeholders(restored.map(item => item.id))})`, [bookId, ...restored.map(item => item.id)]);
+  return restored;
+}
 
 // ── Purge (bin.ts, worker owner) ───────────────────────────────────────
 

@@ -522,6 +522,19 @@ async function binRetentionFloor(userId: string, executor: SqlExecutor = db, { l
   return binFloor(await policyLevels(executor, lock, userId));
 }
 
+/**
+ * The bin's minimum for a shared book, which belongs to no one person: the
+ * strictest of the installation's and every group's; null while every level
+ * allows deleting for good. Locked as binRetentionFloor locks.
+ */
+async function bookBinFloor(executor: SqlExecutor = db, { lock = false }: PolicyRead = {}): Promise<BinMinimumRetention | null> {
+  if (lock) await executor.execute('SELECT setting_value FROM system_settings WHERE setting_key = ? LOCK IN SHARE MODE', [REVISION_KEY]);
+  const set = await loadRuleSet(executor, { lock });
+  const groups: PolicyLevel = new Map();
+  for (const { level } of set.groups.values()) for (const [key, policies] of level) groups.set(key, [...groups.get(key) ?? [], ...policies]);
+  return binFloor(groups.size ? [set.installation, groups] : [set.installation]);
+}
+
 // The bin's minimum becomes a floor of the person's bin_retention, together
 // with any policy of that setting itself (the stricter holds), so the
 // settings answer, a refused choice, new bin items and the purge all see it.
@@ -1142,6 +1155,7 @@ export {
   resolvePolicies,
   getEffectivePolicies,
   binRetentionFloor,
+  bookBinFloor,
   acknowledgePolicies,
   acknowledgeAtSignup,
   signupRules,

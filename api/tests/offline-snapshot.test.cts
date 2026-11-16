@@ -30,6 +30,8 @@ function fixture({ oversizeTable, failTable, modules = {} }: FixtureValue = {}) 
   function select(sql: string, params: FixtureValue) {
     if (sql.includes('FROM user_settings')) return [[{ setting_key: 'module_preferences', setting_value: JSON.stringify(modules) }]];
     if (sql.includes('FROM setting_policies')) return [[]];
+    // Nobody in the directory and no shared books.
+    if (/\bFROM (users|org_group_members)\b/.test(sql)) return [sql.includes('AS people') ? [{ people: 0, created_at: new Date(0), updated_at: new Date(0) }] : []];
     if (sql.includes('JOIN mail_folder_remote_boxes')) {
       assert.equal(params[0], 'user-1');
       assert.match(sql, /JSON_CONTAINS/);

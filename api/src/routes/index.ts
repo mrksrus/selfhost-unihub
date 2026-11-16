@@ -7,6 +7,7 @@ import contactsTransferRoutes = require('./contacts-transfer');
 import contactsPhotosRoutes = require('./contacts-photos');
 import contactsMergeRoutes = require('./contacts-merge');
 import addressBooksRoutes = require('./address-books');
+import directoryRoutes = require('./directory');
 import settingsRoutes = require('./settings');
 import backupRoutes = require('./backup');
 import searchRoutes = require('./search');
@@ -45,6 +46,7 @@ const routes = mergeRouteTables(
   contactsPhotosRoutes,
   contactsMergeRoutes,
   addressBooksRoutes,
+  directoryRoutes,
   settingsRoutes,
   backupRoutes,
   searchRoutes,

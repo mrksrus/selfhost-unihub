@@ -81,6 +81,9 @@ export const SETTINGS = {
     // Keeping longer is stricter, so an administrator's policy is a minimum;
     // while bin.delete is forbidden, BIN_MIN_RETENTION is one.
     bin_retention: { scope: 'user', kind: { type: 'enum', values: ['7', '30', '90', 'forever'] }, default: '30', strictness: ['7', '30', '90', 'forever'] },
+    // The shared books (and `company`) the person keeps off their phones
+    // (GET /api/address-books/phone); every other visible book goes there.
+    contacts_phone_books_off: { scope: 'user', kind: { type: 'list', item: /^(company|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/, maxItems: 500, unique: true }, default: [] },
   },
   mail_account: {
     notify_enabled: { scope: 'mail_account', kind: { type: 'boolean' }, default: true },

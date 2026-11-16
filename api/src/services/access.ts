@@ -160,6 +160,11 @@ async function removeGrantsOf(cx: SqlExecutor, principal: Exclude<Principal, { k
   await cx.execute('DELETE FROM grants WHERE principal_kind = ? AND principal_id = ?', [...principalKey(principal)]);
 }
 
+/** Removes every grant on a resource, in the transaction that deletes it for good. */
+async function removeGrantsOn(cx: SqlExecutor, resource: Resource) {
+  await cx.execute('DELETE FROM grants WHERE resource_kind = ? AND resource_id = ?', [resource.kind, resource.id]);
+}
+
 /** The resources of a kind on which the person holds a direct grant of exactly `permission` (the books they created). */
 async function heldBy(userId: string, kind: AccessKind, permission: string, executor: SqlExecutor = db): Promise<string[]> {
   const [rows] = await executor.execute<RowDataPacket[]>(`SELECT resource_id FROM grants
@@ -167,5 +172,5 @@ async function heldBy(userId: string, kind: AccessKind, permission: string, exec
   return rows.map(row => String(row.resource_id));
 }
 
-export { principalsOf, accessLevel, can, assertCan, visible, grantsOn, lockGrant, setGrant, removeGrantsOf, heldBy };
+export { principalsOf, accessLevel, can, assertCan, visible, grantsOn, lockGrant, setGrant, removeGrantsOf, removeGrantsOn, heldBy };
 export type { Resource, Grant };

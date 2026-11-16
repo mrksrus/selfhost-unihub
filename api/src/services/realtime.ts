@@ -179,6 +179,15 @@ function publishCalendarChanged(userId: unknown, accountId: unknown, reason: str
     { module: 'calendar', throttleKey: `calendar.changed:${account || '*'}` });
 }
 
+// --- Shared address books ------------------------------------------------
+
+/** The books these people can reach may have changed (a share, a membership, a book deleted or restored, the directory): refetch them. */
+function publishBooksChanged(userIds: Iterable<unknown>, hub: Realtime = realtime) {
+  for (const userId of new Set(userIds)) {
+    if (userId && hub.isOnline(userId)) hub.publishToUser(userId, 'contacts.books', {}, { module: 'contacts', throttleKey: 'contacts.books' });
+  }
+}
+
 export {
   createRealtime,
   realtime,
@@ -186,5 +195,6 @@ export {
   publishMailOperation,
   publishMailChanged,
   publishCalendarChanged,
+  publishBooksChanged,
 };
 export type { Realtime, PublishOptions };

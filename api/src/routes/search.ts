@@ -5,6 +5,7 @@ import { getUserModules } from '../services/module-settings';
 import { escapeLike } from '../services/sql';
 import { defineRoutes } from '../http/route';
 import { contactSearchCondition, displayName } from '../services/contacts';
+import { searchBooks } from '../services/address-books';
 
 function isoDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : (value || null);
@@ -37,6 +38,9 @@ export = defineRoutes({
          LIMIT ${perTypeLimit}`,
         [userId, ...contactSearch.params]
       );
+
+      // Company and the shared books the person sees; each result names its book.
+      const shared = modules.get('contacts') ? await searchBooks(userId, q, perTypeLimit) : [];
 
       const [emails] = await queryModule('mail',
         `SELECT id, subject, from_address, from_name, folder, received_at
@@ -87,6 +91,15 @@ export = defineRoutes({
             entity_id: contact.id,
           };
         }),
+        ...shared.map(({ book, contact }) => ({
+          id: `contact:${book.id}:${contact.id}`,
+          type: 'contact',
+          title: contact.display_name || 'Contact',
+          subtitle: [book.name, contact.email || contact.company || contact.phone].filter(Boolean).join(' • '),
+          href: `/contacts?book=${encodeURIComponent(book.id)}&search=${encodeURIComponent(q)}`,
+          entity_id: contact.id,
+          book_id: book.id,
+        })),
         ...emails.map((email) => ({
           id: `email:${email.id}`,
           type: 'mail',

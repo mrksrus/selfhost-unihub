@@ -11,6 +11,7 @@ import { assertCaller } from './caller-proof';
 import { recordAudit } from './audit';
 import { checkPeoplePolicies, deleteGroupPolicies, groupRules, groupsWithPolicies, lockRules } from './settings';
 import { applyPolicyChange } from './module-lifecycle';
+import { publishBooksChanged } from './realtime';
 
 // The organisation's groups and their members (F3) have one owner: this
 // service (a lint fence keeps their SQL here). Who may do what with a group
@@ -180,6 +181,8 @@ async function underRulesLock<T>(work: (cx: SqlExecutor) => Promise<{ value: T; 
     return result;
   });
   if (reached.length) await applyPolicyChange(reached);
+  // A membership reaches the books shared with the group.
+  publishBooksChanged(reached);
   return value;
 }
 

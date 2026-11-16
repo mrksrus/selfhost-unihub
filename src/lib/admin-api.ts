@@ -221,6 +221,7 @@ const ACTIONS: Record<string, string> = {
   'group.member_added': 'Added to a group',
   'group.member_removed': 'Removed from a group',
   'admin.group_manager_set': 'Changed a group manager',
+  'admin.directory_changed': 'Corrected a directory entry',
 };
 const ROLE_NAMES: Record<string, string> = { owner: 'owner', admin: 'admin', user: 'member' };
 

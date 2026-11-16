@@ -8,6 +8,7 @@ test('global search queries only enabled domains and keeps results owner-scoped'
   const queries: FixtureValue[] = [];
   setDb({ async execute(sql: string, params: FixtureValue) {
     if (sql.includes('FROM setting_policies')) return [[]]; // no policies
+    if (/\bFROM (users|org_group_members)\b/.test(sql)) return [[]]; // no directory, no shared books
     queries.push(sql);
     assert.equal(params[0], 'owner');
     if (sql.includes('FROM user_settings')) return [[{ setting_value: JSON.stringify({ mail: { enabled: false }, calendar: { enabled: false }, recordings: { enabled: false } }) }]];
