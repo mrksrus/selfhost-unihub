@@ -47,7 +47,7 @@ test('the company directory: everyone active, own entry, audited correction, dea
   const [audit] = await pool.execute<RowDataPacket[]>("SELECT actor_id, target_user_id FROM audit_log WHERE action = 'admin.directory_changed'");
   assert.deepEqual(audit.map(row => [row.actor_id, row.target_user_id]), [[ids.admin, ids.manager]]);
   await call(admin, 'PUT', '/api/admin/users/00000000-0000-4000-8000-000000000000/directory', { job_title: 'x' }, 404);
-  await call(blair, 'GET', `/api/admin/users/${ids.manager}/directory`, 403);
+  await call(blair, 'GET', `/api/admin/users/${ids.manager}/directory`, undefined, 403);
   assert.equal((await call(admin, 'GET', `/api/admin/users/${ids.manager}/directory`)).entry.job_title, 'Team manager');
 
   // Company is the read-only book in front of the person's books, in contact shape.
