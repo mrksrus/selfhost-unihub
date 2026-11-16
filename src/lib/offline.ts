@@ -21,6 +21,10 @@ export interface OfflineSnapshot {
   pages?: PagePreference[];
   /** The user keeps snoozed messages in the lists (snoozed_messages: 'keep'); older snapshots hide them. */
   keepSnoozed?: boolean;
+  /** Company and the shared books seen when the copy was saved, each with its contacts; older snapshots have none. */
+  books?: (Row & { id: string; contacts: Row[] })[];
+  /** The company directory with each person's groups. */
+  directory?: Row[];
 }
 interface SnapshotPointer { epoch: string; key: string; userId: string }
 const DATABASE = 'unihub-offline-v1';
@@ -308,6 +312,25 @@ function contactSearchText(row: Row) {
     organization.name, organization.department, row.job_title, ...list(row.nicknames), ...list(row.categories),
     ...valuesOf(row, 'emails'), ...valuesOf(row, 'phones')].map(text).filter(Boolean).join(' ').toLowerCase();
 }
+// The contacts route's filter, search and paging, for personal and book contacts alike.
+function pageOfContacts(all: Row[], params: URLSearchParams) {
+  let rows = all;
+  const group = params.get('group');
+  if (group === 'name_only' || group === 'number_or_email_only') {
+    rows = rows.filter(row => {
+      const name = row.name as Row;
+      const hasName = [name.given, name.family, name.middle, name.display].some(value => text(value).trim());
+      const hasAddress = valuesOf(row, 'emails').length > 0 || valuesOf(row, 'phones').length > 0;
+      return group === 'name_only' ? hasName && !hasAddress : !hasName && hasAddress;
+    });
+  }
+  const query = (params.get('q') || '').toLowerCase();
+  // As the server: a query of digits and phone punctuation also matches numbers by their digits, without leading zeros.
+  const digits = /^[\d\s+\-()./]+$/.test(query) ? query.replace(/\D/g, '').replace(/^0+/, '') : '';
+  if (query) rows = rows.filter(row => contactSearchText(row).includes(query) || (digits.length >= 3 && valuesOf(row, 'phones').some(number => number.replace(/\D/g, '').includes(digits))));
+  const offset=numberParam(params,'offset',0,10000000), limit=numberParam(params,'limit',2000,2000);
+  return {contacts:rows.slice(offset,offset+limit),has_more:offset+limit<rows.length,offset};
+}
 export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: string): {data: unknown} | {error: string;status?:number} | null {
   const url = new URL(endpoint,'https://offline.invalid');
   const path = url.pathname.replace(/^\/api(?=\/)/,'');
@@ -317,23 +340,18 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
   if (path === '/modules') return { data: { modules, pages: snapshot.pages ? knownPages(snapshot.pages) : defaultPages(modules) } };
   const moduleId = moduleForPath(path);
   if (moduleId && !modules.some(module => module.id === moduleId && module.enabled)) return { error: 'This module was disabled when the offline copy was saved.', status: 403 };
-  if (path === '/contacts') {
-    let rows = snapshot.contacts.map(offlineContact);
-    const group = params.get('group');
-    if (group === 'name_only' || group === 'number_or_email_only') {
-      rows = rows.filter(row => {
-        const name = row.name as Row;
-        const hasName = [name.given, name.family, name.middle, name.display].some(value => text(value).trim());
-        const hasAddress = valuesOf(row, 'emails').length > 0 || valuesOf(row, 'phones').length > 0;
-        return group === 'name_only' ? hasName && !hasAddress : !hasName && hasAddress;
-      });
-    }
-    const query = (params.get('q') || '').toLowerCase();
-    // As the server: a query of digits and phone punctuation also matches numbers by their digits, without leading zeros.
-    const digits = /^[\d\s+\-()./]+$/.test(query) ? query.replace(/\D/g, '').replace(/^0+/, '') : '';
-    if (query) rows = rows.filter(row => contactSearchText(row).includes(query) || (digits.length >= 3 && valuesOf(row, 'phones').some(number => number.replace(/\D/g, '').includes(digits))));
-    const offset=numberParam(params,'offset',0,10000000), limit=numberParam(params,'limit',2000,2000);
-    return {data:{contacts:rows.slice(offset,offset+limit),has_more:offset+limit<rows.length,offset}};
+  if (path === '/contacts') return { data: pageOfContacts(snapshot.contacts.map(offlineContact), params) };
+  if (path === '/address-books') return { data: { books: (snapshot.books ?? []).map(({ contacts: _contacts, ...book }) => book) } };
+  if (path === '/directory') return { data: { entries: snapshot.directory ?? [] } };
+  const bookMatch = path.match(/^\/address-books\/([^/]+)(\/contacts(?:\/([^/]+))?)?$/);
+  if (bookMatch) {
+    const book = (snapshot.books ?? []).find(row => row.id === decodeURIComponent(bookMatch[1]));
+    if (!book) return { error: 'This address book is not in your offline snapshot.', status: 404 };
+    const { contacts, ...shown } = book;
+    if (!bookMatch[2]) return { data: { book: shown } };
+    if (!bookMatch[3]) return { data: pageOfContacts(contacts.map(offlineContact), params) };
+    const contact = contacts.find(row => row.id === decodeURIComponent(bookMatch[3]));
+    return contact ? { data: { contact: { ...offlineContact(contact), properties: [] } } } : { error: 'This contact is not in your offline snapshot.', status: 404 };
   }
   if (path === '/calendar/accounts') return {data:{accounts:snapshot.calendarAccounts}};
   if (path === '/calendar/calendars') return {data:{calendars:snapshot.calendars.filter(row=>!params.get('account_id')||row.account_id===params.get('account_id'))}};

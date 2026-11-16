@@ -6,6 +6,7 @@ import { invalidateMailQueries, type Email, type EmailAttachment } from '@/lib/m
 import { ApiError } from '@/lib/api-error';
 import { cancelMailSchedule, createMailTemplate, mailTemplatesKey, scheduleMailDraft, type MailTemplate } from '@/lib/mail-essentials-api';
 import { contactsQueryOptions } from '@/lib/contacts-api';
+import { sharedContactsQueryOptions } from '@/lib/address-books-api';
 import { plainTextToHtml, sanitizeComposeHtml, sanitizeReturnTo, isComposeBodyEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
 import { composeBody, convertBody, htmlToPlainText, quoteOf, responseRecipients, responseSubject, signatureFor, type BodyParts, type ComposeFormat, type ResponseMode } from '@/lib/compose-body';
 import { formatWhen } from '@/lib/mail-times';
@@ -206,20 +207,30 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   }, [formatKnown, defaultFormat]);
 
   const { data: contactsForCompose = [] } = useQuery({ ...contactsQueryOptions, enabled: isComposeOpen || isReplying });
+  const { data: sharedForCompose = [] } = useQuery({ ...sharedContactsQueryOptions, enabled: isComposeOpen || isReplying });
+  // One suggestion per address: a personal contact's name first, then Company's, then the books'.
   const contactEmailSuggestions = useMemo<ContactEmailSuggestion[]>(() => {
-    return contactsForCompose.flatMap((contact) => {
+    const seen = new Set<string>();
+    const sources = [{ prefix: '', contacts: contactsForCompose }, ...sharedForCompose.map(({ book, contacts }) => ({ prefix: `${book.id}:`, contacts }))];
+    return sources.flatMap(({ prefix, contacts }) => contacts.flatMap((contact) => {
       const name = getContactDisplayName(contact);
       // The preferred address first, then the others in their order.
       const emails = contact.emails.map(entry => entry.value.trim()).filter(Boolean);
       const preferred = contact.emails.find(entry => entry.preferred)?.value.trim();
       return (preferred ? [preferred, ...emails.filter(email => email !== preferred)] : emails)
+        .filter((email) => {
+          const key = email.toLowerCase();
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
         .map((email, index) => ({
-          key: `${contact.id}-${index}-${email}`,
+          key: `${prefix}${contact.id}-${index}-${email}`,
           name,
           email,
         }));
-    });
-  }, [contactsForCompose]);
+    }));
+  }, [contactsForCompose, sharedForCompose]);
 
   const hasMeaningfulContent = () =>
     isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length, bodyFormat);

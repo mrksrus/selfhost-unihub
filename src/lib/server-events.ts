@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { invalidateChangedMail, mailQueryKeys } from '@/lib/mail-api';
 import { invalidateCalendarQueries } from '@/lib/calendar-api';
+import { invalidateBookQueries } from '@/lib/address-books-api';
 
 // Live status updates from GET /api/events (Server-Sent Events). Events are
 // hints: each one only marks the matching queries stale, and the normal API
@@ -23,7 +24,7 @@ const BACKOFF_MAX_MS = 5 * 60_000;
 // A connection that stayed open this long resets the backoff.
 const STABLE_MS = 30_000;
 
-type Group = 'jobs' | 'writebacks' | 'lists' | 'calendar';
+type Group = 'jobs' | 'writebacks' | 'lists' | 'calendar' | 'books';
 
 interface Options {
   client: QueryClient;
@@ -82,6 +83,8 @@ export function startServerEvents({
       void invalidateCalendarQueries(client);
       void client.invalidateQueries({ queryKey: ['mail-calendar'] });
     }
+    // Shares, memberships, deleted or restored books, the directory.
+    if (group === 'books') void invalidateBookQueries(client);
     if (group === 'lists') {
       const accounts = new Set(changedAccounts);
       const folders = foldersChanged;
@@ -113,6 +116,7 @@ export function startServerEvents({
     schedule('writebacks');
     schedule('lists');
     schedule('calendar');
+    schedule('books');
   }
 
   function close() {
@@ -155,6 +159,7 @@ export function startServerEvents({
       schedule('lists');
     }));
     current.addEventListener('calendar.changed', live(() => schedule('calendar')));
+    current.addEventListener('contacts.books', live(() => schedule('books')));
     current.addEventListener('end', live(event => {
       const reason = parse<{ reason?: string }>(event)?.reason;
       close();

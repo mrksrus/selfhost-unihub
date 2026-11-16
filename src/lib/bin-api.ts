@@ -38,6 +38,8 @@ export const BIN_MODULES: { id: BinModule; label: string }[] = [
 export const binQueryKeys = {
   all: ['bin'] as const,
   list: (module?: BinModule) => ['bin', module ?? 'all'] as const,
+  /** A shared book's bin (its editors'). */
+  book: (bookId: string) => ['bin', 'book', bookId] as const,
 };
 
 const required = <T>(value: T | undefined, what: string): T => {
@@ -47,9 +49,10 @@ const required = <T>(value: T | undefined, what: string): T => {
 
 export const binApi = {
   /** One page, newest first; `before` is the next_cursor of the page before (whole groups only, so a group never spans pages). */
-  list: async (module?: BinModule, before?: string | null, signal?: AbortSignal): Promise<BinListResponse> => {
+  list: async (module?: BinModule, before?: string | null, signal?: AbortSignal, book?: string): Promise<BinListResponse> => {
     const params = new URLSearchParams();
     if (module) params.set('module', module);
+    if (book) params.set('book', book);
     if (before) params.set('before', before);
     const query = params.toString();
     const answer = required(unwrap(await api.get<BinListResponse>(`/bin${query ? `?${query}` : ''}`, { signal })), 'bin');
@@ -65,8 +68,8 @@ export const binApi = {
     required(unwrap(await api.post<BinRestoreResponse>('/bin/restore', { ids, ...(calendarId ? { calendar_id: calendarId } : {}) } satisfies BinRestoreRequest)), 'restore result'),
   /** Deletes one item for good (policy bin.delete). */
   delete: async (id: string) => required(unwrap(await api.delete<BinDeleteResponse>(`/bin/${encodeURIComponent(id)}`)), 'result').deleted,
-  /** Empties the whole bin or one module's part (policy bin.delete). */
-  empty: async (module?: BinModule) => required(unwrap(await api.post<BinDeleteResponse>('/bin/empty', (module ? { module } : {}) satisfies BinEmptyRequest)), 'result').deleted,
+  /** Empties the whole bin or one module's part, or a shared book's bin (policy bin.delete). */
+  empty: async (module?: BinModule, book?: string) => required(unwrap(await api.post<BinDeleteResponse>('/bin/empty', (book ? { book } : module ? { module } : {}) satisfies BinEmptyRequest)), 'result').deleted,
   /** The person's retention: a user setting (`bin_retention`), saved like the others. */
   setRetention: async (retention: BinRetention) => { unwrap(await api.put('/settings/values', { values: { bin_retention: retention } })); },
 };
@@ -95,6 +98,14 @@ export function restoreRefusal(code: string | undefined, fallback: string) {
 export const binQueryOptions = (module?: BinModule) => infiniteQueryOptions({
   queryKey: binQueryKeys.list(module),
   queryFn: ({ pageParam, signal }) => binApi.list(module, pageParam, signal),
+  initialPageParam: null as string | null,
+  getNextPageParam: page => page.next_cursor,
+});
+
+/** A shared book's bin, for those who may edit the book; restore and delete its items with binApi as any other. */
+export const bookBinQueryOptions = (bookId: string) => infiniteQueryOptions({
+  queryKey: binQueryKeys.book(bookId),
+  queryFn: ({ pageParam, signal }) => binApi.list(undefined, pageParam, signal, bookId),
   initialPageParam: null as string | null,
   getNextPageParam: page => page.next_cursor,
 });

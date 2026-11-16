@@ -120,6 +120,16 @@ describe('live status stream', () => {
     expect(stale).toEqual(['calendar-events', 'calendar-accounts', 'calendar-calendars', 'upcoming-events', 'mail-calendar']);
   });
 
+  it('refreshes the shared books, their bins and personal contact details after a books hint, nothing else', async () => {
+    const queries = [['address-books', 'list'], ['address-books', 'book', 'b1', 'contacts'], ['bin', 'book', 'b1'], ['contacts', 'detail', 'c1'], ['contacts'], ['emails', 'a']];
+    for (const key of queries) client.setQueryData(key, []);
+    renderHook(() => useQueryClient(), { wrapper });
+    await emit('ready');
+    await emit('contacts.books', {});
+    const stale = queries.filter(key => client.getQueryState(key)?.isInvalidated).map(key => key.join(':'));
+    expect(stale).toEqual(['address-books:list', 'address-books:book:b1:contacts', 'bin:book:b1', 'contacts:detail:c1']);
+  });
+
   it('does not refetch while the tab is hidden and catches up when it is shown', async () => {
     renderHook(() => useQueryClient(), { wrapper });
     await emit('ready');

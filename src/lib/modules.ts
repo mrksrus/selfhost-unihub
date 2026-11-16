@@ -4,7 +4,8 @@ export type ModulePreference = { id: ModuleId; label: string; visible: boolean; 
 // Calendar and ToDo, or Recordings and Music, are still switched on together.
 export type PageId = 'mail' | 'calendar' | 'todo' | 'contacts' | 'recordings' | 'music' | 'today';
 export type PagePreference = { id: PageId; label: string; module: ModuleId | null; visible: boolean };
-const routeModules: Record<string, ModuleId> = { mail: 'mail', calendar: 'calendar', todo: 'calendar', contacts: 'contacts', recordings: 'recordings', music: 'recordings' };
+const routeModules: Record<string, ModuleId> = { mail: 'mail', calendar: 'calendar', todo: 'calendar', contacts: 'contacts', recordings: 'recordings', music: 'recordings',
+  'address-books': 'contacts', directory: 'contacts' };
 const routePages: Record<string, PageId> = { mail: 'mail', calendar: 'calendar', todo: 'todo', contacts: 'contacts', recordings: 'recordings', music: 'music', dashboard: 'today' };
 const moduleIds = new Set<string>(Object.values(routeModules));
 // Same as PAGE_CATALOG in api/src/services/module-catalog.ts (checked by src/test/module-catalog-parity.test.ts).
