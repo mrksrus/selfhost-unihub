@@ -628,8 +628,6 @@ function defaultRoutes(emails: typeof EMAILS, admin = false): Route[] {
       const offset = Number(url.searchParams.get('offset') || 0);
       return ok({ contacts: CONTACTS.slice(offset), has_more: false, offset });
     }],
-    // No shared books in these screens (the composer asks for their addresses).
-    ['GET', /^\/address-books$/, () => ok({ books: [] })],
     ['GET', /^\/contacts\/duplicates$/, () => ok({ groups: DUPLICATE_GROUPS })],
     ['GET', /^\/contacts\/merges$/, () => ok({ merges: [] })],
     ['GET', /^\/contacts\/[^/]+$/, url => {
