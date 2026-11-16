@@ -318,7 +318,11 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     await expect(page.getByRole('list', { name: 'People and groups to add' })).toBeVisible();
     await settle();
     expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
-    await open('/contacts?book=company&contact=user-katherine');
+    await open('/contacts?book=company');
+    await expect(page.getByRole('button', { name: /^Katherine/ })).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page), []);
+    await page.getByRole('button', { name: /^Katherine/ }).click();
     await expect(page.getByRole('region', { name: 'Groups' })).toBeVisible();
     await settle();
     expectOnlyKnown(await touchViolations(page), []);

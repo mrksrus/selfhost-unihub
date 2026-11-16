@@ -13,6 +13,7 @@ import { filterContacts } from '@/lib/contact-views';
 import { contactName, type Contact } from '@/lib/contacts-api';
 import { directoryQueryOptions } from '@/lib/directory-api';
 import { BinView } from '@/components/bin/BinView';
+import { ROW_LINK } from '@/components/admin/person-words';
 import { BOOK_WORDS } from '@/components/contacts/book-words';
 import { BookShareDialog } from '@/components/contacts/BookShareDialog';
 import { ContactDetail } from '@/components/contacts/ContactDetail';
@@ -124,7 +125,7 @@ export function BookView({ book, search, onEmail }: { book: AddressBook; search:
                 {company ? (
                   <p className="mt-1 max-w-prose text-sm text-muted-foreground">
                     Everyone with an account on this server. Each person fills in their own phone, job title and department under{' '}
-                    <Link to={settingsHref('account')} className="underline underline-offset-2 hover:text-foreground">Settings › Profile</Link>.
+                    <Link to={settingsHref('account')} className={`${ROW_LINK} underline underline-offset-2 hover:text-foreground`}>Settings › Profile</Link>.
                   </p>
                 ) : book.description && <p className="mt-1 max-w-prose text-sm text-muted-foreground">{book.description}</p>}
                 <p className="mt-1 text-sm text-muted-foreground">

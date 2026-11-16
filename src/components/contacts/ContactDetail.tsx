@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { LoadingState } from '@/components/ui/page-states';
+import { ROW_LINK } from '@/components/admin/person-words';
 import { ContactAvatar } from '@/components/contacts/ContactAvatar';
 
 interface Props {
@@ -177,7 +178,7 @@ export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onTo
               Also in {alsoIn.map((entry, index) => (
                 <Fragment key={entry.book_id}>
                   {index > 0 && ', '}
-                  <Link to={`/contacts?book=${encodeURIComponent(entry.book_id)}&search=${encodeURIComponent(name)}`} className="underline underline-offset-2 hover:text-foreground">{entry.name}</Link>
+                  <Link to={`/contacts?book=${encodeURIComponent(entry.book_id)}&search=${encodeURIComponent(name)}`} className={cn(ROW_LINK, 'underline underline-offset-2 hover:text-foreground')}>{entry.name}</Link>
                 </Fragment>
               ))}
             </p>
