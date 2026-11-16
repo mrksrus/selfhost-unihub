@@ -2,7 +2,7 @@ import type { RouteRequest } from '../types';
 import type { DirectoryEntryResponse, DirectoryResponse } from '../contracts/directory';
 import { defineRoutes } from '../http/route';
 import { personFromParam } from '../services/admin-path';
-import { listDirectory, updateDirectoryEntry } from '../services/directory';
+import { directoryEntry, listDirectory, updateDirectoryEntry } from '../services/directory';
 
 // The company directory (contracts/directory.ts). Reading it is the Contacts
 // module's; a person's own fields sit under Settings › Profile, open with
@@ -14,10 +14,16 @@ export = defineRoutes({
     const entries = (await listDirectory()).map(({ created_at: _created, updated_at: _updated, ...entry }) => entry);
     return { entries } satisfies DirectoryResponse;
   } },
+  'GET /api/directory/me': { auth: 'user', module: null, handler: async (_req: Request, userId: string) => {
+    return { entry: await directoryEntry(userId) } satisfies DirectoryEntryResponse;
+  } },
   'PUT /api/directory/me': { auth: 'user', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (_req: Request, userId: string, body: unknown) => {
     return { entry: await updateDirectoryEntry(userId, body) } satisfies DirectoryEntryResponse;
   } },
   // An administrator's correction, recorded in the activity log.
+  'GET /api/admin/users/:id/directory': { auth: 'admin', permission: 'users.manage', module: null, handler: async (req: Request) => {
+    return { entry: await directoryEntry(await personFromParam(req.params.id)) } satisfies DirectoryEntryResponse;
+  } },
   'PUT /api/admin/users/:id/directory': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, adminId: string, body: unknown) => {
     return { entry: await updateDirectoryEntry(await personFromParam(req.params.id), body, { adminId, req }) } satisfies DirectoryEntryResponse;
   } },

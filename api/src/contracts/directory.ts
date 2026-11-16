@@ -25,8 +25,8 @@ export interface DirectoryEntry {
 export interface DirectoryResponse { entries: DirectoryEntry[] }
 
 /**
- * PUT /api/directory/me (open with Contacts off, under Settings › Profile):
- * the caller's own fields; PUT /api/admin/users/:id/directory
+ * GET and PUT /api/directory/me (open with Contacts off, under Settings › Profile):
+ * the caller's own fields; GET and PUT /api/admin/users/:id/directory
  * (users.manage): an administrator's correction, recorded in the activity
  * log. Null or empty clears a field. Phone at most 64 characters, job title
  * and department at most 255.

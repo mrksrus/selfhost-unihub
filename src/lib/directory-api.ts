@@ -19,8 +19,10 @@ const entryOf = (answer: DirectoryEntryResponse | undefined) => {
 export const directoryApi = {
   list: async (signal?: AbortSignal): Promise<DirectoryEntry[]> => unwrap(await api.get<DirectoryResponse>('/directory', { signal }))?.entries ?? [],
   /** The signed-in person's own fields; null or '' clears one. */
+  mine: async (signal?: AbortSignal) => entryOf(unwrap(await api.get<DirectoryEntryResponse>('/directory/me', { signal }))),
   updateMine: async (input: DirectoryEntryInput) => entryOf(unwrap(await api.put<DirectoryEntryResponse>('/directory/me', input))),
   /** An administrator's correction (users.manage), recorded in the activity log. */
+  ofPerson: async (userId: string, signal?: AbortSignal) => entryOf(unwrap(await api.get<DirectoryEntryResponse>(`/admin/users/${encodeURIComponent(userId)}/directory`, { signal }))),
   correct: async (userId: string, input: DirectoryEntryInput) => entryOf(unwrap(await api.put<DirectoryEntryResponse>(`/admin/users/${encodeURIComponent(userId)}/directory`, input))),
 };
 

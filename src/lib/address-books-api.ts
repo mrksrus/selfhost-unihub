@@ -146,5 +146,7 @@ export function invalidateBookQueries(client: QueryClient) {
     client.invalidateQueries({ queryKey: binQueryKeys.all }),
     // A personal contact's "Also in" names books.
     client.invalidateQueries({ queryKey: ['contacts', 'detail'] }),
+    // Deactivating someone takes them out of Company.
+    client.invalidateQueries({ queryKey: ['directory'] }),
   ]);
 }
