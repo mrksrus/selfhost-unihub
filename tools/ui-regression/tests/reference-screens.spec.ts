@@ -11,8 +11,10 @@
 // (Phone), the Policies page at its App lock group (Wide) and Settings ->
 // Security with Devices (Wide), and since 0.30.0 Server -> People, a person,
 // Groups and a group's rules (Wide), the setup link page and the required
-// two-factor set-up (Phone), each in Dark Default and Light Default.
-// Sixty-eight pictures; see docs/UI_BASELINES.md.
+// two-factor set-up (Phone), and since 0.31.0 a shared address book with a
+// contact open and its share dialog (Wide), the book's list and a company
+// directory entry (Phone) and Server -> Shared books (Wide), each in Dark
+// Default and Light Default. Seventy-eight pictures; see docs/UI_BASELINES.md.
 import { expect, expectBaseline, test, THEMES, VIEWPORTS, type Page } from '../support/test.ts';
 import { CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_EFFECTIVE_APP_LOCK, POLICIES_EFFECTIVE_TWO_FACTOR, USER } from '../support/fixtures.ts';
 
@@ -126,8 +128,31 @@ for (const theme of THEMES) {
         await expectBaseline(page, `bin-wide-${theme}.png`);
       });
 
+      // 0.31: a shared address book the person manages, with a contact open, and its share dialog.
+      test(`shared book (wide, ${theme})`, async ({ page, open, settle }) => {
+        await open('/contacts?book=book-suppliers&contact=bc-1');
+        await expect(page.getByRole('article', { name: 'Maria Okafor' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `book-wide-${theme}.png`);
+      });
+
+      test(`shared book, share dialog (wide, ${theme})`, async ({ page, open, settle }) => {
+        await open('/contacts?book=book-suppliers');
+        await page.getByRole('button', { name: 'Share', exact: true }).click();
+        await expect(page.getByRole('list', { name: 'People and groups to add' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `book-share-wide-${theme}.png`);
+      });
+
       test.describe('as an administrator', () => {
         test.use({ admin: true });
+
+      test(`shared books of the server (wide, ${theme})`, async ({ page, open, settle }) => {
+        await open('/admin/address-books');
+        await expect(page.getByRole('button', { name: 'Restore Trade fair 2025' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `shared-books-wide-${theme}.png`);
+      });
         test(`admin policies (wide, ${theme})`, async ({ page, open, settle }) => {
           await open('/admin/policies');
           await expect(page.getByRole('combobox', { name: 'Creating backups' })).toBeVisible();
@@ -258,6 +283,21 @@ for (const theme of THEMES) {
         await expect(page.getByRole('list', { name: 'Deleted items' })).toBeVisible();
         await settle();
         await expectBaseline(page, `bin-phone-${theme}.png`);
+      });
+
+      // 0.31: a shared book's list with what its manager may do, and a company directory entry.
+      test(`shared book (phone, ${theme})`, async ({ page, open, settle }) => {
+        await open('/contacts?book=book-suppliers');
+        await expect(page.getByRole('button', { name: /^Maria Okafor/ })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `book-phone-${theme}.png`);
+      });
+
+      test(`company directory entry (phone, ${theme})`, async ({ page, open, settle }) => {
+        await open('/contacts?book=company&contact=user-katherine');
+        await expect(page.getByRole('region', { name: 'Groups' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `company-entry-phone-${theme}.png`);
       });
 
       // 0.29: the lock in a phone's hand, and the set-up the administrator requires.

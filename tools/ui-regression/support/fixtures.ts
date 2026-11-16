@@ -383,7 +383,7 @@ export const POLICIES_ADMIN_APP_LOCK = {
 };
 
 // ── 0.30 organisation: people, groups, a group's rules, setup links, required two-factor authentication ──
-const ALL_PERMISSIONS = ['users.read', 'users.manage', 'server.settings', 'storage.read', 'audit.read', 'groups.manage', 'admins.manage', 'owner.transfer'];
+const ALL_PERMISSIONS = ['users.read', 'users.manage', 'server.settings', 'storage.read', 'audit.read', 'groups.manage', 'admins.manage', 'owner.transfer', 'contacts.books.manage'];
 /** The administrator of the server pages is the owner: every permission, so every control shows. */
 const OWNER = { ...USER, role: 'owner' as const, permissions: ALL_PERMISSIONS, manages_groups: false, two_factor_enabled: true };
 export const GROUPS = [
@@ -448,6 +448,66 @@ type Handler = (url: URL, method: string, body: unknown) => ApiReply | undefined
 type Route = [method: string, path: RegExp, handler: Handler];
 
 const ok = (body: unknown): ApiReply => ({ body });
+
+// ── 0.31 shared address books and the company directory ──
+// Company is every active person; Suppliers is a book the synthetic person made and shares; Press contacts is shared with them to read.
+const DIRECTORY_FIELDS: Record<string, { phone: string | null; job_title: string | null; department: string | null }> = {
+  [USER.id]: { phone: '+1 555 0140', job_title: 'Operations lead', department: 'Operations' },
+  'user-grace': { phone: '+1 555 0141', job_title: 'Head of support', department: 'Support' },
+  'user-alex': { phone: '+1 555 0142', job_title: 'Support agent', department: 'Support' },
+  'user-blair': { phone: null, job_title: 'Support agent', department: 'Support' },
+  'user-katherine': { phone: '+1 555 0144', job_title: 'Senior accountant for payroll and the year-end close', department: 'Finance' },
+};
+export const DIRECTORY = PEOPLE.filter(person => person.is_active).map(person => ({
+  user_id: person.id, full_name: person.full_name, email: person.email, phone: null, job_title: null, department: null, ...DIRECTORY_FIELDS[person.id],
+  groups: person.groups.map(({ id, name }) => ({ id, name })), version: 1,
+}));
+const book = (id: string, name: string, description: string | null, permission: 'read' | 'edit' | 'manage', contacts: unknown[]) =>
+  ({ id, name, description, permission, contact_count: contacts.length, created_at: STAMP, updated_at: STAMP, contacts });
+export const BOOKS = [
+  book('company', 'Company', null, 'read', DIRECTORY.map(entry => contact(entry.user_id, entry.full_name ?? entry.email, null, {
+    name: { ...emptyName, display: entry.full_name }, organization: { name: null, department: entry.department }, job_title: entry.job_title,
+    emails: [value(`${entry.user_id}-email`, entry.email, 'work', true)], phones: entry.phone ? [value(`${entry.user_id}-phone`, entry.phone, 'work', true)] : [],
+  }))),
+  book('book-suppliers', 'Suppliers', 'Who we order from, and who to call when a delivery is late', 'manage', [
+    contact('bc-1', 'Maria', 'Okafor', { organization: { name: 'Example Paper Ltd', department: 'Sales' }, job_title: 'Account manager',
+      emails: [value('be-1', 'maria.okafor@paper.example.com', 'work', true)], phones: [value('bp-1', '+1 555 0160', 'work', true), value('bp-2', '+1 555 0161', 'mobile')],
+      notes: 'Orders before Wednesday noon ship the same week.' }),
+    contact('bc-2', 'Jonas', 'Lindqvist', { organization: { name: 'Example Couriers', department: null }, emails: [value('be-2', 'dispatch@couriers.example.net', 'work')], phones: [value('bp-3', '+1 555 0162', 'work')] }),
+    contact('bc-3', 'Priya', 'Raman', { organization: { name: 'Example Print Works', department: null }, emails: [value('be-3', 'priya@printworks.example.org', 'work')] }),
+    contact('bc-4', 'Grace', 'Hopper', { organization: { name: 'Example Labs', department: 'Research' }, emails: [value('be-4', 'grace@example.com', 'work')] }),
+  ]),
+  book('book-press', 'Press contacts', null, 'read', [
+    contact('bc-5', 'Sam', 'Reporter', { organization: { name: 'The Example Courier', department: null }, emails: [value('be-5', 'sam@courier.example.org', 'work')] }),
+    contact('bc-6', 'Noor', 'Haddad', { organization: { name: 'Example Radio', department: 'News desk' }, phones: [value('bp-4', '+1 555 0170', 'work')] }),
+  ]),
+];
+const BOOK_SHARES = [
+  { principal: { kind: 'user', id: USER.id }, name: USER.full_name, email: USER.email, permission: 'manage' },
+  { principal: { kind: 'group', id: 'grp-support' }, name: 'Support', email: null, permission: 'edit' },
+  { principal: { kind: 'user', id: 'user-katherine' }, name: 'Katherine Johnson-Example of the Accounting Office', email: 'katherine.johnson-example@accounting.example.com', permission: 'read' },
+];
+const BOOK_BIN = [binItem('bin-book-1', { title: 'Old Example Stationers', deleted_at: at('06-13T10:00:00.000Z'), purge_after: at('07-13T10:00:00.000Z') })];
+const adminBook = ({ contacts: _contacts, permission: _permission, ...fields }: typeof BOOKS[number], created_by: string | null, deleted_at: string | null = null) => {
+  const creator = PEOPLE.find(person => person.id === created_by);
+  return { ...fields, created_by: creator ? { id: creator.id, full_name: creator.full_name, email: creator.email } : null, deleted_at };
+};
+const ADMIN_BOOKS = [
+  adminBook(BOOKS[1], USER.id), adminBook(BOOKS[2], 'user-grace'),
+  adminBook(book('book-night', 'Night shift handover', 'Numbers the night shift needs', 'manage', [1, 2, 3]), null),
+  adminBook(book('book-fair', 'Trade fair 2025', null, 'manage', [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]), 'user-alex', at('06-09T14:00:00.000Z')),
+];
+const bookOf = (url: URL) => BOOKS.find(entry => entry.id === decodeURIComponent(url.pathname.split('/')[3] ?? ''));
+const noBook: ApiReply = { status: 404, body: { error: 'Address book not found', code: 'BOOK_NOT_FOUND' } };
+const bookRoutes = (admin: boolean): Route[] => [
+  ['GET', /^\/address-books$/, () => ok({ books: BOOKS.map(({ contacts: _contacts, ...entry }) => entry) })],
+  ['GET', /^\/address-books\/[^/]+\/contacts$/, url => { const found = bookOf(url); return found ? ok({ contacts: found.contacts, has_more: false, offset: 0 }) : noBook; }],
+  ['GET', /^\/address-books\/[^/]+\/shares$/, () => ok({ shares: BOOK_SHARES })],
+  ['GET', /^\/address-books\/[^/]+\/share-candidates$/, () => ok({ people: PEOPLE.filter(person => ['user-blair', 'user-alex'].includes(person.id)).map(({ id, email, full_name }) => ({ id, email, full_name })),
+    groups: GROUPS.map(({ id, name }) => ({ id, name })), everyone: admin })],
+  ['GET', /^\/directory$/, () => ok({ entries: DIRECTORY })],
+  ['GET', /^\/admin\/address-books$/, () => ok({ books: ADMIN_BOOKS })],
+];
 
 function mailList(emails: typeof EMAILS, url: URL) {
   const account = url.searchParams.get('account_id');
@@ -536,6 +596,7 @@ function defaultRoutes(emails: typeof EMAILS, admin = false): Route[] {
     ['GET', /^\/policies\/effective$/, () => ok(POLICIES_EFFECTIVE)],
     ['GET', /^\/bin$/, url => {
       const module = url.searchParams.get('module');
+      if (url.searchParams.get('book')) return ok({ items: BOOK_BIN, retention: '30' });
       return ok({ items: BIN_ITEMS.filter(item => !module || item.module === module), retention: '30' });
     }],
     ['GET', /^\/backup\/capabilities$/, () => ok(BACKUP_CAPABILITIES)],
@@ -553,7 +614,8 @@ function defaultRoutes(emails: typeof EMAILS, admin = false): Route[] {
     // 0.30 organisation: people, a person's devices and data, groups and their rules, the setup link's public check.
     ['GET', /^\/admin\/users$/, () => ok({ users: PEOPLE })],
     ['GET', /^\/admin\/users\/[^/]+\/devices$/, () => ok({ devices: DEVICES.slice(1) })],
-    ['GET', /^\/admin\/users\/[^/]+\/accounts$/, url => ok({ user_id: url.pathname.split('/')[4], mail_accounts: [], calendar_accounts: [] })],
+    ['GET', /^\/admin\/users\/[^/]+\/accounts$/, url => ok({ user_id: url.pathname.split('/')[4], mail_accounts: [], calendar_accounts: [],
+      managed_books: url.pathname.split('/')[4] === 'user-grace' ? [{ id: 'book-press', name: 'Press contacts' }] : [] })],
     ['GET', /^\/admin\/users\/[^/]+\/backups$/, () => ok({ jobs: [] })],
     ['GET', /^\/admin\/users\/[^/]+\/bin$/, () => ok({ items: [], retention: '30', next_cursor: null })],
     ['GET', /^\/admin\/groups$/, () => ok({ groups: GROUPS })],
@@ -572,8 +634,10 @@ function defaultRoutes(emails: typeof EMAILS, admin = false): Route[] {
     ['GET', /^\/contacts\/merges$/, () => ok({ merges: [] })],
     ['GET', /^\/contacts\/[^/]+$/, url => {
       const found = CONTACTS.find(entry => `/contacts/${entry.id}` === url.pathname.replace(/^\/api/, ''));
-      return found ? ok({ contact: { ...found, properties: found.kept_properties ? KEPT_PROPERTIES : [] } }) : { status: 404, body: { error: 'Not found' } };
+      // Grace is also in the Suppliers book: the detail says so.
+      return found ? ok({ contact: { ...found, properties: found.kept_properties ? KEPT_PROPERTIES : [], also_in: found.id === 'c-1' ? [{ book_id: 'book-suppliers', name: 'Suppliers' }] : [] } }) : { status: 404, body: { error: 'Not found' } };
     }],
+    ...bookRoutes(admin),
   ];
 }
 
