@@ -859,6 +859,39 @@ of 0.28.0's production code existed only because of review rounds.
 Evidence: [AGENTS.md "Change size"](AGENTS.md#change-size),
 [Code review](docs/agents/review.md).
 
+#### P-43 Shared address books work like groups
+
+Accepted, 2026-11-15 (maintainer, for 0.31.0 and 0.32.0). Not built yet.
+
+The company directory is the built-in read-only address book "Company":
+every active person, with the account's name and email and the phone, job
+title and department they fill in (administrators correct them). Any person
+can create a shared address book and manages it; an administrator shares a
+book with any people or groups, a member only with the groups they belong to
+and the people in them, each share read or edit. Books belong to the
+organisation and stay when their creator leaves. Each person chooses per
+book, the directory included, whether it goes to their phone (default on,
+read-only), unless the phone-contacts rule forbids it. Contacts reach a
+book one at a time, by copying selected personal contacts (a new copy, not
+linked) or by importing a vCard or CSV file (2026-11-16). Something deleted
+from a shared book or calendar goes to that book's or calendar's own bin,
+which everyone who may edit it sees. More administrator rules on who may
+create or share wait until the maintainer has seen the whole interface.
+
+#### P-44 Chat is always end-to-end encrypted
+
+Accepted, 2026-11-15 (maintainer, for 0.33.0). Not built yet.
+
+There is no server-readable mode. A new device gets the history through a
+passphrase-protected key backup. An optional organisation recovery key is
+off by default; the owner turns it on and keeps it offline, a recovery needs
+it and the owner's password, is logged and is told to the person, and while
+it is on everyone is told the organisation can recover their chats. While
+deleting for good is forbidden, chat messages cannot be deleted; otherwise a
+deletion is final and leaves "message deleted". Presence and read receipts
+are on by default, each person can switch them off, and an administrator can
+lock them. Chat is on after the upgrade like the other modules.
+
 ## Open decisions and conflicts
 
 Open proposals do not override accepted decisions.
