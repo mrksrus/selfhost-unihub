@@ -363,8 +363,9 @@ async function verifyDatabaseInventory(connection: SqlExecutor, options?: Parame
 function assertArchiveRelationships(rows: readonly RelationshipRow[]) {
   for (const row of rows) {
     const table = row.table_name === 'users' ? 'user' : row.table_name;
-    // Non-archive relationships, and those of columns no archive carries, are not restored.
-    if (!TABLE_POLICIES[table]?.columns.includes(row.column_name)) continue;
+    if (!TABLE_POLICIES[table]) continue; // Non-archive relationships are not restored.
+    // A book's rows are never archived, so their link to the book is not restored either.
+    if (row.column_name === 'address_book_id' && row.parent_table === 'address_books' && BOOK_ROWS.tables.includes(row.table_name)) continue;
     const parent = row.column_name === 'user_id' ? 'users' : REFERENCES[table]?.[row.column_name];
     if (!parent || parent !== row.parent_table || row.parent_column !== 'id') {
       throw new Error(`Unclassified recovery relationship ${row.table_name}.${row.column_name} -> ${row.parent_table}.${row.parent_column}`);

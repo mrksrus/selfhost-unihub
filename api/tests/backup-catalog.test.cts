@@ -29,6 +29,9 @@ test('changing an existing database FK cannot silently reuse a different restore
   assertArchiveRelationships([relation]);
   assert.throws(() => assertArchiveRelationships([{ ...relation, parent_table: 'contacts' }]), /Unclassified recovery relationship/);
   assert.throws(() => assertArchiveRelationships([{ ...relation, column_name: 'future_account_id' }]), /Unclassified recovery relationship/);
+  // A shared book's rows are not archived; only their own link to the book is exempt.
+  assertArchiveRelationships([{ table_name: 'contacts', column_name: 'address_book_id', parent_table: 'address_books', parent_column: 'id' }]);
+  assert.throws(() => assertArchiveRelationships([{ table_name: 'emails', column_name: 'address_book_id', parent_table: 'address_books', parent_column: 'id' }]), /Unclassified recovery relationship/);
 });
 
 test('account settings are a request-only section that exports accounts without content', () => {
