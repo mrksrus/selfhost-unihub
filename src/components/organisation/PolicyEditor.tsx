@@ -204,20 +204,33 @@ function AppLockRequiredControl({ id, value, floor, onChange, disabled }: { id: 
 
 /**
  * Before two-factor authentication becomes required: who it reaches that has
- * none yet, and who among them is already in their 7 days (a rule of another
- * scope started them). Nobody is locked out by saving.
+ * none yet. Only those new to the rule get 7 days; a rule of another scope
+ * already started the others, who are still in their 7 days or past them.
  */
 function TwoFactorPreview({ without, inGrace }: { without: number; inGrace: readonly PolicyPreviewPerson[] }) {
+  const now = Date.now();
+  const ended = inGrace.filter(person => new Date(person.grace_ends_at).getTime() <= now);
+  const counting = inGrace.filter(person => !ended.includes(person));
+  const fresh = without - inGrace.length;
   return (
     <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm" data-testid="two-factor-preview">
       <p className="font-medium">
         {without === 0 ? 'Everyone this covers has two-factor authentication.'
           : `${without} ${without === 1 ? 'person' : 'people'} this covers ${without === 1 ? 'has' : 'have'} no two-factor authentication.`}
       </p>
-      {without > 0 && <p className="mt-1 text-muted-foreground">They get 7 days to set it up and are reminded at every start. After that they can only set it up or sign out.</p>}
-      {inGrace.length > 0 && (
+      {fresh > 0 && (
+        <p className="mt-1 text-muted-foreground">
+          {fresh === without ? 'They get' : `${fresh} of them ${fresh === 1 ? 'gets' : 'get'}`} 7 days from now to set it up, with a reminder at every start. After that they can only set it up or sign out.
+        </p>
+      )}
+      {counting.length > 0 && (
         <ul aria-label="Already in their 7 days" className="mt-2 space-y-0.5 text-muted-foreground">
-          {inGrace.map(person => <li key={person.id}>{personName(person)}: until {formatDay(person.grace_ends_at)}, from an earlier rule</li>)}
+          {counting.map(person => <li key={person.id}>{personName(person)}: until {formatDay(person.grace_ends_at)}, from an earlier rule</li>)}
+        </ul>
+      )}
+      {ended.length > 0 && (
+        <ul aria-label="Their 7 days have ended" className="mt-2 space-y-0.5 text-muted-foreground">
+          {ended.map(person => <li key={person.id}>{personName(person)}: must set it up at their next start</li>)}
         </ul>
       )}
     </div>

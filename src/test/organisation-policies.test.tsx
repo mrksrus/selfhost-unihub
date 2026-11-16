@@ -49,6 +49,8 @@ const PEOPLE = [
   person({ id: 'user-drew', email: 'drew@example.com', full_name: 'Drew Example' }),
   person({ id: 'user-gone', email: 'gone@example.com', is_active: false, status: 'inactive', groups: inSupport }),
 ];
+const DAY = 24 * 60 * 60 * 1000;
+const GRACE_RUNNING = new Date(Date.now() + 3 * DAY).toISOString();
 let installation = everyone();
 let support = ofGroup(installation);
 
@@ -80,10 +82,13 @@ beforeEach(() => {
   });
   vi.mocked(api.put).mockImplementation(async (path: string) => ({ data: path === '/admin/policies' ? installation : support }));
   vi.mocked(api.post).mockImplementation(async (path: string, body?: unknown) => {
-    // The server's preview: Everyone active without 2FA are Alex, Blair and Drew; Support's, Alex and Blair. Blair is in their 7 days from another rule.
+    // The server's preview: Everyone active without 2FA are Alex, Blair and Drew; Support's, Alex and Blair. Another rule started
+    // Blair's 7 days, which still run, and Drew's, which have ended.
     if (path === '/admin/policies/preview') {
-      const blair = { id: 'user-blair', email: 'blair@example.com', full_name: 'Blair Example', grace_ends_at: '2026-06-20T09:00:00.000Z' };
-      return { data: { two_factor: { without: (body as { group_id: string | null }).group_id ? 2 : 3, in_grace: [blair] } } };
+      const group = !!(body as { group_id: string | null }).group_id;
+      const blair = { id: 'user-blair', email: 'blair@example.com', full_name: 'Blair Example', grace_ends_at: GRACE_RUNNING };
+      const drew = { id: 'user-drew', email: 'drew@example.com', full_name: 'Drew Example', grace_ends_at: new Date(Date.now() - 2 * DAY).toISOString() };
+      return { data: { two_factor: { without: group ? 2 : 3, in_grace: group ? [blair] : [blair, drew] } } };
     }
     return { data: { acknowledged_revision: 3 } };
   });
@@ -108,7 +113,10 @@ describe('Server › Policies by scope', () => {
     const preview = await within(dialog).findByTestId('two-factor-preview');
     expect(api.post).toHaveBeenCalledWith('/admin/policies/preview', { group_id: null }, expect.anything());
     expect(preview).toHaveTextContent('3 people this covers have no two-factor authentication.');
-    expect(within(preview).getByRole('list', { name: 'Already in their 7 days' })).toHaveTextContent(/Blair Example: until (20 June|June 20)/);
+    // Only the person new to the rule gets 7 days; the one past them is not promised any.
+    expect(preview).toHaveTextContent('1 of them gets 7 days from now to set it up');
+    expect(within(preview).getByRole('list', { name: 'Already in their 7 days' })).toHaveTextContent(`Blair Example: until ${new Date(GRACE_RUNNING).toLocaleDateString(undefined, { day: 'numeric', month: 'long' })}`);
+    expect(within(preview).getByRole('list', { name: 'Their 7 days have ended' })).toHaveTextContent('Drew Example: must set it up at their next start');
     confirm(dialog);
     await waitFor(() => expect(api.put).toHaveBeenCalledExactlyOnceWith('/admin/policies', { values: { 'auth.two_factor': 'required', 'auth.password_min_length': 14 }, current_password: 'admin-own-password' }));
   });
