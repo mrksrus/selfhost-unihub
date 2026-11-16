@@ -181,8 +181,9 @@ export function DateField({ id, label, value, onChange, error, onRemove }: {
 }
 
 /** The photo: choose a picture or remove it. No cropping; the server resizes and converts it. */
-export function PhotoField({ contact, photo, onChange, status, error }: {
+export function PhotoField({ contact, photo, onChange, status, error, bookId }: {
   contact: Pick<Contact, 'id' | 'photo' | 'display_name' | 'name' | 'emails' | 'phones'>;
+  bookId?: string;
   photo: ContactForm['photo'];
   onChange: (photo: ContactForm['photo']) => void;
   status?: string | null;
@@ -199,7 +200,7 @@ export function PhotoField({ contact, photo, onChange, status, error }: {
   };
   return (
     <div className="flex items-center gap-4">
-      <ContactAvatar contact={contact} size="editor" src={preview} />
+      <ContactAvatar contact={contact} size="editor" src={preview} bookId={bookId} />
       <div className="min-w-0 space-y-1">
         <div className="flex flex-wrap items-center gap-2">
           <Button type="button" variant="outline" size="sm" onClick={() => input.current?.click()} disabled={!!status}>

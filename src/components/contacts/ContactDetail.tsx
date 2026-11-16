@@ -1,8 +1,11 @@
-import { useState, type MouseEvent, type ReactNode } from 'react';
+import { Fragment, useContext, useState, type MouseEvent, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { ArrowLeft, AtSign, Cake, ChevronDown, Copy, Globe, Mail, MapPin, MessageSquare, MoreHorizontal, Phone, Star, Users } from 'lucide-react';
 import { contactDetailQueryOptions, contactName, type Address, type Contact, type KeptProperty, type LabelledValue } from '@/lib/contacts-api';
 import { addressLines, contactRole, formatPartialDate, labelText, mapHref, safeHref, telHref } from '@/lib/contact-fields';
+import { AuthContext } from '@/contexts/auth-context';
+import { addressBooksApi, addressBooksQueryKeys } from '@/lib/address-books-api';
 import { copyText } from '@/lib/platform';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
@@ -10,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { LoadingState } from '@/components/ui/page-states';
+import { PolicyNote } from '@/components/ui/policy-note';
 import { ContactAvatar } from '@/components/contacts/ContactAvatar';
 
 interface Props {
@@ -17,9 +21,19 @@ interface Props {
   /** Compose inside UniHub instead of following the mailto: link. */
   onEmail?: (address: string) => void;
   onBack: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  onToggleFavorite: () => void;
+  /** Absent where the person may not change the contact: a shared book they only read, the company directory. */
+  onEdit?: () => void;
+  onDelete?: () => void;
+  /** Absent in a shared book: favorites are the person's own. */
+  onToggleFavorite?: () => void;
+  /** The shared book the contact is in. */
+  book?: { id: string; name: string };
+  /** Why the contact cannot be changed here; Edit stays, greyed out. */
+  readOnly?: string;
+  /** A company entry's groups. */
+  groups?: { id: string; name: string }[];
+  /** The shared books the person may edit, to copy their own contact into. */
+  copyTo?: { books: { id: string; name: string }[]; onCopy: (bookId: string) => void };
 }
 
 function CopyButton({ value }: { value: string }) {
@@ -73,9 +87,11 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
 
 const withValues = <T extends LabelledValue>(list: T[]) => list.filter(entry => entry.value.trim());
 
-function KeptProperties({ id, count }: { id: string; count: number }) {
+function KeptProperties({ id, count, bookId }: { id: string; count: number; bookId?: string }) {
   const [open, setOpen] = useState(false);
-  const detail = useQuery({ ...contactDetailQueryOptions(id), enabled: open });
+  const own = useQuery({ ...contactDetailQueryOptions(id), enabled: open && !bookId });
+  const shared = useQuery({ queryKey: addressBooksQueryKeys.contact(bookId ?? '', id), queryFn: ({ signal }) => addressBooksApi.contact(bookId!, id, signal), enabled: open && !!bookId });
+  const detail = bookId ? shared : own;
   const properties: KeptProperty[] = detail.data?.properties ?? [];
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="mb-5">
@@ -105,8 +121,12 @@ function KeptProperties({ id, count }: { id: string; count: number }) {
   );
 }
 
-export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onToggleFavorite }: Props) {
+export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onToggleFavorite, book, readOnly, groups, copyTo }: Props) {
   const name = contactName(contact);
+  const isOffline = !!useContext(AuthContext)?.isOffline;
+  // The shared books that hold the same person; nothing is merged across them. The offline copy does not say.
+  const alsoIn = useQuery({ ...contactDetailQueryOptions(contact.id), enabled: !book && !isOffline }).data?.also_in ?? [];
+  const copyBooks = copyTo?.books ?? [];
   const nickname = withValues(contact.nicknames)[0]?.value.trim();
   const role = contactRole(contact);
   const phones = withValues(contact.phones);
@@ -122,32 +142,48 @@ export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onTo
   return (
     <article aria-label={name} className="mx-auto w-full max-w-xl px-4 py-4 md:px-6">
       <div className="mb-4 flex items-center gap-1">
-        <Button variant="ghost" size="sm" className="-ml-2 lg:hidden" onClick={onBack}><ArrowLeft aria-hidden="true" />Contacts</Button>
-        <div className="ml-auto flex items-center gap-1">
-          <Button variant="ghost" size="icon" aria-pressed={contact.is_favorite} onClick={onToggleFavorite}
-            aria-label={contact.is_favorite ? 'Remove from favorites' : 'Add to favorites'}>
-            <Star aria-hidden="true" className={cn(contact.is_favorite && 'fill-current text-warning')} />
-          </Button>
-          <Button variant="outline" size="sm" onClick={onEdit}>Edit</Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" aria-label={`More actions for ${name}`}><MoreHorizontal aria-hidden="true" /></Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={onDelete}>Delete contact</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+        <Button variant="ghost" size="sm" className="-ml-2 min-w-0 lg:hidden" onClick={onBack}><ArrowLeft aria-hidden="true" /><span className="truncate">{book?.name ?? 'Contacts'}</span></Button>
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {onToggleFavorite && (
+            <Button variant="ghost" size="icon" aria-pressed={contact.is_favorite} onClick={onToggleFavorite}
+              aria-label={contact.is_favorite ? 'Remove from favorites' : 'Add to favorites'}>
+              <Star aria-hidden="true" className={cn(contact.is_favorite && 'fill-current text-warning')} />
+            </Button>
+          )}
+          {(onEdit || readOnly) && <Button variant="outline" size="sm" onClick={onEdit} disabled={!onEdit}>Edit</Button>}
+          {(onDelete || copyBooks.length > 0) && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" aria-label={`More actions for ${name}`}><MoreHorizontal aria-hidden="true" /></Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {copyBooks.map(target => <DropdownMenuItem key={target.id} onClick={() => copyTo!.onCopy(target.id)}>Copy to {target.name}</DropdownMenuItem>)}
+                {onDelete && <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={onDelete}>Delete contact</DropdownMenuItem>}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       </div>
+      {readOnly && <PolicyNote reason={readOnly} className="mb-4 mt-0" />}
 
       <div className="mb-6 flex items-center gap-4">
-        <ContactAvatar contact={contact} size="detail" />
+        <ContactAvatar contact={contact} size="detail" bookId={book?.id} />
         <div className="min-w-0">
           <h2 className="break-words text-xl font-semibold tracking-tight">
             {name}
             {nickname && <span className="font-normal text-muted-foreground"> “{nickname}”</span>}
           </h2>
           {role && <p className="text-sm text-muted-foreground">{role}</p>}
+          {alsoIn.length > 0 && (
+            <p className="mt-1 text-sm text-muted-foreground">
+              Also in {alsoIn.map((entry, index) => (
+                <Fragment key={entry.book_id}>
+                  {index > 0 && ', '}
+                  <Link to={`/contacts?book=${encodeURIComponent(entry.book_id)}&search=${encodeURIComponent(name)}`} className="underline underline-offset-2 hover:text-foreground">{entry.name}</Link>
+                </Fragment>
+              ))}
+            </p>
+          )}
           {contact.categories.length > 0 && (
             <ul aria-label="Categories" className="mt-2 flex flex-wrap gap-1.5">
               {contact.categories.map(category => (
@@ -159,6 +195,15 @@ export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onTo
       </div>
 
       {empty && <p className="mb-6 text-sm text-muted-foreground">No email or phone number yet.</p>}
+
+      {!!groups?.length && (
+        <section aria-label="Groups" className="mb-5 px-2">
+          <h3 className="mb-1.5 text-xs font-medium text-muted-foreground">Groups</h3>
+          <ul className="flex flex-wrap gap-1.5">
+            {groups.map(group => <li key={group.id} className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">{group.name}</li>)}
+          </ul>
+        </section>
+      )}
 
       {phones.length > 0 && (
         <Group title="Phone">
@@ -218,7 +263,7 @@ export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onTo
         </section>
       )}
 
-      {contact.kept_properties > 0 && <KeptProperties id={contact.id} count={contact.kept_properties} />}
+      {contact.kept_properties > 0 && <KeptProperties id={contact.id} count={contact.kept_properties} bookId={book?.id} />}
     </article>
   );
 }

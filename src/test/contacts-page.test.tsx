@@ -1,11 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Contacts from '@/pages/Contacts';
 import { api } from '@/lib/api';
 import { contact, duplicateGroup } from './contact-fixtures';
 import { userSettingsAnswer } from './settings-fixtures';
+import { mountSignedIn } from './helpers/data-safety';
 import type { UserSettingValues } from '@/lib/settings-api';
 
 const state = vi.hoisted(() => ({ toast: vi.fn() }));
@@ -34,14 +34,8 @@ function mount(path = '/contacts', preferences: Partial<UserSettingValues> = { e
     if (url === '/settings/values') return userSettingsAnswer(preferences);
     return { data: {} };
   });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[path]}>
-        <Routes><Route path="*" element={<><Contacts /><Location /></>} /></Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
-  );
+  // Signed in, as the page always is: its shared books follow the session.
+  return mountSignedIn(<><Contacts /><Location /></>, { path });
 }
 
 beforeEach(() => {

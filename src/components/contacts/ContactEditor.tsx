@@ -33,8 +33,10 @@ const FIRST_INPUT: Record<OptionalField, string> = {
  * fields appear from "Add field" or when the contact holds them. A contact
  * changed elsewhere since it was opened is not overwritten silently.
  */
-export function ContactEditor({ target, onClose, actions, onSaved }: {
-  target: ContactEditorTarget; onClose: () => void; actions: ContactActions; onSaved?: (id: string) => void;
+export function ContactEditor({ target, onClose, actions, onSaved, book }: {
+  target: ContactEditorTarget; onClose: () => void; actions: Pick<ContactActions, 'create' | 'update' | 'setPhoto' | 'removePhoto'>; onSaved?: (id: string) => void;
+  /** The shared book the contact is saved in, with that book's actions. */
+  book?: { id: string; name: string };
 }) {
   const isMobile = useIsMobile();
   // A save answered after an account switch sends no photo and touches nothing of the next session.
@@ -140,7 +142,7 @@ export function ContactEditor({ target, onClose, actions, onSaved }: {
     void save(undefined);
   };
 
-  const title = editing ? 'Edit contact' : 'New contact';
+  const title = editing ? 'Edit contact' : book ? `New contact in ${book.name}` : 'New contact';
   const saveLabel = editing ? 'Save' : 'Add contact';
   const pending = busy || !!photoStatus;
 
@@ -157,7 +159,7 @@ export function ContactEditor({ target, onClose, actions, onSaved }: {
 
   const fields = (
     <div className="space-y-6">
-      <PhotoField contact={editing ?? NEW_CONTACT} photo={form.photo} onChange={photo => { setPhotoError(null); set('photo', photo); }} status={photoStatus} error={photoError} />
+      <PhotoField contact={editing ?? NEW_CONTACT} bookId={book?.id} photo={form.photo} onChange={photo => { setPhotoError(null); set('photo', photo); }} status={photoStatus} error={photoError} />
 
       <div className="space-y-3">
         {shown('name_details') && (

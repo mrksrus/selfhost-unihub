@@ -7,7 +7,7 @@ import { usePolicy } from '@/hooks/use-policies';
 import { useToast } from '@/hooks/use-toast';
 import { hasCode } from '@/lib/api-error';
 import { useBinActions, type DestinationAsk } from '@/hooks/use-bin-actions';
-import { BIN_MODULES, binQueryKeys, binQueryOptions, groupBinItems, retentionSentence, type BinItem, type BinModule } from '@/lib/bin-api';
+import { BIN_MODULES, binQueryKeys, binQueryOptions, bookBinQueryOptions, groupBinItems, retentionSentence, type BinItem, type BinModule } from '@/lib/bin-api';
 import { calendarApi, calendarQueryKeys, type CalendarCalendar } from '@/lib/calendar-api';
 import { listRefusal } from '@/lib/tasks';
 import { ListChooser } from '@/components/todo/ListChooser';
@@ -121,21 +121,27 @@ function DestinationDialog({ ask, titles, pending, onClose, onChoose, returnFocu
  * as a unit. Binned items are not in the offline copy, so the view needs a
  * connection. The server answers a page at a time (whole groups, newest
  * first); "Show older items" at the end of the list appends the next page.
+ * With `book` it is that shared book's bin, which everyone who may edit the
+ * book sees; how long it keeps items is the server's, not the person's.
  */
-export function BinView({ module, showSettingsLink = true }: { module?: BinModule; showSettingsLink?: boolean }) {
+export function BinView({ module, showSettingsLink = true, book }: { module?: BinModule; showSettingsLink?: boolean; book?: { id: string; name: string } }) {
   const isOffline = !!useContext(AuthContext)?.isOffline;
   const client = useQueryClient();
   const { toast } = useToast();
-  const query = useInfiniteQuery({ ...binQueryOptions(module), enabled: !isOffline });
+  const own = useInfiniteQuery({ ...binQueryOptions(module), enabled: !isOffline && !book });
+  const shared = useInfiniteQuery({ ...bookBinQueryOptions(book?.id ?? ''), enabled: !isOffline && !!book });
+  const query = book ? shared : own;
+  const queryKey = book ? binQueryKeys.book(book.id) : binQueryKeys.list(module);
   // A cursor the server no longer accepts (400 BIN_INVALID): the bin is read again from the newest items, with the server's word.
   const invalidCursor = hasCode(query.error, 'BIN_INVALID') ? query.error : null;
   useEffect(() => {
     if (!invalidCursor) return;
     toast({ title: 'Could not load older items', description: invalidCursor.message, variant: 'destructive' });
-    void client.resetQueries({ queryKey: binQueryKeys.list(module), exact: true });
-  }, [invalidCursor, client, module, toast]);
+    void client.resetQueries({ queryKey, exact: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invalidCursor, client, module, book?.id, toast]);
   const [ask, setAsk] = useState<DestinationAsk | null>(null);
-  const actions = useBinActions(module, { onDestinationAsked: setAsk });
+  const actions = useBinActions(module, { onDestinationAsked: setAsk, book: book?.id });
   const deletePolicy = usePolicy('bin.delete');
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   // Where focus returns when the destination dialog closes. After a submission the row is about to
@@ -171,7 +177,7 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
   const moduleLabel = (id: BinModule) => BIN_MODULES.find(entry => entry.id === id)?.label ?? id;
 
   const confirmEmpty = () => setConfirm({
-    title: module ? `Empty the ${moduleLabel(module).toLowerCase()} bin?` : 'Empty the bin?',
+    title: book ? `Empty the bin of ${book.name}?` : module ? `Empty the ${moduleLabel(module).toLowerCase()} bin?` : 'Empty the bin?',
     description: query.hasNextPage ? 'Everything in it, also the older items not shown yet, is deleted for good. Nothing can be restored afterwards.'
       : `${plural(binItems.length, 'item')} ${binItems.length === 1 ? 'is' : 'are'} deleted for good. Nothing can be restored afterwards.`,
     action: 'Delete for good', run: () => actions.empty.mutate(module),
@@ -188,7 +194,8 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
         <div className="min-w-0">
           <p className="text-sm text-muted-foreground">
             {retentionSentence(retention)}
-            {showSettingsLink && <> Change this in <Link to={settingsHref('bin')} className="underline underline-offset-4 hover:text-foreground">Settings › Bin</Link>.</>}
+            {book ? ` Everyone who can edit ${book.name} sees this bin.`
+              : showSettingsLink && <> Change this in <Link to={settingsHref('bin')} className="underline underline-offset-4 hover:text-foreground">Settings › Bin</Link>.</>}
           </p>
           {deletePolicy.lock && <PolicyNote reason={deletePolicy.lock} />}
         </div>
@@ -196,7 +203,7 @@ export function BinView({ module, showSettingsLink = true }: { module?: BinModul
           disabled={!!deletePolicy.lock || binItems.length === 0 || actions.empty.isPending}>Empty bin</Button>
       </div>
       {groups.length === 0 ? (
-        <EmptyState icon={Trash2} title="The bin is empty" description={module ? `Deleted ${moduleLabel(module).toLowerCase()} items wait here before they are gone for good.` : 'Deleted contacts, events, tasks and recordings wait here before they are gone for good.'} />
+        <EmptyState icon={Trash2} title="The bin is empty" description={book ? `Contacts deleted from ${book.name} wait here before they are gone for good.` : module ? `Deleted ${moduleLabel(module).toLowerCase()} items wait here before they are gone for good.` : 'Deleted contacts, events, tasks and recordings wait here before they are gone for good.'} />
       ) : (
         <ul ref={list} tabIndex={-1} aria-label="Deleted items" className="-mx-2 divide-y divide-border outline-none">
           {groups.map(group => {

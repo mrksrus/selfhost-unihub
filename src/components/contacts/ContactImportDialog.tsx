@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { FileUp, Loader2 } from 'lucide-react';
 import { contactsApi, contactsQueryKeys, invalidateContactQueries, type ImportCardSummary, type ImportDecisionKind, type ImportGroup, type ImportStatus, type ImportSummary, type ImportWarning } from '@/lib/contacts-api';
+import { addressBooksApi, invalidateBookQueries } from '@/lib/address-books-api';
 import { formatPartialDate, reasonText, SINGLE_FIELD_TEXT } from '@/lib/contact-fields';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -39,9 +40,11 @@ type Step = { kind: 'pick' } | { kind: 'reading' } | { kind: 'summary'; summary:
 /**
  * Import in two steps: the file is read and matched first, then the person
  * decides per group before anything is written (D6). The commit reports its
- * progress and the result.
+ * progress and the result. With `book` the file goes into that shared book:
+ * matched against its contacts, added or skipped, never merged.
  */
-export function ContactImportDialog({ open, onClose, onImported }: { open: boolean; onClose: () => void; onImported?: () => void }) {
+export function ContactImportDialog({ open, onClose, onImported, book }: { open: boolean; onClose: () => void; onImported?: () => void; book?: { id: string; name: string } }) {
+  const choices = (['merge', 'add', 'skip'] as ImportDecisionKind[]).filter(decision => !book || decision !== 'merge');
   const client = useQueryClient();
   const input = useRef<HTMLInputElement>(null);
   const [step, setStep] = useState<Step>({ kind: 'pick' });
@@ -54,7 +57,7 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
   useEffect(() => { if (open) { setStep({ kind: 'pick' }); setDecisions({}); setShowConflicts(false); setFileName(''); setStaged(null); } }, [open]);
 
   const stage = useSessionMutation({
-    mutationFn: (file: File) => contactsApi.stageImport(file),
+    mutationFn: (file: File) => book ? addressBooksApi.stageImport(book.id, file) : contactsApi.stageImport(file),
     onMutate: () => setStep({ kind: 'reading' }),
     onSuccess: summary => {
       setDecisions(Object.fromEntries(summary.groups.map(group => [group.id, group.default_decision])));
@@ -80,7 +83,7 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
   }, [committingId, progress.data, staged]);
   useEffect(() => {
     // A failed import may have written part of the file; the list shows what is there.
-    if (step.kind === 'done' && step.status.state !== 'expired') { void invalidateContactQueries(client); if (step.status.state === 'committed') onImported?.(); }
+    if (step.kind === 'done' && step.status.state !== 'expired') { void (book ? invalidateBookQueries(client) : invalidateContactQueries(client)); if (step.status.state === 'committed') onImported?.(); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step.kind]);
 
@@ -98,7 +101,10 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
     if (step.kind === 'pick' || step.kind === 'reading') {
       return (
         <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">A vCard file (4.0, 3.0 or 2.1) or a CSV export from Google Contacts or Outlook. Nothing is written before you confirm.</p>
+          <p className="text-sm text-muted-foreground">
+            A vCard file (4.0, 3.0 or 2.1) or a CSV export from Google Contacts or Outlook. Nothing is written before you confirm.
+            {book && ` The contacts are added to ${book.name}, for everyone who can see it.`}
+          </p>
           <input ref={input} type="file" accept={ACCEPT} className="hidden" aria-label="Choose a file" onChange={event => { pick(event.target.files?.[0]); event.target.value = ''; }} />
           <Button type="button" variant="outline" onClick={() => input.current?.click()} disabled={step.kind === 'reading'}>
             {step.kind === 'reading' ? <Loader2 aria-hidden="true" className="motion-safe:animate-spin" /> : <FileUp aria-hidden="true" />}
@@ -139,7 +145,7 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
               <h3 className="font-medium">What to do with matches</h3>
               <div className="flex flex-wrap items-center gap-x-1 gap-y-2">
                 <span className="mr-1 text-xs text-muted-foreground">For all:</span>
-                {(['merge', 'add', 'skip'] as ImportDecisionKind[]).map(decision => (
+                {choices.map(decision => (
                   <Button key={decision} type="button" variant="ghost" size="sm" onClick={() => setAll(decision, decided)}>{DECISION_TEXT[decision].split(' ')[0]}</Button>
                 ))}
                 {conflicting.length > 0 && <Button type="button" variant="outline" size="sm" className="ml-auto" onClick={() => setShowConflicts(value => !value)}>{showConflicts ? 'Hide conflicts' : `Review conflicts (${conflicting.length})`}</Button>}
@@ -152,7 +158,7 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
                       <span className="block text-xs text-muted-foreground">{[...new Set(group.reasons.map(reasonText))].join(' · ')}</span>
                       {showConflicts && group.conflicts.length > 0 && (
                         <span className="mt-1 block space-y-0.5 text-xs">
-                          <span className="block text-warning">Differs in {group.conflicts.map(field => SINGLE_FIELD_TEXT[field].toLowerCase()).join(', ')}: UniHub's value is kept when merging.</span>
+                          <span className="block text-warning">Differs in {group.conflicts.map(field => SINGLE_FIELD_TEXT[field].toLowerCase()).join(', ')}{book ? '.' : ': UniHub\'s value is kept when merging.'}</span>
                           {(group.summaries ?? []).map(card => <span key={card.card} className="block break-words text-muted-foreground">In the file: {cardText(card)}</span>)}
                         </span>
                       )}
@@ -160,7 +166,7 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
                     <Select value={decisions[group.id] ?? group.default_decision} onValueChange={value => setDecisions(prev => ({ ...prev, [group.id]: value as ImportDecisionKind }))}>
                       <SelectTrigger aria-label={`Decision for contacts ${group.cards.join(', ')}`} className="h-9 w-44"><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        {(['add', 'merge', 'skip'] as ImportDecisionKind[]).map(decision => <SelectItem key={decision} value={decision}>{DECISION_TEXT[decision]}</SelectItem>)}
+                        {(['add', 'merge', 'skip'] as ImportDecisionKind[]).filter(decision => choices.includes(decision)).map(decision => <SelectItem key={decision} value={decision}>{DECISION_TEXT[decision]}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </li>
@@ -190,7 +196,7 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
         {status.state === 'committed' ? (
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
             <dt className="text-muted-foreground">Added</dt><dd>{result?.added ?? 0}</dd>
-            <dt className="text-muted-foreground">Merged</dt><dd>{result?.merged ?? 0}</dd>
+            {!book && <><dt className="text-muted-foreground">Merged</dt><dd>{result?.merged ?? 0}</dd></>}
             <dt className="text-muted-foreground">Skipped</dt><dd>{result?.skipped ?? 0}</dd>
             {result && result.kept_conflicts.length > 0 && <><dt className="text-muted-foreground">Kept UniHub's value</dt><dd>{result.kept_conflicts.length} field{result.kept_conflicts.length === 1 ? '' : 's'} that differed</dd></>}
           </dl>
@@ -217,7 +223,7 @@ export function ContactImportDialog({ open, onClose, onImported }: { open: boole
     <Dialog open={open} onOpenChange={next => { if (!next && !busy) onClose(); }}>
       <DialogContent className="flex max-h-[90dvh] flex-col gap-0 p-0 sm:max-w-lg">
         <DialogHeader className="px-6 pb-3 pt-6">
-          <DialogTitle>Import contacts</DialogTitle>
+          <DialogTitle>{book ? `Import into ${book.name}` : 'Import contacts'}</DialogTitle>
           <DialogDescription>{step.kind === 'summary' ? `What ${fileName} would change.` : step.kind === 'done' ? 'Finished.' : 'From a vCard or CSV file.'}</DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-2">{body()}</div>

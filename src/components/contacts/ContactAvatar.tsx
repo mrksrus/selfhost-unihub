@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { contactInitials, contactPhotoUrl, type Contact } from '@/lib/contacts-api';
+import { bookContactPhotoUrl } from '@/lib/address-books-api';
 import { cn } from '@/lib/utils';
 
 type Size = 'row' | 'detail' | 'editor';
@@ -15,12 +16,15 @@ const SIZES: Record<Size, string> = {
  * lazily; a picture that cannot be loaded (no photo route yet, a swept file)
  * falls back to the initials without a broken image.
  */
-export function ContactAvatar({ contact, size = 'row', className, src }: {
+export function ContactAvatar({ contact, size = 'row', className, src, bookId }: {
   contact: Pick<Contact, 'id' | 'photo' | 'display_name' | 'name' | 'emails' | 'phones'>; size?: Size; className?: string;
   /** A picture chosen in the editor, shown before it is saved. */
   src?: string | null;
+  /** The shared book the contact is in; its photo is read through the book. */
+  bookId?: string;
 }) {
-  const url = src ?? contactPhotoUrl(contact, size === 'row' ? 'thumb' : 'full');
+  const variant = size === 'row' ? 'thumb' : 'full';
+  const url = src ?? (bookId ? bookContactPhotoUrl(bookId, contact, variant) : contactPhotoUrl(contact, variant));
   const [failed, setFailed] = useState<string | null>(null);
   useEffect(() => { setFailed(null); }, [url]);
   const showPhoto = url && failed !== url;
