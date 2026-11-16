@@ -7,6 +7,7 @@ import { ApiError } from '@/lib/api-error';
 import { binApi, destinationAsked, invalidateBinQueries, restoreRefusal, type BinDestinationKind, type BinModule, type BinRestoreResponse } from '@/lib/bin-api';
 import { invalidateCalendarQueries } from '@/lib/calendar-api';
 import { invalidateContactQueries } from '@/lib/contacts-api';
+import { invalidateBookQueries } from '@/lib/address-books-api';
 import { recordingsQueryKeys } from '@/lib/recordings-api';
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
@@ -40,9 +41,10 @@ export interface RestoreVariables { ids: string[]; modules?: BinModule[]; calend
 /**
  * Restoring, deleting for good and emptying, with their feedback, and the
  * "Moved to the bin · Undo" notice every delete shows. An answer after an
- * account switch shows and caches nothing (useSessionMutation).
+ * account switch shows and caches nothing (useSessionMutation). With `book`
+ * they act on that shared book's bin, whose items return to the book.
  */
-export function useBinActions(module?: BinModule, { onDestinationAsked }: { onDestinationAsked?: (ask: DestinationAsk) => void } = {}) {
+export function useBinActions(module?: BinModule, { onDestinationAsked, book }: { onDestinationAsked?: (ask: DestinationAsk) => void; book?: string } = {}) {
   const client = useQueryClient();
   const { toast } = useToast();
   const scope = useSessionScope();
@@ -52,6 +54,7 @@ export function useBinActions(module?: BinModule, { onDestinationAsked }: { onDe
     mutationFn: ({ ids, calendarId }: RestoreVariables) => binApi.restore(ids, calendarId),
     onSuccess: (result, { modules }) => {
       refreshAfterRestore(client, modules ?? [module]);
+      if (book) void invalidateBookQueries(client);
       // An item whose own calendar is gone or read-only waits for the person's choice; the rest is reported.
       const asked = result.failed.filter(entry => destinationAsked(entry.code));
       const rest = { ...result, failed: result.failed.filter(entry => !destinationAsked(entry.code)) };
@@ -70,7 +73,7 @@ export function useBinActions(module?: BinModule, { onDestinationAsked }: { onDe
   });
 
   const empty = useSessionMutation({
-    mutationFn: (target: BinModule | undefined) => binApi.empty(target),
+    mutationFn: (target: BinModule | undefined) => binApi.empty(target, book),
     onSuccess: deleted => { void invalidateBinQueries(client); toast({ title: deleted === 0 ? 'The bin was already empty' : `${plural(deleted, 'item')} deleted for good` }); },
     onError: error => {
       // Emptying runs in batches. A rule set meanwhile stops it between two: the server says how many
