@@ -230,7 +230,8 @@ roots pointing at the empty installation.
 The restore changes these rows in the same transaction, after the load
 (`services/instance-restore.ts`). Everything else comes back as the dump had
 it: users with their roles and the owner, their data, groups with their
-members and managers, the policies for everyone and for each group, the
+members and managers, shared address books with their shares, contacts and
+bins, the directory's fields, the policies for everyone and for each group, the
 activity log and the push identity, so phones keep receiving notifications.
 Ids are kept, so nothing that names a group or a person needs remapping.
 
@@ -318,6 +319,18 @@ person restored onto another installation starts in no group: the rules for
 everyone apply until an administrator adds them. The rule for later versions:
 principal and group ids never appear in a personal archive; grants of shared
 resources are organisation data and follow the same path.
+
+0.31.0 keeps data schema 7 and the personal backup format unchanged. Shared
+address books, their grants and the company directory's fields
+(`address_books`, `grants`, `directory_entries`, class `org`) travel only in
+the instance backup, with their ids. A book's contacts, values, kept
+properties, photos and bin items share the person's tables (upgrade step 29)
+but have `address_book_id` instead of `user_id`; the personal export and
+restore read and write only `user_id` rows, so a book's rows never enter or
+leave a personal backup (`address_book_id` is declared deliberately
+excluded). The instance backup's dump and files carry them as they are, book
+photos under `contact-photos/books/<book id>/`. See
+[Contacts](CONTACTS.md#shared-address-books).
 
 0.28.0 writes data schema 7: a backup holds data by class (local,
 configuration, Download-mode mail by choice or policy), never a provider's

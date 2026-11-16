@@ -15,21 +15,26 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   and New book. Whoever makes a book manages it: Share gives people and
   groups reading or editing (an administrator shares with anyone, a member
   with the groups they are in and the people in them), and Rename and Delete
-  book are in the book's menu. Contacts get into a book one at a time, by
-  "Copy to" from your own contacts (a copy, not linked) or by importing a
-  vCard or CSV file with the usual review. A book you only read says so and
-  offers no changes.
+  book are in the book's menu. A contact is added to a book one at a time,
+  or many at once by "Copy to" from your own contacts (a copy, not linked)
+  or by importing a vCard or CSV file with the usual review. A book you
+  only read says so and offers no changes.
 - **Each book has its own bin.** A contact deleted from a book waits under
   the book's Deleted view, where everyone who can edit the book can restore
   it.
-- **The company directory.** Company lists everyone with an account, with
-  the phone, job title and department they fill in under Settings › Profile,
-  and their groups. An administrator corrects an entry on the person's page
+- **The company directory.** Company lists everyone with an active
+  account, with the phone, job title and department they fill in under
+  Settings › Profile, and their groups. An administrator corrects an entry on the person's page
   under Server › People.
 - **"On my phones" per book.** A switch on every book, Company included,
   decides whether the Android app shows it in the phone's contacts
   (read-only). It is greyed out with the reason while an administrator
   forbids contacts on the phone.
+- **Shared books in search, suggestions and the offline copy.** Search
+  finds contacts in Company and your shared books and names the book; the
+  composer suggests their addresses after your own contacts; the offline
+  copy holds them, and a book no longer shared with you leaves it at the
+  next refresh.
 - **"Also in" on your own contacts.** A contact says which shared books hold
   the same email address or phone number. Nothing is merged across them.
 - **Server › Shared books.** Administrators see every shared book, open it

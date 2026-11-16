@@ -5,6 +5,34 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.31.0 Shared address books
+
+**Make a database backup first.** One automatic database upgrade runs at the
+first start: **step 29** adds the tables of shared address books, their
+shares and the company directory, and lets a book own rows in `contacts`,
+`contact_values`, `contact_properties`, `contact_photos` and `bin_items`. It
+changes no row, but MariaDB copies each of those five tables once, and the
+server does not answer until it is done. It took 12 to 14 seconds per
+100,000 contact values (with 20,000 contacts, their kept details, photos and
+bin items) on a NAS with an Intel Xeon E3-1230 v3 and MariaDB 11.8; the
+Docker health check's 360-second start period covers about 2.5 million
+values on such a machine. A start stopped part-way runs the step again
+safely.
+
+Going back to 0.30.x means restoring that backup: 0.30.x does not know step
+29 and refuses to start ("Database upgrade history is unknown or out of
+order"). Personal backups stay data schema 7 and never hold shared books or
+the directory; the instance backup carries them
+([Data recovery](DATA_RECOVERY.md#backup-versions-and-restore-behavior)).
+
+- **Everyone sees the company directory.** After the upgrade, everyone with
+  Contacts on finds every active account's name and email under Contacts ›
+  Company. An administrator who does not want that for some people turns
+  Contacts off for them under Policies. Phone, job title and department
+  stay empty until each person fills them in.
+- **Android app.** (Filled in with the version commit: the app update for
+  shared books and email links, and the support window.)
+
 ## 0.30.3 Backups off by default
 
 No database upgrade. **Personal backups are off** (Settings → Backup:

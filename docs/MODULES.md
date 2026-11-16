@@ -23,6 +23,14 @@ pages are shown, hidden and ordered one by one, but the module still turns them
 on and off together: with **Calendar and ToDo** disabled, neither page opens.
 Today belongs to no module and can only be hidden.
 
+Shared address books and the company directory belong to Contacts. With
+Contacts off for a person (their switch or a policy), Company, the shared
+books, their bins and their suggestions in the composer and search are gone
+for them, and their phones and offline copies lose them at the next sync or
+refresh. Their own directory fields under Settings › Profile stay open, and
+the books themselves keep working for everyone else
+([Contacts](CONTACTS.md#shared-address-books)).
+
 Contacts and recordings have no automatic provider worker to pause.
 Temporary-upload housekeeping continues to remove expired incomplete uploads.
 The contacts housekeeping (merged contacts past their 30-day undo, expired

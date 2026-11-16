@@ -2,8 +2,9 @@
 
 ## Overview
 
-Contacts are per-user records in MariaDB, modelled on vCard 4.0 (RFC 6350)
-since 0.26.0. A contact holds:
+Contacts are records in MariaDB, modelled on vCard 4.0 (RFC 6350) since
+0.26.0. A contact belongs to one person, or since 0.31.0 to a [shared address
+book](#shared-address-books) of the organisation. A contact holds:
 
 - name parts (given, family, middle, prefix, suffix) and a display name
 - organisation, department and job title
@@ -24,7 +25,9 @@ The shapes are in `api/src/contracts/contacts.ts`; the rules live in
 `api/src/services/contacts.ts` (the store and the input contract),
 `contacts-vcard-*.ts`, `contacts-csv.ts`, `contacts-import.ts`,
 `contacts-export.ts`, `contact-photos.ts`, `contact-duplicates.ts` and
-`contact-merge.ts`.
+`contact-merge.ts`. Shared books are `services/address-books.ts` and
+`contracts/address-books.ts`; the company directory is
+`services/directory.ts` and `contracts/directory.ts`.
 
 ## Data model
 
@@ -39,12 +42,19 @@ The shapes are in `api/src/contracts/contacts.ts`; the rules live in
 | `contact_merges` | Merges of the last 30 days, with the survivor as it was, for undo |
 | `bin_items` | Deleted and merged-away contacts in the [bin](#the-bin), shared with the other modules |
 | `contact_imports` | Staged and running imports (temporary; never in a backup) |
+| `address_books` | Shared address books: name, description, creator, `deleted_at` (upgrade step 29) |
+| `grants` | Who may read, edit or manage a shared resource: a person, a group or Everyone (upgrade step 29) |
+| `directory_entries` | The phone, job title and department a person shows in the company directory (upgrade step 29) |
 
 Upgrade step 22 copied the 0.25 columns `email`, `email2`, `email3`, `phone`,
 `phone2` and `phone3` into `contact_values` verbatim, at positions 0 to 2 and
 without a label, gave every contact a UID and checked the count of values per
 contact; step 23 removed those columns and `avatar_url`. Every table is
-owner-scoped by `user_id` and declared in `data-inventory.ts`.
+declared in `data-inventory.ts`. Step 29 gave `contacts`, `contact_values`,
+`contact_properties`, `contact_photos` and `bin_items` an `address_book_id`:
+each row has either `user_id` (a person's) or `address_book_id` (a book's),
+never both. A person's queries stay scoped by `user_id`, so a book's rows
+never appear in them.
 
 ## API
 
@@ -362,10 +372,170 @@ hourly `bin.purge` deletes what is past its time, never while Contacts is
 off or being restored, and never what the retention in force then (an
 administrator's minimum included) still keeps.
 
+## Shared address books
+
+A shared address book (0.31.0) holds contacts of the organisation that
+several people use. Books belong to the organisation, not to the person who
+made them, and stay when that person leaves. A book's contacts have the same
+model, input contract, version checks and photos as a person's own, without
+the favourite. Duplicates, merges and export stay personal.
+The request and response shapes, with every error code, are in
+`api/src/contracts/address-books.ts`.
+
+### Who may do what
+
+A person's permission on a book is **read**, **edit** or **manage**; each
+includes the one before. The access service (`services/access.ts`, kind
+`address_book`) answers it from the grants to the person, to their groups and
+to Everyone.
+
+- **Anyone** signed in creates a book and manages it from then on.
+- **Readers** see the book and its contacts. **Editors** also add, change and
+  delete contacts, copy and import into the book and see its bin.
+  **Managers** also rename, describe, share and delete the book.
+- **Administrators** (the permission `contacts.books.manage`: administrators
+  and the owner) manage every book without a grant. Their Contacts page lists
+  only the books shared with them or made by them; every other book is under
+  Server › Shared books ([Auth and admin](AUTH_ADMIN_SETTINGS.md#shared-books-and-the-directory)).
+- **Sharing.** A manager gives a person, a group or Everyone read or edit.
+  An administrator shares with anyone. A member shares only with the groups
+  they belong to and the active people in those groups, never with
+  Everyone (`403 SHARE_OUT_OF_REACH`); raising a share counts as sharing.
+  Any manager may lower or remove any share. The creator's own management is
+  not a share and does not change (`400 SHARE_IS_CREATOR`). Group managers
+  have no extra rights on books.
+- **Revocation.** Access is asked on every request and again inside every
+  write's transaction, after the book's row is locked, so a share removed
+  while a write waits refuses the write. A book the person cannot see
+  answers `404 BOOK_NOT_FOUND` (also a deleted one); one they see but may not
+  change that way answers `403 BOOK_FORBIDDEN`. After a share changes, a
+  membership of a group holding a share changes, a book is deleted or
+  restored, or someone is deactivated or activated, the people concerned
+  get the hint `contacts.books` and their pages refetch.
+- **People leaving.** A deactivated creator's grant is dormant until they
+  are activated again. Deleting a person removes their grants; deleting a
+  group removes the group's grants. The book stays, and administrators
+  manage it. Before deactivating or deleting someone, the dialog names the
+  books they manage. Changes to books write no activity-log entry.
+
+### Getting contacts into a book
+
+A contact is added one at a time in the book, or many at once:
+
+- **Copy to a shared book** (`POST /api/address-books/:id/copy`, edit, at
+  most 1000): each of the person's own contacts is copied with a new id and
+  UID, its kept properties and its photo. The copy is not linked to the
+  original, which stays as it was.
+- **Import** (`POST /api/address-books/:id/imports`, edit): a vCard or CSV
+  file is staged and matched against the book's contacts, with the
+  [usual review](#import). Status and commit are the person's own import's
+  routes; a merge is neither offered nor accepted, because a book's contacts
+  are never merged. The commit checks the person may still edit the book
+  before and inside every chunk.
+
+Moving a contact between a person and a book, and exporting a book, are not
+offered.
+
+### Deleting a book, and each book's bin
+
+**Deleting a book** (manage) hides it everywhere at once and deletes
+nothing for good. Administrators restore it, with its contacts and shares,
+under Server › Shared books › Deleted.
+
+**A contact deleted from a book** goes to that book's own bin, never to a
+person's. Everyone who may edit the book lists it (`GET /api/bin?book=<id>`;
+`403` for a reader), restores items, deletes them for good and empties it
+(`POST /api/bin/empty` with `{ "book": "<id>" }`) through the bin's usual
+routes. Each action is checked against the book again inside its
+transaction and follows the acting person's own Contacts switch, restore
+lock and `bin.delete` rule. The administrator's path for a person never
+reaches a book's items.
+
+**How long a book's bin keeps items.** A book belongs to no one person, so
+no personal `bin_retention` applies: a book's bin keeps items 30 days. While
+deleting for good is forbidden for Everyone or for any group, it keeps them
+at least for the strictest bin minimum among those rules (30 or 90 days, or,
+by default, until someone restores or deletes them), as a personal bin keeps
+its person's minimum. The hourly purge deletes a book's items past
+that time, and a book deleted that long ago with its contacts, photos, bin
+and shares, book by book, reading the minimum again under the book's lock.
+It does not follow anyone's module switch or restore lock, since nobody
+owns the book. The daily photo sweep removes the files under
+`books/<book id>/`.
+
+## The company directory
+
+**Company** is a read-only book with the id `company`, listed first. It is
+computed on each read, not stored as contacts: every active account
+(including someone who has not used their setup link yet) with the name and
+email of the account, the phone (64 characters), job title and department
+(255 each) they fill in, and their groups. A deactivated person leaves it at
+once; a deleted person is gone. An entry's `version` changes whenever a field
+it shows changes. The shapes are in `api/src/contracts/directory.ts`.
+
+- A person reads and edits their own entry under Settings › Profile
+  (`GET` and `PUT /api/directory/me`), also with Contacts off.
+- An administrator (`users.manage`) corrects anyone's entry on the person's
+  page under Server › People (`GET` and `PUT /api/admin/users/:id/directory`),
+  recorded in the activity log as `admin.directory_changed`.
+- Nobody writes through the book: every write route answers
+  `403 BOOK_FORBIDDEN` for `company`.
+- A directory edit sends no hint; open pages show it when they next fetch.
+
+## Where shared books appear
+
+Company and the books shared with a person (directly, through a group or
+Everyone) or made by them appear in:
+
+- **Contacts**, in the panel's Shared group.
+- **Search** (`/api/search`): each result names its book.
+- **Recipient suggestions** in the composer: one entry per address, the
+  person's own contact first, then Company, then the books.
+- **"Also in"** on a person's own contact (`also_in` of `GET
+  /api/contacts/:id`): the visible books and Company that hold an entry with
+  one of its email or phone keys. Nothing is merged across them.
+- **The offline copy** ([Offline](#offline)).
+- **The phone.** Android apps that see the feature `contacts-books` in
+  `GET /api/version` read `GET /api/address-books/phone` and each listed
+  book's contacts and photos, and keep them read-only
+  ([Android](ANDROID.md)). The list leaves out what the person switched off
+  with "On my phones" on the book (the user setting
+  `contacts_phone_books_off`: book ids and `company`, default empty, unknown
+  ids ignored). Under the phone-contacts rule (`contacts.phone_sync`
+  forbidden) the phone's requests get `403 MODULE_DISABLED`. `/api/contacts`
+  never lists or accepts a book's contact, so older apps see only personal
+  contacts.
+
+### API
+
+All routes need a signed-in session and the Contacts module, except the
+administrator's and `/api/directory/me`. No personal restore touches a book,
+so no restore of contacts blocks them. Writes need `X-CSRF-Token`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET, POST | `/api/address-books` | Company and the person's books; create one |
+| GET | `/api/address-books/phone` | The books for the person's phones (also with `X-Background-Sync: 1`) |
+| GET, PUT, DELETE | `/api/address-books/:id` | Read (read); rename and describe, delete (manage) |
+| GET, PUT | `/api/address-books/:id/shares` | The shares; give, change or remove one (manage) |
+| GET | `/api/address-books/:id/share-candidates?q=` | People and groups within the manager's reach, at most 20 each |
+| GET, POST | `/api/address-books/:id/contacts` | List with `q`, `limit` (1 to 2000), `offset` (read); create (edit) |
+| GET, PUT, DELETE | `/api/address-books/:id/contacts/:contactId` | Read; replace, version-checked; to the book's bin (edit) |
+| POST | `/api/address-books/:id/contacts/bulk-delete` | Up to 5,000 to the book's bin (edit) |
+| GET, PUT, DELETE | `/api/address-books/:id/contacts/:contactId/photo` | As a person's contact photo; removing it is `bin.delete` (edit) |
+| POST | `/api/address-books/:id/copy`, `/api/address-books/:id/imports` | [Copy and import](#getting-contacts-into-a-book) (edit) |
+| GET, PUT | `/api/directory/me` | The person's own directory entry |
+| GET | `/api/directory` | Every directory entry |
+| GET, PUT | `/api/admin/users/:id/directory` | An administrator's correction (`users.manage`) |
+| GET | `/api/admin/address-books` | Every book, deleted ones too, with its creator (`contacts.books.manage`) |
+| POST | `/api/admin/address-books/:id/restore` | Restore a deleted book (`contacts.books.manage`) |
+
 ## Offline
 
 The offline snapshot holds the contacts with their lists and without photos
-(the page shows initials). The offline search reads every email and number
+(the page shows initials), and Company and the shared books the person sees
+then, each with its contacts, also without photos. A book shared no longer
+leaves at the next refresh. The offline search reads every email and number
 (see [Offline](OFFLINE.md)). A snapshot saved before 0.26.0 (the 3+3
 columns) is read in the same model until it is refreshed.
 
@@ -375,7 +545,10 @@ columns) is read in the same model until it is refreshed.
 
 Data schema 5 carries the contacts with their values, kept properties,
 photos (as archive files), UID aliases and "Not the same person" pairs;
-restore remaps the ids. Merges are not in a backup: a restore brings back
+restore remaps the ids. A shared book's contacts, its bin and the company
+directory are organisation data: only the instance backup carries them
+([Data recovery](DATA_RECOVERY.md#backup-versions-and-restore-behavior)).
+Merges are not in a backup: a restore brings back
 contacts, not a 30-day undo. From data schema 7 the bin's contacts are
 archived with the contacts section (`restoreBinItems` in `services/bin.ts`);
 a merged-away contact comes back as an ordinary deleted one. A backup made by 0.26.0 cannot be
@@ -394,8 +567,11 @@ repeatable labelled rows with a preferred star, structured addresses, dates
 with an optional year, categories as chips (each a whole name, commas
 included; a stored category is never rewritten), the photo and "Add field"
 for the rarer fields. The
-selection offers "Set company…", "Export selected" and Delete. The mail
-composer suggests every email of every contact, the preferred one first.
+selection offers "Set company…", "Copy to book…", "Export selected" and
+Delete. The panel's Shared group lists Company and the shared books; a
+book's page offers what the person's permission allows and says why
+otherwise. The mail composer suggests every email of every contact, the
+preferred one first, then those of Company and the shared books.
 
 `email_link_behavior` decides whether email links open the system mail
 client (`mailto`) or UniHub's composer (`internal`).

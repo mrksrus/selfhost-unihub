@@ -342,7 +342,8 @@ Existing passwords keep working.
 Admin routes require an authenticated user whose role grants the route's
 permission. `api/src/security/permissions.ts` maps roles to permissions
 (`users.read`, `users.manage`, `server.settings`, `storage.read`,
-`audit.read`, `groups.manage`, `admins.manage`, `owner.transfer`): the owner
+`audit.read`, `groups.manage`, `admins.manage`, `owner.transfer`,
+`contacts.books.manage`): the owner
 has all of them, an `admin` all but `admins.manage` and `owner.transfer`, and
 a member (`user`) none. Every route declared with `auth: 'admin'` must name
 its permission, and the request boundary checks it before the handler runs.
@@ -377,7 +378,10 @@ same map through the `permissions` of `/api/auth/me`.
 | PUT | `/api/admin/policies` | Save changed policies with the admin's password (`server.settings`) |
 | GET, PUT | `/api/admin/groups/:id/policies` | The same for one group: only values at least as strict as Everyone's, and `clear` to give a key back to Everyone (`server.settings`; `404 GROUP_NOT_FOUND`) |
 | POST | `/api/admin/policies/preview` | `{ "group_id" }` or none for Everyone: before requiring 2FA, how many people it covers have none and who of them is already in a grace; changes nothing (`server.settings`) |
-| GET | `/api/admin/users/:id/accounts`, `/backups`, `/bin` | A person's mail and calendar accounts (no credentials), backups and bin (`users.read`) |
+| GET | `/api/admin/users/:id/accounts`, `/backups`, `/bin` | A person's mail and calendar accounts (no credentials) and the shared books they manage (`managed_books`), backups and bin (`users.read`) |
+| GET, PUT | `/api/admin/users/:id/directory` | Read or correct the person's company directory entry (`users.manage`) |
+| GET | `/api/admin/address-books` | Every shared address book, deleted ones too, with its creator (`contacts.books.manage`) |
+| POST | `/api/admin/address-books/:id/restore` | Restore a deleted book with its contacts and shares (`contacts.books.manage`) |
 | POST, PUT, DELETE | `/api/admin/users/:id/mail-accounts[/:accountId]` | Add, change, disconnect (`?purge=true`: and delete UniHub's copy of its mail) a person's mail account (`users.manage`) |
 | POST, PUT, DELETE | `/api/admin/users/:id/calendar-accounts[/:accountId]` | Add, change, remove a person's calendar account (`users.manage`) |
 | DELETE | `/api/admin/users/:id/backups/:jobId` | Delete a person's backup (`users.manage`) |
@@ -408,7 +412,8 @@ account concerned), people and groups (`admin.user_created`,
 `admin.setup_link_created`, `admin.setup_link_revoked`,
 `auth.setup_completed`, `owner.transferred`, `admin.device_removed`,
 `admin.devices_ended`, `admin.group_created`, `admin.group_deleted`,
-`admin.group_manager_set`, and a manager's `group.renamed`,
+`admin.group_manager_set`, `admin.directory_changed` with the fields
+changed, and a manager's `group.renamed`,
 `group.member_added`, `group.member_removed`; a policy change names its
 target, the installation or the group), and the removal of a person's mail
 data: disconnecting a mail account (`mail.account_disconnected`) and deleting
@@ -501,8 +506,8 @@ so do the other administrators' rows.
 
 Server > People lists everyone with their role, status, groups, 2FA and last
 use, and filters by group. A person's page holds their profile and role,
-their groups, their devices, deactivate and delete, and the
-[administrator's path](#the-administrators-path-for-a-person).
+their groups, their company directory entry, their devices, deactivate and
+delete, and the [administrator's path](#the-administrators-path-for-a-person).
 
 ### Add person and setup links
 
@@ -536,7 +541,9 @@ later; no change is forced. Adding a person works whatever the sign-up mode.
 
 Deactivating keeps the person's data, groups and manager roles and ends all
 their sessions; activating them gives everything back. Deleting removes them
-and their data ([Admin Endpoints](#admin-endpoints)).
+and their data ([Admin Endpoints](#admin-endpoints)). Both dialogs first name
+the shared address books the person manages: the books stay, and
+administrators keep managing them.
 
 An administrator sees a person's devices (`GET /api/admin/users/:id/devices`)
 and signs one or all of them out with their password. Live connections
@@ -585,6 +592,22 @@ A membership change takes the rules lock, is checked for policy combinations
 that cannot hold for each person it changes (`400 POLICY_CONFLICT`), and
 then reaches the person's modules, workers and live connections as a policy
 save does ([Data-safety policies](#data-safety-policies)).
+
+## Shared books and the directory
+
+**Server › Shared books** lists every shared address book with its creator,
+also books nobody shared with the administrator, and under **Deleted** the
+deleted ones with **Restore**. It needs `contacts.books.manage` (the owner
+and administrators), which also lets them open and manage any book. A book
+keeps working when its creator is deactivated or deleted. Who may do what
+in a book, its bin and the routes are in
+[Contacts](CONTACTS.md#shared-address-books).
+
+**The directory correction.** A person fills in their phone, job title and
+department under Settings › Profile. An administrator with `users.manage`
+corrects them on the person's page under Server › People; only the changed
+fields are sent, and the activity log records `admin.directory_changed`.
+Members cannot change another person's entry.
 
 ## User settings
 
@@ -654,6 +677,7 @@ stricter. See [Data-safety policies](#data-safety-policies).
 | `snooze_choices` | a list from `1h`, `3h`, `tomorrow`, `1d`, `2d`, `next_week`, `1w`, `2w`, `1mo`, each at most once | `1h`, `1d`, `1w` | Mail |
 | `snoozed_messages` | `hide` (out of the lists until due), `keep` (stays in its folder, marked); a view rule applied at once ([Snooze](MAIL_SYNC.md#snooze)) | `hide` | Mail |
 | `bin_retention` | how long the bin keeps a deleted item: `7`, `30`, `90` days or `forever`; while deleting from the bin for good is forbidden, never below the administrator's minimum (its `floor`) | `30` | Bin |
+| `contacts_phone_books_off` | a list of shared book ids and `company` that stay off the person's phones ("On my phones" on each book, [Contacts](CONTACTS.md#where-shared-books-appear)); unknown ids are ignored | empty | Contacts |
 
 A reference (`default_mail_account_id`, `default_task_list_id`,
 `default_calendar_id`) is checked against its own kind of record when it is
