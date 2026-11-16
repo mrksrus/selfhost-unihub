@@ -1180,8 +1180,9 @@ object ContactsSync {
             val book = books.getJSONObject(index)
             val id = book.getString("id")
             val contacts = ArrayList<ServerContact>()
+            var offset = 0
             while (true) {
-                val page = answer("/api/address-books/${Uri.encode(id)}/contacts?limit=$PAGE&offset=${contacts.size}")
+                val page = answer("/api/address-books/${Uri.encode(id)}/contacts?limit=$PAGE&offset=$offset")
                 if (refused(page)) return emptyList()
                 if (page.status == 404) return@mapNotNull null
                 page.expectOk()
@@ -1189,6 +1190,7 @@ object ContactsSync {
                 val rows = json.getJSONArray("contacts")
                 val more = json.get("has_more") as? Boolean ?: throw org.json.JSONException("has_more is not a boolean")
                 for (row in 0 until rows.length()) ServerContact.from(rows.getJSONObject(row))?.let(contacts::add)
+                offset += rows.length()
                 if (!more) break
                 if (rows.length() == 0) throw org.json.JSONException("An empty page with more to come")
                 if (contacts.size >= MAX_CONTACTS) throw IOException("More than $MAX_CONTACTS contacts in a book")

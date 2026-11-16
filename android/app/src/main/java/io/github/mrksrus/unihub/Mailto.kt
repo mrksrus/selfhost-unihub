@@ -10,8 +10,8 @@ import java.util.Locale
  * composer only opens, nothing is sent by itself.
  */
 object Mailto {
-    // Bounds what a link from any app puts into the page's address.
-    private const val MAX_FIELD = 32_000
+    // Bounds the page's address: the first load goes to Nginx, whose request line is 8 KB by default.
+    private const val MAX_PATH = 6_000
 
     data class Mail(
         val to: List<String> = emptyList(),
@@ -50,8 +50,19 @@ object Mailto {
             "subject" to line(mail.subject),
             "body" to mail.body.replace("\r\n", "\n"),
         )
-        return "/mail?action=compose" + fields.filter { it.second.isNotEmpty() }
-            .joinToString("") { (name, value) -> "&$name=" + URLEncoder.encode(value.take(MAX_FIELD), "UTF-8") }
+        val out = StringBuilder("/mail?action=compose")
+        for ((name, value) in fields) {
+            var text = value
+            var encoded = URLEncoder.encode(text, "UTF-8")
+            val room = MAX_PATH - out.length - name.length - 2
+            // A field too long for what is left keeps its start; the body is last, so it is the one cut.
+            while (encoded.length > room && text.isNotEmpty()) {
+                text = text.take(maxOf(0, minOf(text.length - 1, text.length * room / encoded.length)))
+                encoded = URLEncoder.encode(text, "UTF-8")
+            }
+            if (text.isNotEmpty()) out.append('&').append(name).append('=').append(encoded)
+        }
+        return out.toString()
     }
 
     private fun addresses(text: String) = text.split(',').map { it.trim() }.filter { it.isNotEmpty() }
