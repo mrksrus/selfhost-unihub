@@ -1,12 +1,11 @@
 import { useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { format } from 'date-fns';
 import { Globe, Plus } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { useModules } from '@/hooks/use-modules';
 import { useAdminGroups, usePersonDevices, invalidateOrganisation } from '@/hooks/use-organisation';
-import { useDirectory } from '@/hooks/use-address-books';
 import { useSecretMutation } from '@/hooks/use-secret-mutation';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { useToast } from '@/hooks/use-toast';
@@ -72,24 +71,27 @@ export function PersonDirectory({ person }: { person: Person }) {
   const { user } = useAuth();
   const { toast } = useToast();
   const client = useQueryClient();
-  const directory = useDirectory();
+  const manage = can(user, 'users.manage');
+  const queryKey = [...directoryQueryKeys.all, 'person', person.id];
+  const entry = useQuery({ queryKey, queryFn: ({ signal }) => directoryApi.ofPerson(person.id, signal), enabled: manage && person.is_active });
   const name = personName(person);
   const correct = useSessionMutation({
     mutationFn: (input: DirectoryEntryInput) => directoryApi.correct(person.id, input),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: directoryQueryKeys.all });
+    onSuccess: answer => {
+      client.setQueryData(queryKey, answer);
+      // Company shows the entry too.
       void invalidateBookQueries(client);
       toast({ title: `Directory entry of ${name} corrected` });
     },
     onError: (error: Error) => toast({ title: 'Could not correct the directory entry', description: error.message, variant: 'destructive' }),
   });
-  if (!can(user, 'users.manage')) return null;
-  const entry = directory.data?.find(candidate => candidate.user_id === person.id);
+  if (!manage) return null;
   return (
     <SettingsSection title="Company directory" description={`What colleagues see about ${name} in the Company address book, beside the name and email. They fill it in themselves under Settings › Profile; a correction here is recorded in the activity log.`}>
       {!person.is_active ? <SettingsBlock><p className="text-sm text-muted-foreground">{name} is not listed while the account is inactive. The entry is kept.</p></SettingsBlock>
-        : directory.error ? <SettingsBlock><ErrorState title="Could not load the directory" error={directory.error} onRetry={() => void directory.refetch()} retrying={directory.isFetching} /></SettingsBlock>
-        : <DirectoryEntryForm id={`directory-${person.id}`} entry={entry} unknown={!entry && !directory.isLoading} pending={correct.isPending} saveLabel="Save correction" onSave={input => correct.mutate(input)} />}
+        : entry.data ? <DirectoryEntryForm id={`directory-${person.id}`} entry={entry.data} pending={correct.isPending} saveLabel="Save correction" onSave={input => correct.mutate(input)} />
+        : entry.error ? <SettingsBlock><ErrorState title="Could not load the directory entry" error={entry.error} onRetry={() => void entry.refetch()} retrying={entry.isFetching} /></SettingsBlock>
+        : <SettingsBlock><LoadingState compact label="Loading the directory entry…" /></SettingsBlock>}
     </SettingsSection>
   );
 }

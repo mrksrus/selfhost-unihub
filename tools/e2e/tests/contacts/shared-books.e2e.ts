@@ -74,6 +74,11 @@ test('[31-02] blair makes a shared book, shares it with a group for editing, and
     await expect(dialog.getByText('Added', { exact: true })).toBeVisible({ timeout: 120_000 });
     await dialog.getByRole('button', 'Done', { exact: true }).tap();
 
+    // A search result's link opens the book with the search applied.
+    await app.open(`/contacts?book=${book!.id}&search=Copied${run}`);
+    await expect(screen.getByRole('button', new RegExp(`^Copied${run} Personal`))).toBeVisible();
+    await expect(screen.getByRole('button', new RegExp(`^Typed${run} Shared`))).toHaveCount(0);
+
     const names = await namesIn(alex, book!.id);
     for (const expected of [`Typed${run} Shared`, `Copied${run} Personal`]) expect(names, 'what alex finds in the book').toContain(expected);
     expect(names.filter((entry) => entry.includes(`Fourpoint ${run}`)), 'both cards of the file').toHaveLength(2);

@@ -506,6 +506,8 @@ const bookRoutes = (admin: boolean): Route[] => [
   ['GET', /^\/address-books\/[^/]+\/share-candidates$/, () => ok({ people: PEOPLE.filter(person => ['user-blair', 'user-alex'].includes(person.id)).map(({ id, email, full_name }) => ({ id, email, full_name })),
     groups: GROUPS.map(({ id, name }) => ({ id, name })), everyone: admin })],
   ['GET', /^\/directory$/, () => ok({ entries: DIRECTORY })],
+  ['GET', /^\/directory\/me$/, () => ok({ entry: DIRECTORY.find(entry => entry.user_id === USER.id) })],
+  ['GET', /^\/admin\/users\/[^/]+\/directory$/, url => ok({ entry: DIRECTORY.find(entry => entry.user_id === url.pathname.split('/')[4]) })],
   ['GET', /^\/admin\/address-books$/, () => ok({ books: ADMIN_BOOKS })],
 ];
 

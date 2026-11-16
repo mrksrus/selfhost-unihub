@@ -193,8 +193,11 @@ export function BinView({ module, showSettingsLink = true, book }: { module?: Bi
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
         <div className="min-w-0">
           <p className="text-sm text-muted-foreground">
-            {retentionSentence(retention)}
-            {book ? ` Everyone who can edit ${book.name} sees this bin.`
+            {/* A shared book's bin keeps items as long as the server says: 30 days, or the administrator's minimum. */}
+            {!book ? retentionSentence(retention)
+              : retention === 'forever' ? `Contacts deleted from ${book.name} stay here until someone restores or deletes them.`
+              : `Contacts deleted from ${book.name} stay here ${retention} days, then are deleted for good.`}
+            {book ? ' Everyone who can edit the book sees this bin.'
               : showSettingsLink && <> Change this in <Link to={settingsHref('bin')} className="underline underline-offset-4 hover:text-foreground">Settings › Bin</Link>.</>}
           </p>
           {deletePolicy.lock && <PolicyNote reason={deletePolicy.lock} />}

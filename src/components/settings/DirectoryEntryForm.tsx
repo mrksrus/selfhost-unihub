@@ -11,23 +11,18 @@ const FIELDS = [
   { key: 'department', label: 'Department', max: 255, autoComplete: 'off' },
 ] as const;
 type Entry = Pick<DirectoryEntry, 'phone' | 'job_title' | 'department'>;
-const valuesOf = (entry: Entry | undefined) => ({ phone: entry?.phone ?? '', job_title: entry?.job_title ?? '', department: entry?.department ?? '' });
+const valuesOf = (entry: Entry) => ({ phone: entry.phone ?? '', job_title: entry.job_title ?? '', department: entry.department ?? '' });
 
 /**
  * The three fields a person adds to their company directory entry, for
  * their own Settings › Profile and for an administrator's correction. Only
- * the fields that were changed are sent, so one that could not be shown
- * (the directory is part of Contacts) is never emptied by a save.
+ * the fields that were changed are sent.
  */
-export function DirectoryEntryForm({ id, entry, unknown = false, pending, saveLabel, onSave }: {
-  id: string;
-  entry: Entry | undefined;
-  /** The directory cannot be read here, so the fields start empty whatever it holds. */
-  unknown?: boolean;
-  pending: boolean; saveLabel: string; onSave: (input: DirectoryEntryInput) => void;
+export function DirectoryEntryForm({ id, entry, pending, saveLabel, onSave }: {
+  id: string; entry: Entry; pending: boolean; saveLabel: string; onSave: (input: DirectoryEntryInput) => void;
 }) {
   const [values, setValues] = useState(() => valuesOf(entry));
-  useEffect(() => { setValues(valuesOf(entry)); }, [entry?.phone, entry?.job_title, entry?.department]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setValues(valuesOf(entry)); }, [entry.phone, entry.job_title, entry.department]); // eslint-disable-line react-hooks/exhaustive-deps
   const saved = valuesOf(entry);
   const changed = FIELDS.filter(field => values[field.key].trim() !== saved[field.key]);
   const submit = (event: FormEvent) => {
@@ -42,10 +37,7 @@ export function DirectoryEntryForm({ id, entry, unknown = false, pending, saveLa
             value={values[field.key]} onChange={event => setValues(current => ({ ...current, [field.key]: event.target.value }))} />
         </SettingsRow>
       ))}
-      <SettingsBlock className="flex flex-wrap items-center justify-between gap-3">
-        <p className="min-w-0 max-w-prose text-xs text-muted-foreground">
-          {unknown ? 'Contacts is off for you, so what the directory holds now is not shown. A field you leave empty stays as it is.' : ''}
-        </p>
+      <SettingsBlock className="flex justify-end">
         <Button type="submit" disabled={!changed.length || pending}>{pending && <Loader2 aria-hidden="true" className="animate-spin" />}{saveLabel}</Button>
       </SettingsBlock>
     </form>

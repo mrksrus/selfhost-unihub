@@ -1,19 +1,19 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import type { User } from '@/contexts/auth-context';
 import { useAuth } from '@/contexts/useAuth';
 import { can } from '@/lib/permissions';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
-import { useDirectory } from '@/hooks/use-address-books';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { invalidateBookQueries } from '@/lib/address-books-api';
-import { directoryApi, directoryQueryKeys, type DirectoryEntry } from '@/lib/directory-api';
+import { directoryApi, directoryQueryKeys } from '@/lib/directory-api';
 import { usePolicies } from '@/hooks/use-policies';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
+import { ErrorState, LoadingState } from '@/components/ui/page-states';
 import { RulesList } from '@/components/policies/PolicyNoticeDialog';
 import { MyGroups } from '@/components/organisation/MyGroups';
 import { DirectoryEntryForm } from '@/components/settings/DirectoryEntryForm';
@@ -49,21 +49,20 @@ export function RulesOnThisServer() {
 
 /**
  * Settings → Profile, "Company directory": the phone, job title and
- * department colleagues see beside the account's name and email. Saving
- * works with Contacts off; reading the entry back needs Contacts.
+ * department colleagues see beside the account's name and email. It is
+ * read and saved with Contacts off too.
  */
 function DirectorySettings() {
-  const { user } = useAuth();
+  const { user, isOffline } = useAuth();
   const { toast } = useToast();
   const client = useQueryClient();
-  const directory = useDirectory();
-  const [saved, setSaved] = useState<DirectoryEntry | null>(null);
-  const entry = directory.data?.find(candidate => candidate.user_id === user?.id) ?? saved ?? undefined;
+  const queryKey = [...directoryQueryKeys.all, 'me'];
+  const mine = useQuery({ queryKey, queryFn: ({ signal }) => directoryApi.mine(signal), enabled: !!user && !isOffline });
   const save = useSessionMutation({
     mutationFn: directoryApi.updateMine,
     onSuccess: answer => {
-      setSaved(answer);
-      void client.invalidateQueries({ queryKey: directoryQueryKeys.all });
+      client.setQueryData(queryKey, answer);
+      // Company shows the entry too.
       void invalidateBookQueries(client);
       toast({ title: 'Directory entry saved' });
     },
@@ -71,7 +70,10 @@ function DirectorySettings() {
   });
   return (
     <SettingsSection className="mt-10" title="Company directory" description="What colleagues see about you in the Company address book, beside your name and email. Everyone with an account on this server can read it.">
-      <DirectoryEntryForm id="directory" entry={entry} unknown={!entry && !directory.isLoading} pending={save.isPending} saveLabel="Save directory entry" onSave={input => save.mutate(input)} />
+      {isOffline ? <SettingsBlock><p className="text-sm text-muted-foreground">The directory entry needs a connection.</p></SettingsBlock>
+        : mine.data ? <DirectoryEntryForm id="directory" entry={mine.data} pending={save.isPending} saveLabel="Save directory entry" onSave={input => save.mutate(input)} />
+        : mine.error ? <SettingsBlock><ErrorState title="Could not load your directory entry" error={mine.error} onRetry={() => void mine.refetch()} retrying={mine.isFetching} /></SettingsBlock>
+        : <SettingsBlock><LoadingState compact label="Loading your directory entry…" /></SettingsBlock>}
     </SettingsSection>
   );
 }
