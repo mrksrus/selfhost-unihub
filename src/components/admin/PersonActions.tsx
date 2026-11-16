@@ -1,12 +1,12 @@
 import { useRef, useState, type ReactNode } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/useAuth';
 import { useSecretMutation } from '@/hooks/use-secret-mutation';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { invalidateOrganisation } from '@/hooks/use-organisation';
 import { useToast } from '@/hooks/use-toast';
 import {
-  createSetupLink, deleteAdminUser, resetUserTwoFactor, revokeSetupLink, setUserActive, setUserPassword, setUserRole, transferOwnership,
+  adminUserQueryKeys, createSetupLink, deleteAdminUser, fetchAdminUserAccounts, resetUserTwoFactor, revokeSetupLink, setUserActive, setUserPassword, setUserRole, transferOwnership,
   type Person, type SetupLink,
 } from '@/lib/admin-api';
 import { can } from '@/lib/permissions';
@@ -125,6 +125,9 @@ export function usePersonActions({ people = [], onDeleted }: { people?: readonly
 
   const person = dialog?.person;
   const email = person?.email ?? '';
+  // The shared address books the person manages, named before they are deactivated or deleted.
+  const leaving = dialog?.action === 'deactivate' || dialog?.action === 'delete' ? dialog.person.id : '';
+  const managedBooks = useQuery({ queryKey: adminUserQueryKeys.accounts(leaving), queryFn: ({ signal }) => fetchAdminUserAccounts(leaving, signal), enabled: !!leaving && can(user, 'users.manage') }).data?.managed_books ?? [];
   // The server hands ownership only to an administrator who can sign in.
   const admins = people.filter(entry => entry.role === 'admin' && entry.status === 'active');
   const copy: Record<PersonAction, { title: string; description: ReactNode; action: string; destructive?: boolean }> = {
@@ -146,6 +149,13 @@ export function usePersonActions({ people = [], onDeleted }: { people?: readonly
       <PasswordConfirmDialog open={!!dialog} onClose={() => setDialog(null)} title={shown?.title ?? ''} description={shown?.description ?? ''} actionLabel={shown?.action ?? ''}
         target={person && dialog?.action !== 'transfer' ? personTarget(person) : undefined} destructive={shown?.destructive} pending={run.isPending} confirmDisabled={incomplete}
         onConfirm={password => { if (dialog) run.mutate({ ...dialog, password, newPassword, heir }); }}>
+        {!!leaving && managedBooks.length > 0 && (
+          <div className="text-sm" data-testid="managed-books">
+            <p className="font-medium">Shared address books they manage</p>
+            <ul className="mt-1 list-disc pl-5 text-muted-foreground">{managedBooks.map(book => <li key={book.id} className="break-words">{book.name}</li>)}</ul>
+            <p className="mt-1 text-muted-foreground">They stay; administrators keep managing them.</p>
+          </div>
+        )}
         {dialog?.action === 'password' && (
           <div className="space-y-2">
             <Label htmlFor="person-new-password">New password</Label>

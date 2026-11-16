@@ -1,17 +1,22 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import type { User } from '@/contexts/auth-context';
 import { useAuth } from '@/contexts/useAuth';
 import { can } from '@/lib/permissions';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
+import { useDirectory } from '@/hooks/use-address-books';
+import { useSessionMutation } from '@/hooks/use-session-mutation';
+import { invalidateBookQueries } from '@/lib/address-books-api';
+import { directoryApi, directoryQueryKeys, type DirectoryEntry } from '@/lib/directory-api';
 import { usePolicies } from '@/hooks/use-policies';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 import { RulesList } from '@/components/policies/PolicyNoticeDialog';
 import { MyGroups } from '@/components/organisation/MyGroups';
+import { DirectoryEntryForm } from '@/components/settings/DirectoryEntryForm';
 
 const DEVICE_TIME_ZONE = '';
 const timeZones = (() => {
@@ -38,6 +43,35 @@ export function RulesOnThisServer() {
           : <RulesList rules={rules} className="text-sm" />}
         {can(user, 'server.settings') && loaded && <p className="mt-3 text-xs text-muted-foreground">You set these under Server › Policies; they apply to you too.</p>}
       </SettingsBlock>
+    </SettingsSection>
+  );
+}
+
+/**
+ * Settings → Profile, "Company directory": the phone, job title and
+ * department colleagues see beside the account's name and email. Saving
+ * works with Contacts off; reading the entry back needs Contacts.
+ */
+function DirectorySettings() {
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const client = useQueryClient();
+  const directory = useDirectory();
+  const [saved, setSaved] = useState<DirectoryEntry | null>(null);
+  const entry = directory.data?.find(candidate => candidate.user_id === user?.id) ?? saved ?? undefined;
+  const save = useSessionMutation({
+    mutationFn: directoryApi.updateMine,
+    onSuccess: answer => {
+      setSaved(answer);
+      void client.invalidateQueries({ queryKey: directoryQueryKeys.all });
+      void invalidateBookQueries(client);
+      toast({ title: 'Directory entry saved' });
+    },
+    onError: (error: Error) => toast({ title: 'Could not save the directory entry', description: error.message, variant: 'destructive' }),
+  });
+  return (
+    <SettingsSection title="Company directory" description="What colleagues see about you in the Company address book, beside your name and email. Everyone with an account on this server can read it.">
+      <DirectoryEntryForm id="directory" entry={entry} unknown={!entry && !directory.isLoading} pending={save.isPending} saveLabel="Save directory entry" onSave={input => save.mutate(input)} />
     </SettingsSection>
   );
 }
@@ -90,6 +124,7 @@ export default function AccountSettings() {
         </SettingsBlock>
       </SettingsSection>
     </form>
+    <DirectorySettings />
     <RulesOnThisServer />
     <MyGroups />
   </>);

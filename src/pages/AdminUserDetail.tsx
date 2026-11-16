@@ -25,7 +25,7 @@ import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settin
 import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog';
 import { personAbilities, usePersonActions } from '@/components/admin/PersonActions';
 import { PolicyNote } from '@/components/ui/policy-note';
-import { PersonAccount, PersonDevices, PersonGroups, PersonProfile } from '@/components/admin/PersonOrganisation';
+import { PersonAccount, PersonDevices, PersonDirectory, PersonGroups, PersonProfile } from '@/components/admin/PersonOrganisation';
 import { usePeople } from '@/hooks/use-organisation';
 import { can } from '@/lib/permissions';
 import { AdminCalendarAccountDialog, AdminMailAccountDialog } from '@/components/admin/AdminAccountDialogs';
@@ -231,6 +231,7 @@ const AdminUserDetail = () => {
     : (
       <>
         <PersonProfile person={person} actions={actions} />
+        <PersonDirectory key={person.id} person={person} />
         <PersonGroups person={person} />
         <PersonDevices person={person} />
         <PersonAccount person={person} actions={actions} />

@@ -6,18 +6,22 @@ import { Globe, Plus } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { useModules } from '@/hooks/use-modules';
 import { useAdminGroups, usePersonDevices, invalidateOrganisation } from '@/hooks/use-organisation';
+import { useDirectory } from '@/hooks/use-address-books';
 import { useSecretMutation } from '@/hooks/use-secret-mutation';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { useToast } from '@/hooks/use-toast';
 import { lastActiveLabel } from '@/lib/account-api';
 import { endPersonDevices, personDevicesQueryKey, setGroupManager, type Person } from '@/lib/admin-api';
+import { invalidateBookQueries } from '@/lib/address-books-api';
 import { deviceLabel } from '@/lib/devices-api';
+import { directoryApi, directoryQueryKeys, type DirectoryEntryInput } from '@/lib/directory-api';
 import { addGroupMembers, removeGroupMember } from '@/lib/groups-api';
 import { can } from '@/lib/permissions';
 import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog';
 import type { usePersonActions } from '@/components/admin/PersonActions';
 import { ROLE_LABELS, ROW_LINK, formatDay, personName, personTarget } from '@/components/admin/person-words';
 import { DEVICE_KIND_ICONS, describeDeviceLock } from '@/components/settings/Devices';
+import { DirectoryEntryForm } from '@/components/settings/DirectoryEntryForm';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -59,6 +63,33 @@ export function PersonProfile({ person, actions }: { person: Person; actions: Ac
         {able.password && <Button variant="outline" disabled={!!able.signInLock} onClick={() => actions.open('password', person)}>{able.pending ? 'Set a password' : 'Set a new password'}</Button>}
         {able.resetTwoFactor && <Button variant="outline" disabled={!!able.signInLock} onClick={() => actions.open('reset-2fa', person)}>Reset 2FA</Button>}
       </SettingsRow>
+    </SettingsSection>
+  );
+}
+
+/** The person's company directory entry, corrected by an administrator; the activity log records it. */
+export function PersonDirectory({ person }: { person: Person }) {
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const client = useQueryClient();
+  const directory = useDirectory();
+  const name = personName(person);
+  const correct = useSessionMutation({
+    mutationFn: (input: DirectoryEntryInput) => directoryApi.correct(person.id, input),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: directoryQueryKeys.all });
+      void invalidateBookQueries(client);
+      toast({ title: `Directory entry of ${name} corrected` });
+    },
+    onError: (error: Error) => toast({ title: 'Could not correct the directory entry', description: error.message, variant: 'destructive' }),
+  });
+  if (!can(user, 'users.manage')) return null;
+  const entry = directory.data?.find(candidate => candidate.user_id === person.id);
+  return (
+    <SettingsSection title="Company directory" description={`What colleagues see about ${name} in the Company address book, beside the name and email. They fill it in themselves under Settings › Profile; a correction here is recorded in the activity log.`}>
+      {!person.is_active ? <SettingsBlock><p className="text-sm text-muted-foreground">{name} is not listed while the account is inactive. The entry is kept.</p></SettingsBlock>
+        : directory.error ? <SettingsBlock><ErrorState title="Could not load the directory" error={directory.error} onRetry={() => void directory.refetch()} retrying={directory.isFetching} /></SettingsBlock>
+        : <DirectoryEntryForm id={`directory-${person.id}`} entry={entry} unknown={!entry && !directory.isLoading} pending={correct.isPending} saveLabel="Save correction" onSave={input => correct.mutate(input)} />}
     </SettingsSection>
   );
 }

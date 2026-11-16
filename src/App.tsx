@@ -31,6 +31,7 @@ const AdminPolicies = lazy(() => import("./pages/AdminPolicies"));
 const AdminInstanceBackup = lazy(() => import("./pages/AdminInstanceBackup"));
 const AdminUserDetail = lazy(() => import("./pages/AdminUserDetail"));
 const AdminGroups = lazy(() => import("./pages/AdminGroups"));
+const AdminAddressBooks = lazy(() => import("./pages/AdminAddressBooks"));
 const GroupPage = lazy(() => import("./pages/GroupPage"));
 const MyGroupsPage = lazy(() => import("./pages/MyGroupsPage"));
 const InviteAccept = lazy(() => import("./pages/InviteAccept"));
@@ -65,6 +66,7 @@ const AuthenticatedApp = () => {
               <Route path="/admin/users" element={<AdminUsers />} />
               <Route path="/admin/users/:id" element={<AdminUserDetail />} />
               <Route path="/admin/groups" element={<AdminGroups />} />
+              <Route path="/admin/address-books" element={<AdminAddressBooks />} />
               <Route path="/admin/groups/:id" element={<GroupPage admin />} />
               <Route path="/groups" element={<MyGroupsPage />} />
               <Route path="/groups/:id" element={<GroupPage />} />
