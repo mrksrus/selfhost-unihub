@@ -117,12 +117,21 @@ test('a link while the app is locked opens the composer behind the lock, shown o
   try {
     // Settings → App lock → Whole app, every time UniHub opens (app-lock.test.mjs has the screens).
     await page.goto(new URL('/settings?section=app-lock', page.url()).href);
+    await page.getByRole('heading', { name: 'App lock' }).first().waitFor();
     const whole = page.getByRole('radio', { name: 'Whole app' });
-    await whole.waitFor({ state: 'attached' });
     if (!await whole.isChecked()) {
       const row = page.getByRole('radiogroup', { name: 'Lock' }).getByText('Whole app', { exact: true });
-      await row.evaluate(element => element.scrollIntoView({ block: 'center' }));
-      await touch(page, row);
+      // The page may still be scrolling to the section; the bottom bar covers its lower edge.
+      for (let attempt = 1; ; attempt++) {
+        await row.evaluate(element => element.scrollIntoView({ block: 'center' }));
+        try {
+          await touch(page, row);
+          break;
+        } catch (error) {
+          if (attempt >= 5) throw error;
+          await sleep(1000);
+        }
+      }
       await waitForUnlockPrompt();
       await touchFinger(1);
       for (let i = 0; i < 30 && !await whole.isChecked(); i++) await sleep(1000);
