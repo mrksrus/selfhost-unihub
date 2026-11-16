@@ -138,7 +138,12 @@ class LogicalLine {
   private head: Buffer[] = [];
   quotedPrintable = false;
   base64Block = false;
-  constructor(readonly name: string, readonly limit: number) {}
+  readonly name: string;
+  readonly limit: number;
+  constructor(name: string, limit: number) {
+    this.name = name;
+    this.limit = limit;
+  }
 
   append(chunk: Buffer) {
     if (this.oversize) return;
