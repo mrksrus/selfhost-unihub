@@ -47,6 +47,11 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   Calendar chooser lists those; a new event or task goes to one of your own
   calendars or one you can edit.
 
+### Fixed
+
+- A reminder or notification that fell due as the clock turned a second
+  could arrive half a minute late; it now goes out at once.
+
 ## 0.31.0
 
 ### Added
