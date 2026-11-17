@@ -137,6 +137,8 @@ test('MySQL restores colliding backup IDs without changing another user in every
   await connection.execute('ALTER TABLE emails ADD COLUMN remote_gmail_msgid VARCHAR(32) NULL');
   await connection.execute('ALTER TABLE calendar_calendars ADD COLUMN uid CHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NOT NULL DEFAULT uuid()');
   await connection.execute('ALTER TABLE calendar_events ADD COLUMN uid VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NOT NULL DEFAULT uuid()');
+  // Upgrade 30: a date of a repeating event names its series.
+  await connection.execute('ALTER TABLE calendar_events ADD COLUMN series_id CHAR(36) NULL, ADD COLUMN recurrence_id VARCHAR(64) NULL');
   await connection.execute('ALTER TABLE recordings ADD COLUMN uid CHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NOT NULL DEFAULT uuid()');
   await connection.execute(`CREATE TEMPORARY TABLE calendar_overlay_restores (id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, calendar_id CHAR(36) NOT NULL,
     account_identity VARCHAR(500) NOT NULL DEFAULT '', uid VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NULL, recurrence_id VARCHAR(64) NOT NULL DEFAULT '',
