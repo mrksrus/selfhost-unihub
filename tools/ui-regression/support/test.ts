@@ -123,7 +123,7 @@ export async function sharedCalendars(page: Page, { offered = false } = {}) {
   await page.route(url => url.pathname === '/api/calendar/events', route => route.fulfill(answer({ events: SHARED_EVENTS })));
 }
 
-/** Opens a new event on the Calendar page and gives it a custom repeat rule, scrolled to the top of the dialog's view (0.32). */
+/** Opens a new event on the Calendar page and gives it a custom repeat rule, with the dialog scrolled to its top (0.32). */
 export async function customRepeat(page: Page) {
   await page.getByRole('button', { name: 'New event' }).first().click();
   const dialog = page.getByRole('dialog', { name: 'New event' });
@@ -137,7 +137,8 @@ export async function customRepeat(page: Page) {
   await page.getByRole('option', { name: 'After', exact: true }).click();
   // The reference picture shows no focus ring left behind by the last choice.
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await dialog.getByText('Start', { exact: true }).scrollIntoViewIfNeeded();
+  // Focus returning from a closed list may scroll the dialog; the picture is taken from its top.
+  await dialog.evaluate(element => element.scrollTo(0, 0));
 }
 
 export async function pointerIsCoarse(page: Page) {
