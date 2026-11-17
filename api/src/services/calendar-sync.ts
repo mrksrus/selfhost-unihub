@@ -420,7 +420,8 @@ async function deleteCalendarAccount(userId: string, accountId: string, { actor 
     await assertFinalStep(connection, { userId, policies: ['accounts.remove'], actor, modules: ['calendar'] });
     const [calendars] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_calendars WHERE account_id = ? AND user_id = ?', [accountId, userId]);
     // Shares of its calendars end with them.
-    const { removeGrantsOn } = require('./access') as typeof import('./access');
+    const { removeGrantsOn, assertNoneArchived } = require('./access') as typeof import('./access');
+    if (calendars.length) await assertNoneArchived(connection, userId, calendars.map(row => String(row.id)));
     for (const { id } of calendars) await removeGrantsOn(connection, { kind: 'calendar', id: String(id) });
     await deleteCalendarsWithEvents(connection, userId, calendars.map(row => row.id));
     await connection.execute('DELETE FROM calendar_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);

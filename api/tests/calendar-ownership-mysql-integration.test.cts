@@ -142,17 +142,21 @@ test('calendar ownership: offers, a manager\'s hand-over, the administrator\'s h
   assert.ok((await notices(ids.manager)).includes('Calendar archived: Team is read-only now'));
   const alexDefault = (await call(alex, 'GET', '/api/calendar/calendars')).calendars.find((found: FixtureValue) => found.user_id === ids.manager && found.id !== team.id && found.id !== rota.id).id;
   const alexOwn = (await call(alex, 'POST', '/api/calendar/events', { title: 'Own', start_time: '2031-05-07T09:00:00Z', end_time: '2031-05-07T10:00:00Z', calendar_id: alexDefault })).event;
+  // With a second account, the one holding the archived calendar is not his last.
+  const spare = (await call(alex, 'POST', '/api/calendar/accounts', { provider: 'local', display_name: 'Spare' })).account.id;
   for (const [client, method, url, body] of [
     [alex, 'PUT', ev(team.event), { title: 'Archived' }], [blair, 'PUT', ev(team.event), { title: 'Archived' }], [alex, 'POST', ev(team.event, '/subtasks'), { title: 'Archived' }],
     [alex, 'DELETE', ev(team.event)], [alex, 'PUT', `/api/calendar/calendars/${team.id}/shares`, { principal: { kind: 'user', id: ids.member }, permission: null }],
     [alex, 'POST', hand(team.id), { to: ids.member }], [alex, 'PUT', ev(team.event, '/rsvp'), { response_status: 'accepted', email: 'alex@example.test' }],
     [alex, 'PUT', ev(team.event), { calendar_id: alexDefault }], [alex, 'POST', ev(team.event, '/move'), { calendar_id: alexDefault }],
     [alex, 'POST', ev(alexOwn.id, '/move'), { calendar_id: team.id }], [alex, 'DELETE', `/api/calendar/calendars/${team.id}`],
+    [alex, 'DELETE', `/api/calendar/accounts/${alexAccount}`], [alex, 'POST', '/api/settings/clear-calendar'],
   ] as const) {
     assert.deepEqual(await refused(client, method, url, body), [403, 'CALENDAR_FORBIDDEN'], `archived: ${method} ${url}`);
   }
   assert.equal((await call(blair, 'GET', ev(team.event))).event.title, 'Team meeting 2031', 'reads go on');
   assert.equal((await call(alex, 'GET', ev(alexOwn.id))).event.calendar_id, alexDefault);
+  await call(alex, 'DELETE', `/api/calendar/accounts/${spare}`);
   await call(ari, 'PUT', `/api/admin/calendars/${team.id}/archive`, { archived: false, current_password: password });
   await call(alex, 'PUT', ev(team.event), { title: 'Team meeting' });
   assert.deepEqual((await rows("SELECT action FROM audit_log WHERE action IN ('admin.calendar_archived', 'admin.calendar_unarchived') ORDER BY action")).map(found => found.action),

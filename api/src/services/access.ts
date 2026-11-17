@@ -235,6 +235,18 @@ async function removeGrantsOnCalendarsOf(cx: SqlExecutor, userId: string) {
     WHERE g.resource_kind = 'calendar' AND c.user_id = ?`, [userId]);
 }
 
+/**
+ * Before a person's calendars (all, or these) are deleted without the bin:
+ * refused while one is archived, which only an administrator ends. Deleting
+ * the person does not ask.
+ */
+async function assertNoneArchived(cx: SqlExecutor, userId: string, calendarIds?: readonly string[]) {
+  const only = calendarIds ? ` AND id IN (${calendarIds.map(() => '?').join(', ')})` : '';
+  const [archived] = await cx.execute<RowDataPacket[]>(`SELECT id FROM calendar_calendars WHERE user_id = ? AND archived_at IS NOT NULL${only} FOR UPDATE`,
+    [userId, ...(calendarIds ?? [])]);
+  if (archived.length) throw forbidden('CALENDAR_FORBIDDEN', 'An archived calendar cannot be deleted. An administrator unarchives it or hands it over first.');
+}
+
 /** Removes every grant on a resource, in the transaction that deletes it for good. */
 async function removeGrantsOn(cx: SqlExecutor, resource: Resource) {
   await cx.execute('DELETE FROM grants WHERE resource_kind = ? AND resource_id = ?', [resource.kind, resource.id]);
@@ -283,7 +295,7 @@ async function reachCandidates(userId: string, query: string, adminPermission: P
 }
 
 export {
-  principalsOf, accessLevel, can, assertCan, visible, grantsOn, namedGrants, shareCounts, lockGrant, setGrant, removeGrantsOf, removeGrantsOnCalendarsOf, removeGrantsOn, heldBy,
+  principalsOf, accessLevel, can, assertCan, visible, grantsOn, namedGrants, shareCounts, lockGrant, setGrant, removeGrantsOf, removeGrantsOnCalendarsOf, removeGrantsOn, assertNoneArchived, heldBy,
   assertReach, reachCandidates,
 };
 export type { Resource, Grant };

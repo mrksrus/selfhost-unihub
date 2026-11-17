@@ -73,9 +73,11 @@ async function clearContacts(userId: string, actor: ClearActor): Promise<ClearRe
 async function clearCalendar(userId: string, actor: ClearActor): Promise<ClearResult> {
   const { deletedEvents, deletedSubtasks } = await withTransaction(async cx => {
     await finalCheck(cx, userId, 'calendar', actor);
+    const access = require('./access') as typeof import('./access');
+    await access.assertNoneArchived(cx, userId);
     const [subtasks] = await cx.execute<ResultSetHeader>('DELETE FROM calendar_event_subtasks WHERE user_id = ?', [userId]);
     const [events] = await cx.execute<ResultSetHeader>('DELETE FROM calendar_events WHERE user_id = ?', [userId]);
-    await (require('./access') as typeof import('./access')).removeGrantsOnCalendarsOf(cx, userId);
+    await access.removeGrantsOnCalendarsOf(cx, userId);
     await cx.execute('DELETE FROM calendar_calendars WHERE user_id = ?', [userId]);
     await cx.execute('DELETE FROM calendar_accounts WHERE user_id = ?', [userId]);
     const counts = { deletedEvents: events.affectedRows || 0, deletedSubtasks: subtasks.affectedRows || 0 };
