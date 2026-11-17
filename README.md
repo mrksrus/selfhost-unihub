@@ -98,7 +98,7 @@ that change details.
 | Mattermost-style self-hosted team chat | You | Not built in | Phones: a push proxy, then Google's or Apple's push service | Yes | Open source core |
 | Phone calls and SMS | Your mobile carrier | No | The phone network | None | — |
 | Gmail, Outlook.com, Microsoft 365 | Google or Microsoft | Not by default (S/MIME or add-ons on some plans) | Google's or Apple's push service | Yes, on business plans | Closed |
-| Desktop mail apps (Thunderbird, Apple Mail, Outlook) | Your mail provider; the app keeps a copy on your computer | Optional OpenPGP or S/MIME, when both sides set it up | The app asks the mail server itself | None | Thunderbird open source, the others closed |
+| Desktop mail apps (Thunderbird, Apple Mail) | Your mail provider; the app keeps a copy on your computer | Optional OpenPGP or S/MIME, when both sides set it up | The app asks the mail server itself | None | Thunderbird open source, the others closed |
 
 UniHub does not replace your mail provider: mail to the outside world still
 goes through an ordinary mail server and is as private as that server.
@@ -114,14 +114,15 @@ What UniHub protects today, and how:
 | Mail, contacts, calendars, tasks and recordings on the server | Stored as ordinary data in MariaDB and the uploads volume. Use disk or volume encryption on the host | Whoever runs the server or holds its disks |
 | Saved mail and calendar passwords, subscription addresses, authenticator keys, the push key | AES-256-GCM with your `ENCRYPTION_KEY` | Whoever holds the database and that key |
 | UniHub passwords | bcrypt | Nobody; only checked |
-| Notifications | Encrypted for each device as Web Push does (RFC 8291), in the browser and the Android app; how much they show is set on the server and by the app lock | The device; the push service sees only that a notification was sent |
-| Account backups (ALPHA) | AES-256 ZIP (WinZip AE-2) with a random 256-bit recovery password | You with the password, and the server, which keeps that password sealed with its own backup key |
+| Notifications | Encrypted for each device as Web Push does (RFC 8291), in the browser and the Android app; how much they show is set on the server and by the app lock | The device; the push service sees that a notification was sent, when and how large, but not its content |
+| Account backups (ALPHA) | AES-256 ZIP (WinZip AE-2) with a random 256-bit recovery password | You with the password, and the server, which keeps that password sealed with its backup key (by default the same `ENCRYPTION_KEY`) |
 | Whole-server backup (ALPHA) | AES-256-GCM with a key of its own from the deployment's settings; never offered for download | Whoever holds that key |
 | On a phone or computer | The offline copy sits in the browser's storage; the app lock is a gate, not encryption | The device; rely on its own encryption |
 
 Planned: chat (0.33) is end-to-end encrypted with MLS, so the server stores only
 ciphertext. An organisation can turn on a recovery key, off by default and kept
-offline by the owner; with it on, whoever holds that key can recover chats.
+offline by the owner; with it on, the owner can recover a person's chats sent while it is on, with that key
+and their password; this is logged and the person is told.
 1:1 calls (0.35) are encrypted between the two devices, also through the
 optional relay.
 
