@@ -57,6 +57,8 @@ test('shared calendars beyond the page: reminders, change notifications, revocat
 
   // ── Reminders are each person's: Blair has the event's, Alex his own, nobody else any ──
   await call(alex, 'PUT', `/api/calendar/events/${standup.id}`, { reminders: [10] });
+  // Started in a second's last 20 ms, the pass queues the reminders in the next second and still sends them.
+  while (Date.now() % 1000 < 980) await new Promise(resolve => setImmediate(resolve));
   await pass();
   assert.equal(sentTo(endpoints.blair, 'reminder').length, 1, 'the owner has the event\'s reminder');
   assert.deepEqual(sentTo(endpoints.alex, 'reminder').map(payload => payload.title), ['Planning standup'], 'Alex his own');

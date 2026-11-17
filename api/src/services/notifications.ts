@@ -765,7 +765,8 @@ async function processNotificationJobs() {
     await enqueueDueReminders(connection, now, await blockedBackgroundModulesByUser(connection));
     await enqueueSessionExpiryWarnings(connection);
     await enqueueStalledRecordingUploads(connection, await blockedBackgroundModulesByUser(connection));
-    const delivered = await deliverPending(connection, now, await blockedBackgroundModulesByUser(connection));
+    // The time now, not the pass's start: what this pass queued is stamped with the database's clock since then.
+    const delivered = await deliverPending(connection, new Date(), await blockedBackgroundModulesByUser(connection));
     const pausedUsers = [...paused].filter(([, modules]) => modules.has('calendar') || modules.has('mail')).map(([userId]) => userId);
     await connection.execute(`DELETE FROM notification_events WHERE expires_at < UTC_TIMESTAMP() - INTERVAL 30 DAY ${pausedUsers.length ? `AND user_id NOT IN (${pausedUsers.map(() => '?').join(', ')})` : ''}`, pausedUsers);
     await connection.execute("DELETE FROM push_subscriptions WHERE session_id IN (SELECT id FROM sessions WHERE expires_at <= UTC_TIMESTAMP())");

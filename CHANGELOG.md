@@ -112,6 +112,11 @@ seconds per 100,000 events; back up first (see
   pictures of an administrator gain "Calendars" in the panel: added content
   within the accepted design.
 
+### Fixed
+
+- A reminder or notification that fell due as the clock turned a second
+  could arrive half a minute late; it now goes out at once.
+
 ## 0.31.0
 
 ### Added
