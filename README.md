@@ -198,8 +198,8 @@ The `latest` tag follows successful main-branch and release builds; use a versio
 tag when you want explicit control of upgrades. The supplied
 [Compose file](docker-compose.yml) currently uses `latest`.
 
-**TrueNAS:** a [Community catalog app](https://github.com/truenas/apps/pull/5975)
-is under review; it is not yet in the catalog. See
+**TrueNAS:** UniHub is in the TrueNAS Community catalog
+([added here](https://github.com/truenas/apps/pull/5975)). See
 [UniHub as a TrueNAS app](docs/TRUENAS_INSTALLER.md).
 
 ## Keep your data recoverable
@@ -250,7 +250,7 @@ is not a developer and has no formal software-development qualifications; prior
 coding experience was a tic-tac-toe game and a webpage about 15 years ago.
 Code development, maintenance and security/function reviews are done with
 Anthropic's Claude models: Claude Opus 5.5 for development and independent reviews,
-Claude Fable 5.1 for frontend and design. Earlier releases were written with
+Claude Fable 5.2 for frontend, design and build plans. Earlier releases were written with
 OpenAI/GPT models, which are no longer used. Automated tests
 and AI reviews do not constitute an independent professional security audit.
 UniHub is not affiliated with or endorsed by these providers.
