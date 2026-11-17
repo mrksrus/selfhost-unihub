@@ -222,7 +222,7 @@ export function CalendarSettingsDialog({ calendar, onClose, data }: { calendar: 
           </div>
           {!reached && <div className="flex items-center justify-between gap-4">
             <Label htmlFor="calendar-todo" className="font-normal">Show its events in ToDo</Label>
-            <Switch id="calendar-todo" checked={current.auto_todo_enabled}
+            <Switch id="calendar-todo" checked={current.auto_todo_enabled} disabled={current.archived}
               onCheckedChange={value => data.updateCalendar.mutate({ id: current.id, data: { auto_todo_enabled: value } })} />
           </div>}
           {/* Only UniHub's own calendars are shared here, so only they have other people's changes. */}

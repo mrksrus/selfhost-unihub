@@ -77,7 +77,8 @@ export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount
   const { user } = useAuth();
   const setView = useSetCalendarView();
   const offers = useCalendarOffer();
-  const reached = useMemo(() => calendars.filter(isReached), [calendars]);
+  // A calendar only offered to the person shows as its offer card, not as a "Busy only" row.
+  const reached = useMemo(() => calendars.filter(calendar => isReached(calendar) && !(calendar.offer?.to.id === user?.id && calendar.permission === 'freebusy')), [calendars, user?.id]);
   // The server refuses what a policy forbids; the entries only show the reason (F13).
   const removePolicy = usePolicy('accounts.remove');
   const addPolicy = usePolicy('accounts.add');
@@ -98,7 +99,8 @@ export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount
   const show = (calendar: CalendarCalendar, shown: boolean) => {
     if (isReached(calendar)) { setView.mutate({ id: calendar.id, is_visible: shown }); return; }
     onShow(calendar.id, shown);
-    data.updateCalendar.mutate({ id: calendar.id, data: { is_visible: shown } });
+    // An archived calendar keeps only its name and colour changes; on or off stays this browser's.
+    if (!calendar.archived) data.updateCalendar.mutate({ id: calendar.id, data: { is_visible: shown } });
   };
   const row = (calendar: CalendarCalendar, readOnly: boolean) => {
     const offer = calendar.offer && (calendar.offer.to.id === user?.id ? 'Offered to you' : `Offered to ${calendar.offer.to.full_name || calendar.offer.to.email}`);
