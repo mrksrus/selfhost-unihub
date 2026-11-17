@@ -1,12 +1,14 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import type { AccessKind, AccessPermissions, Principal, Principals } from '../contracts/organisation';
+import type { ShareCandidatesResponse } from '../contracts/address-books';
+import type { Permission } from '../security/permissions';
 
 import crypto from 'node:crypto';
 import { db } from '../state';
 import { forbidden, notFound } from '../http/errors';
 import { can as roleCan } from '../security/permissions';
-import { allGroupIds, groupExists, groupsOf, membershipOf } from './groups';
+import { allGroupIds, groupExists, groupNames, groupsOf, listGroups, membershipOf, peopleMatching, shareAGroup } from './groups';
 
 // The access service (F4): the one place that decides who may read or
 // manage a resource beyond its owner. Routes and workers ask it before any
@@ -15,8 +17,13 @@ import { allGroupIds, groupExists, groupsOf, membershipOf } from './groups';
 // here. A group is managed by its managers and by administrators with
 // groups.manage. A shared address book is reached through grants to a
 // person's principals (the person, their groups, everyone); administrators
-// with contacts.books.manage manage every book without one. The grants
-// table is this file's alone (a lint fence keeps its SQL here).
+// with contacts.books.manage manage every book without one. A calendar is
+// managed by the person who owns it; one no person owns (an organisation's,
+// or a group's) by administrators with calendars.manage and by the managers
+// of its group; anyone else reaches a UniHub calendar through grants, never
+// one synced from a provider. An archived calendar is read-only for
+// everyone. The grants table is this file's alone (a lint fence keeps its
+// SQL here).
 
 type Resource<K extends AccessKind = AccessKind> = { kind: K; id: string };
 
@@ -24,11 +31,13 @@ type Resource<K extends AccessKind = AccessKind> = { kind: K; id: string };
 const ORDER: { readonly [K in AccessKind]: readonly AccessPermissions[K][] } = {
   group: ['read', 'manage'],
   address_book: ['read', 'edit', 'manage'],
+  calendar: ['freebusy', 'read', 'contribute', 'edit', 'manage'],
 };
 
 const REFUSALS: { readonly [K in AccessKind]: { notFound: { code: string; message: string }; forbidden: { code: string; message: string } } } = {
   group: { notFound: { code: 'GROUP_NOT_FOUND', message: 'Group not found' }, forbidden: { code: 'GROUP_FORBIDDEN', message: 'You cannot manage this group.' } },
   address_book: { notFound: { code: 'BOOK_NOT_FOUND', message: 'Address book not found' }, forbidden: { code: 'BOOK_FORBIDDEN', message: 'You cannot change this address book.' } },
+  calendar: { notFound: { code: 'CALENDAR_NOT_FOUND', message: 'Calendar not found' }, forbidden: { code: 'CALENDAR_FORBIDDEN', message: 'You cannot change this calendar.' } },
 };
 
 const highest = <K extends AccessKind>(kind: K, levels: readonly string[]): AccessPermissions[K] | null => {
@@ -62,10 +71,32 @@ async function bookLive(bookId: string, executor: SqlExecutor) {
   return rows.length > 0;
 }
 
+// A calendar as access sees it: its owner, group, state and whether grants may reach it.
+async function calendarOf(calendarId: string, executor: SqlExecutor) {
+  const [[row]] = await executor.execute<RowDataPacket[]>(`SELECT c.user_id, c.group_id, c.deleted_at IS NOT NULL AS deleted, c.archived_at IS NOT NULL AS archived,
+      (c.user_id IS NULL OR a.provider = 'local') AS shareable
+    FROM calendar_calendars c LEFT JOIN calendar_accounts a ON a.id = c.account_id WHERE c.id = ?`, [calendarId]);
+  return row ? { userId: row.user_id == null ? null : String(row.user_id), groupId: row.group_id == null ? null : String(row.group_id),
+    deleted: !!Number(row.deleted), archived: !!Number(row.archived), shareable: !!Number(row.shareable) } : null;
+}
+
+async function calendarLevel(userId: string, role: string, calendarId: string, executor: SqlExecutor): Promise<AccessPermissions['calendar'] | null> {
+  const calendar = await calendarOf(calendarId, executor);
+  if (!calendar || calendar.deleted) return null;
+  const levels: string[] = [];
+  if (calendar.userId === userId) levels.push('manage');
+  if (calendar.userId === null && roleCan(role, 'calendars.manage')) levels.push('manage');
+  if (calendar.userId === null && calendar.groupId && await membershipOf(calendar.groupId, userId, executor) === 'manager') levels.push('manage');
+  if (calendar.shareable) levels.push(...(await reachingGrants(userId, 'calendar', calendarId, executor)).map(([, permission]) => permission));
+  const level = highest('calendar', levels);
+  return calendar.archived && level && level !== 'freebusy' ? 'read' : level;
+}
+
 /** The most the person may do with the resource, or null when they cannot see it. */
 async function accessLevel<K extends AccessKind>(userId: string, resource: Resource<K>, executor: SqlExecutor = db): Promise<AccessPermissions[K] | null> {
   const role = await activeRole(userId, executor);
   if (!role) return null;
+  if (resource.kind === 'calendar') return calendarLevel(userId, role, resource.id, executor) as Promise<AccessPermissions[K] | null>;
   const levels: string[] = [];
   if (resource.kind === 'address_book') {
     if (!await bookLive(resource.id, executor)) return null;
@@ -104,7 +135,10 @@ async function assertCan<K extends AccessKind>(userId: string, resource: Resourc
 /**
  * The ids of the resources of a kind the person can see, for list queries.
  * A book shows only where a grant reaches the person: an administrator
- * finds the others under Server › Shared books.
+ * finds the others under Server › Shared books. A calendar shows where a
+ * grant reaches the person and for the managers of its group; never the
+ * person's own (listed as theirs) and never for an administrator by
+ * permission alone (Server › Calendars lists the others).
  */
 async function visible(userId: string, kind: AccessKind, executor: SqlExecutor = db): Promise<string[]> {
   const role = await activeRole(userId, executor);
@@ -114,6 +148,17 @@ async function visible(userId: string, kind: AccessKind, executor: SqlExecutor =
     if (!reached.length) return [];
     const [live] = await executor.execute<RowDataPacket[]>(`SELECT id FROM address_books WHERE deleted_at IS NULL AND id IN (${reached.map(() => '?').join(', ')})
       ORDER BY name, id`, reached);
+    return live.map(row => String(row.id));
+  }
+  if (kind === 'calendar') {
+    const reached = [...new Set((await reachingGrants(userId, kind, null, executor)).map(([id]) => id))];
+    const managed = (await groupsOf(userId, executor)).filter(group => group.role === 'manager').map(group => group.id);
+    if (!reached.length && !managed.length) return [];
+    const list = (ids: readonly string[]) => ids.length ? ids.map(() => '?').join(', ') : 'NULL';
+    const [live] = await executor.execute<RowDataPacket[]>(`SELECT c.id FROM calendar_calendars c LEFT JOIN calendar_accounts a ON a.id = c.account_id
+      WHERE c.deleted_at IS NULL AND (c.user_id IS NULL OR (a.provider = 'local' AND c.user_id <> ?))
+        AND (c.id IN (${list(reached)}) OR (c.user_id IS NULL AND c.group_id IN (${list(managed)})))
+      ORDER BY c.name, c.id`, [userId, ...reached, ...managed]);
     return live.map(row => String(row.id));
   }
   if (roleCan(role, 'groups.manage') || roleCan(role, 'users.read')) return allGroupIds(executor);
@@ -135,6 +180,30 @@ async function grantsOn(resource: Resource, executor: SqlExecutor = db): Promise
     permission: String(row.permission),
     granted_at: row.granted_at instanceof Date ? row.granted_at.toISOString() : String(row.granted_at),
   }));
+}
+
+/** A resource's grants with each principal's name ("Everyone" for everyone) and a person's address. */
+async function namedGrants(resource: Resource, executor: SqlExecutor = db) {
+  const grants = await grantsOn(resource, executor);
+  const userIds = grants.flatMap(grant => grant.principal.kind === 'user' ? [grant.principal.id] : []);
+  const [people] = userIds.length ? await executor.execute<RowDataPacket[]>(`SELECT id, full_name, email FROM users WHERE id IN (${userIds.map(() => '?').join(', ')})`, userIds) : [[]];
+  const byId = new Map(people.map(row => [String(row.id), row]));
+  const groups = await groupNames(grants.flatMap(grant => grant.principal.kind === 'group' ? [grant.principal.id] : []), executor);
+  return grants.map(({ principal, permission }) => {
+    const person = principal.kind === 'user' ? byId.get(principal.id) : undefined;
+    return {
+      principal, permission, email: person ? String(person.email) : null,
+      name: principal.kind === 'everyone' ? 'Everyone' : principal.kind === 'group' ? groups.get(principal.id) ?? '' : person?.full_name ?? String(person?.email ?? ''),
+    };
+  });
+}
+
+/** How many grants each resource of a kind has: of the given ids, or (null) of every resource that has one. */
+async function shareCounts(kind: AccessKind, ids: readonly string[] | null, executor: SqlExecutor = db): Promise<Map<string, number>> {
+  if (ids && !ids.length) return new Map();
+  const [rows] = await executor.execute<RowDataPacket[]>(`SELECT resource_id, COUNT(*) AS shares FROM grants WHERE resource_kind = ?
+    ${ids ? `AND resource_id IN (${ids.map(() => '?').join(', ')})` : ''} GROUP BY resource_id`, [kind, ...(ids ?? [])]);
+  return new Map(rows.map(row => [String(row.resource_id), Number(row.shares)]));
 }
 
 /** The principal's grant on the resource, locked for the caller's transaction; null when none. */
@@ -160,6 +229,12 @@ async function removeGrantsOf(cx: SqlExecutor, principal: Exclude<Principal, { k
   await cx.execute('DELETE FROM grants WHERE principal_kind = ? AND principal_id = ?', [...principalKey(principal)]);
 }
 
+/** Removes the grants on a person's calendars, in the transaction that deletes the person and with them their calendars. */
+async function removeGrantsOnCalendarsOf(cx: SqlExecutor, userId: string) {
+  await cx.execute(`DELETE g FROM grants g JOIN calendar_calendars c ON c.id = g.resource_id
+    WHERE g.resource_kind = 'calendar' AND c.user_id = ?`, [userId]);
+}
+
 /** Removes every grant on a resource, in the transaction that deletes it for good. */
 async function removeGrantsOn(cx: SqlExecutor, resource: Resource) {
   await cx.execute('DELETE FROM grants WHERE resource_kind = ? AND resource_id = ?', [resource.kind, resource.id]);
@@ -172,5 +247,43 @@ async function heldBy(userId: string, kind: AccessKind, permission: string, exec
   return rows.map(row => String(row.resource_id));
 }
 
-export { principalsOf, accessLevel, can, assertCan, visible, grantsOn, lockGrant, setGrant, removeGrantsOf, removeGrantsOn, heldBy };
+// --- Reach ------------------------------------------------------------------------
+
+const MAX_CANDIDATES = 20;
+const outOfReach = () => forbidden('SHARE_OUT_OF_REACH', 'You can share only with your own groups and the people in them.');
+
+/**
+ * Whom the caller may give a share or a higher one: an administrator with
+ * the kind's permission anyone active, any group or everyone; anyone else
+ * their own groups and the active people in them, never everyone.
+ */
+async function assertReach(cx: SqlExecutor, userId: string, principal: Principal, adminPermission: Permission) {
+  const [[caller]] = await cx.execute<RowDataPacket[]>('SELECT role FROM users WHERE id = ?', [userId]);
+  const admin = roleCan(caller?.role, adminPermission);
+  if (principal.kind === 'everyone') { if (!admin) throw outOfReach(); return; }
+  if (principal.kind === 'group') {
+    if (!await groupExists(principal.id, cx)) throw notFound('GROUP_NOT_FOUND', 'Group not found');
+    if (!admin && !await membershipOf(principal.id, userId, cx)) throw outOfReach();
+    return;
+  }
+  const [[person]] = await cx.execute<RowDataPacket[]>('SELECT id FROM users WHERE id = ? AND is_active = TRUE', [principal.id]);
+  if (!person) throw notFound('USER_NOT_FOUND', 'User not found');
+  if (!admin && !await shareAGroup(userId, principal.id, cx)) throw outOfReach();
+}
+
+/** The people and groups within the caller's reach that match the query, at most 20 of each. */
+async function reachCandidates(userId: string, query: string, adminPermission: Permission): Promise<ShareCandidatesResponse> {
+  const [[caller]] = await db.execute<RowDataPacket[]>('SELECT role FROM users WHERE id = ?', [userId]);
+  const admin = roleCan(caller?.role, adminPermission);
+  const people = await peopleMatching(query, admin ? {} : { sharingGroupsWith: userId });
+  const needle = query.trim().toLowerCase();
+  const groups = (admin ? await listGroups() : await groupsOf(userId))
+    .filter(group => group.name.toLowerCase().includes(needle)).slice(0, MAX_CANDIDATES).map(({ id, name }) => ({ id, name }));
+  return { people, groups, everyone: admin };
+}
+
+export {
+  principalsOf, accessLevel, can, assertCan, visible, grantsOn, namedGrants, shareCounts, lockGrant, setGrant, removeGrantsOf, removeGrantsOnCalendarsOf, removeGrantsOn, heldBy,
+  assertReach, reachCandidates,
+};
 export type { Resource, Grant };

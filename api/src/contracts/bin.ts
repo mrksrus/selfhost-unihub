@@ -36,6 +36,11 @@ export interface BinItem {
  * With book=<id>: that shared book's bin instead, for those who may edit
  * the book (404 BOOK_NOT_FOUND, 403 BOOK_FORBIDDEN otherwise); restoring,
  * deleting for good and emptying (with `book`) reach its items the same way.
+ * With calendar=<id>: that calendar's own bin, for those who may edit a
+ * calendar shared with them or no person owns (404 CALENDAR_NOT_FOUND, 403
+ * CALENDAR_FORBIDDEN otherwise); the owner of a person's calendar also finds
+ * its items in their own bin; restoring, deleting for good and emptying
+ * (with `calendar`) reach its items the same way.
  * Newest first, a page at a time: up to 2000 items, in whole groups (a
  * page's first group is always whole, also a larger one), so the members of
  * a group are always on the same page. `before` is the next_cursor of the
@@ -107,7 +112,7 @@ export interface BinRestoreResponse {
 }
 
 /** POST /api/bin/empty: the whole bin, or one module's part of it. */
-export interface BinEmptyRequest { module?: BinModule; /** A shared book's bin instead of the person's own. */ book?: string }
+export interface BinEmptyRequest { module?: BinModule; /** A shared book's bin instead of the person's own. */ book?: string; /** A calendar's own bin instead of the person's. */ calendar?: string }
 
 /** DELETE /api/bin/:id and POST /api/bin/empty (both under the bin.delete policy). */
 export interface BinDeleteResponse { deleted: number }

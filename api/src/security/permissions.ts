@@ -10,7 +10,7 @@
 // that group, answered by services/access.ts.
 const PERMISSIONS = [
   'users.read', 'users.manage', 'server.settings', 'storage.read', 'audit.read',
-  'groups.manage', 'admins.manage', 'owner.transfer', 'contacts.books.manage',
+  'groups.manage', 'admins.manage', 'owner.transfer', 'contacts.books.manage', 'calendars.manage',
 ] as const;
 type Permission = typeof PERMISSIONS[number];
 

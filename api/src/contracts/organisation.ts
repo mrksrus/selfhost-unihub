@@ -12,6 +12,7 @@
 // INVITE_INVALID for a setup link that is unknown, used, expired or revoked
 // (one answer for all of them).
 import type { AdminReauthentication } from './admin-accounts';
+import type { CalendarPermission } from './calendar-shares';
 import type { DeviceSummary } from './devices';
 import type { Permission } from '../security/permissions';
 
@@ -43,12 +44,13 @@ export interface Principals {
 // --- Access (F4) -------------------------------------------------------------
 
 /** The kinds of resource the access service answers for. */
-export type AccessKind = 'group' | 'address_book';
+export type AccessKind = 'group' | 'address_book' | 'calendar';
 
 /** Permissions on each kind, from the least to the most. */
 export interface AccessPermissions {
   group: 'read' | 'manage';
   address_book: 'read' | 'edit' | 'manage';
+  calendar: CalendarPermission;
 }
 
 // --- The signed-in person ------------------------------------------------------

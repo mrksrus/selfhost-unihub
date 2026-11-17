@@ -3,7 +3,7 @@
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
--- Through migration 29.
+-- Through migration 30.
 
 CREATE TABLE `address_books` (
   `id` char(36) NOT NULL,
@@ -107,15 +107,17 @@ CREATE TABLE `bin_items` (
   `purge_after` datetime DEFAULT NULL,
   `restored_at` datetime DEFAULT NULL,
   `address_book_id` char(36) DEFAULT NULL,
+  `calendar_id` char(36) DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_bin_items_purge` (`user_id`,`purge_after`),
   KEY `idx_bin_items_item` (`user_id`,`item_type`,`item_id`),
   KEY `idx_bin_items_group` (`group_id`),
   KEY `idx_bin_items_due` (`purge_after`),
   KEY `fk_bin_items_book` (`address_book_id`),
+  KEY `idx_bin_items_calendar` (`calendar_id`),
   CONSTRAINT `bin_items_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_bin_items_book` FOREIGN KEY (`address_book_id`) REFERENCES `address_books` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `chk_bin_items_owner` CHECK (`user_id` is null <> (`address_book_id` is null))
+  CONSTRAINT `chk_bin_items_owner` CHECK ((`user_id` is not null) + (`address_book_id` is not null) + (`user_id` is null and `calendar_id` is not null) = 1)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `calendar_accounts` (
@@ -151,8 +153,8 @@ CREATE TABLE `calendar_accounts` (
 
 CREATE TABLE `calendar_calendars` (
   `id` char(36) NOT NULL DEFAULT uuid(),
-  `user_id` char(36) NOT NULL,
-  `account_id` char(36) NOT NULL,
+  `user_id` char(36) DEFAULT NULL,
+  `account_id` char(36) DEFAULT NULL,
   `name` varchar(255) NOT NULL,
   `external_id` varchar(500) DEFAULT NULL,
   `color` varchar(20) DEFAULT '#2563eb',
@@ -166,18 +168,30 @@ CREATE TABLE `calendar_calendars` (
   `remote_ctag` varchar(255) DEFAULT NULL,
   `remote_expanded_on` date DEFAULT NULL,
   `uid` char(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NOT NULL DEFAULT uuid(),
+  `group_id` char(36) DEFAULT NULL,
+  `deleted_at` datetime DEFAULT NULL,
+  `archived_at` datetime DEFAULT NULL,
+  `offer_to` char(36) DEFAULT NULL,
+  `offer_by` char(36) DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `unique_calendar_external` (`account_id`,`external_id`),
   KEY `idx_calendar_calendars_user` (`user_id`),
   KEY `idx_calendar_calendars_account` (`account_id`),
   KEY `idx_calendar_calendars_user_uid` (`user_id`,`uid`),
+  KEY `fk_calendar_calendars_group` (`group_id`),
+  KEY `fk_calendar_calendars_offer_to` (`offer_to`),
+  KEY `fk_calendar_calendars_offer_by` (`offer_by`),
   CONSTRAINT `calendar_calendars_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `calendar_calendars_ibfk_2` FOREIGN KEY (`account_id`) REFERENCES `calendar_accounts` (`id`) ON DELETE CASCADE
+  CONSTRAINT `calendar_calendars_ibfk_2` FOREIGN KEY (`account_id`) REFERENCES `calendar_accounts` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_calendar_calendars_group` FOREIGN KEY (`group_id`) REFERENCES `org_groups` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_calendar_calendars_offer_by` FOREIGN KEY (`offer_by`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_calendar_calendars_offer_to` FOREIGN KEY (`offer_to`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `chk_calendar_calendars_owner` CHECK (`user_id` is null = (`account_id` is null))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `calendar_event_attendees` (
   `id` char(36) NOT NULL DEFAULT uuid(),
-  `user_id` char(36) NOT NULL,
+  `user_id` char(36) DEFAULT NULL,
   `event_id` char(36) NOT NULL,
   `email` varchar(255) NOT NULL,
   `display_name` varchar(255) DEFAULT NULL,
@@ -261,23 +275,26 @@ CREATE TABLE `calendar_event_moves` (
 CREATE TABLE `calendar_event_subtasks` (
   `id` char(36) NOT NULL DEFAULT uuid(),
   `event_id` char(36) NOT NULL,
-  `user_id` char(36) NOT NULL,
+  `user_id` char(36) DEFAULT NULL,
   `title` varchar(255) NOT NULL,
   `is_done` tinyint(1) DEFAULT 0,
   `position` int(11) NOT NULL DEFAULT 0,
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `created_by` char(36) DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_subtasks_event` (`event_id`),
   KEY `idx_subtasks_user` (`user_id`),
   KEY `idx_subtasks_order` (`event_id`,`position`),
+  KEY `fk_calendar_event_subtasks_created_by` (`created_by`),
   CONSTRAINT `calendar_event_subtasks_ibfk_1` FOREIGN KEY (`event_id`) REFERENCES `calendar_events` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `calendar_event_subtasks_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+  CONSTRAINT `calendar_event_subtasks_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_calendar_event_subtasks_created_by` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `calendar_events` (
   `id` char(36) NOT NULL DEFAULT uuid(),
-  `user_id` char(36) NOT NULL,
+  `user_id` char(36) DEFAULT NULL,
   `calendar_id` char(36) DEFAULT NULL,
   `title` varchar(255) NOT NULL,
   `description` text DEFAULT NULL,
@@ -298,7 +315,10 @@ CREATE TABLE `calendar_events` (
   `source_email_json` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`source_email_json`)),
   `order_key` varchar(64) DEFAULT NULL,
   `uid` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NOT NULL DEFAULT uuid(),
+  `series_id` char(36) DEFAULT NULL,
+  `recurrence_id` varchar(64) DEFAULT NULL,
   PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_calendar_events_series` (`series_id`,`recurrence_id`),
   KEY `idx_events_user` (`user_id`),
   KEY `idx_events_start` (`start_time`),
   KEY `idx_events_user_time` (`user_id`,`start_time`,`end_time`),
@@ -307,7 +327,8 @@ CREATE TABLE `calendar_events` (
   KEY `idx_events_source_email` (`user_id`,`source_email_id`),
   KEY `idx_events_user_uid` (`user_id`,`uid`),
   CONSTRAINT `calendar_events_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `fk_calendar_events_calendar_id` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE SET NULL
+  CONSTRAINT `fk_calendar_events_calendar_id` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_calendar_events_series` FOREIGN KEY (`series_id`) REFERENCES `calendar_series` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `calendar_overlay_restores` (
@@ -333,6 +354,23 @@ CREATE TABLE `calendar_overlay_restores` (
   CONSTRAINT `calendar_overlay_restores_ibfk_2` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `calendar_reminders` (
+  `id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `event_id` char(36) DEFAULT NULL,
+  `series_id` char(36) DEFAULT NULL,
+  `reminders` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`reminders`)),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_calendar_reminders_event` (`user_id`,`event_id`),
+  UNIQUE KEY `uq_calendar_reminders_series` (`user_id`,`series_id`),
+  KEY `fk_calendar_reminders_event` (`event_id`),
+  KEY `fk_calendar_reminders_series` (`series_id`),
+  CONSTRAINT `fk_calendar_reminders_event` FOREIGN KEY (`event_id`) REFERENCES `calendar_events` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_calendar_reminders_series` FOREIGN KEY (`series_id`) REFERENCES `calendar_series` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_calendar_reminders_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_calendar_reminders_target` CHECK (`event_id` is null <> (`series_id` is null))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE `calendar_remote_objects` (
   `id` char(36) NOT NULL,
   `user_id` char(36) NOT NULL,
@@ -354,6 +392,18 @@ CREATE TABLE `calendar_remote_objects` (
   CONSTRAINT `calendar_remote_objects_ibfk_3` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `calendar_series` (
+  `id` char(36) NOT NULL,
+  `calendar_id` char(36) NOT NULL,
+  `uid` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NOT NULL,
+  `ics` mediumtext NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `updated_at` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `fk_calendar_series_calendar` (`calendar_id`),
+  CONSTRAINT `fk_calendar_series_calendar` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE `calendar_settings` (
   `calendar_id` char(36) NOT NULL,
   `user_id` char(36) NOT NULL,
@@ -364,6 +414,19 @@ CREATE TABLE `calendar_settings` (
   KEY `idx_calendar_settings_user` (`user_id`),
   CONSTRAINT `calendar_settings_ibfk_1` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE CASCADE,
   CONSTRAINT `calendar_settings_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `calendar_views` (
+  `calendar_id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `is_visible` tinyint(1) NOT NULL DEFAULT 1,
+  `color` varchar(20) DEFAULT NULL,
+  `notify_changes` tinyint(1) NOT NULL DEFAULT 0,
+  `updated_at` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`calendar_id`,`user_id`),
+  KEY `idx_calendar_views_user` (`user_id`),
+  CONSTRAINT `fk_calendar_views_calendar` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_calendar_views_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `contact_duplicate_dismissals` (
@@ -1308,7 +1371,7 @@ CREATE TABLE `notification_reminders` (
   `minutes` int(11) NOT NULL,
   `due_at` datetime NOT NULL,
   `queued_at` datetime DEFAULT NULL,
-  PRIMARY KEY (`event_id`,`minutes`),
+  PRIMARY KEY (`event_id`,`user_id`,`minutes`),
   KEY `user_id` (`user_id`),
   KEY `idx_reminder_due` (`queued_at`,`due_at`),
   CONSTRAINT `notification_reminders_ibfk_1` FOREIGN KEY (`event_id`) REFERENCES `calendar_events` (`id`) ON DELETE CASCADE,

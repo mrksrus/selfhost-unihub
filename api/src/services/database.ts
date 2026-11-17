@@ -16,6 +16,7 @@ import { adoptRawCalendarUids } from './calendar-uid-upgrade';
 import { addDevices, verifyDevices } from './devices-migration';
 import { addOrganisation, chooseOwner, verifyOrganisation, verifyOwner } from './organisation-migration';
 import { addSharedContacts, verifySharedContacts } from './shared-contacts-migration';
+import { addSharedCalendars, verifySharedCalendars } from './shared-calendars-migration';
 import { log } from '../log';
 
 type FieldRow = RowDataPacket & { Field: string };
@@ -453,6 +454,18 @@ const MIGRATIONS: readonly Migration[] = [
     verify: async (connection: PoolConnection) => {
       await verifyDatabaseInventory(connection, { throughMigration: 29 });
       await verifySharedContacts(connection);
+    },
+  },
+  {
+    // Shared calendars: group and organisation calendars, shares,
+    // repeating local events, a calendar's bin and each person's view of and
+    // reminders on a calendar (shared-calendars-migration.ts). No row changes.
+    id: 30,
+    name: 'shared-calendars',
+    up: addSharedCalendars,
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 30 });
+      await verifySharedCalendars(connection);
     },
   },
 ];

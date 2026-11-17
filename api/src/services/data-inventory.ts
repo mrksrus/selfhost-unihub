@@ -153,6 +153,16 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
       'user_id phone job_title department updated_by updated_at'],
   ].map(([name, reason, columns]) => [name, Object.freeze({ ...excluded('deliberately_excluded', reason, columns),
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 29])) })])),
+  // Upgrade step 30.
+  ...Object.fromEntries([
+    ['calendar_series', 'Data schema 7 carries no series; a restored date of a repeating event comes back as a single event. The instance backup carries series with their ids.',
+      'id calendar_id uid ics created_at updated_at'],
+    ['calendar_views', "A person's view of a calendar others share with them points at calendars a personal restore elsewhere does not have; only the instance backup carries it.",
+      'calendar_id user_id is_visible color notify_changes updated_at'],
+    ['calendar_reminders', "A person's own reminders on a calendar they do not own point at events a personal restore elsewhere does not have; only the instance backup carries them.",
+      'id user_id event_id series_id reminders'],
+  ].map(([name, reason, columns]) => [name, Object.freeze({ ...excluded('deliberately_excluded', reason, columns),
+    introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 30])) })])),
 });
 
 // Upgrade step 29 (0.31.0): rows of these personal tables may belong to a
@@ -163,6 +173,24 @@ const BOOK_ROWS = Object.freeze({
   treatment: 'deliberately_excluded', introducedIn: 29,
   reason: "A shared address book's rows are organisation data; a personal backup carries only the person's own rows, the instance backup the book's.",
   tables: Object.freeze(['contacts', 'contact_values', 'contact_properties', 'contact_photos', 'bin_items']),
+});
+
+// Upgrade step 30: a calendar's rows belong to no person (user_id NULL)
+// when the calendar is an organisation's or a group's; a personal backup
+// selects only the person's rows, the instance backup carries the others.
+// Who owns, shares, offers or archived a calendar, who added a checklist
+// point, which calendar's bin holds an item and which series a date belongs
+// to are never archived (calendar_series above).
+const CALENDAR_ROWS = Object.freeze({
+  treatment: 'deliberately_excluded', introducedIn: 30,
+  reason: "An organisation's or a group's calendar and the sharing of a person's calendar are organisation data; a personal backup carries only the person's own rows.",
+  tables: Object.freeze(['calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'bin_items']),
+  columns: Object.freeze({
+    calendar_calendars: Object.freeze(['group_id', 'deleted_at', 'archived_at', 'offer_to', 'offer_by']),
+    calendar_events: Object.freeze(['series_id', 'recurrence_id']),
+    calendar_event_subtasks: Object.freeze(['created_by']),
+    bin_items: Object.freeze(['calendar_id']),
+  }) as Readonly<Record<string, readonly string[]>>,
 });
 
 // Every table states who owns a row, whether it can be shared, its data
@@ -190,6 +218,9 @@ const CALENDAR_CONTENT: readonly DataClass[] = Object.freeze(['local', 'mirror']
 // A person's contacts and bin are local; a shared address book's rows in the
 // same tables belong to the organisation (BOOK_ROWS).
 const BOOK_ROW_CLASSES: readonly DataClass[] = Object.freeze(['local', 'org']);
+// So are an organisation's or a group's calendar and its rows (CALENDAR_ROWS).
+const CALENDAR_SETUP_ROWS: readonly DataClass[] = Object.freeze([...CALENDAR_SETUP, 'org']);
+const CALENDAR_CONTENT_ROWS: readonly DataClass[] = Object.freeze([...CALENDAR_CONTENT, 'org']);
 const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.freeze({
   // Identity, settings and the installation.
   users: { owner: 'user', shareable: false, dataClass: 'config', module: null, restore: 'Profile fields restored onto the signed-in person; login, role and 2FA stay with the destination identity.' },
@@ -238,14 +269,14 @@ const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.fr
   contact_merges: { owner: 'user', shareable: false, dataClass: 'local', module: 'contacts', restore: 'Not archived: a restore brings back contacts, not a 30-day undo.' },
   contact_imports: { owner: 'user', shareable: false, dataClass: 'installation', module: 'contacts', restore: 'Never restored: a staged import expires after 24 hours.' },
   // Each item's module column names the module that gates it.
-  bin_items: { owner: 'user', shareable: true, dataClass: BOOK_ROW_CLASSES, module: null, restore: "From data schema 7 restored with the section of its module, with the time it had left (bin.ts restoreBinItems); not archived before. A shared book's bin: only in the instance backup." },
+  bin_items: { owner: 'user', shareable: true, dataClass: BOOK_ROW_CLASSES, module: null, restore: "From data schema 7 restored with the section of its module, with the time it had left (bin.ts restoreBinItems); not archived before. A shared book's bin and an organisation's or a group's calendar's: only in the instance backup." },
   // Calendar and ToDo.
   calendar_accounts: { owner: 'user', shareable: false, dataClass: CALENDAR_SETUP, module: 'calendar', restore: 'Restored with the Calendar section; a CalDAV or ICS account comes back paused until it signs in.' },
-  calendar_calendars: { owner: 'user', shareable: false, dataClass: CALENDAR_SETUP, module: 'calendar', restore: 'Restored with its account; matched by UID, id, server id, then name.' },
+  calendar_calendars: { owner: 'user', shareable: true, dataClass: CALENDAR_SETUP_ROWS, module: 'calendar', restore: "Restored with its account, unshared; matched by UID, id, server id, then name. An organisation's or a group's calendar: only in the instance backup." },
   calendar_settings: { owner: 'user', shareable: false, dataClass: CALENDAR_SETUP, module: 'calendar', restore: 'Restored with its calendar.' },
-  calendar_events: { owner: 'user', shareable: false, dataClass: CALENDAR_CONTENT, module: 'calendar', restore: 'Local events restored with the Calendar section, matched by UID across the local calendars, then by shape; synced ones download again, their UniHub state travels as an overlay.' },
-  calendar_event_subtasks: { owner: 'user', shareable: false, dataClass: 'local', module: 'calendar', restore: 'Restored with its task.' },
-  calendar_event_attendees: { owner: 'user', shareable: false, dataClass: CALENDAR_CONTENT, module: 'calendar', restore: 'Restored with its event.' },
+  calendar_events: { owner: 'user', shareable: true, dataClass: CALENDAR_CONTENT_ROWS, module: 'calendar', restore: "Local events restored with the Calendar section, matched by UID across the local calendars, then by shape; synced ones download again, their UniHub state travels as an overlay. An organisation's or a group's calendar: only in the instance backup." },
+  calendar_event_subtasks: { owner: 'user', shareable: true, dataClass: BOOK_ROW_CLASSES, module: 'calendar', restore: "Restored with its task. An organisation's or a group's calendar: only in the instance backup." },
+  calendar_event_attendees: { owner: 'user', shareable: true, dataClass: CALENDAR_CONTENT_ROWS, module: 'calendar', restore: "Restored with its event. An organisation's or a group's calendar: only in the instance backup." },
   calendar_event_external_refs: { owner: 'user', shareable: false, dataClass: 'mirror', module: 'calendar', restore: 'Restored with its event; the link to the server copy is rebuilt by the next sync.' },
   calendar_remote_objects: { owner: 'user', shareable: false, dataClass: 'mirror', module: 'calendar', restore: 'Never restored: downloaded again by the next sync.' },
   // Upgrade step 24 (0.27.0). The hand order is UniHub's own overlay on
@@ -255,6 +286,11 @@ const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.fr
   calendar_event_moves: { owner: 'user', shareable: false, dataClass: 'installation', module: 'calendar', restore: 'Never restored: a restore must not replay provider writes.' },
   // Upgrade step 25 (0.28.0): UniHub's overlay on a synced task, waiting for
   // the sync that creates the task's row.
+  // Upgrade step 30: a repeating local event goes with its calendar; a
+  // person's own view of and reminders on a calendar they reach.
+  calendar_series: { owner: 'user', shareable: true, dataClass: BOOK_ROW_CLASSES, module: 'calendar', restore: 'Goes with its calendar; only the instance backup carries it, with its id.' },
+  calendar_views: { owner: 'user', shareable: false, dataClass: 'config', module: 'calendar', restore: 'Never in a personal backup; the instance backup restores it; it goes with its calendar or person.' },
+  calendar_reminders: { owner: 'user', shareable: false, dataClass: 'config', module: 'calendar', restore: 'Never in a personal backup; the instance backup restores it; it goes with its event, series or person.' },
   calendar_overlay_restores: { owner: 'user', shareable: false, dataClass: 'local', module: 'calendar', restore: 'Exported with the Calendar section, also for every synced task with UniHub state; a restore applies it to the live task or keeps it until the sync that creates the task takes it; goes with its calendar.' },
   // Mail.
   mail_accounts: { owner: 'user', shareable: false, dataClass: 'config', module: 'mail', restore: 'Restored with the Mail section, paused until it signs in; provider deletion off.' },
@@ -320,6 +356,7 @@ function declaredFields() {
     for (const column of policy.columns) add(table, column, policy.treatment, policy.introducedIn?.[column], policy.removedIn);
   }
   for (const table of BOOK_ROWS.tables) add(table, 'address_book_id', BOOK_ROWS.treatment, BOOK_ROWS.introducedIn);
+  for (const [table, columns] of Object.entries(CALENDAR_ROWS.columns)) for (const column of columns) add(table, column, CALENDAR_ROWS.treatment, CALENDAR_ROWS.introducedIn);
   assertTableDeclarations(fields);
   return fields;
 }
@@ -366,6 +403,8 @@ function assertArchiveRelationships(rows: readonly RelationshipRow[]) {
     if (!TABLE_POLICIES[table]) continue; // Non-archive relationships are not restored.
     // A book's rows are never archived, so their link to the book is not restored either.
     if (row.column_name === 'address_book_id' && row.parent_table === 'address_books' && BOOK_ROWS.tables.includes(row.table_name)) continue;
+    // Nor are a calendar's owner, group, offer, series and a point's author (CALENDAR_ROWS).
+    if (CALENDAR_ROWS.columns[row.table_name]?.includes(row.column_name)) continue;
     const parent = row.column_name === 'user_id' ? 'users' : REFERENCES[table]?.[row.column_name];
     if (!parent || parent !== row.parent_table || row.parent_column !== 'id') {
       throw new Error(`Unclassified recovery relationship ${row.table_name}.${row.column_name} -> ${row.parent_table}.${row.parent_column}`);
@@ -373,5 +412,5 @@ function assertArchiveRelationships(rows: readonly RelationshipRow[]) {
   }
 }
 
-export { NON_ARCHIVE_POLICIES, BOOK_ROWS, TABLE_DECLARATIONS, declaredFields, assertInventoryCoverage, assertArchiveRelationships, verifyDatabaseInventory };
+export { NON_ARCHIVE_POLICIES, BOOK_ROWS, CALENDAR_ROWS, TABLE_DECLARATIONS, declaredFields, assertInventoryCoverage, assertArchiveRelationships, verifyDatabaseInventory };
 export type { DataClass, TableDeclaration };

@@ -234,6 +234,8 @@ async function deleteCalendarToBin(userId: string, calendarId: string) {
     const binItemIds = await putInBin(cx, userId, [{ module: 'calendar', itemType: 'calendar', itemId: calendarId, title: String(calendar.name ?? ''), reason: 'deleted', groupId, payload }]);
     const [events] = await cx.execute<RowDataPacket[]>('SELECT id FROM calendar_events WHERE calendar_id = ? AND user_id = ? ORDER BY start_time, id FOR UPDATE', [calendarId, userId]);
     binItemIds.push(...await binLocalEvents(cx, userId, events.map(row => String(row.id)), { reason: 'calendar_deleted', groupId }));
+    // Its shares end with it: a calendar back from the bin is unshared.
+    await (require('./access') as typeof import('./access')).removeGrantsOn(cx, { kind: 'calendar', id: calendarId });
     await cx.execute('DELETE FROM calendar_calendars WHERE id = ? AND user_id = ?', [calendarId, userId]);
     return { deletedEvents: events.length, binItemIds };
   });

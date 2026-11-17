@@ -64,9 +64,8 @@ const {
   serializeCalendarCalendar,
   ensureDefaultLocalCalendarForUser,
   formatProviderDateRange,
-  getCalendarSubtasksForEvents,
-  getCalendarAttendeesForEvents,
-  serializeCalendarEvent,
+  presentEvents,
+  seriesKeySql,
   parseDatetimeToMillis,
   replaceEventAttendees,
   applyLocalEventUpdate,
@@ -82,12 +81,13 @@ const {
   takesUndatedTasks,
 } = require('../services/calendar') as typeof import('../services/calendar');
 const taskOrder = require('../services/task-order') as typeof import('../services/task-order');
-const { attachMoveState, movePending, eventChanged, writebackIdentity, withEventLock, fenceTaskLocks, fencedWrite } = require('../services/calendar-move-state') as typeof import('../services/calendar-move-state');
+const { movePending, eventChanged, writebackIdentity, withEventLock, fenceTaskLocks, fencedWrite } = require('../services/calendar-move-state') as typeof import('../services/calendar-move-state');
 const calendarSync = require('../services/calendar-sync') as typeof import('../services/calendar-sync');
 const calendarMove = require('../services/calendar-move') as typeof import('../services/calendar-move');
 const binCalendar = require('../services/bin-calendar') as typeof import('../services/bin-calendar');
 const calendarAccounts = require('../services/calendar-accounts') as typeof import('../services/calendar-accounts');
 const calendarAccountChanges = require('../services/calendar-account-changes') as typeof import('../services/calendar-account-changes');
+const calendarShares = require('../services/calendar-shares') as typeof import('../services/calendar-shares');
 
 const has = (body: Record<string, unknown>, key: string) => Object.prototype.hasOwnProperty.call(body, key);
 
@@ -242,17 +242,35 @@ export = {
       // server's rules (contracts/tasks.ts CalendarChoiceFields).
       const defaults = await resolveCalendarDefaults(userId);
       const choices = new Map(defaults.choices.map(choice => [choice.id, choice]));
-      const calendars = rows.map((row) => {
+      // Then the calendars others share with the person, at their level and in their view (contracts/calendar-shares.ts).
+      const calendars = (await calendarShares.calendarsWithAccess(userId, rows)).map(({ row, mine, access }) => {
+        const writes = access.permission === 'edit' || access.permission === 'manage';
+        if (!mine) {
+          return {
+            ...serializeCalendarCalendar(row as CalendarRecordRow),
+            is_visible: access.view.is_visible,
+            color: access.view.color,
+            account_provider: row.provider ?? 'local',
+            account_display_name: null,
+            account_email: null,
+            default_for_tasks: false,
+            default_for_events: false,
+            write_block: writes ? null : 'read_only',
+            takes_undated_tasks: writes,
+            ...access,
+          };
+        }
         const choice = choices.get(row.id);
         return {
-          ...serializeCalendarCalendar(row),
+          ...serializeCalendarCalendar(row as CalendarRecordRow),
           account_provider: row.provider,
           account_display_name: row.account_display_name || null,
           account_email: row.account_email || null,
           default_for_tasks: row.id === defaults.taskListId,
           default_for_events: row.id === defaults.calendarId,
-          write_block: choice ? calendarWriteBlock(choice) : 'read_only',
-          takes_undated_tasks: choice ? takesUndatedTasks(choice) : false,
+          write_block: !writes ? 'read_only' : choice ? calendarWriteBlock(choice) : 'read_only',
+          takes_undated_tasks: writes && choice ? takesUndatedTasks(choice) : false,
+          ...access,
         };
       });
       return { calendars };
@@ -421,12 +439,17 @@ export = {
         .map((value) => value.trim())
         .filter(Boolean);
 
+      // The person's own events, and those of the calendars others share
+      // with them that they have on (their own view, not the owner's).
+      const levels = await calendarShares.reachedCalendars(userId);
+      const views = await calendarShares.viewsOfCalendars(userId, [...levels.keys()]);
+      const reached = [...levels.keys()].filter(id => !visibleOnly || views.get(id)?.is_visible);
       let query = `
-        SELECT e.*, c.auto_todo_enabled, c.is_visible, ${sourceEmailPresentSql('e')} AS source_email_present
+        SELECT e.*, c.auto_todo_enabled, c.is_visible, ${sourceEmailPresentSql('e')} AS source_email_present, ${seriesKeySql('e')} AS series_key
         FROM calendar_events e
         LEFT JOIN calendar_calendars c ON c.id = e.calendar_id
-        WHERE e.user_id = ?`;
-      const params: (string | null)[] = [userId];
+        WHERE ((e.user_id = ?${visibleOnly ? ' AND (c.is_visible = TRUE OR c.is_visible IS NULL)' : ''})${reached.length ? ` OR e.calendar_id IN (${reached.map(() => '?').join(', ')})` : ''})`;
+      const params: (string | null)[] = [userId, ...reached];
 
       if (!includeTodos) {
         query += ' AND e.is_todo_only = FALSE';
@@ -436,9 +459,6 @@ export = {
       }
       if (respectAutoTodo) {
         query += ' AND (c.auto_todo_enabled = TRUE OR c.auto_todo_enabled IS NULL)';
-      }
-      if (visibleOnly) {
-        query += ' AND (c.is_visible = TRUE OR c.is_visible IS NULL)';
       }
       if (rangeStart) {
         query += ' AND e.end_time >= ?';
@@ -456,14 +476,10 @@ export = {
       query += ' ORDER BY e.start_time ASC';
 
       const [rows] = await db.execute<EventRow[]>(query, params);
-      const eventIds = rows.map((row) => row.id);
-      const subtasksByEventId = await getCalendarSubtasksForEvents(userId, eventIds);
-      const attendeesByEventId = await getCalendarAttendeesForEvents(userId, eventIds);
-      const events = await attachMoveState(userId, await taskOrder.attachRanks(userId, rows.map((row) => serializeCalendarEvent(
-        row,
-        subtasksByEventId.get(row.id) || [],
-        attendeesByEventId.get(row.id) || []
-      ))));
+      const own = rows.filter(row => row.user_id === userId);
+      const shared = await calendarShares.presentReached(userId, rows.filter(row => row.user_id !== userId), levels);
+      const order = new Map(rows.map((row, index) => [row.id, index]));
+      const events = [...await presentEvents(userId, own), ...shared].sort((a, b) => order.get(a.id)! - order.get(b.id)!);
       return { events };
     } catch (error) {
       console.error('Get events error:', error);
@@ -591,7 +607,7 @@ export = {
     const id = getCalendarEventIdFromReq(req)!;
     if (!id) return { error: 'Invalid event id', status: 400 };
     try {
-      const event = await getCalendarEventWithSubtasks(userId, id);
+      const event = await getCalendarEventWithSubtasks(userId, id) ?? await calendarShares.reachedEvent(userId, id);
       return event ? { event } : { error: 'Event not found', status: 404 };
     } catch (error) {
       console.error('Get calendar event error:', error);

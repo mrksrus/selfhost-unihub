@@ -245,13 +245,17 @@ function serializeCalendarEvent(row: CalendarEvent, subtasks: ReturnType<typeof 
   };
 }
 
-async function getCalendarSubtasksForEvents(userId: string, eventIds: readonly string[] | null | undefined) {
+// Each event's points and attendees carry its owner's user_id: the person,
+// the owner of a calendar shared with the caller, or none for a calendar no
+// person owns. The caller has already been allowed to read the events.
+async function getCalendarSubtasksForEvents(ownerId: string | null, eventIds: readonly string[] | null | undefined) {
   if (!eventIds || eventIds.length === 0) return new Map();
 
   const placeholders = eventIds.map(() => '?').join(', ');
   const [rows] = await db.execute<(RowDataPacket & CalendarSubtask)[]>(
-    `SELECT * FROM calendar_event_subtasks WHERE user_id = ? AND event_id IN (${placeholders}) ORDER BY position ASC, created_at ASC`,
-    [userId, ...eventIds]
+    `SELECT s.*, COALESCE(u.full_name, u.email) AS created_by_name FROM calendar_event_subtasks s LEFT JOIN users u ON u.id = s.created_by
+     WHERE s.user_id <=> ? AND s.event_id IN (${placeholders}) ORDER BY s.position ASC, s.created_at ASC`,
+    [ownerId, ...eventIds]
   );
 
   const grouped = new Map<string, ReturnType<typeof serializeCalendarSubtask>[]>();
@@ -263,13 +267,13 @@ async function getCalendarSubtasksForEvents(userId: string, eventIds: readonly s
   return grouped;
 }
 
-async function getCalendarAttendeesForEvents(userId: string, eventIds: readonly string[] | null | undefined) {
+async function getCalendarAttendeesForEvents(ownerId: string | null, eventIds: readonly string[] | null | undefined) {
   if (!eventIds || eventIds.length === 0) return new Map();
 
   const placeholders = eventIds.map(() => '?').join(', ');
   const [rows] = await db.execute<(RowDataPacket & CalendarAttendee)[]>(
-    `SELECT * FROM calendar_event_attendees WHERE user_id = ? AND event_id IN (${placeholders}) ORDER BY created_at ASC`,
-    [userId, ...eventIds]
+    `SELECT * FROM calendar_event_attendees WHERE user_id <=> ? AND event_id IN (${placeholders}) ORDER BY created_at ASC`,
+    [ownerId, ...eventIds]
   );
 
   const grouped = new Map<string, ReturnType<typeof serializeCalendarAttendee>[]>();
@@ -281,25 +285,29 @@ async function getCalendarAttendeesForEvents(userId: string, eventIds: readonly 
   return grouped;
 }
 
+// The series a date belongs to: a local series' id, or a synced repeating object's UID.
+const seriesKeySql = (alias: string) => `CASE WHEN ${alias}.series_id IS NOT NULL THEN ${alias}.series_id
+  WHEN EXISTS (SELECT 1 FROM calendar_event_external_refs sr WHERE sr.event_id = ${alias}.id AND sr.recurrence_id IS NOT NULL) THEN ${alias}.uid END`;
+
+/** Event rows the viewer may read, serialized with their points, attendees, the viewer's order and pending moves. */
+async function presentEvents(viewerId: string, rows: readonly CalendarEvent[]) {
+  const byOwner = new Map<string | null, string[]>();
+  for (const row of rows) byOwner.set(row.user_id ?? null, [...(byOwner.get(row.user_id ?? null) ?? []), row.id]);
+  const subtasks = new Map<string, ReturnType<typeof serializeCalendarSubtask>[]>();
+  const attendees = new Map<string, ReturnType<typeof serializeCalendarAttendee>[]>();
+  for (const [ownerId, ids] of byOwner) {
+    for (const [id, list] of await getCalendarSubtasksForEvents(ownerId, ids)) subtasks.set(id, list);
+    for (const [id, list] of await getCalendarAttendeesForEvents(ownerId, ids)) attendees.set(id, list);
+  }
+  return attachMoveState(viewerId, await attachRanks(viewerId, rows.map(row => serializeCalendarEvent(row, subtasks.get(row.id) || [], attendees.get(row.id) || []))));
+}
+
 async function getCalendarEventWithSubtasks(userId: string, eventId: string) {
-  const [events] = await db.execute<(RowDataPacket & CalendarEvent)[]>(`SELECT calendar_events.*, ${sourceEmailPresentSql()} AS source_email_present
+  const [events] = await db.execute<(RowDataPacket & CalendarEvent)[]>(`SELECT calendar_events.*, ${sourceEmailPresentSql()} AS source_email_present,
+      ${seriesKeySql('calendar_events')} AS series_key
     FROM calendar_events WHERE id = ? AND user_id = ?`, [eventId, userId]);
   if (events.length === 0) return null;
-
-  const [subtasks] = await db.execute<(RowDataPacket & CalendarSubtask)[]>(
-    'SELECT * FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ? ORDER BY position ASC, created_at ASC',
-    [eventId, userId]
-  );
-  const [attendees] = await db.execute<(RowDataPacket & CalendarAttendee)[]>(
-    'SELECT * FROM calendar_event_attendees WHERE event_id = ? AND user_id = ? ORDER BY created_at ASC',
-    [eventId, userId]
-  );
-  const [ranked] = await attachMoveState(userId, await attachRanks(userId, [serializeCalendarEvent(
-    events[0],
-    subtasks.map(serializeCalendarSubtask),
-    attendees.map(serializeCalendarAttendee)
-  )]));
-  return ranked;
+  return (await presentEvents(userId, events))[0];
 }
 
 function normalizeResponseStatus(value: unknown) {
@@ -547,6 +555,8 @@ export {
   getCalendarSubtasksForEvents,
   getCalendarAttendeesForEvents,
   getCalendarEventWithSubtasks,
+  presentEvents,
+  seriesKeySql,
   normalizeResponseStatus,
   normalizeAttendeesPayload,
   replaceEventAttendees,

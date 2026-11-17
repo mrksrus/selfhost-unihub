@@ -14,7 +14,10 @@ function sourceColumns(source: FixtureValue) {
   for (const match of source.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?`?(\w+)`? \(([\s\S]*?)\) ENGINE=/g)) {
     for (const column of match[2].matchAll(/(?:^|\n|,)\s*`?([a-z][a-z_0-9]*)`?\s+(?:CHAR|VARCHAR|TEXT|LONGTEXT|MEDIUMTEXT|INT|TINYINT|BIGINT|SMALLINT|BOOLEAN|BOOL|DATETIME|TIMESTAMP|DATE|JSON|ENUM|DECIMAL|DOUBLE|FLOAT)\b/gi)) add(match[1], column[1]);
   }
-  for (const match of source.matchAll(/ALTER TABLE (\w+) ADD COLUMN (?:IF NOT EXISTS )?(\w+)/g)) add(match[1], match[2]);
+  // Every column one ALTER adds, also after a MODIFY or another ADD.
+  for (const match of source.matchAll(/ALTER TABLE (\w+) ([^`']*)/g)) {
+    for (const column of match[2].matchAll(/ADD COLUMN (?:IF NOT EXISTS )?(\w+)/g)) add(match[1], column[1]);
+  }
   // Columns a later step drops (step 23: the fixed contact fields).
   for (const match of source.matchAll(/ALTER TABLE (\w+) DROP COLUMN (\w+)/g)) rows.delete(`${match[1]}.${match[2]}`);
   // Grouped additive migration declarations are independently read from real
@@ -26,7 +29,7 @@ function sourceColumns(source: FixtureValue) {
 }
 const serviceSource = (name: FixtureValue) => fs.readFileSync(path.join(__dirname, '../src/services', `${name}.ts`), 'utf8');
 function productionColumns() {
-  return sourceColumns(['database-baseline', 'database', 'database-migrations', 'contacts-migration', 'devices-migration', 'organisation-migration', 'shared-contacts-migration'].map(serviceSource).join('\n'));
+  return sourceColumns(['database-baseline', 'database', 'database-migrations', 'contacts-migration', 'devices-migration', 'organisation-migration', 'shared-contacts-migration', 'shared-calendars-migration'].map(serviceSource).join('\n'));
 }
 
 // Devices (0.29, F5) are installation state: no personal backup carries a
@@ -93,6 +96,21 @@ test('shared address books, grants, directory entries and a book\'s contact rows
   }
   assert.deepEqual([...BOOK_ROWS.tables].sort(), ['bin_items', 'contact_photos', 'contact_properties', 'contact_values', 'contacts']);
   for (const table of BOOK_ROWS.tables) assert.ok(!TABLE_POLICIES[table].columns.includes('address_book_id'), `${table}.address_book_id is not archived`);
+});
+
+// Calendars no person owns, who reaches a calendar and each person's view of
+// and reminders on one are only in the instance backup; so are, until a data
+// schema carries them, the series of repeating events.
+test('organisation calendar rows, calendar shares, views, personal reminders and series never travel in a personal backup', () => {
+  const { NON_ARCHIVE_POLICIES, CALENDAR_ROWS } = require('../dist/src/services/data-inventory') as typeof import('../src/services/data-inventory');
+  const { TABLE_POLICIES } = require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog');
+  for (const table of ['calendar_series', 'calendar_views', 'calendar_reminders']) {
+    assert.equal(TABLE_POLICIES[table], undefined, `${table} is in no backup section`);
+    assert.ok(NON_ARCHIVE_POLICIES[table].columns.every(column => NON_ARCHIVE_POLICIES[table].introducedIn?.[column] === 30), `${table} comes with upgrade 30`);
+  }
+  for (const [table, columns] of Object.entries(CALENDAR_ROWS.columns)) {
+    for (const column of columns) assert.ok(!TABLE_POLICIES[table].columns.includes(column), `${table}.${column} is not archived`);
+  }
 });
 
 test('every runtime schema table and field has an explicit recovery policy', () => {

@@ -8,10 +8,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { db } from '../state';
 import { badRequest, forbidden, notFound } from '../http/errors';
-import { can as roleCan } from '../security/permissions';
 import { withTransaction } from './transactions';
-import { accessLevel, assertCan, grantsOn, heldBy, lockGrant, setGrant, visible } from './access';
-import { groupExists, groupMemberIds, groupNames, groupsOf, listGroups, membershipOf, peopleMatching, shareAGroup } from './groups';
+import { accessLevel, assertCan, assertReach, grantsOn, heldBy, lockGrant, namedGrants, reachCandidates, setGrant, visible } from './access';
+import { groupMemberIds } from './groups';
 import { contactSearchCondition, displayName, getContact, insertContact, listContacts } from './contacts';
 import { valueKey } from './contact-keys';
 import { COMPANY, companyContacts, listDirectory } from './directory';
@@ -30,7 +29,6 @@ import { recordDraft } from './contacts-import';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHARE_ORDER: readonly BookPermission[] = ['read', 'edit', 'manage'];
-const MAX_CANDIDATES = 20;
 const COPY_MAX = 1000;
 
 const book = (id: string) => ({ kind: 'address_book' as const, id });
@@ -184,18 +182,7 @@ async function restoreBook(bookId: string): Promise<AdminAddressBook> {
 /** GET /api/address-books/:id/shares (manage). */
 async function bookShares(userId: string, bookId: string, executor: SqlExecutor = db): Promise<BookShare[]> {
   await assertBook(userId, bookId, 'manage', executor);
-  const grants = await grantsOn(book(bookId), executor);
-  const userIds = grants.flatMap(grant => grant.principal.kind === 'user' ? [grant.principal.id] : []);
-  const [people] = userIds.length ? await executor.execute<RowDataPacket[]>(`SELECT id, full_name, email FROM users WHERE id IN (${userIds.map(() => '?').join(', ')})`, userIds) : [[]];
-  const byId = new Map(people.map(row => [String(row.id), row]));
-  const groups = await groupNames(grants.flatMap(grant => grant.principal.kind === 'group' ? [grant.principal.id] : []), executor);
-  return grants.map(({ principal, permission }) => {
-    const person = principal.kind === 'user' ? byId.get(principal.id) : undefined;
-    return {
-      principal, permission: permission as BookPermission, email: person ? String(person.email) : null,
-      name: principal.kind === 'everyone' ? 'Everyone' : principal.kind === 'group' ? groups.get(principal.id) ?? '' : person?.full_name ?? String(person?.email ?? ''),
-    };
-  });
+  return (await namedGrants(book(bookId), executor)).map(share => ({ ...share, permission: share.permission as BookPermission }));
 }
 
 function shareInput(input: unknown): { principal: Principal; permission: SharePermission | null } {
@@ -208,25 +195,6 @@ function shareInput(input: unknown): { principal: Principal; permission: SharePe
   throw badRequest('SHARE_INVALID', 'Expected { principal: { kind: user | group | everyone, id }, permission }.');
 }
 
-const outOfReach = () => forbidden('SHARE_OUT_OF_REACH', 'You can share only with your own groups and the people in them.');
-
-// Whom the caller may give a share or a higher one: an administrator anyone
-// active, any group or everyone; anyone else their own groups and the active
-// people in them, never everyone.
-async function assertReach(cx: SqlExecutor, userId: string, principal: Principal) {
-  const [[caller]] = await cx.execute<RowDataPacket[]>('SELECT role FROM users WHERE id = ?', [userId]);
-  const admin = roleCan(caller?.role, 'contacts.books.manage');
-  if (principal.kind === 'everyone') { if (!admin) throw outOfReach(); return; }
-  if (principal.kind === 'group') {
-    if (!await groupExists(principal.id, cx)) throw notFound('GROUP_NOT_FOUND', 'Group not found');
-    if (!admin && !await membershipOf(principal.id, userId, cx)) throw outOfReach();
-    return;
-  }
-  const [[person]] = await cx.execute<RowDataPacket[]>('SELECT id FROM users WHERE id = ? AND is_active = TRUE', [principal.id]);
-  if (!person) throw notFound('USER_NOT_FOUND', 'User not found');
-  if (!admin && !await shareAGroup(userId, principal.id, cx)) throw outOfReach();
-}
-
 /** PUT /api/address-books/:id/shares (manage): gives, changes or removes one share; giving or raising one is checked against the caller's reach. */
 async function setShare(userId: string, bookId: string, input: unknown): Promise<BookShare[]> {
   const { principal, permission } = shareInput(input);
@@ -237,7 +205,7 @@ async function setShare(userId: string, bookId: string, input: unknown): Promise
     const current = await lockGrant(cx, book(bookId), principal);
     if (current === 'manage') throw badRequest('SHARE_IS_CREATOR', 'The person who created the book manages it; that stays as it is.');
     const raised = permission !== null && (current === null || SHARE_ORDER.indexOf(permission) > SHARE_ORDER.indexOf(current as BookPermission));
-    if (raised) await assertReach(cx, userId, principal);
+    if (raised) await assertReach(cx, userId, principal, 'contacts.books.manage');
     if (current !== permission) await setGrant(cx, book(bookId), principal, permission, userId);
     return bookShares(userId, bookId, cx);
   }).then(async shares => { publishBooksChanged(await peopleOf([principal]).catch(() => [])); return shares; });
@@ -246,13 +214,7 @@ async function setShare(userId: string, bookId: string, input: unknown): Promise
 /** GET /api/address-books/:id/share-candidates?q= (manage): people and groups within the caller's reach. */
 async function shareCandidates(userId: string, bookId: string, query: string): Promise<ShareCandidatesResponse> {
   await assertBook(userId, bookId, 'manage');
-  const [[caller]] = await db.execute<RowDataPacket[]>('SELECT role FROM users WHERE id = ?', [userId]);
-  const admin = roleCan(caller?.role, 'contacts.books.manage');
-  const people = await peopleMatching(query, admin ? {} : { sharingGroupsWith: userId });
-  const needle = query.trim().toLowerCase();
-  const groups = (admin ? await listGroups() : await groupsOf(userId))
-    .filter(group => group.name.toLowerCase().includes(needle)).slice(0, MAX_CANDIDATES).map(({ id, name }) => ({ id, name }));
-  return { people, groups, everyone: admin };
+  return reachCandidates(userId, query, 'contacts.books.manage');
 }
 
 /** The live books the person created and manages, for the administrator's view of them. */

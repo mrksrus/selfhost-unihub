@@ -56,6 +56,15 @@ export const INSTALLATION_RULES: Readonly<Record<string, Rule>> = Object.freeze(
   directory_entries: { reason: 'The company directory comes back.' },
   ...Object.fromEntries(['contacts', 'contact_values', 'contact_properties', 'contact_photos', 'bin_items', 'photo files'].map(table =>
     [`${table} of books`, { reason: "A shared book's contacts, photos and bin come back as they were." }])),
+  // Shared calendars: calendars no person owns with their events, points,
+  // attendees and bin, every series, each person's view of and own
+  // reminders on a calendar, and the offers of people's calendars.
+  ...Object.fromEntries(['calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'bin_items'].map(table =>
+    [`${table} of organisation calendars`, { reason: "A group's or the organisation's calendar comes back with its events, points, attendees and bin." }])),
+  calendar_series: { reason: 'Repeating events come back with their rule and changed dates.' },
+  calendar_views: { reason: "Each person's view of a calendar comes back." },
+  calendar_reminders: { reason: "Each person's own reminders on a calendar they do not own come back." },
+  'calendar offers': { reason: "A pending offer of a person's calendar comes back." },
 });
 
 // A DATETIME in UTC (dateStrings), to the second, within the restore command's run.
