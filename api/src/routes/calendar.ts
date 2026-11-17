@@ -390,7 +390,7 @@ export = {
       const defaults = await resolveCalendarDefaults(userId);
       const choices = new Map(defaults.choices.map(choice => [choice.id, choice]));
       // Then the calendars others share with the person, at their level and in their view (contracts/calendar-shares.ts).
-      const calendars = (await calendarShares.calendarsWithAccess(userId, rows)).map(({ row, mine, access }) => {
+      const calendars = (await calendarShares.calendarsWithAccess(userId, rows, db, { offers: true })).map(({ row, mine, access }) => {
         const writes = access.permission === 'edit' || access.permission === 'manage';
         if (!mine) {
           return {

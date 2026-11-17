@@ -95,6 +95,17 @@ test('calendar ownership: offers, a manager\'s hand-over, the administrator\'s h
   assert.deepEqual(await refused(alex, 'POST', `${hand(team.id)}/accept`), [404, 'OFFER_NOT_FOUND'], 'a withdrawn offer cannot be accepted');
   assert.deepEqual([await owners(team.id), (await row('SELECT offer_to FROM calendar_calendars WHERE id = ?', [team.id])).offer_to], [[ids.member], null]);
 
+  // An offer of a calendar no share reaches: the recipient's list carries it for the offer alone.
+  const solo = await newCalendar(blair, blairAccount, 'Solo');
+  const listedFor = async (client: Client) => (await call(client, 'GET', '/api/calendar/calendars')).calendars.find((found: FixtureValue) => found.id === solo.id);
+  await call(blair, 'POST', hand(solo.id), { to: ids.manager });
+  const offeredSolo = await listedFor(alex);
+  assert.deepEqual([offeredSolo.name, offeredSolo.permission, offeredSolo.offer.to.id, offeredSolo.offer.by.id], ['Solo', 'freebusy', ids.manager, ids.member]);
+  assert.deepEqual([(await alex.request('GET', ev(solo.event))).status, (await call(alex, 'GET', '/api/calendar/events')).events.some((found: FixtureValue) => found.calendar_id === solo.id),
+    await listedFor(casey)], [404, false, undefined], 'its events stay unread, and nobody else lists it');
+  await call(alex, 'DELETE', hand(solo.id));
+  assert.equal(await listedFor(alex), undefined, 'declined: gone from his list');
+
   await call(blair, 'POST', hand(team.id), { to: ids.manager });
   assert.deepEqual(await call(alex, 'POST', `${hand(team.id)}/accept`), { calendar_id: team.id });
   assert.deepEqual(await owners(team.id), [ids.manager], 'the calendar, its events, points and bin items are Alex\'s');

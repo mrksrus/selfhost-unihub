@@ -56,7 +56,9 @@ export interface CalendarOffer {
  * What GET /api/calendar/calendars adds to each calendar. The list holds the
  * caller's own calendars, then those others share with them (directly,
  * through a group or Everyone) and the group calendars of groups they
- * manage, each at the most any grant gives. A reached calendar's
+ * manage, each at the most any grant gives; a calendar offered to the
+ * caller that no share reaches is listed at freebusy for its offer alone,
+ * and nothing else of it answers them until they accept. A reached calendar's
  * is_visible and color are the caller's view; its write_block is read_only
  * below edit.
  */

@@ -271,13 +271,15 @@ async function people(ids: readonly (string | null)[], executor: SqlExecutor = d
 /**
  * GET /api/calendar/calendars: the caller's own calendar rows and those
  * others share with them (c.* with the account's provider), each with what
- * the caller may do and their view of it.
+ * the caller may do and their view of it; with `offers`, one offered to
+ * them that no share reaches as well, at free/busy.
  */
-async function calendarsWithAccess(userId: string, own: readonly RowDataPacket[], executor: SqlExecutor = db) {
+async function calendarsWithAccess(userId: string, own: readonly RowDataPacket[], executor: SqlExecutor = db, { offers = false } = {}) {
   const levels = await reachedCalendars(userId, executor);
   const ids = [...levels.keys()];
-  const [reached] = ids.length ? await executor.execute<RowDataPacket[]>(`SELECT c.*, a.provider FROM calendar_calendars c LEFT JOIN calendar_accounts a ON a.id = c.account_id
-    WHERE c.id IN (${ids.map(() => '?').join(', ')}) ORDER BY c.name, c.id`, ids) : [[]];
+  // offers: also a calendar offered to the person that no share reaches, for its offer alone; nothing reads its events until they accept.
+  const [reached] = ids.length || offers ? await executor.execute<RowDataPacket[]>(`SELECT c.*, a.provider FROM calendar_calendars c LEFT JOIN calendar_accounts a ON a.id = c.account_id
+    WHERE c.id IN (${ids.map(() => '?').join(', ') || 'NULL'})${offers ? ' OR c.offer_to = ?' : ''} ORDER BY c.name, c.id`, offers ? [...ids, userId] : ids) : [[]];
   const rows = [...own, ...reached];
   const persons = await people(rows.flatMap(row => [row.user_id, row.offer_to, row.offer_by]), executor);
   const groups = await groupNames(rows.flatMap(row => row.group_id == null ? [] : [String(row.group_id)]), executor);
@@ -287,7 +289,7 @@ async function calendarsWithAccess(userId: string, own: readonly RowDataPacket[]
     const offer = row.offer_to != null && [row.user_id, row.offer_to, row.offer_by].includes(userId)
       ? { to: persons.get(String(row.offer_to))!, by: row.offer_by == null ? null : persons.get(String(row.offer_by)) ?? null } : null;
     const access: CalendarAccessFields = {
-      permission: mine ? (row.archived_at ? 'read' : 'manage') : levels.get(String(row.id))!,
+      permission: mine ? (row.archived_at ? 'read' : 'manage') : levels.get(String(row.id)) ?? 'freebusy',
       owner_kind: row.user_id != null ? 'user' : row.group_id != null ? 'group' : 'organisation',
       owner: mine || row.user_id == null ? null : persons.get(String(row.user_id)) ?? null,
       group: row.group_id == null ? null : { id: String(row.group_id), name: groups.get(String(row.group_id)) ?? '' },
