@@ -4,14 +4,14 @@
 // them. A tick on the ToDo widget reaches the server, also while the app is
 // locked (the app lock does not hide the widgets, the notification detail
 // does); the least detail "none" leaves times and "Event" without ticks;
-// signing out and another person's sign-in empty both widgets. Their look is
-// checked elsewhere.
+// signing out and another person's sign-in empty them. Their look is checked
+// elsewhere.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { people } from '../support/people.mjs';
+import { addPerson, resetPeople } from '../support/people.mjs';
 import {
-  PACKAGE, adb, enrollFingerprint, openApp, resetAppLock, screenNodes, setDevicePin, setPolicies, sleep, stackSession, tapNative, touch,
-  touchFinger, waitForUnlockPrompt,
+  PACKAGE, adb, answerPromptWithPin, openApp, resetAppLock, screenNodes, setDevicePin, setPolicies, sleep, stackSession, tapNative, touch,
+  waitForUnlockPrompt,
 } from '../support/android.mjs';
 
 const run = Date.now().toString(36);
@@ -27,9 +27,17 @@ async function place(kind) {
 }
 
 /** The home screen after the widgets fetched again (the job the app schedules every 30 minutes, run now). */
-function refreshed() {
-  adb('shell', 'input', 'keyevent', 'KEYCODE_HOME');
-  adb('shell', 'cmd', 'jobscheduler', 'run', '-f', PACKAGE, '70');
+async function refreshed() {
+  // Home on the home screen would turn to its first page, away from the widgets.
+  if (!/launcher/i.test(adb('shell', 'dumpsys window | grep mCurrentFocus'))) adb('shell', 'input', 'keyevent', 'KEYCODE_HOME');
+  try {
+    adb('shell', 'cmd', 'jobscheduler', 'run', '-f', PACKAGE, '70');
+  } catch {
+    // A force stop (resetAppLock) cancelled the job: the app opened and left fetches and schedules it again.
+    adb('shell', 'am', 'start', '-n', `${PACKAGE}/.MainActivity`);
+    await sleep(5000);
+    adb('shell', 'input', 'keyevent', 'KEYCODE_HOME');
+  }
 }
 
 /** Waits until the launcher's screen shows what `check` wants; answers its nodes. */
@@ -52,12 +60,13 @@ async function taskStatus(api, id) {
 before(async () => {
   await resetAppLock();
   setDevicePin();
-  await enrollFingerprint();
 });
 
 after(async () => {
   await setPolicies({ 'notifications.detail': 'full' });
   await resetAppLock();
+  // Removing the test's own person ends their sign-in in the app; the next files expect the administrator.
+  await resetPeople();
 });
 
 test('[32-08..32-11] both widgets on the home screen: a tick reaches the server, also locked; detail none hides titles; signing out and another person empty them', { timeout: 1_800_000 }, async () => {
@@ -72,13 +81,24 @@ test('[32-08..32-11] both widgets on the home screen: a tick reaches the server,
   const meeting = await create({ title: MEETING, start_time: tomorrow.toISOString(), end_time: new Date(tomorrow.getTime() + 3_600_000).toISOString() });
   const task = await create({ title: TASK, is_todo_only: true });
   const locked = await create({ title: LOCKED_TASK, is_todo_only: true });
+  // First in the administrator's own order, so the widget shows them above the seeded tasks.
+  const first = async id => {
+    const { data } = await api('GET', '/api/widgets');
+    const top = data.tasks[0].id;
+    if (top !== id) assert.equal((await api('PUT', `/api/calendar/events/${id}/position`, { before: top, after: null })).status, 200);
+  };
+  await first(locked.id);
+  await first(task.id);
 
   const { device, page } = await openApp();
   try {
+    // The launcher may put each on a page of its own: each is read where it was put, the ToDo widget last.
     await place('agenda');
+    await refreshed();
+    await home(shows(MEETING), 'the Calendar widget shows the meeting');
     await place('tasks');
-    refreshed();
-    await home(nodes => shows(MEETING)(nodes) && shows(TASK)(nodes), 'both widgets show the meeting and the task');
+    await refreshed();
+    await home(shows(TASK), 'the ToDo widget shows the task');
 
     // A tick on the home screen: done on the server, gone from the widget.
     await tapNative(new RegExp(`^Mark done: ${TASK}$`));
@@ -91,45 +111,45 @@ test('[32-08..32-11] both widgets on the home screen: a tick reaches the server,
     await page.goto(new URL('/settings?section=app-lock', page.url()).href);
     await touch(page, page.getByText('Whole app', { exact: true }));
     await waitForUnlockPrompt();
-    await touchFinger(1);
+    await answerPromptWithPin();
     await page.getByLabel('Ask again').selectOption({ label: 'Every time UniHub opens' }, { timeout: 5000 }).catch(async () => {
       await touch(page, page.getByRole('combobox', { name: 'Ask again' }));
       await touch(page, page.getByRole('option', { name: 'Every time UniHub opens' }));
     });
     await sleep(2000);
-    refreshed();
+    await refreshed();
     await home(shows(LOCKED_TASK), 'the locked app\'s widget keeps its titles');
     await tapNative(new RegExp(`^Mark done: ${LOCKED_TASK}$`));
     for (const end = Date.now() + 60_000; Date.now() < end && await taskStatus(api, locked.id) !== 'done'; await sleep(1000));
     assert.equal(await taskStatus(api, locked.id), 'done', 'the tick reached the server while the app was locked');
 
-    // The least detail "none": times and "Event", no titles and no tick.
+    // The least detail "none": tasks without titles and without a tick.
     const hidden = await create({ title: `Hidden task ${run}`, is_todo_only: true });
     await setPolicies({ 'notifications.detail': 'none' });
-    refreshed();
-    const plain = await home(nodes => shows('Event')(nodes) && !shows(MEETING)(nodes), 'titles hidden at detail none');
-    assert.ok(!plain.some(node => /^Mark done:/.test(node.desc) || node.text.includes(hidden.title)), 'no title and no tick at detail none');
+    await refreshed();
+    const plain = await home(nodes => shows('Task')(nodes) && !nodes.some(node => /^Mark done:/.test(node.desc)), 'titles and ticks hidden at detail none');
+    assert.ok(!plain.some(node => node.text.includes(hidden.title)), 'no title at detail none');
     await setPolicies({ 'notifications.detail': 'full' });
 
-    // Signed out (the app's session ended): both widgets empty, with "Open UniHub".
+    // Signed out (the app's session ended): the widget empties, with "Open UniHub".
     await resetAppLock();
-    refreshed();
-    const out = await home(nodes => nodes.filter(node => node.text === 'Sign in to UniHub to see this').length === 2, 'both widgets say to sign in');
-    assert.ok(!out.some(node => node.text === MEETING) && out.some(node => node.text === 'Open UniHub'));
+    await refreshed();
+    const out = await home(shows('Sign in to UniHub to see this'), 'the widget says to sign in');
+    assert.ok(out.some(node => node.text === 'Open UniHub') && !out.some(node => /^Mark done:/.test(node.desc)));
 
-    // Another person signs in: none of the administrator's items come back.
-    const other = await openApp({ email: 'alex@example.com' });
+    // Another person signs in: their own task shows, none of the administrator's items.
+    const person = await addPerson('widgets');
+    const theirTask = `Their task ${run}`;
+    const created = await (await person.session())('POST', '/api/calendar/events', { title: theirTask, is_todo_only: true, reminders: null });
+    assert.equal(created.status, 200, JSON.stringify(created.data));
+    const other = await openApp({ email: person.email });
     await other.device.close();
-    refreshed();
-    const theirs = await home(nodes => !nodes.some(node => node.text === 'Sign in to UniHub to see this' || node.text === 'Loading…'), 'Alex\'s widgets loaded');
+    await refreshed();
+    const theirs = await home(shows(theirTask), 'the other person\'s widget shows their task');
     assert.ok(!theirs.some(node => [MEETING, LOCKED_TASK].includes(node.text) || node.text === hidden.title), 'nothing of the administrator\'s');
     await api('DELETE', `/api/calendar/events/${hidden.id}`);
   } finally {
     for (const item of [meeting, task, locked]) await api('DELETE', `/api/calendar/events/${item.id}`).catch(() => {});
-    // The next files expect the administrator: Alex's sign-in in the app ends.
-    const [, alex] = await people();
-    const { data } = await alex('GET', '/api/devices');
-    for (const { id } of data?.devices?.filter(d => !d.current) ?? []) await alex('DELETE', `/api/devices/${id}`);
     await device.close();
   }
 });

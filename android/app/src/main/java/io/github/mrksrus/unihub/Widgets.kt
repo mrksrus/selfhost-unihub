@@ -106,7 +106,10 @@ object Widgets {
             store(context, origin, session, if (session == null) SIGNED_OUT else null, null)
             render(context)
         }
-        if (origin == null || cookies == null || placed(context).isEmpty()) return
+        if (placed(context).isEmpty()) return
+        // A force stop cancels the app's jobs; any refresh brings the 30 minutes back.
+        schedulePeriodic(context)
+        if (origin == null || cookies == null) return
         val current = Current { ServerAddress.saved(context) == origin && AppSession.cookie(origin)?.let(AppSession::sessionOf) == AppSession.sessionOf(cookies) }
         try {
             val state = if (FEATURE !in ContactsSync.features(context, origin, cookies, current)) FEATURE else {
