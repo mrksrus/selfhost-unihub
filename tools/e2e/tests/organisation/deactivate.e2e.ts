@@ -2,8 +2,9 @@ import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { ok, signIn } from '../support/api.ts';
 import { onlyOn } from '../support/ui.ts';
-import { signInPassword } from '../support/env.ts';
-import { addPerson, createGroup, dialogPassword, passwordSignIn, personByEmail, setManager, sweep } from './organisation-helpers.ts';
+import { people, runId, signInPassword } from '../support/env.ts';
+import { adminCalendars, calendarsOf, makeCalendar, removeCalendars, removeSharedCalendars, share } from '../calendar/shared-helpers.ts';
+import { addPerson, createGroup, dialogPassword, passwordSignIn, personByEmail, seededId, setManager, sweep } from './organisation-helpers.ts';
 
 // 30-08: deactivating a person signs them out and stops sign-in; activating
 // brings back what they had: their data, their group and their manager
@@ -47,6 +48,50 @@ test('[30-08] a deactivated person cannot sign in and keeps their data, group an
     expect(ok(await after<{ groups: { id: string; role: string }[] }>('GET', '/api/groups'), 'their groups').groups).toMatchObject([{ id: group.id, role: 'manager' }]);
   } finally {
     await sweep();
+  }
+});
+
+// 32-12: before a person is deactivated or deleted, each calendar they share
+// gets a choice. Deactivating leaves one as it is unless told otherwise;
+// deleting makes one an organisation calendar unless told otherwise.
+test('[32-12] the calendars a leaving person shares: left as it is or handed to a colleague before Deactivate, an organisation calendar before Delete', { session: 'admin', timeout: 300_000 }, async ({ app, screen, browser }) => {
+  await onlyOn(browser, 'desktop');
+  const alex = await signIn('alex');
+  const clean = async () => { await removeCalendars(alex); await removeSharedCalendars(); await sweep(); };
+  await clean();
+  try {
+    const alexId = await seededId('alex');
+    const person = await addPerson('sharing');
+    await createGroup('Shared', [person.id, alexId]);
+    const theirs = await signIn(person.email, { fresh: true });
+    await calendarsOf(theirs);
+    const rota = await makeCalendar(theirs, `e2e Rota ${runId()}`);
+    const plans = await makeCalendar(theirs, `e2e Plans ${runId()}`);
+    for (const calendar of [rota, plans]) await share(theirs, calendar.id, { kind: 'user', id: alexId }, 'edit');
+    const alexHas = async (id: string) => (await calendarsOf(alex)).find((entry) => entry.id === id);
+
+    await app.open(`/admin/users/${person.id}`);
+    await screen.getByRole('button', 'Deactivate', { exact: true }).tap();
+    const deactivate = screen.getByRole('dialog', `Deactivate ${person.email}?`);
+    await expect(deactivate.getByRole('combobox', new RegExp(`^${plans.name}`))).toContainText('Leave it as it is');
+    await deactivate.getByRole('combobox', new RegExp(`^${rota.name}`)).tap();
+    await screen.getByRole('option', new RegExp(`^${people.alex.name}`)).tap();
+    await deactivate.getByLabel('Your password', { exact: true }).fill(dialogPassword());
+    await deactivate.getByRole('button', 'Deactivate', { exact: true }).tap();
+    await expect(screen.getByText(`${person.name} deactivated`, { exact: true }).first()).toBeVisible();
+    expect(await alexHas(rota.id), 'handed to the colleague').toMatchObject({ permission: 'manage', user_id: alexId });
+    expect(await alexHas(plans.id), 'left as it is, it keeps working for alex').toMatchObject({ permission: 'edit', user_id: person.id });
+
+    await screen.getByRole('button', 'Delete person', { exact: true }).tap();
+    const remove = screen.getByRole('dialog', `Delete ${person.email}?`);
+    await expect(remove.getByRole('combobox', new RegExp(`^${plans.name}`))).toContainText('Make it an organisation calendar');
+    await remove.getByLabel('Your password', { exact: true }).fill(dialogPassword());
+    await remove.getByRole('button', 'Delete person', { exact: true }).tap();
+    await expect(screen.getByText(`${person.name} deleted`, { exact: true }).first()).toBeVisible();
+    expect((await adminCalendars()).find((entry) => entry.id === plans.id), 'an organisation calendar now').toMatchObject({ owner_kind: 'organisation', deleted_at: null });
+    expect((await alexHas(plans.id))?.permission, 'alex still edits it').toBe('edit');
+  } finally {
+    await clean();
   }
 });
 

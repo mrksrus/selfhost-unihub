@@ -1,4 +1,4 @@
-import { ok, type ApiCall } from '../support/api.ts';
+import { ok, signIn, type ApiCall } from '../support/api.ts';
 
 // What the shared-calendar and shared-list tests prepare through the API: a
 // person's own UniHub calendar, its shares, and the removal of what a run
@@ -22,6 +22,18 @@ export async function makeCalendar(api: ApiCall, name: string): Promise<SharedCa
 
 export async function share(api: ApiCall, calendarId: string, principal: SharePrincipal, permission: string | null) {
   ok(await api('PUT', `/api/calendar/calendars/${calendarId}/shares`, { principal, permission }), `share at ${permission}`);
+}
+
+export interface AdminCalendar { id: string; name: string; owner_kind: 'user' | 'group' | 'organisation'; owner: { id: string } | null; archived_at: string | null; deleted_at: string | null }
+/** Server › Calendars as the owner sees it. */
+export const adminCalendars = async () => ok(await (await signIn('admin'))<{ calendars: AdminCalendar[] }>('GET', '/api/admin/calendars'), 'Server › Calendars').calendars;
+
+/** Deletes the "e2e …" calendars no person owns (a group's, the organisation's); an administrator's list keeps them until the purge. */
+export async function removeSharedCalendars() {
+  const admin = await signIn('admin');
+  for (const calendar of (await adminCalendars()).filter((entry) => entry.name.startsWith('e2e ') && entry.owner_kind !== 'user' && !entry.deleted_at)) {
+    await admin('DELETE', `/api/calendar/shared-calendars/${calendar.id}`);
+  }
 }
 
 /** Deletes the person's own "e2e …" calendars; their shares go with them. */
