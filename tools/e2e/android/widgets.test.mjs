@@ -19,8 +19,15 @@ const MEETING = `Widget meeting ${run}`;
 const TASK = `Widget task ${run}`;
 const LOCKED_TASK = `Locked task ${run}`;
 
+/** The app in front, as Android requires of an app that asks to pin a widget. */
+async function toFront() {
+  adb('shell', 'am', 'start', '-n', `${PACKAGE}/.MainActivity`);
+  for (const end = Date.now() + 60_000; Date.now() < end && !adb('shell', 'dumpsys window | grep mCurrentFocus').includes(PACKAGE); await sleep(1000));
+}
+
 /** Asks the launcher to place a widget and confirms its dialog. */
 async function place(kind) {
+  await toFront();
   adb('shell', 'am', 'broadcast', '-n', `${PACKAGE}/.TestWidgets`, '--es', 'pin', kind);
   await tapNative(/^add( to home screen)?$/i, { timeoutMs: 60_000 });
   await sleep(2000);
@@ -107,8 +114,7 @@ test('[32-08..32-11] both widgets on the home screen: a tick reaches the server,
     await home(nodes => !shows(TASK)(nodes) && shows(LOCKED_TASK)(nodes), 'the ticked task left the widget');
 
     // The whole app locked: the widgets keep their titles and the tick still works.
-    adb('shell', 'am', 'start', '-n', `${PACKAGE}/.MainActivity`);
-    for (const end = Date.now() + 60_000; Date.now() < end && !adb('shell', 'dumpsys window | grep mCurrentFocus').includes(PACKAGE); await sleep(1000));
+    await toFront();
     await page.goto(new URL('/settings?section=app-lock', page.url()).href);
     await touch(page, page.getByText('Whole app', { exact: true }));
     await waitForUnlockPrompt();
