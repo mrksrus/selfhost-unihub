@@ -136,7 +136,9 @@ object Widgets {
     private fun tick(context: Context, id: String) {
         val origin = ServerAddress.saved(context)
         val cookies = origin?.let { AppSession.cookie(it) }?.takeIf { "auth-token=" in it }
-        val done = origin != null && cookies != null && try {
+        // Only for the session whose answer the widget shows; another sign-in waits for the refresh.
+        val shown = prefs(context).let { it.getString("origin", null) == origin && cookies != null && it.getString("session", null) == sessionKey(cookies) }
+        val done = origin != null && cookies != null && shown && try {
             val current = Current { AppSession.cookie(origin)?.let(AppSession::sessionOf) == AppSession.sessionOf(cookies) }
             AppSession.request(context, origin, "PUT", "/api/calendar/events/${Uri.encode(id)}/todo-status", cookies, current, JSONObject().put("todo_status", "done")).status == 200
         } catch (_: Exception) {

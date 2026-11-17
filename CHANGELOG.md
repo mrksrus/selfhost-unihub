@@ -35,7 +35,6 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - **A shared calendar's own bin.** The Calendar's Bin has a "Deleted from"
   row for the calendars others share that you can edit: what anyone deleted
   from one waits there, and everyone who can edit it restores it.
-
 - **Calendar and ToDo widgets on Android.** The app puts the next 14 days
   and your open tasks on the home screen, from your own, shared, group and
   organisation calendars; tick a task off right there. They follow your
