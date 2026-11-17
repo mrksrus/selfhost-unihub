@@ -104,10 +104,11 @@ async function lockEventWrite(cx: SqlExecutor, userId: string, eventId: string, 
   return { event: row as CalendarEvent, level };
 }
 
-/** A person's own reminders on an event (null: none of their own, the event's apply to its owner). */
-async function setOwnReminders(cx: SqlExecutor, userId: string, eventId: string, reminders: unknown) {
-  await cx.execute(`INSERT INTO calendar_reminders (id, user_id, event_id, reminders) VALUES (?, ?, ?, ?)
-    ON DUPLICATE KEY UPDATE reminders = VALUES(reminders)`, [crypto.randomUUID(), userId, eventId, JSON.stringify(Array.isArray(reminders) ? reminders : [])]);
+/** A person's own reminders on an event or on every date of a series (null: none of their own, the event's apply to its owner). */
+async function setOwnReminders(cx: SqlExecutor, userId: string, target: string | { seriesId: string }, reminders: unknown) {
+  const [eventId, seriesId] = typeof target === 'string' ? [target, null] : [null, target.seriesId];
+  await cx.execute(`INSERT INTO calendar_reminders (id, user_id, event_id, series_id, reminders) VALUES (?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE reminders = VALUES(reminders)`, [crypto.randomUUID(), userId, eventId, seriesId, JSON.stringify(Array.isArray(reminders) ? reminders : [])]);
   // The scheduler reads reminders again.
   await cx.execute('UPDATE notification_config SET reminder_revision = reminder_revision + 1 WHERE id = 1');
 }

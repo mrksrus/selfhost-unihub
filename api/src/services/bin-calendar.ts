@@ -44,6 +44,9 @@ interface LocalPayload {
   subtasks: Stored[];
   attendees: Stored[];
   task_order: Stored[];
+  /** A whole repeating event: its series row, and its other dates beside event. */
+  series?: Stored;
+  dates?: Pick<LocalPayload, 'event' | 'subtasks' | 'attendees' | 'task_order'>[];
 }
 interface SyncedPayload extends Omit<LocalPayload, 'provider'> {
   provider: 'caldav';
@@ -134,6 +137,30 @@ async function binLocalEvents(cx: SqlExecutor, ownerId: string | null, eventIds:
     await cx.execute(`DELETE FROM calendar_events WHERE user_id <=> ? AND id IN (${placeholders(chunk)})`, [ownerId, ...chunk]);
   }
   return binIds;
+}
+
+/**
+ * In the caller's transaction: a repeating UniHub event, its series and
+ * every date with its own rows, into the bin as one item (first: the date
+ * the person deleted it from); restored, it comes back with its ids.
+ */
+async function binSeries(cx: SqlExecutor, ownerId: string | null, seriesId: string, { first = null as string | null, reason = 'deleted' as const, groupId = null as string | null }: { first?: string | null; reason?: 'deleted' | 'calendar_deleted'; groupId?: string | null } = {}) {
+  const [[series]] = await cx.execute<RowDataPacket[]>('SELECT * FROM calendar_series WHERE id = ? FOR UPDATE', [seriesId]);
+  if (!series) return null;
+  const [events] = await cx.execute<RowDataPacket[]>('SELECT * FROM calendar_events WHERE series_id = ? AND user_id <=> ? ORDER BY id = ? DESC, start_time, id FOR UPDATE', [seriesId, ownerId, first]);
+  const ofSeries = `IN (SELECT id FROM calendar_events WHERE series_id = ?) AND user_id <=> ?`;
+  const [subtasks] = await cx.execute<RowDataPacket[]>(`SELECT * FROM calendar_event_subtasks WHERE event_id ${ofSeries} ORDER BY position, created_at, id`, [seriesId, ownerId]);
+  const [attendees] = await cx.execute<RowDataPacket[]>(`SELECT * FROM calendar_event_attendees WHERE event_id ${ofSeries} ORDER BY created_at, id`, [seriesId, ownerId]);
+  const [ranks] = await cx.execute<RowDataPacket[]>(`SELECT * FROM task_order WHERE event_id ${ofSeries}`, [seriesId, ownerId]);
+  const [[calendar]] = await cx.execute<RowDataPacket[]>('SELECT name FROM calendar_calendars WHERE id = ?', [series.calendar_id]);
+  const of = (rows: RowDataPacket[], id: unknown) => rows.filter(row => row.event_id === id).map(toStored);
+  const [head, ...rest] = events.map(event => ({ event: toStored(event), subtasks: of(subtasks, event.id), attendees: of(attendees, event.id), task_order: of(ranks, event.id) }));
+  const [binned] = head ? await putInBin(cx, ownerId ?? { calendarId: String(series.calendar_id) }, [{ module: 'calendar', itemType: itemTypeOf(head.event),
+    itemId: String(head.event.id), title: String(head.event.title ?? ''), reason, groupId, calendarId: String(series.calendar_id),
+    payload: { provider: 'local', origin: calendar?.name ?? null, ...head, series: toStored(series), dates: rest } satisfies LocalPayload }]) : [];
+  // Its dates go with it (foreign key), and with them their points, attendees and ranks.
+  await cx.execute('DELETE FROM calendar_series WHERE id = ?', [seriesId]);
+  return binned ?? null;
 }
 
 // A synced item, inside the transaction that removes its rows after the
@@ -247,12 +274,15 @@ async function deleteCalendarToBin(userId: string, calendarId: string) {
     const groupId = crypto.randomUUID();
     const payload: CalendarPayload = { provider: 'local', origin: null, calendar: toStored(calendar), settings };
     const binItemIds = await putInBin(cx, userId, [{ module: 'calendar', itemType: 'calendar', itemId: calendarId, title: String(calendar.name ?? ''), reason: 'deleted', groupId, payload }]);
+    const [[{ n: deletedEvents }]] = await cx.execute<RowDataPacket[]>('SELECT COUNT(*) AS n FROM calendar_events WHERE calendar_id = ? AND user_id = ?', [calendarId, userId]);
+    const [series] = await cx.execute<RowDataPacket[]>('SELECT id FROM calendar_series WHERE calendar_id = ? ORDER BY id', [calendarId]);
+    for (const { id } of series) binItemIds.push(...[await binSeries(cx, userId, String(id), { reason: 'calendar_deleted', groupId })].filter((item): item is string => !!item));
     const [events] = await cx.execute<RowDataPacket[]>('SELECT id FROM calendar_events WHERE calendar_id = ? AND user_id = ? ORDER BY start_time, id FOR UPDATE', [calendarId, userId]);
     binItemIds.push(...await binLocalEvents(cx, userId, events.map(row => String(row.id)), { reason: 'calendar_deleted', groupId }));
     // Its shares end with it: a calendar back from the bin is unshared.
     await (require('./access') as typeof import('./access')).removeGrantsOn(cx, { kind: 'calendar', id: calendarId });
     await cx.execute('DELETE FROM calendar_calendars WHERE id = ? AND user_id = ?', [calendarId, userId]);
-    return { deletedEvents: events.length, binItemIds };
+    return { deletedEvents: Number(deletedEvents), binItemIds };
   });
 }
 
@@ -282,7 +312,7 @@ async function localTarget(cx: SqlExecutor, userId: string, calendarId: unknown)
  * null for a calendar no person owns); its id and identity stay unless
  * taken. Returns the row's id, or null when it is the owner's again (already back).
  */
-async function restoreLocalEvent(cx: SqlExecutor, userId: string | null, payload: Pick<LocalPayload, 'event' | 'subtasks' | 'attendees' | 'task_order'>, calendarId: string) {
+async function restoreLocalEvent(cx: SqlExecutor, userId: string | null, payload: Pick<LocalPayload, 'event' | 'subtasks' | 'attendees' | 'task_order'>, calendarId: string, seriesId: string | null = null) {
   const event = payload.event || {};
   const [[idTaken]] = ID_PATTERN.test(String(event.id)) ? await cx.execute<RowDataPacket[]>('SELECT id, user_id FROM calendar_events WHERE id = ?', [String(event.id)]) : [[{ id: '', user_id: undefined }]];
   if (idTaken && (idTaken.user_id ?? null) === userId) return null;
@@ -295,8 +325,10 @@ async function restoreLocalEvent(cx: SqlExecutor, userId: string | null, payload
     if (!owned.length) emailId = null;
   }
   const [[calendar]] = await cx.execute<RowDataPacket[]>('SELECT color FROM calendar_calendars WHERE id = ? AND user_id <=> ?', [calendarId, userId]);
-  await insertRows(cx, 'calendar_events', EVENT_COLUMNS, [{
-    ...event, id, user_id: userId, calendar_id: calendarId, uid: uidTaken ? id : own, source_email_id: emailId,
+  // A date alone comes back as a single event; with its series, as one of its dates.
+  await insertRows(cx, 'calendar_events', seriesId ? [...EVENT_COLUMNS, 'series_id', 'recurrence_id'] : EVENT_COLUMNS, [{
+    ...event, id, user_id: userId, calendar_id: calendarId, uid: uidTaken ? id : own, source_email_id: emailId, series_id: seriesId,
+    recurrence: seriesId || !event.series_id ? event.recurrence : null,
     color: calendar?.color ?? event.color ?? '#2563eb', title: String(event.title ?? '').slice(0, 255) || 'Untitled',
     start_time: event.start_time ?? new Date().toISOString(), end_time: event.end_time ?? event.start_time ?? new Date().toISOString(),
   }]);
@@ -314,6 +346,22 @@ async function restoreLocalEvent(cx: SqlExecutor, userId: string | null, payload
       [userId, itemKey({ event_id: id }), id, Number(rank.sort_rank)]);
   }
   return id;
+}
+
+/** An event, or a whole repeating one (its series under its own id unless taken, then each date), back into a UniHub calendar. */
+async function restoreBinned(cx: SqlExecutor, userId: string | null, payload: LocalPayload, calendarId: string) {
+  const series = payload.series;
+  if (!series) return restoreLocalEvent(cx, userId, payload, calendarId);
+  const [[taken]] = ID_PATTERN.test(String(series.id)) ? await cx.execute<RowDataPacket[]>('SELECT id FROM calendar_series WHERE id = ?', [String(series.id)]) : [[{ id: '' }]];
+  const seriesId = taken ? crypto.randomUUID() : String(series.id);
+  await cx.execute('INSERT INTO calendar_series (id, calendar_id, uid, ics) VALUES (?, ?, ?, ?)', [seriesId, calendarId, String(series.uid ?? seriesId).slice(0, 500), String(series.ics ?? '')]);
+  let first: string | null = null;
+  for (const date of [payload, ...(payload.dates || [])]) {
+    const id = await restoreLocalEvent(cx, userId, date, calendarId, seriesId);
+    first ??= id;
+  }
+  if (!first) await cx.execute('DELETE FROM calendar_series WHERE id = ?', [seriesId]);
+  return first;
 }
 
 /** A local calendar from its snapshot, under its own id and identity unless taken, in the person's UniHub account. */
@@ -356,7 +404,7 @@ async function restoreGroupWithCalendar(userId: string, group: readonly BinRow[]
     for (const row of locked.filter(item => item !== calendarRow)) {
       const payload = parsePayload<LocalPayload>(row);
       if (!payload?.event) continue;
-      const id = await restoreLocalEvent(cx, userId, payload, calendarId);
+      const id = await restoreBinned(cx, userId, payload, calendarId);
       if (id) answers.push(restoredOf(row, id, null)); else back.push(row.id);
     }
     // An event already back stays in the bin; the rest of the group comes back.
@@ -397,7 +445,7 @@ async function restoreLocalItem(userId: string, row: BinRow, note?: string | nul
     if (!payload?.event) throw conflict('BIN_ITEM_UNREADABLE', 'This item cannot be restored.');
     const target = await localTarget(cx, userId, chosenList ?? (payload.provider === 'local' ? payload.event.calendar_id : null));
     if (chosenList && target.id !== chosenList) throw listGone();
-    const id = await restoreLocalEvent(cx, userId, payload, target.id);
+    const id = await restoreBinned(cx, userId, payload, target.id);
     if (!id) throw alreadyBack();
     await dropItems(cx, userId, [locked.id]);
     return restoredOf(locked, id, note ?? target.note);
@@ -603,7 +651,7 @@ async function restoreCalendarItem(userId: string, row: BinRow) {
     if (!locked) throw notFound('BIN_ITEM_NOT_FOUND', 'Not in the bin');
     const payload = parsePayload<LocalPayload>(locked);
     if (!payload?.event || payload.provider !== 'local') throw conflict('BIN_ITEM_UNREADABLE', 'This item cannot be restored.');
-    const id = await restoreLocalEvent(cx, ownerId, payload, String(row.calendar_id));
+    const id = await restoreBinned(cx, ownerId, payload, String(row.calendar_id));
     if (!id) throw alreadyBack();
     await cx.execute('DELETE FROM bin_items WHERE id = ?', [locked.id]);
     return restoredOf(locked, id, null);
@@ -631,4 +679,4 @@ const eventBinKind: BinKind = {
   },
 };
 
-export { binLocalEvents, binLocally, deleteEventToBin, deleteCalendarToBin, finishServerRestore, eventBinKind };
+export { binLocalEvents, binSeries, binLocally, deleteEventToBin, deleteCalendarToBin, finishServerRestore, eventBinKind };

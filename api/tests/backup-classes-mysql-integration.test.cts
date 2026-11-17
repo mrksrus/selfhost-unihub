@@ -247,8 +247,10 @@ test('backups by data class: Download mail choice, UID matching and synced-task 
     delete old.contents;
     delete old.data.calendar_overlay_restores;
     delete old.data.bin_items;
+    delete old.data.calendar_series;
     old.data.calendar_accounts.find((row: FixtureValue) => row.id === accountId).provider = 'caldav';
     for (const table of ['calendar_events', 'calendar_calendars']) for (const row of old.data[table]) delete row.uid;
+    for (const row of old.data.calendar_events) { delete row.series_id; delete row.recurrence_id; }
     assert.equal(old.data.calendar_event_subtasks.length, 501);
     const oldReader = await newUser('checklist-old-reader');
     const imported = await restore(oldReader, old, 'keep_existing');

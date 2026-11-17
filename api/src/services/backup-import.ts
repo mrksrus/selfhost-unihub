@@ -57,6 +57,7 @@ import { log } from '../log';
 import crypto from 'node:crypto';
 import { archivedContents, filterOldArchive } from './backup-classes';
 import { restoreOverlays, validateOverlayRows } from './backup-overlays';
+import * as ical from './calendar-ical';
 import { restoreBinItems, parseRefs } from './bin';
 import { recordingBinFolder } from './recordings';
 
@@ -544,6 +545,27 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         );
       }
 
+      // A repeating event (data schema 8) goes with its calendar; its dates name it below.
+      const calendarSeriesIdMap = new Map<string, string>();
+      for (const series of (data.calendar_series || []) as BackupRow[]) {
+        await checkRestoreCancelled();
+        try {
+          ical.seriesRule(series.ics);
+        } catch {
+          validation.warnings.push('A repeating event in this backup could not be read; its dates were restored as single events.');
+          continue;
+        }
+        const targetCalendarId = await resolveOwnedReference(connection, userId, 'calendar_calendars', series.calendar_id as string, calendarIdMap);
+        const [[existing]] = await connection.execute<RowDataPacket[]>(`SELECT s.id FROM calendar_series s JOIN calendar_calendars c ON c.id = s.calendar_id AND c.user_id = ?
+          WHERE s.id = ? OR (s.calendar_id = ? AND s.uid = ?) ORDER BY s.id = ? DESC LIMIT 1 FOR UPDATE`, [userId, String(series.id), targetCalendarId, String(series.uid), String(series.id)]);
+        const targetId = chooseTargetId(series.id, existing?.id ?? null, conflictMode);
+        calendarSeriesIdMap.set(String(series.id), targetId);
+        if (!shouldWriteExisting(existing?.id ?? null, targetId, conflictMode)) continue;
+        if (existing?.id === targetId) await connection.execute('UPDATE calendar_series SET calendar_id = ?, ics = ? WHERE id = ?', [targetCalendarId, String(series.ics), targetId]);
+        // A copy kept beside the one it matched gets a UID of its own.
+        else await connection.execute('INSERT INTO calendar_series (id, calendar_id, uid, ics) VALUES (?, ?, ?, ?)', [targetId, targetCalendarId, existing ? crypto.randomUUID() : String(series.uid).slice(0, 500), String(series.ics)]);
+      }
+
       for (const event of data.calendar_events || []) {
         await checkRestoreCancelled();
         const row = overwriteUserId(event, userId);
@@ -557,10 +579,12 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         const eventIdentity = await restoredIdentity(connection, 'calendar_events', userId, row, !!existingEventId && targetEventId !== existingEventId);
         // created_at and the order key too (0.27): a task without a date is
         // ordered by when it was made, and ties by the archived task's key.
+        const seriesId = calendarSeriesIdMap.get(String(row.series_id)) ?? null;
         await writeOwnedRow(connection, userId, 'calendar_events',
-          ['id', 'user_id', 'calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json', 'created_at', 'order_key', 'uid'],
-          [targetEventId, row.user_id, targetCalendarId, row.title || 'Untitled Event', row.description ?? null, normalizeMysqlDateTime(row.start_time), normalizeMysqlDateTime(row.end_time), row.all_day ? 1 : 0, row.location || null, row.color || '#22c55e', row.recurrence || null, row.reminder_minutes ?? null, row.reminders ? (typeof row.reminders === 'string' ? row.reminders : JSON.stringify(row.reminders)) : null, row.todo_status || null, row.is_todo_only ? 1 : 0, normalizeMysqlDateTime(row.done_at), sourceEmailId(row.source_email_id), sourceEmailJson(row.source_email_json), normalizeMysqlDateTime(row.created_at, new Date()), restoredOrderKey(row, targetEventId), eventIdentity],
-          ['calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json', 'created_at', 'order_key']
+          ['id', 'user_id', 'calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json', 'created_at', 'order_key', 'uid', 'series_id', 'recurrence_id'],
+          [targetEventId, row.user_id, targetCalendarId, row.title || 'Untitled Event', row.description ?? null, normalizeMysqlDateTime(row.start_time), normalizeMysqlDateTime(row.end_time), row.all_day ? 1 : 0, row.location || null, row.color || '#22c55e', row.recurrence || null, row.reminder_minutes ?? null, row.reminders ? (typeof row.reminders === 'string' ? row.reminders : JSON.stringify(row.reminders)) : null, row.todo_status || null, row.is_todo_only ? 1 : 0, normalizeMysqlDateTime(row.done_at), sourceEmailId(row.source_email_id), sourceEmailJson(row.source_email_json), normalizeMysqlDateTime(row.created_at, new Date()), restoredOrderKey(row, targetEventId), eventIdentity,
+            seriesId, seriesId ? String(row.recurrence_id ?? '').slice(0, 64) : null],
+          ['calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json', 'created_at', 'order_key', 'series_id', 'recurrence_id']
         );
         writtenCalendarEvents.push({ row, targetId: targetEventId });
         if (sourceEmailId(row.source_email_id)) eventsWithSourceEmail.set(targetEventId, row.source_email_id);

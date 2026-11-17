@@ -452,6 +452,10 @@ async function readBackupSnapshot(userId: string, sections: unknown, checkCancel
         if (table === 'mail_folder_remote_boxes') {
           from += ' JOIN mail_folders f ON f.id = b.folder_id JOIN mail_accounts a ON a.id = b.mail_account_id';
           where = 'f.user_id = ? AND a.user_id = ?'; params = [userId, userId];
+        } else if (table === 'calendar_series') {
+          // A series is its calendar's (no user_id of its own).
+          from += ' JOIN calendar_calendars c ON c.id = b.calendar_id';
+          where = 'c.user_id = ?';
         } else if (table === 'mail_folder_rule_overrides') {
           from += ' JOIN mail_sender_rules r ON r.id = b.rule_id JOIN mail_accounts a ON a.id = b.mail_account_id';
           where = 'r.user_id = ? AND a.user_id = ?'; params = [userId, userId];

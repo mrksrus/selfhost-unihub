@@ -129,6 +129,14 @@ export async function seedSource(source: Installation, owner: Session, ownerId: 
   for (const title of ['Read it', 'Reply']) await owner.json('POST', `/api/calendar/events/${task.id}/subtasks`, { title }, { expected: [200, 201] });
   await owner.json('POST', '/api/calendar/events', { title: 'Local all-day', start_time: '2030-04-01T00:00:00.000Z', end_time: '2030-04-02T00:00:00.000Z', all_day: true,
     location: 'Graz', reminders: [30] }, { expected: [200, 201] });
+  // A repeating event with one date changed on its own: its rule, zone and changed date travel (data schema 8).
+  const next = new Date(); next.setUTCHours(8, 0, 0, 0); next.setUTCDate(next.getUTCDate() + 7);
+  const { event: review } = await owner.json<{ event: Row }>('POST', '/api/calendar/events', { title: 'Weekly review', start_time: next.toISOString(),
+    end_time: new Date(next.getTime() + 3600000).toISOString(), repeat: { freq: 'WEEKLY', count: 3 }, time_zone: 'Europe/Vienna' }, { expected: [200, 201] });
+  const reviews = (await owner.json<{ events: Row[] }>('GET', '/api/calendar/events?range_start=2000-01-01T00:00:00Z&range_end=2100-01-01T00:00:00Z')).events
+    .filter(event => event.series_key === review.series_key);
+  assert.equal(reviews.length, 3, 'The weekly review has three dates');
+  await owner.json('PUT', `/api/calendar/events/${reviews[1].id}`, { title: 'Weekly review with guests', scope: 'occurrence' });
   // The hand order (0.27): tasks without a date and a dated one; the newest
   // undated task is placed above the oldest by hand. A restore must give
   // back this order although every task gets a new id.
@@ -237,7 +245,7 @@ export async function publicView(session: Session) {
       display_name: account.display_name, username: account.username, base_url: account.base_url }))),
     calendars: sort(calendars.map(calendar => ({ name: calendar.name, color: calendar.color, account: calendar.account_display_name, visible: calendar.is_visible }))),
     events: sort(events.map(event => ({ title: event.title, description: event.description, start: event.start_time, end: event.end_time, all_day: event.all_day,
-      location: event.location, recurrence: event.recurrence, reminders: event.reminders, todo_status: event.todo_status, todo_only: event.is_todo_only,
+      location: event.location, recurrence: event.recurrence, repeats: Boolean(event.series_key), reminders: event.reminders, todo_status: event.todo_status, todo_only: event.is_todo_only,
       calendar: calendars.find(calendar => calendar.id === event.calendar_id)?.name ?? null,
       source_email: event.source_email_id ? emailSubjects.get(event.source_email_id) ?? `missing email ${event.source_email_id}` : null,
       subtasks: (event.subtasks as Row[]).map(subtask => ({ title: subtask.title, done: Boolean(subtask.is_done), position: subtask.position })),

@@ -1167,6 +1167,9 @@ async function runCalendarSyncPass() {
     await moves().resumeDueMoves(pass)
       .catch((error: Error) => console.warn('[CALENDAR] Resuming moves failed:', error.message));
     await sweepExpiredOverlays().catch((error: Error) => console.warn('[CALENDAR] Removing expired overlays failed:', error.message));
+    // UniHub's own repeating events get the dates that came into the window, once a day per calendar.
+    await (require('./calendar-series') as typeof import('./calendar-series')).extendSeries()
+      .catch((error: Error) => console.warn('[CALENDAR] Extending repeating events failed:', error.message));
     const [rows] = await db.execute<RowDataPacket[]>(
       `SELECT id, user_id FROM calendar_accounts
        WHERE provider IN ('caldav', 'ics') AND is_active = TRUE AND (next_sync_at IS NULL OR next_sync_at <= UTC_TIMESTAMP())

@@ -121,7 +121,7 @@ test('backup capabilities expose the shared recoverable sections and the Downloa
   t.after(() => setDb(null));
   const capabilities = await call('GET /api/backup/capabilities', {}, 'owner');
   assert.equal(capabilities.enabled, true);
-  assert.equal(capabilities.version, 7);
+  assert.equal(capabilities.version, 8);
   assert.deepEqual(capabilities.sections.map((section: FixtureValue) => section.id), Object.keys((require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog')).SECTION_POLICIES));
   assert.ok(capabilities.exclusions.some((value: string) => /Other users/.test(value)));
   // An account that deletes mail at the provider holds the only copy, so its mail is always included.

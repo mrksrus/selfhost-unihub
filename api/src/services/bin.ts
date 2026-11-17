@@ -792,6 +792,7 @@ interface ArchivedBinItem {
   file_refs?: unknown;
   deleted_at?: unknown;
   purge_after?: unknown;
+  calendar_id?: unknown;
 }
 interface RestoreArchivedBinOptions {
   userId: string;
@@ -853,9 +854,11 @@ async function restoreBinItems(connection: SqlExecutor, options: RestoreArchived
       groups.set(item.group_id, groupId);
     }
     const reason: BinReason = item.reason === 'calendar_deleted' ? 'calendar_deleted' : 'deleted';
-    await connection.execute(`INSERT INTO bin_items (id, user_id, module, item_type, item_id, title, reason, group_id, payload, payload_version, file_refs, deleted_at, purge_after)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${left === null ? 'NULL' : 'UTC_TIMESTAMP() + INTERVAL ? SECOND'})`, [
-      crypto.randomUUID(), userId, MODULE_OF[type], type, item.item_id, Array.from(String(item.title ?? '')).slice(0, TITLE_MAX).join(''), reason, groupId,
+    // The calendar whose bin shows it too, as restored.
+    const calendarId = typeof item.calendar_id === 'string' ? options.calendarIds?.get(item.calendar_id) ?? null : null;
+    await connection.execute(`INSERT INTO bin_items (id, user_id, calendar_id, module, item_type, item_id, title, reason, group_id, payload, payload_version, file_refs, deleted_at, purge_after)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${left === null ? 'NULL' : 'UTC_TIMESTAMP() + INTERVAL ? SECOND'})`, [
+      crypto.randomUUID(), userId, calendarId, MODULE_OF[type], type, item.item_id, Array.from(String(item.title ?? '')).slice(0, TITLE_MAX).join(''), reason, groupId,
       JSON.stringify(payload), PAYLOAD_VERSION, type === 'recording' ? JSON.stringify([payload.bin_path]) : jsonRefs(item.file_refs), deletedSql,
       ...(left === null ? [] : [Math.ceil(left / 1000)]),
     ]);
@@ -936,7 +939,7 @@ async function exportableBinItems(executor: SqlExecutor, userId: string, section
   const modules = MODULES.filter(module => sectionOf(module) === section);
   if (!modules.length) return [];
   const [rows] = await executor.execute<BinRow[]>(
-    `SELECT id, user_id, module, item_type, item_id, title, reason, group_id, payload, payload_version, file_refs, deleted_at, purge_after
+    `SELECT id, user_id, module, item_type, item_id, title, reason, group_id, payload, payload_version, file_refs, deleted_at, purge_after, calendar_id
      FROM bin_items WHERE user_id = ? AND restored_at IS NULL AND module IN (${placeholders(modules)}) ORDER BY deleted_at, id`, [userId, ...modules]);
   return rows.map(row => ({ row, files: parseRefs(row.file_refs) }));
 }

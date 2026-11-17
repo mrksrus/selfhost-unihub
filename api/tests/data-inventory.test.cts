@@ -99,12 +99,14 @@ test('shared address books, grants, directory entries and a book\'s contact rows
 });
 
 // Calendars no person owns, who reaches a calendar and each person's view of
-// and reminders on one are only in the instance backup; so are, until a data
-// schema carries them, the series of repeating events.
-test('organisation calendar rows, calendar shares, views, personal reminders and series never travel in a personal backup', () => {
+// and reminders on one are only in the instance backup; the series of
+// repeating events travel with their calendar from data schema 8.
+test('organisation calendar rows, calendar shares, views and personal reminders never travel in a personal backup; series do', () => {
   const { NON_ARCHIVE_POLICIES, CALENDAR_ROWS } = require('../dist/src/services/data-inventory') as typeof import('../src/services/data-inventory');
-  const { TABLE_POLICIES } = require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog');
-  for (const table of ['calendar_series', 'calendar_views', 'calendar_reminders']) {
+  const { TABLE_POLICIES, SECTION_POLICIES } = require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog');
+  assert.ok(SECTION_POLICIES.calendar.tables.includes('calendar_series'));
+  assert.deepEqual([TABLE_POLICIES.calendar_events.introducedIn.series_id, TABLE_POLICIES.calendar_events.introducedIn.recurrence_id, TABLE_POLICIES.bin_items.introducedIn.calendar_id], [30, 30, 30]);
+  for (const table of ['calendar_views', 'calendar_reminders']) {
     assert.equal(TABLE_POLICIES[table], undefined, `${table} is in no backup section`);
     assert.ok(NON_ARCHIVE_POLICIES[table].columns.every(column => NON_ARCHIVE_POLICIES[table].introducedIn?.[column] === 30), `${table} comes with upgrade 30`);
   }

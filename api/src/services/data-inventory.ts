@@ -155,8 +155,6 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 29])) })])),
   // Upgrade step 30.
   ...Object.fromEntries([
-    ['calendar_series', 'Data schema 7 carries no series; a restored date of a repeating event comes back as a single event. The instance backup carries series with their ids.',
-      'id calendar_id uid ics created_at updated_at'],
     ['calendar_views', "A person's view of a calendar others share with them points at calendars a personal restore elsewhere does not have; only the instance backup carries it.",
       'calendar_id user_id is_visible color notify_changes updated_at'],
     ['calendar_reminders', "A person's own reminders on a calendar they do not own point at events a personal restore elsewhere does not have; only the instance backup carries them.",
@@ -178,18 +176,15 @@ const BOOK_ROWS = Object.freeze({
 // Upgrade step 30: a calendar's rows belong to no person (user_id NULL)
 // when the calendar is an organisation's or a group's; a personal backup
 // selects only the person's rows, the instance backup carries the others.
-// Who owns, shares, offers or archived a calendar, who added a checklist
-// point, which calendar's bin holds an item and which series a date belongs
-// to are never archived (calendar_series above).
+// Who owns, shares, offers or archived a calendar and who added a checklist
+// point are never archived.
 const CALENDAR_ROWS = Object.freeze({
   treatment: 'deliberately_excluded', introducedIn: 30,
   reason: "An organisation's or a group's calendar and the sharing of a person's calendar are organisation data; a personal backup carries only the person's own rows.",
   tables: Object.freeze(['calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'bin_items']),
   columns: Object.freeze({
     calendar_calendars: Object.freeze(['group_id', 'deleted_at', 'archived_at', 'offer_to', 'offer_by']),
-    calendar_events: Object.freeze(['series_id', 'recurrence_id']),
     calendar_event_subtasks: Object.freeze(['created_by']),
-    bin_items: Object.freeze(['calendar_id']),
   }) as Readonly<Record<string, readonly string[]>>,
 });
 
@@ -288,7 +283,7 @@ const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.fr
   // the sync that creates the task's row.
   // Upgrade step 30: a repeating local event goes with its calendar; a
   // person's own view of and reminders on a calendar they reach.
-  calendar_series: { owner: 'user', shareable: true, dataClass: BOOK_ROW_CLASSES, module: 'calendar', restore: 'Goes with its calendar; only the instance backup carries it, with its id.' },
+  calendar_series: { owner: 'user', shareable: true, dataClass: BOOK_ROW_CLASSES, module: 'calendar', restore: "From data schema 8 restored with its calendar and its dates; ids remapped, a copy kept beside it gets a new UID. An organisation's or a group's calendar: only in the instance backup." },
   calendar_views: { owner: 'user', shareable: false, dataClass: 'config', module: 'calendar', restore: 'Never in a personal backup; the instance backup restores it; it goes with its calendar or person.' },
   calendar_reminders: { owner: 'user', shareable: false, dataClass: 'config', module: 'calendar', restore: 'Never in a personal backup; the instance backup restores it; it goes with its event, series or person.' },
   calendar_overlay_restores: { owner: 'user', shareable: false, dataClass: 'local', module: 'calendar', restore: 'Exported with the Calendar section, also for every synced task with UniHub state; a restore applies it to the live task or keeps it until the sync that creates the task takes it; goes with its calendar.' },
@@ -403,7 +398,7 @@ function assertArchiveRelationships(rows: readonly RelationshipRow[]) {
     if (!TABLE_POLICIES[table]) continue; // Non-archive relationships are not restored.
     // A book's rows are never archived, so their link to the book is not restored either.
     if (row.column_name === 'address_book_id' && row.parent_table === 'address_books' && BOOK_ROWS.tables.includes(row.table_name)) continue;
-    // Nor are a calendar's owner, group, offer, series and a point's author (CALENDAR_ROWS).
+    // Nor are a calendar's owner, group, offer and a point's author (CALENDAR_ROWS).
     if (CALENDAR_ROWS.columns[row.table_name]?.includes(row.column_name)) continue;
     const parent = row.column_name === 'user_id' ? 'users' : REFERENCES[table]?.[row.column_name];
     if (!parent || parent !== row.parent_table || row.parent_column !== 'id') {

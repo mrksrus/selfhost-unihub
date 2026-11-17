@@ -28,7 +28,7 @@ interface TablePolicy {
 const SECTION_POLICIES: Readonly<Record<string, SectionPolicy>> = Object.freeze({
   settings: { tables: ["user", "user_settings"], fileKinds: [] },
   contacts: { tables: ["contacts", "contact_values", "contact_properties", "contact_photos", "contact_uid_aliases", "contact_duplicate_dismissals", "bin_items"], fileKinds: ["contact_photo"] },
-  calendar: { tables: ["calendar_accounts", "calendar_calendars", "calendar_settings", "calendar_events", "calendar_event_subtasks", "calendar_event_attendees", "calendar_event_external_refs", "task_order", "calendar_overlay_restores", "bin_items"], fileKinds: [] },
+  calendar: { tables: ["calendar_accounts", "calendar_calendars", "calendar_settings", "calendar_series", "calendar_events", "calendar_event_subtasks", "calendar_event_attendees", "calendar_event_external_refs", "task_order", "calendar_overlay_restores", "bin_items"], fileKinds: [] },
   mail: { tables: ["mail_accounts", "mail_account_settings", "mail_templates", "mail_folders", "mail_folder_remote_boxes", "mail_sender_rules", "emails", "email_attachments", "mail_email_scores", "mail_folder_reconciliations", "mail_folder_recovery_items", "mail_folder_rule_overrides", ...Object.keys(ARCHIVE_COLUMNS)], fileKinds: ["email_attachment", "raw_email"] },
   recordings: { tables: ["recordings", "recording_tags", "recording_tag_links", "recording_transcription_jobs", "bin_items"], fileKinds: ["recording", "recording_bin"] },
 });
@@ -73,7 +73,11 @@ const BASE_TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Obj
   calendar_settings: table('calendar', 'calendar_id user_id setting_key setting_value updated_at', ['calendar_id', 'setting_key'], {}, since(20, 'calendar_id user_id setting_key setting_value updated_at')),
   // created_at is restored (0.27): a task without a date is ordered by it.
   // order_key (step 24) keeps a task's place among equal dates over new ids.
-  calendar_events: table('calendar', 'id user_id calendar_id title description start_time end_time all_day location color recurrence reminder_minutes reminders todo_status is_todo_only done_at created_at updated_at source_email_id source_email_json order_key uid', ["id"], { source_email_id: 'preserve', created_at: 'preserve' }, { source_email_id: 16, source_email_json: 16, order_key: 24, uid: 25 }),
+  // Upgrade step 30 (data schema 8): a repeating event is its series (the
+  // iCalendar text) and a row per date, keyed by its recurrence id.
+  calendar_series: table('calendar', 'id calendar_id uid ics created_at updated_at', ['id'], {}, since(30, 'id calendar_id uid ics created_at updated_at')),
+  calendar_events: table('calendar', 'id user_id calendar_id title description start_time end_time all_day location color recurrence reminder_minutes reminders todo_status is_todo_only done_at created_at updated_at source_email_id source_email_json order_key uid series_id recurrence_id', ["id"],
+    { source_email_id: 'preserve', created_at: 'preserve', recurrence_id: 'preserve' }, { source_email_id: 16, source_email_json: 16, order_key: 24, uid: 25, ...since(30, 'series_id recurrence_id') }),
   calendar_event_subtasks: table('calendar', 'id event_id user_id title is_done position created_at updated_at', ["id"], {}),
   calendar_event_attendees: table('calendar', 'id user_id event_id email display_name response_status is_organizer optional_attendee comment created_at updated_at', ["id"], {}),
   calendar_event_external_refs: table('calendar', 'id user_id event_id calendar_id account_id provider external_event_id external_etag external_updated_at last_synced_at created_at updated_at', ["id"], {}),
@@ -109,9 +113,10 @@ const BASE_TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Obj
   // module), with the time it has left (bin.ts restoreBinItems: new ids and
   // groups, the payload checked again by its kind's restore). A recording's
   // file is its own file kind; a contact's photos are content files.
-  bin_items: Object.freeze({ ...table('*', 'id user_id module item_type item_id title reason group_id payload payload_version file_refs deleted_at purge_after', ['id'],
-    { item_id: 'preserve', group_id: 'rebuild', file_refs: 'restored_file', deleted_at: 'preserve', purge_after: 'rebuild' },
-    since(25, 'id user_id module item_type item_id title reason group_id payload payload_version file_refs deleted_at purge_after')),
+  // calendar_id (step 30): the calendar whose bin shows the item too, as restored.
+  bin_items: Object.freeze({ ...table('*', 'id user_id module item_type item_id title reason group_id payload payload_version file_refs deleted_at purge_after calendar_id', ['id'],
+    { item_id: 'preserve', group_id: 'rebuild', file_refs: 'restored_file', deleted_at: 'preserve', purge_after: 'rebuild', calendar_id: 'rebuild' },
+    { ...since(25, 'id user_id module item_type item_id title reason group_id payload payload_version file_refs deleted_at purge_after'), ...since(30, 'calendar_id') }),
   rowSection: 'module', rowPolicy: 'Only items still in the bin are exported; a restored one is not.' }),
   recordings: table('recordings', 'id user_id title description original_filename content_type size_bytes duration_seconds storage_path source category recorded_at metadata created_at updated_at uid', ["id"], {"storage_path": "restored_file", "created_at": "preserve"}, since(25, 'uid')),
   recording_tags: table('recordings', 'id user_id name color created_at updated_at', ["id"], {}),
@@ -151,7 +156,8 @@ const REFERENCES: Readonly<Record<string, Readonly<Record<string, string>>>> = O
   // calendar_events.source_email_id is a link across sections (to emails),
   // so it is preserved as written; the import follows a restored email's new
   // id afterwards, and a calendar-only restore keeps the task's own snapshot.
-  calendar_events: { calendar_id: 'calendar_calendars' },
+  calendar_series: { calendar_id: 'calendar_calendars' },
+  calendar_events: { calendar_id: 'calendar_calendars', series_id: 'calendar_series' },
   calendar_event_subtasks: { event_id: 'calendar_events' },
   calendar_event_attendees: { event_id: 'calendar_events' },
   calendar_event_external_refs: { event_id: 'calendar_events', calendar_id: 'calendar_calendars', account_id: 'calendar_accounts' },

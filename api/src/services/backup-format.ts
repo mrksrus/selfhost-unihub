@@ -8,9 +8,10 @@ import { readV4 } from './backup-formats/v4';
 import { readV5 } from './backup-formats/v5';
 import { readV6 } from './backup-formats/v6';
 import { readV7 } from './backup-formats/v7';
+import { readV8 } from './backup-formats/v8';
 import { RETIRED_TABLES, RETIRED_FILE_KINDS } from './backup-catalog';
 
-const BACKUP_VERSION = 7;
+const BACKUP_VERSION = 8;
 const ZIP_BACKUP_FORMAT = 'unihub-restorable-backup';
 // Format 2 (0.28) keeps the restore metadata under "UniHub restore data/"
 // beside the readable copies (backup-readable.ts); format 1 at the root.
@@ -26,10 +27,10 @@ const BACKUP_METADATA_LIMITS = Object.freeze({
   'checksums.json': 64 * 1024 * 1024,
   'data/backup.json': 512 * 1024 * 1024,
 });
-const READERS = new Map<number, (backup: ArchiveEnvelope) => ArchiveEnvelope>([[1, readV1], [2, readV2], [3, readV3], [4, readV4], [5, readV5], [6, readV6], [7, readV7]]);
+const READERS = new Map<number, (backup: ArchiveEnvelope) => ArchiveEnvelope>([[1, readV1], [2, readV2], [3, readV3], [4, readV4], [5, readV5], [6, readV6], [7, readV7], [8, readV8]]);
 // The first upgrade step whose fields a data schema carries: an archive older
 // than the schema may not carry them (validation refuses them as unknown).
-const ARCHIVE_FIRST_STEPS: Readonly<Record<number, number>> = Object.freeze({ 5: 22, 6: 24, 7: 25 });
+const ARCHIVE_FIRST_STEPS: Readonly<Record<number, number>> = Object.freeze({ 5: 22, 6: 24, 7: 25, 8: 30 });
 
 function archiveCarriesStep(version: number, step: number) {
   return Object.entries(ARCHIVE_FIRST_STEPS).every(([schema, first]) => step < first || version >= Number(schema));
@@ -108,6 +109,7 @@ function normalizeBackupPayload(backup: ArchiveEnvelope): ArchiveEnvelope {
   if (backup.version < 5) result = readV5(result);
   if (backup.version < 6) result = readV6(result);
   if (backup.version < 7) result = readV7(result);
+  if (backup.version < 8) result = readV8(result);
   result.source_backup_version = backup.version;
   result.version = BACKUP_VERSION;
   // The original checksum was verified before migration. It describes the

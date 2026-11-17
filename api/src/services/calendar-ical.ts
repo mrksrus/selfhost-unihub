@@ -16,8 +16,8 @@ interface Fields {
   allDay?: boolean;
   reminders?: unknown;
 }
-interface TimeOptions { allDayValue?: Time; template?: Time | null; userTimeZone?: string }
-interface ApplyOptions { template?: { start: Time | null; end: Time | null }; userTimeZone: string }
+interface TimeOptions { allDayValue?: Time; template?: Time | null; userTimeZone?: string; tzid?: string }
+interface ApplyOptions { template?: { start: Time | null; end: Time | null }; userTimeZone: string; tzid?: string }
 interface Occurrence extends ReturnType<typeof occurrenceFromComponent> { recurrenceId: string }
 const ICAL: typeof import('ical.js').default = require('ical.js');
 
@@ -179,7 +179,7 @@ function eventEnd(vevent: Component, start: Time): Time {
 // One CalDAV object holds one UID: a master VEVENT and optional exceptions
 // (RECURRENCE-ID). Returns every occurrence in the window, keyed by its
 // original recurrence time so a moved occurrence keeps its identity.
-function expandCalendarObject(ics: unknown, { windowStartMs, windowEndMs, userTimeZone }: { windowStartMs: number; windowEndMs: number; userTimeZone: string }) {
+function expandCalendarObject(ics: unknown, { windowStartMs, windowEndMs, userTimeZone, maxOccurrences = MAX_OCCURRENCES_PER_SERIES }: { windowStartMs: number; windowEndMs: number; userTimeZone: string; maxOccurrences?: number }) {
   const root = parseIcs(ics);
   return withCalendarTimezones(root, () => {
     const vevents = root.getAllSubcomponents('vevent');
@@ -203,7 +203,7 @@ function expandCalendarObject(ics: unknown, { windowStartMs, windowEndMs, userTi
       const iterator = event.iterator();
       let next;
       let steps = 0;
-      while ((next = iterator.next()) && steps++ < MAX_RECURRENCE_STEPS && occurrences.length < MAX_OCCURRENCES_PER_SERIES) {
+      while ((next = iterator.next()) && steps++ < MAX_RECURRENCE_STEPS && occurrences.length < maxOccurrences) {
         const details = event.getOccurrenceDetails(next);
         const startMs = icalTimeToMillis(details.startDate, userTimeZone);
         if (startMs > windowEndMs && icalTimeToMillis(next, userTimeZone) > windowEndMs) break;
@@ -279,13 +279,13 @@ function allDayRange(startMs: number, endMs: number, timeZone: string) {
 
 // Write a time in the zone the server copy used, so a recurring series keeps
 // following its own DST rules; otherwise write UTC.
-function setTimeProperty(vevent: Component, name: string, ms: number, { allDayValue, template, userTimeZone }: TimeOptions) {
+function setTimeProperty(vevent: Component, name: string, ms: number, { allDayValue, template, userTimeZone, tzid: zone }: TimeOptions) {
   vevent.removeAllProperties(name);
   if (allDayValue) {
     vevent.addPropertyWithValue(name, allDayValue);
     return;
   }
-  const tzid = template && !template.isDate ? (template.zone?.tzid !== 'floating' ? template.zone?.tzid : (template as Time & { timezone?: string }).timezone) : null;
+  const tzid = zone ?? (template && !template.isDate ? (template.zone?.tzid !== 'floating' ? template.zone?.tzid : (template as Time & { timezone?: string }).timezone) : null);
   const property = new ICAL.Property(name, vevent);
   if (tzid && tzid !== 'UTC' && ICAL.TimezoneService.has(tzid)) {
     property.setValue(utcTime(ms).convertToZone(ICAL.TimezoneService.get(tzid)));
@@ -327,7 +327,7 @@ function touch(vevent: Component) {
   vevent.updatePropertyWithValue('sequence', sequence + 1);
 }
 
-function applyFields(vevent: Component, fields: Fields, { template, userTimeZone }: ApplyOptions) {
+function applyFields(vevent: Component, fields: Fields, { template, userTimeZone, tzid }: ApplyOptions) {
   if (fields.title !== undefined) setText(vevent, 'summary', fields.title);
   if (fields.description !== undefined) setText(vevent, 'description', fields.description);
   if (fields.location !== undefined) setText(vevent, 'location', fields.location);
@@ -338,23 +338,28 @@ function applyFields(vevent: Component, fields: Fields, { template, userTimeZone
       setTimeProperty(vevent, 'dtstart', fields.startMs, { allDayValue: range.start });
       setTimeProperty(vevent, 'dtend', fields.endMs, { allDayValue: range.end });
     } else {
-      setTimeProperty(vevent, 'dtstart', fields.startMs, { template: template?.start, userTimeZone });
-      setTimeProperty(vevent, 'dtend', fields.endMs, { template: template?.end || template?.start, userTimeZone });
+      setTimeProperty(vevent, 'dtstart', fields.startMs, { template: template?.start, userTimeZone, tzid });
+      setTimeProperty(vevent, 'dtend', fields.endMs, { template: template?.end || template?.start, userTimeZone, tzid });
     }
   }
   if (fields.reminders !== undefined) setAlarms(vevent, fields.reminders);
   touch(vevent);
 }
 
-function createEventIcs(fields: Fields, { uid = crypto.randomUUID(), userTimeZone }: { uid?: string; userTimeZone: string }) {
+// rrule: a repeating event (a UniHub series), its times in userTimeZone (TZID)
+// so a series keeps its wall-clock time across DST; the zone is also the
+// calendar's X-WR-TIMEZONE, which places an all-day series' dates.
+function createEventIcs(fields: Fields, { uid = crypto.randomUUID(), userTimeZone, rrule }: { uid?: string; userTimeZone: string; rrule?: string }) {
   const calendar = new ICAL.Component('vcalendar');
   calendar.addPropertyWithValue('version', '2.0');
   calendar.addPropertyWithValue('prodid', PRODID);
+  if (rrule) calendar.addPropertyWithValue('x-wr-timezone', userTimeZone);
   const vevent = new ICAL.Component('vevent');
   vevent.addPropertyWithValue('uid', uid);
   vevent.addPropertyWithValue('created', utcTime(Date.now()));
   calendar.addSubcomponent(vevent);
-  applyFields(vevent, fields, { userTimeZone });
+  applyFields(vevent, fields, { userTimeZone, tzid: rrule && userTimeZone !== 'UTC' ? userTimeZone : undefined });
+  if (rrule) vevent.addPropertyWithValue('rrule', ICAL.Recur.fromString(rrule));
   vevent.updatePropertyWithValue('sequence', 0);
   return { uid, ics: calendar.toString() };
 }
@@ -424,7 +429,7 @@ function shiftSeriesExceptions(root: Component, master: Component, deltaMs: numb
 //   scope 'series': change the master; a time change shifts the series start
 //     by the same amount the edited occurrence moved.
 //   scope 'occurrence': create or update the exception for one occurrence.
-function updateEventIcs(ics: unknown, fields: Fields, { recurrenceId = '', scope = 'series', previousStartMs, userTimeZone }: { recurrenceId?: string; scope?: string; previousStartMs?: number | null; userTimeZone: string }) {
+function updateEventIcs(ics: unknown, fields: Fields, { recurrenceId = '', scope = 'series', previousStartMs, userTimeZone, tzid }: { recurrenceId?: string; scope?: string; previousStartMs?: number | null; userTimeZone: string; tzid?: string }) {
   const root = parseIcs(ics);
   return withCalendarTimezones(root, () => {
     const master = findMaster(root);
@@ -439,7 +444,7 @@ function updateEventIcs(ics: unknown, fields: Fields, { recurrenceId = '', scope
         root.addSubcomponent(exception);
       }
       const start = (exception.getFirstPropertyValue('dtstart') as Time);
-      applyFields(exception, fields, { template: { start, end: (exception.getFirstPropertyValue('dtend') as Time) }, userTimeZone });
+      applyFields(exception, fields, { template: { start, end: (exception.getFirstPropertyValue('dtend') as Time) }, userTimeZone, tzid });
       return root.toString();
     }
     const target = master || (recurrenceId ? findException(root, recurrenceId, userTimeZone) : null) || root.getFirstSubcomponent('vevent');
@@ -455,7 +460,7 @@ function updateEventIcs(ics: unknown, fields: Fields, { recurrenceId = '', scope
       next = { ...fields, startMs: masterStart, endMs: masterStart + length };
       if (delta && !!fields.allDay === !!start.isDate) shiftSeriesExceptions(root, master, delta, userTimeZone);
     }
-    applyFields(target, next, { template: { start, end }, userTimeZone });
+    applyFields(target, next, { template: { start, end }, userTimeZone, tzid });
     return root.toString();
   });
 }
@@ -473,6 +478,19 @@ function removeOccurrenceIcs(ics: unknown, recurrenceId: string, { userTimeZone 
     touch(master);
     return root.toString();
   });
+}
+
+/** A UniHub series' rule (RRULE text) and zone (X-WR-TIMEZONE); setting rrule replaces the rule, keeping removed and changed dates. */
+function seriesRule(ics: unknown, rrule?: string) {
+  const root = parseIcs(ics);
+  const master = findMaster(root);
+  const timeZone = resolveUserTimeZone(root.getFirstPropertyValue('x-wr-timezone'));
+  if (rrule !== undefined && master) {
+    master.updatePropertyWithValue('rrule', ICAL.Recur.fromString(rrule));
+    touch(master);
+  }
+  const rule = master?.getFirstProperty('rrule')?.toICALString().replace(/^RRULE:/i, '') ?? null;
+  return { rrule: rule, timeZone, ics: root.toString() };
 }
 
 const UID_MAX = 500;
@@ -512,6 +530,7 @@ export {
   createEventIcs,
   updateEventIcs,
   removeOccurrenceIcs,
+  seriesRule,
   objectUid,
   storableObjectUid,
   MAX_OCCURRENCES_PER_SERIES,

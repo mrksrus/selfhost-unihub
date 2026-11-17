@@ -90,11 +90,12 @@ const binCalendar = require('../services/bin-calendar') as typeof import('../ser
 const calendarAccounts = require('../services/calendar-accounts') as typeof import('../services/calendar-accounts');
 const calendarAccountChanges = require('../services/calendar-account-changes') as typeof import('../services/calendar-account-changes');
 const calendarShares = require('../services/calendar-shares') as typeof import('../services/calendar-shares');
+const calendarSeries = require('../services/calendar-series') as typeof import('../services/calendar-series');
 
 const has = (body: Record<string, unknown>, key: string) => Object.prototype.hasOwnProperty.call(body, key);
 
-/** An event the caller may read: their own, or one of a calendar they reach (free/busy redacted). */
-const readEvent = async (userId: string, id: string) => await getCalendarEventWithSubtasks(userId, id) ?? await calendarShares.reachedEvent(userId, id);
+/** An event the caller may read: their own, or one of a calendar they reach (free/busy redacted); a date of a local series with its rule. */
+const readEvent = async (userId: string, id: string) => calendarSeries.withSeriesDetail(await getCalendarEventWithSubtasks(userId, id) ?? await calendarShares.reachedEvent(userId, id));
 const pointRefused = () => clientError(forbidden('CALENDAR_FORBIDDEN', 'You can change only the points you added.'), 'Failed to update subtask');
 const remindersOf = (body: Input) => Array.isArray(body.reminders) ? body.reminders : body.reminder_minutes == null ? [] : [body.reminder_minutes];
 
@@ -200,6 +201,41 @@ async function updateReachedEvent(userId: string, target: { event: CalendarEvent
   if (fields.dateChanged) await taskOrder.clearRank(db, userId, event.id);
   if (changes) await calendarShares.afterEventWrite(userId, moveTo ?? event.calendar_id ?? null, { eventId: event.id, seriesKey: event.series_id as string | null, action: 'changed' });
   return { event: await readEvent(userId, event.id) };
+}
+
+/**
+ * PUT /api/calendar/events/:id of a date of a local series, or with a rule
+ * for a single event (contracts/calendar-series.ts): the fields the
+ * iCalendar text holds go to the series or the date's exception, the rest
+ * to the row(s) (services/calendar-series.ts).
+ */
+async function updateSeriesEvent(userId: string, target: { event: CalendarEvent; ownerId: string | null }, body: Input) {
+  const { event } = target;
+  if (has(body, 'source_email_id')) return { error: 'A repeating event keeps no email link.', status: 400 };
+  if (body.is_todo_only) return { error: 'A repeating event has a date.', status: 400 };
+  const scope = calendarSeries.seriesScope(body.scope);
+  const ownReminders = (has(body, 'reminders') || has(body, 'reminder_minutes')) && await calendarShares.remindersAreOwn(db, userId, event);
+  const fields = eventFieldUpdates(body, event, { remote: false, reminders: !ownReminders });
+  if ('error' in fields) return fields;
+  if (has(body, 'calendar_id') && !body.calendar_id) return { error: 'Choose a calendar for this event.', status: 400 };
+  const timed = has(body, 'start_time') || has(body, 'end_time') || has(body, 'all_day');
+  const edits = await calendarSeries.changeSeriesEvent(userId, target, {
+    updates: fields.updates, params: fields.params, scope, repeat: body.repeat, timeZone: body.time_zone, attendees: body.attendees,
+    moveTo: has(body, 'calendar_id') && body.calendar_id !== event.calendar_id ? body.calendar_id! : null,
+    color: has(body, 'color') ? body.color || '#2563eb' : undefined,
+    ownReminders: ownReminders ? remindersOf(body) : undefined,
+    fields: {
+      ...(has(body, 'title') ? { title: body.title!.trim() } : {}),
+      ...(has(body, 'description') ? { description: body.description || null } : {}),
+      ...(has(body, 'location') ? { location: body.location?.trim() || null } : {}),
+      ...(timed ? { startMs: parseDatetimeToMillis(fields.resolvedStart)!, endMs: parseDatetimeToMillis(fields.resolvedEnd)!, allDay: has(body, 'all_day') ? !!body.all_day : !!Number(event.all_day) } : {}),
+      ...(!ownReminders && (has(body, 'reminders') || has(body, 'reminder_minutes')) ? { reminders: remindersOf(body) } : {}),
+    },
+  });
+  if (fields.dateChanged && scope === 'occurrence') await taskOrder.clearRank(db, userId, event.id);
+  if (edits) await calendarShares.afterEventWrite(userId, event.calendar_id ?? null, { eventId: event.id, seriesKey: (event.series_id as string | null) ?? event.id, action: 'changed' });
+  const updated = await readEvent(userId, event.id);
+  return { event: updated, ...(updated ? {} : { replaced: true }) };
 }
 
 async function loadCalendarAccountRow(userId: string, calendarId: string) {
@@ -692,7 +728,8 @@ export = {
           if (Array.isArray(body.attendees)) {
             await replaceEventAttendees(ownerId, eventId, body.attendees, connection);
           }
-          if (!own && (reminders || reminder_minutes != null)) await calendarShares.setOwnReminders(connection, userId, eventId, remindersOf(body));
+          const seriesId = body.repeat != null ? await calendarSeries.startSeries(connection, userId, ownerId, eventId, body.repeat, body.time_zone) : null;
+          if (!own && (reminders || reminder_minutes != null)) await calendarShares.setOwnReminders(connection, userId, seriesId ? { seriesId } : eventId, remindersOf(body));
 
           await (require('../services/notifications') as typeof import('../services/notifications')).enqueueCalendarNotification({ userId, eventId }, connection);
           await connection.commit();
@@ -729,7 +766,7 @@ export = {
     const id = getCalendarEventIdFromReq(req)!;
     if (!id) return { error: 'Invalid event id', status: 400 };
     try {
-      const event = await getCalendarEventWithSubtasks(userId, id) ?? await calendarShares.reachedEvent(userId, id);
+      const event = await readEvent(userId, id);
       return event ? { event } : { error: 'Event not found', status: 404 };
     } catch (error) {
       console.error('Get calendar event error:', error);
@@ -749,6 +786,7 @@ export = {
       // (a second line behind the item's lock, which a sync does not take).
       const target = await calendarShares.eventTarget(userId, id);
       if (!target) return { error: 'Event not found', status: 404 };
+      if (target.event.series_id || (has(body, 'repeat') && body.repeat !== null)) return await updateSeriesEvent(userId, target, body);
       if (!target.own) return await updateReachedEvent(userId, target, body);
       const decidedFor = await writebackIdentity(db, userId, id);
       const [events] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
@@ -1166,6 +1204,12 @@ export = {
       const target = await calendarShares.eventTarget(userId, id);
       if (!target) return { message: 'Event deleted', bin_item_ids: [] };
       const deleted = { eventId: id, seriesKey: (target.event.series_id as string | null) ?? null, action: 'deleted' as const };
+      if (target.event.series_id) {
+        // One date, or the whole series as one bin item.
+        const binned = await calendarSeries.deleteSeriesEvent(userId, target, calendarSeries.seriesScope(new URL(req.url, 'http://localhost').searchParams.get('scope')));
+        if (binned) await calendarShares.afterEventWrite(userId, target.event.calendar_id ?? null, deleted);
+        return { message: binned ? 'Event moved to the bin' : 'Event deleted', bin_item_ids: binned ? [binned] : [] };
+      }
       if (!target.own) {
         // Into the calendar's bin, under its guard.
         const binned = await binCalendar.binLocally(userId, target.event);

@@ -5,6 +5,7 @@ import { api, type ApiResponse } from '@/lib/api';
 import { ApiError } from '@/lib/api-error';
 import type { BinnedResponse } from '../../api/src/contracts/bin';
 import type { CalendarAccessFields, SharedEventFields, SubtaskAuthorFields } from '../../api/src/contracts/calendar-shares';
+import type { SeriesDetail } from '../../api/src/contracts/calendar-series';
 import type { CalendarChoiceFields, CalendarWriteBlock, TaskMoveCancelResponse, TaskMovePending, TaskMoveRequest, TaskMoveResponse, TaskPositionRequest, TaskPositionResponse, TaskRankFields } from '../../api/src/contracts/tasks';
 
 export type { CalendarWriteBlock, TaskPositionRequest, TaskPositionResponse } from '../../api/src/contracts/tasks';
@@ -188,7 +189,8 @@ export function normalizeCalendar(calendar: CalendarCalendarRow): CalendarCalend
   };
 }
 
-export interface CalendarEvent extends Partial<TaskRankFields>, Partial<SharedEventFields> {
+/** A date of a repeating local event also answers its rule and zone, which create and update take (contracts/calendar-series.ts). */
+export interface CalendarEvent extends Partial<TaskRankFields>, Partial<SharedEventFields>, Partial<SeriesDetail> {
   id: string;
   user_id: string;
   calendar_id: string | null;

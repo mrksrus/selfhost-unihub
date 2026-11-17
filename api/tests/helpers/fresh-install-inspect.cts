@@ -35,6 +35,8 @@ async function main() {
     const columns = async (table: string) => (await rows('SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?', [table])).map(row => row.name as string);
     const owned = async (table: string) => {
       if ((await columns(table)).includes('user_id')) return rows(`SELECT * FROM \`${table}\` WHERE user_id = ?`, [userId]);
+      // A repeating event belongs to the user through its calendar.
+      if (table === 'calendar_series') return rows('SELECT t.* FROM calendar_series t JOIN calendar_calendars c ON c.id = t.calendar_id WHERE c.user_id = ?', [userId]);
       // Tables without an owner column belong to the user through a mail account.
       return rows(`SELECT t.* FROM \`${table}\` t JOIN mail_accounts a ON a.id = t.mail_account_id WHERE a.user_id = ?`, [userId]);
     };

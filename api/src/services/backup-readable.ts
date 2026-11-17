@@ -271,16 +271,26 @@ const TASK_STATUS: Readonly<Record<string, string>> = Object.freeze({ done: 'COM
  * parent. Times are written in UTC; all-day events as dates in timeZone with
  * the exclusive end the calendar's own writer gives them (allDayRange). A
  * ToDo-only item has no date in UniHub (its stored times are placeholders),
- * so its VTODO has neither DTSTART nor DUE.
+ * so its VTODO has neither DTSTART nor DUE. A repeating event is written
+ * once, as its series stores it (rule, zone, changed and removed dates),
+ * instead of its dates.
  */
-function calendarIcs(name: string, events: readonly BackupRow[], subtasks: readonly BackupRow[], timeZone: string, now = Date.now()) {
+function calendarIcs(name: string, events: readonly BackupRow[], subtasks: readonly BackupRow[], timeZone: string, now = Date.now(), series: readonly BackupRow[] = []) {
   const calendar = new ICAL.Component('vcalendar');
   calendar.addPropertyWithValue('version', '2.0');
   calendar.addPropertyWithValue('prodid', PRODID);
   calendar.addPropertyWithValue('x-wr-calname', name);
   const byEvent = new Map<string, BackupRow[]>();
   for (const subtask of subtasks) byEvent.set(String(subtask.event_id), [...(byEvent.get(String(subtask.event_id)) || []), subtask]);
+  const written = new Set<string>();
+  for (const row of series) {
+    try {
+      for (const vevent of new ICAL.Component(ICAL.parse(String(row.ics))).getAllSubcomponents('vevent')) calendar.addSubcomponent(vevent);
+      written.add(String(row.id));
+    } catch { /* unreadable: its dates are written one by one below */ }
+  }
   for (const event of events) {
+    if (written.has(String(event.series_id))) continue;
     const startMs = parseDatetimeToMillis(event.start_time);
     const endMs = parseDatetimeToMillis(event.end_time);
     if (startMs === null) continue;
@@ -350,7 +360,8 @@ function calendarEntries(data: Record<string, unknown>, timeZoneValue: unknown) 
     const label = String(row.name || 'Calendar');
     entries.push({
       name: names.take('Calendars', portableName(label, { maxBytes: 100, fallback: 'Calendar' }), '.ics'),
-      data: Buffer.from(calendarIcs(label, own, subtasks.filter(subtask => ids.has(String(subtask.event_id))), timeZone), 'utf8'),
+      data: Buffer.from(calendarIcs(label, own, subtasks.filter(subtask => ids.has(String(subtask.event_id))), timeZone, Date.now(),
+        asRows(data.calendar_series).filter(series => String(series.calendar_id) === String(row.id))), 'utf8'),
     });
   }
   return entries;
