@@ -2,6 +2,7 @@
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/widget_agenda_description"
     android:initialLayout="@layout/widget"
+    android:previewImage="@drawable/widget_agenda_preview"
     android:minWidth="180dp"
     android:minHeight="110dp"
     android:resizeMode="horizontal|vertical"

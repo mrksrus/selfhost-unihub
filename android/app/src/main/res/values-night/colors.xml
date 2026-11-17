@@ -5,5 +5,7 @@
     <color name="foreground">#F5F7FA</color>
     <color name="muted">#9AA3B2</color>
     <color name="accent">#3B82F6</color>
+    <color name="border">#26282B</color>
+    <color name="warning">#F59F0A</color>
     <color name="destructive">#F87171</color>
 </resources>

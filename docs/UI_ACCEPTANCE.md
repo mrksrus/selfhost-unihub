@@ -191,6 +191,24 @@ The e2e files are in `tools/e2e/tests/organisation/`.
 | C-02 | Wide, Phone | Open Settings → Appearance, General, Mail and Notifications. | Device settings say "Saved on this device"; account settings say they follow the account; the two are not mixed in one row. A setting an administrator fixed is greyed out with "Set by your administrator", never hidden. | Source (`AppearanceSettings.tsx`, `settings-pages.test.tsx`), Open at runtime |
 | C-05 | Wide, Phone | Settings → Pages and modules: drag Contacts above Mail by its handle; use a row's menu; reload. | Every page row has a ≡ handle and a menu with Move up and Move down (disabled at the ends); the rail (Wide) and the bottom bar (Phone) follow at once; a refused save puts the rows back and says why; the order survives a reload. Settings → General shows "New tasks go to" and "New events go to" beside the reminder, only with the Calendar module on; a choice that is gone reads "Let UniHub choose" with the list in effect named. | Source (`modules-navigation.test.tsx`, `task-order.test.tsx`), Browser (pictures `settings-pages-*`), e2e (`tools/e2e/tests/settings/pages-order.e2e.ts`) |
 
+### Android home-screen widgets (D69)
+
+Checked by `tools/e2e/android/widgets.test.mjs` in the emulator: each widget
+alone on the screen at a size in dp (the debug app's `TestWidgetHost`), and
+both on the launcher's home screen. Its pictures go to the run's evidence
+folder; the approved ones are in `tools/e2e/android/baselines/`
+(`widget-<agenda or tasks>-<size or state>-<theme>.png`; `agenda` is the Calendar widget). They are compared
+by eye, not by pixel: the dates are the day's own and each emulator draws
+type a little differently.
+
+| ID | Where | Steps | Checks | Mark |
+| --- | --- | --- | --- | --- |
+| W-01 | Device, light and dark | Place Calendar at about 3 by 2 cells, about 4 by 4 and the whole screen. | The page colour with a border and the system's widget corners; "Calendar" as the header; events under "Today", "Tomorrow" or the date, a line between days; start over end in tabular figures, "All day" for a day's event, the calendar's colour as a bar, the title on one line (two from about 300dp wide, with larger type); a long title ends in an ellipsis; the list scrolls. | Device (emulator, API 35 and CI's Android 16; pictures `widget-agenda-{small,medium,full}-{light,dark}`), Open on a real phone (32-08) |
+| W-02 | Device, light and dark | Place ToDo at the same three sizes. | "ToDo" and the count of open tasks; each task with its done circle, title, and the date in words under it, "Overdue · …" in the warning colour; a line between tasks; "and N more in UniHub" under the rows beyond 50. | Device (as W-01; pictures `widget-tasks-{small,medium,full}-{light,dark}`), Open on a real phone (32-08) |
+| W-03 | Device | ToDo at the smallest size: measure the circles and a title; tap the title; tap an event in Calendar; tap the header. | Every circle is a tap target of at least 48dp each way, ends where the title begins and does not lie on the next row's; "Mark done: <title>" is its label; the title opens ToDo at the task, an event its dialog in Calendar, the header the page, also from the launcher. | Device (emulator: the measures and the taps on a task and an event are asserted), Source for the header (`Widgets.kt` `views`) |
+| W-04 | Device | No events or tasks; no connection; the least notification detail; signed out. | "Nothing in the next 14 days" or "No open tasks"; without a connection the rows stay with "No connection. Updated <time>" under them (the date too when it was not today); with titles hidden "Event" and "Task", faint circles without a tick and "Titles hidden, as in notifications"; signed out one line and "Open UniHub" in the accent, 48dp high. | Device (emulator; pictures `widget-*-empty`, `widget-tasks-no-connection`, `widget-*-titles-hidden`, `widget-tasks-signed-out`) |
+| W-05 | Device | Calendar turned off for the person; two-factor sign-in due; the app lock required; a server before 0.32; before the first answer; add a widget from the launcher's picker on Android 10 to 16. | The same line-and-button layout as signed out with "Calendar is turned off", "Set up two-factor sign-in to see this", "Turn on the app lock to see this", "The server needs an update for widgets"; "Loading…" (or "No connection") before the first answer; the picker shows each widget's picture and description. | Source (`Widgets.kt` `line`, `res/xml/widget_*.xml`), Open at runtime |
+
 ## Baselines and approval
 
 A baseline is an approved picture of a reference screen under the fixed
@@ -217,7 +235,9 @@ and a company directory entry (Phone) and Server → Shared books (Wide), and
 since 0.32.0 the calendars others share and a calendar's share dialog (Wide)
 and an event as a contributor reads it (Phone), each in Dark Default and
 Light Default. Eighty-four pictures in total; add a screen only when a
-decision depends on it.
+decision depends on it. The Android widgets' eighteen pictures (0.32.0, D69)
+are kept apart, in `tools/e2e/android/baselines/`, and compared by eye (see
+the W rows).
 
 **Approval policy.**
 

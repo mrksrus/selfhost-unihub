@@ -1,21 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- A placeholder layout for both widgets; their design comes later. -->
+<!-- Both widgets: a small UniHub page with its header, rows and, when there
+     is something to say about them, one note under the rows. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@android:id/background"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/background"
+    android:background="@drawable/widget_background"
+    android:clipToOutline="true"
     android:orientation="vertical"
-    android:padding="8dp">
+    android:padding="1dp"
+    tools:targetApi="s">
 
-    <TextView
-        android:id="@+id/widget_title"
+    <LinearLayout
+        android:id="@+id/widget_header"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:minHeight="48dp"
         android:gravity="center_vertical"
-        android:textColor="@color/foreground"
-        android:textSize="16sp"
-        android:textStyle="bold" />
+        android:minHeight="48dp"
+        android:orientation="horizontal"
+        android:paddingHorizontal="16dp">
+
+        <TextView
+            android:id="@+id/widget_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:fontFamily="sans-serif-medium"
+            android:maxLines="1"
+            android:textColor="@color/foreground"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/widget_count"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFeatureSettings="tnum"
+            android:maxLines="1"
+            android:textColor="@color/muted"
+            android:textSize="12sp" />
+    </LinearLayout>
 
     <FrameLayout
         android:layout_width="match_parent"
@@ -26,31 +50,52 @@
             android:id="@+id/widget_list"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:divider="@null" />
+            android:divider="@null"
+            android:listSelector="@android:color/transparent"
+            android:paddingBottom="8dp"
+            android:clipToPadding="false"
+            android:scrollbars="none" />
 
         <LinearLayout
             android:id="@+id/widget_empty"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:gravity="center"
-            android:orientation="vertical">
+            android:orientation="vertical"
+            android:paddingHorizontal="16dp"
+            android:paddingBottom="12dp">
 
             <TextView
                 android:id="@+id/widget_line"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:gravity="center"
-                android:textColor="@color/foreground" />
+                android:textColor="@color/muted"
+                android:textSize="14sp" />
 
             <TextView
                 android:id="@+id/widget_open"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:minHeight="48dp"
+                android:fontFamily="sans-serif-medium"
                 android:gravity="center"
+                android:minHeight="48dp"
+                android:paddingHorizontal="12dp"
                 android:text="@string/widget_open"
                 android:textColor="@color/accent"
-                android:textStyle="bold" />
+                android:textSize="14sp" />
         </LinearLayout>
     </FrameLayout>
+
+    <TextView
+        android:id="@+id/widget_note"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:maxLines="2"
+        android:paddingHorizontal="16dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="10dp"
+        android:textColor="@color/muted"
+        android:textSize="12sp"
+        android:visibility="gone" />
 </LinearLayout>

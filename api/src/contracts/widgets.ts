@@ -39,5 +39,7 @@ export interface WidgetsResponse {
   tasks: WidgetTask[];
   /** Open tasks beyond the ones listed. */
   more_tasks: number;
+  /** The zone of every `date_text`: the person's, or the phone's when they set none. The app shows the agenda's times in it. */
+  time_zone: string;
   generated_at: string;
 }

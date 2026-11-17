@@ -1,51 +1,129 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- One event or task in a widget's list; a placeholder until the widgets' design. -->
+<!-- One event or task. Widgets.kt shows the parts a row has: a day's first
+     event carries the day above it, an event its start, end and calendar
+     colour, a task its done circle in a 48dp target. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/row"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:gravity="center_vertical"
-    android:minHeight="48dp"
-    android:orientation="horizontal"
-    android:paddingVertical="4dp">
+    android:orientation="vertical">
 
-    <ImageView
-        android:id="@+id/row_dot"
-        android:layout_width="4dp"
-        android:layout_height="32dp"
-        android:layout_marginEnd="8dp"
-        android:importantForAccessibility="no" />
-
-    <LinearLayout
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:orientation="vertical">
-
-        <TextView
-            android:id="@+id/row_title"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:ellipsize="end"
-            android:maxLines="1"
-            android:textColor="@color/foreground" />
-
-        <TextView
-            android:id="@+id/row_when"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:maxLines="1"
-            android:textColor="@color/muted"
-            android:textSize="12sp" />
-    </LinearLayout>
+    <!-- A FrameLayout: a widget's layout may not hold a plain View. -->
+    <FrameLayout
+        android:id="@+id/row_rule"
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginHorizontal="16dp"
+        android:background="@color/border"
+        android:visibility="gone" />
 
     <TextView
-        android:id="@+id/row_tick"
-        android:layout_width="wrap_content"
-        android:layout_height="48dp"
-        android:minWidth="48dp"
-        android:gravity="center"
-        android:paddingHorizontal="8dp"
-        android:text="@string/widget_tick"
-        android:textColor="@color/accent" />
+        android:id="@+id/row_day"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="sans-serif-medium"
+        android:maxLines="1"
+        android:paddingHorizontal="16dp"
+        android:paddingTop="6dp"
+        android:textColor="@color/muted"
+        android:textSize="12sp"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:minHeight="40dp"
+        android:orientation="horizontal"
+        android:paddingEnd="16dp">
+
+        <!-- 3dp + 13dp around the 22dp circle: the circle sits on the 16dp line of the title above. -->
+        <FrameLayout
+            android:id="@+id/row_tick"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="3dp">
+
+            <ImageView
+                android:id="@+id/row_circle"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:layout_gravity="center"
+                android:importantForAccessibility="no"
+                android:src="@drawable/widget_tick" />
+        </FrameLayout>
+
+        <LinearLayout
+            android:id="@+id/row_times"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:gravity="end"
+            android:minWidth="40dp"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/row_time"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFeatureSettings="tnum"
+                android:maxLines="1"
+                android:textColor="@color/foreground"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/row_end"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFeatureSettings="tnum"
+                android:maxLines="1"
+                android:textColor="@color/muted"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <ImageView
+            android:id="@+id/row_dot"
+            android:layout_width="4dp"
+            android:layout_height="28dp"
+            android:layout_marginHorizontal="10dp"
+            android:importantForAccessibility="no"
+            android:src="@drawable/widget_bar" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:paddingVertical="6dp">
+
+            <TextView
+                android:id="@+id/row_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:fontFamily="sans-serif-medium"
+                android:maxLines="1"
+                android:textColor="@color/foreground"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/row_when"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFeatureSettings="tnum"
+                android:maxLines="1"
+                android:textColor="@color/muted"
+                android:textSize="12sp" />
+
+            <!-- Its own view, so the colour follows the phone's theme without a new answer. -->
+            <TextView
+                android:id="@+id/row_overdue"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFeatureSettings="tnum"
+                android:maxLines="1"
+                android:textColor="@color/warning"
+                android:textSize="12sp" />
+        </LinearLayout>
+    </LinearLayout>
 </LinearLayout>

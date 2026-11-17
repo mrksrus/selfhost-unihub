@@ -76,7 +76,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   and your open tasks on the home screen, from your own, shared, group and
   organisation calendars; tick a task off right there. They follow your
   notification detail (the app lock does not hide them) and empty when you
-  sign out. They need a server of this version.
+  sign out. Resize them from three cells wide to the whole screen; a tap on
+  an event or task opens it in UniHub. They need a server of this version.
 
 ### Changed
 

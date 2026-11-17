@@ -100,7 +100,7 @@ async function widgets(userId: string, deviceZone: string | null): Promise<Widge
     };
     return [task];
   });
-  return { detail, agenda, tasks: open.slice(0, LIMIT), more_tasks: Math.max(0, open.length - LIMIT), generated_at: now.toISOString() };
+  return { detail, agenda, tasks: open.slice(0, LIMIT), more_tasks: Math.max(0, open.length - LIMIT), time_zone: zone, generated_at: now.toISOString() };
 }
 
 export { widgets, dateText };

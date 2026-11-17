@@ -424,11 +424,32 @@ hash of the session it came from.
 - **The tick** marks a task done through the app's own session
   (`PUT /api/calendar/events/:id/todo-status`), only where the person may
   edit the list; it works while the app is locked. It is sent at once or not
-  at all: without a connection the app says so and the task stays.
+  at all, and the task stays when it fails: without a connection the app
+  says to check it, and when the server says no (the task is gone, changed
+  or no longer the person's to tick) it says to open UniHub. The circle is a
+  48dp target; it is faint where the person cannot tick.
+- **Taps**: the header opens the widget's page, an event its dialog in
+  Calendar (`/calendar?event=`), a task ToDo at that task (`/todo?task=`),
+  through the way a tapped notification takes.
+- **Times** are in one zone in both widgets: the zone the server wrote the
+  tasks' dates in (`time_zone` of the answer), which is the person's own
+  zone as on UniHub's pages, or the phone's when they set none.
 - **Refresh**: every 30 minutes (a `JobScheduler` job while a widget is
   placed), when the app comes to the front or goes to the back, after a
   tick, and when a calendar or ToDo notification arrives. Without a
-  connection the last answer stays.
+  connection the last answer stays, with "No connection. Updated 14:05"
+  under the rows.
+- **Look and sizes**: a widget is a small UniHub page in the phone's light
+  or dark theme (the page colour, a border, the app's blue for the one
+  action), resizable from 3 by 2 cells to the whole screen. From about 300dp
+  wide the type is larger and a title takes two lines; the size comes from
+  the widget's options on every Android version. Calendar groups events
+  under their day with start and end beside the calendar's colour; ToDo
+  shows the count of open tasks, the date in words and overdue in the
+  warning colour. The widget picker shows a picture of each
+  (`res/drawable-nodpi/widget_*_preview.png` and its night twin, cut from
+  the emulator test's pictures). The checks and approved pictures are W-01
+  to W-05 of [UI acceptance](UI_ACCEPTANCE.md).
 - **Emptied** before anything is fetched when the person signs out, another
   person signs in or the app changes server; and with one line and "Open
   UniHub" when the server refuses the answer: Calendar turned off
