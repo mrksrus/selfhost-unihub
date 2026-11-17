@@ -17,6 +17,7 @@ import { SortableList } from '@/components/ui/sortable-list';
 import { TaskRow } from '@/components/todo/TaskRow';
 import { movingTo, orderTasks, taskSection } from '@/lib/tasks';
 import { EditTaskDialog, MoveListDialog, MoveTaskDialog, NewTaskDialog } from '@/components/todo/TaskDialogs';
+import { isReached, ownerName, sameOwner } from '@/components/calendar/calendar-access';
 
 const VIEWS = {
   open: { label: 'Open', icon: ListTodo },
@@ -75,7 +76,13 @@ const TodoPage = () => {
     queryKey: calendarQueryKeys.list({ includeTodos: true, respectAutoTodo: true }),
     queryFn: ({ signal }) => calendarApi.fetchEvents({ includeTodos: true, respectAutoTodo: true }, signal),
   });
-  const calendars = useQuery({ queryKey: calendarQueryKeys.calendars, queryFn: ({ signal }) => calendarApi.fetchCalendars(signal) }).data ?? [];
+  const allCalendars = useQuery({ queryKey: calendarQueryKeys.calendars, queryFn: ({ signal }) => calendarApi.fetchCalendars(signal) }).data;
+  // Lists others share are lists here too, with whose they are; one the person only sees busy times of holds no tasks.
+  const calendars = useMemo(() => (allCalendars ?? []).filter(calendar => calendar.permission !== 'freebusy'), [allCalendars]);
+  const listOf = (task: CalendarEvent) => calendars.find(calendar => calendar.id === task.calendar_id);
+  // A new task goes to one of the person's own lists or one they may edit; a task moves only between lists of one owner.
+  const writable = useMemo(() => calendars.filter(calendar => !isReached(calendar) || !calendar.write_block), [calendars]);
+  const movingFrom = movingList ? listOf(movingList) : undefined;
   useNotificationEventLink(setEditing);
   // Today and the command palette link here to start a new task.
   useEffect(() => {
@@ -154,7 +161,7 @@ const TodoPage = () => {
           {calendars.map(calendar => (
             <Chip key={calendar.id} color={calendar.color} selected={calendarId === calendar.id} onSelect={() => setCalendarId(calendar.id)}
               count={openCount(calendar.id)} countLabel="open tasks">
-              {calendar.name}
+              {calendar.name}{calendar.owner_kind === 'user' && isReached(calendar) && ` · ${ownerName(calendar)}`}
             </Chip>
           ))}
         </ChipGroup>
@@ -166,6 +173,7 @@ const TodoPage = () => {
     const label = section.label ?? VIEWS[view].label;
     const shared = (task: CalendarEvent) => ({
       task, actions, timezone, calendarColor: calendarColor(task), onEdit: setEditing, onMove: setMoving,
+      level: listOf(task)?.permission, listOwner: listOf(task) && ownerName(listOf(task)!),
       onMoveList: reorderable ? setMovingList : undefined, canReorder: reorderable,
       // A move not confirmed yet is marked on the row; it can be cancelled with a server at hand.
       movingTo: movingTo(task, calendars), onCancelMove: reorderable ? cancelMove : undefined,
@@ -211,10 +219,10 @@ const TodoPage = () => {
             </section>
           ))}
       </PageBody>
-      <NewTaskDialog open={creating} onOpenChange={setCreating} actions={actions} timezone={timezone} calendars={calendars} />
+      <NewTaskDialog open={creating} onOpenChange={setCreating} actions={actions} timezone={timezone} calendars={writable} />
       <EditTaskDialog task={editing} onClose={() => setEditing(null)} actions={actions} timezone={timezone} />
       <MoveTaskDialog task={moving} onClose={() => setMoving(null)} actions={actions} timezone={timezone} />
-      <MoveListDialog task={movingList} onClose={() => setMovingList(null)} actions={actions} calendars={calendars} />
+      <MoveListDialog task={movingList} onClose={() => setMovingList(null)} actions={actions} calendars={movingFrom ? calendars.filter(calendar => sameOwner(calendar, movingFrom)) : writable} />
     </PageShell>
   );
 };

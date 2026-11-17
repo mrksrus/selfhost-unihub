@@ -23,6 +23,9 @@ import { useSourceEmailUnlink } from '@/hooks/use-source-email-unlink';
 import { selectUserSetting, userSettingsQueryOptions } from '@/lib/settings-api';
 import { defaultEventCalendar, movingTo } from '@/lib/tasks';
 import { ListChooser } from '@/components/todo/ListChooser';
+import { Subtasks } from '@/components/todo/TaskRow';
+import { useTaskActions } from '@/hooks/use-task-actions';
+import { atLeast, isReached, readOnlyReason, sameOwner } from '@/components/calendar/calendar-access';
 
 /** What the dialog shows: a new event (optionally on a day) or an existing one. */
 export type EventDialogTarget = { kind: 'new'; date?: Date } | { kind: 'edit'; event: CalendarEvent } | null;
@@ -33,13 +36,14 @@ const emptyForm = { calendar_id: '', title: '', description: '', start_time: '',
 type Form = typeof emptyForm;
 
 // A new event starts with the account's default reminder (Settings, General).
-function formFor(target: Exclude<EventDialogTarget, null>, timezone: string | null, calendarId: string, defaultReminder: number | null): Form {
+// In a calendar someone else owns, the reminders are the person's own: none until they set some.
+function formFor(target: Exclude<EventDialogTarget, null>, timezone: string | null, calendarId: string, defaultReminder: number | null, reached: boolean): Form {
   if (target.kind === 'edit') {
     const event = target.event;
     return {
       calendar_id: event.calendar_id || '', title: event.title, description: event.description || '',
       start_time: toDatetimeLocalValue(event.start_time, timezone), end_time: toDatetimeLocalValue(event.end_time, timezone),
-      all_day: event.all_day, location: event.location || '', color: event.color, reminders: event.reminders || [0],
+      all_day: event.all_day, location: event.location || '', color: event.color, reminders: event.reminders || (reached ? [] : [0]),
       attendee_emails: (event.attendees || []).map(attendee => attendee.email).join(', '),
     };
   }
@@ -57,9 +61,22 @@ interface Props {
   accounts: CalendarAccount[];
   actions: EventActions;
   timezone: string | null;
+  /** The events on show, so an open event's subtasks follow what was just added or ticked. */
+  events?: readonly CalendarEvent[];
 }
 
-export function EventDialog({ target, onClose, calendars, accounts, actions, timezone }: Props) {
+/** An event's subtasks in its dialog: everyone who reads the event sees them; who may add or change them follows the level. */
+function EventSubtasks({ event, level }: { event: CalendarEvent; level: 'read' | 'contribute' | 'edit' }) {
+  const actions = useTaskActions();
+  return (
+    <section aria-label="Subtasks" className="space-y-1">
+      <h3 className="text-sm font-medium">Subtasks</h3>
+      <Subtasks task={event} actions={actions} readOnly={level === 'read'} ownOnly={level === 'contribute'} canReorder={level === 'edit'} autoFocus={false} />
+    </section>
+  );
+}
+
+export function EventDialog({ target, onClose, calendars, accounts, actions, timezone, events }: Props) {
   const { toast } = useToast();
   const [form, setForm] = useState(emptyForm);
   const [formTarget, setFormTarget] = useState<EventDialogTarget>(null);
@@ -81,14 +98,29 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
     const calendar = calendarId ? calendarById.get(calendarId) : undefined;
     return Boolean(calendar && (calendar.read_only || accountOf(calendarId)?.provider === 'ics'));
   };
-  const readOnly = Boolean(editing && isReadOnly(editing.calendar_id));
+  // What the person's level in the event's calendar leaves them: below edit the
+  // fields are read-only and the dialog says why; a contributor still adds
+  // subtasks, and everyone who reads the event keeps reminders of their own.
+  const eventCalendar = editing?.calendar_id ? calendarById.get(editing.calendar_id) : undefined;
+  const levelReason = eventCalendar ? readOnlyReason(eventCalendar) : null;
+  const busy = eventCalendar?.permission === 'freebusy';
+  const reached = !!eventCalendar && isReached(eventCalendar);
+  const readOnly = Boolean(editing && (isReadOnly(editing.calendar_id) || levelReason));
+  const ownReminders = !!levelReason && !busy;
+  const shown = editing ? events?.find(event => event.id === editing.id) ?? editing : null;
+  const subtaskLevel = !shown || !eventCalendar || busy || isRemoteCalendarAccount(accountOf(shown.calendar_id)) || (!reached && shown.subtasks.length === 0) ? null
+    : eventCalendar.archived || !atLeast(eventCalendar, 'contribute') ? (shown.subtasks.length > 0 ? 'read' as const : null)
+    : atLeast(eventCalendar, 'edit') ? 'edit' as const : 'contribute' as const;
   const unlink = useSourceEmailUnlink();
   // The open event is a copy from the list; once unlinked, its block goes until the list refreshes.
   const [unlinkedId, setUnlinkedId] = useState<string | null>(null);
-  // A read-only event still shows its own calendar in the picker; otherwise
-  // every calendar is listed, the ones that take nothing new greyed out with
-  // the server's reason (contracts/tasks.ts).
-  const options = readOnly && editing?.calendar_id && calendarById.has(editing.calendar_id) ? [calendarById.get(editing.calendar_id)!] : calendars;
+  // A read-only event still shows its own calendar in the picker. An event that
+  // exists moves only between calendars of one owner, so only those are listed;
+  // a new one goes to the person's own calendars or one they may edit. Those
+  // that take nothing new are greyed out with the server's reason (contracts/tasks.ts).
+  const options = readOnly && eventCalendar ? [eventCalendar]
+    : eventCalendar ? calendars.filter(calendar => sameOwner(calendar, eventCalendar))
+    : calendars.filter(calendar => !isReached(calendar) || !calendar.write_block);
   const isRemote = (event: CalendarEvent) => isRemoteCalendarAccount(accountOf(event.calendar_id));
 
   // The form is filled while rendering a new target, so the dialog never shows
@@ -99,7 +131,10 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
     setMovePending(target?.kind === 'edit' ? movingTo(target.event, calendars) : null);
     opening.current += 1;
     // A new event starts in the calendar the server marks as the default (Settings → General, else UniHub's choice).
-    if (target) setForm(formFor(target, timezone, defaultEventCalendar(calendars)?.id || '', defaultReminder === undefined ? 0 : defaultReminder));
+    if (target) {
+      const calendar = target.kind === 'edit' && target.event.calendar_id ? calendarById.get(target.event.calendar_id) : undefined;
+      setForm(formFor(target, timezone, defaultEventCalendar(calendars)?.id || '', defaultReminder === undefined ? 0 : defaultReminder, !!calendar && isReached(calendar)));
+    }
   }
 
   const payload = (): Partial<CalendarEvent> & { title: string } => ({
@@ -130,6 +165,8 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
+    // Below edit only the person's own reminders are sent.
+    if (editing && ownReminders) { actions.update.mutate({ id: editing.id, event: { reminders: form.reminders } }, { onSuccess: onClose }); return; }
     if (!form.title.trim()) { toast({ title: 'Add a title', variant: 'destructive' }); return; }
     if (!form.start_time || !form.end_time) { toast({ title: 'Choose a start and an end', variant: 'destructive' }); return; }
     if (!form.calendar_id) { toast({ title: 'Choose a calendar', variant: 'destructive' }); return; }
@@ -168,11 +205,11 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
     <Dialog open={!!target} onOpenChange={open => { if (!open) onClose(); }}>
       <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-[560px]">
         <DialogHeader>
-          <DialogTitle>{readOnly ? 'Event' : editing ? 'Edit event' : 'New event'}</DialogTitle>
+          <DialogTitle>{busy ? 'Busy' : readOnly ? 'Event' : editing ? 'Edit event' : 'New event'}</DialogTitle>
           {(readOnly || editing?.recurrence) && (
             <DialogDescription>
               {editing?.recurrence && <Repeat className="mr-1.5 inline h-3.5 w-3.5 align-[-0.125em]" aria-hidden />}
-              {readOnly ? 'This calendar is read-only. Change the event where the calendar is published.'
+              {readOnly ? levelReason ?? 'This calendar is read-only. Change the event where the calendar is published.'
                 : 'Repeating event. Saving asks whether to change only this event or the whole series.'}
             </DialogDescription>
           )}
@@ -203,7 +240,11 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
             </DialogFooter>
           </div>
         ) : (
-        <form onSubmit={submit} className="space-y-4">
+        // Subtasks have forms of their own, so they stand outside the event's form and the buttons name it:
+        // after it, or before it for a contributor, to whom they are the one thing to do here.
+        <div className="space-y-4">
+          {shown && subtaskLevel === 'contribute' && <EventSubtasks event={shown} level={subtaskLevel} />}
+        <form id="event-form" onSubmit={submit} className="space-y-4">
           <fieldset disabled={readOnly} className="min-w-0 space-y-4">
             <div className="space-y-2">
               <Label htmlFor="event-title">Title</Label>
@@ -228,16 +269,17 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
               <Label htmlFor="event-all-day" className="font-normal">All day</Label>
               <Switch id="event-all-day" checked={form.all_day} onCheckedChange={checked => setForm(prev => ({ ...prev, all_day: checked }))} />
             </div>
-            <div className="space-y-2">
+            {/* A free/busy holder gets the times only; below edit, a field nobody filled in is left out. */}
+            {!busy && !(levelReason && !form.location) && <div className="space-y-2">
               <Label htmlFor="event-location">Location</Label>
               <Input id="event-location" value={form.location} onChange={event => setForm(prev => ({ ...prev, location: event.target.value }))} />
-            </div>
-            <div className="space-y-2">
+            </div>}
+            {!busy && !(levelReason && !form.description) && <div className="space-y-2">
               <Label htmlFor="event-description">Notes</Label>
               <Textarea id="event-description" rows={3} value={form.description} onChange={event => setForm(prev => ({ ...prev, description: event.target.value }))} />
-            </div>
+            </div>}
             {/* Attendees are kept in UniHub only; they are not sent to calendar servers. */}
-            {!isRemoteCalendarAccount(accountOf(form.calendar_id)) && (
+            {!busy && !(levelReason && !form.attendee_emails) && !isRemoteCalendarAccount(accountOf(form.calendar_id)) && (
               <div className="space-y-2">
                 <Label htmlFor="event-attendees">Attendees</Label>
                 <Input id="event-attendees" placeholder="alice@example.com, bob@example.com" value={form.attendee_emails}
@@ -245,8 +287,10 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
                 <p className="text-xs text-muted-foreground">Separate addresses with commas. Kept in UniHub; no invitation is sent.</p>
               </div>
             )}
-            <fieldset className="space-y-2">
-              <legend className="text-sm font-medium">Reminders (up to 3)</legend>
+          </fieldset>
+          {!busy && (
+            <fieldset disabled={readOnly && !ownReminders} className="min-w-0 space-y-2">
+              <legend className="text-sm font-medium">{reached ? 'Your reminders (up to 3)' : 'Reminders (up to 3)'}</legend>
               <div className="grid grid-cols-1 gap-x-4 gap-y-1.5 sm:grid-cols-2">
                 {REMINDER_OPTIONS.map(option => (
                   <label key={option.value} className="flex items-center gap-2 text-sm">
@@ -260,18 +304,20 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
                 ))}
               </div>
             </fieldset>
-          </fieldset>
+          )}
+        </form>
+          {shown && subtaskLevel && subtaskLevel !== 'contribute' && <EventSubtasks event={shown} level={subtaskLevel} />}
           <DialogFooter className="gap-2 sm:gap-0">
             {editing && !readOnly && (
               <Button type="button" variant="ghost" className="mr-auto text-destructive hover:text-destructive" disabled={actions.remove.isPending}
                 onClick={() => requestDelete(editing)}>Delete</Button>
             )}
             <Button type="button" variant="outline" onClick={onClose}>{readOnly ? 'Close' : 'Cancel'}</Button>
-            {!readOnly && (
-              <Button type="submit" disabled={saving}>{saving && <Loader2 aria-hidden="true" className="animate-spin" />}{editing ? 'Save' : 'Create'}</Button>
+            {(!readOnly || ownReminders) && (
+              <Button type="submit" form="event-form" disabled={saving}>{saving && <Loader2 aria-hidden="true" className="animate-spin" />}{ownReminders ? 'Save reminders' : editing ? 'Save' : 'Create'}</Button>
             )}
           </DialogFooter>
-        </form>
+        </div>
         )}
       </DialogContent>
     </Dialog>

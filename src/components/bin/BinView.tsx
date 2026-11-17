@@ -7,7 +7,7 @@ import { usePolicy } from '@/hooks/use-policies';
 import { useToast } from '@/hooks/use-toast';
 import { hasCode } from '@/lib/api-error';
 import { useBinActions, type DestinationAsk } from '@/hooks/use-bin-actions';
-import { BIN_MODULES, binQueryKeys, binQueryOptions, bookBinQueryOptions, groupBinItems, retentionSentence, type BinItem, type BinModule } from '@/lib/bin-api';
+import { BIN_MODULES, binQueryKeys, binQueryOptions, bookBinQueryOptions, calendarBinQueryOptions, groupBinItems, retentionSentence, type BinItem, type BinModule } from '@/lib/bin-api';
 import { calendarApi, calendarQueryKeys, type CalendarCalendar } from '@/lib/calendar-api';
 import { listRefusal } from '@/lib/tasks';
 import { ListChooser } from '@/components/todo/ListChooser';
@@ -122,16 +122,20 @@ function DestinationDialog({ ask, titles, pending, onClose, onChoose, returnFocu
  * connection. The server answers a page at a time (whole groups, newest
  * first); "Show older items" at the end of the list appends the next page.
  * With `book` it is that shared book's bin, which everyone who may edit the
- * book sees; how long it keeps items is the server's, not the person's.
+ * book sees; how long it keeps items is the server's, not the person's. With
+ * `calendar` it is the bin of a calendar the person reaches, in the same way.
  */
-export function BinView({ module, showSettingsLink = true, book }: { module?: BinModule; showSettingsLink?: boolean; book?: { id: string; name: string } }) {
+export function BinView({ module, showSettingsLink = true, book, calendar }: { module?: BinModule; showSettingsLink?: boolean; book?: { id: string; name: string }; calendar?: { id: string; name: string } }) {
   const isOffline = !!useContext(AuthContext)?.isOffline;
   const client = useQueryClient();
   const { toast } = useToast();
-  const own = useInfiniteQuery({ ...binQueryOptions(module), enabled: !isOffline && !book });
-  const shared = useInfiniteQuery({ ...bookBinQueryOptions(book?.id ?? ''), enabled: !isOffline && !!book });
-  const query = book ? shared : own;
-  const queryKey = book ? binQueryKeys.book(book.id) : binQueryKeys.list(module);
+  // The shared bin of a book or of a calendar: `of` names it and says what it holds.
+  const of = book ? { ...book, what: 'Contacts', noun: 'book' } : calendar ? { ...calendar, what: 'Events and tasks', noun: 'calendar' } : null;
+  const own = useInfiniteQuery({ ...binQueryOptions(module), enabled: !isOffline && !of });
+  const ofBook = useInfiniteQuery({ ...bookBinQueryOptions(book?.id ?? ''), enabled: !isOffline && !!book });
+  const ofCalendar = useInfiniteQuery({ ...calendarBinQueryOptions(calendar?.id ?? ''), enabled: !isOffline && !!calendar });
+  const query = calendar ? ofCalendar : book ? ofBook : own;
+  const queryKey = calendar ? binQueryKeys.calendar(calendar.id) : book ? binQueryKeys.book(book.id) : binQueryKeys.list(module);
   // A cursor the server no longer accepts (400 BIN_INVALID): the bin is read again from the newest items, with the server's word.
   const invalidCursor = hasCode(query.error, 'BIN_INVALID') ? query.error : null;
   useEffect(() => {
@@ -139,9 +143,9 @@ export function BinView({ module, showSettingsLink = true, book }: { module?: Bi
     toast({ title: 'Could not load older items', description: invalidCursor.message, variant: 'destructive' });
     void client.resetQueries({ queryKey, exact: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [invalidCursor, client, module, book?.id, toast]);
+  }, [invalidCursor, client, module, of?.id, toast]);
   const [ask, setAsk] = useState<DestinationAsk | null>(null);
-  const actions = useBinActions(module, { onDestinationAsked: setAsk, book: book?.id });
+  const actions = useBinActions(module, { onDestinationAsked: setAsk, book: book?.id, calendar: calendar?.id });
   const deletePolicy = usePolicy('bin.delete');
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   // Where focus returns when the destination dialog closes. After a submission the row is about to
@@ -177,7 +181,7 @@ export function BinView({ module, showSettingsLink = true, book }: { module?: Bi
   const moduleLabel = (id: BinModule) => BIN_MODULES.find(entry => entry.id === id)?.label ?? id;
 
   const confirmEmpty = () => setConfirm({
-    title: book ? `Empty the bin of ${book.name}?` : module ? `Empty the ${moduleLabel(module).toLowerCase()} bin?` : 'Empty the bin?',
+    title: of ? `Empty the bin of ${of.name}?` : module ? `Empty the ${moduleLabel(module).toLowerCase()} bin?` : 'Empty the bin?',
     description: query.hasNextPage ? 'Everything in it, also the older items not shown yet, is deleted for good. Nothing can be restored afterwards.'
       : `${plural(binItems.length, 'item')} ${binItems.length === 1 ? 'is' : 'are'} deleted for good. Nothing can be restored afterwards.`,
     action: 'Delete for good', run: () => actions.empty.mutate(module),
@@ -194,10 +198,10 @@ export function BinView({ module, showSettingsLink = true, book }: { module?: Bi
         <div className="min-w-0">
           <p className="text-sm text-muted-foreground">
             {/* A shared book's bin keeps items as long as the server says: 30 days, or the administrator's minimum. */}
-            {!book ? retentionSentence(retention)
-              : retention === 'forever' ? `Contacts deleted from ${book.name} stay here until someone restores or deletes them.`
-              : `Contacts deleted from ${book.name} stay here ${retention} days, then are deleted for good.`}
-            {book ? ' Everyone who can edit the book sees this bin.'
+            {!of ? retentionSentence(retention)
+              : retention === 'forever' ? `${of.what} deleted from ${of.name} stay here until someone restores or deletes them.`
+              : `${of.what} deleted from ${of.name} stay here ${retention} days, then are deleted for good.`}
+            {of ? ` Everyone who can edit the ${of.noun} sees this bin.`
               : showSettingsLink && <> Change this in <Link to={settingsHref('bin')} className="underline underline-offset-4 hover:text-foreground">Settings › Bin</Link>.</>}
           </p>
           {deletePolicy.lock && <PolicyNote reason={deletePolicy.lock} />}
@@ -206,7 +210,7 @@ export function BinView({ module, showSettingsLink = true, book }: { module?: Bi
           disabled={!!deletePolicy.lock || binItems.length === 0 || actions.empty.isPending}>Empty bin</Button>
       </div>
       {groups.length === 0 ? (
-        <EmptyState icon={Trash2} title="The bin is empty" description={book ? `Contacts deleted from ${book.name} wait here before they are gone for good.` : module ? `Deleted ${moduleLabel(module).toLowerCase()} items wait here before they are gone for good.` : 'Deleted contacts, events, tasks and recordings wait here before they are gone for good.'} />
+        <EmptyState icon={Trash2} title="The bin is empty" description={of ? `${of.what} deleted from ${of.name} wait here before they are gone for good.` : module ? `Deleted ${moduleLabel(module).toLowerCase()} items wait here before they are gone for good.` : 'Deleted contacts, events, tasks and recordings wait here before they are gone for good.'} />
       ) : (
         <ul ref={list} tabIndex={-1} aria-label="Deleted items" className="-mx-2 divide-y divide-border outline-none">
           {groups.map(group => {

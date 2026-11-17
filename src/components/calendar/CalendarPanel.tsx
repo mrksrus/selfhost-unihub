@@ -3,6 +3,9 @@ import { formatDistanceToNowStrict } from 'date-fns';
 import { MoreHorizontal, Plus, Settings2, Trash2 } from 'lucide-react';
 import { isRemoteCalendarAccount, type CalendarAccount, type CalendarCalendar } from '@/lib/calendar-api';
 import type { CalendarAccounts } from '@/hooks/use-calendar-accounts';
+import { useSetCalendarView } from '@/hooks/use-calendar-shares';
+import { useAuth } from '@/contexts/useAuth';
+import { isReached, ownerName } from '@/components/calendar/calendar-access';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { ErrorState, LoadingState } from '@/components/ui/page-states';
@@ -28,6 +31,33 @@ function accountSyncText(account: CalendarAccount) {
 
 type Confirm = { title: string; description: string; action: string; run: () => void };
 
+// Calendars of other people, of groups and of the organisation, under the person's own.
+const REACHED = [['user', 'Shared with me'], ['group', 'Groups'], ['organisation', 'Organisation']] as const;
+
+/** One calendar: shown or not, its name, whose it is and what stands out about it, and its settings. */
+function CalendarRow({ calendar, shown, detail, mark, onShow, onSettings }: {
+  calendar: CalendarCalendar; shown: boolean; detail?: string | null; mark?: string | null; onShow: (shown: boolean) => void; onSettings: () => void;
+}) {
+  return (
+    // On touch screens a row is as tall as its gear's tap area, so neighbouring rows' areas never overlap.
+    <li className="group flex items-center gap-1 rounded-md pr-1 touch:min-h-11 hover:bg-muted/60">
+      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 px-2 py-1.5 text-sm">
+        <input type="checkbox" checked={shown} onChange={event => onShow(event.target.checked)}
+          className="h-4 w-4 shrink-0 cursor-pointer rounded" style={{ accentColor: calendar.color }} />
+        <span className="min-w-0 flex-1">
+          <span className={cn('block truncate', !shown && 'text-muted-foreground')}>{calendar.name}</span>
+          {detail && <span className="block truncate text-xs text-muted-foreground">{detail}</span>}
+        </span>
+        {mark && <span className="shrink-0 text-xs text-muted-foreground">{mark}</span>}
+      </label>
+      <Button variant="ghost" size="icon-xs" className="shrink-0 opacity-0 focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+        aria-label={`Settings for ${calendar.name}`} onClick={onSettings}>
+        <Settings2 aria-hidden="true" />
+      </Button>
+    </li>
+  );
+}
+
 interface Props {
   data: CalendarAccounts;
   shownIds: string[];
@@ -44,6 +74,9 @@ interface Props {
 /** Calendar's context panel: accounts, their calendars and which ones are shown. */
 export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount, onAddCalendar, onCalendarSettings, binOpen, onOpenBin }: Props) {
   const { accounts, calendars, accountsQuery, calendarsQuery } = data;
+  const { user } = useAuth();
+  const setView = useSetCalendarView();
+  const reached = useMemo(() => calendars.filter(isReached), [calendars]);
   // The server refuses what a policy forbids; the entries only show the reason (F13).
   const removePolicy = usePolicy('accounts.remove');
   const addPolicy = usePolicy('accounts.add');
@@ -52,6 +85,7 @@ export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount
     const grouped = new Map<string, { account: CalendarAccount | null; calendars: CalendarCalendar[] }>();
     for (const account of accounts) grouped.set(account.id, { account, calendars: [] });
     for (const calendar of calendars) {
+      if (isReached(calendar)) continue;
       const entry = grouped.get(calendar.account_id) || { account: null, calendars: [] };
       entry.calendars.push(calendar);
       grouped.set(calendar.account_id, entry);
@@ -59,9 +93,19 @@ export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount
     return [...grouped.values()];
   }, [accounts, calendars]);
 
+  // A reached calendar is on or off in the person's own view of it, on every device.
   const show = (calendar: CalendarCalendar, shown: boolean) => {
+    if (isReached(calendar)) { setView.mutate({ id: calendar.id, is_visible: shown }); return; }
     onShow(calendar.id, shown);
     data.updateCalendar.mutate({ id: calendar.id, data: { is_visible: shown } });
+  };
+  const row = (calendar: CalendarCalendar, readOnly: boolean) => {
+    const offer = calendar.offer && (calendar.offer.to.id === user?.id ? 'Offered to you' : `Offered to ${calendar.offer.to.full_name || calendar.offer.to.email}`);
+    return (
+      <CalendarRow key={calendar.id} calendar={calendar} shown={shownIds.includes(calendar.id)} onShow={shown => show(calendar, shown)} onSettings={() => onCalendarSettings(calendar)}
+        detail={[calendar.owner_kind === 'organisation' ? null : ownerName(calendar), offer].filter(Boolean).join(' · ')}
+        mark={calendar.archived ? 'Archived' : calendar.permission === 'freebusy' ? 'Busy only' : readOnly || calendar.permission === 'read' ? 'Read-only' : null} />
+    );
   };
 
   return (
@@ -74,7 +118,7 @@ export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount
             retrying={accountsQuery.isFetching || calendarsQuery.isFetching} /></div>
         ) : accountsQuery.isLoading || calendarsQuery.isLoading ? (
           <LoadingState compact label="Loading calendars…" />
-        ) : groups.length === 0 ? (
+        ) : groups.length === 0 && reached.length === 0 ? (
           <p className="px-4 py-2 text-sm text-muted-foreground">No calendars yet. Add an account to start.</p>
         ) : groups.map(({ account, calendars: accountCalendars }) => {
           const remote = isRemoteCalendarAccount(account);
@@ -82,7 +126,7 @@ export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount
           const name = account?.display_name || account?.account_email || 'Calendars';
           return (
             <section key={account?.id ?? accountCalendars[0]?.account_id} aria-label={name} className="px-2 py-2">
-              <div className="flex items-start gap-1 px-2 pb-1">
+              <div className="flex items-start gap-1 px-2 pb-1 touch:pb-2.5">
                 <div className="min-w-0 flex-1">
                   <h2 className="truncate text-xs font-medium text-muted-foreground" title={name}>{name}</h2>
                   <p className={cn('truncate text-xs', status?.error ? 'text-destructive' : 'text-muted-foreground/80')}>
@@ -122,25 +166,17 @@ export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount
                 )}
               </div>
               <ul className="space-y-0.5">
-                {accountCalendars.map(calendar => {
-                  const shown = shownIds.includes(calendar.id);
-                  const readOnly = calendar.read_only || remote && account?.provider === 'ics';
-                  return (
-                    <li key={calendar.id} className="group flex items-center gap-1 rounded-md pr-1 hover:bg-muted/60">
-                      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 px-2 py-1.5 text-sm">
-                        <input type="checkbox" checked={shown} onChange={event => show(calendar, event.target.checked)}
-                          className="h-4 w-4 shrink-0 cursor-pointer rounded" style={{ accentColor: calendar.color }} />
-                        <span className={cn('min-w-0 flex-1 truncate', !shown && 'text-muted-foreground')}>{calendar.name}</span>
-                        {readOnly && <span className="shrink-0 text-xs text-muted-foreground">Read-only</span>}
-                      </label>
-                      <Button variant="ghost" size="icon-xs" className="shrink-0 opacity-0 focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
-                        aria-label={`Settings for ${calendar.name}`} onClick={() => onCalendarSettings(calendar)}>
-                        <Settings2 aria-hidden="true" />
-                      </Button>
-                    </li>
-                  );
-                })}
+                {accountCalendars.map(calendar => row(calendar, calendar.read_only || remote && account?.provider === 'ics'))}
               </ul>
+            </section>
+          );
+        })}
+        {!calendarsQuery.isLoading && !calendarsQuery.error && REACHED.map(([kind, title]) => {
+          const list = reached.filter(calendar => calendar.owner_kind === kind);
+          return list.length > 0 && (
+            <section key={kind} aria-label={title} className="px-2 py-2">
+              <h2 className="truncate px-2 pb-1 text-xs font-medium text-muted-foreground">{title}</h2>
+              <ul className="space-y-0.5">{list.map(calendar => row(calendar, false))}</ul>
             </section>
           );
         })}

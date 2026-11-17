@@ -13,6 +13,9 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { buttonVariants } from '@/components/ui/button-variants';
+import { useSetCalendarView } from '@/hooks/use-calendar-shares';
+import { CalendarShareDialog } from '@/components/calendar/CalendarShareDialog';
+import { atLeast, isReached, levelSentence, ownerName } from '@/components/calendar/calendar-access';
 
 const providerOptions: { value: CalendarProvider; label: string; description: string }[] = [
   { value: 'local', label: 'On this server', description: 'Stored only in UniHub.' },
@@ -143,38 +146,68 @@ export function AddCalendarDialog({ accountId, onClose, data }: { accountId: str
   );
 }
 
-/** Color, ToDo and removal of one calendar. */
+/**
+ * One calendar's settings. The person's own: colour, ToDo, sharing and
+ * removal. One they reach: what they may do, their own colour for it, and
+ * sharing for those who manage it. Notifications of other people's changes
+ * are each person's choice on every UniHub calendar.
+ */
 export function CalendarSettingsDialog({ calendar, onClose, data }: { calendar: CalendarCalendar | null; onClose: () => void; data: CalendarAccounts }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const setView = useSetCalendarView();
+  useEffect(() => { if (!calendar) setSharing(false); }, [calendar]);
   const account = calendar ? data.accounts.find(entry => entry.id === calendar.account_id) : undefined;
   const remote = isRemoteCalendarAccount(account);
   // Show the cached calendar so switches reflect saved changes at once.
   const current = calendar ? data.calendars.find(entry => entry.id === calendar.id) ?? calendar : null;
+  const reached = !!current && isReached(current);
+  const owner = current && ownerName(current);
   return <>
     <Dialog open={!!calendar} onOpenChange={open => { if (!open) onClose(); }}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{current?.name}</DialogTitle>
-          <DialogDescription>{account?.display_name || account?.account_email || 'Calendar settings'}</DialogDescription>
+          <DialogDescription>
+            {!reached ? account?.display_name || account?.account_email || 'Calendar settings'
+              : current.owner_kind === 'user' ? `Shared by ${owner}` : current.owner_kind === 'group' ? `Calendar of the group ${owner}` : 'Calendar of the organisation'}
+          </DialogDescription>
         </DialogHeader>
         {current && <div className="space-y-4">
+          {(reached || current.archived) && <p className="text-sm text-muted-foreground">{levelSentence(current)}</p>}
           <div className="flex items-center justify-between gap-4">
-            <Label htmlFor="calendar-color" className="font-normal">Color</Label>
+            <Label htmlFor="calendar-color" className="font-normal">{reached ? 'Your color for it' : 'Color'}</Label>
             <input id="calendar-color" type="color" className="h-8 w-14 cursor-pointer touch:h-10 rounded border border-input bg-transparent" defaultValue={current.color}
-              onBlur={event => { if (event.target.value !== current.color) data.updateCalendar.mutate({ id: current.id, data: { color: event.target.value } }); }} />
+              onBlur={event => {
+                if (event.target.value === current.color) return;
+                if (reached) setView.mutate({ id: current.id, color: event.target.value });
+                else data.updateCalendar.mutate({ id: current.id, data: { color: event.target.value } });
+              }} />
           </div>
-          <div className="flex items-center justify-between gap-4">
+          {!reached && <div className="flex items-center justify-between gap-4">
             <Label htmlFor="calendar-todo" className="font-normal">Show its events in ToDo</Label>
             <Switch id="calendar-todo" checked={current.auto_todo_enabled}
               onCheckedChange={value => data.updateCalendar.mutate({ id: current.id, data: { auto_todo_enabled: value } })} />
-          </div>
+          </div>}
+          {/* Only UniHub's own calendars are shared here, so only they have other people's changes. */}
+          {!remote && current.view && current.permission !== 'freebusy' && <div className="flex items-center justify-between gap-4">
+            <Label htmlFor="calendar-notify" className="font-normal">Notify me of others' changes</Label>
+            <Switch id="calendar-notify" checked={current.view.notify_changes} disabled={setView.isPending}
+              onCheckedChange={value => setView.mutate({ id: current.id, notify_changes: value })} />
+          </div>}
+          {current.permission && (remote || atLeast(current, 'manage')) && <div className="flex min-h-9 items-center justify-between gap-4 text-sm">
+            <span>Sharing</span>
+            {remote ? <span className="text-right text-muted-foreground">Shared at its provider</span>
+              : <Button variant="outline" size="sm" onClick={() => setSharing(true)}>Share</Button>}
+          </div>}
         </div>}
         <DialogFooter className="gap-2 sm:gap-0">
-          {!remote && <Button variant="ghost" className="mr-auto text-destructive hover:text-destructive" onClick={() => setConfirmDelete(true)}>Delete calendar</Button>}
+          {!remote && !reached && <Button variant="ghost" className="mr-auto text-destructive hover:text-destructive" onClick={() => setConfirmDelete(true)}>Delete calendar</Button>}
           <Button onClick={onClose}>Done</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+    {current && <CalendarShareDialog calendar={current} open={sharing} onClose={() => setSharing(false)} />}
     <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
       <AlertDialogContent>
         <AlertDialogHeader>

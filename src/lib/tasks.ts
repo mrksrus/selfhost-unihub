@@ -139,8 +139,11 @@ export function defaultEventCalendar(calendars: readonly CalendarCalendar[]) {
     ?? null;
 }
 
-/** The name of a calendar's account as the chooser groups it: the person's own UniHub, or the server account. */
-export function accountLabel(calendar: Pick<CalendarCalendar, 'account_provider' | 'account_display_name' | 'account_email'>) {
+/** The name of a calendar's account as the chooser groups it: the person's own UniHub, the server account, or whose calendar it is. */
+export function accountLabel(calendar: Pick<CalendarCalendar, 'account_provider' | 'account_display_name' | 'account_email' | 'owner_kind' | 'owner' | 'group'>) {
+  if (calendar.owner_kind === 'group') return calendar.group?.name || 'A group';
+  if (calendar.owner_kind === 'organisation') return 'Organisation';
+  if (calendar.owner) return calendar.owner.full_name || calendar.owner.email;
   if ((calendar.account_provider ?? 'local') === 'local') return 'On this UniHub';
   return calendar.account_display_name || calendar.account_email || 'Calendar server';
 }
@@ -149,9 +152,11 @@ export function accountLabel(calendar: Pick<CalendarCalendar, 'account_provider'
 export function groupByAccount<T extends CalendarCalendar>(calendars: readonly T[]) {
   const groups = new Map<string, { label: string; calendars: T[] }>();
   for (const calendar of calendars) {
-    const group = groups.get(calendar.account_id) ?? { label: accountLabel(calendar), calendars: [] };
+    // A group's or the organisation's calendar has no account: its label stands in.
+    const key = calendar.account_id ?? accountLabel(calendar);
+    const group = groups.get(key) ?? { label: accountLabel(calendar), calendars: [] };
     group.calendars.push(calendar);
-    groups.set(calendar.account_id, group);
+    groups.set(key, group);
   }
   return [...groups.values()];
 }
