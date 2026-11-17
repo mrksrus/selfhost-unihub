@@ -161,15 +161,19 @@ async function applySeries(cx: SqlExecutor, series: SeriesRow, ownerId: string |
   }
   if (addOnly) return added;
   const left = rows.filter(row => !keep.has(String(row.recurrence_id)) && keyMs(String(row.recurrence_id)) >= windowStartMs && keyMs(String(row.recurrence_id)) <= coveredUntil).map(row => String(row.id));
-  if (left.length) {
-    const [held] = await cx.execute<RowDataPacket[]>(`SELECT e.id FROM calendar_events e WHERE e.id IN (${placeholders(left)}) AND (e.todo_status IS NOT NULL
-      OR EXISTS (SELECT 1 FROM calendar_event_subtasks s WHERE s.event_id = e.id) OR EXISTS (SELECT 1 FROM calendar_event_attendees a WHERE a.event_id = e.id))`, left);
-    const kept = held.map(row => String(row.id));
-    await binLocalEvents(cx, ownerId, kept);
-    const gone = left.filter(id => !kept.includes(id));
-    if (gone.length) await cx.execute(`DELETE FROM calendar_events WHERE id IN (${placeholders(gone)})`, gone);
-  }
+  await dropDates(cx, ownerId, left);
   return added;
+}
+
+/** Dates that left the rule: to the bin when they hold something of their own (a ToDo state, points, attendees), else removed. */
+async function dropDates(cx: SqlExecutor, ownerId: string | null, left: readonly string[]) {
+  if (!left.length) return;
+  const [held] = await cx.execute<RowDataPacket[]>(`SELECT e.id FROM calendar_events e WHERE e.id IN (${placeholders(left)}) AND (e.todo_status IS NOT NULL
+    OR EXISTS (SELECT 1 FROM calendar_event_subtasks s WHERE s.event_id = e.id) OR EXISTS (SELECT 1 FROM calendar_event_attendees a WHERE a.event_id = e.id))`, [...left]);
+  const kept = held.map(row => String(row.id));
+  await binLocalEvents(cx, ownerId, kept);
+  const gone = left.filter(id => !kept.includes(id));
+  if (gone.length) await cx.execute(`DELETE FROM calendar_events WHERE id IN (${placeholders(gone)})`, gone);
 }
 
 /**
@@ -283,6 +287,16 @@ async function changeSeriesEvent(userId: string, target: { event: CalendarEvent;
   return edits;
 }
 
+/** A date's own times (a ToDo "Moved" time) as its exception, so a change to every date keeps them. */
+async function keepDateTimes(cx: SqlExecutor, eventId: string) {
+  const [[row]] = await cx.execute<Row[]>('SELECT series_id, recurrence_id, start_time, end_time, all_day FROM calendar_events WHERE id = ?', [eventId]);
+  const series = row?.series_id ? await lockSeries(cx, String(row.series_id)) : null;
+  if (!series) return;
+  const { timeZone } = ical.seriesRule(series.ics);
+  const times = { startMs: parseDatetimeToMillis(row.start_time)!, endMs: parseDatetimeToMillis(row.end_time)!, allDay: !!Number(row.all_day) };
+  await saveIcs(cx, series.id, ical.updateEventIcs(series.ics, times, { recurrenceId: String(row.recurrence_id), scope: 'occurrence', userTimeZone: timeZone, tzid: timeZone }));
+}
+
 /** DELETE /api/calendar/events/:id of a date of a local series: one date (an EXDATE, the row to the bin) or the whole series as one bin item. */
 async function deleteSeriesEvent(userId: string, target: { event: CalendarEvent; ownerId: string | null }, scope: SeriesScope) {
   const { event, ownerId } = target;
@@ -335,4 +349,4 @@ async function extendSeries() {
   return added;
 }
 
-export { ruleText, repeatOf, seriesScope, isLocalCalendar, startSeries, applySeries, changeSeriesEvent, deleteSeriesEvent, withSeriesDetail, extendSeries };
+export { ruleText, repeatOf, seriesScope, isLocalCalendar, startSeries, applySeries, dropDates, changeSeriesEvent, keepDateTimes, deleteSeriesEvent, withSeriesDetail, extendSeries };

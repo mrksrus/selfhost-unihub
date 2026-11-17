@@ -553,6 +553,7 @@ async function moveEvent(userId: string, eventId: string, targetCalendarId: stri
 async function admitMove(userId: string, eventId: string, targetCalendarId: string, changes: Partial<CalendarEvent>): Promise<MoveOutcome | typeof STALE> {
   const [[event]] = await db.execute<(RowDataPacket & CalendarEvent)[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
   if (!event) throw notFound('TASK_NOT_FOUND', 'Task not found');
+  if (event.series_id) throw conflict('SERIES_MOVE_REFUSED', 'A repeating event moves only as a whole.');
   const target = await loadCalendar(userId, targetCalendarId);
   if (!target) throw notFound('CALENDAR_NOT_FOUND', 'Calendar not found');
   // Moving again to where it is going resumes the move now; edits sent

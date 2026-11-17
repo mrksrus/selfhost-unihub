@@ -58,6 +58,7 @@ import crypto from 'node:crypto';
 import { archivedContents, filterOldArchive } from './backup-classes';
 import { restoreOverlays, validateOverlayRows } from './backup-overlays';
 import * as ical from './calendar-ical';
+import { dropDates } from './calendar-series';
 import { restoreBinItems, parseRefs } from './bin';
 import { recordingBinFolder } from './recordings';
 
@@ -547,6 +548,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
 
       // A repeating event (data schema 8) goes with its calendar; its dates name it below.
       const calendarSeriesIdMap = new Map<string, string>();
+      const overwrittenSeries: string[] = [];
       for (const series of (data.calendar_series || []) as BackupRow[]) {
         await checkRestoreCancelled();
         try {
@@ -561,11 +563,17 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         const targetId = chooseTargetId(series.id, existing?.id ?? null, conflictMode);
         calendarSeriesIdMap.set(String(series.id), targetId);
         if (!shouldWriteExisting(existing?.id ?? null, targetId, conflictMode)) continue;
-        if (existing?.id === targetId) await connection.execute('UPDATE calendar_series SET calendar_id = ?, ics = ? WHERE id = ?', [targetCalendarId, String(series.ics), targetId]);
+        if (existing?.id === targetId) {
+          await connection.execute('UPDATE calendar_series SET calendar_id = ?, ics = ? WHERE id = ?', [targetCalendarId, String(series.ics), targetId]);
+          overwrittenSeries.push(targetId);
+        }
         // A copy kept beside the one it matched gets a UID of its own.
         else await connection.execute('INSERT INTO calendar_series (id, calendar_id, uid, ics) VALUES (?, ?, ?, ?)', [targetId, targetCalendarId, existing ? crypto.randomUUID() : String(series.uid).slice(0, 500), String(series.ics)]);
       }
 
+      // An overwritten series' dates set their keys aside, so the archived dates take theirs in any order.
+      const inOverwritten = `series_id IN (${overwrittenSeries.map(() => '?').join(', ')})`;
+      if (overwrittenSeries.length) await connection.execute(`UPDATE calendar_events SET recurrence_id = CONCAT(recurrence_id, '~', id) WHERE ${inOverwritten}`, overwrittenSeries);
       for (const event of data.calendar_events || []) {
         await checkRestoreCancelled();
         const row = overwriteUserId(event, userId);
@@ -590,6 +598,18 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         if (sourceEmailId(row.source_email_id)) eventsWithSourceEmail.set(targetEventId, row.source_email_id);
       }
 
+      // A date the archive did not write takes its key back; one whose key an archived date took left the rule.
+      if (overwrittenSeries.length) {
+        const [parked] = await connection.execute<RowDataPacket[]>(`SELECT id, series_id, SUBSTRING_INDEX(recurrence_id, '~', 1) AS recurrence_id FROM calendar_events
+          WHERE ${inOverwritten} AND recurrence_id LIKE '%~%'`, overwrittenSeries);
+        const taken: string[] = [];
+        for (const date of parked) {
+          const [holder] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_events WHERE series_id = ? AND recurrence_id = ?', [date.series_id, date.recurrence_id]);
+          if (holder.length) taken.push(String(date.id));
+          else await connection.execute('UPDATE calendar_events SET recurrence_id = ? WHERE id = ?', [date.recurrence_id, date.id]);
+        }
+        await dropDates(connection, userId, taken);
+      }
       await separateCopyKeys(connection, userId, writtenCalendarEvents);
 
       for (const subtask of data.calendar_event_subtasks || []) {

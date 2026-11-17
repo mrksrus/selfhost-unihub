@@ -971,7 +971,9 @@ export = {
       const written = await withTransaction(async connection => {
         if (!await calendarShares.lockEventWrite(connection, userId, id, target.ownerId, 'edit', target.event.calendar_id ?? null)) return { affectedRows: 0 } as ResultSetHeader;
         if (timeMoved) await fenceTaskLocks(connection);
-        return (await connection.execute<ResultSetHeader>(updateQuery, params))[0];
+        const [result] = await connection.execute<ResultSetHeader>(updateQuery, params);
+        if (result.affectedRows && updates.includes('start_time = ?')) await calendarSeries.keepDateTimes(connection, id);
+        return result;
       });
       if (timeMoved && !written.affectedRows) {
         const [moving] = await db.execute<RowDataPacket[]>("SELECT id FROM calendar_event_moves WHERE event_id = ? AND state = 'creating'", [id]);

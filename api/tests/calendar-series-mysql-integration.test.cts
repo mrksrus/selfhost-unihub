@@ -130,6 +130,13 @@ test('repeating local events: dates in place, one or all, the bin, levels, remin
   assert.deepEqual(await refused(blair, 'PUT', ev(d1), { repeat: { freq: 'HOURLY' } }), [400, 'RRULE_UNSUPPORTED']);
   const other = (await call(blair, 'GET', '/api/calendar/calendars')).calendars.find((calendar: FixtureValue) => calendar.id !== team.id && calendar.user_id === ids.member);
   assert.deepEqual(await refused(blair, 'PUT', ev(d2), { calendar_id: other.id }), [409, 'SERIES_MOVE_REFUSED']);
+  assert.deepEqual(await refused(blair, 'POST', ev(d2, '/move'), { calendar_id: other.id }), [409, 'SERIES_MOVE_REFUSED'], 'nor one date to another list');
+
+  // ── A date moved in ToDo keeps its time through a change to every date ──
+  await call(blair, 'PUT', ev(d2, '/todo-status'), { todo_status: 'time_moved', start_time: at(monday + 8, 7) });
+  await call(blair, 'PUT', ev(d1), { location: 'Room 5', scope: 'series' });
+  const movedDate = (await call(blair, 'GET', ev(d2))).event;
+  assert.deepEqual([movedDate.start_time, movedDate.end_time, movedDate.todo_status], [at(monday + 8, 7), at(monday + 8, 8), 'time_moved']);
 
   // ── The rule changed: the ticked date goes to the bin, the empty one is removed; back as a single event ──
   await call(blair, 'PUT', ev(d1), { repeat: { freq: 'WEEKLY', by_day: ['MO'], count: 2 } });
@@ -196,6 +203,22 @@ test('repeating local events: dates in place, one or all, the bin, levels, remin
   assert.equal(await series.extendSeries(), 0, 'nothing new');
   assert.equal(await count(), full + 1);
   assert.equal((await call(blair, 'GET', ev(daily.id))).event.title, 'Kept as it is');
+
+  // ── Blair's own earlier backup restored with "replace" after the series moved a day: each date back on its key ──
+  const keysOf = async () => (await rows('SELECT id, recurrence_id FROM calendar_events WHERE series_id = ? ORDER BY id', [daily.series_key])).map(row => [row.id, row.recurrence_id]);
+  const backedUp = await keysOf();
+  const ownZip = path.join(scratch, 'own.zip');
+  await writeZip(await backup.buildBackupArchiveEntriesForUser(ids.member, 'calendar', { workDirectory: scratch }), ownZip);
+  const own = await backup.backupFromZipFile(ownZip);
+  await call(blair, 'PUT', ev(daily.id), { start_time: new Date(today.getTime() + 86400000).toISOString(), end_time: new Date(today.getTime() + 86400000 + 900000).toISOString(), scope: 'series' });
+  // A ticked date made since on a key the backup's date takes back: it goes to the bin.
+  const since = crypto.randomUUID();
+  await pool.execute("INSERT INTO calendar_events (id, user_id, calendar_id, title, start_time, end_time, todo_status, series_id, recurrence_id, uid) VALUES (?, ?, ?, 'Since', ?, ?, 'done', ?, ?, ?)",
+    [since, ids.member, team.id, '2000-01-01 06:30:00', '2000-01-01 07:00:00', daily.series_key, '20000101T063000Z', since]);
+  const replaced = await backup.importBackupForUser(ids.member, own.backup, { mode: 'apply', conflict_mode: 'replace', fileSourcesByPath: own.fileSourcesByPath });
+  assert.equal(replaced.valid, true, (replaced as FixtureValue).errors?.join('\n'));
+  assert.deepEqual(await keysOf(), backedUp);
+  assert.equal((await rows('SELECT id FROM bin_items WHERE item_id = ? AND user_id = ?', [since, ids.member])).length, 1);
 
   // ── Every date deleted: one bin item, restored as the series with its ids ──
   const before = (await rows('SELECT id, recurrence_id FROM calendar_events WHERE series_id = ? ORDER BY id', [daily.series_key])).map(row => [row.id, row.recurrence_id]);
