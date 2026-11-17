@@ -136,10 +136,13 @@ a self-hoster, not yet as audited infrastructure for confidential company data.
 ## Limitations
 
 - **No OAuth.** UniHub signs in to mail and calendar servers with a password,
-  usually an app password (Gmail, iCloud, Fastmail, Yahoo). Microsoft has
-  switched off password sign-in to IMAP for Microsoft 365 and Outlook.com
-  mailboxes in most cases, so those generally cannot be connected; an
-  Exchange server that still allows IMAP with a password works for mail.
+  usually an app password (iCloud, Fastmail, Yahoo; Gmail with 2-Step
+  Verification on, though a work or school account may not offer app
+  passwords). **Microsoft 365 and Outlook.com mail cannot be connected:**
+  Microsoft accepts only OAuth for IMAP there (Microsoft 365 since 2022,
+  Outlook.com since September 2024). An Exchange server an organisation runs
+  itself may work if it allows IMAP and SMTP with a password; this has not
+  been tested.
 - **Calendars** sync two ways over CalDAV only. Google and Microsoft calendars
   (including Exchange and Microsoft 365) are read-only subscriptions, Exchange
   Web Services is not supported, tasks do not sync with CalDAV, and
